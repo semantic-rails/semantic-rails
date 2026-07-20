@@ -1,0 +1,21 @@
+{
+  "order_by": [
+    {
+      "direction": "ASC",
+      "field": "temporal_role.jaffle_order_time__month"
+    }
+  ],
+  "select": [
+    {
+      "as": "orders_from_customers_with_10plus_orders_in_period",
+      "expression": {
+        "metric": "metric.jaffle.orders_from_customers_with_10plus_orders_in_period"
+      }
+    }
+  ],
+  "time": {
+    "grain": "month",
+    "temporal_role": "temporal_role.jaffle_order_time"
+  },
+  "version": 1
+}

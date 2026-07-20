@@ -1,0 +1,57 @@
+metrics:
+  # Snapshot metrics — point-in-time stock values that are NOT summable
+  # across days. The underlying measures use `accumulation: stock`; the
+  # `kind: semi_additive` metric pins the contract so callers ask for
+  # an end-of-period or start-of-period value, never a sum across rows.
+
+  sales.inventory_on_hand_eop:
+    as: metric.sales.inventory_on_hand_eop
+    label: Inventory on hand (end of period)
+    description: Inventory at the end of each reporting period.
+    kind: semi_additive
+    measure: inventory_on_hand_eop
+    value_type: number
+    temporal_role: temporal_role.jaffle_inventory_day
+    meta:
+      owner_team: operations_analytics
+      review_priority: high
+      change_risk: high
+
+  sales.inventory_on_hand_sop:
+    as: metric.sales.inventory_on_hand_sop
+    label: Inventory on hand (start of period)
+    description: Inventory at the start of each reporting period.
+    kind: semi_additive
+    measure: inventory_on_hand_sop
+    value_type: number
+    temporal_role: temporal_role.jaffle_inventory_day
+    meta:
+      owner_team: operations_analytics
+      review_priority: high
+      change_risk: high
+
+  sales.active_menu_count_eop:
+    as: metric.sales.active_menu_count_eop
+    label: Active menu count (end of period)
+    description: Number of active menu items at the end of each reporting period.
+    kind: semi_additive
+    measure: active_menu_count_eop
+    value_type: count
+    temporal_role: temporal_role.jaffle_inventory_day
+    meta:
+      owner_team: operations_analytics
+      review_priority: high
+      change_risk: high
+
+  sales.open_store_count_eop:
+    as: metric.sales.open_store_count_eop
+    label: Open store count (end of period)
+    description: Number of stores open at the end of each reporting period.
+    kind: semi_additive
+    measure: open_store_count_eop
+    value_type: count
+    temporal_role: temporal_role.jaffle_inventory_day
+    meta:
+      owner_team: operations_analytics
+      review_priority: medium
+      change_risk: high

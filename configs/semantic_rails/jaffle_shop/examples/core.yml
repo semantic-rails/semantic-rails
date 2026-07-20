@@ -1,0 +1,52 @@
+examples:
+  top_stores_by_revenue:
+    question: Top stores by revenue
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: revenue_usd
+      group_by: [dimension.jaffle_store_name]
+      order_by:
+        - field: revenue_usd
+          direction: DESC
+      limit: 5
+    expected_shape:
+      columns: [dimension.jaffle_store_name, revenue_usd]
+      min_rows: 2
+      max_rows: 2
+
+  monthly_revenue:
+    question: Monthly revenue
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: revenue_usd
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+      order_by:
+        - field: time
+          direction: ASC
+      limit: 5
+    expected_shape:
+      columns: [temporal_role.jaffle_order_time__month, revenue_usd]
+      min_rows: 5
+
+  aov_by_customer_type:
+    question: Average order value by customer type
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.aov_usd}
+          as: aov_usd
+      group_by: [dimension.jaffle_customer_type]
+      order_by:
+        - field: dimension.jaffle_customer_type
+          direction: ASC
+      limit: 10
+    expected_shape:
+      columns: [dimension.jaffle_customer_type, aov_usd]
+      min_rows: 2
+      max_rows: 2

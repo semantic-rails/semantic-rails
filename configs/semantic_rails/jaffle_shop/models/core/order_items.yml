@@ -1,0 +1,80 @@
+model:
+  id: order_items
+  relation: jaffle_item
+  description: One row per line item within an order.
+  entities:
+    item: {}
+    order: {}
+    product: {}
+  dimensions:
+    product_name:
+      label: Item product name
+      description: Product name attached to the line item.
+      kind: categorical
+    product_type:
+      label: Item product type
+      description: Product family for the purchased item.
+      kind: categorical
+      domain:
+        - value: jaffle
+          label: Food
+          description: Food items sold on the menu.
+        - value: beverage
+          label: Drink
+          description: Beverage items sold on the menu.
+  measures:
+    item_count:
+      label: Items
+      description: Count of order line items.
+      kind: entity_count
+      entity_key: item_id
+      accumulation:
+        kind: event
+      value_type: count
+      time: temporal_role.jaffle_order_time
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: high
+        change_risk: low
+    item_revenue_usd:
+      kind: aggregate
+      label: Item revenue (USD)
+      description: Revenue captured at the order-item grain.
+      expr: item_revenue_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      time: temporal_role.jaffle_order_time
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: high
+        change_risk: medium
+    item_cost_usd:
+      kind: aggregate
+      label: Supply cost exposure
+      description: Supply-side cost allocated to each purchased item.
+      expr: item_cost_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      time: temporal_role.jaffle_order_time
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: medium
+        change_risk: medium
+    item_margin_usd:
+      kind: aggregate
+      label: Product margin
+      description: Revenue minus attributed supply cost at the item grain.
+      expr: item_margin_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      time: temporal_role.jaffle_order_time
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: high
+        change_risk: medium

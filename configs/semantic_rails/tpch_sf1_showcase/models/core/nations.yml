@@ -1,0 +1,15 @@
+model:
+  id: nations
+  relation: SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.NATION
+  description: TPCH nation dimension.
+  entities:
+    nation: {}
+    region:
+      expr: N_REGIONKEY
+  dimensions:
+    nation_name:
+      as: dimension.tpch_nation_name
+      label: Nation
+      column: N_NAME
+      kind: categorical
+      description: Nation name from TPCH sample data.

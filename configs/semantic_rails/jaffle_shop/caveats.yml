@@ -1,0 +1,18 @@
+semantic_caveats:
+  - id: caveat.jaffle.brooklyn_soft_launch_mar_2017
+    kind: business_event
+    message: Brooklyn opened during March 2017; store comparisons for that month include a partial operating period.
+    object_ids:
+      - dimension.jaffle_store_name
+    entity_values:
+      - entity: entity.jaffle_store
+        dimension: dimension.jaffle_store_name
+        value: Brooklyn
+    time:
+      from: "2017-03-01"
+      to: "2017-04-01"
+    severity: warning
+    owner: operations_analytics
+    references:
+      - label: synthetic fixture
+        url: https://semantic-rails.com/docs/authoring-reference.html#caveats

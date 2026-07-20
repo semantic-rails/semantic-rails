@@ -1,0 +1,162 @@
+[
+  {
+    "ordered_month_month": "2016-09-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 575.58
+  },
+  {
+    "ordered_month_month": "2016-09-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 17477.69999999999
+  },
+  {
+    "ordered_month_month": "2016-10-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 646.5900000000003
+  },
+  {
+    "ordered_month_month": "2016-10-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 21277.360000000004
+  },
+  {
+    "ordered_month_month": "2016-11-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 488.64000000000027
+  },
+  {
+    "ordered_month_month": "2016-11-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 27428.180000000022
+  },
+  {
+    "ordered_month_month": "2016-12-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 724.9900000000002
+  },
+  {
+    "ordered_month_month": "2016-12-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 34952.610000000066
+  },
+  {
+    "ordered_month_month": "2017-01-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 294.67000000000013
+  },
+  {
+    "ordered_month_month": "2017-01-01 00:00:00",
+    "customer_segment": "repeat",
+    "revenue_usd": 218.35
+  },
+  {
+    "ordered_month_month": "2017-01-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 44504.92999999988
+  },
+  {
+    "ordered_month_month": "2017-02-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 376.29000000000013
+  },
+  {
+    "ordered_month_month": "2017-02-01 00:00:00",
+    "customer_segment": "repeat",
+    "revenue_usd": 147.32999999999998
+  },
+  {
+    "ordered_month_month": "2017-02-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 42834.49999999985
+  },
+  {
+    "ordered_month_month": "2017-03-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 414.4300000000003
+  },
+  {
+    "ordered_month_month": "2017-03-01 00:00:00",
+    "customer_segment": "repeat",
+    "revenue_usd": 214.11999999999998
+  },
+  {
+    "ordered_month_month": "2017-03-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 73321.77000000067
+  },
+  {
+    "ordered_month_month": "2017-04-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 362.5000000000002
+  },
+  {
+    "ordered_month_month": "2017-04-01 00:00:00",
+    "customer_segment": "repeat",
+    "revenue_usd": 272.42
+  },
+  {
+    "ordered_month_month": "2017-04-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 82682.07000000148
+  },
+  {
+    "ordered_month_month": "2017-05-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 396.4000000000003
+  },
+  {
+    "ordered_month_month": "2017-05-01 00:00:00",
+    "customer_segment": "repeat",
+    "revenue_usd": 278.78000000000003
+  },
+  {
+    "ordered_month_month": "2017-05-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 95395.1700000031
+  },
+  {
+    "ordered_month_month": "2017-06-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 348.73000000000025
+  },
+  {
+    "ordered_month_month": "2017-06-01 00:00:00",
+    "customer_segment": "repeat",
+    "revenue_usd": 302.07
+  },
+  {
+    "ordered_month_month": "2017-06-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 97728.07000000274
+  },
+  {
+    "ordered_month_month": "2017-07-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 374.1500000000002
+  },
+  {
+    "ordered_month_month": "2017-07-01 00:00:00",
+    "customer_segment": "repeat",
+    "revenue_usd": 377.34999999999997
+  },
+  {
+    "ordered_month_month": "2017-07-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 94105.69000000246
+  },
+  {
+    "ordered_month_month": "2017-08-01 00:00:00",
+    "customer_segment": "new",
+    "revenue_usd": 348.7200000000003
+  },
+  {
+    "ordered_month_month": "2017-08-01 00:00:00",
+    "customer_segment": "repeat",
+    "revenue_usd": 171.72
+  },
+  {
+    "ordered_month_month": "2017-08-01 00:00:00",
+    "customer_segment": null,
+    "revenue_usd": 106851.15000000411
+  }
+]

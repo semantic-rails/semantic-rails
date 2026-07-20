@@ -1,0 +1,56 @@
+# Python env/cache
+.venv/
+.uv-cache/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+*.py[cod]
+
+# Build artifacts
+build/
+dist/
+**/dist/
+*.egg-info/
+
+# Node artifacts
+**/node_modules/
+
+# OS/editor clutter
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+
+# Audit reports (working artifacts from launch-readiness reviews; not source)
+audit/
+
+# Local environment files — never commit. .env.example is the right place for
+# templates with placeholder values.
+.env*
+**/.env*
+!.env.example
+!**/.env.example
+
+# Local databases
+data/*.duckdb
+data/*.sqlite
+*.log
+.tmp-baseline/
+.tmp-snapshot/
+
+# Local agent config / worktrees (managed by EnterWorktree)
+.claude/
+.screenshots/
+
+# Compiled package artifacts (manifest.json, etc.)
+configs/**/.compiled/
+**/.compiled/
+
+# Cross-warehouse conformance fixture cache (content-addressed parquet exports)
+data/.fixture_cache/
+# DuckLake local catalog/data for integration runs
+data/.ducklake/

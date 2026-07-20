@@ -1,0 +1,21 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+✔ Success 🦄 - query completed after 0.07 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+SELECT
+  metric_time__month
+  , SUM(orders) AS orders
+FROM (
+  SELECT
+    DATE_TRUNC('month', ordered_at) AS metric_time__month
+    , 1 AS orders
+  FROM "jaffle_comparison"."main"."orders" orders_src_10000
+) subq_2
+GROUP BY
+  metric_time__month
+ORDER BY metric_time__month
+

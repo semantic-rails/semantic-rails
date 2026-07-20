@@ -1,0 +1,27 @@
+schema_version: 1
+
+package:
+  id: tpch_sf1_showcase
+  namespace: tpch
+  name: tpch_sf1_showcase
+  description: Snowflake TPCH SF1 showcase package powered by the semantic_views_trial Snow CLI connection.
+  warehouse: snowflake
+  environments: [development, staging, production]
+  schema_strict: true
+  connection:
+    kind: snowflake_cli
+    name: semantic_views_trial
+
+defaults:
+  dimension:
+    groupable: true
+    filterable: true
+  time:
+    timezone: UTC
+    default_query_axis: false
+    supported_grains: [day, week, month, quarter, year]
+  measure:
+    subject_entity: self
+    aggregation_entity: self
+  relationship:
+    traversal: [forward, reverse]

@@ -1,0 +1,1 @@
+{"error":"Error: Catalog Error: Table with name comparison_order_items does not exist!\nDid you mean \"raw_storefront_sessions\"?\n\nLINE 4:       comparison_order_items AS \"order_items\"  GROUP BY 1, 2 ORDER...\n              ^","requestId":"85aaa9f0-8a65-408f-bc6a-ff737726167c-span-1"}

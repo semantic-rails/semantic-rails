@@ -1,0 +1,19 @@
+# Local runtime and install state
+cube/.cubestore/
+cube/node_modules/
+malloy/node_modules/
+malloy/.cache/
+malloy/.home/
+metricflow/.venv/
+metricflow/logs/
+metricflow/target/
+metricflow/.user.yml
+
+# Rebuildable shared data
+shared/data/*
+!shared/data/.gitignore
+
+# Common Python noise
+**/__pycache__/
+*.pyc
+.DS_Store

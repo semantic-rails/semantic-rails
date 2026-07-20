@@ -1,0 +1,54 @@
+(To see warnings and future-errors, run again with flag `--show-all`)
+
+
+⠋ Building manifest from dbt project root
+
+⠙ Building manifest from dbt project root
+✔ 🎉 Successfully parsed manifest from dbt project
+
+
+⠋ Validating semantics of built manifest
+
+⠙ Validating semantics of built manifest
+✔ 🎉 Successfully validated the semantics of built manifest (ERRORS: 0, FUTURE_ERRORS: 0, WARNINGS: 0)
+
+
+⠋ Validating semantic models against data warehouse...
+
+⠙ Validating semantic models against data warehouse...
+✔ 🎉 Successfully validated semantic models against data warehouse (ERRORS: 0, FUTURE_ERRORS: 0, WARNINGS: 0)
+
+
+⠋ Validating dimensions against data warehouse...
+
+⠙ Validating dimensions against data warehouse...
+
+⠹ Validating dimensions against data warehouse...
+✔ 🎉 Successfully validated dimensions against data warehouse (ERRORS: 0, FUTURE_ERRORS: 0, WARNINGS: 0)
+
+
+⠋ Validating entities against data warehouse...
+
+⠙ Validating entities against data warehouse...
+✔ 🎉 Successfully validated entities against data warehouse (ERRORS: 0, FUTURE_ERRORS: 0, WARNINGS: 0)
+
+
+⠋ Validating measures against data warehouse...
+
+⠙ Validating measures against data warehouse...
+✔ 🎉 Successfully validated measures against data warehouse (ERRORS: 0, FUTURE_ERRORS: 0, WARNINGS: 0)
+
+
+⠋ Validating metrics against data warehouse...
+
+⠙ Validating metrics against data warehouse...
+
+⠹ Validating metrics against data warehouse...
+✔ 🎉 Successfully validated metrics against data warehouse (ERRORS: 0, FUTURE_ERRORS: 0, WARNINGS: 0)
+
+
+
+
+
+
+

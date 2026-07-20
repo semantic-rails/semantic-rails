@@ -1,0 +1,13 @@
+{
+  "dimensions": [
+    {
+      "field": "session_conversion_7d.session_month",
+      "granularity": "month"
+    }
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "session_conversion_7d.session_to_order_conversion_rate_7d"
+  ]
+}

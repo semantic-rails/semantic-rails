@@ -1,0 +1,14 @@
+{
+  "dimensions": [
+    {
+      "field": "delivered_revenue_by_customer_segment.delivered_month",
+      "granularity": "month"
+    },
+    "delivered_revenue_by_customer_segment.customer_segment"
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "delivered_revenue_by_customer_segment.delivered_revenue"
+  ]
+}

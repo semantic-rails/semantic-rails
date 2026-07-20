@@ -1,0 +1,1 @@
+SELECT DATE_TRUNC('MONTH', orders.ordered_at) AS ordered_at_month, COUNT(DISTINCT orders.order_id) AS orders FROM comparison_orders AS orders JOIN comparison_customers AS customers ON orders.customer_id = customers.customer_id WHERE customers.lifetime_spend_cents >= 50000 GROUP BY DATE_TRUNC('MONTH', orders.ordered_at) ORDER BY 1 LIMIT 5000

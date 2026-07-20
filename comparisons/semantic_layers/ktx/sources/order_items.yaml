@@ -1,0 +1,26 @@
+name: order_items
+table: comparison_order_items
+grain: [item_id]
+columns:
+  - name: item_id
+    type: string
+  - name: order_id
+    type: string
+  - name: product_type
+    type: string
+  - name: item_revenue_cents
+    type: number
+  - name: ordered_at
+    type: time
+    role: time
+  - name: store_id
+    type: string
+  - name: customer_id
+    type: string
+joins:
+  - to: orders
+    "on": order_id = orders.order_id
+    relationship: many_to_one
+measures:
+  - name: item_revenue_usd
+    expr: sum(item_revenue_cents / 100.0)

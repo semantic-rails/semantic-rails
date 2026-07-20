@@ -1,0 +1,37 @@
+model:
+  id: order_items
+  relation: jaffle_item
+  description: One row per line item within an order.
+  entities:
+    item: {}
+    order: {}
+  dimensions:
+    product_name:
+      label: Item product name
+      kind: categorical
+    product_type:
+      label: Item product type
+      kind: categorical
+      domain:
+        - value: jaffle
+          label: Food
+        - value: beverage
+          label: Drink
+  measures:
+    # Item revenue is anchored to the order's `ordered_at` role so that
+    # selecting `temporal_role.jaffle_order_time` aligns line-item revenue
+    # with order-level facts. The role is declared on `orders` and the
+    # measure references the public ID via `time:`.
+    item_revenue_usd:
+      label: Item revenue (USD)
+      kind: aggregate
+      expr: item_revenue_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      time: temporal_role.jaffle_order_time
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium

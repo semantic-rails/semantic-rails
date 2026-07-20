@@ -1,0 +1,17 @@
+metrics:
+  # kind: ratio — direct numerator / denominator. Pins the formula and
+  # null-handling so AOV is always (revenue / orders) on the same slice.
+  aov_usd:
+    label: Average order value (USD)
+    description: Revenue divided by orders for the selected slice.
+    kind: ratio
+    numerator: revenue_usd
+    denominator: order_count
+    null_behavior: null_if_zero
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium

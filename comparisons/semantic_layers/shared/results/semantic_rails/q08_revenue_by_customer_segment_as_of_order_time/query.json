@@ -1,0 +1,24 @@
+{
+  "group_by": [
+    "dimension.jaffle_customer_history_segment"
+  ],
+  "order_by": [
+    {
+      "direction": "DESC",
+      "field": "revenue_usd"
+    }
+  ],
+  "select": [
+    {
+      "as": "revenue_usd",
+      "expression": {
+        "metric": "metric.jaffle.revenue_usd"
+      }
+    }
+  ],
+  "time": {
+    "grain": "month",
+    "temporal_role": "temporal_role.jaffle_order_time"
+  },
+  "version": 1
+}

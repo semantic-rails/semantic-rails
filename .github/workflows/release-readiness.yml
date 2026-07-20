@@ -1,0 +1,45 @@
+name: Release Readiness
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-readiness:
+    name: Release readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dev --locked
+      - run: uv run python scripts/generate_contract_artifacts.py --check
+      - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
+      - run: uv run python scripts/benchmark_plan.py --gate --output dist/agentic-governance-scorecard.json --markdown-output dist/agentic-governance-scorecard.md
+      - run: uv run semantic-rails check --package jaffle_shop --artifact dist/jaffle_shop.semantic-rails.tar.gz
+      - run: uv build --out-dir dist
+      - run: uv run python scripts/verify_package_distribution.py --dist-dir dist --no-build
+      - name: Verify release surface and tag/version agreement
+        run: |
+          uv run python scripts/verify_release_readiness.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-artifacts
+          path: |
+            dist/jaffle_shop.semantic-rails.tar.gz
+            dist/semantic_rails-*.tar.gz
+            dist/*.whl
+            dist/agentic-governance-scorecard.*
+            semantic_rails/contracts/*.json

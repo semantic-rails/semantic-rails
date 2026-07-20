@@ -1,0 +1,2 @@
+compile -n q11_repeat_customer_orders_by_store_by_month
+execute compiled SQL in DuckDB

@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-rails.com/schemas/semantic_contract.v1.json",
+  "title": "Semantic Rails Validation Contract (v1)",
+  "description": "Framework-neutral semantic validation payload. The engine owns semantic; dbt, SQLMesh, and other integrations own optional binding extensions.",
+  "type": "object",
+  "required": [
+    "contract_format_version",
+    "semantic"
+  ],
+  "properties": {
+    "contract_format_version": {
+      "const": 1
+    },
+    "semantic": {
+      "$ref": "#/$defs/SemanticContract"
+    },
+    "binding": {
+      "$ref": "#/$defs/BindingExtension"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "semantic": {
+      "$ref": "#/$defs/SemanticContract"
+    },
+    "SemanticContract": {
+      "type": "object",
+      "required": [
+        "producer",
+        "packages"
+      ],
+      "properties": {
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "packages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/SemanticPackage"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Producer": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "const": "semantic-rails"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "SemanticPackage": {
+      "type": "object",
+      "required": [
+        "package_id",
+        "package_schema_version",
+        "semantic_hash",
+        "resources"
+      ],
+      "properties": {
+        "package_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "package_schema_version": {
+          "const": 1
+        },
+        "semantic_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SemanticResource"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SemanticResource": {
+      "type": "object",
+      "required": [
+        "semantic_model_id",
+        "columns"
+      ],
+      "properties": {
+        "semantic_model_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relation": {
+          "type": "string"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SemanticColumn"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SemanticColumn": {
+      "type": "object",
+      "required": [
+        "name",
+        "required_by"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_by": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "BindingExtension": {
+      "description": "Adapter-owned binding. A composed dbt/SQLMesh schema should narrow this extension without changing the engine-owned semantic section.",
+      "type": "object",
+      "required": [
+        "kind",
+        "binding_version",
+        "packages"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binding_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

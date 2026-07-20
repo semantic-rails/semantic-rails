@@ -1,0 +1,1462 @@
+[
+  {
+    "ordered_day": "2016-09-01",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2016-09-02",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2016-09-03",
+    "qualifying_orders": 2
+  },
+  {
+    "ordered_day": "2016-09-04",
+    "qualifying_orders": 1
+  },
+  {
+    "ordered_day": "2016-09-05",
+    "qualifying_orders": 27
+  },
+  {
+    "ordered_day": "2016-09-06",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2016-09-07",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2016-09-08",
+    "qualifying_orders": 36
+  },
+  {
+    "ordered_day": "2016-09-09",
+    "qualifying_orders": 37
+  },
+  {
+    "ordered_day": "2016-09-10",
+    "qualifying_orders": 5
+  },
+  {
+    "ordered_day": "2016-09-11",
+    "qualifying_orders": 1
+  },
+  {
+    "ordered_day": "2016-09-12",
+    "qualifying_orders": 35
+  },
+  {
+    "ordered_day": "2016-09-13",
+    "qualifying_orders": 29
+  },
+  {
+    "ordered_day": "2016-09-14",
+    "qualifying_orders": 30
+  },
+  {
+    "ordered_day": "2016-09-15",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2016-09-16",
+    "qualifying_orders": 31
+  },
+  {
+    "ordered_day": "2016-09-17",
+    "qualifying_orders": 2
+  },
+  {
+    "ordered_day": "2016-09-18",
+    "qualifying_orders": 2
+  },
+  {
+    "ordered_day": "2016-09-19",
+    "qualifying_orders": 39
+  },
+  {
+    "ordered_day": "2016-09-20",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2016-09-21",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2016-09-22",
+    "qualifying_orders": 37
+  },
+  {
+    "ordered_day": "2016-09-23",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2016-09-24",
+    "qualifying_orders": 2
+  },
+  {
+    "ordered_day": "2016-09-25",
+    "qualifying_orders": 3
+  },
+  {
+    "ordered_day": "2016-09-26",
+    "qualifying_orders": 31
+  },
+  {
+    "ordered_day": "2016-09-27",
+    "qualifying_orders": 31
+  },
+  {
+    "ordered_day": "2016-09-28",
+    "qualifying_orders": 35
+  },
+  {
+    "ordered_day": "2016-09-29",
+    "qualifying_orders": 34
+  },
+  {
+    "ordered_day": "2016-09-30",
+    "qualifying_orders": 41
+  },
+  {
+    "ordered_day": "2016-10-01",
+    "qualifying_orders": 6
+  },
+  {
+    "ordered_day": "2016-10-02",
+    "qualifying_orders": 4
+  },
+  {
+    "ordered_day": "2016-10-03",
+    "qualifying_orders": 47
+  },
+  {
+    "ordered_day": "2016-10-04",
+    "qualifying_orders": 54
+  },
+  {
+    "ordered_day": "2016-10-05",
+    "qualifying_orders": 42
+  },
+  {
+    "ordered_day": "2016-10-06",
+    "qualifying_orders": 53
+  },
+  {
+    "ordered_day": "2016-10-07",
+    "qualifying_orders": 51
+  },
+  {
+    "ordered_day": "2016-10-08",
+    "qualifying_orders": 3
+  },
+  {
+    "ordered_day": "2016-10-09",
+    "qualifying_orders": 3
+  },
+  {
+    "ordered_day": "2016-10-10",
+    "qualifying_orders": 48
+  },
+  {
+    "ordered_day": "2016-10-11",
+    "qualifying_orders": 45
+  },
+  {
+    "ordered_day": "2016-10-12",
+    "qualifying_orders": 50
+  },
+  {
+    "ordered_day": "2016-10-13",
+    "qualifying_orders": 46
+  },
+  {
+    "ordered_day": "2016-10-14",
+    "qualifying_orders": 45
+  },
+  {
+    "ordered_day": "2016-10-15",
+    "qualifying_orders": 2
+  },
+  {
+    "ordered_day": "2016-10-16",
+    "qualifying_orders": 5
+  },
+  {
+    "ordered_day": "2016-10-17",
+    "qualifying_orders": 53
+  },
+  {
+    "ordered_day": "2016-10-18",
+    "qualifying_orders": 50
+  },
+  {
+    "ordered_day": "2016-10-19",
+    "qualifying_orders": 48
+  },
+  {
+    "ordered_day": "2016-10-20",
+    "qualifying_orders": 49
+  },
+  {
+    "ordered_day": "2016-10-21",
+    "qualifying_orders": 51
+  },
+  {
+    "ordered_day": "2016-10-22",
+    "qualifying_orders": 1
+  },
+  {
+    "ordered_day": "2016-10-23",
+    "qualifying_orders": 1
+  },
+  {
+    "ordered_day": "2016-10-24",
+    "qualifying_orders": 52
+  },
+  {
+    "ordered_day": "2016-10-25",
+    "qualifying_orders": 51
+  },
+  {
+    "ordered_day": "2016-10-26",
+    "qualifying_orders": 53
+  },
+  {
+    "ordered_day": "2016-10-27",
+    "qualifying_orders": 43
+  },
+  {
+    "ordered_day": "2016-10-28",
+    "qualifying_orders": 55
+  },
+  {
+    "ordered_day": "2016-10-29",
+    "qualifying_orders": 3
+  },
+  {
+    "ordered_day": "2016-10-30",
+    "qualifying_orders": 3
+  },
+  {
+    "ordered_day": "2016-10-31",
+    "qualifying_orders": 56
+  },
+  {
+    "ordered_day": "2016-11-01",
+    "qualifying_orders": 55
+  },
+  {
+    "ordered_day": "2016-11-02",
+    "qualifying_orders": 71
+  },
+  {
+    "ordered_day": "2016-11-03",
+    "qualifying_orders": 54
+  },
+  {
+    "ordered_day": "2016-11-04",
+    "qualifying_orders": 69
+  },
+  {
+    "ordered_day": "2016-11-05",
+    "qualifying_orders": 8
+  },
+  {
+    "ordered_day": "2016-11-06",
+    "qualifying_orders": 7
+  },
+  {
+    "ordered_day": "2016-11-07",
+    "qualifying_orders": 67
+  },
+  {
+    "ordered_day": "2016-11-08",
+    "qualifying_orders": 69
+  },
+  {
+    "ordered_day": "2016-11-09",
+    "qualifying_orders": 64
+  },
+  {
+    "ordered_day": "2016-11-10",
+    "qualifying_orders": 69
+  },
+  {
+    "ordered_day": "2016-11-11",
+    "qualifying_orders": 62
+  },
+  {
+    "ordered_day": "2016-11-12",
+    "qualifying_orders": 7
+  },
+  {
+    "ordered_day": "2016-11-13",
+    "qualifying_orders": 7
+  },
+  {
+    "ordered_day": "2016-11-14",
+    "qualifying_orders": 63
+  },
+  {
+    "ordered_day": "2016-11-15",
+    "qualifying_orders": 72
+  },
+  {
+    "ordered_day": "2016-11-16",
+    "qualifying_orders": 65
+  },
+  {
+    "ordered_day": "2016-11-17",
+    "qualifying_orders": 75
+  },
+  {
+    "ordered_day": "2016-11-18",
+    "qualifying_orders": 63
+  },
+  {
+    "ordered_day": "2016-11-19",
+    "qualifying_orders": 6
+  },
+  {
+    "ordered_day": "2016-11-20",
+    "qualifying_orders": 7
+  },
+  {
+    "ordered_day": "2016-11-21",
+    "qualifying_orders": 63
+  },
+  {
+    "ordered_day": "2016-11-22",
+    "qualifying_orders": 68
+  },
+  {
+    "ordered_day": "2016-11-23",
+    "qualifying_orders": 62
+  },
+  {
+    "ordered_day": "2016-11-24",
+    "qualifying_orders": 69
+  },
+  {
+    "ordered_day": "2016-11-25",
+    "qualifying_orders": 77
+  },
+  {
+    "ordered_day": "2016-11-26",
+    "qualifying_orders": 6
+  },
+  {
+    "ordered_day": "2016-11-27",
+    "qualifying_orders": 4
+  },
+  {
+    "ordered_day": "2016-11-28",
+    "qualifying_orders": 67
+  },
+  {
+    "ordered_day": "2016-11-29",
+    "qualifying_orders": 66
+  },
+  {
+    "ordered_day": "2016-11-30",
+    "qualifying_orders": 75
+  },
+  {
+    "ordered_day": "2016-12-01",
+    "qualifying_orders": 82
+  },
+  {
+    "ordered_day": "2016-12-02",
+    "qualifying_orders": 81
+  },
+  {
+    "ordered_day": "2016-12-03",
+    "qualifying_orders": 10
+  },
+  {
+    "ordered_day": "2016-12-04",
+    "qualifying_orders": 9
+  },
+  {
+    "ordered_day": "2016-12-05",
+    "qualifying_orders": 78
+  },
+  {
+    "ordered_day": "2016-12-06",
+    "qualifying_orders": 80
+  },
+  {
+    "ordered_day": "2016-12-07",
+    "qualifying_orders": 84
+  },
+  {
+    "ordered_day": "2016-12-08",
+    "qualifying_orders": 93
+  },
+  {
+    "ordered_day": "2016-12-09",
+    "qualifying_orders": 89
+  },
+  {
+    "ordered_day": "2016-12-10",
+    "qualifying_orders": 7
+  },
+  {
+    "ordered_day": "2016-12-11",
+    "qualifying_orders": 7
+  },
+  {
+    "ordered_day": "2016-12-12",
+    "qualifying_orders": 91
+  },
+  {
+    "ordered_day": "2016-12-13",
+    "qualifying_orders": 96
+  },
+  {
+    "ordered_day": "2016-12-14",
+    "qualifying_orders": 92
+  },
+  {
+    "ordered_day": "2016-12-15",
+    "qualifying_orders": 91
+  },
+  {
+    "ordered_day": "2016-12-16",
+    "qualifying_orders": 85
+  },
+  {
+    "ordered_day": "2016-12-17",
+    "qualifying_orders": 10
+  },
+  {
+    "ordered_day": "2016-12-18",
+    "qualifying_orders": 11
+  },
+  {
+    "ordered_day": "2016-12-19",
+    "qualifying_orders": 88
+  },
+  {
+    "ordered_day": "2016-12-20",
+    "qualifying_orders": 89
+  },
+  {
+    "ordered_day": "2016-12-21",
+    "qualifying_orders": 87
+  },
+  {
+    "ordered_day": "2016-12-22",
+    "qualifying_orders": 88
+  },
+  {
+    "ordered_day": "2016-12-23",
+    "qualifying_orders": 87
+  },
+  {
+    "ordered_day": "2016-12-24",
+    "qualifying_orders": 9
+  },
+  {
+    "ordered_day": "2016-12-25",
+    "qualifying_orders": 10
+  },
+  {
+    "ordered_day": "2016-12-26",
+    "qualifying_orders": 92
+  },
+  {
+    "ordered_day": "2016-12-27",
+    "qualifying_orders": 94
+  },
+  {
+    "ordered_day": "2016-12-28",
+    "qualifying_orders": 86
+  },
+  {
+    "ordered_day": "2016-12-29",
+    "qualifying_orders": 91
+  },
+  {
+    "ordered_day": "2016-12-30",
+    "qualifying_orders": 96
+  },
+  {
+    "ordered_day": "2016-12-31",
+    "qualifying_orders": 4
+  },
+  {
+    "ordered_day": "2017-01-01",
+    "qualifying_orders": 11
+  },
+  {
+    "ordered_day": "2017-01-02",
+    "qualifying_orders": 104
+  },
+  {
+    "ordered_day": "2017-01-03",
+    "qualifying_orders": 110
+  },
+  {
+    "ordered_day": "2017-01-04",
+    "qualifying_orders": 109
+  },
+  {
+    "ordered_day": "2017-01-05",
+    "qualifying_orders": 111
+  },
+  {
+    "ordered_day": "2017-01-06",
+    "qualifying_orders": 108
+  },
+  {
+    "ordered_day": "2017-01-07",
+    "qualifying_orders": 13
+  },
+  {
+    "ordered_day": "2017-01-08",
+    "qualifying_orders": 11
+  },
+  {
+    "ordered_day": "2017-01-09",
+    "qualifying_orders": 108
+  },
+  {
+    "ordered_day": "2017-01-10",
+    "qualifying_orders": 101
+  },
+  {
+    "ordered_day": "2017-01-11",
+    "qualifying_orders": 107
+  },
+  {
+    "ordered_day": "2017-01-12",
+    "qualifying_orders": 108
+  },
+  {
+    "ordered_day": "2017-01-13",
+    "qualifying_orders": 108
+  },
+  {
+    "ordered_day": "2017-01-14",
+    "qualifying_orders": 14
+  },
+  {
+    "ordered_day": "2017-01-15",
+    "qualifying_orders": 11
+  },
+  {
+    "ordered_day": "2017-01-16",
+    "qualifying_orders": 110
+  },
+  {
+    "ordered_day": "2017-01-17",
+    "qualifying_orders": 107
+  },
+  {
+    "ordered_day": "2017-01-18",
+    "qualifying_orders": 109
+  },
+  {
+    "ordered_day": "2017-01-19",
+    "qualifying_orders": 106
+  },
+  {
+    "ordered_day": "2017-01-20",
+    "qualifying_orders": 106
+  },
+  {
+    "ordered_day": "2017-01-21",
+    "qualifying_orders": 12
+  },
+  {
+    "ordered_day": "2017-01-22",
+    "qualifying_orders": 10
+  },
+  {
+    "ordered_day": "2017-01-23",
+    "qualifying_orders": 107
+  },
+  {
+    "ordered_day": "2017-01-24",
+    "qualifying_orders": 109
+  },
+  {
+    "ordered_day": "2017-01-25",
+    "qualifying_orders": 103
+  },
+  {
+    "ordered_day": "2017-01-26",
+    "qualifying_orders": 93
+  },
+  {
+    "ordered_day": "2017-01-27",
+    "qualifying_orders": 103
+  },
+  {
+    "ordered_day": "2017-01-28",
+    "qualifying_orders": 11
+  },
+  {
+    "ordered_day": "2017-01-29",
+    "qualifying_orders": 16
+  },
+  {
+    "ordered_day": "2017-01-30",
+    "qualifying_orders": 105
+  },
+  {
+    "ordered_day": "2017-01-31",
+    "qualifying_orders": 108
+  },
+  {
+    "ordered_day": "2017-02-01",
+    "qualifying_orders": 105
+  },
+  {
+    "ordered_day": "2017-02-02",
+    "qualifying_orders": 105
+  },
+  {
+    "ordered_day": "2017-02-03",
+    "qualifying_orders": 109
+  },
+  {
+    "ordered_day": "2017-02-04",
+    "qualifying_orders": 5
+  },
+  {
+    "ordered_day": "2017-02-05",
+    "qualifying_orders": 8
+  },
+  {
+    "ordered_day": "2017-02-06",
+    "qualifying_orders": 100
+  },
+  {
+    "ordered_day": "2017-02-07",
+    "qualifying_orders": 106
+  },
+  {
+    "ordered_day": "2017-02-08",
+    "qualifying_orders": 104
+  },
+  {
+    "ordered_day": "2017-02-09",
+    "qualifying_orders": 104
+  },
+  {
+    "ordered_day": "2017-02-10",
+    "qualifying_orders": 109
+  },
+  {
+    "ordered_day": "2017-02-11",
+    "qualifying_orders": 9
+  },
+  {
+    "ordered_day": "2017-02-12",
+    "qualifying_orders": 7
+  },
+  {
+    "ordered_day": "2017-02-13",
+    "qualifying_orders": 116
+  },
+  {
+    "ordered_day": "2017-02-14",
+    "qualifying_orders": 101
+  },
+  {
+    "ordered_day": "2017-02-15",
+    "qualifying_orders": 120
+  },
+  {
+    "ordered_day": "2017-02-16",
+    "qualifying_orders": 117
+  },
+  {
+    "ordered_day": "2017-02-17",
+    "qualifying_orders": 104
+  },
+  {
+    "ordered_day": "2017-02-18",
+    "qualifying_orders": 7
+  },
+  {
+    "ordered_day": "2017-02-19",
+    "qualifying_orders": 11
+  },
+  {
+    "ordered_day": "2017-02-20",
+    "qualifying_orders": 113
+  },
+  {
+    "ordered_day": "2017-02-21",
+    "qualifying_orders": 103
+  },
+  {
+    "ordered_day": "2017-02-22",
+    "qualifying_orders": 112
+  },
+  {
+    "ordered_day": "2017-02-23",
+    "qualifying_orders": 94
+  },
+  {
+    "ordered_day": "2017-02-24",
+    "qualifying_orders": 106
+  },
+  {
+    "ordered_day": "2017-02-25",
+    "qualifying_orders": 11
+  },
+  {
+    "ordered_day": "2017-02-26",
+    "qualifying_orders": 10
+  },
+  {
+    "ordered_day": "2017-02-27",
+    "qualifying_orders": 96
+  },
+  {
+    "ordered_day": "2017-02-28",
+    "qualifying_orders": 111
+  },
+  {
+    "ordered_day": "2017-03-01",
+    "qualifying_orders": 124
+  },
+  {
+    "ordered_day": "2017-03-02",
+    "qualifying_orders": 123
+  },
+  {
+    "ordered_day": "2017-03-03",
+    "qualifying_orders": 122
+  },
+  {
+    "ordered_day": "2017-03-04",
+    "qualifying_orders": 10
+  },
+  {
+    "ordered_day": "2017-03-05",
+    "qualifying_orders": 13
+  },
+  {
+    "ordered_day": "2017-03-06",
+    "qualifying_orders": 118
+  },
+  {
+    "ordered_day": "2017-03-07",
+    "qualifying_orders": 123
+  },
+  {
+    "ordered_day": "2017-03-08",
+    "qualifying_orders": 129
+  },
+  {
+    "ordered_day": "2017-03-09",
+    "qualifying_orders": 130
+  },
+  {
+    "ordered_day": "2017-03-10",
+    "qualifying_orders": 117
+  },
+  {
+    "ordered_day": "2017-03-11",
+    "qualifying_orders": 8
+  },
+  {
+    "ordered_day": "2017-03-12",
+    "qualifying_orders": 14
+  },
+  {
+    "ordered_day": "2017-03-13",
+    "qualifying_orders": 180
+  },
+  {
+    "ordered_day": "2017-03-14",
+    "qualifying_orders": 195
+  },
+  {
+    "ordered_day": "2017-03-15",
+    "qualifying_orders": 188
+  },
+  {
+    "ordered_day": "2017-03-16",
+    "qualifying_orders": 195
+  },
+  {
+    "ordered_day": "2017-03-17",
+    "qualifying_orders": 181
+  },
+  {
+    "ordered_day": "2017-03-18",
+    "qualifying_orders": 17
+  },
+  {
+    "ordered_day": "2017-03-19",
+    "qualifying_orders": 18
+  },
+  {
+    "ordered_day": "2017-03-20",
+    "qualifying_orders": 177
+  },
+  {
+    "ordered_day": "2017-03-21",
+    "qualifying_orders": 187
+  },
+  {
+    "ordered_day": "2017-03-22",
+    "qualifying_orders": 180
+  },
+  {
+    "ordered_day": "2017-03-23",
+    "qualifying_orders": 187
+  },
+  {
+    "ordered_day": "2017-03-24",
+    "qualifying_orders": 171
+  },
+  {
+    "ordered_day": "2017-03-25",
+    "qualifying_orders": 14
+  },
+  {
+    "ordered_day": "2017-03-26",
+    "qualifying_orders": 17
+  },
+  {
+    "ordered_day": "2017-03-27",
+    "qualifying_orders": 190
+  },
+  {
+    "ordered_day": "2017-03-28",
+    "qualifying_orders": 182
+  },
+  {
+    "ordered_day": "2017-03-29",
+    "qualifying_orders": 190
+  },
+  {
+    "ordered_day": "2017-03-30",
+    "qualifying_orders": 178
+  },
+  {
+    "ordered_day": "2017-03-31",
+    "qualifying_orders": 185
+  },
+  {
+    "ordered_day": "2017-04-01",
+    "qualifying_orders": 23
+  },
+  {
+    "ordered_day": "2017-04-02",
+    "qualifying_orders": 13
+  },
+  {
+    "ordered_day": "2017-04-03",
+    "qualifying_orders": 220
+  },
+  {
+    "ordered_day": "2017-04-04",
+    "qualifying_orders": 203
+  },
+  {
+    "ordered_day": "2017-04-05",
+    "qualifying_orders": 213
+  },
+  {
+    "ordered_day": "2017-04-06",
+    "qualifying_orders": 215
+  },
+  {
+    "ordered_day": "2017-04-07",
+    "qualifying_orders": 212
+  },
+  {
+    "ordered_day": "2017-04-08",
+    "qualifying_orders": 23
+  },
+  {
+    "ordered_day": "2017-04-09",
+    "qualifying_orders": 23
+  },
+  {
+    "ordered_day": "2017-04-10",
+    "qualifying_orders": 204
+  },
+  {
+    "ordered_day": "2017-04-11",
+    "qualifying_orders": 209
+  },
+  {
+    "ordered_day": "2017-04-12",
+    "qualifying_orders": 221
+  },
+  {
+    "ordered_day": "2017-04-13",
+    "qualifying_orders": 219
+  },
+  {
+    "ordered_day": "2017-04-14",
+    "qualifying_orders": 221
+  },
+  {
+    "ordered_day": "2017-04-15",
+    "qualifying_orders": 26
+  },
+  {
+    "ordered_day": "2017-04-16",
+    "qualifying_orders": 17
+  },
+  {
+    "ordered_day": "2017-04-17",
+    "qualifying_orders": 212
+  },
+  {
+    "ordered_day": "2017-04-18",
+    "qualifying_orders": 218
+  },
+  {
+    "ordered_day": "2017-04-19",
+    "qualifying_orders": 213
+  },
+  {
+    "ordered_day": "2017-04-20",
+    "qualifying_orders": 217
+  },
+  {
+    "ordered_day": "2017-04-21",
+    "qualifying_orders": 213
+  },
+  {
+    "ordered_day": "2017-04-22",
+    "qualifying_orders": 25
+  },
+  {
+    "ordered_day": "2017-04-23",
+    "qualifying_orders": 20
+  },
+  {
+    "ordered_day": "2017-04-24",
+    "qualifying_orders": 218
+  },
+  {
+    "ordered_day": "2017-04-25",
+    "qualifying_orders": 209
+  },
+  {
+    "ordered_day": "2017-04-26",
+    "qualifying_orders": 215
+  },
+  {
+    "ordered_day": "2017-04-27",
+    "qualifying_orders": 216
+  },
+  {
+    "ordered_day": "2017-04-28",
+    "qualifying_orders": 211
+  },
+  {
+    "ordered_day": "2017-04-29",
+    "qualifying_orders": 24
+  },
+  {
+    "ordered_day": "2017-04-30",
+    "qualifying_orders": 25
+  },
+  {
+    "ordered_day": "2017-05-01",
+    "qualifying_orders": 221
+  },
+  {
+    "ordered_day": "2017-05-02",
+    "qualifying_orders": 235
+  },
+  {
+    "ordered_day": "2017-05-03",
+    "qualifying_orders": 217
+  },
+  {
+    "ordered_day": "2017-05-04",
+    "qualifying_orders": 251
+  },
+  {
+    "ordered_day": "2017-05-05",
+    "qualifying_orders": 247
+  },
+  {
+    "ordered_day": "2017-05-06",
+    "qualifying_orders": 14
+  },
+  {
+    "ordered_day": "2017-05-07",
+    "qualifying_orders": 20
+  },
+  {
+    "ordered_day": "2017-05-08",
+    "qualifying_orders": 242
+  },
+  {
+    "ordered_day": "2017-05-09",
+    "qualifying_orders": 229
+  },
+  {
+    "ordered_day": "2017-05-10",
+    "qualifying_orders": 239
+  },
+  {
+    "ordered_day": "2017-05-11",
+    "qualifying_orders": 250
+  },
+  {
+    "ordered_day": "2017-05-12",
+    "qualifying_orders": 257
+  },
+  {
+    "ordered_day": "2017-05-13",
+    "qualifying_orders": 19
+  },
+  {
+    "ordered_day": "2017-05-14",
+    "qualifying_orders": 11
+  },
+  {
+    "ordered_day": "2017-05-15",
+    "qualifying_orders": 242
+  },
+  {
+    "ordered_day": "2017-05-16",
+    "qualifying_orders": 247
+  },
+  {
+    "ordered_day": "2017-05-17",
+    "qualifying_orders": 246
+  },
+  {
+    "ordered_day": "2017-05-18",
+    "qualifying_orders": 242
+  },
+  {
+    "ordered_day": "2017-05-19",
+    "qualifying_orders": 233
+  },
+  {
+    "ordered_day": "2017-05-20",
+    "qualifying_orders": 23
+  },
+  {
+    "ordered_day": "2017-05-21",
+    "qualifying_orders": 22
+  },
+  {
+    "ordered_day": "2017-05-22",
+    "qualifying_orders": 230
+  },
+  {
+    "ordered_day": "2017-05-23",
+    "qualifying_orders": 239
+  },
+  {
+    "ordered_day": "2017-05-24",
+    "qualifying_orders": 237
+  },
+  {
+    "ordered_day": "2017-05-25",
+    "qualifying_orders": 232
+  },
+  {
+    "ordered_day": "2017-05-26",
+    "qualifying_orders": 250
+  },
+  {
+    "ordered_day": "2017-05-27",
+    "qualifying_orders": 24
+  },
+  {
+    "ordered_day": "2017-05-28",
+    "qualifying_orders": 20
+  },
+  {
+    "ordered_day": "2017-05-29",
+    "qualifying_orders": 233
+  },
+  {
+    "ordered_day": "2017-05-30",
+    "qualifying_orders": 230
+  },
+  {
+    "ordered_day": "2017-05-31",
+    "qualifying_orders": 251
+  },
+  {
+    "ordered_day": "2017-06-01",
+    "qualifying_orders": 203
+  },
+  {
+    "ordered_day": "2017-06-02",
+    "qualifying_orders": 183
+  },
+  {
+    "ordered_day": "2017-06-03",
+    "qualifying_orders": 22
+  },
+  {
+    "ordered_day": "2017-06-04",
+    "qualifying_orders": 14
+  },
+  {
+    "ordered_day": "2017-06-05",
+    "qualifying_orders": 196
+  },
+  {
+    "ordered_day": "2017-06-06",
+    "qualifying_orders": 201
+  },
+  {
+    "ordered_day": "2017-06-07",
+    "qualifying_orders": 204
+  },
+  {
+    "ordered_day": "2017-06-08",
+    "qualifying_orders": 219
+  },
+  {
+    "ordered_day": "2017-06-09",
+    "qualifying_orders": 204
+  },
+  {
+    "ordered_day": "2017-06-10",
+    "qualifying_orders": 21
+  },
+  {
+    "ordered_day": "2017-06-11",
+    "qualifying_orders": 25
+  },
+  {
+    "ordered_day": "2017-06-12",
+    "qualifying_orders": 213
+  },
+  {
+    "ordered_day": "2017-06-13",
+    "qualifying_orders": 198
+  },
+  {
+    "ordered_day": "2017-06-14",
+    "qualifying_orders": 205
+  },
+  {
+    "ordered_day": "2017-06-15",
+    "qualifying_orders": 210
+  },
+  {
+    "ordered_day": "2017-06-16",
+    "qualifying_orders": 199
+  },
+  {
+    "ordered_day": "2017-06-17",
+    "qualifying_orders": 22
+  },
+  {
+    "ordered_day": "2017-06-18",
+    "qualifying_orders": 29
+  },
+  {
+    "ordered_day": "2017-06-19",
+    "qualifying_orders": 201
+  },
+  {
+    "ordered_day": "2017-06-20",
+    "qualifying_orders": 205
+  },
+  {
+    "ordered_day": "2017-06-21",
+    "qualifying_orders": 197
+  },
+  {
+    "ordered_day": "2017-06-22",
+    "qualifying_orders": 206
+  },
+  {
+    "ordered_day": "2017-06-23",
+    "qualifying_orders": 204
+  },
+  {
+    "ordered_day": "2017-06-24",
+    "qualifying_orders": 15
+  },
+  {
+    "ordered_day": "2017-06-25",
+    "qualifying_orders": 19
+  },
+  {
+    "ordered_day": "2017-06-26",
+    "qualifying_orders": 209
+  },
+  {
+    "ordered_day": "2017-06-27",
+    "qualifying_orders": 209
+  },
+  {
+    "ordered_day": "2017-06-28",
+    "qualifying_orders": 186
+  },
+  {
+    "ordered_day": "2017-06-29",
+    "qualifying_orders": 200
+  },
+  {
+    "ordered_day": "2017-06-30",
+    "qualifying_orders": 201
+  },
+  {
+    "ordered_day": "2017-07-01",
+    "qualifying_orders": 24
+  },
+  {
+    "ordered_day": "2017-07-02",
+    "qualifying_orders": 34
+  },
+  {
+    "ordered_day": "2017-07-03",
+    "qualifying_orders": 236
+  },
+  {
+    "ordered_day": "2017-07-04",
+    "qualifying_orders": 216
+  },
+  {
+    "ordered_day": "2017-07-05",
+    "qualifying_orders": 228
+  },
+  {
+    "ordered_day": "2017-07-06",
+    "qualifying_orders": 225
+  },
+  {
+    "ordered_day": "2017-07-07",
+    "qualifying_orders": 219
+  },
+  {
+    "ordered_day": "2017-07-08",
+    "qualifying_orders": 21
+  },
+  {
+    "ordered_day": "2017-07-09",
+    "qualifying_orders": 20
+  },
+  {
+    "ordered_day": "2017-07-10",
+    "qualifying_orders": 228
+  },
+  {
+    "ordered_day": "2017-07-11",
+    "qualifying_orders": 221
+  },
+  {
+    "ordered_day": "2017-07-12",
+    "qualifying_orders": 227
+  },
+  {
+    "ordered_day": "2017-07-13",
+    "qualifying_orders": 227
+  },
+  {
+    "ordered_day": "2017-07-14",
+    "qualifying_orders": 237
+  },
+  {
+    "ordered_day": "2017-07-15",
+    "qualifying_orders": 22
+  },
+  {
+    "ordered_day": "2017-07-16",
+    "qualifying_orders": 20
+  },
+  {
+    "ordered_day": "2017-07-17",
+    "qualifying_orders": 216
+  },
+  {
+    "ordered_day": "2017-07-18",
+    "qualifying_orders": 222
+  },
+  {
+    "ordered_day": "2017-07-19",
+    "qualifying_orders": 220
+  },
+  {
+    "ordered_day": "2017-07-20",
+    "qualifying_orders": 218
+  },
+  {
+    "ordered_day": "2017-07-21",
+    "qualifying_orders": 220
+  },
+  {
+    "ordered_day": "2017-07-22",
+    "qualifying_orders": 18
+  },
+  {
+    "ordered_day": "2017-07-23",
+    "qualifying_orders": 17
+  },
+  {
+    "ordered_day": "2017-07-24",
+    "qualifying_orders": 232
+  },
+  {
+    "ordered_day": "2017-07-25",
+    "qualifying_orders": 234
+  },
+  {
+    "ordered_day": "2017-07-26",
+    "qualifying_orders": 232
+  },
+  {
+    "ordered_day": "2017-07-27",
+    "qualifying_orders": 236
+  },
+  {
+    "ordered_day": "2017-07-28",
+    "qualifying_orders": 222
+  },
+  {
+    "ordered_day": "2017-07-29",
+    "qualifying_orders": 24
+  },
+  {
+    "ordered_day": "2017-07-30",
+    "qualifying_orders": 27
+  },
+  {
+    "ordered_day": "2017-07-31",
+    "qualifying_orders": 229
+  },
+  {
+    "ordered_day": "2017-08-01",
+    "qualifying_orders": 260
+  },
+  {
+    "ordered_day": "2017-08-02",
+    "qualifying_orders": 272
+  },
+  {
+    "ordered_day": "2017-08-03",
+    "qualifying_orders": 258
+  },
+  {
+    "ordered_day": "2017-08-04",
+    "qualifying_orders": 268
+  },
+  {
+    "ordered_day": "2017-08-05",
+    "qualifying_orders": 35
+  },
+  {
+    "ordered_day": "2017-08-06",
+    "qualifying_orders": 30
+  },
+  {
+    "ordered_day": "2017-08-07",
+    "qualifying_orders": 275
+  },
+  {
+    "ordered_day": "2017-08-08",
+    "qualifying_orders": 274
+  },
+  {
+    "ordered_day": "2017-08-09",
+    "qualifying_orders": 283
+  },
+  {
+    "ordered_day": "2017-08-10",
+    "qualifying_orders": 267
+  },
+  {
+    "ordered_day": "2017-08-11",
+    "qualifying_orders": 277
+  },
+  {
+    "ordered_day": "2017-08-12",
+    "qualifying_orders": 24
+  },
+  {
+    "ordered_day": "2017-08-13",
+    "qualifying_orders": 30
+  },
+  {
+    "ordered_day": "2017-08-14",
+    "qualifying_orders": 287
+  },
+  {
+    "ordered_day": "2017-08-15",
+    "qualifying_orders": 272
+  },
+  {
+    "ordered_day": "2017-08-16",
+    "qualifying_orders": 279
+  },
+  {
+    "ordered_day": "2017-08-17",
+    "qualifying_orders": 277
+  },
+  {
+    "ordered_day": "2017-08-18",
+    "qualifying_orders": 269
+  },
+  {
+    "ordered_day": "2017-08-19",
+    "qualifying_orders": 33
+  },
+  {
+    "ordered_day": "2017-08-20",
+    "qualifying_orders": 35
+  },
+  {
+    "ordered_day": "2017-08-21",
+    "qualifying_orders": 262
+  },
+  {
+    "ordered_day": "2017-08-22",
+    "qualifying_orders": 272
+  },
+  {
+    "ordered_day": "2017-08-23",
+    "qualifying_orders": 273
+  },
+  {
+    "ordered_day": "2017-08-24",
+    "qualifying_orders": 291
+  },
+  {
+    "ordered_day": "2017-08-25",
+    "qualifying_orders": 274
+  },
+  {
+    "ordered_day": "2017-08-26",
+    "qualifying_orders": 26
+  },
+  {
+    "ordered_day": "2017-08-27",
+    "qualifying_orders": 32
+  },
+  {
+    "ordered_day": "2017-08-28",
+    "qualifying_orders": 293
+  },
+  {
+    "ordered_day": "2017-08-29",
+    "qualifying_orders": 268
+  },
+  {
+    "ordered_day": "2017-08-30",
+    "qualifying_orders": 288
+  },
+  {
+    "ordered_day": "2017-08-31",
+    "qualifying_orders": 277
+  }
+]

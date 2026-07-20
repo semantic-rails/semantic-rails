@@ -1,0 +1,1 @@
+SELECT DATE_TRUNC('MONTH', orders.ordered_at) AS ordered_at_month, COUNT(DISTINCT CASE WHEN orders.is_new_customer_order = TRUE THEN orders.order_id END) AS new_customer_orders FROM comparison_orders AS orders GROUP BY DATE_TRUNC('MONTH', orders.ordered_at) ORDER BY 1 LIMIT 5000

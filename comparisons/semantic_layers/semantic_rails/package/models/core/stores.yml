@@ -1,0 +1,11 @@
+model:
+  id: stores
+  relation: jaffle_store
+  entities:
+    store: {}
+  dimensions:
+    store_name:
+      # Preserve the public ID used by comparison query JSONs.
+      as: dimension.jaffle_store_name
+      label: Store name
+      kind: categorical

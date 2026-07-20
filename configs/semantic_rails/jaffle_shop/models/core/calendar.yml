@@ -1,0 +1,29 @@
+model:
+  id: calendar
+  relation: jaffle_calendar
+  calendar_id: default
+  entities:
+    time: {}
+  times:
+    date_day:
+      label: Calendar day
+      column: date_day
+      kind: date
+      class: calendar_time
+      as: temporal_role.jaffle_calendar_day
+  # Calendar entities (kind: time) are the ONE place date columns may
+  # appear under `dimensions:` — they're the framework's grain ladder
+  # used by time.fill / dense-fill. User-authored models still cannot.
+  dimensions:
+    week_start:
+      label: Calendar week start
+      kind: date
+    month_start:
+      label: Calendar month start
+      kind: date
+    quarter_start:
+      label: Calendar quarter start
+      kind: date
+    year_start:
+      label: Calendar year start
+      kind: date

@@ -1,0 +1,2 @@
+compile -n q14_revenue_from_customers_with_10plus_orders_same_store_month
+execute compiled SQL in DuckDB

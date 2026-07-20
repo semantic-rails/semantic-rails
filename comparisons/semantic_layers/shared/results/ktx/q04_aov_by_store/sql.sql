@@ -1,0 +1,1 @@
+SELECT stores.store_name AS store_name, AVG(orders.order_total_cents / 100.0) AS aov_usd FROM comparison_orders AS orders JOIN comparison_stores AS stores ON orders.store_id = stores.store_id GROUP BY stores.store_name ORDER BY 1 LIMIT 5000

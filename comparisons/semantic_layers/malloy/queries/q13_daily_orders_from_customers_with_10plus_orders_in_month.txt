@@ -1,0 +1,2 @@
+compile -n q13_daily_orders_from_customers_with_10plus_orders_in_month
+execute compiled SQL in DuckDB

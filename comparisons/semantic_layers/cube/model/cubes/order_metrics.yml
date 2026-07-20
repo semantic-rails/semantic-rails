@@ -1,0 +1,51 @@
+cubes:
+  - name: order_metrics
+    sql: |
+      with item_totals as (
+        select
+          order_id,
+          sum(item_revenue_cents) as item_revenue_cents
+        from comparison_order_items
+        group by 1
+      )
+      select
+        o.order_id,
+        o.customer_id,
+        o.store_id,
+        o.ordered_at,
+        coalesce(i.item_revenue_cents, 0) / 100.0 as item_revenue_usd
+      from comparison_orders as o
+      left join item_totals as i
+        on o.order_id = i.order_id
+
+    joins:
+      - name: stores
+        relationship: many_to_one
+        sql: "{CUBE}.store_id = {stores.store_id}"
+
+    dimensions:
+      - name: order_id
+        sql: order_id
+        type: string
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: string
+
+      - name: store_id
+        sql: store_id
+        type: string
+
+      - name: ordered_at
+        sql: ordered_at
+        type: time
+
+    measures:
+      - name: orders
+        sql: order_id
+        type: count_distinct
+
+      - name: item_revenue_usd
+        sql: item_revenue_usd
+        type: sum

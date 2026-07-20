@@ -1,0 +1,37 @@
+cubes:
+  - name: delivered_orders_with_customer_segment
+    sql: |
+      select
+        l.order_id,
+        l.store_id,
+        l.delivered_at,
+        h.customer_segment,
+        l.order_total_cents / 100.0 as delivered_revenue_usd
+      from comparison_order_lifecycle as l
+      left join comparison_customer_history as h
+        on l.customer_id = h.customer_id
+       and l.delivered_at >= h.valid_from
+       and (l.delivered_at < h.valid_to or h.valid_to is null)
+
+    dimensions:
+      - name: order_id
+        sql: order_id
+        type: string
+        primary_key: true
+
+      - name: store_id
+        sql: store_id
+        type: string
+
+      - name: delivered_at
+        sql: delivered_at
+        type: time
+
+      - name: customer_segment
+        sql: customer_segment
+        type: string
+
+    measures:
+      - name: delivered_revenue
+        sql: delivered_revenue_usd
+        type: sum

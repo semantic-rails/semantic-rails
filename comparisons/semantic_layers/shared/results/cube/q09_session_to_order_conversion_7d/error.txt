@@ -1,0 +1,1 @@
+{"error":"Error: Catalog Error: Table with name comparison_storefront_sessions does not exist!\nDid you mean \"raw_storefront_sessions\"?\n\nLINE 4:       comparison_storefront_sessions AS \"storefront_sessions\"...\n              ^","requestId":"71329e1d-0a1f-419e-b4fa-1fd63e689946-span-1"}

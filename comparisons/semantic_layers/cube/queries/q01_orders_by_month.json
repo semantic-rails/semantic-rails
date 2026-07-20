@@ -1,0 +1,7 @@
+{
+  "measures": ["orders.orders"],
+  "timeDimensions": [
+    { "dimension": "orders.ordered_at", "granularity": "month" }
+  ],
+  "order": { "orders.ordered_at": "asc" }
+}

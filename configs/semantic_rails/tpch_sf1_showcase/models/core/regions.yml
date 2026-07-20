@@ -1,0 +1,13 @@
+model:
+  id: regions
+  relation: SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.REGION
+  description: TPCH region dimension.
+  entities:
+    region: {}
+  dimensions:
+    region_name:
+      as: dimension.tpch_region_name
+      label: Region
+      column: R_NAME
+      kind: categorical
+      description: Region name from TPCH sample data.

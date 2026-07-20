@@ -1,0 +1,36 @@
+model:
+  id: storefront_sessions
+  relation: jaffle_storefront_session
+  description: One row per browsing session before or around an order.
+  entities:
+    storefront_session: {}
+    customer: {}
+    store: {}
+    order:
+      expr: converted_order_id
+  times:
+    started_at:
+      label: Session started at
+      column: started_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_session_started_at
+      default: true
+    converted_at:
+      label: Session converted at
+      column: converted_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_session_converted_at
+  measures:
+    session_starts:
+      label: Session starts
+      kind: entity_count
+      entity_key: session_id
+      accumulation:
+        kind: event
+      value_type: count
+      meta:
+        owner_team: growth_analytics
+        review_priority: high
+        change_risk: medium

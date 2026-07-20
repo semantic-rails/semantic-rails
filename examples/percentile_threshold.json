@@ -1,0 +1,47 @@
+{
+  "_note": [
+    "Inline percentile-as-threshold: revenue from top-decile customers by",
+    "lifetime spend. The two-round-trip pattern (compute P90 → filter on",
+    "P90) collapses to a single query. The threshold is materialised in",
+    "a CTE next to the predicate source and CROSS JOIN'd into the set",
+    "CTE, so the WHERE clause reads `__predicate_value >= __threshold`",
+    "instead of a literal scalar.",
+    "",
+    "Inline threshold shape (validated at parse time):",
+    "  value: {kind: 'percentile', p: <float in [0,1]>, measure?: <id>}",
+    "The optional `measure` key must match the predicate's input measure;",
+    "cross-measure thresholds remain a two-step pattern for now.",
+    "",
+    "Note: this example aggregates revenue without a group_by because",
+    "combining a customer-grain percentile predicate with a store-grain",
+    "group_by trips PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE — a separate",
+    "cross-grain constraint that lives in the compiler. Add the group_by",
+    "once the cohort-by-breakdown rewrite lands."
+  ],
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.revenue_usd",
+        "aggregation": "sum",
+        "predicates": [
+          {
+            "kind": "metric_predicate",
+            "entity": "entity.jaffle_customer",
+            "input": {
+              "measure": "measure.jaffle.lifetime_spend_usd",
+              "aggregation": "sum"
+            },
+            "op": ">=",
+            "value": {
+              "kind": "percentile",
+              "p": 0.9
+            }
+          }
+        ]
+      },
+      "as": "revenue_top_decile"
+    }
+  ]
+}

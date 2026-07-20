@@ -1,0 +1,311 @@
+{
+  "benchmark_cases": [
+    {
+      "name": "top_stores_by_revenue",
+      "intent": "What are the top stores by revenue?",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "measure.jaffle.revenue_usd"
+      ],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ]
+      }
+    },
+    {
+      "name": "new_customer_orders_trending",
+      "intent": "How are new customer orders trending over time?",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "measure.jaffle.new_customer_order_count"
+      ],
+      "expected_query_patch": {
+        "time": {
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "grain": "month"
+        }
+      }
+    },
+    {
+      "name": "food_vs_drink_share",
+      "intent": "What share of revenue comes from food vs drink?",
+      "expectation": "comparison_bundle",
+      "expected_comparison_mode": "same_query",
+      "expected_bundle_object_ids": [
+        "metric.sales.food_revenue_share",
+        "metric.sales.drink_revenue_share"
+      ]
+    },
+    {
+      "name": "historical_revenue_by_segment",
+      "intent": "Which customer segments drove the most historical revenue?",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "measure.jaffle.revenue_usd"
+      ],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_customer_history_segment"
+        ],
+        "time": {
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "grain": "month"
+        }
+      }
+    },
+    {
+      "name": "ordered_vs_delivered_revenue",
+      "intent": "Compare delivered revenue by delivered month versus ordered month.",
+      "expectation": "comparison_bundle",
+      "expected_comparison_mode": "coordinated_queries",
+      "expected_block_code": "COMPARISON_COORDINATED",
+      "expected_bundle_object_ids": [
+        "measure.jaffle.delivered_revenue_usd",
+        "measure.jaffle.revenue_usd"
+      ]
+    },
+    {
+      "name": "inventory_levels_by_store",
+      "intent": "What are end-of-month inventory levels by store?",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "measure.jaffle.inventory_on_hand_eop"
+      ],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ]
+      }
+    },
+    {
+      "name": "repeat_customer_orders",
+      "intent": "How many repeat-customer orders do we have?",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "metric.sales.repeat_customer_orders"
+      ]
+    },
+    {
+      "name": "session_to_order_conversion_rate",
+      "intent": "What is the session-to-order conversion rate?",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "metric.sales.session_to_order_conversion_rate_7d"
+      ]
+    },
+    {
+      "name": "active_menu_snapshot_for_high_activity_stores",
+      "intent": "Give me the sum of active menu snapshot at the store dimension for stores that have done more than one order and more than one session grouped by month.",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "measure.jaffle.active_menu_count_eop",
+        "measure.jaffle.order_count",
+        "measure.jaffle.session_starts",
+        "entity.jaffle_store",
+        "dimension.jaffle_store_name"
+      ],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ],
+        "time": {
+          "temporal_role": "temporal_role.jaffle_inventory_day",
+          "grain": "month"
+        }
+      }
+    },
+    {
+      "name": "signup_to_send_adoption_for_high_order_rate_stores",
+      "intent": "Give me the 28D adoption funnel from signup to Send for stores that have an order rate of over 90% grouped by month.",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "metric.adoption.signup_to_send_conversion_rate_28d",
+        "metric.sales.session_to_order_conversion_rate_7d_same_store",
+        "entity.jaffle_store",
+        "dimension.jaffle_store_name"
+      ],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ],
+        "metric_filters": [
+          {
+            "expression": {
+              "kind": "metric_predicate",
+              "entity": "entity.jaffle_store",
+              "scope_mode": "contextual",
+              "input": {
+                "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
+              },
+              "op": ">",
+              "value": 0.9
+            },
+            "op": "=",
+            "value": true
+          }
+        ],
+        "time": {
+          "temporal_role": "temporal_role.jaffle_session_started_at",
+          "grain": "month"
+        }
+      }
+    },
+    {
+      "name": "monthly_orders_from_customers_with_10plus_orders",
+      "intent": "What is the monthly order volume for customers who made more than 10 purchases in that month?",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "measure.jaffle.order_count",
+        "measure.jaffle.order_count",
+        "entity.jaffle_customer"
+      ],
+      "expected_query_patch": {
+        "time": {
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "grain": "month"
+        }
+      }
+    },
+    {
+      "name": "daily_orders_from_customers_with_10plus_orders_in_month",
+      "intent": "What is the daily order volume for customers who made more than 10 purchases in that month?",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "measure.jaffle.order_count",
+        "measure.jaffle.order_count",
+        "entity.jaffle_customer"
+      ],
+      "expected_query_patch": {
+        "time": {
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "grain": "day"
+        }
+      }
+    },
+    {
+      "name": "adversarial_fake_ids_route_to_real_revenue",
+      "intent": "Use metric.sales.moon_revenue and dimension.jaffle_mars_colony_id for revenue by store.",
+      "expectation": "candidate",
+      "expected_resolved_ids": [
+        "measure.jaffle.revenue_usd"
+      ],
+      "forbidden_ids": [
+        "metric.sales.moon_revenue",
+        "dimension.jaffle_mars_colony_id"
+      ],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ]
+      }
+    }
+  ],
+  "builder_cases": [
+    {
+      "name": "top_stores_by_revenue",
+      "partial_query": {
+        "version": 1,
+        "select": [
+          {
+            "expression": {
+              "measure": "measure.jaffle.revenue_usd"
+            },
+            "as": "Revenue (USD)"
+          }
+        ]
+      },
+      "step": "group_by",
+      "focus_terms": "top stores by revenue",
+      "expected_recommended_id": "dimension.jaffle_store_name",
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ]
+      }
+    },
+    {
+      "name": "average_order_value_by_customer_type",
+      "partial_query": {
+        "version": 1,
+        "select": [
+          {
+            "expression": {
+              "metric": "metric.sales.aov_usd"
+            },
+            "as": "Average order value"
+          }
+        ]
+      },
+      "step": "group_by",
+      "focus_terms": "average order value by customer type",
+      "expected_recommended_id": "dimension.jaffle_customer_type",
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_customer_type"
+        ]
+      }
+    },
+    {
+      "name": "historical_revenue_by_customer_segment",
+      "partial_query": {
+        "version": 1,
+        "select": [
+          {
+            "expression": {
+              "measure": "measure.jaffle.revenue_usd"
+            },
+            "as": "Revenue (USD)"
+          }
+        ]
+      },
+      "step": "group_by",
+      "focus_terms": "historical revenue by customer segment",
+      "expected_recommended_id": "dimension.jaffle_customer_history_segment",
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_customer_history_segment"
+        ]
+      }
+    }
+  ],
+  "blocked_case": {
+    "name": "blocked_incompatible_contextual_predicate",
+    "intent": "Reject a finer-grain contextual predicate inside a monthly query.",
+    "verify_no_hallucinated_ids": true,
+    "query": {
+      "version": 1,
+      "select": [
+        {
+          "expression": {
+            "measure": "measure.jaffle.order_count"
+          },
+          "as": "Orders"
+        }
+      ],
+      "time": {
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "grain": "month"
+      },
+      "metric_filters": [
+        {
+          "expression": {
+            "kind": "metric_predicate",
+            "entity": "entity.jaffle_customer",
+            "input": {
+              "measure": "measure.jaffle.order_count"
+            },
+            "op": ">",
+            "value": 10,
+            "scope_mode": "contextual",
+            "time_grain": "day"
+          },
+          "op": "=",
+          "value": true
+        }
+      ]
+    },
+    "expected_error": "PREDICATE_GRAIN_UNSAFE",
+    "expected_recovery_hint_kind": "adjust_predicate_scope"
+  }
+}

@@ -1,0 +1,1555 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "@aws-sdk/xml-builder": {
+      "name": "@aws-sdk/xml-builder",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "fast-xml-parser"
+      ],
+      "effects": [],
+      "range": "3.894.0 - 3.972.18",
+      "nodes": [
+        "node_modules/@aws-sdk/xml-builder"
+      ],
+      "fixAvailable": true
+    },
+    "@azure/msal-node": {
+      "name": "@azure/msal-node",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "uuid"
+      ],
+      "effects": [],
+      "range": "<=5.1.4",
+      "nodes": [
+        "node_modules/@azure/msal-node"
+      ],
+      "fixAvailable": true
+    },
+    "@babel/core": {
+      "name": "@babel/core",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1120793,
+          "name": "@babel/core",
+          "dependency": "@babel/core",
+          "title": "@babel/core: Arbitrary File Read via sourceMappingURL Comment",
+          "url": "https://github.com/advisories/GHSA-4x5r-pxfx-6jf8",
+          "severity": "low",
+          "cwe": [
+            "CWE-22",
+            "CWE-200"
+          ],
+          "cvss": {
+            "score": 3.2,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:N/UI:N/S:C/C:L/I:N/A:N"
+          },
+          "range": "<=7.29.0"
+        }
+      ],
+      "effects": [],
+      "range": "<=7.29.0",
+      "nodes": [
+        "node_modules/@babel/core"
+      ],
+      "fixAvailable": true
+    },
+    "@babel/plugin-transform-modules-systemjs": {
+      "name": "@babel/plugin-transform-modules-systemjs",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1120258,
+          "name": "@babel/plugin-transform-modules-systemjs",
+          "dependency": "@babel/plugin-transform-modules-systemjs",
+          "title": "@babel/plugin-transform-modules-systemjs generates arbitrary code when compiling malicious input",
+          "url": "https://github.com/advisories/GHSA-fv7c-fp4j-7gwp",
+          "severity": "high",
+          "cwe": [
+            "CWE-94",
+            "CWE-843"
+          ],
+          "cvss": {
+            "score": 8.2,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:C/C:H/I:H/A:H"
+          },
+          "range": ">=7.12.0 <=7.29.3"
+        }
+      ],
+      "effects": [],
+      "range": "7.12.0 - 7.29.0",
+      "nodes": [
+        "node_modules/@babel/plugin-transform-modules-systemjs"
+      ],
+      "fixAvailable": true
+    },
+    "@cubejs-backend/api-gateway": {
+      "name": "@cubejs-backend/api-gateway",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/native",
+        "@cubejs-backend/query-orchestrator",
+        "@cubejs-backend/shared",
+        "jwk-to-pem",
+        "uuid"
+      ],
+      "effects": [
+        "@cubejs-backend/server-core"
+      ],
+      "range": ">=0.13.2",
+      "nodes": [
+        "node_modules/@cubejs-backend/api-gateway"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/base-driver": {
+      "name": "@cubejs-backend/base-driver",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/shared"
+      ],
+      "effects": [
+        "@cubejs-backend/cubestore-driver",
+        "@cubejs-backend/query-orchestrator",
+        "@cubejs-backend/server-core"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/@cubejs-backend/base-driver"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/cloud": {
+      "name": "@cubejs-backend/cloud",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/shared"
+      ],
+      "effects": [
+        "cubejs-cli"
+      ],
+      "range": ">=0.26.81",
+      "nodes": [
+        "node_modules/@cubejs-backend/cloud"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/cubestore": {
+      "name": "@cubejs-backend/cubestore",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/shared",
+        "@octokit/core"
+      ],
+      "effects": [
+        "@cubejs-backend/cubestore-driver"
+      ],
+      "range": ">=0.26.23",
+      "nodes": [
+        "node_modules/@cubejs-backend/cubestore"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/cubestore-driver": {
+      "name": "@cubejs-backend/cubestore-driver",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/base-driver",
+        "@cubejs-backend/cubestore",
+        "@cubejs-backend/native",
+        "@cubejs-backend/shared",
+        "uuid"
+      ],
+      "effects": [
+        "@cubejs-backend/query-orchestrator",
+        "@cubejs-backend/server",
+        "@cubejs-backend/server-core"
+      ],
+      "range": ">=0.26.35",
+      "nodes": [
+        "node_modules/@cubejs-backend/cubestore-driver"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/duckdb-driver": {
+      "name": "@cubejs-backend/duckdb-driver",
+      "severity": "critical",
+      "isDirect": true,
+      "via": [
+        "@cubejs-backend/base-driver",
+        "@cubejs-backend/schema-compiler",
+        "@cubejs-backend/shared",
+        "duckdb"
+      ],
+      "effects": [],
+      "range": "*",
+      "nodes": [
+        "node_modules/@cubejs-backend/duckdb-driver"
+      ],
+      "fixAvailable": false
+    },
+    "@cubejs-backend/native": {
+      "name": "@cubejs-backend/native",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/shared",
+        "@cubejs-infra/post-installer"
+      ],
+      "effects": [
+        "@cubejs-backend/api-gateway",
+        "@cubejs-backend/cubestore-driver",
+        "@cubejs-backend/schema-compiler",
+        "@cubejs-backend/server",
+        "@cubejs-backend/server-core"
+      ],
+      "range": ">=0.31.41",
+      "nodes": [
+        "node_modules/@cubejs-backend/native"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/query-orchestrator": {
+      "name": "@cubejs-backend/query-orchestrator",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/base-driver",
+        "@cubejs-backend/cubestore-driver",
+        "@cubejs-backend/shared"
+      ],
+      "effects": [
+        "@cubejs-backend/api-gateway"
+      ],
+      "range": ">=0.26.81",
+      "nodes": [
+        "node_modules/@cubejs-backend/query-orchestrator"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/schema-compiler": {
+      "name": "@cubejs-backend/schema-compiler",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/native",
+        "@cubejs-backend/shared",
+        "uuid"
+      ],
+      "effects": [
+        "@cubejs-backend/duckdb-driver",
+        "@cubejs-backend/server-core",
+        "cubejs-cli"
+      ],
+      "range": ">=0.27.17",
+      "nodes": [
+        "node_modules/@cubejs-backend/schema-compiler"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/server": {
+      "name": "@cubejs-backend/server",
+      "severity": "critical",
+      "isDirect": true,
+      "via": [
+        "@cubejs-backend/cubestore-driver",
+        "@cubejs-backend/native",
+        "@cubejs-backend/server-core",
+        "@cubejs-backend/shared"
+      ],
+      "effects": [],
+      "range": ">=0.14.0",
+      "nodes": [
+        "node_modules/@cubejs-backend/server"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/server-core": {
+      "name": "@cubejs-backend/server-core",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/api-gateway",
+        "@cubejs-backend/base-driver",
+        "@cubejs-backend/cloud",
+        "@cubejs-backend/cubestore-driver",
+        "@cubejs-backend/native",
+        "@cubejs-backend/query-orchestrator",
+        "@cubejs-backend/schema-compiler",
+        "@cubejs-backend/shared",
+        "@cubejs-backend/templates",
+        "uuid"
+      ],
+      "effects": [
+        "@cubejs-backend/server"
+      ],
+      "range": ">=0.13.2",
+      "nodes": [
+        "node_modules/@cubejs-backend/server-core"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/shared": {
+      "name": "@cubejs-backend/shared",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "decompress",
+        "http-proxy-agent",
+        "uuid"
+      ],
+      "effects": [
+        "@cubejs-backend/api-gateway",
+        "@cubejs-backend/base-driver",
+        "@cubejs-backend/cloud",
+        "@cubejs-backend/cubestore",
+        "@cubejs-backend/cubestore-driver",
+        "@cubejs-backend/duckdb-driver",
+        "@cubejs-backend/native",
+        "@cubejs-backend/query-orchestrator",
+        "@cubejs-backend/schema-compiler",
+        "@cubejs-backend/server",
+        "@cubejs-backend/server-core",
+        "@cubejs-backend/templates",
+        "@cubejs-infra/post-installer",
+        "cubejs-cli"
+      ],
+      "range": ">=0.26.81",
+      "nodes": [
+        "node_modules/@cubejs-backend/shared",
+        "node_modules/@cubejs-infra/post-installer/node_modules/@cubejs-backend/shared"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-backend/templates": {
+      "name": "@cubejs-backend/templates",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/shared",
+        "decompress"
+      ],
+      "effects": [
+        "@cubejs-backend/server-core"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/@cubejs-backend/templates"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@cubejs-infra/post-installer": {
+      "name": "@cubejs-infra/post-installer",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        "@cubejs-backend/shared"
+      ],
+      "effects": [
+        "@cubejs-backend/native"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/@cubejs-infra/post-installer"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@google-cloud/storage": {
+      "name": "@google-cloud/storage",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "retry-request",
+        "teeny-request",
+        "uuid"
+      ],
+      "effects": [],
+      "range": "2.2.0 - 2.5.0 || >=5.19.0",
+      "nodes": [
+        "node_modules/@google-cloud/storage"
+      ],
+      "fixAvailable": true
+    },
+    "@octokit/core": {
+      "name": "@octokit/core",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "@octokit/graphql",
+        "@octokit/request",
+        "@octokit/request-error"
+      ],
+      "effects": [
+        "@cubejs-backend/cubestore"
+      ],
+      "range": "<=5.0.0-beta.5",
+      "nodes": [
+        "node_modules/@octokit/core"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@octokit/graphql": {
+      "name": "@octokit/graphql",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "@octokit/request"
+      ],
+      "effects": [],
+      "range": "<=2.1.3 || 3.0.0 - 6.0.1",
+      "nodes": [
+        "node_modules/@octokit/graphql"
+      ],
+      "fixAvailable": true
+    },
+    "@octokit/request": {
+      "name": "@octokit/request",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "@octokit/request-error",
+        {
+          "source": 1112248,
+          "name": "@octokit/request",
+          "dependency": "@octokit/request",
+          "title": "@octokit/request has a Regular Expression in fetchWrapper that Leads to ReDoS Vulnerability Due to Catastrophic Backtracking",
+          "url": "https://github.com/advisories/GHSA-rmvr-2pp2-xj38",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-1333"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=1.0.0 <8.4.1"
+        }
+      ],
+      "effects": [
+        "@octokit/core",
+        "@octokit/graphql"
+      ],
+      "range": "<=8.4.0",
+      "nodes": [
+        "node_modules/@octokit/request"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@octokit/request-error": {
+      "name": "@octokit/request-error",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1102256,
+          "name": "@octokit/request-error",
+          "dependency": "@octokit/request-error",
+          "title": "@octokit/request-error has a Regular Expression in index that Leads to ReDoS Vulnerability Due to Catastrophic Backtracking",
+          "url": "https://github.com/advisories/GHSA-xx4v-prfh-6cgc",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-1333"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=1.0.0 <5.1.1"
+        }
+      ],
+      "effects": [
+        "@octokit/core",
+        "@octokit/request"
+      ],
+      "range": "<=5.1.0",
+      "nodes": [
+        "node_modules/@octokit/request-error"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "@tootallnate/once": {
+      "name": "@tootallnate/once",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1119438,
+          "name": "@tootallnate/once",
+          "dependency": "@tootallnate/once",
+          "title": "@tootallnate/once vulnerable to Incorrect Control Flow Scoping",
+          "url": "https://github.com/advisories/GHSA-vpq2-c234-7xj6",
+          "severity": "low",
+          "cwe": [
+            "CWE-705"
+          ],
+          "cvss": {
+            "score": 3.3,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<2.0.1"
+        }
+      ],
+      "effects": [
+        "http-proxy-agent"
+      ],
+      "range": "<2.0.1",
+      "nodes": [
+        "node_modules/@tootallnate/once",
+        "node_modules/make-fetch-happen/node_modules/@tootallnate/once",
+        "node_modules/teeny-request/node_modules/@tootallnate/once"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "basic-ftp": {
+      "name": "basic-ftp",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1116454,
+          "name": "basic-ftp",
+          "dependency": "basic-ftp",
+          "title": "basic-ftp: Incomplete CRLF Injection Protection Allows Arbitrary FTP Command Execution via Credentials and MKD Commands",
+          "url": "https://github.com/advisories/GHSA-6v7q-wjvx-w8wg",
+          "severity": "high",
+          "cwe": [
+            "CWE-93"
+          ],
+          "cvss": {
+            "score": 8.2,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:L"
+          },
+          "range": "<=5.2.1"
+        },
+        {
+          "source": 1116478,
+          "name": "basic-ftp",
+          "dependency": "basic-ftp",
+          "title": "basic-ftp has FTP Command Injection via CRLF",
+          "url": "https://github.com/advisories/GHSA-chqc-8p9q-pq6q",
+          "severity": "high",
+          "cwe": [
+            "CWE-93"
+          ],
+          "cvss": {
+            "score": 8.6,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L"
+          },
+          "range": "=5.2.0"
+        },
+        {
+          "source": 1117083,
+          "name": "basic-ftp",
+          "dependency": "basic-ftp",
+          "title": "basic-ftp vulnerable to denial of service via unbounded memory consumption in Client.list()",
+          "url": "https://github.com/advisories/GHSA-rp42-5vxx-qpwr",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-770"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<=5.2.2"
+        },
+        {
+          "source": 1118825,
+          "name": "basic-ftp",
+          "dependency": "basic-ftp",
+          "title": "basic-ftp allows a malicious FTP server to cause client-side denial of service via unbounded multiline control response buffering",
+          "url": "https://github.com/advisories/GHSA-rpmf-866q-6p89",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-770"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": "<=5.3.0"
+        }
+      ],
+      "effects": [],
+      "range": "<=5.3.0",
+      "nodes": [
+        "node_modules/basic-ftp"
+      ],
+      "fixAvailable": true
+    },
+    "body-parser": {
+      "name": "body-parser",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "qs"
+      ],
+      "effects": [],
+      "range": "1.20.3 - 1.20.4 || 2.0.0-beta.1 - 2.0.2",
+      "nodes": [
+        "node_modules/body-parser"
+      ],
+      "fixAvailable": true
+    },
+    "cacache": {
+      "name": "cacache",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "tar"
+      ],
+      "effects": [
+        "make-fetch-happen"
+      ],
+      "range": "14.0.0 - 18.0.4",
+      "nodes": [
+        "node_modules/cacache"
+      ],
+      "fixAvailable": true
+    },
+    "cubejs-cli": {
+      "name": "cubejs-cli",
+      "severity": "critical",
+      "isDirect": true,
+      "via": [
+        "@cubejs-backend/cloud",
+        "@cubejs-backend/schema-compiler",
+        "@cubejs-backend/shared",
+        "inquirer"
+      ],
+      "effects": [],
+      "range": ">=0.19.31",
+      "nodes": [
+        "node_modules/cubejs-cli"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "decompress": {
+      "name": "decompress",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1122670,
+          "name": "decompress",
+          "dependency": "decompress",
+          "title": "Decompress: Archive extraction can create files and links outside of the target directory",
+          "url": "https://github.com/advisories/GHSA-mp2f-45pm-3cg9",
+          "severity": "critical",
+          "cwe": [
+            "CWE-22",
+            "CWE-59",
+            "CWE-732"
+          ],
+          "cvss": {
+            "score": 9.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"
+          },
+          "range": "<=4.2.1"
+        }
+      ],
+      "effects": [
+        "@cubejs-backend/shared",
+        "@cubejs-backend/templates"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/decompress"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "duckdb": {
+      "name": "duckdb",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "node-gyp"
+      ],
+      "effects": [],
+      "range": "*",
+      "nodes": [
+        "node_modules/duckdb"
+      ],
+      "fixAvailable": true
+    },
+    "elliptic": {
+      "name": "elliptic",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1112030,
+          "name": "elliptic",
+          "dependency": "elliptic",
+          "title": "Elliptic Uses a Cryptographic Primitive with a Risky Implementation",
+          "url": "https://github.com/advisories/GHSA-848j-6mx2-7j84",
+          "severity": "low",
+          "cwe": [
+            "CWE-1240"
+          ],
+          "cvss": {
+            "score": 5.6,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:L"
+          },
+          "range": "<=6.6.1"
+        }
+      ],
+      "effects": [
+        "jwk-to-pem"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/elliptic"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "express": {
+      "name": "express",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "qs"
+      ],
+      "effects": [],
+      "range": "4.21.0 - 4.22.1 || 5.0.0-alpha.1 - 5.0.1",
+      "nodes": [
+        "node_modules/express"
+      ],
+      "fixAvailable": true
+    },
+    "external-editor": {
+      "name": "external-editor",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        "tmp"
+      ],
+      "effects": [
+        "inquirer"
+      ],
+      "range": ">=1.1.1",
+      "nodes": [
+        "node_modules/external-editor"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "fast-xml-builder": {
+      "name": "fast-xml-builder",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1118965,
+          "name": "fast-xml-builder",
+          "dependency": "fast-xml-builder",
+          "title": "fast-xml-builder allows attribute values with unwanted quotes to bypass malicious or unwanted attributes",
+          "url": "https://github.com/advisories/GHSA-5wm8-gmm8-39j9",
+          "severity": "high",
+          "cwe": [
+            "CWE-91",
+            "CWE-611"
+          ],
+          "cvss": {
+            "score": 6.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"
+          },
+          "range": "<=1.1.6"
+        }
+      ],
+      "effects": [],
+      "range": "<=1.1.6",
+      "nodes": [
+        "node_modules/fast-xml-builder"
+      ],
+      "fixAvailable": true
+    },
+    "fast-xml-parser": {
+      "name": "fast-xml-parser",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1117911,
+          "name": "fast-xml-parser",
+          "dependency": "fast-xml-parser",
+          "title": "fast-xml-parser XMLBuilder: XML Comment and CDATA Injection via Unescaped Delimiters",
+          "url": "https://github.com/advisories/GHSA-gh4j-gqv2-49f6",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-91"
+          ],
+          "cvss": {
+            "score": 6.1,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"
+          },
+          "range": "<5.7.0"
+        }
+      ],
+      "effects": [
+        "@aws-sdk/xml-builder"
+      ],
+      "range": "<5.7.0",
+      "nodes": [
+        "node_modules/fast-xml-parser"
+      ],
+      "fixAvailable": true
+    },
+    "follow-redirects": {
+      "name": "follow-redirects",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1116560,
+          "name": "follow-redirects",
+          "dependency": "follow-redirects",
+          "title": "follow-redirects leaks Custom Authentication Headers to Cross-Domain Redirect Targets",
+          "url": "https://github.com/advisories/GHSA-r4q5-vmmm-2653",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-200"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=1.15.11"
+        }
+      ],
+      "effects": [],
+      "range": "<=1.15.11",
+      "nodes": [
+        "node_modules/follow-redirects"
+      ],
+      "fixAvailable": true
+    },
+    "form-data": {
+      "name": "form-data",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1120743,
+          "name": "form-data",
+          "dependency": "form-data",
+          "title": "form-data: CRLF injection in form-data via unescaped multipart field names and filenames",
+          "url": "https://github.com/advisories/GHSA-hmw2-7cc7-3qxx",
+          "severity": "high",
+          "cwe": [
+            "CWE-93"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
+          },
+          "range": ">=4.0.0 <4.0.6"
+        },
+        {
+          "source": 1120745,
+          "name": "form-data",
+          "dependency": "form-data",
+          "title": "form-data: CRLF injection in form-data via unescaped multipart field names and filenames",
+          "url": "https://github.com/advisories/GHSA-hmw2-7cc7-3qxx",
+          "severity": "high",
+          "cwe": [
+            "CWE-93"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
+          },
+          "range": "<2.5.6"
+        }
+      ],
+      "effects": [],
+      "range": ">=4.0.0 <4.0.6 || <2.5.6",
+      "nodes": [
+        "node_modules/@types/request/node_modules/form-data",
+        "node_modules/form-data"
+      ],
+      "fixAvailable": true
+    },
+    "gaxios": {
+      "name": "gaxios",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "uuid"
+      ],
+      "effects": [],
+      "range": "6.4.0 - 6.7.1",
+      "nodes": [
+        "node_modules/gaxios"
+      ],
+      "fixAvailable": true
+    },
+    "http-proxy-agent": {
+      "name": "http-proxy-agent",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        "@tootallnate/once"
+      ],
+      "effects": [
+        "@cubejs-backend/shared"
+      ],
+      "range": "4.0.1",
+      "nodes": [
+        "node_modules/@cubejs-infra/post-installer/node_modules/http-proxy-agent"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "http-proxy-middleware": {
+      "name": "http-proxy-middleware",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1121163,
+          "name": "http-proxy-middleware",
+          "dependency": "http-proxy-middleware",
+          "title": "http-proxy-middleware: multipart/form-data field injection via unescaped CRLF in `fixRequestBody`",
+          "url": "https://github.com/advisories/GHSA-gcq2-9pq2-cxqm",
+          "severity": "high",
+          "cwe": [
+            "CWE-93"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:H/A:N"
+          },
+          "range": ">=3.0.4 <3.0.7"
+        },
+        {
+          "source": 1121361,
+          "name": "http-proxy-middleware",
+          "dependency": "http-proxy-middleware",
+          "title": "http-proxy-middleware `router` host+path substring matching allows Host-header-driven backend routing bypass",
+          "url": "https://github.com/advisories/GHSA-64mm-vxmg-q3vj",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-20",
+            "CWE-187"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=3.0.0 <3.0.6"
+        }
+      ],
+      "effects": [],
+      "range": "3.0.0 - 3.0.6",
+      "nodes": [
+        "node_modules/http-proxy-middleware"
+      ],
+      "fixAvailable": true
+    },
+    "inquirer": {
+      "name": "inquirer",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        "external-editor"
+      ],
+      "effects": [
+        "cubejs-cli"
+      ],
+      "range": "3.0.0 - 8.2.6 || 9.0.0 - 9.3.7",
+      "nodes": [
+        "node_modules/inquirer"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "ip-address": {
+      "name": "ip-address",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1118827,
+          "name": "ip-address",
+          "dependency": "ip-address",
+          "title": "ip-address has XSS in Address6 HTML-emitting methods",
+          "url": "https://github.com/advisories/GHSA-v2v4-37r5-5v8g",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-79"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=10.1.0"
+        }
+      ],
+      "effects": [],
+      "range": "<=10.1.0",
+      "nodes": [
+        "node_modules/ip-address"
+      ],
+      "fixAvailable": true
+    },
+    "joi": {
+      "name": "joi",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1120656,
+          "name": "joi",
+          "dependency": "joi",
+          "title": "joi has an uncaught RangeError on deeply nested input through recursive `link()` schemas",
+          "url": "https://github.com/advisories/GHSA-q7cg-457f-vx79",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-248",
+            "CWE-400"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": "<17.13.4"
+        }
+      ],
+      "effects": [],
+      "range": "<17.13.4",
+      "nodes": [
+        "node_modules/joi"
+      ],
+      "fixAvailable": true
+    },
+    "js-yaml": {
+      "name": "js-yaml",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1121860,
+          "name": "js-yaml",
+          "dependency": "js-yaml",
+          "title": "JS-YAML: Quadratic-complexity DoS in merge key handling via repeated aliases",
+          "url": "https://github.com/advisories/GHSA-h67p-54hq-rp68",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-407"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=4.0.0 <=4.1.1"
+        }
+      ],
+      "effects": [],
+      "range": "4.0.0 - 4.1.1",
+      "nodes": [
+        "node_modules/js-yaml"
+      ],
+      "fixAvailable": true
+    },
+    "jwk-to-pem": {
+      "name": "jwk-to-pem",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        "elliptic"
+      ],
+      "effects": [
+        "@cubejs-backend/api-gateway"
+      ],
+      "range": "*",
+      "nodes": [
+        "node_modules/jwk-to-pem"
+      ],
+      "fixAvailable": {
+        "name": "@cubejs-backend/server",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "make-fetch-happen": {
+      "name": "make-fetch-happen",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "cacache"
+      ],
+      "effects": [
+        "node-gyp"
+      ],
+      "range": "7.1.1 - 14.0.0",
+      "nodes": [
+        "node_modules/make-fetch-happen"
+      ],
+      "fixAvailable": true
+    },
+    "node-gyp": {
+      "name": "node-gyp",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        "make-fetch-happen",
+        "tar"
+      ],
+      "effects": [
+        "duckdb"
+      ],
+      "range": "<=10.3.1",
+      "nodes": [
+        "node_modules/node-gyp"
+      ],
+      "fixAvailable": true
+    },
+    "qs": {
+      "name": "qs",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1119502,
+          "name": "qs",
+          "dependency": "qs",
+          "title": "qs has a remotely triggerable DoS: qs.stringify crashes with TypeError on null/undefined entries in comma-format arrays when encodeValuesOnly is set",
+          "url": "https://github.com/advisories/GHSA-q8mj-m7cp-5q26",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-476"
+          ],
+          "cvss": {
+            "score": 5.3,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"
+          },
+          "range": ">=6.11.1 <=6.15.1"
+        }
+      ],
+      "effects": [
+        "body-parser",
+        "express"
+      ],
+      "range": "6.11.1 - 6.15.1",
+      "nodes": [
+        "node_modules/qs"
+      ],
+      "fixAvailable": true
+    },
+    "retry-request": {
+      "name": "retry-request",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "teeny-request"
+      ],
+      "effects": [
+        "@google-cloud/storage"
+      ],
+      "range": "7.0.0 - 7.0.2",
+      "nodes": [
+        "node_modules/retry-request"
+      ],
+      "fixAvailable": true
+    },
+    "tar": {
+      "name": "tar",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1112659,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar Vulnerable to Arbitrary File Creation/Overwrite via Hardlink Path Traversal",
+          "url": "https://github.com/advisories/GHSA-34x7-hfp2-rc4v",
+          "severity": "high",
+          "cwe": [
+            "CWE-22",
+            "CWE-59"
+          ],
+          "cvss": {
+            "score": 8.2,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N"
+          },
+          "range": "<7.5.7"
+        },
+        {
+          "source": 1113300,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar is Vulnerable to Arbitrary File Overwrite and Symlink Poisoning via Insufficient Path Sanitization",
+          "url": "https://github.com/advisories/GHSA-8qq5-rm4j-mr97",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=7.5.2"
+        },
+        {
+          "source": 1113375,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "Arbitrary File Read/Write via Hardlink Target Escape Through Symlink Chain in node-tar Extraction",
+          "url": "https://github.com/advisories/GHSA-83g3-92jg-28cx",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 7.1,
+            "vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N"
+          },
+          "range": "<7.5.8"
+        },
+        {
+          "source": 1114200,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "tar has Hardlink Path Traversal via Drive-Relative Linkpath",
+          "url": "https://github.com/advisories/GHSA-qffp-2rhf-9h96",
+          "severity": "high",
+          "cwe": [
+            "CWE-22",
+            "CWE-59"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=7.5.9"
+        },
+        {
+          "source": 1114302,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar Symlink Path Traversal via Drive-Relative Linkpath",
+          "url": "https://github.com/advisories/GHSA-9ppj-qmqm-q256",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=7.5.10"
+        },
+        {
+          "source": 1114680,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "Race Condition in node-tar Path Reservations via Unicode Ligature Collisions on macOS APFS",
+          "url": "https://github.com/advisories/GHSA-r6q2-hw4h-h46w",
+          "severity": "high",
+          "cwe": [
+            "CWE-176",
+            "CWE-367"
+          ],
+          "cvss": {
+            "score": 8.8,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:H/A:L"
+          },
+          "range": "<=7.5.3"
+        },
+        {
+          "source": 1120782,
+          "name": "tar",
+          "dependency": "tar",
+          "title": "node-tar applies PAX size override to intermediary GNU long-name/long-link headers, causing tar parser interpretation differential (file smuggling)",
+          "url": "https://github.com/advisories/GHSA-vmf3-w455-68vh",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-436"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<=7.5.15"
+        }
+      ],
+      "effects": [
+        "cacache",
+        "node-gyp"
+      ],
+      "range": "<=7.5.15",
+      "nodes": [
+        "node_modules/cacache/node_modules/tar",
+        "node_modules/node-gyp/node_modules/tar",
+        "node_modules/tar"
+      ],
+      "fixAvailable": true
+    },
+    "teeny-request": {
+      "name": "teeny-request",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        "uuid"
+      ],
+      "effects": [
+        "@google-cloud/storage",
+        "retry-request"
+      ],
+      "range": "3.9.1 - 9.0.0",
+      "nodes": [
+        "node_modules/teeny-request"
+      ],
+      "fixAvailable": true
+    },
+    "tmp": {
+      "name": "tmp",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1109537,
+          "name": "tmp",
+          "dependency": "tmp",
+          "title": "tmp allows arbitrary temporary file / directory write via symbolic link `dir` parameter",
+          "url": "https://github.com/advisories/GHSA-52f5-9888-hmc6",
+          "severity": "low",
+          "cwe": [
+            "CWE-59"
+          ],
+          "cvss": {
+            "score": 2.5,
+            "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:N"
+          },
+          "range": "<=0.2.3"
+        },
+        {
+          "source": 1120654,
+          "name": "tmp",
+          "dependency": "tmp",
+          "title": "tmp has Path Traversal via unsanitized prefix/postfix that enables directory escape",
+          "url": "https://github.com/advisories/GHSA-ph9p-34f9-6g65",
+          "severity": "high",
+          "cwe": [
+            "CWE-22"
+          ],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": "<0.2.6"
+        }
+      ],
+      "effects": [
+        "external-editor"
+      ],
+      "range": "<=0.2.5",
+      "nodes": [
+        "node_modules/tmp"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "uuid": {
+      "name": "uuid",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1119441,
+          "name": "uuid",
+          "dependency": "uuid",
+          "title": "uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided",
+          "url": "https://github.com/advisories/GHSA-w5hq-g745-h8pq",
+          "severity": "moderate",
+          "cwe": [
+            "CWE-787",
+            "CWE-1285"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
+          },
+          "range": "<11.1.1"
+        }
+      ],
+      "effects": [
+        "@azure/msal-node",
+        "@cubejs-backend/api-gateway",
+        "@cubejs-backend/cubestore-driver",
+        "@cubejs-backend/schema-compiler",
+        "@cubejs-backend/server-core",
+        "@cubejs-backend/shared",
+        "@google-cloud/storage",
+        "gaxios",
+        "teeny-request"
+      ],
+      "range": "<11.1.1",
+      "nodes": [
+        "node_modules/gaxios/node_modules/uuid",
+        "node_modules/teeny-request/node_modules/uuid",
+        "node_modules/uuid"
+      ],
+      "fixAvailable": {
+        "name": "cubejs-cli",
+        "version": "0.26.80",
+        "isSemVerMajor": true
+      }
+    },
+    "ws": {
+      "name": "ws",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1122846,
+          "name": "ws",
+          "dependency": "ws",
+          "title": "ws: Memory exhaustion DoS from tiny fragments and data chunks",
+          "url": "https://github.com/advisories/GHSA-96hv-2xvq-fx4p",
+          "severity": "high",
+          "cwe": [
+            "CWE-400",
+            "CWE-770",
+            "CWE-1050"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          },
+          "range": ">=7.0.0 <7.5.11"
+        }
+      ],
+      "effects": [],
+      "range": "7.0.0 - 7.5.10",
+      "nodes": [
+        "node_modules/ws"
+      ],
+      "fixAvailable": true
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 7,
+      "moderate": 19,
+      "high": 12,
+      "critical": 16,
+      "total": 54
+    },
+    "dependencies": {
+      "prod": 843,
+      "dev": 30,
+      "optional": 3,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 875
+    }
+  }
+}

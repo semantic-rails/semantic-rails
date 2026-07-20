@@ -1,0 +1,16 @@
+{
+  "dimensions": [
+    {
+      "field": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "filters": [
+    "customers.lifetime_spend_cents >= 50000"
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "orders.orders"
+  ]
+}

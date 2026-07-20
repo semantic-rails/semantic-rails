@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "metric": "metric.jaffle.orders_from_customers_with_10plus_orders_in_period"
+      },
+      "as": "qualifying_orders"
+    }
+  ],
+  "time": {
+    "temporal_role": "temporal_role.jaffle_order_time",
+    "grain": "day"
+  },
+  "order_by": [
+    {
+      "field": "temporal_role.jaffle_order_time__day",
+      "direction": "ASC"
+    }
+  ]
+}

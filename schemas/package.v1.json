@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-rails.com/schemas/package.v1.json",
+  "title": "Semantic Rails Project Package (v1)",
+  "description": "Structural authoring schema for Semantic Rails package YAML. Runtime parsing and semantic validation remain authoritative for expression and cross-reference rules.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "package"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "package": {
+      "$ref": "#/$defs/Package"
+    },
+    "defaults": {
+      "type": "object"
+    },
+    "graph": {
+      "type": "object"
+    },
+    "models": {
+      "oneOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "metrics": {
+      "oneOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "segments": {
+      "oneOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "relations": {
+      "type": "object"
+    },
+    "semantic_policies": {
+      "type": [
+        "object",
+        "array"
+      ]
+    },
+    "semantic_caveats": {
+      "type": [
+        "object",
+        "array"
+      ]
+    },
+    "aggregate_relations": {
+      "type": [
+        "object",
+        "array"
+      ]
+    },
+    "path_policy": {
+      "type": "object"
+    },
+    "path_preferences": {
+      "type": [
+        "object",
+        "array"
+      ]
+    },
+    "examples": {
+      "type": [
+        "object",
+        "array"
+      ]
+    },
+    "tests": {
+      "type": [
+        "object",
+        "array"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Package": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "warehouse": {
+          "type": "string"
+        },
+        "default_db": {
+          "type": "string"
+        },
+        "schema_strict": {
+          "type": "boolean"
+        },
+        "environments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "seed": {
+          "type": "object"
+        },
+        "connection": {
+          "type": "object"
+        },
+        "planner": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

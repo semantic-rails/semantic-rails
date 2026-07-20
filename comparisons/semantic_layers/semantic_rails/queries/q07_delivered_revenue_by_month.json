@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "metric": "metric.jaffle.delivered_revenue"
+      },
+      "as": "delivered_revenue"
+    }
+  ],
+  "time": {
+    "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+    "grain": "month"
+  },
+  "order_by": [
+    {
+      "field": "temporal_role.jaffle_lifecycle_delivered_at__month",
+      "direction": "ASC"
+    }
+  ]
+}

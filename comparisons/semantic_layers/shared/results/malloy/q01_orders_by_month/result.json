@@ -1,0 +1,50 @@
+[
+  {
+    "ordered_month": "2016-09-01",
+    "orders": 1367
+  },
+  {
+    "ordered_month": "2016-10-01",
+    "orders": 1685
+  },
+  {
+    "ordered_month": "2016-11-01",
+    "orders": 2280
+  },
+  {
+    "ordered_month": "2016-12-01",
+    "orders": 2862
+  },
+  {
+    "ordered_month": "2017-01-01",
+    "orders": 3410
+  },
+  {
+    "ordered_month": "2017-02-01",
+    "orders": 3357
+  },
+  {
+    "ordered_month": "2017-03-01",
+    "orders": 6078
+  },
+  {
+    "ordered_month": "2017-04-01",
+    "orders": 6596
+  },
+  {
+    "ordered_month": "2017-05-01",
+    "orders": 7956
+  },
+  {
+    "ordered_month": "2017-06-01",
+    "orders": 7881
+  },
+  {
+    "ordered_month": "2017-07-01",
+    "orders": 7438
+  },
+  {
+    "ordered_month": "2017-08-01",
+    "orders": 8742
+  }
+]

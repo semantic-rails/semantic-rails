@@ -1,0 +1,29 @@
+schema_version: 1
+
+package:
+  id: jaffle_shop
+  namespace: jaffle
+  name: jaffle_shop
+  description: Jaffle Shop semantic package authored in the graph-first model-centric format.
+  warehouse: duckdb
+  environments: [development, staging, production]
+  default_db: data/jaffle_shop.duckdb
+  schema_strict: true
+  seed:
+    kind: csv_dir_duckdb
+    source: data/jaffle_csv
+    post_sql: data/seed_jaffle.sql
+
+defaults:
+  dimension:
+    groupable: true
+    filterable: true
+  time:
+    timezone: UTC
+    default_query_axis: false
+    supported_grains: [day, week, month, quarter, year]
+  measure:
+    subject_entity: self
+    aggregation_entity: self
+  relationship:
+    traversal: [forward, reverse]

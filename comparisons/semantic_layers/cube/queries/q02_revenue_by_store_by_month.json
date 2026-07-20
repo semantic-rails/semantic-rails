@@ -1,0 +1,8 @@
+{
+  "measures": ["orders.revenue_usd"],
+  "dimensions": ["stores.store_name"],
+  "timeDimensions": [
+    { "dimension": "orders.ordered_at", "granularity": "month" }
+  ],
+  "order": { "orders.ordered_at": "asc" }
+}

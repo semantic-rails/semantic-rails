@@ -1,0 +1,2 @@
+compile -n q09_session_to_order_conversion_7d
+execute compiled SQL in DuckDB

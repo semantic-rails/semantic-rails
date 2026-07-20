@@ -1,0 +1,1 @@
+SELECT DATE_TRUNC('MONTH', order_items.ordered_at) AS ordered_at_month, order_items.product_type AS product_type, SUM(order_items.item_revenue_cents / 100.0) AS item_revenue_usd FROM comparison_order_items AS order_items GROUP BY DATE_TRUNC('MONTH', order_items.ordered_at), order_items.product_type ORDER BY 1, 2 LIMIT 5000

@@ -1,0 +1,26 @@
+# Order line items — fixture table `jaffle_item` (one row per item).
+version: 2
+
+semantic_models:
+  - name: order_items
+    description: Order line items, one row per purchased item.
+    model: ref('jaffle_item')
+    entities:
+      - name: item
+        type: primary
+        expr: item_id
+      - name: order
+        type: foreign
+        expr: order_id
+    dimensions:
+      - name: product_type
+        type: categorical
+        label: Product type
+      - name: product_name
+        type: categorical
+        label: Product name
+    measures:
+      - name: item_revenue
+        description: Revenue captured at the order-item grain (cents).
+        expr: item_revenue_cents
+        agg: sum

@@ -1,0 +1,1 @@
+{"error":"Error: Catalog Error: Table with name comparison_orders does not exist!\nDid you mean \"raw_stores\"?\n\nLINE 4:       comparison_orders AS \"orders\"\n              ^","requestId":"5f1fa7c9-5c01-447f-92fb-ca4e68c6502c-span-1"}

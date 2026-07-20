@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "metric": "metric.jaffle.orders"
+      },
+      "as": "orders"
+    }
+  ],
+  "time": {
+    "temporal_role": "temporal_role.jaffle_order_time",
+    "grain": "month"
+  },
+  "order_by": [
+    {
+      "field": "temporal_role.jaffle_order_time__month",
+      "direction": "ASC"
+    }
+  ]
+}

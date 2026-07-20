@@ -1,0 +1,119 @@
+metrics:
+  # Semi-additive time-window metrics over revenue.
+  #
+  # These earn governance because the underlying daily-aggregated
+  # measures (rolling_28d_revenue_usd, revenue_qtd_usd, etc.) carry
+  # `accumulation: stock` — the value at any point in time IS the
+  # accumulated window total, not a flow that sums across rows.
+  # The metric form pins the time-axis semantics (kind: semi_additive)
+  # so callers cannot accidentally re-sum across days.
+  #
+  # Three sister metrics — `sales.rolling_7d_revenue`,
+  # `sales.revenue_mtd`, `sales.prior_period_revenue` — were dropped
+  # in the pre-launch cleanup because their direct query-time
+  # counterparts in `derived_metrics.yml`
+  # (`*_direct`) cover the same surface without a precomputed measure.
+
+  sales.rolling_28d_revenue:
+    as: metric.sales.rolling_28d_revenue
+    label: Rolling 28-day revenue
+    description: Trailing 28-day revenue total at each day; not summable across rows.
+    kind: semi_additive
+    measure: rolling_28d_revenue_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_daily_metric_day
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium
+
+  sales.revenue_qtd:
+    as: metric.sales.revenue_qtd
+    label: Revenue QTD
+    description: Quarter-to-date revenue at each day; reset at quarter boundaries.
+    kind: semi_additive
+    measure: revenue_qtd_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_daily_metric_day
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium
+
+  sales.revenue_ytd:
+    as: metric.sales.revenue_ytd
+    label: Revenue YTD
+    description: Year-to-date revenue at each day; reset at year boundaries.
+    kind: semi_additive
+    measure: revenue_ytd_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_daily_metric_day
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium
+
+  sales.median_item_revenue:
+    as: metric.sales.median_item_revenue
+    label: Median item revenue
+    description: Daily median item revenue; not averageable across rows.
+    kind: semi_additive
+    measure: median_item_revenue_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_daily_metric_day
+    meta:
+      owner_team: finance_analytics
+      review_priority: medium
+      change_risk: medium
+
+  # Cross-period comparison metric — month-over-month growth as
+  # `kind: derived` arithmetic over the primitive revenue_usd flow
+  # measure. Replaces the previous semi_additive wrapper over the
+  # `month_over_month_revenue_growth_ratio` precomputed measure
+  # (which was semantically suspect — semi-additive over a ratio
+  # has no rollup definition).
+
+  sales.month_over_month_revenue_growth:
+    as: metric.sales.month_over_month_revenue_growth
+    label: Month-over-month revenue growth
+    description: (current_month_revenue - prior_month_revenue) / prior_month_revenue, computed at query time over the primitive revenue measure.
+    kind: derived
+    value_type: percent
+    temporal_role: temporal_role.jaffle_order_time
+    expression:
+      kind: binary
+      op: divide
+      null_behavior: null_if_zero
+      left:
+        kind: binary
+        op: subtract
+        left:
+          kind: aggregate
+          measure: measure.jaffle.revenue_usd
+          aggregation: sum
+        right:
+          kind: prior_period
+          input:
+            kind: aggregate
+            measure: measure.jaffle.revenue_usd
+            aggregation: sum
+          offset:
+            unit: month
+            value: 1
+      right:
+        kind: prior_period
+        input:
+          kind: aggregate
+          measure: measure.jaffle.revenue_usd
+          aggregation: sum
+        offset:
+          unit: month
+          value: 1
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium

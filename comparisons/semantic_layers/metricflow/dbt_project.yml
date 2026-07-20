@@ -1,0 +1,8 @@
+name: comparison_metricflow
+version: 1.0.0
+config-version: 2
+
+profile: comparison_metricflow
+
+model-paths: ["models"]
+seed-paths: ["seeds"]

@@ -1,0 +1,28 @@
+name: order_lifecycle
+table: comparison_order_lifecycle
+grain: [order_id]
+columns:
+  - name: order_id
+    type: string
+  - name: customer_id
+    type: string
+  - name: store_id
+    type: string
+  - name: order_total_cents
+    type: number
+  - name: ordered_at
+    type: time
+    role: time
+  - name: delivered_at
+    type: time
+    role: time
+joins:
+  - to: customers
+    "on": customer_id = customers.customer_id
+    relationship: many_to_one
+  - to: stores
+    "on": store_id = stores.store_id
+    relationship: many_to_one
+measures:
+  - name: delivered_revenue
+    expr: sum(order_total_cents / 100.0)

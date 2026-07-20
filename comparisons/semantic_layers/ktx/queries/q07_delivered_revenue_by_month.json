@@ -1,0 +1,13 @@
+{
+  "dimensions": [
+    {
+      "field": "order_lifecycle.delivered_at",
+      "granularity": "month"
+    }
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "order_lifecycle.delivered_revenue"
+  ]
+}

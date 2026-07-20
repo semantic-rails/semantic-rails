@@ -1,0 +1,209 @@
+[project]
+# Distribution, import package, and CLI all use the `semantic-rails` /
+# `semantic_rails` name. (The unrelated PyPI project `semantic-layer` claims
+# the `semantic_layer` import namespace, so we renamed away from it before the
+# first publish. The wheel ships `semantic_rails` plus `mf2sr`; it does not
+# ship a `semantic_layer` rename shim because nothing was ever published
+# under the old names, and installing a `semantic_layer` top-level package
+# would collide with the unrelated project that owns it.)
+name = "semantic-rails"
+version = "0.2.0"
+description = "Agent-first semantic layer for governed analytics over DuckDB, Snowflake, Postgres, BigQuery, Databricks, Athena, ClickHouse, MotherDuck, and DuckLake"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+  { name = "WTremml" },
+]
+keywords = [
+  "analytics",
+  "athena",
+  "bigquery",
+  "clickhouse",
+  "databricks",
+  "duckdb",
+  "metrics",
+  "postgres",
+  "semantic-layer",
+  "snowflake",
+  "sql",
+  "warehouse",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+  "duckdb>=1.5.3",
+  "mcp>=1.27.0",
+  "pydantic>=2.13.0",
+  "PyYAML>=6.0.3",
+]
+
+[project.urls]
+Homepage = "https://semantic-rails.com"
+Documentation = "https://semantic-rails.com/docs/"
+Source = "https://github.com/semantic-rails/semantic-rails"
+Issues = "https://github.com/semantic-rails/semantic-rails/issues"
+Changelog = "https://github.com/semantic-rails/semantic-rails/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+server = [
+  "uvicorn>=0.49.0",
+]
+snowflake = [
+  "snowflake-connector-python>=4.6.0",
+]
+postgres = [
+  "psycopg[binary]>=3.3.4",
+]
+bigquery = [
+  "google-cloud-bigquery>=3.41.0",
+]
+databricks = [
+  "databricks-sql-connector>=4.3.0",
+]
+athena = [
+  "pyathena>=3.32.0",
+]
+clickhouse = [
+  "clickhouse-connect>=1.3.0",
+]
+# MotherDuck and DuckLake ride on the core duckdb dependency — no extra
+# driver needed (DuckLake's extension is fetched by duckdb at ATTACH time).
+all = [
+  "uvicorn>=0.49.0",
+  "snowflake-connector-python>=4.6.0",
+  "psycopg[binary]>=3.3.4",
+  "google-cloud-bigquery>=3.41.0",
+  "databricks-sql-connector>=4.3.0",
+  "pyathena>=3.32.0",
+  "clickhouse-connect>=1.3.0",
+]
+
+[project.scripts]
+semantic-rails = "semantic_rails.cli:main"
+semantic-rails-architect-mcp = "semantic_rails.architect_mcp:main"
+
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# The wheel ships the core package plus `mf2sr`, the MetricFlow
+# translator behind `semantic-rails import --from metricflow` (its tests
+# run in every gate via testpaths). The `semantic_layer` rename shim was
+# dropped before first publish (it would collide with the unrelated PyPI
+# project that owns that import namespace).
+include = ["semantic_rails", "semantic_rails.*", "mf2sr", "mf2sr.*"]
+
+# Ship the PEP 561 marker so type checkers consume the package's inline
+# annotations from the wheel.
+[tool.setuptools.package-data]
+semantic_rails = ["py.typed", "contracts/*.json"]
+mf2sr = ["py.typed"]
+
+[tool.setuptools.data-files]
+# Starter + reference templates that `semantic-rails init` reads at runtime;
+# resolved from share/semantic-rails/ by config.resolve_repo_path when installed.
+"share/semantic-rails/configs/examples" = [
+  "configs/examples/semantic_rails_package_starter.yml",
+  "configs/examples/semantic_rails_capabilities_reference.yml",
+]
+"share/semantic-rails/configs/semantic_rails/jaffle_shop" = [
+  "configs/semantic_rails/jaffle_shop/graph.yml",
+  "configs/semantic_rails/jaffle_shop/package.yml",
+  "configs/semantic_rails/jaffle_shop/caveats.yml",
+  "configs/semantic_rails/jaffle_shop/policies.yml",
+]
+"share/semantic-rails/configs/semantic_rails/jaffle_shop/examples" = [
+  "configs/semantic_rails/jaffle_shop/examples/*.yml",
+]
+"share/semantic-rails/configs/semantic_rails/jaffle_shop/metrics/core" = [
+  "configs/semantic_rails/jaffle_shop/metrics/core/*.yml",
+]
+"share/semantic-rails/configs/semantic_rails/jaffle_shop/metrics/extensions" = [
+  "configs/semantic_rails/jaffle_shop/metrics/extensions/*.yml",
+]
+"share/semantic-rails/configs/semantic_rails/jaffle_shop/models/core" = [
+  "configs/semantic_rails/jaffle_shop/models/core/*.yml",
+]
+"share/semantic-rails/configs/semantic_rails/jaffle_shop/models/extensions" = [
+  "configs/semantic_rails/jaffle_shop/models/extensions/*.yml",
+]
+"share/semantic-rails/configs/semantic_rails/jaffle_shop/segments" = [
+  "configs/semantic_rails/jaffle_shop/segments/*.yml",
+]
+"share/semantic-rails/configs/semantic_rails/jaffle_shop/tests" = [
+  "configs/semantic_rails/jaffle_shop/tests/*.yml",
+]
+# NOTE: data/jaffle_shop.duckdb is gitignored — it is seeded from
+# data/jaffle_csv/*.csv + data/seed_jaffle.sql by the runtime on first use,
+# so it is intentionally NOT in the wheel. Including it would break
+# `uv build --wheel` on a clean checkout.
+"share/semantic-rails/data" = [
+  "data/seed_jaffle.sql",
+]
+"share/semantic-rails/data/jaffle_csv" = [
+  "data/jaffle_csv/*.csv",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=9.1.0",
+  "pytest-xdist>=3.8.0",
+  "uvicorn>=0.49.0",
+  "ruff>=0.15.17",
+  "mypy>=2.1.0",
+  "pip-audit>=2.10.1",
+  # Schema-contract tests (tests/semantic_rails/test_query_ir_schema.py)
+  # skip silently when jsonschema is absent — keep it in the dev group so
+  # they always run in CI and local dev environments.
+  "jsonschema>=4.26.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/semantic_rails", "tests/mf2sr"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+  "build",
+  "dist",
+  "*.egg-info",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["semantic_rails"]
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+warn_unused_ignores = true
+
+[tool.uv]
+package = true
+
+# Pin the package index to public PyPI so contributors with a private mirror
+# configured in their global uv config (e.g. ~/.config/uv/uv.toml) do not
+# inadvertently re-lock against it. Without this, regenerating uv.lock can
+# rewrite every source URL to a private registry.
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true

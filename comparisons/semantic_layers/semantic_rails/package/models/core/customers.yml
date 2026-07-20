@@ -1,0 +1,44 @@
+model:
+  id: customers
+  relation: jaffle_customer
+  description: One row per customer with lifecycle rollups.
+  entities:
+    customer: {}
+  times:
+    first_order_at:
+      label: Customer first order at
+      column: first_order_at
+      kind: timestamp
+      class: event_time
+      default: true
+  dimensions:
+    customer_name:
+      label: Customer name
+      kind: categorical
+  measures:
+    lifetime_spend_usd:
+      label: Lifetime spend
+      kind: aggregate
+      expr: lifetime_spend_cents / 100.0
+      accumulation:
+        kind: stock
+        snapshot: end_of_period
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: growth_analytics
+        review_priority: high
+        change_risk: medium
+    lifetime_order_count:
+      label: Lifetime order count
+      kind: aggregate
+      expr:
+        kind: column
+        column: lifetime_order_count
+      accumulation:
+        kind: flow
+      value_type: count
+      meta:
+        owner_team: growth_analytics
+        review_priority: high
+        change_risk: medium

@@ -1,0 +1,62 @@
+# MetricFlow metrics over the jaffle_shop semantic models. Covers the
+# metric kinds mf2sr translates first-class: simple, filtered simple
+# (Jinja Dimension() filter), and ratio.
+version: 2
+
+metrics:
+  - name: order_count
+    label: Orders
+    description: Count of orders placed.
+    type: simple
+    type_params:
+      measure:
+        name: order_count
+
+  - name: revenue
+    label: Revenue
+    description: Total order revenue in cents.
+    type: simple
+    type_params:
+      measure:
+        name: revenue
+
+  - name: large_orders
+    label: Large orders
+    description: Orders that cleared the large-order threshold.
+    type: simple
+    type_params:
+      measure:
+        name: large_order_count
+
+  - name: large_order_revenue
+    label: Large order revenue
+    description: Revenue from large orders only.
+    type: simple
+    type_params:
+      measure:
+        name: revenue
+    filter: "{{ Dimension('order__is_large_order') }}"
+
+  - name: customers_with_orders
+    label: Customers with orders
+    description: Distinct customers who placed at least one order.
+    type: simple
+    type_params:
+      measure:
+        name: customers_with_orders
+
+  - name: revenue_per_order
+    label: Revenue per order
+    description: Average order revenue in cents.
+    type: ratio
+    type_params:
+      numerator: revenue
+      denominator: order_count
+
+  - name: item_revenue
+    label: Item revenue
+    description: Revenue measured at the order-item grain (cents).
+    type: simple
+    type_params:
+      measure:
+        name: item_revenue

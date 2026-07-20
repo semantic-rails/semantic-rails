@@ -1,0 +1,21 @@
+{
+  "order_by": [
+    {
+      "direction": "ASC",
+      "field": "temporal_role.jaffle_session_started_at__month"
+    }
+  ],
+  "select": [
+    {
+      "as": "session_to_order_conversion_rate_7d",
+      "expression": {
+        "metric": "metric.jaffle.session_to_order_conversion_rate_7d"
+      }
+    }
+  ],
+  "time": {
+    "grain": "month",
+    "temporal_role": "temporal_role.jaffle_session_started_at"
+  },
+  "version": 1
+}

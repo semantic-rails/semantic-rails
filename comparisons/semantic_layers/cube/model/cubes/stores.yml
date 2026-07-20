@@ -1,0 +1,17 @@
+cubes:
+  - name: stores
+    sql_table: comparison_stores
+
+    dimensions:
+      - name: store_id
+        sql: store_id
+        type: string
+        primary_key: true
+
+      - name: store_name
+        sql: store_name
+        type: string
+
+      - name: opened_at
+        sql: opened_at
+        type: time

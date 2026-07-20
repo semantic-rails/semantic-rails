@@ -1,0 +1,21 @@
+graph:
+  entities:
+    order:
+      label: Order
+      key: [O_ORDERKEY]
+      model: orders
+
+    customer:
+      label: Customer
+      key: [C_CUSTKEY]
+      model: customers
+
+    nation:
+      label: Nation
+      key: [N_NATIONKEY]
+      model: nations
+
+    region:
+      label: Region
+      key: [R_REGIONKEY]
+      model: regions

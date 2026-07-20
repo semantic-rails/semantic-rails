@@ -1,0 +1,117 @@
+{
+  "layer": "cube",
+  "questions": [
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q01_orders_by_month.json",
+      "question_id": "q01_orders_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q01_orders_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q01_orders_by_month/sql.json",
+      "status": "native"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q02_revenue_by_store_by_month.json",
+      "question_id": "q02_revenue_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q02_revenue_by_store_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q02_revenue_by_store_by_month/sql.json",
+      "status": "native"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q03_item_revenue_by_product_type_by_month.json",
+      "question_id": "q03_item_revenue_by_product_type_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q03_item_revenue_by_product_type_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q03_item_revenue_by_product_type_by_month/sql.json",
+      "status": "native"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q04_aov_by_store.json",
+      "question_id": "q04_aov_by_store",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q04_aov_by_store/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q04_aov_by_store/sql.json",
+      "status": "native"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q05_orders_and_item_revenue_by_store_by_month.json",
+      "question_id": "q05_orders_and_item_revenue_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q05_orders_and_item_revenue_by_store_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q05_orders_and_item_revenue_by_store_by_month/sql.json",
+      "status": "workaround"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q06_new_customer_orders_by_month.json",
+      "question_id": "q06_new_customer_orders_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q06_new_customer_orders_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q06_new_customer_orders_by_month/sql.json",
+      "status": "native"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q07_delivered_revenue_by_month.json",
+      "question_id": "q07_delivered_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q07_delivered_revenue_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q07_delivered_revenue_by_month/sql.json",
+      "status": "native"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q08_revenue_by_customer_segment_as_of_order_time.json",
+      "question_id": "q08_revenue_by_customer_segment_as_of_order_time",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q08_revenue_by_customer_segment_as_of_order_time/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q08_revenue_by_customer_segment_as_of_order_time/sql.json",
+      "status": "workaround"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q09_session_to_order_conversion_7d.json",
+      "question_id": "q09_session_to_order_conversion_7d",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q09_session_to_order_conversion_7d/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q09_session_to_order_conversion_7d/sql.json",
+      "status": "precomputed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q10_orders_from_customers_with_10plus_orders_in_month.json",
+      "question_id": "q10_orders_from_customers_with_10plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q10_orders_from_customers_with_10plus_orders_in_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q10_orders_from_customers_with_10plus_orders_in_month/sql.json",
+      "status": "precomputed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q11_repeat_customer_orders_by_store_by_month.json",
+      "question_id": "q11_repeat_customer_orders_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q11_repeat_customer_orders_by_store_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q11_repeat_customer_orders_by_store_by_month/sql.json",
+      "status": "workaround"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q12_orders_by_month_with_lifetime_spend_500_filter.json",
+      "question_id": "q12_orders_by_month_with_lifetime_spend_500_filter",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q12_orders_by_month_with_lifetime_spend_500_filter/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q12_orders_by_month_with_lifetime_spend_500_filter/sql.json",
+      "status": "workaround"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q13_daily_orders_from_customers_with_10plus_orders_in_month.json",
+      "question_id": "q13_daily_orders_from_customers_with_10plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q13_daily_orders_from_customers_with_10plus_orders_in_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.json",
+      "status": "precomputed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q14_revenue_from_customers_with_10plus_orders_same_store_month.json",
+      "question_id": "q14_revenue_from_customers_with_10plus_orders_same_store_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q14_revenue_from_customers_with_10plus_orders_same_store_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q14_revenue_from_customers_with_10plus_orders_same_store_month/sql.json",
+      "status": "precomputed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q15_same_store_session_to_order_conversion_7d.json",
+      "question_id": "q15_same_store_session_to_order_conversion_7d",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q15_same_store_session_to_order_conversion_7d/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q15_same_store_session_to_order_conversion_7d/sql.json",
+      "status": "precomputed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q16_revenue_by_customer_segment_as_of_delivered_time.json",
+      "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q16_revenue_by_customer_segment_as_of_delivered_time/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q16_revenue_by_customer_segment_as_of_delivered_time/sql.json",
+      "status": "precomputed"
+    }
+  ]
+}

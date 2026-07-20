@@ -1,0 +1,40 @@
+name: orders
+table: comparison_orders
+grain: [order_id]
+columns:
+  - name: order_id
+    type: string
+  - name: customer_id
+    type: string
+  - name: store_id
+    type: string
+  - name: ordered_at
+    type: time
+    role: time
+  - name: ordered_date
+    type: time
+  - name: order_total_cents
+    type: number
+  - name: customer_order_number
+    type: number
+  - name: is_new_customer_order
+    type: boolean
+  - name: item_count
+    type: number
+joins:
+  - to: customers
+    "on": customer_id = customers.customer_id
+    relationship: many_to_one
+  - to: stores
+    "on": store_id = stores.store_id
+    relationship: many_to_one
+measures:
+  - name: orders
+    expr: count_distinct(order_id)
+  - name: revenue_usd
+    expr: sum(order_total_cents / 100.0)
+  - name: aov_usd
+    expr: avg(order_total_cents / 100.0)
+  - name: new_customer_orders
+    expr: count_distinct(order_id)
+    filter: "is_new_customer_order = true"

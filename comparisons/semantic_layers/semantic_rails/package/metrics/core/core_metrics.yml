@@ -1,0 +1,79 @@
+metrics:
+  # Aggregate metrics — published from primitive measures. Each pins a
+  # stable contract for callers in the comparison query suite.
+
+  orders:
+    label: Orders
+    description: Stable contract for order count.
+    kind: aggregate
+    measure: order_count
+    value_type: count
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: sales_analytics
+      review_priority: high
+      change_risk: low
+
+  revenue_usd:
+    label: Revenue (USD)
+    description: Stable contract for net order revenue.
+    kind: aggregate
+    measure: revenue_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium
+
+  item_revenue_usd:
+    label: Item revenue (USD)
+    description: Stable contract for line-item revenue.
+    kind: aggregate
+    measure: item_revenue_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium
+
+  new_customer_orders:
+    label: New customer orders
+    description: Stable contract for orders that are a customer's first.
+    kind: aggregate
+    measure: new_customer_order_count
+    value_type: count
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: growth_analytics
+      review_priority: medium
+      change_risk: medium
+
+  delivered_revenue:
+    label: Delivered revenue (USD)
+    description: Order revenue anchored to the delivered timestamp instead of the ordered timestamp.
+    kind: aggregate
+    measure: delivered_revenue_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_lifecycle_delivered_at
+    meta:
+      owner_team: operations_analytics
+      review_priority: high
+      change_risk: medium
+
+  lifetime_spend:
+    label: Lifetime spend
+    description: Stable contract for cumulative customer spend, used as a metric_predicate input.
+    kind: aggregate
+    measure: lifetime_spend_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_customer_first_order_at
+    meta:
+      owner_team: growth_analytics
+      review_priority: medium
+      change_risk: medium

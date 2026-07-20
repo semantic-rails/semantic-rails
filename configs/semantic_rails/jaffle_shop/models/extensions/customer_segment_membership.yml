@@ -1,0 +1,46 @@
+model:
+  id: customer_segment_membership
+  relation: jaffle_customer_segment_membership
+  description: >-
+    Junction table mapping customers to named segments over time. Modeled
+    with `bridge: false` so the planner does not synthesize multi-hop
+    customer↔segment↔other_customer fanouts. The membership entity is
+    self-rooted: queries against it must start at membership_id, not
+    traverse to it from the customer side.
+  entities:
+    # Block-level option: opt out of inferred relationships. Without this,
+    # the planner would auto-create customer_segment_membership →
+    # customer relationships and treat this table as a routable bridge,
+    # which would silently fan out customer-grain queries.
+    bridge: false
+    customer_segment_membership: {}
+    customer: {}
+  times:
+    member_since:
+      label: Member since
+      column: member_since
+      kind: timestamp
+      class: state_time
+    member_until:
+      label: Member until
+      column: member_until
+      kind: timestamp
+      class: state_time
+  dimensions:
+    segment_name:
+      as: dimension.jaffle_membership_segment_name
+      label: Segment name
+      description: Named segment label (new, repeat, high_value).
+      kind: categorical
+      domain:
+        - new
+        - repeat
+        - high_value
+    membership_status:
+      as: dimension.jaffle_membership_status
+      label: Membership status
+      description: Whether the membership is currently active or historic.
+      kind: categorical
+      domain:
+        - active
+        - historic

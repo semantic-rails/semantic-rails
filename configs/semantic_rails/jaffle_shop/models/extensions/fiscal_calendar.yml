@@ -1,0 +1,27 @@
+model:
+  id: fiscal_calendar
+  relation: jaffle_calendar_fiscal
+  calendar_id: fiscal
+  entities:
+    fiscal_calendar: {}
+  times:
+    date_day:
+      label: Fiscal calendar day
+      column: date_day
+      kind: date
+      class: calendar_time
+      as: temporal_role.jaffle_fiscal_calendar_day
+  # Fiscal calendar — same grain ladder as default calendar.
+  dimensions:
+    week_start:
+      label: Fiscal week start
+      kind: date
+    month_start:
+      label: Fiscal month start
+      kind: date
+    quarter_start:
+      label: Fiscal quarter start
+      kind: date
+    year_start:
+      label: Fiscal year start
+      kind: date

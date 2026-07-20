@@ -1,0 +1,158 @@
+tests:
+  # Measures are the primitive query surface. These tests confirm that
+  # asking for a measure directly works against the warehouse — no metric
+  # wrapper required.
+
+  core_order_finance_primitives_execute:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.order_count}
+          as: orders
+        - expression: {measure: measure.jaffle.gross_order_value_usd}
+          as: gross_order_value
+        - expression: {measure: measure.jaffle.tax_paid_usd}
+          as: tax_paid
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: revenue_usd
+        - expression: {measure: measure.jaffle.gross_profit_usd}
+          as: gross_profit
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+        start: "2016-09-01"
+        end: "2016-10-01"
+      limit: 5
+    columns: [temporal_role.jaffle_order_time__month, orders, gross_order_value, tax_paid, revenue_usd, gross_profit]
+
+  customer_lifetime_primitives_by_type_execute:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.customer_count}
+          as: customers
+        - expression: {measure: measure.jaffle.lifetime_spend_usd}
+          as: lifetime_spend
+        - expression: {measure: measure.jaffle.lifetime_order_count}
+          as: lifetime_orders
+        - expression: {measure: measure.jaffle.repeat_customer_count}
+          as: repeat_customers
+        - expression: {measure: measure.jaffle.high_value_customer_count}
+          as: high_value_customers
+      group_by: [dimension.jaffle_customer_type]
+      limit: 10
+    columns: [dimension.jaffle_customer_type, customers, lifetime_spend, lifetime_orders, repeat_customers, high_value_customers]
+
+  product_item_margin_primitives_execute:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.item_count}
+          as: items
+        - expression: {measure: measure.jaffle.item_revenue_usd}
+          as: item_revenue
+        - expression: {measure: measure.jaffle.item_cost_usd}
+          as: supply_cost
+        - expression: {measure: measure.jaffle.item_margin_usd}
+          as: product_margin
+      group_by: [dimension.jaffle_item_product_type]
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+        start: "2016-09-01"
+        end: "2016-10-01"
+      limit: 10
+    columns: [dimension.jaffle_item_product_type, temporal_role.jaffle_order_time__month, items, item_revenue, supply_cost, product_margin]
+
+  supply_component_primitives_execute:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.supply_component_count}
+          as: components
+        - expression: {measure: measure.jaffle.supply_component_cost_usd}
+          as: component_cost
+      group_by: [dimension.jaffle_supply_is_perishable]
+      limit: 10
+    columns: [dimension.jaffle_supply_is_perishable, components, component_cost]
+
+  # Semi-additive metrics — `kind: semi_additive` pins the time-axis
+  # contract so callers cannot accidentally re-sum stock measures across
+  # rows. These tests confirm the planner respects that contract.
+
+  time_series_metrics_execute:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.rolling_28d_revenue}
+          as: rolling_28d_revenue
+        - expression: {metric: metric.sales.revenue_qtd}
+          as: revenue_qtd
+        - expression: {metric: metric.sales.revenue_ytd}
+          as: revenue_ytd
+      time:
+        temporal_role: temporal_role.jaffle_daily_metric_day
+        grain: day
+        start: "2016-09-01"
+        end: "2016-09-08"
+      limit: 10
+    columns: [temporal_role.jaffle_daily_metric_day__day, rolling_28d_revenue, revenue_qtd, revenue_ytd]
+
+  monthly_period_comparison_metrics_execute:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.month_over_month_revenue_growth}
+          as: mom_growth
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+      limit: 5
+    columns: [temporal_role.jaffle_order_time__month, mom_growth]
+
+  snapshot_metrics_execute:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.inventory_on_hand_sop}
+          as: inventory_sop
+        - expression: {metric: metric.sales.inventory_on_hand_eop}
+          as: inventory_eop
+        - expression: {metric: metric.sales.active_menu_count_eop}
+          as: active_menu
+        - expression: {metric: metric.sales.open_store_count_eop}
+          as: open_stores
+      group_by: [dimension.jaffle_store_name]
+      time:
+        temporal_role: temporal_role.jaffle_inventory_day
+        grain: month
+      order_by:
+        - field: time
+          direction: ASC
+      limit: 5
+    columns: [dimension.jaffle_store_name, temporal_role.jaffle_inventory_day__month, inventory_sop, inventory_eop, active_menu, open_stores]
+
+  # Lifecycle / clock-variant measures — same logical "delivered" event,
+  # different temporal anchor than the canonical "ordered" timestamp.
+  lifecycle_delivery_primitives_execute:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.delivered_orders}
+          as: delivered_orders
+        - expression: {measure: measure.jaffle.delivered_revenue_usd}
+          as: delivered_revenue
+      group_by: [dimension.jaffle_store_name]
+      time:
+        temporal_role: temporal_role.jaffle_lifecycle_delivered_at
+        grain: month
+      limit: 10
+    columns: [dimension.jaffle_store_name, temporal_role.jaffle_lifecycle_delivered_at__month, delivered_orders, delivered_revenue]

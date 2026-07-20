@@ -1,0 +1,148 @@
+model:
+  id: customers
+  relation: jaffle_customer
+  description: One row per customer with lifecycle rollups.
+  entities:
+    customer: {}
+  times:
+    first_order_at:
+      label: Customer first order at
+      column: first_order_at
+      kind: timestamp
+      class: event_time
+      default: true
+    latest_ordered_at:
+      label: Customer latest ordered at
+      column: latest_ordered_at
+      kind: timestamp
+      class: event_time
+  dimensions:
+    customer_name:
+      as: dimension.jaffle_customer_name
+      label: Customer name
+      description: Display name for the customer.
+      kind: categorical
+    customer_type:
+      as: dimension.jaffle_customer_type
+      label: Customer type
+      description: Whether the customer is new or repeat at the modeled customer grain.
+      kind: categorical
+      domain:
+        - value: new
+          label: New
+        - value: repeat
+          label: Repeat
+  measures:
+    customer_count:
+      label: Customer count
+      description: Count of modeled customers.
+      kind: entity_count
+      entity_key: customer_id
+      accumulation:
+        kind: population
+      value_type: count
+      meta:
+        owner_team: growth_analytics
+        review_priority: high
+        change_risk: low
+    lifetime_spend_usd:
+      kind: aggregate
+      label: Lifetime spend
+      description: |
+        Cumulative historical spend per customer. Semi-additive: the
+        current snapshot value is what matters; summing across days
+        double-counts. `accumulation.kind: stock` routes through the
+        compiler's semi-additive path (last_value over time).
+      expr: lifetime_spend_cents / 100.0
+      accumulation:
+        kind: stock
+        snapshot: end_of_period
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: growth_analytics
+        review_priority: high
+        change_risk: medium
+    lifetime_spend_before_tax_usd:
+      kind: aggregate
+      label: Lifetime spend before tax
+      description: Total customer spend before taxes.
+      expr: lifetime_spend_before_tax_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: growth_analytics
+        review_priority: medium
+        change_risk: medium
+    lifetime_order_count:
+      kind: aggregate
+      label: Lifetime order count
+      description: Total completed orders for each customer.
+      expr:
+        kind: column
+        column: lifetime_order_count
+      accumulation:
+        kind: flow
+      value_type: count
+      meta:
+        owner_team: growth_analytics
+        review_priority: high
+        change_risk: medium
+    repeat_customer_count:
+      label: Repeat customers
+      kind: entity_count
+      accumulation:
+        kind: population
+      value_type: count
+      expr:
+        kind: case
+        whens:
+          - when:
+              kind: comparison
+              op: '>'
+              left:
+                kind: column
+                column: lifetime_order_count
+              right:
+                kind: literal
+                value: 1
+            then:
+              kind: column
+              column: customer_id
+        else:
+          kind: literal
+          value: null
+      meta:
+        owner_team: growth_analytics
+        review_priority: medium
+        change_risk: medium
+    high_value_customer_count:
+      label: High value customers
+      kind: entity_count
+      accumulation:
+        kind: population
+      value_type: count
+      expr:
+        kind: case
+        whens:
+          - when:
+              kind: comparison
+              op: '>='
+              left:
+                kind: column
+                column: lifetime_spend_cents
+              right:
+                kind: literal
+                value: 10000
+            then:
+              kind: column
+              column: customer_id
+        else:
+          kind: literal
+          value: null
+      meta:
+        owner_team: growth_analytics
+        review_priority: medium
+        change_risk: medium

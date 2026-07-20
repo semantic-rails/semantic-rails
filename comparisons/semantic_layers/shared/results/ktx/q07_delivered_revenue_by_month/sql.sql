@@ -1,0 +1,1 @@
+SELECT DATE_TRUNC('MONTH', order_lifecycle.delivered_at) AS delivered_at_month, SUM(order_lifecycle.order_total_cents / 100.0) AS delivered_revenue FROM comparison_order_lifecycle AS order_lifecycle GROUP BY DATE_TRUNC('MONTH', order_lifecycle.delivered_at) ORDER BY 1 LIMIT 5000

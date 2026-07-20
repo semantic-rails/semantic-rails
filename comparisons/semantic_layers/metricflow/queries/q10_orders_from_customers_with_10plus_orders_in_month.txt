@@ -1,0 +1,1 @@
+query --metrics qualifying_orders --group-by metric_time__month --order metric_time__month

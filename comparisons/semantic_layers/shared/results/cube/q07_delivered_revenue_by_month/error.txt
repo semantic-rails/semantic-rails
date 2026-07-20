@@ -1,0 +1,1 @@
+{"error":"Error: Catalog Error: Table with name comparison_order_lifecycle does not exist!\nDid you mean \"order_lifecycle\"?\n\nLINE 4:       comparison_order_lifecycle AS \"order_lifecycle\"  GROUP BY...\n              ^","requestId":"c7c029ea-be25-4ec4-990f-9766c825b414-span-1"}

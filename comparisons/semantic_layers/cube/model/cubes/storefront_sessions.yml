@@ -1,0 +1,65 @@
+cubes:
+  - name: storefront_sessions
+    sql: |
+      WITH matched AS (
+        SELECT
+          s.session_id,
+          s.customer_id,
+          s.store_id,
+          s.started_at,
+          MIN(o.ordered_at) AS converted_at
+        FROM comparison_storefront_sessions AS s
+        LEFT JOIN comparison_orders AS o
+          ON s.customer_id = o.customer_id
+         AND o.ordered_at >= s.started_at
+         AND datediff('day', s.started_at, o.ordered_at) <= 7
+        GROUP BY 1, 2, 3, 4
+      )
+      SELECT
+        session_id,
+        customer_id,
+        store_id,
+        started_at,
+        converted_at,
+        CASE WHEN converted_at IS NOT NULL THEN session_id END AS converted_session_id
+      FROM matched
+
+    joins:
+      - name: stores
+        relationship: many_to_one
+        sql: "{CUBE}.store_id = {stores.store_id}"
+
+    dimensions:
+      - name: session_id
+        sql: session_id
+        type: string
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: string
+
+      - name: store_id
+        sql: store_id
+        type: string
+
+      - name: started_at
+        sql: started_at
+        type: time
+
+      - name: converted_at
+        sql: converted_at
+        type: time
+
+    measures:
+      - name: session_starts
+        sql: session_id
+        type: count_distinct
+
+      - name: converted_sessions_7d
+        sql: converted_session_id
+        type: count_distinct
+
+      - name: session_to_order_conversion_rate_7d
+        sql: "{converted_sessions_7d} * 1.0 / NULLIF({session_starts}, 0)"
+        type: number

@@ -1,0 +1,115 @@
+metrics:
+  # Ratios and shares — composed from primitive measures. The metric
+  # form pins the formula, the time alignment, and the null-handling
+  # rule so callers cannot accidentally compute "average order value"
+  # by summing AOV across rows or dividing the wrong way.
+
+  sales.aov_usd:
+    as: metric.sales.aov_usd
+    label: Average order value (USD)
+    description: Total revenue divided by total order count for the selected slice.
+    kind: ratio
+    numerator: revenue_usd
+    denominator: order_count
+    null_behavior: null_if_zero
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium
+
+  sales.average_customer_lifetime_value:
+    as: metric.sales.average_customer_lifetime_value
+    label: Average customer lifetime value
+    description: >-
+      Mean lifetime spend across customers (averaged at the customer grain).
+      Computed as `AVG(lifetime_spend_usd)` over the customer population —
+      NOT `SUM(spend)/SUM(order_count)`, which would weight by orders and
+      collapse to revenue-per-order. Use `metric.sales.aov_usd` for that.
+    kind: derived
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_customer_first_order_at
+    expression:
+      kind: aggregate
+      measure: measure.jaffle.lifetime_spend_usd
+      aggregation: avg
+    meta:
+      owner_team: growth_analytics
+      review_priority: medium
+      change_risk: medium
+
+  sales.food_revenue_share:
+    as: metric.sales.food_revenue_share
+    label: Food revenue share
+    description: Share of total revenue attributable to food items.
+    kind: ratio
+    numerator: food_revenue_usd
+    denominator: revenue_usd
+    null_behavior: null_if_zero
+    value_type: percent
+    temporal_role: temporal_role.jaffle_order_time
+    comparison_family: product_mix_share
+    comparison_mode: same_query
+    preferred_companion_metrics: [metric.sales.drink_revenue_share]
+    meta:
+      owner_team: merchandising_analytics
+      review_priority: high
+      change_risk: medium
+
+  sales.drink_revenue_share:
+    as: metric.sales.drink_revenue_share
+    label: Drink revenue share
+    description: Share of total revenue attributable to drink items.
+    kind: ratio
+    numerator: drink_revenue_usd
+    denominator: revenue_usd
+    null_behavior: null_if_zero
+    value_type: percent
+    temporal_role: temporal_role.jaffle_order_time
+    comparison_family: product_mix_share
+    comparison_mode: same_query
+    preferred_companion_metrics: [metric.sales.food_revenue_share]
+    meta:
+      owner_team: merchandising_analytics
+      review_priority: high
+      change_risk: medium
+
+  # Population metric — codifies "the canonical count of customers"
+  # so segment definitions and dashboards refer to the same primitive.
+  # Used as the basis_metric for the high-value customer segment.
+
+  sales.customer_count:
+    as: metric.sales.customer_count
+    label: Customer count
+    description: Distinct count of customers in the selected slice. Stable contract for population queries and segment bases.
+    kind: aggregate
+    measure: customer_count
+    aggregation: count_distinct
+    value_type: count
+    temporal_role: temporal_role.jaffle_customer_first_order_at
+    meta:
+      owner_team: growth_analytics
+      review_priority: high
+      change_risk: low
+
+  # Cumulative — running total over the selected time axis. The metric
+  # form pins the cumulative-window contract; without it, "cumulative
+  # revenue" could mean half a dozen things (since the period? since
+  # the year? since the start of data?).
+
+  sales.cumulative_revenue:
+    as: metric.sales.cumulative_revenue
+    label: Cumulative revenue
+    description: Running total of revenue over the selected time axis.
+    kind: cumulative
+    measure: revenue_usd
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: medium
+      change_risk: medium

@@ -1,0 +1,23 @@
+
+
+⠋ 🔍 Looking for all available metrics...
+
+⠙ 🔍 Looking for all available metrics...
+✔ 🌱 We've found 15 metrics.
+The list below shows metrics in the format of "metric_name: list of available dimensions"
+• aov_usd: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 15 more
+• converted_sessions_7d: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 4 more
+• delivered_revenue: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 15 more
+• filtered_orders_lifetime_spend_500: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 4 more
+• item_revenue_usd: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 11 more
+• new_customer_orders: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 15 more
+• orders: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 15 more
+• qualifying_orders: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 4 more
+• qualifying_revenue_usd_same_store: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 4 more
+• repeat_customer_orders: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 4 more
+• revenue_usd: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 15 more
+• same_store_converted_sessions_7d: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 4 more
+• same_store_session_to_order_conversion_rate_7d: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 3 more
+• session_starts: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 10 more
+• session_to_order_conversion_rate_7d: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 3 more
+

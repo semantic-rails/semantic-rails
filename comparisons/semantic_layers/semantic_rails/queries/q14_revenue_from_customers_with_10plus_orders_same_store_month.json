@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "metric": "metric.jaffle.revenue_from_customers_with_10plus_orders_in_period"
+      },
+      "as": "qualifying_revenue_usd"
+    }
+  ],
+  "group_by": [
+    "dimension.jaffle_store_name"
+  ],
+  "time": {
+    "temporal_role": "temporal_role.jaffle_order_time",
+    "grain": "month"
+  },
+  "order_by": [
+    {
+      "field": "temporal_role.jaffle_order_time__month",
+      "direction": "ASC"
+    },
+    {
+      "field": "dimension.jaffle_store_name",
+      "direction": "ASC"
+    }
+  ]
+}

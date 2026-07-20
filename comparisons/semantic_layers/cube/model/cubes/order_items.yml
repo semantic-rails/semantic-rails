@@ -1,0 +1,39 @@
+cubes:
+  - name: order_items
+    sql_table: comparison_order_items
+
+    joins:
+      - name: orders
+        relationship: many_to_one
+        sql: "{CUBE}.order_id = {orders.order_id}"
+
+    dimensions:
+      - name: item_id
+        sql: item_id
+        type: string
+        primary_key: true
+
+      - name: order_id
+        sql: order_id
+        type: string
+
+      - name: store_id
+        sql: store_id
+        type: string
+
+      - name: ordered_at
+        sql: ordered_at
+        type: time
+
+      - name: product_name
+        sql: product_name
+        type: string
+
+      - name: product_type
+        sql: product_type
+        type: string
+
+    measures:
+      - name: item_revenue_usd
+        sql: "{CUBE}.item_revenue_cents / 100.0"
+        type: sum

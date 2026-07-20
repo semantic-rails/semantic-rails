@@ -1,0 +1,78 @@
+graph:
+  entities:
+    customer:
+      label: Customer
+      key: [customer_id]
+      model: customers
+      allowed_as_root: true
+
+    store:
+      label: Store
+      key: [store_id]
+      model: stores
+      allowed_as_root: true
+
+    order:
+      label: Order
+      key: [order_id]
+      model: orders
+      allowed_as_root: true
+
+    item:
+      label: Item
+      key: [item_id]
+      model: order_items
+      allowed_as_root: true
+
+    customer_history:
+      label: Customer history
+      key: [customer_id, valid_from]
+      model: customer_history
+      allowed_as_root: false
+
+    order_lifecycle:
+      label: Order lifecycle
+      key: [order_id]
+      model: order_lifecycle
+      allowed_as_root: true
+
+    storefront_session:
+      label: Storefront session
+      key: [session_id]
+      model: storefront_sessions
+      allowed_as_root: true
+
+  # Explicit relationships — orders/order_lifecycle point at the
+  # customer_history row that was valid at the time the order was placed.
+  # SCD2 joins, so the planner must rewrite with a temporal-validity
+  # predicate. Only the FK column on the source side participates in the
+  # match (target: [customer_id]); customer_history's full key includes
+  # valid_from for SCD2 row identity, but joins resolve on customer_id.
+  relationships:
+    order_to_customer_history:
+      as: relationship.jaffle_order_customer_history
+      entities: [order, customer_history]
+      cardinality: many_to_one
+      target: [customer_id]
+      safety: requires_rewrite
+      path_preference: 50
+      rollup_safe:
+        forward: [sum, count]
+        reverse: []
+      temporal_validity:
+        valid_from: jaffle_customer_history.valid_from
+        valid_to: jaffle_customer_history.valid_to
+
+    order_lifecycle_to_customer_history:
+      as: relationship.jaffle_order_lifecycle_customer_history
+      entities: [order_lifecycle, customer_history]
+      cardinality: many_to_one
+      target: [customer_id]
+      safety: requires_rewrite
+      path_preference: 50
+      rollup_safe:
+        forward: [sum, count]
+        reverse: []
+      temporal_validity:
+        valid_from: jaffle_customer_history.valid_from
+        valid_to: jaffle_customer_history.valid_to

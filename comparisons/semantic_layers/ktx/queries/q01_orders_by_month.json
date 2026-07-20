@@ -1,0 +1,13 @@
+{
+  "dimensions": [
+    {
+      "field": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "orders.orders"
+  ]
+}

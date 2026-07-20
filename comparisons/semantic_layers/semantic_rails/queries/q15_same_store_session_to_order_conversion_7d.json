@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+      },
+      "as": "same_store_conversion_rate_7d"
+    }
+  ],
+  "time": {
+    "temporal_role": "temporal_role.jaffle_session_started_at",
+    "grain": "month"
+  },
+  "order_by": [
+    {
+      "field": "temporal_role.jaffle_session_started_at__month",
+      "direction": "ASC"
+    }
+  ]
+}

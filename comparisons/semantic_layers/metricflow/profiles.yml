@@ -1,0 +1,6 @@
+comparison_metricflow:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: '../shared/data/jaffle_comparison.duckdb'

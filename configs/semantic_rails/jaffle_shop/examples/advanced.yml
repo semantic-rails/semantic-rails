@@ -1,0 +1,530 @@
+examples:
+  # Scoped aggregate with metric_predicate filtering — the "share of"
+  # pattern. Both numerator and denominator pull from the same measure;
+  # the predicate restricts the numerator to a customer cohort.
+  revenue_share_from_session_customers:
+    question: What share of revenue came from customers with sessions in the same month?
+    query:
+      version: 2
+      select:
+        - as: pct_revenue_from_session_customers
+          expression:
+            kind: ratio
+            numerator:
+              kind: scoped_aggregate
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+              predicates:
+                - input: {measure: measure.jaffle.session_starts}
+                  entity: entity.jaffle_customer
+                  op: ">"
+                  value: 0
+            denominator:
+              kind: scoped_aggregate
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+        start: "2016-09-01"
+        end: "2016-10-01"
+      order_by:
+        - field: temporal_role.jaffle_order_time__month
+          direction: ASC
+    expected_shape:
+      min_rows: 1
+      max_rows: 1
+
+  # Distribution shape — p80 monthly revenue per customer, computed
+  # over only customers with positive revenue that month.
+  p80_customer_revenue_by_month:
+    question: What is the p80 monthly revenue per customer?
+    query:
+      version: 2
+      select:
+        - as: p80_customer_revenue
+          expression:
+            kind: distribution
+            function: percentile
+            p: 0.8
+            over:
+              kind: entity_value
+              entity: entity.jaffle_customer
+              input:
+                measure: measure.jaffle.revenue_usd
+                aggregation: sum
+              where:
+                - kind: value_filter
+                  op: ">"
+                  value: 0
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+        start: "2016-09-01"
+        end: "2017-01-01"
+      order_by:
+        - field: temporal_role.jaffle_order_time__month
+          direction: ASC
+    expected_shape:
+      min_rows: 4
+      max_rows: 4
+
+  # Arithmetic over two primitive measures.
+  menu_orders_by_store:
+    question: How many food or drink orders did each store handle?
+    query:
+      version: 2
+      select:
+        - as: menu_orders
+          expression:
+            kind: arithmetic
+            op: add
+            left:
+              measure: measure.jaffle.food_order_count
+            right:
+              measure: measure.jaffle.drink_order_count
+      group_by: [dimension.jaffle_store_name]
+      order_by:
+        - field: dimension.jaffle_store_name
+          direction: ASC
+    expected_shape:
+      min_rows: 2
+      max_rows: 2
+
+  order_share_from_session_customers_by_store:
+    question: What share of store orders came from customers with sessions in the same month?
+    query:
+      version: 2
+      select:
+        - as: pct_orders_from_session_customers
+          expression:
+            kind: ratio
+            numerator:
+              kind: scoped_aggregate
+              measure: measure.jaffle.order_count
+              aggregation: count_distinct
+              predicates:
+                - input: {measure: measure.jaffle.session_starts}
+                  entity: entity.jaffle_customer
+                  op: ">"
+                  value: 0
+            denominator:
+              kind: scoped_aggregate
+              measure: measure.jaffle.order_count
+              aggregation: count_distinct
+      group_by: [dimension.jaffle_store_name]
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+        start: "2016-09-01"
+        end: "2016-10-01"
+      order_by:
+        - field: dimension.jaffle_store_name
+          direction: ASC
+    expected_shape:
+      min_rows: 1
+      max_rows: 1
+
+  # Multi-predicate scoped aggregate — sum(active_menu) restricted to
+  # stores with both "more than one order" AND "more than one session"
+  # in the same month. Demonstrates contextual scope_mode where each
+  # predicate is re-evaluated for every (store, month) cell.
+  active_menu_snapshot_for_high_activity_stores:
+    question: Give me the active menu snapshot by store and month for stores with more than one order and more than one session in the same month.
+    query:
+      version: 2
+      select:
+        - as: active_menu_count_from_high_activity_stores
+          expression:
+            kind: scoped_aggregate
+            measure: measure.jaffle.active_menu_count_eop
+            aggregation: sum
+            predicates:
+              - input: {measure: measure.jaffle.order_count}
+                entity: entity.jaffle_store
+                scope_mode: contextual
+                op: ">"
+                value: 1
+              - input: {measure: measure.jaffle.session_starts}
+                entity: entity.jaffle_store
+                scope_mode: contextual
+                op: ">"
+                value: 1
+      group_by: [dimension.jaffle_store_name]
+      time:
+        temporal_role: temporal_role.jaffle_inventory_day
+        grain: month
+      order_by:
+        - field: time
+          direction: ASC
+        - field: dimension.jaffle_store_name
+          direction: ASC
+    expected_shape:
+      min_rows: 1
+      max_rows: 1
+
+  # ---------------------------------------------------------------
+  # Raw query-time time-series AST forms.
+  #
+  # These four examples show that `kind: cumulative`, `kind: rolling`,
+  # `kind: prior_period`, and `kind: period_to_date` can be authored
+  # directly inside a query — without going through a metric ref.
+  # They map 1:1 to the same AST nodes that the published metrics
+  # in metrics/extensions/derived_metrics.yml compile down to.
+  # ---------------------------------------------------------------
+  raw_cumulative_revenue_by_day:
+    question: Show the running revenue total day by day.
+    query:
+      version: 1
+      select:
+        - as: cumulative_revenue
+          expression:
+            kind: cumulative
+            input:
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+      # Cumulative is unbounded by definition — the planner rejects a
+      # bounded `start` (CUMULATIVE_TIME_FILTER_UNSUPPORTED). Use only
+      # `end` to truncate the result, which preserves the running-total
+      # semantics from the start of data.
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: day
+        end: "2017-01-08"
+      order_by:
+        - field: temporal_role.jaffle_order_time__day
+          direction: ASC
+      limit: 7
+    expected_shape:
+      min_rows: 1
+      max_rows: 7
+
+  raw_rolling_7d_revenue:
+    question: Show 7-day trailing revenue at each day, computed at query time.
+    query:
+      version: 1
+      select:
+        - as: rolling_7d_revenue
+          expression:
+            kind: rolling
+            input:
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+            window:
+              unit: day
+              value: 7
+      # Rolling/prior_period/period_to_date reject a bounded `start`
+      # (WINDOWED_TIME_FILTER_UNSUPPORTED) — the leaf-level WHERE would
+      # truncate the lookback rows the window function depends on,
+      # producing silently wrong values. Use only `end` plus `limit` to
+      # bound output size while preserving correct lookback semantics.
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: day
+        end: "2017-01-08"
+      order_by:
+        - field: temporal_role.jaffle_order_time__day
+          direction: DESC
+      limit: 7
+    expected_shape:
+      min_rows: 1
+      max_rows: 7
+
+  raw_prior_week_revenue:
+    question: For each day, show revenue from 7 days earlier (computed at query time).
+    query:
+      version: 1
+      select:
+        - as: prior_week_revenue
+          expression:
+            kind: prior_period
+            input:
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+            offset:
+              unit: day
+              value: 7
+      # See raw_rolling_7d_revenue — bounded `start` is rejected with
+      # WINDOWED_TIME_FILTER_UNSUPPORTED.
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: day
+        end: "2017-01-15"
+      order_by:
+        - field: temporal_role.jaffle_order_time__day
+          direction: DESC
+      limit: 7
+    expected_shape:
+      min_rows: 1
+      max_rows: 7
+
+  raw_revenue_mtd_by_day:
+    question: Show month-to-date revenue at each day, computed at query time.
+    query:
+      version: 1
+      select:
+        - as: revenue_mtd
+          expression:
+            kind: period_to_date
+            input:
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+            period: month
+      # See raw_rolling_7d_revenue — bounded `start` is rejected with
+      # WINDOWED_TIME_FILTER_UNSUPPORTED.
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: day
+        end: "2017-01-08"
+      order_by:
+        - field: temporal_role.jaffle_order_time__day
+          direction: DESC
+      limit: 7
+    expected_shape:
+      min_rows: 1
+      max_rows: 7
+
+  # Use the existing fiscal_calendar (graph entity = fiscal_calendar,
+  # calendar_id = fiscal). To route through fiscal-quarter boundaries,
+  # set `time.fill: true` so the planner joins the fiscal calendar
+  # entity and uses its quarter_start column for bucketing. Without
+  # `fill: true`, `calendar_id: fiscal` on a Gregorian-bound role is
+  # rejected with INCOMPATIBLE_CALENDAR — the parameter cannot switch
+  # the role's calendar on its own.
+  fiscal_revenue_by_quarter:
+    question: Show revenue by fiscal quarter using the fiscal calendar.
+    query:
+      version: 1
+      select:
+        - as: revenue_usd
+          expression:
+            measure: measure.jaffle.revenue_usd
+            aggregation: sum
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        calendar_id: fiscal
+        grain: quarter
+        fill: true
+        start: "2017-01-01"
+        end: "2017-12-31"
+      order_by:
+        - field: temporal_role.jaffle_order_time__quarter
+          direction: ASC
+    expected_shape:
+      min_rows: 1
+
+  # Conversion metric filtered by another conversion metric — illustrates
+  # that metric_predicate.input can itself be a metric reference, not
+  # just a measure. Read: "show me the 28d adoption funnel only for
+  # stores whose 7d same-store conversion rate is above 90%."
+  signup_to_send_28d_for_high_order_rate_stores:
+    question: Give me the 28 day signup to Send adoption funnel for stores whose order rate is above 90 percent.
+    query:
+      version: 1
+      select:
+        - as: signup_to_send_28d
+          expression:
+            metric: metric.adoption.signup_to_send_conversion_rate_28d
+      group_by: [dimension.jaffle_store_name]
+      metric_filters:
+        - expression:
+            kind: metric_predicate
+            entity: entity.jaffle_store
+            scope_mode: contextual
+            input:
+              metric: metric.sales.session_to_order_conversion_rate_7d_same_store
+            op: ">"
+            value: 0.9
+          op: "="
+          value: true
+      time:
+        temporal_role: temporal_role.jaffle_session_started_at
+        grain: month
+      order_by:
+        - field: time
+          direction: ASC
+        - field: dimension.jaffle_store_name
+          direction: ASC
+    expected_shape:
+      min_rows: 1
+      max_rows: 1
+
+  # ---------------------------------------------------------------
+  # Entity-hop planner examples.
+  #
+  # These are intentionally phrased like analyst questions. They
+  # demonstrate that entity-in-terms-of execution starts from the
+  # smallest safe physical relation instead of always scanning the
+  # semantic root entity table.
+  # ---------------------------------------------------------------
+  ordering_customers_by_store:
+    question: How many customers ordered by store?
+    query:
+      version: 1
+      select:
+        - as: customers
+          expression:
+            measure: measure.jaffle.customer_count
+            aggregation: count_distinct
+      group_by: [dimension.jaffle_store_name]
+      order_by:
+        - field: dimension.jaffle_store_name
+          direction: ASC
+    expected_shape:
+      columns: [dimension.jaffle_store_name, customers]
+      min_rows: 2
+      max_rows: 2
+
+  orders_containing_product_type:
+    question: How many orders contained each product type?
+    query:
+      version: 1
+      select:
+        - as: orders
+          expression:
+            measure: measure.jaffle.order_count
+            aggregation: count_distinct
+      group_by: [dimension.jaffle_product_type]
+      order_by:
+        - field: dimension.jaffle_product_type
+          direction: ASC
+    expected_shape:
+      columns: [dimension.jaffle_product_type, orders]
+      min_rows: 1
+
+  monthly_orders_containing_product_type:
+    question: How many orders contained each product type by month?
+    query:
+      version: 1
+      select:
+        - as: orders
+          expression:
+            measure: measure.jaffle.order_count
+            aggregation: count_distinct
+      group_by: [dimension.jaffle_product_type]
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+      order_by:
+        - field: time
+          direction: ASC
+        - field: dimension.jaffle_product_type
+          direction: ASC
+      limit: 10
+    expected_shape:
+      columns: [dimension.jaffle_product_type, temporal_role.jaffle_order_time__month, orders]
+      min_rows: 1
+      max_rows: 10
+
+  brooklyn_orders_containing_product_type:
+    question: How many Brooklyn orders contained each product type?
+    query:
+      version: 1
+      select:
+        - as: orders
+          expression:
+            measure: measure.jaffle.order_count
+            aggregation: count_distinct
+      group_by: [dimension.jaffle_product_type]
+      where:
+        - field: dimension.jaffle_store_name
+          op: "="
+          value: Brooklyn
+      order_by:
+        - field: dimension.jaffle_product_type
+          direction: ASC
+    expected_shape:
+      columns: [dimension.jaffle_product_type, orders]
+      min_rows: 1
+
+  customers_who_bought_product_type:
+    question: How many customers bought each product type?
+    query:
+      version: 1
+      select:
+        - as: customers
+          expression:
+            measure: measure.jaffle.customer_count
+            aggregation: count_distinct
+      group_by: [dimension.jaffle_product_type]
+      order_by:
+        - field: dimension.jaffle_product_type
+          direction: ASC
+    expected_shape:
+      columns: [dimension.jaffle_product_type, customers]
+      min_rows: 1
+
+  repeat_customers_who_bought_product_type:
+    question: How many repeat customers bought each product type?
+    query:
+      version: 1
+      select:
+        - as: customers
+          expression:
+            measure: measure.jaffle.customer_count
+            aggregation: count_distinct
+      group_by: [dimension.jaffle_product_type]
+      where:
+        - field: dimension.jaffle_customer_type
+          op: "="
+          value: repeat
+      order_by:
+        - field: dimension.jaffle_product_type
+          direction: ASC
+    expected_shape:
+      columns: [dimension.jaffle_product_type, customers]
+      min_rows: 1
+
+  signup_to_send_28d_by_converted_product_type:
+    question: What is signup to send conversion by converted product type?
+    query:
+      version: 1
+      select:
+        - as: signup_to_send_28d
+          expression:
+            metric: metric.adoption.signup_to_send_conversion_rate_28d
+      group_by: [dimension.jaffle_product_type]
+      time:
+        temporal_role: temporal_role.jaffle_session_started_at
+        grain: month
+      order_by:
+        - field: time
+          direction: ASC
+        - field: dimension.jaffle_product_type
+          direction: ASC
+      limit: 10
+    expected_shape:
+      columns: [dimension.jaffle_product_type, temporal_role.jaffle_session_started_at__month, signup_to_send_28d]
+      min_rows: 1
+      max_rows: 10
+
+  active_menu_snapshot_for_session_stores:
+    question: Monthly active menu snapshot for stores with any storefront sessions, by store.
+    query:
+      version: 2
+      select:
+        - as: active_menu_count_from_session_stores
+          expression:
+            kind: scoped_aggregate
+            measure: measure.jaffle.active_menu_count_eop
+            aggregation: sum
+            predicates:
+              - input: {measure: measure.jaffle.session_starts}
+                entity: entity.jaffle_store
+                scope_mode: contextual
+                op: ">"
+                value: 0
+      group_by: [dimension.jaffle_store_name]
+      time:
+        temporal_role: temporal_role.jaffle_inventory_day
+        grain: month
+      order_by:
+        - field: time
+          direction: ASC
+        - field: dimension.jaffle_store_name
+          direction: ASC
+      limit: 10
+    expected_shape:
+      columns: [dimension.jaffle_store_name, temporal_role.jaffle_inventory_day__month, active_menu_count_from_session_stores]
+      min_rows: 1
+      max_rows: 10

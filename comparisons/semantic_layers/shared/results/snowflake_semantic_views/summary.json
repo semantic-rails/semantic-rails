@@ -1,0 +1,168 @@
+{
+  "connection": "semantic_views_trial",
+  "generated_at": "2026-04-06T23:05:57-04:00",
+  "layer": "snowflake_semantic_views",
+  "questions": [
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q01_orders_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q01_orders_by_month/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q01_orders_by_month/sql.sql",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q01_orders_by_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q01_orders_by_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q02_revenue_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q02_revenue_by_store_by_month/result.json",
+      "row_count": 18,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q02_revenue_by_store_by_month/sql.sql",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q02_revenue_by_store_by_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q02_revenue_by_store_by_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q03_item_revenue_by_product_type_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q03_item_revenue_by_product_type_by_month/result.json",
+      "row_count": 24,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q03_item_revenue_by_product_type_by_month/sql.sql",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q03_item_revenue_by_product_type_by_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q03_item_revenue_by_product_type_by_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q04_aov_by_store",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q04_aov_by_store/result.json",
+      "row_count": 2,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q04_aov_by_store/sql.sql",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q04_aov_by_store/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q04_aov_by_store/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q05_orders_and_item_revenue_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q05_orders_and_item_revenue_by_store_by_month/result.json",
+      "row_count": 18,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q05_orders_and_item_revenue_by_store_by_month/sql.sql",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q05_orders_and_item_revenue_by_store_by_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q05_orders_and_item_revenue_by_store_by_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q06_new_customer_orders_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q06_new_customer_orders_by_month/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q06_new_customer_orders_by_month/sql.sql",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q06_new_customer_orders_by_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q06_new_customer_orders_by_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q07_delivered_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q07_delivered_revenue_by_month/result.json",
+      "row_count": 1,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q07_delivered_revenue_by_month/sql.sql",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q07_delivered_revenue_by_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q07_delivered_revenue_by_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q08_revenue_by_customer_segment_as_of_order_time",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q08_revenue_by_customer_segment_as_of_order_time/result.json",
+      "row_count": 32,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q08_revenue_by_customer_segment_as_of_order_time/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q08_revenue_by_customer_segment_as_of_order_time/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q08_revenue_by_customer_segment_as_of_order_time/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q09_session_to_order_conversion_7d",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q09_session_to_order_conversion_7d/result.json",
+      "row_count": 1,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q09_session_to_order_conversion_7d/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q09_session_to_order_conversion_7d/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q09_session_to_order_conversion_7d/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q10_orders_from_customers_with_10plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q10_orders_from_customers_with_10plus_orders_in_month/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q10_orders_from_customers_with_10plus_orders_in_month/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q10_orders_from_customers_with_10plus_orders_in_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q10_orders_from_customers_with_10plus_orders_in_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q11_repeat_customer_orders_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q11_repeat_customer_orders_by_store_by_month/result.json",
+      "row_count": 18,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q11_repeat_customer_orders_by_store_by_month/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q11_repeat_customer_orders_by_store_by_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q11_repeat_customer_orders_by_store_by_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q12_orders_by_month_with_lifetime_spend_500_filter",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q12_orders_by_month_with_lifetime_spend_500_filter/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q12_orders_by_month_with_lifetime_spend_500_filter/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q12_orders_by_month_with_lifetime_spend_500_filter/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q12_orders_by_month_with_lifetime_spend_500_filter/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q13_daily_orders_from_customers_with_10plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q13_daily_orders_from_customers_with_10plus_orders_in_month/result.json",
+      "row_count": 365,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q13_daily_orders_from_customers_with_10plus_orders_in_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q13_daily_orders_from_customers_with_10plus_orders_in_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q14_revenue_from_customers_with_10plus_orders_same_store_month",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q14_revenue_from_customers_with_10plus_orders_same_store_month/result.json",
+      "row_count": 18,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q14_revenue_from_customers_with_10plus_orders_same_store_month/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q14_revenue_from_customers_with_10plus_orders_same_store_month/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q14_revenue_from_customers_with_10plus_orders_same_store_month/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q15_same_store_session_to_order_conversion_7d",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q15_same_store_session_to_order_conversion_7d/result.json",
+      "row_count": 1,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q15_same_store_session_to_order_conversion_7d/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q15_same_store_session_to_order_conversion_7d/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q15_same_store_session_to_order_conversion_7d/stdout.json"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+      "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
+      "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q16_revenue_by_customer_segment_as_of_delivered_time/result.json",
+      "row_count": 2,
+      "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q16_revenue_by_customer_segment_as_of_delivered_time/sql.sql",
+      "status": "workaround",
+      "stderr_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q16_revenue_by_customer_segment_as_of_delivered_time/stderr.txt",
+      "stdout_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q16_revenue_by_customer_segment_as_of_delivered_time/stdout.json"
+    }
+  ],
+  "semantic_view": "ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+}

@@ -1,0 +1,1 @@
+query --metrics item_revenue_usd --group-by metric_time__month,item__product_type --order metric_time__month

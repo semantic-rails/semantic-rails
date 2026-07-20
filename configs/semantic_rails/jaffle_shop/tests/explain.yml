@@ -1,0 +1,49 @@
+tests:
+  # explain_contains: assert that the planner's explain output mentions
+  # a specific relationship_id. This proves the chosen path used the
+  # `orders_store` join rather than wandering into a multi-hop path.
+  aov_uses_orders_store_relationship:
+    kind: explain_contains
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.aov_usd}
+          as: aov_usd
+      group_by: [dimension.jaffle_store_name]
+    text: relationship.orders_store
+
+  # metric_equals_query: assert that a metric ref produces the same
+  # rows as a raw arithmetic AST that expands the same formula.
+  # `metric.sales.aov_usd` = `kind: ratio { numerator: revenue_usd,
+  #  denominator: order_count }`, which the loader compiles down to
+  # the same `kind: arithmetic / op: divide` AST authored explicitly
+  # below. If the two ever drift, this test fails loudly.
+  aov_metric_equals_raw_division:
+    kind: metric_equals_query
+    metric_query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.aov_usd}
+          as: aov
+      group_by: [dimension.jaffle_store_name]
+      order_by:
+        - field: dimension.jaffle_store_name
+          direction: ASC
+    expected_query:
+      version: 1
+      select:
+        - as: aov
+          expression:
+            kind: arithmetic
+            op: divide
+            null_behavior: null_if_zero
+            left:
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+            right:
+              measure: measure.jaffle.order_count
+              aggregation: count_distinct
+      group_by: [dimension.jaffle_store_name]
+      order_by:
+        - field: dimension.jaffle_store_name
+          direction: ASC

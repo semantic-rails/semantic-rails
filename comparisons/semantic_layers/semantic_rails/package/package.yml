@@ -1,0 +1,33 @@
+schema_version: 1
+
+package:
+  # The package dir is named `package/` (under `comparisons/semantic_layers/
+  # semantic_rails/`), so package.id must match. The runner script in
+  # `scripts/run_questions.py` exposes this package as `comparison_semantic_rails`
+  # via `list_package_paths` override.
+  id: package
+  namespace: jaffle
+  name: comparison_semantic_rails
+  description: Comparison-only Semantic Rails package authored against the V1 contract for the Jaffle subset used in cross-layer evaluation.
+  warehouse: duckdb
+  default_db: comparisons/semantic_layers/shared/data/jaffle_comparison.duckdb
+  environments: [development, staging, production]
+  schema_strict: true
+  seed:
+    kind: csv_dir_duckdb
+    source: data/jaffle_csv
+    post_sql: data/seed_jaffle.sql
+
+defaults:
+  dimension:
+    groupable: true
+    filterable: true
+  time:
+    timezone: UTC
+    default_query_axis: false
+    supported_grains: [day, week, month, quarter, year]
+  measure:
+    subject_entity: self
+    aggregation_entity: self
+  relationship:
+    traversal: [forward, reverse]

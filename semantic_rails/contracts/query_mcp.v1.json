@@ -1,0 +1,1394 @@
+{
+  "$id": "https://semantic-rails.com/schemas/query_mcp.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "interface_version": "v1",
+  "manifest_version": 1,
+  "mcp_protocol": {
+    "default": "2025-11-25",
+    "supported": [
+      "2025-11-25",
+      "2025-03-26",
+      "2024-11-05"
+    ]
+  },
+  "producer": {
+    "name": "semantic-rails",
+    "version": "0.2.0"
+  },
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "description": "Business question or analysis goal.",
+          "name": "intent",
+          "required": true
+        },
+        {
+          "description": "Semantic layer package id.",
+          "name": "package_id",
+          "required": false
+        }
+      ],
+      "description": "Guide an agent through discover, inspect, build-options, valid-values, validate, compile, and execute.",
+      "name": "semantic-rails-query-builder"
+    },
+    {
+      "arguments": [
+        {
+          "description": "Query IR JSON to review.",
+          "name": "query_json",
+          "required": true
+        }
+      ],
+      "description": "Review existing Query IR with validate and compile (its response includes the `explain` payload) before execution.",
+      "name": "semantic-rails-query-review"
+    },
+    {
+      "arguments": [
+        {
+          "description": "Segment id such as segment.jaffle.high_value_customers.",
+          "name": "segment_id",
+          "required": true
+        }
+      ],
+      "description": "Validate, segment-explain, and segment-preview a package-authored segment.",
+      "name": "semantic-rails-segment-workflow"
+    }
+  ],
+  "resources": [
+    {
+      "description": "Dependency-free MCP interface capabilities, including tool, resource, and prompt definitions.",
+      "mimeType": "application/json",
+      "name": "capabilities",
+      "uri": "semantic-rails://capabilities"
+    },
+    {
+      "description": "Compact summary catalog for the active package.",
+      "mimeType": "application/json",
+      "name": "catalog-summary",
+      "uri": "semantic-rails://catalog/summary"
+    },
+    {
+      "description": "Full catalog cards and payloads for the active package.",
+      "mimeType": "application/json",
+      "name": "catalog-full",
+      "uri": "semantic-rails://catalog/full"
+    }
+  ],
+  "resultSchema": {
+    "$defs": {
+      "issue": {
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object"
+          },
+          "message": {
+            "type": "string"
+          },
+          "recovery_hints": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": true,
+    "description": "Semantic Rails MCP result envelope. Tool-specific fields are additive; the status, issue, request, and package fields are stable v1.",
+    "properties": {
+      "api_version": {
+        "const": "v1",
+        "type": "string"
+      },
+      "error": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/issue"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "errors": {
+        "items": {
+          "$ref": "#/$defs/issue"
+        },
+        "type": "array"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "package_id": {
+        "type": "string"
+      },
+      "recovery_hints": {
+        "items": {
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "request_context": {
+        "type": "object"
+      },
+      "request_id": {
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "ok",
+          "warning",
+          "error",
+          "low_confidence",
+          "unrealizable",
+          "out_of_scope"
+        ],
+        "type": "string"
+      },
+      "timing_ms": {
+        "minimum": 0,
+        "type": "number"
+      },
+      "warnings": {
+        "items": {
+          "$ref": "#/$defs/issue"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "ok",
+      "status",
+      "api_version",
+      "request_id",
+      "package_id",
+      "warnings",
+      "errors"
+    ],
+    "type": "object"
+  },
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Capabilities"
+      },
+      "description": "Semantic Rails MCP question-answering entrypoint. For answering governed-data questions, use: discover, plan, validate, compile, execute. Use catalog for orientation. Return the package's supported and unsupported capability surface — rolling windows, prior-period offsets, metric predicates, scoped aggregates, conversion metrics, etc. Recommended loop position: 0 (cold-start orientation). This compact orientation response tells you which IR expression kinds the runtime can compile and execute for this package. Gotcha: capabilities are package-scoped — re-call after switching packages.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "capabilities",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Catalog"
+      },
+      "description": "List every governed semantic object in the active package — measures, metrics, dimensions, segments, entities. Recommended loop position: 1 (after capabilities, before discover). Prefer 'discover' for term-targeted lookups. Gotcha: default verbosity is 'summary' — flat ID lists, right for orientation. Bump to 'compact' for row metadata (capped 200/kind) or 'full' for uncapped + alias_index (large).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "Optional root entity context.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Optional object kind filter.",
+            "type": "string"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "search": {
+            "description": "Optional substring filter.",
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "summary",
+            "enum": [
+              "summary",
+              "minimal",
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          },
+          "view": {
+            "default": "summary",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "catalog",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Discover"
+      },
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities scored with 'match_reasons'. Recommended loop position: 1 (after the user's question). Pick best id, then 'inspect'. Verbosity: 'minimal' trims each row to {id,kind,score,default_temporal_role,available,match_reasons} (cheap orientation); 'compact' (default) ships full cards. Gotcha: nonsense or out-of-scope terms return an 'out_of_scope' or 'low_relevance' block with empty buckets — branch on those before assuming a candidate.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "kinds": {
+            "oneOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "limit": {
+            "default": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "terms": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "compact",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "discover",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Inspect"
+      },
+      "description": "Return the stable object card for one id — label, description, search terms, related dimensions, valid temporal roles, policy/validity windows. Recommended loop position: 2 (after 'discover', before composing Query IR). Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "object_id": {
+            "type": "string"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "compact",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "type": "object"
+      },
+      "name": "inspect",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Build Options"
+      },
+      "description": "Return ranked next choices for a guided query builder — given partial Query IR, what dimension/filter/time-range to add next. Recommended loop position: 2.5 (between 'inspect' and 'plan' when composing step-by-step instead of from a single intent). Gotcha: pass the partial 'query' you've assembled — empty input returns initial-stage options.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "focus_object_id": {
+            "type": "string"
+          },
+          "focus_terms": {
+            "type": "string"
+          },
+          "include_blocked": {
+            "default": true,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "compact",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "build-options",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Valid Values"
+      },
+      "description": "Return governed valid values for one dimension — from its declared value_domain by default, or via a constrained warehouse probe when 'allow_live_query: true'. Recommended loop position: 3 (composing a 'where' filter on a categorical dimension). Gotcha: 'dimension_id' must be a full id like 'dimension.jaffle.store_name'. Set allow_live_query: true only when no declared domain exists — it costs a warehouse round-trip.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "allow_live_query": {
+            "default": false,
+            "type": "boolean"
+          },
+          "dimension_id": {
+            "type": "string"
+          },
+          "include_counts": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dimension_id"
+        ],
+        "type": "object"
+      },
+      "name": "valid-values",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Plan"
+      },
+      "description": "Single public intent-planning surface: natural-language intent → one best Query IR plus optional alternatives. Use detail='query' for the tight QA loop before execute(row_format='columns'). Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope') and 'best.query_ir'. 'status=ok' has already paid validation cost, so agents may proceed to 'compile' or 'execute' with 'best.query_ir'. Use detail='full' for alternatives/blocked drafts, or detail='debug' for compose_hints. Gotcha: branch on 'status' before reading 'best'.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "detail": {
+            "default": "best",
+            "enum": [
+              "query",
+              "best",
+              "full",
+              "debug"
+            ],
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "limit": {
+            "default": 3,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "type": "object"
+      },
+      "name": "plan",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Validate"
+      },
+      "description": "Check Query IR before compiling — returns errors, warnings, and repair hints. Loop position: 5 (before 'compile' or 'execute'). Gotcha: 'query' must be a JSON object, not a stringified blob; wrap as {query: {...}}. Defaults to verbosity='minimal' — pass verbosity=compact|full for normalized query/policy effects/plans. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}. Call 'capabilities' first for runnable example IR per kind (capabilities.expression_shapes[].example).",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as INVALID_QUERY (offenders under details.unsupported_keys).",
+            "properties": {
+              "time": {
+                "additionalProperties": true,
+                "description": "Time anchor: temporal_role + grain + start|end|range + fill + calendar_id. Omit entirely for an all-time scalar aggregate.",
+                "properties": {
+                  "calendar_id": {
+                    "default": "default",
+                    "description": "Calendar for dense spine (Gregorian or authored fiscal).",
+                    "type": "string"
+                  },
+                  "end": {
+                    "description": "ISO-8601.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "fill": {
+                    "default": false,
+                    "description": "Dense calendar spine for grain buckets (0 / NULL fill). Requires grain; otherwise fails as INVALID_QUERY.",
+                    "type": "boolean"
+                  },
+                  "grain": {
+                    "description": "Bucket size. Required when fill=true or for inline prior_period.",
+                    "enum": [
+                      "",
+                      "day",
+                      "week",
+                      "month",
+                      "quarter",
+                      "year",
+                      "hour",
+                      "minute"
+                    ],
+                    "type": "string"
+                  },
+                  "range": {
+                    "additionalProperties": true,
+                    "description": "Relative window {last: {unit, value}}: window ends at the floor of now (start of current period) — covers the last N completed periods, NOT a rolling-to-today window. Mutually exclusive with start/end; string shorthand rejected as USE_OBJECT_SHAPE.",
+                    "properties": {
+                      "last": {
+                        "additionalProperties": false,
+                        "description": "{unit, value} — e.g. {unit: 'day', value: 90}.",
+                        "properties": {
+                          "unit": {
+                            "enum": [
+                              "minute",
+                              "hour",
+                              "day",
+                              "week",
+                              "month",
+                              "quarter",
+                              "year"
+                            ],
+                            "type": "string"
+                          },
+                          "value": {
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "unit",
+                          "value"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "start": {
+                    "description": "ISO-8601.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "temporal_role": {
+                    "description": "Clock id, e.g. 'temporal_role.<x>'. Must match the metric's anchor; mismatch fails as INVALID_TEMPORAL_BINDING.",
+                    "type": "string"
+                  }
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "sql_profile": {
+            "default": "audit",
+            "description": "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; 'off' suppresses rendered_sql + sql_plan entirely.",
+            "enum": [
+              "audit",
+              "compact",
+              "debug",
+              "off"
+            ],
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "description": "Response detail. 'minimal' (default)={ok,errors,warnings}, +rendered_sql on compile, +rows/row_count on execute — a few KB. 'compact' adds rendered_sql/sql_plan/explain/normalized query. 'full' = legacy maximal envelope (~100KB).",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "validate",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Compile"
+      },
+      "description": "Compile validated Query IR into rendered SQL — no warehouse execution. Loop position: 6 (after 'validate', before 'execute'). Gotcha: do not call before validate — compile raises on errors; validate returns structured repair hints. Defaults to verbosity='minimal' (keeps rendered_sql) — pass verbosity=compact|full for sql_plan/explain/logical plans. IR shape: see the 'validate' tool or 'build-options'.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "sql_profile": {
+            "default": "audit",
+            "description": "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; 'off' suppresses rendered_sql + sql_plan entirely.",
+            "enum": [
+              "audit",
+              "compact",
+              "debug",
+              "off"
+            ],
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "description": "Response detail. 'minimal' (default)={ok,errors,warnings}, +rendered_sql on compile, +rows/row_count on execute — a few KB. 'compact' adds rendered_sql/sql_plan/explain/normalized query. 'full' = legacy maximal envelope (~100KB).",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "compile",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Execute"
+      },
+      "description": "Execute Query IR against the warehouse and return rows (compiles + runs in one call). Loop position: 7 (final — only after validate + compile succeed). Gotcha: only tool that costs warehouse credits + round-trip latency; side-effecting. Use 'compile' for SQL only. Defaults to verbosity='minimal' (rows + row_count) — pass verbosity=compact|full for SQL/plans/explain. Use row_format='columns' for compact answers. IR shape: see the 'validate' tool or 'build-options'.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "row_format": {
+            "default": "records",
+            "description": "Execute row shape. 'records' (default)=rows as objects; 'columns'=columns plus array rows, avoiding repeated field names.",
+            "enum": [
+              "records",
+              "columns"
+            ],
+            "type": "string"
+          },
+          "sql_profile": {
+            "default": "audit",
+            "description": "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; 'off' suppresses rendered_sql + sql_plan entirely.",
+            "enum": [
+              "audit",
+              "compact",
+              "debug",
+              "off"
+            ],
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "description": "Response detail. 'minimal' (default)={ok,errors,warnings}, +rendered_sql on compile, +rows/row_count on execute — a few KB. 'compact' adds rendered_sql/sql_plan/explain/normalized query. 'full' = legacy maximal envelope (~100KB).",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "execute",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Segment Validate"
+      },
+      "description": "Validate a package-authored segment and the Query IR derived from it. Recommended loop position: 5 (segment workflow analogue of 'validate' for ad-hoc IR). Gotcha: 'segment_id' must be a full id like 'segment.jaffle.high_value_customers' — list known segments via 'catalog' if you only have a label.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment_id"
+        ],
+        "type": "object"
+      },
+      "name": "segment-validate",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Segment Explain"
+      },
+      "description": "Explain the derived query for a package-authored segment — filters, joins, and time bounds it compiles to. Recommended loop position: 6 (after 'segment-validate', before previewing rows). Gotcha: governed segments only — for ad-hoc cohorts, compose Query IR with a 'where' clause and call 'compile' to read the explain payload on its response.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment_id"
+        ],
+        "type": "object"
+      },
+      "name": "segment-explain",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Segment Preview"
+      },
+      "description": "Preview members of a package-authored segment — sample rows plus total member count. Hits the warehouse. Recommended loop position: 7 (segment analogue of 'execute' — final step). Gotcha: only segment tool that costs warehouse credits. Run segment-validate + segment-explain first; preview is for showing rows to the user.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment_id"
+        ],
+        "type": "object"
+      },
+      "name": "segment-preview",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v1 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v1",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+✔ Success 🦄 - query completed after 0.07 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+SELECT
+  DATE_TRUNC('month', high_frequency_store_orders_src_10000.ordered_at) AS metric_time__month
+  , stores_src_10000.store_name AS store__store_name
+  , SUM(high_frequency_store_orders_src_10000.revenue_usd) AS qualifying_revenue_usd_same_store
+FROM "jaffle_comparison"."main"."high_frequency_store_orders" high_frequency_store_orders_src_10000
+LEFT OUTER JOIN
+  "jaffle_comparison"."main"."stores" stores_src_10000
+ON
+  high_frequency_store_orders_src_10000.store_id = stores_src_10000.store_id
+GROUP BY
+  DATE_TRUNC('month', high_frequency_store_orders_src_10000.ordered_at)
+  , stores_src_10000.store_name
+ORDER BY metric_time__month
+

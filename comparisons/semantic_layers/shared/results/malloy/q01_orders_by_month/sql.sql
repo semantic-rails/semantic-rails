@@ -1,0 +1,8 @@
+SELECT 
+   DATE_TRUNC('month', base."ordered_at") as "ordered_month",
+   COUNT(1) as "orders"
+FROM comparison_orders as base
+GROUP BY 1
+ORDER BY 1 asc NULLS LAST
+LIMIT 5000
+

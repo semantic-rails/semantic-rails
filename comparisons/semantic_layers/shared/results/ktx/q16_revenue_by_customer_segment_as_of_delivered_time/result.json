@@ -1,0 +1,12 @@
+[
+  {
+    "delivered_month_month": "2016-09-01 00:00:00",
+    "customer_segment": "new",
+    "delivered_revenue": 66.78
+  },
+  {
+    "delivered_month_month": "2016-09-01 00:00:00",
+    "customer_segment": null,
+    "delivered_revenue": 69.96000000000001
+  }
+]

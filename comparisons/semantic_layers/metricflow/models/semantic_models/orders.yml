@@ -1,0 +1,105 @@
+semantic_models:
+  - name: orders
+    description: One row per completed customer order.
+    defaults:
+      agg_time_dimension: ordered_at
+    model: ref('orders')
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: orders
+        description: Count of completed orders.
+        expr: "1"
+        agg: SUM
+      - name: revenue_usd
+        description: Net order revenue.
+        expr: order_total_cents / 100.0
+        agg: SUM
+      - name: new_customer_orders
+        description: Count of first orders.
+        expr: CASE WHEN is_new_customer_order THEN 1 ELSE 0 END
+        agg: SUM
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: ordered_date
+        type: categorical
+      - name: is_new_customer_order
+        type: categorical
+
+  - name: order_items
+    description: One row per item with order time and grouping keys enriched from the order table.
+    defaults:
+      agg_time_dimension: ordered_at
+    model: ref('order_items')
+    entities:
+      - name: item
+        type: primary
+        expr: item_id
+      - name: order
+        type: foreign
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: item_revenue_usd
+        description: Revenue at item grain.
+        expr: item_revenue_cents / 100.0
+        agg: SUM
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: product_name
+        type: categorical
+      - name: product_type
+        type: categorical
+
+  - name: customers
+    description: One row per customer.
+    defaults:
+      agg_time_dimension: first_order_at
+    model: ref('customers')
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_id
+    dimensions:
+      - name: first_order_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: customer_name
+        type: categorical
+
+  - name: stores
+    description: One row per store.
+    defaults:
+      agg_time_dimension: opened_at
+    model: ref('stores')
+    entities:
+      - name: store
+        type: primary
+        expr: store_id
+    dimensions:
+      - name: opened_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: store_name
+        type: categorical

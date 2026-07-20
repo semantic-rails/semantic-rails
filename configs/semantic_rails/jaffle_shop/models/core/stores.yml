@@ -1,0 +1,25 @@
+model:
+  id: stores
+  relation: jaffle_store
+  entities:
+    store: {}
+  times:
+    opened_at:
+      label: Store opened at
+      column: opened_at
+      kind: timestamp
+      class: state_time
+  dimensions:
+    store_name:
+      as: dimension.jaffle_store_name
+      label: Store name
+      kind: categorical
+      domain:
+        - Brooklyn
+        - Chicago
+        - New Orleans
+        - Philadelphia
+        - San Francisco
+    tax_rate:
+      label: Tax rate
+      kind: percent

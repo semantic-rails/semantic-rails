@@ -1,0 +1,55 @@
+cubes:
+  - name: orders
+    sql_table: comparison_orders
+
+    joins:
+      - name: stores
+        relationship: many_to_one
+        sql: "{CUBE}.store_id = {stores.store_id}"
+
+      - name: customers
+        relationship: many_to_one
+        sql: "{CUBE}.customer_id = {customers.customer_id}"
+
+      - name: customer_history
+        relationship: many_to_one
+        sql: "{CUBE}.customer_id = {customer_history.customer_id} AND {CUBE}.ordered_at >= {customer_history.valid_from} AND ({CUBE}.ordered_at < {customer_history.valid_to} OR {customer_history.valid_to} IS NULL)"
+
+    dimensions:
+      - name: order_id
+        sql: order_id
+        type: string
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: string
+
+      - name: store_id
+        sql: store_id
+        type: string
+
+      - name: ordered_at
+        sql: ordered_at
+        type: time
+
+      - name: is_new_customer_order
+        sql: is_new_customer_order
+        type: boolean
+
+    measures:
+      - name: orders
+        sql: order_id
+        type: count_distinct
+
+      - name: revenue_usd
+        sql: "order_total_cents / 100.0"
+        type: sum
+
+      - name: new_customer_orders
+        sql: "CASE WHEN {CUBE}.is_new_customer_order THEN {CUBE}.order_id END"
+        type: count_distinct
+
+      - name: aov_usd
+        sql: "order_total_cents / 100.0"
+        type: avg

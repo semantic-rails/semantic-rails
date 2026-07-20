@@ -1,0 +1,15 @@
+{
+  "dimensions": [
+    {
+      "field": "orders.ordered_at",
+      "granularity": "month"
+    },
+    "stores.store_name"
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "orders.orders",
+    "order_items.item_revenue_usd"
+  ]
+}

@@ -1,0 +1,1 @@
+query --metrics qualifying_revenue_usd_same_store --group-by metric_time__month,store__store_name --order metric_time__month

@@ -1,0 +1,71 @@
+model:
+  id: orders
+  relation: jaffle_order
+  description: One row per completed customer order.
+  entities:
+    order: {}
+    customer: {}
+    customer_history:
+      expr: customer_id
+    store: {}
+  times:
+    ordered_at:
+      label: Order time
+      column: ordered_at
+      kind: timestamp
+      class: event_time
+      default_query_axis: true
+      as: temporal_role.jaffle_order_time
+      default: true
+  dimensions:
+    ordered_date:
+      label: Ordered date
+      column: ordered_date
+      kind: date
+    is_new_customer_order:
+      label: Is new customer order
+      kind: boolean
+  measures:
+    order_count:
+      label: Orders
+      kind: entity_count
+      entity_key: order_id
+      accumulation:
+        kind: event
+      value_type: count
+      meta:
+        owner_team: sales_analytics
+        review_priority: high
+        change_risk: low
+    new_customer_order_count:
+      label: New customer orders
+      kind: entity_count
+      accumulation:
+        kind: event
+      value_type: count
+      expr:
+        kind: case
+        whens:
+          - when:
+              kind: comparison
+              op: "="
+              left: {kind: column, column: is_new_customer_order}
+              right: {kind: literal, value: true}
+            then: {kind: column, column: order_id}
+        else: {kind: literal, value: null}
+      meta:
+        owner_team: growth_analytics
+        review_priority: medium
+        change_risk: medium
+    revenue_usd:
+      label: Revenue (USD)
+      kind: aggregate
+      expr: order_total_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium

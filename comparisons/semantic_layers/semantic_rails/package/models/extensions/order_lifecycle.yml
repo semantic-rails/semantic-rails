@@ -1,0 +1,45 @@
+model:
+  id: order_lifecycle
+  relation: jaffle_order_lifecycle
+  description: Lifecycle timestamps per order — ordered, prepared, delivered.
+  entities:
+    order_lifecycle: {}
+    order: {}
+    customer: {}
+    customer_history:
+      expr: customer_id
+    store: {}
+  times:
+    ordered_at:
+      label: Lifecycle ordered at
+      column: ordered_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_lifecycle_ordered_at
+      default: true
+    prepared_at:
+      label: Lifecycle prepared at
+      column: prepared_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_lifecycle_prepared_at
+    delivered_at:
+      label: Lifecycle delivered at
+      column: delivered_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_lifecycle_delivered_at
+  measures:
+    delivered_revenue_usd:
+      label: Delivered revenue
+      kind: aggregate
+      expr: order_total_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      time: delivered_at
+      meta:
+        owner_team: operations_analytics
+        review_priority: high
+        change_risk: medium

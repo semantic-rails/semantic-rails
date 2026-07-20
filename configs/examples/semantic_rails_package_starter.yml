@@ -1,0 +1,231 @@
+# Semantic Layer package starter — V1 contract
+#
+# A complete, runnable single-file starter. Author your first package by
+# copy-paste, then split sections into sibling files as the package grows.
+#
+# Validate it with:
+#
+#   uv run semantic-rails parse-config --path configs/examples/semantic_rails_package_starter.yml
+#
+# To turn this into a directory package, copy each top-level block into
+# the matching file under configs/semantic_rails/<your_package>/:
+#
+#   package.yml   <- schema_version, package, defaults
+#   graph.yml     <- graph
+#   models/<m>.yml<- one entry from models: per file
+#   metrics/<m>.yml <- one or more entries from metrics: per file
+#
+# The loader merges every YAML file under models/**, metrics/**, and
+# segments/* into one PackageConfig — the directory layout is purely
+# organizational. Identifiers below are auto-derived from
+# package.namespace + each block's key; `as:` overrides only exist as
+# escape hatches when an external system has hard-coded a public ID.
+
+schema_version: 1
+
+package:
+  id: shop_starter
+  # namespace seeds every auto-derived ID (entity.shop_customer,
+  # dimension.shop_order_status, metric.shop.revenue_usd, etc.).
+  namespace: shop
+  description: Minimal V1 starter package over a synthetic shop domain.
+  warehouse: duckdb
+  default_db: data/shop_starter.duckdb
+  # schema_strict rejects every legacy authoring form with a clear error
+  # and migration pointer. Recommended for new packages.
+  schema_strict: true
+  environments: [development, staging, production]
+  seed:
+    kind: sql_script
+    source: data/seed_shop.sql
+
+defaults:
+  dimension:
+    groupable: true
+    filterable: true
+  time:
+    timezone: UTC
+    supported_grains: [day, week, month, quarter, year]
+
+graph:
+  # Each entity declares a key column. The loader auto-creates a key
+  # dimension on every model that exposes the entity — no `kind: id`
+  # dimensions to author by hand.
+  entities:
+    customer:
+      label: Customer
+      key: customer_id
+      # disallowed_names rejects any model that introduces a forbidden
+      # alias for this entity — explicit anti-pattern guard.
+      disallowed_names: [cust_id, custid]
+    order:
+      label: Order
+      key: order_id
+    order_item:
+      label: Order item
+      key: order_item_id
+    product:
+      label: Product
+      key: product_id
+
+  # Most relationships are inferred from each model's `entities:` block.
+  # Author an explicit entry only for non-default rules (per-direction
+  # rollup safety, SCD2 temporal_validity, custom path_preference, etc.).
+
+models:
+  # One model per warehouse table. Primary entity is auto-detected from
+  # whichever entity's canonical key matches `model.grain`.
+  customers:
+    relation: shop_customer
+    grain: [customer_id]
+    entities:
+      customer: {}                          # primary
+    times:
+      first_ordered_at:
+        column: first_ordered_at
+        kind: timestamp
+        class: event_time
+        default: true
+    dimensions:
+      customer_type:
+        label: Customer type
+        kind: categorical
+        # domain is a list of allowed values (scalars, or {value, label}
+        # entries when you want display labels).
+        domain: [new, repeat]
+
+  orders:
+    relation: shop_order
+    grain: [order_id]
+    entities:
+      order: {}                             # primary
+      customer: {}                          # FK — column = customer_id
+    times:
+      ordered_at:
+        column: ordered_at
+        kind: timestamp
+        class: event_time
+        default: true
+    dimensions:
+      channel:
+        label: Order channel
+        kind: categorical
+        domain: [web, store]
+    measures:
+      # kind: entity_count — count distinct entity keys. entity_key names
+      # the key COLUMN (graph.entities.<entity>.key), not the entity name.
+      order_count:
+        label: Orders
+        kind: entity_count
+        entity_key: order_id
+        accumulation: { kind: event }
+        value_type: count
+        meta:
+          owner_team: sales_analytics
+          review_priority: high
+          change_risk: low
+      # kind: aggregate — sum a flow expression
+      revenue_usd:
+        label: Revenue (USD)
+        kind: aggregate
+        expr: order_total_cents / 100.0
+        default_agg: sum
+        accumulation: { kind: flow }
+        value_type: currency
+        currency: USD
+        meta:
+          owner_team: finance_analytics
+          review_priority: high
+          change_risk: medium
+
+  order_items:
+    relation: shop_order_item
+    grain: [order_item_id]
+    entities:
+      order_item: {}                        # primary
+      order: {}                             # FK
+      product: {}                           # FK
+    dimensions:
+      quantity:
+        kind: integer
+    measures:
+      line_revenue_usd:
+        label: Line revenue (USD)
+        kind: aggregate
+        expr: line_total_cents / 100.0
+        default_agg: sum
+        accumulation: { kind: flow }
+        value_type: currency
+        currency: USD
+        meta:
+          owner_team: finance_analytics
+          review_priority: medium
+          change_risk: medium
+
+  products:
+    relation: shop_product
+    grain: [product_id]
+    entities:
+      product: {}                           # primary
+    dimensions:
+      product_type:
+        label: Product type
+        kind: categorical
+
+# Metrics codify governed access patterns. Measures are queryable as
+# primitives; metrics exist when you want a stable, named contract for a
+# specific use of a measure (a ratio, a cumulative, a derived formula).
+# Auto-publish was removed in V1 — every governed metric is authored.
+metrics:
+  # kind: aggregate — publish a measure as a stable metric.
+  revenue_usd:
+    label: Revenue (USD)
+    description: Total revenue. Stable contract for the measure.
+    kind: aggregate
+    measure: revenue_usd
+    value_type: currency
+    currency: USD
+    # meta drives governance — the validator warns when curated metrics
+    # omit owner_team, review_priority, or change_risk.
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: low
+
+  # kind: ratio — direct numerator / denominator. Pins the formula and
+  # the null-handling rule so callers cannot compute AOV the wrong way.
+  aov_usd:
+    label: Average order value (USD)
+    description: Revenue per order.
+    kind: ratio
+    numerator: revenue_usd
+    denominator: order_count
+    null_behavior: null_if_zero
+    value_type: currency
+    currency: USD
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium
+
+  # kind: derived — long-tail formulas use the AST. Direct named fields
+  # cover the common kinds (aggregate, ratio, cumulative, prior_period,
+  # period_to_date, rolling, semi_additive); `derived` is the escape
+  # hatch for anything that doesn't fit those shapes. Measure references
+  # inside an expression tree must be fully qualified:
+  # measure.<namespace>.<key>.
+  revenue_per_item_usd:
+    label: Revenue per item (USD)
+    description: Order revenue divided by line item revenue (illustrative derived form).
+    kind: derived
+    value_type: currency
+    currency: USD
+    expression:
+      kind: arithmetic
+      op: divide
+      left:  { kind: metric, metric: revenue_usd }
+      right: { kind: measure, measure: measure.shop.line_revenue_usd }
+    meta:
+      owner_team: finance_analytics
+      review_priority: medium
+      change_risk: medium

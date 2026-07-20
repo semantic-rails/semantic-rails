@@ -1,0 +1,2139 @@
+[
+  [
+    {
+      "status": "Statement executed successfully."
+    }
+  ],
+  [
+    {
+      "status": "Statement executed successfully."
+    }
+  ],
+  [
+    {
+      "status": "Statement executed successfully."
+    }
+  ],
+  [
+    {
+      "status": "Statement executed successfully."
+    }
+  ],
+  [
+    {
+      "SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML": "YAML file is valid for creating a semantic view. No object has been created yet."
+    }
+  ],
+  [
+    {
+      "SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML": "Semantic view was successfully created."
+    }
+  ],
+  [
+    {
+      "created_on": "2026-04-06T20:05:12.287000-07:00",
+      "name": "JAFFLE_SEMANTIC_COMPARISON",
+      "database_name": "ANALYTICS",
+      "schema_name": "SEMANTIC_COMPARISON",
+      "comment": "Concise Snowflake Semantic Views representation of the Jaffle comparison slice.",
+      "owner": "ACCOUNTADMIN",
+      "owner_role_type": "ROLE",
+      "extension": "[\"CA\",\"AI\"]"
+    }
+  ],
+  [
+    {
+      "object_kind": "EXTENSION",
+      "object_name": "CA",
+      "parent_entity": null,
+      "property": "VALUE",
+      "property_value": "{\"tables\":[{\"name\":\"orders\",\"dimensions\":[{\"name\":\"order_id\",\"unique\":true},{\"name\":\"customer_id\"},{\"name\":\"store_id\"},{\"name\":\"is_new_customer_order\"}],\"facts\":[{\"name\":\"order_total_usd\"}],\"metrics\":[{\"name\":\"orders\"},{\"name\":\"revenue_usd\"},{\"name\":\"new_customer_orders\"}],\"time_dimensions\":[{\"name\":\"ordered_at\"},{\"name\":\"ordered_date\"}]},{\"name\":\"order_items\",\"dimensions\":[{\"name\":\"item_id\",\"unique\":true},{\"name\":\"order_id\"},{\"name\":\"product_name\"},{\"name\":\"product_type\"},{\"name\":\"store_id\"}],\"facts\":[{\"name\":\"item_revenue_row_usd\"}],\"metrics\":[{\"name\":\"item_revenue_usd\"}],\"time_dimensions\":[{\"name\":\"ordered_at\"}]},{\"name\":\"customers\",\"dimensions\":[{\"name\":\"customer_id\",\"unique\":true},{\"name\":\"customer_name\"},{\"name\":\"customer_type\"}],\"time_dimensions\":[{\"name\":\"first_order_at\"}]},{\"name\":\"stores\",\"dimensions\":[{\"name\":\"store_id\",\"unique\":true},{\"name\":\"store_name\"}],\"time_dimensions\":[{\"name\":\"opened_at\"}]},{\"name\":\"customer_history\",\"dimensions\":[{\"name\":\"customer_id\"},{\"name\":\"customer_segment\"},{\"name\":\"preferred_store_id\"}],\"time_dimensions\":[{\"name\":\"valid_from\"},{\"name\":\"valid_to\"}]},{\"name\":\"order_lifecycle\",\"dimensions\":[{\"name\":\"order_id\",\"unique\":true},{\"name\":\"customer_id\"},{\"name\":\"store_id\"}],\"metrics\":[{\"name\":\"delivered_revenue\"}],\"time_dimensions\":[{\"name\":\"ordered_at\"},{\"name\":\"prepared_at\"},{\"name\":\"delivered_at\"}]},{\"name\":\"storefront_sessions\",\"dimensions\":[{\"name\":\"session_id\",\"unique\":true},{\"name\":\"customer_id\"},{\"name\":\"store_id\"},{\"name\":\"converted_order_id\"}],\"metrics\":[{\"name\":\"session_starts\"}],\"time_dimensions\":[{\"name\":\"started_at\"},{\"name\":\"converted_at\"}]}],\"relationships\":[{\"name\":\"orders_to_customers\"},{\"name\":\"orders_to_stores\"},{\"name\":\"order_items_to_orders\"},{\"name\":\"order_lifecycle_to_orders\"},{\"name\":\"storefront_sessions_to_customers\"},{\"name\":\"storefront_sessions_to_orders\"}]}"
+    },
+    {
+      "object_kind": null,
+      "object_name": null,
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "Concise Snowflake Semantic Views representation of the Jaffle comparison slice."
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q01_ORDERS_BY_MONTH",
+      "parent_entity": null,
+      "property": "QUESTION",
+      "property_value": "How many orders did we have by month?"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q01_ORDERS_BY_MONTH",
+      "parent_entity": null,
+      "property": "SQL",
+      "property_value": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n);\n"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q01_ORDERS_BY_MONTH",
+      "parent_entity": null,
+      "property": "ONBOARDING_QUESTION",
+      "property_value": "FALSE"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q05_ORDERS_AND_ITEM_REVENUE_BY_STORE_BY_MONTH",
+      "parent_entity": null,
+      "property": "QUESTION",
+      "property_value": "Show orders and item revenue in one query by store and month."
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q05_ORDERS_AND_ITEM_REVENUE_BY_STORE_BY_MONTH",
+      "parent_entity": null,
+      "property": "SQL",
+      "property_value": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders, order_items.item_revenue_usd\n);\n"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q05_ORDERS_AND_ITEM_REVENUE_BY_STORE_BY_MONTH",
+      "parent_entity": null,
+      "property": "ONBOARDING_QUESTION",
+      "property_value": "FALSE"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q08_REVENUE_BY_CUSTOMER_SEGMENT_AS_OF_ORDER_TIME",
+      "parent_entity": null,
+      "property": "QUESTION",
+      "property_value": "What was revenue by customer segment at the time the order happened?"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q08_REVENUE_BY_CUSTOMER_SEGMENT_AS_OF_ORDER_TIME",
+      "parent_entity": null,
+      "property": "SQL",
+      "property_value": "-- Executed as verified SQL because the as-of validity predicate remains\n-- outside the clean SEMANTIC_VIEW(...) surface in this comparison pack.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON o.customer_id = h.customer_id\n AND o.ordered_at >= h.valid_from\n AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2;\n"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q08_REVENUE_BY_CUSTOMER_SEGMENT_AS_OF_ORDER_TIME",
+      "parent_entity": null,
+      "property": "ONBOARDING_QUESTION",
+      "property_value": "FALSE"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q09_SESSION_TO_ORDER_CONVERSION_7D",
+      "parent_entity": null,
+      "property": "QUESTION",
+      "property_value": "What share of sessions converted to an order within 7 days?"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q09_SESSION_TO_ORDER_CONVERSION_7D",
+      "parent_entity": null,
+      "property": "SQL",
+      "property_value": "WITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS conversion_rate_7d\nFROM matched_sessions\nGROUP BY 1;\n"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q09_SESSION_TO_ORDER_CONVERSION_7D",
+      "parent_entity": null,
+      "property": "ONBOARDING_QUESTION",
+      "property_value": "FALSE"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q10_ORDERS_FROM_CUSTOMERS_WITH_10PLUS_ORDERS_IN_MONTH",
+      "parent_entity": null,
+      "property": "QUESTION",
+      "property_value": "What was order volume from customers with more than 10 orders in the same month?"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q10_ORDERS_FROM_CUSTOMERS_WITH_10PLUS_ORDERS_IN_MONTH",
+      "parent_entity": null,
+      "property": "SQL",
+      "property_value": "WITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10\nGROUP BY 1;\n"
+    },
+    {
+      "object_kind": "AI_VERIFIED_QUERY",
+      "object_name": "Q10_ORDERS_FROM_CUSTOMERS_WITH_10PLUS_ORDERS_IN_MONTH",
+      "parent_entity": null,
+      "property": "ONBOARDING_QUESTION",
+      "property_value": "FALSE"
+    },
+    {
+      "object_kind": "DERIVED_METRIC",
+      "object_name": "AOV_USD",
+      "parent_entity": null,
+      "property": "EXPRESSION",
+      "property_value": "orders.revenue_usd / NULLIF(orders.orders, 0)"
+    },
+    {
+      "object_kind": "DERIVED_METRIC",
+      "object_name": "AOV_USD",
+      "parent_entity": null,
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(38,12)"
+    },
+    {
+      "object_kind": "DERIVED_METRIC",
+      "object_name": "AOV_USD",
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "Average order value."
+    },
+    {
+      "object_kind": "DERIVED_METRIC",
+      "object_name": "AOV_USD",
+      "parent_entity": null,
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMERS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_DATABASE_NAME",
+      "property_value": "ANALYTICS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMERS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_SCHEMA_NAME",
+      "property_value": "SEMANTIC_COMPARISON"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMERS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_NAME",
+      "property_value": "COMPARISON_CUSTOMERS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMERS",
+      "parent_entity": null,
+      "property": "UNIQUE_KEY",
+      "property_value": "[[\"CUSTOMER_ID\"]]"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMERS",
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "One row per customer."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMERS",
+      "property": "TABLE",
+      "property_value": "CUSTOMERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMERS",
+      "property": "EXPRESSION",
+      "property_value": "customer_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMERS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMERS",
+      "property": "COMMENT",
+      "property_value": "Unique customer identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_NAME",
+      "parent_entity": "CUSTOMERS",
+      "property": "TABLE",
+      "property_value": "CUSTOMERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_NAME",
+      "parent_entity": "CUSTOMERS",
+      "property": "EXPRESSION",
+      "property_value": "customer_name"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_NAME",
+      "parent_entity": "CUSTOMERS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_NAME",
+      "parent_entity": "CUSTOMERS",
+      "property": "COMMENT",
+      "property_value": "Customer name."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_NAME",
+      "parent_entity": "CUSTOMERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_TYPE",
+      "parent_entity": "CUSTOMERS",
+      "property": "TABLE",
+      "property_value": "CUSTOMERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_TYPE",
+      "parent_entity": "CUSTOMERS",
+      "property": "EXPRESSION",
+      "property_value": "customer_type"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_TYPE",
+      "parent_entity": "CUSTOMERS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_TYPE",
+      "parent_entity": "CUSTOMERS",
+      "property": "COMMENT",
+      "property_value": "Current customer type label."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_TYPE",
+      "parent_entity": "CUSTOMERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "FIRST_ORDER_AT",
+      "parent_entity": "CUSTOMERS",
+      "property": "TABLE",
+      "property_value": "CUSTOMERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "FIRST_ORDER_AT",
+      "parent_entity": "CUSTOMERS",
+      "property": "EXPRESSION",
+      "property_value": "first_order_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "FIRST_ORDER_AT",
+      "parent_entity": "CUSTOMERS",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "FIRST_ORDER_AT",
+      "parent_entity": "CUSTOMERS",
+      "property": "COMMENT",
+      "property_value": "First order timestamp."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "FIRST_ORDER_AT",
+      "parent_entity": "CUSTOMERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMER_HISTORY",
+      "parent_entity": null,
+      "property": "BASE_TABLE_DATABASE_NAME",
+      "property_value": "ANALYTICS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMER_HISTORY",
+      "parent_entity": null,
+      "property": "BASE_TABLE_SCHEMA_NAME",
+      "property_value": "SEMANTIC_COMPARISON"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMER_HISTORY",
+      "parent_entity": null,
+      "property": "BASE_TABLE_NAME",
+      "property_value": "COMPARISON_CUSTOMER_HISTORY"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "CUSTOMER_HISTORY",
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "Historical customer segment states."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "TABLE",
+      "property_value": "CUSTOMER_HISTORY"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "EXPRESSION",
+      "property_value": "customer_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "COMMENT",
+      "property_value": "Customer identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_SEGMENT",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "TABLE",
+      "property_value": "CUSTOMER_HISTORY"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_SEGMENT",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "EXPRESSION",
+      "property_value": "customer_segment"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_SEGMENT",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_SEGMENT",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "COMMENT",
+      "property_value": "Historical segment label."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_SEGMENT",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREFERRED_STORE_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "TABLE",
+      "property_value": "CUSTOMER_HISTORY"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREFERRED_STORE_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "EXPRESSION",
+      "property_value": "preferred_store_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREFERRED_STORE_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREFERRED_STORE_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "COMMENT",
+      "property_value": "Preferred store identifier during the validity window."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREFERRED_STORE_ID",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_FROM",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "TABLE",
+      "property_value": "CUSTOMER_HISTORY"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_FROM",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "EXPRESSION",
+      "property_value": "valid_from"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_FROM",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_FROM",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "COMMENT",
+      "property_value": "Start of segment validity."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_FROM",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_TO",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "TABLE",
+      "property_value": "CUSTOMER_HISTORY"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_TO",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "EXPRESSION",
+      "property_value": "valid_to"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_TO",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_TO",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "COMMENT",
+      "property_value": "End of segment validity."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "VALID_TO",
+      "parent_entity": "CUSTOMER_HISTORY",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDERS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_DATABASE_NAME",
+      "property_value": "ANALYTICS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDERS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_SCHEMA_NAME",
+      "property_value": "SEMANTIC_COMPARISON"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDERS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_NAME",
+      "property_value": "COMPARISON_ORDERS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDERS",
+      "parent_entity": null,
+      "property": "UNIQUE_KEY",
+      "property_value": "[[\"ORDER_ID\"]]"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDERS",
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "One row per completed customer order."
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDERS_TO_CUSTOMERS",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDERS_TO_CUSTOMERS",
+      "parent_entity": "ORDERS",
+      "property": "REF_TABLE",
+      "property_value": "CUSTOMERS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDERS_TO_CUSTOMERS",
+      "parent_entity": "ORDERS",
+      "property": "FOREIGN_KEY",
+      "property_value": "[\"CUSTOMER_ID\"]"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDERS_TO_CUSTOMERS",
+      "parent_entity": "ORDERS",
+      "property": "REF_KEY",
+      "property_value": "[\"CUSTOMER_ID\"]"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDERS_TO_STORES",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDERS_TO_STORES",
+      "parent_entity": "ORDERS",
+      "property": "REF_TABLE",
+      "property_value": "STORES"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDERS_TO_STORES",
+      "parent_entity": "ORDERS",
+      "property": "FOREIGN_KEY",
+      "property_value": "[\"STORE_ID\"]"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDERS_TO_STORES",
+      "parent_entity": "ORDERS",
+      "property": "REF_KEY",
+      "property_value": "[\"STORE_ID\"]"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "customer_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Customer identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "IS_NEW_CUSTOMER_ORDER",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "IS_NEW_CUSTOMER_ORDER",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "is_new_customer_order"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "IS_NEW_CUSTOMER_ORDER",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "BOOLEAN"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "IS_NEW_CUSTOMER_ORDER",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Whether this order is the customer's first order."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "IS_NEW_CUSTOMER_ORDER",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "NEW_CUSTOMER_ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "NEW_CUSTOMER_ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "COUNT_IF(is_new_customer_order)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "NEW_CUSTOMER_ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(13,0)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "NEW_CUSTOMER_ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Count of first orders."
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "NEW_CUSTOMER_ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "ordered_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Order timestamp."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_DATE",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_DATE",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "ordered_date"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_DATE",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "DATE"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_DATE",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Order date."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_DATE",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "COUNT(order_id)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(18,0)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Count of orders."
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ORDERS",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "order_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Unique order identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ORDER_TOTAL_USD",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ORDER_TOTAL_USD",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "order_total_cents / 100.0"
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ORDER_TOTAL_USD",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(38,6)"
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ORDER_TOTAL_USD",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Row-level order total in USD."
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ORDER_TOTAL_USD",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "REVENUE_USD",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "REVENUE_USD",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "SUM(order_total_cents / 100.0)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "REVENUE_USD",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(38,6)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "REVENUE_USD",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Sum of order revenue."
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "REVENUE_USD",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDERS",
+      "property": "TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDERS",
+      "property": "EXPRESSION",
+      "property_value": "store_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDERS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDERS",
+      "property": "COMMENT",
+      "property_value": "Store identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDERS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_ITEMS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_DATABASE_NAME",
+      "property_value": "ANALYTICS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_ITEMS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_SCHEMA_NAME",
+      "property_value": "SEMANTIC_COMPARISON"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_ITEMS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_NAME",
+      "property_value": "COMPARISON_ORDER_ITEMS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_ITEMS",
+      "parent_entity": null,
+      "property": "UNIQUE_KEY",
+      "property_value": "[[\"ITEM_ID\"]]"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_ITEMS",
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "One row per order line item."
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDER_ITEMS_TO_ORDERS",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDER_ITEMS_TO_ORDERS",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "REF_TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDER_ITEMS_TO_ORDERS",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "FOREIGN_KEY",
+      "property_value": "[\"ORDER_ID\"]"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDER_ITEMS_TO_ORDERS",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "REF_KEY",
+      "property_value": "[\"ORDER_ID\"]"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ITEM_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ITEM_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "EXPRESSION",
+      "property_value": "item_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ITEM_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ITEM_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "COMMENT",
+      "property_value": "Unique item identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ITEM_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ITEM_REVENUE_ROW_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ITEM_REVENUE_ROW_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "EXPRESSION",
+      "property_value": "item_revenue_cents / 100.0"
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ITEM_REVENUE_ROW_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(38,6)"
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ITEM_REVENUE_ROW_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "COMMENT",
+      "property_value": "Row-level item revenue in USD."
+    },
+    {
+      "object_kind": "FACT",
+      "object_name": "ITEM_REVENUE_ROW_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ITEM_REVENUE_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ITEM_REVENUE_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "EXPRESSION",
+      "property_value": "SUM(item_revenue_cents / 100.0)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ITEM_REVENUE_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(38,6)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ITEM_REVENUE_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "COMMENT",
+      "property_value": "Sum of item revenue."
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "ITEM_REVENUE_USD",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "EXPRESSION",
+      "property_value": "ordered_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "COMMENT",
+      "property_value": "Parent order timestamp."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "EXPRESSION",
+      "property_value": "order_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "COMMENT",
+      "property_value": "Parent order identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_NAME",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_NAME",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "EXPRESSION",
+      "property_value": "product_name"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_NAME",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_NAME",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "COMMENT",
+      "property_value": "Product name."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_NAME",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_TYPE",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_TYPE",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "EXPRESSION",
+      "property_value": "product_type"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_TYPE",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_TYPE",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "COMMENT",
+      "property_value": "Product type."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PRODUCT_TYPE",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "TABLE",
+      "property_value": "ORDER_ITEMS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "EXPRESSION",
+      "property_value": "store_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "COMMENT",
+      "property_value": "Store identifier copied from the order."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_ITEMS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_LIFECYCLE",
+      "parent_entity": null,
+      "property": "BASE_TABLE_DATABASE_NAME",
+      "property_value": "ANALYTICS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_LIFECYCLE",
+      "parent_entity": null,
+      "property": "BASE_TABLE_SCHEMA_NAME",
+      "property_value": "SEMANTIC_COMPARISON"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_LIFECYCLE",
+      "parent_entity": null,
+      "property": "BASE_TABLE_NAME",
+      "property_value": "COMPARISON_ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_LIFECYCLE",
+      "parent_entity": null,
+      "property": "UNIQUE_KEY",
+      "property_value": "[[\"ORDER_ID\"]]"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "ORDER_LIFECYCLE",
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "Alternate order lifecycle clock."
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDER_LIFECYCLE_TO_ORDERS",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "TABLE",
+      "property_value": "ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDER_LIFECYCLE_TO_ORDERS",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "REF_TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDER_LIFECYCLE_TO_ORDERS",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "FOREIGN_KEY",
+      "property_value": "[\"ORDER_ID\"]"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "ORDER_LIFECYCLE_TO_ORDERS",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "REF_KEY",
+      "property_value": "[\"ORDER_ID\"]"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "TABLE",
+      "property_value": "ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "EXPRESSION",
+      "property_value": "customer_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "COMMENT",
+      "property_value": "Customer identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "DELIVERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "TABLE",
+      "property_value": "ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "DELIVERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "EXPRESSION",
+      "property_value": "delivered_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "DELIVERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "DELIVERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "COMMENT",
+      "property_value": "Delivered timestamp."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "DELIVERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "DELIVERED_REVENUE",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "TABLE",
+      "property_value": "ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "DELIVERED_REVENUE",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "EXPRESSION",
+      "property_value": "SUM(order_total_cents / 100.0)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "DELIVERED_REVENUE",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(38,6)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "DELIVERED_REVENUE",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "COMMENT",
+      "property_value": "Revenue anchored to delivered time."
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "DELIVERED_REVENUE",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "TABLE",
+      "property_value": "ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "EXPRESSION",
+      "property_value": "ordered_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "COMMENT",
+      "property_value": "Ordered timestamp."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDERED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "TABLE",
+      "property_value": "ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "EXPRESSION",
+      "property_value": "order_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "COMMENT",
+      "property_value": "Order identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "ORDER_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREPARED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "TABLE",
+      "property_value": "ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREPARED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "EXPRESSION",
+      "property_value": "prepared_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREPARED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREPARED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "COMMENT",
+      "property_value": "Prepared timestamp."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "PREPARED_AT",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "TABLE",
+      "property_value": "ORDER_LIFECYCLE"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "EXPRESSION",
+      "property_value": "store_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "COMMENT",
+      "property_value": "Store identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "ORDER_LIFECYCLE",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STOREFRONT_SESSIONS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_DATABASE_NAME",
+      "property_value": "ANALYTICS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STOREFRONT_SESSIONS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_SCHEMA_NAME",
+      "property_value": "SEMANTIC_COMPARISON"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STOREFRONT_SESSIONS",
+      "parent_entity": null,
+      "property": "BASE_TABLE_NAME",
+      "property_value": "COMPARISON_STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STOREFRONT_SESSIONS",
+      "parent_entity": null,
+      "property": "UNIQUE_KEY",
+      "property_value": "[[\"SESSION_ID\"]]"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STOREFRONT_SESSIONS",
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "One row per storefront session."
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "STOREFRONT_SESSIONS_TO_CUSTOMERS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "STOREFRONT_SESSIONS_TO_CUSTOMERS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "REF_TABLE",
+      "property_value": "CUSTOMERS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "STOREFRONT_SESSIONS_TO_CUSTOMERS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "FOREIGN_KEY",
+      "property_value": "[\"CUSTOMER_ID\"]"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "STOREFRONT_SESSIONS_TO_CUSTOMERS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "REF_KEY",
+      "property_value": "[\"CUSTOMER_ID\"]"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "STOREFRONT_SESSIONS_TO_ORDERS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "STOREFRONT_SESSIONS_TO_ORDERS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "REF_TABLE",
+      "property_value": "ORDERS"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "STOREFRONT_SESSIONS_TO_ORDERS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "FOREIGN_KEY",
+      "property_value": "[\"CONVERTED_ORDER_ID\"]"
+    },
+    {
+      "object_kind": "RELATIONSHIP",
+      "object_name": "STOREFRONT_SESSIONS_TO_ORDERS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "REF_KEY",
+      "property_value": "[\"ORDER_ID\"]"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "EXPRESSION",
+      "property_value": "converted_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "COMMENT",
+      "property_value": "Conversion timestamp when present."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_ORDER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_ORDER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "EXPRESSION",
+      "property_value": "converted_order_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_ORDER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_ORDER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "COMMENT",
+      "property_value": "Converted order identifier when present."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CONVERTED_ORDER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "EXPRESSION",
+      "property_value": "customer_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "COMMENT",
+      "property_value": "Customer identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "CUSTOMER_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "SESSION_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "SESSION_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "EXPRESSION",
+      "property_value": "session_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "SESSION_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "SESSION_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "COMMENT",
+      "property_value": "Session identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "SESSION_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "SESSION_STARTS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "SESSION_STARTS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "EXPRESSION",
+      "property_value": "COUNT(session_id)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "SESSION_STARTS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "DATA_TYPE",
+      "property_value": "NUMBER(18,0)"
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "SESSION_STARTS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "COMMENT",
+      "property_value": "Count of sessions."
+    },
+    {
+      "object_kind": "METRIC",
+      "object_name": "SESSION_STARTS",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STARTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STARTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "EXPRESSION",
+      "property_value": "started_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STARTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STARTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "COMMENT",
+      "property_value": "Session start timestamp."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STARTED_AT",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "TABLE",
+      "property_value": "STOREFRONT_SESSIONS"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "EXPRESSION",
+      "property_value": "store_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "COMMENT",
+      "property_value": "Store identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STOREFRONT_SESSIONS",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STORES",
+      "parent_entity": null,
+      "property": "BASE_TABLE_DATABASE_NAME",
+      "property_value": "ANALYTICS"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STORES",
+      "parent_entity": null,
+      "property": "BASE_TABLE_SCHEMA_NAME",
+      "property_value": "SEMANTIC_COMPARISON"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STORES",
+      "parent_entity": null,
+      "property": "BASE_TABLE_NAME",
+      "property_value": "COMPARISON_STORES"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STORES",
+      "parent_entity": null,
+      "property": "UNIQUE_KEY",
+      "property_value": "[[\"STORE_ID\"]]"
+    },
+    {
+      "object_kind": "TABLE",
+      "object_name": "STORES",
+      "parent_entity": null,
+      "property": "COMMENT",
+      "property_value": "One row per store."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "OPENED_AT",
+      "parent_entity": "STORES",
+      "property": "TABLE",
+      "property_value": "STORES"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "OPENED_AT",
+      "parent_entity": "STORES",
+      "property": "EXPRESSION",
+      "property_value": "opened_at"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "OPENED_AT",
+      "parent_entity": "STORES",
+      "property": "DATA_TYPE",
+      "property_value": "TIMESTAMP_NTZ(9)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "OPENED_AT",
+      "parent_entity": "STORES",
+      "property": "COMMENT",
+      "property_value": "Store opening timestamp."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "OPENED_AT",
+      "parent_entity": "STORES",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STORES",
+      "property": "TABLE",
+      "property_value": "STORES"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STORES",
+      "property": "EXPRESSION",
+      "property_value": "store_id"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STORES",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STORES",
+      "property": "COMMENT",
+      "property_value": "Unique store identifier."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_ID",
+      "parent_entity": "STORES",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_NAME",
+      "parent_entity": "STORES",
+      "property": "TABLE",
+      "property_value": "STORES"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_NAME",
+      "parent_entity": "STORES",
+      "property": "EXPRESSION",
+      "property_value": "store_name"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_NAME",
+      "parent_entity": "STORES",
+      "property": "DATA_TYPE",
+      "property_value": "VARCHAR(16777216)"
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_NAME",
+      "parent_entity": "STORES",
+      "property": "COMMENT",
+      "property_value": "Human-readable store name."
+    },
+    {
+      "object_kind": "DIMENSION",
+      "object_name": "STORE_NAME",
+      "parent_entity": "STORES",
+      "property": "ACCESS_MODIFIER",
+      "property_value": "PUBLIC"
+    }
+  ]
+]

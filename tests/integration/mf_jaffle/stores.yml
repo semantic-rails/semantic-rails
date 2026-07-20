@@ -1,0 +1,15 @@
+# Store dimension — fixture table `jaffle_store`.
+version: 2
+
+semantic_models:
+  - name: stores
+    description: Store dimension table for the Jaffle Shop.
+    model: ref('jaffle_store')
+    entities:
+      - name: store
+        type: primary
+        expr: store_id
+    dimensions:
+      - name: store_name
+        type: categorical
+        label: Store name

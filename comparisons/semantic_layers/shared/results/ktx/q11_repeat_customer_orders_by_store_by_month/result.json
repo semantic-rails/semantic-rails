@@ -1,0 +1,92 @@
+[
+  {
+    "ordered_at_month": "2016-09-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 1367
+  },
+  {
+    "ordered_at_month": "2016-10-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 1685
+  },
+  {
+    "ordered_at_month": "2016-11-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 2280
+  },
+  {
+    "ordered_at_month": "2016-12-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 2862
+  },
+  {
+    "ordered_at_month": "2017-01-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3410
+  },
+  {
+    "ordered_at_month": "2017-02-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3357
+  },
+  {
+    "ordered_at_month": "2017-03-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 2092
+  },
+  {
+    "ordered_at_month": "2017-03-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3986
+  },
+  {
+    "ordered_at_month": "2017-04-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 2850
+  },
+  {
+    "ordered_at_month": "2017-04-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3746
+  },
+  {
+    "ordered_at_month": "2017-05-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 3565
+  },
+  {
+    "ordered_at_month": "2017-05-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 4391
+  },
+  {
+    "ordered_at_month": "2017-06-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 3963
+  },
+  {
+    "ordered_at_month": "2017-06-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3916
+  },
+  {
+    "ordered_at_month": "2017-07-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 4053
+  },
+  {
+    "ordered_at_month": "2017-07-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3385
+  },
+  {
+    "ordered_at_month": "2017-08-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 4937
+  },
+  {
+    "ordered_at_month": "2017-08-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3801
+  }
+]

@@ -1,0 +1,150 @@
+{
+  "layer": "ktx",
+  "ktx_sl_path": "/tmp/ktx-compare/python/ktx-sl",
+  "questions": [
+    {
+      "question_id": "q01_orders_by_month",
+      "status": "native",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q01_orders_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q01_orders_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q01_orders_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q01_orders_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q01_orders_by_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q02_revenue_by_store_by_month",
+      "status": "native",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q02_revenue_by_store_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q02_revenue_by_store_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q02_revenue_by_store_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q02_revenue_by_store_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q02_revenue_by_store_by_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q03_item_revenue_by_product_type_by_month",
+      "status": "native",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q03_item_revenue_by_product_type_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q03_item_revenue_by_product_type_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q03_item_revenue_by_product_type_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q03_item_revenue_by_product_type_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q03_item_revenue_by_product_type_by_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q04_aov_by_store",
+      "status": "native",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q04_aov_by_store.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q04_aov_by_store/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q04_aov_by_store/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q04_aov_by_store/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q04_aov_by_store/run.stderr.txt"
+    },
+    {
+      "question_id": "q05_orders_and_item_revenue_by_store_by_month",
+      "status": "native",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q05_orders_and_item_revenue_by_store_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q05_orders_and_item_revenue_by_store_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q05_orders_and_item_revenue_by_store_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q05_orders_and_item_revenue_by_store_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q05_orders_and_item_revenue_by_store_by_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q06_new_customer_orders_by_month",
+      "status": "native",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q06_new_customer_orders_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q06_new_customer_orders_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q06_new_customer_orders_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q06_new_customer_orders_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q06_new_customer_orders_by_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q07_delivered_revenue_by_month",
+      "status": "native",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q07_delivered_revenue_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q07_delivered_revenue_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q07_delivered_revenue_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q07_delivered_revenue_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q07_delivered_revenue_by_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q08_revenue_by_customer_segment_as_of_order_time",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q08_revenue_by_customer_segment_as_of_order_time.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q08_revenue_by_customer_segment_as_of_order_time/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q08_revenue_by_customer_segment_as_of_order_time/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q08_revenue_by_customer_segment_as_of_order_time/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q08_revenue_by_customer_segment_as_of_order_time/run.stderr.txt"
+    },
+    {
+      "question_id": "q09_session_to_order_conversion_7d",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q09_session_to_order_conversion_7d.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q09_session_to_order_conversion_7d/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q09_session_to_order_conversion_7d/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q09_session_to_order_conversion_7d/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q09_session_to_order_conversion_7d/run.stderr.txt"
+    },
+    {
+      "question_id": "q10_orders_from_customers_with_10plus_orders_in_month",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q10_orders_from_customers_with_10plus_orders_in_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q10_orders_from_customers_with_10plus_orders_in_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q10_orders_from_customers_with_10plus_orders_in_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q10_orders_from_customers_with_10plus_orders_in_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q10_orders_from_customers_with_10plus_orders_in_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q11_repeat_customer_orders_by_store_by_month",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q11_repeat_customer_orders_by_store_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q11_repeat_customer_orders_by_store_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q11_repeat_customer_orders_by_store_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q11_repeat_customer_orders_by_store_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q11_repeat_customer_orders_by_store_by_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q12_orders_by_month_with_lifetime_spend_500_filter",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q12_orders_by_month_with_lifetime_spend_500_filter.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q12_orders_by_month_with_lifetime_spend_500_filter/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q12_orders_by_month_with_lifetime_spend_500_filter/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q12_orders_by_month_with_lifetime_spend_500_filter/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q12_orders_by_month_with_lifetime_spend_500_filter/run.stderr.txt"
+    },
+    {
+      "question_id": "q13_daily_orders_from_customers_with_10plus_orders_in_month",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q13_daily_orders_from_customers_with_10plus_orders_in_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q13_daily_orders_from_customers_with_10plus_orders_in_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q13_daily_orders_from_customers_with_10plus_orders_in_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q13_daily_orders_from_customers_with_10plus_orders_in_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q14_revenue_from_customers_with_10plus_orders_same_store_month",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q14_revenue_from_customers_with_10plus_orders_same_store_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q14_revenue_from_customers_with_10plus_orders_same_store_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q14_revenue_from_customers_with_10plus_orders_same_store_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q14_revenue_from_customers_with_10plus_orders_same_store_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q14_revenue_from_customers_with_10plus_orders_same_store_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q15_same_store_session_to_order_conversion_7d",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q15_same_store_session_to_order_conversion_7d.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q15_same_store_session_to_order_conversion_7d/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q15_same_store_session_to_order_conversion_7d/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q15_same_store_session_to_order_conversion_7d/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q15_same_store_session_to_order_conversion_7d/run.stderr.txt"
+    },
+    {
+      "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
+      "status": "workaround",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q16_revenue_by_customer_segment_as_of_delivered_time.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q16_revenue_by_customer_segment_as_of_delivered_time/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q16_revenue_by_customer_segment_as_of_delivered_time/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q16_revenue_by_customer_segment_as_of_delivered_time/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q16_revenue_by_customer_segment_as_of_delivered_time/run.stderr.txt"
+    }
+  ]
+}

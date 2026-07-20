@@ -1,0 +1,30 @@
+{
+  "group_by": [
+    "dimension.jaffle_store_name"
+  ],
+  "order_by": [
+    {
+      "direction": "DESC",
+      "field": "orders"
+    }
+  ],
+  "select": [
+    {
+      "as": "orders",
+      "expression": {
+        "metric": "metric.jaffle.orders"
+      }
+    },
+    {
+      "as": "item_revenue_usd",
+      "expression": {
+        "metric": "metric.jaffle.item_revenue_usd"
+      }
+    }
+  ],
+  "time": {
+    "grain": "month",
+    "temporal_role": "temporal_role.jaffle_order_time"
+  },
+  "version": 1
+}

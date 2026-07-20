@@ -1,0 +1,296 @@
+# Semantic Layer Capabilities Reference
+#
+# Purpose:
+# - Show the active semantic_rails surface in one file.
+# - Mirror the current Jaffle proof runtime rather than historical packages.
+# - Provide copy/paste examples without forcing you to read the whole repo.
+#
+# This file is not a runtime package config.
+
+meta:
+  artifact: semantic_rails_capabilities_reference
+  version: 3
+  active_runtime:
+    package: semantic_rails
+    active_package: configs/semantic_rails/jaffle_shop
+    notes:
+      - The human-facing authoring contract is schema_version 1.
+      - Package configs are directory packages under configs/semantic_rails/.
+      - The shipped proof package is jaffle_shop.
+
+repo_layout:
+  active_paths:
+    runtime: semantic_rails/
+    package_configs: configs/semantic_rails/
+    active_package: configs/semantic_rails/jaffle_shop/
+    focused_tests: tests/semantic_rails/
+    architecture_spec: docs/ARCHITECTURE.md
+    package_authoring: docs/PACKAGE_AUTHORING.md
+    query_api: docs/QUERY_API.md
+    capability_guide: docs/CAPABILITIES.md
+
+package_authoring:
+  schema_version: 1
+  package_layout:
+    - package.yml
+    - graph.yml
+    - policies.yml
+    - caveats.yml
+    - models/**/*.yml
+    - metrics/**/*.yml
+    - segments/*.yml
+    - examples/*.yml
+    - tests/*.yml
+  core_ideas:
+    - graph-first entity identity
+    - model-centric authoring by mart or table
+    - compound keys as ordered key lists
+    - reusable primitives for event counts, flows, stock snapshots, comparison families, clock variants, and conversions
+    - measures are queryable primitives; metrics are governed access patterns (no auto-publish)
+    - joins are inferred from each model's `entities:` block (FK references); explicit `graph.relationships:` is reserved for non-default rules
+    - temporal-validity joins remain explicit
+  semantic_caveats:
+    # caveats.yml — advisory interpretation context. Never changes SQL, rows,
+    # access, discovery, or policy; surfaces as SEMANTIC_CAVEAT_APPLIED
+    # warnings on validate / compile / query when the query shape matches.
+    notes:
+      - kinds are business_event, definition_change, and data_quality
+      - severity info = definitional framing; warning (default) = matched window or slice is affected
+      - entity_values match only the declared dimension; declare one row per commonly-filtered dimension
+    example:
+      semantic_caveats:
+        - id: caveat.jaffle.brooklyn_soft_launch_mar_2017
+          kind: business_event
+          message: Brooklyn opened during March 2017; store comparisons for that month include a partial operating period.
+          object_ids:
+            - dimension.jaffle_store_name
+          entity_values:
+            - entity: entity.jaffle_store
+              dimension: dimension.jaffle_store_name
+              value: Brooklyn
+          time:
+            from: "2017-03-01"
+            to: "2017-04-01"
+          severity: warning
+          owner: operations_analytics
+
+query_ast:
+  request_shape:
+    version: 1
+    select:
+      - expression:
+          measure: measure.jaffle.revenue_usd
+        as: revenue_usd
+      - expression:
+          metric: metric.sales.aov_usd
+        as: aov_usd
+    group_by:
+      - dimension.jaffle_store_name
+    where:
+      - field: dimension.jaffle_order_ordered_at
+        op: ">="
+        value: "2016-09-01 00:00:00"
+    metric_filters:
+      - expression:
+          kind: metric_predicate
+          entity: entity.jaffle_customer
+          scope_mode: contextual
+          input:
+            measure: measure.jaffle.order_count
+          op: ">"
+          value: 10
+        op: "="
+        value: true
+    time:
+      temporal_role: temporal_role.jaffle_order_time
+      grain: month
+      start: "2016-09-01 00:00:00"
+      end: "2016-12-01 00:00:00"
+      fill: false
+      calendar_id: default
+    temporal_role_overrides: {}
+    path_policy:
+      preference: fewest_hops
+      ask_if_ambiguous: true
+    order_by:
+      - field: revenue_usd
+        direction: DESC
+    limit: 25
+    debug: false
+    explain: true
+  supported_expression_families:
+    - measure
+    - metric
+    - arithmetic
+    - cumulative
+    - rolling
+    - prior_period
+    - period_to_date
+    - metric_predicate
+    - conversion
+  current_conversion_limit:
+    - conversion expressions execute for the supported event-count model, including same-store variants
+    - unsupported conversion shapes still reject with CONVERSION_NOT_SUPPORTED
+  metric_predicate_notes:
+    - query-time metric_predicate defaults to contextual scope
+    - package-authored metric_predicate expressions must declare scope_mode
+    - supported v1 modes are contextual and entity_only
+    - contextual predicates inherit outer time and compatible grouped context entities
+
+metadata_and_query_endpoints:
+  # The stable HTTP contract is served only under /api/v1/*.
+  supported_routes:
+    - GET /api/v1/health
+    - GET /api/v1/ready
+    - GET /api/v1/capabilities
+    - GET /api/v1/catalog
+    - POST /api/v1/catalog
+    - POST /api/v1/discover
+    - POST /api/v1/inspect
+    - POST /api/v1/build-options
+    - POST /api/v1/valid-values
+    - POST /api/v1/plan
+    - POST /api/v1/validate
+    - POST /api/v1/compile
+    - POST /api/v1/query
+    - POST /api/v1/segment-validate
+    - POST /api/v1/segment-explain
+    - POST /api/v1/segment-preview
+  response_shapes:
+    catalog:
+      keys: [entities, dimensions, measures, temporal_roles, relationships, value_domains, metrics, meta, aliases, alias_index, capabilities, unsupported_capabilities]
+    discover:
+      keys: [measures, metrics, dimensions, dimension_values, entities, blocked]
+    inspect:
+      keys: [object_id, query_state, card]
+    build_options:
+      keys: [root_entity, builder_step, stage, verbosity, query_state, selection, focus_object_id, focus_terms, recommended, available, blocked, query_patches]
+    valid_values:
+      keys: [dimension, values, source, query_state, selection, value_domain_id, provenance, total_count, has_more, selection_context, value_source_type, estimated_cost, anchor_measure]
+    plan:
+      keys: [plan_version, intent, intent_ir, status, best, next, why, alternatives, blocked]
+    validate:
+      keys: [version, ok, errors, warnings, disabled_options, logical_plan, explain, query, normalized_query, timing_ms]
+    query:
+      keys: [rows, row_count, rendered_sql, logical_plan, sql_plan, explain, query, normalized_query]
+
+active_jaffle_coverage:
+  demonstrated:
+    - safe fact-to-dimension traversal
+    - mixed-grain leaf rewrites
+    - dense fill
+    - rolling, prior-period, and PTD metrics
+    - historical customer attributes
+    - compound-key snapshot entities
+    - alternate fiscal calendar
+    - query-time and package-authored metric_predicate usage
+    - executed event-pair conversion metrics
+    - median and percentile aggregations
+    - package-authored semantic caveats (Brooklyn March 2017 soft launch)
+  current_explicit_rejects:
+    - unsupported conversion shapes outside the supported event-count model
+
+  build_options:
+    method: POST
+    path: /api/v1/build-options
+    body:
+      step: group_by
+      focus_terms: orders by store
+      query:
+        version: 1
+        select:
+          - expression:
+              measure: measure.jaffle.order_count
+              aggregation: count_distinct
+            as: orders
+
+  valid_values:
+    method: POST
+    path: /api/v1/valid-values
+    body:
+      dimension: dimension.jaffle_store_name
+
+  validate:
+    method: POST
+    path: /api/v1/validate
+    body:
+      query:
+        version: 1
+        select:
+          - expression:
+              measure: measure.jaffle.revenue_usd
+            as: revenue_usd
+        group_by:
+          - dimension.jaffle_store_name
+        time:
+          temporal_role: temporal_role.jaffle_order_time
+          grain: month
+
+  compile:
+    method: POST
+    path: /api/v1/compile
+    body:
+      query:
+        version: 1
+        select:
+          - expression:
+              metric: metric.sales.cumulative_revenue
+            as: cumulative_revenue
+        time:
+          temporal_role: temporal_role.jaffle_order_time
+          grain: month
+        order_by:
+          - field: cumulative_revenue
+            direction: ASC
+
+  query:
+    method: POST
+    path: /api/v1/query
+    body:
+      query:
+        version: 1
+        select:
+          - expression:
+              measure: measure.jaffle.revenue_usd
+            as: revenue_usd
+          - expression:
+              metric: metric.sales.aov_usd
+            as: aov_usd
+        group_by:
+          - dimension.jaffle_store_name
+        order_by:
+          - field: revenue_usd
+            direction: DESC
+        limit: 5
+
+demo_scenarios:
+  jaffle_shop:
+    package: jaffle_shop
+
+error_taxonomy:
+  canonical_codes:
+    - AMBIGUOUS_ALIAS
+    - AMBIGUOUS_PATH
+    - UNSUPPORTED_AGGREGATION
+    - INVALID_TEMPORAL_ROLE
+    - FANOUT_UNSAFE
+    - MIXED_GRAIN_INVALID
+    - INVALID_METRIC_PREDICATE
+    - PREDICATE_GRAIN_UNSAFE
+    - CONVERSION_NOT_SUPPORTED
+    - NO_VALID_VALUES_SOURCE
+    - REWRITE_NOT_SUPPORTED
+    - INVALID_EXPRESSION_AST
+  review_notes:
+    - AMBIGUOUS_ALIAS should return candidate IDs and rationale.
+    - AMBIGUOUS_PATH should expose candidate paths.
+    - REWRITE_NOT_SUPPORTED indicates a shape the current rewrite engine does not yet handle.
+    - CONVERSION_NOT_SUPPORTED is the explicit behavior for enriched conversion shapes outside the supported execution model.
+
+review_prompts:
+  prompts:
+    - Do you want more or fewer top-level semantic primitives in the reference?
+    - Should query examples prefer metric references, measure references, or both?
+    - Do you want stricter or looser examples for path_policy and metric_filters?
+    - Should the API examples include expected response snippets too?
+    - Do you want this file to stay Jaffle-specific or become a more abstract runtime reference?

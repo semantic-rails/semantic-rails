@@ -1,0 +1,277 @@
+model:
+  id: orders
+  relation: jaffle_order
+  description: One row per completed customer order.
+  entities:
+    order: {}
+    customer: {}
+    customer_history:
+      expr: customer_id
+    store: {}
+  times:
+    ordered_at:
+      label: Order time
+      column: ordered_at
+      kind: timestamp
+      class: event_time
+      default_query_axis: true
+      as: temporal_role.jaffle_order_time
+      default: true
+  dimensions:
+    customer_order_number:
+      label: Customer order number
+      description: Sequence number of the order within the customer lifecycle.
+      kind: integer
+    is_new_customer_order:
+      label: Is new customer order
+      description: True when this is the customer's first order.
+      kind: boolean
+    is_large_order:
+      label: Is large order
+      description: True when the order total clears the large-order threshold.
+      kind: boolean
+    has_food_item:
+      label: Has food item
+      description: True when the order includes at least one food item.
+      kind: boolean
+    has_drink_item:
+      label: Has drink item
+      description: True when the order includes at least one drink item.
+      kind: boolean
+  measures:
+    order_count:
+      label: Orders
+      description: Count of unique orders placed by customers.
+      kind: entity_count
+      entity_key: order_id
+      accumulation:
+        kind: event
+      value_type: count
+      meta:
+        owner_team: sales_analytics
+        review_priority: high
+        change_risk: low
+    ordering_customer_count:
+      label: Ordering customers
+      description: Count of unique customers with at least one completed order in the selected slice.
+      kind: entity_count
+      entity_key: customer_id
+      accumulation:
+        kind: event
+      value_type: count
+      meta:
+        owner_team: growth_analytics
+        review_priority: high
+        change_risk: medium
+    new_customer_order_count:
+      label: New customer orders
+      description: Count of orders that are the customer's first purchase.
+      kind: entity_count
+      accumulation:
+        kind: event
+      value_type: count
+      expr:
+        kind: case
+        whens:
+          - when:
+              kind: comparison
+              op: '='
+              left:
+                kind: column
+                column: is_new_customer_order
+              right:
+                kind: literal
+                value: true
+            then:
+              kind: column
+              column: order_id
+        else:
+          kind: literal
+          value: null
+      meta:
+        owner_team: growth_analytics
+        review_priority: medium
+        change_risk: medium
+    large_order_count:
+      label: Large orders
+      description: Count of orders above the large-order threshold.
+      kind: entity_count
+      accumulation:
+        kind: event
+      value_type: count
+      expr:
+        kind: case
+        whens:
+          - when:
+              kind: comparison
+              op: '='
+              left:
+                kind: column
+                column: is_large_order
+              right:
+                kind: literal
+                value: true
+            then:
+              kind: column
+              column: order_id
+        else:
+          kind: literal
+          value: null
+      meta:
+        owner_team: sales_analytics
+        review_priority: medium
+        change_risk: medium
+    food_order_count:
+      label: Food orders
+      description: Count of orders that include at least one food item.
+      kind: entity_count
+      accumulation:
+        kind: event
+      value_type: count
+      expr:
+        kind: case
+        whens:
+          - when:
+              kind: comparison
+              op: '='
+              left:
+                kind: column
+                column: has_food_item
+              right:
+                kind: literal
+                value: true
+            then:
+              kind: column
+              column: order_id
+        else:
+          kind: literal
+          value: null
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: medium
+        change_risk: medium
+    drink_order_count:
+      label: Drink orders
+      description: Count of orders that include at least one drink item.
+      kind: entity_count
+      accumulation:
+        kind: event
+      value_type: count
+      expr:
+        kind: case
+        whens:
+          - when:
+              kind: comparison
+              op: '='
+              left:
+                kind: column
+                column: has_drink_item
+              right:
+                kind: literal
+                value: true
+            then:
+              kind: column
+              column: order_id
+        else:
+          kind: literal
+          value: null
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: medium
+        change_risk: medium
+    gross_order_value_usd:
+      kind: aggregate
+      label: Gross order value
+      description: Order subtotal before tax and final revenue adjustments.
+      expr: subtotal_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium
+    tax_paid_usd:
+      kind: aggregate
+      label: Tax paid
+      description: Tax amount charged on completed orders.
+      expr: tax_paid_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium
+    revenue_usd:
+      kind: aggregate
+      label: Revenue
+      description: Net sales revenue recognized when the order is placed. Top-line revenue across all completed orders.
+      expr: order_total_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      comparison_family: revenue
+      comparison_mode: coordinated_queries
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium
+    order_cost_usd:
+      kind: aggregate
+      label: Order cost
+      description: Supply-side cost attributed to the completed order.
+      expr: order_cost_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: medium
+        change_risk: medium
+    food_revenue_usd:
+      kind: aggregate
+      label: Food revenue
+      description: Revenue from the food portion of each order.
+      expr: food_revenue_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      comparison_family: product_mix_revenue
+      comparison_mode: same_query
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: high
+        change_risk: medium
+    drink_revenue_usd:
+      kind: aggregate
+      label: Drink revenue
+      description: Revenue from the drink portion of each order.
+      expr: drink_revenue_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      comparison_family: product_mix_revenue
+      comparison_mode: same_query
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: high
+        change_risk: medium
+    gross_profit_usd:
+      kind: aggregate
+      label: Gross profit
+      expr: gross_profit_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium

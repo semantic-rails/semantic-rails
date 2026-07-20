@@ -1,0 +1,24 @@
+model:
+  id: customer_history
+  relation: jaffle_customer_history
+  description: SCD2 history of customer attributes.
+  entities:
+    customer_history: {}
+    customer: {}
+  times:
+    valid_from:
+      label: Customer history valid from
+      column: valid_from
+      kind: timestamp
+      class: state_time
+    valid_to:
+      label: Customer history valid to
+      column: valid_to
+      kind: timestamp
+      class: state_time
+  dimensions:
+    customer_segment:
+      as: dimension.jaffle_customer_history_segment
+      label: Customer segment
+      kind: categorical
+      domain: [new, repeat, high_value]

@@ -1,0 +1,92 @@
+[
+  {
+    "ORDERED_MONTH": "2016-09-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 1367
+  },
+  {
+    "ORDERED_MONTH": "2016-10-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 1685
+  },
+  {
+    "ORDERED_MONTH": "2016-11-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 2280
+  },
+  {
+    "ORDERED_MONTH": "2016-12-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 2862
+  },
+  {
+    "ORDERED_MONTH": "2017-01-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 3410
+  },
+  {
+    "ORDERED_MONTH": "2017-02-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 3357
+  },
+  {
+    "ORDERED_MONTH": "2017-03-01T00:00:00",
+    "STORE_NAME": "Brooklyn",
+    "REPEAT_CUSTOMER_ORDERS": 2092
+  },
+  {
+    "ORDERED_MONTH": "2017-03-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 3986
+  },
+  {
+    "ORDERED_MONTH": "2017-04-01T00:00:00",
+    "STORE_NAME": "Brooklyn",
+    "REPEAT_CUSTOMER_ORDERS": 2850
+  },
+  {
+    "ORDERED_MONTH": "2017-04-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 3746
+  },
+  {
+    "ORDERED_MONTH": "2017-05-01T00:00:00",
+    "STORE_NAME": "Brooklyn",
+    "REPEAT_CUSTOMER_ORDERS": 3565
+  },
+  {
+    "ORDERED_MONTH": "2017-05-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 4391
+  },
+  {
+    "ORDERED_MONTH": "2017-06-01T00:00:00",
+    "STORE_NAME": "Brooklyn",
+    "REPEAT_CUSTOMER_ORDERS": 3963
+  },
+  {
+    "ORDERED_MONTH": "2017-06-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 3916
+  },
+  {
+    "ORDERED_MONTH": "2017-07-01T00:00:00",
+    "STORE_NAME": "Brooklyn",
+    "REPEAT_CUSTOMER_ORDERS": 4053
+  },
+  {
+    "ORDERED_MONTH": "2017-07-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 3385
+  },
+  {
+    "ORDERED_MONTH": "2017-08-01T00:00:00",
+    "STORE_NAME": "Brooklyn",
+    "REPEAT_CUSTOMER_ORDERS": 4937
+  },
+  {
+    "ORDERED_MONTH": "2017-08-01T00:00:00",
+    "STORE_NAME": "Philadelphia",
+    "REPEAT_CUSTOMER_ORDERS": 3801
+  }
+]

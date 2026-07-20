@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "measure": "measure.jaffle.order_count"
+      },
+      "as": "orders"
+    }
+  ],
+  "group_by": ["dimension.jaffle_store_name"],
+  "metric_filters": [
+    {
+      "expression": {
+        "kind": "metric_predicate",
+        "entity": "entity.jaffle_customer",
+        "scope_mode": "entity_only",
+        "input": {
+          "measure": "measure.jaffle.order_count"
+        },
+        "op": ">=",
+        "value": 4
+      },
+      "op": "=",
+      "value": true
+    }
+  ],
+  "order_by": [
+    {
+      "field": "orders",
+      "direction": "DESC"
+    }
+  ],
+  "limit": 10,
+  "time": {
+    "temporal_role": "temporal_role.jaffle_order_time",
+    "grain": "month"
+  }
+}

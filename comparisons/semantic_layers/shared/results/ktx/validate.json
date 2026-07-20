@@ -1,0 +1,7 @@
+{
+  "errors": [],
+  "per_source_warnings": {},
+  "warnings": [
+    "Model has 8 disconnected components. Queries that span components will fail with 'No join path' errors:\n  - Component 1 (5 sources): customers, order_items, ... (+3 more)\n  - Component 2 (1 sources): daily_orders_from_high_frequency_customers_month\n  - Component 3 (1 sources): delivered_revenue_by_customer_segment\n  - Component 4 (1 sources): orders_from_high_frequency_customers_month\n  - Component 5 (1 sources): revenue_by_customer_segment_order_time\n  - Component 6 (1 sources): revenue_from_high_frequency_store_customers\n  - Component 7 (1 sources): session_conversion_7d\n  - Component 8 (1 sources): session_conversion_7d_same_store"
+  ]
+}

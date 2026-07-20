@@ -1,0 +1,38 @@
+model:
+  id: supplies
+  relation: jaffle_supply
+  entities:
+    supply: {}
+    product: {}
+  dimensions:
+    supply_name:
+      as: dimension.jaffle_supply_name
+      label: Supply name
+      kind: categorical
+    is_perishable:
+      label: Is perishable
+      kind: boolean
+  measures:
+    supply_component_count:
+      label: Supply component count
+      kind: entity_count
+      entity_key: supply_id
+      accumulation:
+        kind: population
+      value_type: count
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: medium
+        change_risk: low
+    supply_component_cost_usd:
+      kind: aggregate
+      label: Supply component cost
+      expr: supply_cost_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: merchandising_analytics
+        review_priority: medium
+        change_risk: medium

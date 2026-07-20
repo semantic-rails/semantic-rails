@@ -1,0 +1,32 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+✔ Success 🦄 - query completed after 0.08 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+SELECT
+  store__store_name
+  , CAST(revenue_usd AS DOUBLE) / CAST(NULLIF(orders, 0) AS DOUBLE) AS aov_usd
+FROM (
+  SELECT
+    stores_src_10000.store_name AS store__store_name
+    , SUM(subq_1.revenue_usd) AS revenue_usd
+    , SUM(subq_1.orders) AS orders
+  FROM (
+    SELECT
+      store_id AS store
+      , 1 AS orders
+      , order_total_cents / 100.0 AS revenue_usd
+    FROM "jaffle_comparison"."main"."orders" orders_src_10000
+  ) subq_1
+  LEFT OUTER JOIN
+    "jaffle_comparison"."main"."stores" stores_src_10000
+  ON
+    subq_1.store = stores_src_10000.store_id
+  GROUP BY
+    stores_src_10000.store_name
+) subq_7
+ORDER BY aov_usd DESC
+

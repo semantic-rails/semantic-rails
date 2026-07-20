@@ -1,0 +1,16 @@
+{
+  "name": "semantic-layer-cube-comparison",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "node index.js",
+    "validate": "npx cubejs-cli validate -p model"
+  },
+  "dependencies": {
+    "@cubejs-backend/duckdb-driver": "1.6.32",
+    "@cubejs-backend/server": "1.6.32"
+  },
+  "devDependencies": {
+    "cubejs-cli": "1.6.32"
+  }
+}

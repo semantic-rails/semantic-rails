@@ -1,0 +1,64 @@
+model:
+  id: order_lifecycle
+  relation: jaffle_order_lifecycle
+  entities:
+    order_lifecycle: {}
+    order: {}
+    customer: {}
+    store: {}
+  times:
+    ordered_at:
+      label: Lifecycle ordered at
+      column: ordered_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_lifecycle_ordered_at
+      dimension_id: dimension.jaffle_lifecycle_ordered_at
+      default: true
+    prepared_at:
+      label: Lifecycle prepared at
+      column: prepared_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_lifecycle_prepared_at
+      dimension_id: dimension.jaffle_lifecycle_prepared_at
+    delivered_at:
+      label: Lifecycle delivered at
+      column: delivered_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_lifecycle_delivered_at
+      dimension_id: dimension.jaffle_lifecycle_delivered_at
+  dimensions: {}
+  measures:
+    delivered_orders:
+      label: Delivered orders
+      description: Count of orders anchored to the delivered timestamp instead of the ordered timestamp.
+      kind: entity_count
+      entity_key: order_id
+      accumulation:
+        kind: event
+      value_type: count
+      time: delivered_at
+      comparison_family: order_volume
+      comparison_mode: coordinated_queries
+      meta:
+        owner_team: operations_analytics
+        review_priority: medium
+        change_risk: medium
+    delivered_revenue_usd:
+      kind: aggregate
+      label: Delivered revenue
+      description: Revenue anchored to the delivered timestamp for order lifecycle analysis.
+      expr: order_total_cents / 100.0
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      time: delivered_at
+      comparison_family: revenue
+      comparison_mode: coordinated_queries
+      meta:
+        owner_team: operations_analytics
+        review_priority: high
+        change_risk: medium

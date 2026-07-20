@@ -1,0 +1,58 @@
+model:
+  id: orders
+  relation: SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.ORDERS
+  description: One row per TPCH order in the Snowflake sample dataset.
+  entities:
+    order: {}
+    customer:
+      expr: O_CUSTKEY
+  times:
+    order_date:
+      as: temporal_role.tpch_order_date
+      label: Order date
+      column: O_ORDERDATE
+      kind: date
+      class: event_time
+      default_query_axis: true
+      default: true
+  dimensions:
+    order_priority:
+      as: dimension.tpch_order_priority
+      label: Order priority
+      column: O_ORDERPRIORITY
+      kind: categorical
+      description: Priority assigned to the order.
+    order_status:
+      as: dimension.tpch_order_status
+      label: Order status
+      column: O_ORDERSTATUS
+      kind: categorical
+      description: Current TPCH order status code.
+  measures:
+    order_count:
+      label: Orders
+      description: Count of TPCH orders.
+      kind: entity_count
+      entity_key: O_ORDERKEY
+      accumulation:
+        kind: event
+      value_type: count
+      meta:
+        owner_team: sales_analytics
+        review_priority: high
+        change_risk: low
+
+    revenue:
+      label: Revenue
+      description: Total order value from O_TOTALPRICE.
+      kind: aggregate
+      expr: O_TOTALPRICE
+      default_agg: sum
+      accumulation:
+        kind: flow
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: sales_analytics
+        review_priority: high
+        change_risk: medium

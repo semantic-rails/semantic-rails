@@ -1,0 +1,322 @@
+tests:
+  # Negative tests for the public error codes documented in
+  # docs/QUERY_API.md. Each test pins a specific malformed query
+  # to the exact error code it should produce, so any future
+  # change to validation behavior surfaces here.
+  #
+  # Codes covered:
+  #   - DUPLICATE_OUTPUT_ALIAS  (also tests/core.yml; kept here for symmetry)
+  #   - INVALID_TEMPORAL_ROLE
+  #   - UNSUPPORTED_AGGREGATION
+  #   - INVALID_EXPRESSION_AST
+  #   - REWRITE_NOT_SUPPORTED
+  #   - CUMULATIVE_TIME_FILTER_UNSUPPORTED
+  #   - WINDOWED_TIME_FILTER_UNSUPPORTED
+  #   - PREDICATE_GRAIN_UNSAFE
+  #   - OBJECT_NOT_FOUND
+  #   - INVALID_QUERY
+  #   - MIXED_GRAIN_INVALID
+  #   - POLICY_DENIED
+  #
+  # Public codes that are endpoint-specific (NO_VALID_VALUES_SOURCE,
+  # AMBIGUOUS_PATH, FANOUT_UNSAFE, AMBIGUOUS_ALIAS) are not directly
+  # triggerable through `validate`; they need their own endpoint
+  # path. tests/api_smoke.yml covers those endpoints in passing.
+
+  unknown_temporal_role_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      time:
+        temporal_role: temporal_role.does_not_exist
+        grain: month
+    code: INVALID_TEMPORAL_ROLE
+
+  unsupported_aggregation_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd, aggregation: bogus_agg}
+          as: r
+    code: UNSUPPORTED_AGGREGATION
+
+  invalid_expression_ast_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {kind: unknown_kind}
+          as: x
+    code: INVALID_EXPRESSION_AST
+
+  prior_period_grain_mismatch_rejected:
+    # `kind: prior_period` with a month-unit offset cannot be evaluated
+    # at day grain — the planner reports REWRITE_NOT_SUPPORTED.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - as: pm
+          expression:
+            kind: prior_period
+            input:
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+            offset:
+              unit: month
+              value: 1
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: day
+    code: REWRITE_NOT_SUPPORTED
+
+  cumulative_with_bounded_start_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.cumulative_revenue}
+          as: cum
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+        start: "2017-01-01"
+    code: CUMULATIVE_TIME_FILTER_UNSUPPORTED
+
+  rolling_with_bounded_start_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - as: rolling
+          expression:
+            kind: rolling
+            input:
+              measure: measure.jaffle.revenue_usd
+              aggregation: sum
+            window:
+              unit: day
+              value: 7
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: day
+        start: "2017-01-01"
+        end: "2017-01-08"
+    code: WINDOWED_TIME_FILTER_UNSUPPORTED
+
+  contextual_predicate_finer_than_query_grain_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.order_count}
+          as: orders
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+      metric_filters:
+        - expression:
+            kind: metric_predicate
+            entity: entity.jaffle_customer
+            input:
+              measure: measure.jaffle.order_count
+            op: ">"
+            value: 10
+            scope_mode: contextual
+            time_grain: day
+          op: "="
+          value: true
+    code: PREDICATE_GRAIN_UNSAFE
+
+  unknown_metric_id_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.nonexistent_metric}
+          as: x
+    code: OBJECT_NOT_FOUND
+
+  time_block_without_select_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      time:
+        grain: month
+    code: INVALID_QUERY
+
+  product_grouping_through_item_fanout_rejected:
+    # Grouping `revenue_usd` (orders-grain) by `product_name`
+    # (item-grain dimension) requires a many_to_many rewrite that
+    # the planner refuses without explicit safety hints.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      group_by: [dimension.jaffle_product_name]
+    code: MIXED_GRAIN_INVALID
+
+  order_revenue_by_product_type_requires_attribution_policy:
+    # The new entity-in-terms-of rewrite is intentionally limited to
+    # safe parent-key count_distinct shapes. Additive order-grain
+    # revenue cannot be grouped by item/product dimensions without an
+    # attribution rule or an item-grain revenue measure.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression:
+            measure: measure.jaffle.revenue_usd
+            aggregation: sum
+          as: revenue
+      group_by: [dimension.jaffle_product_type]
+    code: MIXED_GRAIN_INVALID
+
+  inventory_by_customer_type_remains_invalid:
+    # Inventory is store/date snapshot grain; customer_type is activity
+    # context. A valid question must add a scoped activity predicate
+    # instead of treating customer_type as an inventory dimension.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression:
+            metric: metric.sales.inventory_on_hand_eop
+          as: inventory
+      group_by: [dimension.jaffle_customer_type]
+      time:
+        temporal_role: temporal_role.jaffle_inventory_day
+        grain: month
+    code: PATH_NOT_FOUND
+
+  conversion_by_product_type_without_denominator_policy_rejected:
+    # Product type is on the converted order/item side, not the base
+    # session side. The metric must declare whether the denominator is
+    # all base events or dimension-qualified base events.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - as: conversion_rate
+          expression:
+            kind: conversion
+            entity: entity.jaffle_customer
+            window: {unit: day, value: 28}
+            matching_mode: first_converted_after_base
+            base:
+              kind: aggregate
+              measure: measure.jaffle.session_starts
+            converted:
+              kind: aggregate
+              measure: measure.jaffle.order_count
+      group_by: [dimension.jaffle_product_type]
+      time:
+        temporal_role: temporal_role.jaffle_session_started_at
+        grain: month
+    code: CONVERSION_NOT_SUPPORTED
+
+  external_partner_revenue_redacted:
+    # The `policy.jaffle.redact_revenue_for_external` policy redacts
+    # revenue_usd for external_partner audiences — the planner
+    # surfaces POLICY_DENIED before the query runs.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      policy_context:
+        audience: external_partner
+    code: POLICY_DENIED
+
+  unknown_dimension_id_in_where_returns_object_not_found:
+    # Bad dimension IDs used to bubble a raw KeyError as INTERNAL_ERROR.
+    # They now return OBJECT_NOT_FOUND with closest_matches in the
+    # recovery hints, mirroring the measure / metric paths.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      where:
+        - field: dimension.jaffle_store_closed_at
+          op: "<"
+          value: "2020-01-01"
+    code: OBJECT_NOT_FOUND
+
+  unknown_dimension_id_in_group_by_returns_object_not_found:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      group_by:
+        - dimension.jaffle_does_not_exist
+    code: OBJECT_NOT_FOUND
+
+  order_by_ghost_alias_rejected:
+    # `order_by[].field` must resolve to a select alias, a group_by
+    # dimension, or "time"/the time axis alias. A typo used to pass
+    # validate then fail at the warehouse with a raw "column not
+    # found" — now it fails at validate with INVALID_ORDER_BY.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      order_by:
+        - field: not_a_real_alias
+    code: INVALID_ORDER_BY
+
+  where_value_type_mismatch_rejected:
+    # `dimension.jaffle_store_name` is a string dim; passing an integer
+    # value as the comparison would fail at the warehouse. We catch
+    # the mismatch at validate time with INVALID_QUERY.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      where:
+        - field: dimension.jaffle_store_name
+          op: "="
+          value: 42
+    code: INVALID_QUERY
+
+  negative_limit_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      limit: -5
+    code: INVALID_QUERY
+
+  fiscal_calendar_on_gregorian_role_without_fill_rejected:
+    # `calendar_id: fiscal` on a Gregorian-bound temporal role must
+    # either pair with `fill: true` (route through the calendar
+    # entity) or use a fiscal-bound role outright. Without those, the
+    # planner would emit Gregorian SQL silently — INCOMPATIBLE_CALENDAR
+    # forces the user to be explicit.
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: quarter
+        calendar_id: fiscal
+    code: INCOMPATIBLE_CALENDAR

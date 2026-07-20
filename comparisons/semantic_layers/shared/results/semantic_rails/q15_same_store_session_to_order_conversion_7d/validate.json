@@ -1,0 +1,1378 @@
+{
+  "assumptions": [],
+  "dialect": "duckdb",
+  "disabled_options": [],
+  "errors": [],
+  "explain": {
+    "alias_resolution": {
+      "group_by": [],
+      "select": [
+        {
+          "alias": "same_store_conversion_rate_7d",
+          "expression": {
+            "kind": "metric",
+            "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+          }
+        }
+      ],
+      "temporal_role": "temporal_role.jaffle_session_started_at",
+      "where": []
+    },
+    "chosen_paths": {},
+    "compile_stats": {
+      "cache_hit": false,
+      "cache_lookup_ms": 1.256,
+      "compile_ms": 0.785,
+      "dialect": "duckdb",
+      "physical_plan_nodes": 5
+    },
+    "fanout_strategy": {
+      "leaf_paths": {},
+      "root_paths": {},
+      "status": "ok"
+    },
+    "grain_analysis": {
+      "group_by": [],
+      "leaf_grains": {},
+      "measure_entities": [],
+      "root_entity": "entity.jaffle_storefront_session",
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_session_started_at"
+      }
+    },
+    "logical_plan": {
+      "bound_measures": [],
+      "candidate_paths": {},
+      "disabled_options": [],
+      "fanout_strategy": {
+        "leaf_paths": {},
+        "root_paths": {},
+        "status": "ok"
+      },
+      "grain_analysis": {
+        "group_by": [],
+        "leaf_grains": {},
+        "measure_entities": [],
+        "root_entity": "entity.jaffle_storefront_session",
+        "time": {
+          "calendar_id": "default",
+          "end": null,
+          "fill": false,
+          "grain": "month",
+          "start": null,
+          "temporal_role": "temporal_role.jaffle_session_started_at"
+        }
+      },
+      "group_by": [],
+      "measure_plans": [],
+      "post_aggregation_exprs": {
+        "same_store_conversion_rate_7d": {
+          "kind": "metric",
+          "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+        }
+      },
+      "query": {
+        "debug": false,
+        "explain": false,
+        "export": false,
+        "group_by": [],
+        "limit": null,
+        "metric_filters": [],
+        "order_by": [
+          {
+            "direction": "ASC",
+            "field": "temporal_role.jaffle_session_started_at__month"
+          }
+        ],
+        "path_policy": {
+          "ask_if_ambiguous": true,
+          "preference": "fewest_hops"
+        },
+        "select": [
+          {
+            "as": "same_store_conversion_rate_7d",
+            "expression": {
+              "kind": "metric",
+              "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+            }
+          }
+        ],
+        "temporal_role_overrides": {},
+        "time": {
+          "calendar_id": "default",
+          "end": null,
+          "fill": false,
+          "grain": "month",
+          "start": null,
+          "temporal_role": "temporal_role.jaffle_session_started_at"
+        },
+        "version": 1,
+        "where": []
+      },
+      "resolved_ids": {
+        "group_by": [],
+        "select": [
+          {
+            "alias": "same_store_conversion_rate_7d",
+            "expression": {
+              "kind": "metric",
+              "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+            }
+          }
+        ],
+        "temporal_role": "temporal_role.jaffle_session_started_at",
+        "where": []
+      },
+      "rewrite_steps": [],
+      "root_entity": "entity.jaffle_storefront_session",
+      "selected_paths": {},
+      "semantic_dag": {
+        "nodes": [
+          {
+            "details": {
+              "expression": {
+                "base": {
+                  "aggregation": "",
+                  "kind": "aggregate",
+                  "measure": "measure.jaffle.session_starts",
+                  "temporal_role": ""
+                },
+                "constant_properties": [
+                  "dimension.jaffle_store_name"
+                ],
+                "converted": {
+                  "aggregation": "",
+                  "kind": "aggregate",
+                  "measure": "measure.jaffle.order_count",
+                  "temporal_role": ""
+                },
+                "entity": "entity.jaffle_customer",
+                "kind": "conversion",
+                "matching_mode": "first_converted_after_base",
+                "window": {
+                  "unit": "day",
+                  "value": 7
+                }
+              }
+            },
+            "id": "conversion_1",
+            "inputs": [],
+            "kind": "conversion",
+            "label": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+          },
+          {
+            "details": {
+              "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+            },
+            "id": "metric_ref_2",
+            "inputs": [
+              "conversion_1"
+            ],
+            "kind": "MetricRef",
+            "label": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+          },
+          {
+            "details": {
+              "outputs": {
+                "same_store_conversion_rate_7d": "metric_ref_2"
+              }
+            },
+            "id": "final_project",
+            "inputs": [
+              "metric_ref_2"
+            ],
+            "kind": "FinalProject",
+            "label": ""
+          }
+        ],
+        "outputs": {
+          "same_store_conversion_rate_7d": "metric_ref_2"
+        },
+        "version": 1
+      },
+      "synthetic_measures": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_session_started_at"
+      },
+      "version": 2
+    },
+    "normalized_query": {
+      "debug": false,
+      "explain": false,
+      "export": false,
+      "group_by": [],
+      "limit": null,
+      "metric_filters": [],
+      "order_by": [
+        {
+          "direction": "ASC",
+          "field": "temporal_role.jaffle_session_started_at__month"
+        }
+      ],
+      "path_policy": {
+        "ask_if_ambiguous": true,
+        "preference": "fewest_hops"
+      },
+      "select": [
+        {
+          "as": "same_store_conversion_rate_7d",
+          "expression": {
+            "kind": "metric",
+            "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+          }
+        }
+      ],
+      "temporal_role_overrides": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_session_started_at"
+      },
+      "version": 1,
+      "where": []
+    },
+    "performance_plan": {
+      "aggregate_routing": {
+        "selected": [],
+        "selected_count": 0
+      },
+      "date_filter_pushdown": [
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": false,
+          "pushed_to_scan": false,
+          "relation": "jaffle_storefront_session",
+          "scan_id": "conversion_1_base_scan",
+          "time_filter": {}
+        },
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": false,
+          "pushed_to_scan": false,
+          "relation": "jaffle_order",
+          "scan_id": "conversion_1_converted_scan",
+          "time_filter": {}
+        }
+      ],
+      "estimated_scan_relations": [
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": false,
+          "has_time_filter": false,
+          "large_relation_hint": false,
+          "measures": [
+            {
+              "conversion_base": {
+                "aggregation": "",
+                "kind": "aggregate",
+                "measure": "measure.jaffle.session_starts",
+                "temporal_role": ""
+              }
+            }
+          ],
+          "relation": "jaffle_storefront_session",
+          "scan_id": "conversion_1_base_scan",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_storefront_session",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        },
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": false,
+          "has_time_filter": false,
+          "large_relation_hint": false,
+          "measures": [
+            {
+              "conversion_converted": {
+                "aggregation": "",
+                "kind": "aggregate",
+                "measure": "measure.jaffle.order_count",
+                "temporal_role": ""
+              }
+            }
+          ],
+          "relation": "jaffle_order",
+          "scan_id": "conversion_1_converted_scan",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        }
+      ],
+      "execution_recommendation": "needs_acceleration_layer",
+      "full_outer_alignments": 0,
+      "joins_after_aggregate": [],
+      "joins_before_aggregate": [],
+      "large_scan_risk": {
+        "all_raw_scans_bounded": false,
+        "large_raw_relations": [],
+        "reasons": [
+          "unbounded_raw_primitive_scan"
+        ],
+        "risk": true,
+        "source_preaggregates": [],
+        "time_window_days": null
+      },
+      "notes": [],
+      "pre_aggregation_grain": {},
+      "raw_fact_count": 2,
+      "risk_level": "high",
+      "semantic_equivalence": "exact_primitives",
+      "version": 1
+    },
+    "physical_plan": {
+      "nodes": [
+        {
+          "details": {
+            "measures": [
+              {
+                "conversion_base": {
+                  "aggregation": "",
+                  "kind": "aggregate",
+                  "measure": "measure.jaffle.session_starts",
+                  "temporal_role": ""
+                }
+              }
+            ],
+            "relation": "jaffle_storefront_session",
+            "selected_relation": "jaffle_storefront_session",
+            "selected_relation_type": "raw",
+            "source_entity": "entity.jaffle_storefront_session"
+          },
+          "id": "conversion_1_base_scan",
+          "inputs": [],
+          "kind": "Scan",
+          "label": "Scan conversion base relation jaffle_storefront_session"
+        },
+        {
+          "details": {
+            "measures": [
+              {
+                "conversion_converted": {
+                  "aggregation": "",
+                  "kind": "aggregate",
+                  "measure": "measure.jaffle.order_count",
+                  "temporal_role": ""
+                }
+              }
+            ],
+            "relation": "jaffle_order",
+            "selected_relation": "jaffle_order",
+            "selected_relation_type": "raw",
+            "source_entity": "entity.jaffle_order"
+          },
+          "id": "conversion_1_converted_scan",
+          "inputs": [],
+          "kind": "Scan",
+          "label": "Scan conversion converted relation jaffle_order"
+        },
+        {
+          "details": {
+            "constant_properties": [
+              "dimension.jaffle_store_name"
+            ],
+            "entity": "entity.jaffle_customer",
+            "matching_mode": "first_converted_after_base",
+            "metric_predicate_filters": [],
+            "predicate_sets_joined_to_base": [],
+            "window": {
+              "unit": "day",
+              "value": 7
+            }
+          },
+          "id": "conversion_1_match",
+          "inputs": [
+            "conversion_1_base_scan",
+            "conversion_1_converted_scan"
+          ],
+          "kind": "ConversionMatch",
+          "label": ""
+        },
+        {
+          "details": {
+            "grain": [
+              "temporal_role.jaffle_session_started_at__month"
+            ],
+            "output_alias": "conversion__leaf__measure_jaffle_session_starts__count_distinct__to__leaf__measure_jaffle_order_count__count_distinct__7_day__first_converted_after_base__dimension_jaffle_store_name"
+          },
+          "id": "conversion_1_aggregate",
+          "inputs": [
+            "conversion_1_match"
+          ],
+          "kind": "ConversionAggregate",
+          "label": ""
+        },
+        {
+          "details": {
+            "key_aliases": [
+              "temporal_role.jaffle_session_started_at__month"
+            ],
+            "outputs": [
+              "same_store_conversion_rate_7d"
+            ],
+            "projection_wrappers": "pruned_when_no_metric_filters_or_order_by"
+          },
+          "id": "final_project",
+          "inputs": [
+            "conversion_1_aggregate"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "optimizations": [
+        {
+          "kind": "conversion_leaf_lowering",
+          "status": "applied",
+          "target": "final_project"
+        }
+      ],
+      "outputs": {
+        "same_store_conversion_rate_7d": "final_project"
+      },
+      "version": 1
+    },
+    "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_storefront_session.started_at AS TIMESTAMP)) AS t,\n  jaffle_storefront_session.started_at AS __base_event_time,\n  jaffle_storefront_session.session_id AS __base_event_key,\n  jaffle_customer.customer_id AS __match_key_1,\n  jaffle_store.store_name AS __property_1\nFROM jaffle_storefront_session\nINNER JOIN jaffle_store ON jaffle_storefront_session.store_id = jaffle_store.store_id\nINNER JOIN jaffle_customer ON jaffle_storefront_session.customer_id = jaffle_customer.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  jaffle_order.ordered_at AS __converted_event_time,\n  jaffle_order.order_id AS __converted_event_key,\n  jaffle_customer.customer_id AS __match_key_1,\n  jaffle_store.store_name AS __property_1\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nINNER JOIN jaffle_customer ON jaffle_order.customer_id = jaffle_customer.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND DATE_DIFF('day', CAST(base_events.__base_event_time AS TIMESTAMP), CAST(converted_events.__converted_event_time AS TIMESTAMP)) <= 7 AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1 AND base_events.__property_1 IS NOT DISTINCT FROM converted_events.__property_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS same_store_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
+    "rewrite_strategy": {
+      "status": "direct",
+      "steps": []
+    },
+    "semantic_dag": {
+      "nodes": [
+        {
+          "details": {
+            "expression": {
+              "base": {
+                "aggregation": "",
+                "kind": "aggregate",
+                "measure": "measure.jaffle.session_starts",
+                "temporal_role": ""
+              },
+              "constant_properties": [
+                "dimension.jaffle_store_name"
+              ],
+              "converted": {
+                "aggregation": "",
+                "kind": "aggregate",
+                "measure": "measure.jaffle.order_count",
+                "temporal_role": ""
+              },
+              "entity": "entity.jaffle_customer",
+              "kind": "conversion",
+              "matching_mode": "first_converted_after_base",
+              "window": {
+                "unit": "day",
+                "value": 7
+              }
+            }
+          },
+          "id": "conversion_1",
+          "inputs": [],
+          "kind": "conversion",
+          "label": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+        },
+        {
+          "details": {
+            "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+          },
+          "id": "metric_ref_2",
+          "inputs": [
+            "conversion_1"
+          ],
+          "kind": "MetricRef",
+          "label": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+        },
+        {
+          "details": {
+            "outputs": {
+              "same_store_conversion_rate_7d": "metric_ref_2"
+            }
+          },
+          "id": "final_project",
+          "inputs": [
+            "metric_ref_2"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "outputs": {
+        "same_store_conversion_rate_7d": "metric_ref_2"
+      },
+      "version": 1
+    },
+    "sql_plan": {
+      "ctes": [
+        {
+          "name": "conversion_leaf_1",
+          "query": {
+            "ctes": [
+              {
+                "name": "conversion_leaf_1__conversion_matches_1",
+                "query": {
+                  "ctes": [
+                    {
+                      "name": "conversion_leaf_1__conversion_base_1",
+                      "query": {
+                        "ctes": [],
+                        "distinct": false,
+                        "from_table": {
+                          "alias": "",
+                          "name": "jaffle_storefront_session"
+                        },
+                        "group_by": [],
+                        "having": [],
+                        "joins": [
+                          {
+                            "join_type": "INNER",
+                            "on": {
+                              "left": {
+                                "parts": [
+                                  "jaffle_storefront_session",
+                                  "store_id"
+                                ]
+                              },
+                              "op": "=",
+                              "right": {
+                                "parts": [
+                                  "jaffle_store",
+                                  "store_id"
+                                ]
+                              }
+                            },
+                            "table": {
+                              "alias": "",
+                              "name": "jaffle_store"
+                            }
+                          },
+                          {
+                            "join_type": "INNER",
+                            "on": {
+                              "left": {
+                                "parts": [
+                                  "jaffle_storefront_session",
+                                  "customer_id"
+                                ]
+                              },
+                              "op": "=",
+                              "right": {
+                                "parts": [
+                                  "jaffle_customer",
+                                  "customer_id"
+                                ]
+                              }
+                            },
+                            "table": {
+                              "alias": "",
+                              "name": "jaffle_customer"
+                            }
+                          }
+                        ],
+                        "limit": null,
+                        "order_by": [],
+                        "qualify": [],
+                        "select": [
+                          {
+                            "alias": "t",
+                            "expression": {
+                              "args": [
+                                {
+                                  "value": "month"
+                                },
+                                {
+                                  "expr": {
+                                    "parts": [
+                                      "jaffle_storefront_session",
+                                      "started_at"
+                                    ]
+                                  },
+                                  "type_name": "TIMESTAMP"
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "DATE_TRUNC"
+                            }
+                          },
+                          {
+                            "alias": "__base_event_time",
+                            "expression": {
+                              "parts": [
+                                "jaffle_storefront_session",
+                                "started_at"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "__base_event_key",
+                            "expression": {
+                              "parts": [
+                                "jaffle_storefront_session",
+                                "session_id"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "__match_key_1",
+                            "expression": {
+                              "parts": [
+                                "jaffle_customer",
+                                "customer_id"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "__property_1",
+                            "expression": {
+                              "parts": [
+                                "jaffle_store",
+                                "store_name"
+                              ]
+                            }
+                          }
+                        ],
+                        "where": []
+                      }
+                    },
+                    {
+                      "name": "conversion_leaf_1__conversion_converted_1",
+                      "query": {
+                        "ctes": [],
+                        "distinct": false,
+                        "from_table": {
+                          "alias": "",
+                          "name": "jaffle_order"
+                        },
+                        "group_by": [],
+                        "having": [],
+                        "joins": [
+                          {
+                            "join_type": "INNER",
+                            "on": {
+                              "left": {
+                                "parts": [
+                                  "jaffle_order",
+                                  "store_id"
+                                ]
+                              },
+                              "op": "=",
+                              "right": {
+                                "parts": [
+                                  "jaffle_store",
+                                  "store_id"
+                                ]
+                              }
+                            },
+                            "table": {
+                              "alias": "",
+                              "name": "jaffle_store"
+                            }
+                          },
+                          {
+                            "join_type": "INNER",
+                            "on": {
+                              "left": {
+                                "parts": [
+                                  "jaffle_order",
+                                  "customer_id"
+                                ]
+                              },
+                              "op": "=",
+                              "right": {
+                                "parts": [
+                                  "jaffle_customer",
+                                  "customer_id"
+                                ]
+                              }
+                            },
+                            "table": {
+                              "alias": "",
+                              "name": "jaffle_customer"
+                            }
+                          }
+                        ],
+                        "limit": null,
+                        "order_by": [],
+                        "qualify": [],
+                        "select": [
+                          {
+                            "alias": "__converted_event_time",
+                            "expression": {
+                              "parts": [
+                                "jaffle_order",
+                                "ordered_at"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "__converted_event_key",
+                            "expression": {
+                              "parts": [
+                                "jaffle_order",
+                                "order_id"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "__match_key_1",
+                            "expression": {
+                              "parts": [
+                                "jaffle_customer",
+                                "customer_id"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "__property_1",
+                            "expression": {
+                              "parts": [
+                                "jaffle_store",
+                                "store_name"
+                              ]
+                            }
+                          }
+                        ],
+                        "where": []
+                      }
+                    }
+                  ],
+                  "distinct": false,
+                  "from_table": {
+                    "alias": "base_events",
+                    "name": "conversion_leaf_1__conversion_base_1"
+                  },
+                  "group_by": [],
+                  "having": [],
+                  "joins": [
+                    {
+                      "join_type": "LEFT",
+                      "on": {
+                        "left": {
+                          "left": {
+                            "left": {
+                              "left": {
+                                "parts": [
+                                  "converted_events",
+                                  "__converted_event_time"
+                                ]
+                              },
+                              "op": ">=",
+                              "right": {
+                                "parts": [
+                                  "base_events",
+                                  "__base_event_time"
+                                ]
+                              }
+                            },
+                            "op": "AND",
+                            "right": {
+                              "left": {
+                                "args": [
+                                  {
+                                    "value": "day"
+                                  },
+                                  {
+                                    "expr": {
+                                      "parts": [
+                                        "base_events",
+                                        "__base_event_time"
+                                      ]
+                                    },
+                                    "type_name": "TIMESTAMP"
+                                  },
+                                  {
+                                    "expr": {
+                                      "parts": [
+                                        "converted_events",
+                                        "__converted_event_time"
+                                      ]
+                                    },
+                                    "type_name": "TIMESTAMP"
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "DATE_DIFF"
+                              },
+                              "op": "<=",
+                              "right": {
+                                "value": 7
+                              }
+                            }
+                          },
+                          "op": "AND",
+                          "right": {
+                            "left": {
+                              "parts": [
+                                "base_events",
+                                "__match_key_1"
+                              ]
+                            },
+                            "op": "IS NOT DISTINCT FROM",
+                            "right": {
+                              "parts": [
+                                "converted_events",
+                                "__match_key_1"
+                              ]
+                            }
+                          }
+                        },
+                        "op": "AND",
+                        "right": {
+                          "left": {
+                            "parts": [
+                              "base_events",
+                              "__property_1"
+                            ]
+                          },
+                          "op": "IS NOT DISTINCT FROM",
+                          "right": {
+                            "parts": [
+                              "converted_events",
+                              "__property_1"
+                            ]
+                          }
+                        }
+                      },
+                      "table": {
+                        "alias": "converted_events",
+                        "name": "conversion_leaf_1__conversion_converted_1"
+                      }
+                    }
+                  ],
+                  "limit": null,
+                  "order_by": [],
+                  "qualify": [],
+                  "select": [
+                    {
+                      "alias": "t",
+                      "expression": {
+                        "parts": [
+                          "base_events",
+                          "t"
+                        ]
+                      }
+                    },
+                    {
+                      "alias": "__base_event_key",
+                      "expression": {
+                        "parts": [
+                          "base_events",
+                          "__base_event_key"
+                        ]
+                      }
+                    },
+                    {
+                      "alias": "__converted_event_key",
+                      "expression": {
+                        "parts": [
+                          "converted_events",
+                          "__converted_event_key"
+                        ]
+                      }
+                    },
+                    {
+                      "alias": "__match_rank",
+                      "expression": {
+                        "frame": "",
+                        "function": {
+                          "args": [],
+                          "distinct": false,
+                          "name": "ROW_NUMBER"
+                        },
+                        "order_by": [
+                          {
+                            "direction": "ASC",
+                            "expr": {
+                              "parts": [
+                                "converted_events",
+                                "__converted_event_time"
+                              ]
+                            }
+                          },
+                          {
+                            "direction": "ASC",
+                            "expr": {
+                              "parts": [
+                                "converted_events",
+                                "__converted_event_key"
+                              ]
+                            }
+                          }
+                        ],
+                        "partition_by": [
+                          {
+                            "parts": [
+                              "base_events",
+                              "__base_event_key"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  "where": []
+                }
+              }
+            ],
+            "distinct": false,
+            "from_table": {
+              "alias": "matches",
+              "name": "conversion_leaf_1__conversion_matches_1"
+            },
+            "group_by": [
+              {
+                "parts": [
+                  "matches",
+                  "t"
+                ]
+              }
+            ],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "t",
+                "expression": {
+                  "parts": [
+                    "matches",
+                    "t"
+                  ]
+                }
+              },
+              {
+                "alias": "m1",
+                "expression": {
+                  "left": {
+                    "args": [
+                      {
+                        "else_expr": null,
+                        "whens": [
+                          {
+                            "condition": {
+                              "left": {
+                                "parts": [
+                                  "matches",
+                                  "__converted_event_key"
+                                ]
+                              },
+                              "op": "IS NOT",
+                              "right": {
+                                "value": null
+                              }
+                            },
+                            "result": {
+                              "parts": [
+                                "matches",
+                                "__base_event_key"
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "distinct": true,
+                    "name": "COUNT"
+                  },
+                  "op": "/",
+                  "right": {
+                    "args": [
+                      {
+                        "args": [
+                          {
+                            "parts": [
+                              "matches",
+                              "__base_event_key"
+                            ]
+                          }
+                        ],
+                        "distinct": true,
+                        "name": "COUNT"
+                      },
+                      {
+                        "value": 0
+                      }
+                    ],
+                    "distinct": false,
+                    "name": "NULLIF"
+                  }
+                }
+              }
+            ],
+            "where": [
+              {
+                "left": {
+                  "parts": [
+                    "matches",
+                    "__match_rank"
+                  ]
+                },
+                "op": "=",
+                "right": {
+                  "value": 1
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "distinct": false,
+      "from_table": {
+        "alias": "base",
+        "name": "conversion_leaf_1"
+      },
+      "group_by": [],
+      "having": [],
+      "joins": [],
+      "limit": null,
+      "order_by": [
+        {
+          "direction": "ASC",
+          "expression": {
+            "parts": [
+              "t"
+            ]
+          }
+        }
+      ],
+      "qualify": [],
+      "select": [
+        {
+          "alias": "temporal_role.jaffle_session_started_at__month",
+          "expression": {
+            "parts": [
+              "base",
+              "t"
+            ]
+          }
+        },
+        {
+          "alias": "same_store_conversion_rate_7d",
+          "expression": {
+            "parts": [
+              "base",
+              "m1"
+            ]
+          }
+        }
+      ],
+      "where": []
+    }
+  },
+  "freshness_as_of": "",
+  "freshness_by_leaf": [],
+  "logical_plan": {
+    "bound_measures": [],
+    "candidate_paths": {},
+    "disabled_options": [],
+    "fanout_strategy": {
+      "leaf_paths": {},
+      "root_paths": {},
+      "status": "ok"
+    },
+    "grain_analysis": {
+      "group_by": [],
+      "leaf_grains": {},
+      "measure_entities": [],
+      "root_entity": "entity.jaffle_storefront_session",
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_session_started_at"
+      }
+    },
+    "group_by": [],
+    "measure_plans": [],
+    "post_aggregation_exprs": {
+      "same_store_conversion_rate_7d": {
+        "kind": "metric",
+        "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+      }
+    },
+    "query": {
+      "debug": false,
+      "explain": false,
+      "export": false,
+      "group_by": [],
+      "limit": null,
+      "metric_filters": [],
+      "order_by": [
+        {
+          "direction": "ASC",
+          "field": "temporal_role.jaffle_session_started_at__month"
+        }
+      ],
+      "path_policy": {
+        "ask_if_ambiguous": true,
+        "preference": "fewest_hops"
+      },
+      "select": [
+        {
+          "as": "same_store_conversion_rate_7d",
+          "expression": {
+            "kind": "metric",
+            "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+          }
+        }
+      ],
+      "temporal_role_overrides": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_session_started_at"
+      },
+      "version": 1,
+      "where": []
+    },
+    "resolved_ids": {
+      "group_by": [],
+      "select": [
+        {
+          "alias": "same_store_conversion_rate_7d",
+          "expression": {
+            "kind": "metric",
+            "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+          }
+        }
+      ],
+      "temporal_role": "temporal_role.jaffle_session_started_at",
+      "where": []
+    },
+    "rewrite_steps": [],
+    "root_entity": "entity.jaffle_storefront_session",
+    "selected_paths": {},
+    "semantic_dag": {
+      "nodes": [
+        {
+          "details": {
+            "expression": {
+              "base": {
+                "aggregation": "",
+                "kind": "aggregate",
+                "measure": "measure.jaffle.session_starts",
+                "temporal_role": ""
+              },
+              "constant_properties": [
+                "dimension.jaffle_store_name"
+              ],
+              "converted": {
+                "aggregation": "",
+                "kind": "aggregate",
+                "measure": "measure.jaffle.order_count",
+                "temporal_role": ""
+              },
+              "entity": "entity.jaffle_customer",
+              "kind": "conversion",
+              "matching_mode": "first_converted_after_base",
+              "window": {
+                "unit": "day",
+                "value": 7
+              }
+            }
+          },
+          "id": "conversion_1",
+          "inputs": [],
+          "kind": "conversion",
+          "label": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+        },
+        {
+          "details": {
+            "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+          },
+          "id": "metric_ref_2",
+          "inputs": [
+            "conversion_1"
+          ],
+          "kind": "MetricRef",
+          "label": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+        },
+        {
+          "details": {
+            "outputs": {
+              "same_store_conversion_rate_7d": "metric_ref_2"
+            }
+          },
+          "id": "final_project",
+          "inputs": [
+            "metric_ref_2"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "outputs": {
+        "same_store_conversion_rate_7d": "metric_ref_2"
+      },
+      "version": 1
+    },
+    "synthetic_measures": {},
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_session_started_at"
+    },
+    "version": 2
+  },
+  "methodology_hints": [],
+  "normalized_query": {
+    "debug": false,
+    "explain": false,
+    "export": false,
+    "group_by": [],
+    "limit": null,
+    "metric_filters": [],
+    "order_by": [
+      {
+        "direction": "ASC",
+        "field": "temporal_role.jaffle_session_started_at__month"
+      }
+    ],
+    "path_policy": {
+      "ask_if_ambiguous": true,
+      "preference": "fewest_hops"
+    },
+    "select": [
+      {
+        "as": "same_store_conversion_rate_7d",
+        "expression": {
+          "kind": "metric",
+          "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+        }
+      }
+    ],
+    "temporal_role_overrides": {},
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_session_started_at"
+    },
+    "version": 1,
+    "where": []
+  },
+  "ok": true,
+  "output_columns": [
+    {
+      "display_label": "Session started at",
+      "field": "temporal_role.jaffle_session_started_at__month",
+      "semantic_id": "temporal_role.jaffle_session_started_at",
+      "sql_alias": "temporal_role.jaffle_session_started_at__month",
+      "type": "time"
+    },
+    {
+      "display_label": "Session to order conversion rate (7d, same store)",
+      "field": "same_store_conversion_rate_7d",
+      "semantic_id": "metric.jaffle.session_to_order_conversion_rate_7d_same_store",
+      "sql_alias": "same_store_conversion_rate_7d",
+      "type": "percent"
+    }
+  ],
+  "policy_effects": [],
+  "provenance_summary": {
+    "policy_effects": [],
+    "rewrite_status": "direct",
+    "root_entity": "entity.jaffle_storefront_session",
+    "selected_paths": [],
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_session_started_at"
+    }
+  },
+  "query": {
+    "order_by": [
+      {
+        "direction": "ASC",
+        "field": "temporal_role.jaffle_session_started_at__month"
+      }
+    ],
+    "select": [
+      {
+        "as": "same_store_conversion_rate_7d",
+        "expression": {
+          "metric": "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+        }
+      }
+    ],
+    "time": {
+      "grain": "month",
+      "temporal_role": "temporal_role.jaffle_session_started_at"
+    },
+    "version": 1
+  },
+  "recovery_hints": [],
+  "request_context": {},
+  "sql_profile": "audit",
+  "status": "ok",
+  "timing_ms": 3.668,
+  "trace": {
+    "fallback": {
+      "reason": "",
+      "semantic_drift": false,
+      "used": false
+    },
+    "intent_slots": {
+      "filters": [],
+      "grouping": [],
+      "qualification": [],
+      "target": [],
+      "time": {}
+    },
+    "markdown": "### Semantic Trace\n- Target: metric.jaffle.session_to_order_conversion_rate_7d_same_store\n- Grouping: no grouping\n- Filters: 0\n- Relationship paths: 0\n- SQL: available",
+    "selected": {
+      "filters": [],
+      "group_by": [],
+      "paths": [],
+      "rewrite_status": "",
+      "root_entity": "entity.jaffle_storefront_session",
+      "sql_available": true,
+      "subjects": [
+        "metric.jaffle.session_to_order_conversion_rate_7d_same_store"
+      ]
+    }
+  },
+  "version": 2,
+  "warehouse": "duckdb",
+  "warehouse_capabilities": {
+    "date_diff": true,
+    "date_trunc": true,
+    "median": true,
+    "null_safe_equality": true,
+    "percentile_cont": true,
+    "qualify": false,
+    "snapshot_row_selection": "aggregate_join",
+    "timestamp_type": "TIMESTAMP"
+  },
+  "warnings": []
+}

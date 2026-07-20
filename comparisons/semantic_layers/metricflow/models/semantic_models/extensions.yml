@@ -1,0 +1,247 @@
+semantic_models:
+  - name: customer_history
+    description: Historical customer segment states.
+    primary_entity: customer
+    defaults:
+      agg_time_dimension: valid_from
+    model: ref('customer_history')
+    entities:
+      - name: customer
+        type: natural
+        expr: customer_id
+    dimensions:
+      - name: valid_from
+        type: time
+        type_params:
+          time_granularity: day
+          validity_params:
+            is_start: true
+      - name: valid_to
+        type: time
+        type_params:
+          time_granularity: day
+          validity_params:
+            is_end: true
+      - name: customer_segment
+        type: categorical
+
+  - name: order_lifecycle
+    description: One row per order lifecycle state with multiple business clocks.
+    primary_entity: order
+    defaults:
+      agg_time_dimension: delivered_at
+    model: ref('order_lifecycle')
+    entities:
+      - name: order
+        type: unique
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: delivered_revenue
+        description: Revenue anchored to delivered time.
+        expr: order_total_cents / 100.0
+        agg: SUM
+        agg_time_dimension: delivered_at
+    dimensions:
+      - name: prepared_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: delivered_at
+        type: time
+        type_params:
+          time_granularity: day
+
+  - name: storefront_sessions
+    description: One row per storefront session.
+    defaults:
+      agg_time_dimension: started_at
+    model: ref('storefront_sessions')
+    entities:
+      - name: session
+        type: primary
+        expr: session_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+      - name: order
+        type: foreign
+        expr: converted_order_id
+    measures:
+      - name: session_starts
+        description: Count of session starts.
+        expr: "1"
+        agg: SUM
+    dimensions:
+      - name: started_at
+        type: time
+        type_params:
+          time_granularity: day
+      - name: converted_at
+        type: time
+        type_params:
+          time_granularity: day
+
+  - name: session_conversions_7d
+    description: Session-level 7 day conversion flags derived from sessions and later orders.
+    defaults:
+      agg_time_dimension: started_at
+    model: ref('session_conversions_7d')
+    entities:
+      - name: session_conversion
+        type: primary
+        expr: session_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: converted_sessions_7d
+        description: Count of sessions with a later order within 7 days.
+        expr: converted_sessions_7d
+        agg: SUM
+    dimensions:
+      - name: started_at
+        type: time
+        type_params:
+          time_granularity: day
+
+  - name: high_frequency_orders
+    description: Orders belonging to customers with more than 10 orders in the same month.
+    defaults:
+      agg_time_dimension: ordered_at
+    model: ref('high_frequency_orders')
+    entities:
+      - name: qualifying_order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: qualifying_orders
+        description: Orders from qualifying customer-months.
+        expr: "1"
+        agg: SUM
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+
+  - name: repeat_customer_orders
+    description: Orders belonging to customers whose lifetime order count is greater than one.
+    defaults:
+      agg_time_dimension: ordered_at
+    model: ref('repeat_customer_orders')
+    entities:
+      - name: repeat_order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: repeat_customer_orders
+        description: Orders from repeat customers.
+        expr: "1"
+        agg: SUM
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+
+  - name: high_value_orders_500
+    description: Orders belonging to customers whose lifetime spend is at least 500 USD.
+    defaults:
+      agg_time_dimension: ordered_at
+    model: ref('high_value_orders_500')
+    entities:
+      - name: high_value_order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: filtered_orders_lifetime_spend_500
+        description: Orders from customers with lifetime spend of at least 500 USD.
+        expr: "1"
+        agg: SUM
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+
+  - name: high_frequency_store_orders
+    description: Revenue from customer store-months with more than 10 orders.
+    defaults:
+      agg_time_dimension: ordered_at
+    model: ref('high_frequency_store_orders')
+    entities:
+      - name: qualifying_store_order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: qualifying_revenue_usd_same_store
+        description: Revenue from orders in qualifying customer store-months.
+        expr: revenue_usd
+        agg: SUM
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params:
+          time_granularity: day
+
+  - name: session_conversions_7d_same_store
+    description: Session-level 7 day conversion flags with a same-store requirement.
+    defaults:
+      agg_time_dimension: started_at
+    model: ref('session_conversions_7d_same_store')
+    entities:
+      - name: session_conversion_same_store
+        type: primary
+        expr: session_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    measures:
+      - name: same_store_converted_sessions_7d
+        description: Count of sessions with a later same-store order within 7 days.
+        expr: same_store_converted_sessions_7d
+        agg: SUM
+    dimensions:
+      - name: started_at
+        type: time
+        type_params:
+          time_granularity: day

@@ -1,0 +1,1 @@
+query --metrics aov_usd --group-by store__store_name --order -aov_usd

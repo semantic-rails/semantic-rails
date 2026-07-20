@@ -1,0 +1,2 @@
+compile -n q01_orders_by_month
+execute compiled SQL in DuckDB

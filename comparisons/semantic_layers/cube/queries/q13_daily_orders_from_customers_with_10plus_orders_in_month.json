@@ -1,0 +1,7 @@
+{
+  "measures": ["qualified_orders.qualifying_orders"],
+  "timeDimensions": [
+    { "dimension": "qualified_orders.ordered_at", "granularity": "day" }
+  ],
+  "order": { "qualified_orders.ordered_at": "asc" }
+}

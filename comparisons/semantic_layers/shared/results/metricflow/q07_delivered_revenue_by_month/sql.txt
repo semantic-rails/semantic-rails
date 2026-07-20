@@ -1,0 +1,21 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+✔ Success 🦄 - query completed after 0.07 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+SELECT
+  metric_time__month
+  , SUM(delivered_revenue) AS delivered_revenue
+FROM (
+  SELECT
+    DATE_TRUNC('month', delivered_at) AS metric_time__month
+    , order_total_cents / 100.0 AS delivered_revenue
+  FROM "jaffle_comparison"."main"."order_lifecycle" order_lifecycle_src_10000
+) subq_2
+GROUP BY
+  metric_time__month
+ORDER BY metric_time__month
+

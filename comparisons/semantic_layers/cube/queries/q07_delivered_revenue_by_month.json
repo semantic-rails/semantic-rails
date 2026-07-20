@@ -1,0 +1,7 @@
+{
+  "measures": ["order_lifecycle.delivered_revenue"],
+  "timeDimensions": [
+    { "dimension": "order_lifecycle.delivered_at", "granularity": "month" }
+  ],
+  "order": { "order_lifecycle.delivered_at": "asc" }
+}

@@ -1,0 +1,26 @@
+name: delivered_revenue_by_customer_segment
+sql: |
+  select
+    l.order_id,
+    date_trunc('month', l.delivered_at) as delivered_month,
+    h.customer_segment,
+    l.order_total_cents / 100.0 as delivered_revenue_usd
+  from comparison_order_lifecycle as l
+  left join comparison_customer_history as h
+    on l.customer_id = h.customer_id
+   and l.delivered_at >= h.valid_from
+   and (h.valid_to is null or l.delivered_at < h.valid_to)
+grain: [order_id]
+columns:
+  - name: order_id
+    type: string
+  - name: delivered_month
+    type: time
+    role: time
+  - name: customer_segment
+    type: string
+  - name: delivered_revenue_usd
+    type: number
+measures:
+  - name: delivered_revenue
+    expr: sum(delivered_revenue_usd)

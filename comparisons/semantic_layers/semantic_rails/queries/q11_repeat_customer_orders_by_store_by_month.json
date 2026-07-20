@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "metric": "metric.jaffle.repeat_customer_orders"
+      },
+      "as": "repeat_customer_orders"
+    }
+  ],
+  "group_by": [
+    "dimension.jaffle_store_name"
+  ],
+  "time": {
+    "temporal_role": "temporal_role.jaffle_order_time",
+    "grain": "month"
+  },
+  "order_by": [
+    {
+      "field": "temporal_role.jaffle_order_time__month",
+      "direction": "ASC"
+    },
+    {
+      "field": "dimension.jaffle_store_name",
+      "direction": "ASC"
+    }
+  ]
+}

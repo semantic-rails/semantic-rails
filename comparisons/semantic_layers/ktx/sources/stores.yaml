@@ -1,0 +1,13 @@
+name: stores
+table: comparison_stores
+grain: [store_id]
+columns:
+  - name: store_id
+    type: string
+  - name: store_name
+    type: string
+  - name: opened_at
+    type: time
+    role: time
+  - name: tax_rate
+    type: number

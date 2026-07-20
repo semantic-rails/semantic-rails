@@ -1,0 +1,10 @@
+{
+  "dimensions": [
+    "stores.store_name"
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "orders.aov_usd"
+  ]
+}

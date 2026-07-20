@@ -1,0 +1,81 @@
+{
+  "schema_version": 3,
+  "status": "captured-evidence-only",
+  "capture": {
+    "cube_version": "1.6.32",
+    "lockfile_commit_date": "2026-06-24T00:11:39-04:00",
+    "security_audit_date": "2026-07-09",
+    "node_version": "v24.6.0",
+    "npm_version": "11.5.1"
+  },
+  "root_packages": [
+    {
+      "name": "@cubejs-backend/server",
+      "version": "1.6.32",
+      "scope": "runtime"
+    },
+    {
+      "name": "@cubejs-backend/duckdb-driver",
+      "version": "1.6.32",
+      "scope": "runtime"
+    },
+    {
+      "name": "cubejs-cli",
+      "version": "1.6.32",
+      "scope": "development"
+    }
+  ],
+  "source_integrity": {
+    "package_json_sha256": "f834c264898c0ee70fba283e7e113dac7407b890cc4365596ea6eb186414ec26",
+    "package_lock_sha256": "8269fe321041f23dfc5a5a431785d2585eede2cacafaa84acd3a479a4a9a9d69",
+    "lockfile_version": 3
+  },
+  "evidence_artifacts": {
+    "original-package.json.evidence": {
+      "sha256": "f834c264898c0ee70fba283e7e113dac7407b890cc4365596ea6eb186414ec26",
+      "purpose": "original private npm manifest under a non-installable filename"
+    },
+    "original-package-lock.json.evidence": {
+      "sha256": "8269fe321041f23dfc5a5a431785d2585eede2cacafaa84acd3a479a4a9a9d69",
+      "purpose": "original npm lock graph under a non-installable filename"
+    },
+    "npm-audit.json.evidence": {
+      "sha256": "17ce1efff3c5c86d5effd333dbeaca0170fec333c64e56c949d3ab29ebf3cc99",
+      "purpose": "raw npm audit JSON captured on the recorded audit date"
+    },
+    "sbom.cdx.json.evidence": {
+      "sha256": "c934deeb0ebc413ff136ec25c96690ed899a31242d1fcd21b6d20546922eb538",
+      "purpose": "normalized CycloneDX SBOM with nondeterministic fields removed"
+    }
+  },
+  "audit": {
+    "command": "npm audit --package-lock-only --json",
+    "dependencies": {
+      "production": 843,
+      "development": 30,
+      "optional": 3,
+      "total": 875
+    },
+    "vulnerabilities": {
+      "critical": 16,
+      "high": 12,
+      "moderate": 19,
+      "low": 7,
+      "total": 54
+    }
+  },
+  "sbom": {
+    "command": "npm sbom --package-lock-only --sbom-format cyclonedx",
+    "format": "CycloneDX",
+    "spec_version": "1.5",
+    "component_count": 798,
+    "normalized_sha256": "c934deeb0ebc413ff136ec25c96690ed899a31242d1fcd21b6d20546922eb538",
+    "normalization": "serialNumber and metadata.timestamp removed; canonical sorted compact JSON"
+  },
+  "comparison_evidence": {
+    "manifest": "comparisons/semantic_layers/cube/evidence-manifest.json",
+    "manifest_sha256": "e59b5d21065b16948d7de1d4dd298c7f9eb8350a1b95311622caea3fb7a2cbef",
+    "file_count": 81
+  },
+  "reason": "The captured npm graph has unresolved high and critical advisories. The original manifest and lock, raw audit, normalized SBOM, models, queries, runner source, and result evidence are hash-verifiable offline under non-installable evidence filenames."
+}

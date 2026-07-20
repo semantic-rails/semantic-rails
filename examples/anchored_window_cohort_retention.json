@@ -1,0 +1,41 @@
+{
+  "_note": [
+    "IR contract for per-row event-anchored windows on scoped_aggregate.",
+    "Use case: 'revenue in the 90 days following each customer's first",
+    "order, by acquisition month'.",
+    "",
+    "STATUS (round 3): IR shape is locked. The parser validates anchor +",
+    "window; the bind layer raises INVALID_ANCHOR_ROLE with",
+    "feature_status='ir_contract_only' when compile would emit SQL.",
+    "SQL lowering ships in the next round; until then, pre-author the",
+    "windowed measure inside a metric recipe.",
+    "",
+    "Locked contract (subject to schemas/query_ir.v1.json):",
+    "  anchor:  { temporal_role: '<per-entity scalar role id>' }",
+    "  window:  { unit: day|week|month|quarter|year,",
+    "             value: <positive int>,",
+    "             direction: forward|backward|around (default forward) }",
+    "Both keys are required together; half-specified shapes raise",
+    "INVALID_EXPRESSION_AST at parse time."
+  ],
+  "_status": "ir_contract_only",
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.revenue_usd",
+        "aggregation": "sum",
+        "anchor": {
+          "temporal_role": "temporal_role.jaffle_customer_first_order_at"
+        },
+        "window": {
+          "unit": "day",
+          "value": 90,
+          "direction": "forward"
+        }
+      },
+      "as": "revenue_90d_post_acquisition"
+    }
+  ]
+}

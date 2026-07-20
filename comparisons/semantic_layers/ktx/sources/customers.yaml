@@ -1,0 +1,20 @@
+name: customers
+table: comparison_customers
+grain: [customer_id]
+columns:
+  - name: customer_id
+    type: string
+  - name: customer_name
+    type: string
+  - name: first_order_at
+    type: time
+    role: time
+  - name: latest_ordered_at
+    type: time
+    role: time
+  - name: lifetime_order_count
+    type: number
+  - name: lifetime_spend_cents
+    type: number
+  - name: customer_type
+    type: string

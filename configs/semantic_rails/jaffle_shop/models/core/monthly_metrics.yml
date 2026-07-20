@@ -1,0 +1,45 @@
+model:
+  id: monthly_metrics
+  kind: fact
+  relation: jaffle_monthly_metric_rollup
+  time_entity: time
+  time_column: month_start
+  times:
+    month_start:
+      label: Monthly metric month
+      column: month_start
+      kind: date
+      class: calendar_time
+      supported_grains:
+        - month
+        - quarter
+        - year
+      as: temporal_role.jaffle_monthly_metric_month
+      dimension_id: dimension.jaffle_monthly_metric_month_start
+      default: true
+  measures:
+    prior_period_revenue_usd:
+      kind: aggregate
+      label: Prior period revenue
+      expr: prior_period_revenue_cents / 100.0
+      accumulation:
+        kind: stock
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium
+    month_over_month_revenue_growth_ratio:
+      kind: aggregate
+      label: Month-over-month revenue growth
+      expr:
+        kind: column
+        column: month_over_month_revenue_growth_ratio
+      accumulation:
+        kind: stock
+      value_type: percent
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium

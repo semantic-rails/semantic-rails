@@ -1,0 +1,149 @@
+{
+  "layer": "metricflow",
+  "questions": [
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q01_orders_by_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q01_orders_by_month.txt",
+      "question_id": "q01_orders_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q01_orders_by_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q01_orders_by_month/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q01_orders_by_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q02_revenue_by_store_by_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q02_revenue_by_store_by_month.txt",
+      "question_id": "q02_revenue_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q02_revenue_by_store_by_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q02_revenue_by_store_by_month/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q02_revenue_by_store_by_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q03_item_revenue_by_product_type_by_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q03_item_revenue_by_product_type_by_month.txt",
+      "question_id": "q03_item_revenue_by_product_type_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q03_item_revenue_by_product_type_by_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q03_item_revenue_by_product_type_by_month/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q03_item_revenue_by_product_type_by_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q04_aov_by_store/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q04_aov_by_store.txt",
+      "question_id": "q04_aov_by_store",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q04_aov_by_store/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q04_aov_by_store/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q04_aov_by_store/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q05_orders_and_item_revenue_by_store_by_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q05_orders_and_item_revenue_by_store_by_month.txt",
+      "question_id": "q05_orders_and_item_revenue_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q05_orders_and_item_revenue_by_store_by_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q05_orders_and_item_revenue_by_store_by_month/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q05_orders_and_item_revenue_by_store_by_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q06_new_customer_orders_by_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q06_new_customer_orders_by_month.txt",
+      "question_id": "q06_new_customer_orders_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q06_new_customer_orders_by_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q06_new_customer_orders_by_month/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q06_new_customer_orders_by_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q07_delivered_revenue_by_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q07_delivered_revenue_by_month.txt",
+      "question_id": "q07_delivered_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q07_delivered_revenue_by_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q07_delivered_revenue_by_month/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q07_delivered_revenue_by_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q08_revenue_by_customer_segment_as_of_order_time/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q08_revenue_by_customer_segment_as_of_order_time.txt",
+      "question_id": "q08_revenue_by_customer_segment_as_of_order_time",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q08_revenue_by_customer_segment_as_of_order_time/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q08_revenue_by_customer_segment_as_of_order_time/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q08_revenue_by_customer_segment_as_of_order_time/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q09_session_to_order_conversion_7d.txt",
+      "question_id": "q09_session_to_order_conversion_7d",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/sql.txt",
+      "status": "precomputed",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q10_orders_from_customers_with_10plus_orders_in_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q10_orders_from_customers_with_10plus_orders_in_month.txt",
+      "question_id": "q10_orders_from_customers_with_10plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q10_orders_from_customers_with_10plus_orders_in_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q10_orders_from_customers_with_10plus_orders_in_month/sql.txt",
+      "status": "precomputed",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q10_orders_from_customers_with_10plus_orders_in_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q11_repeat_customer_orders_by_store_by_month.txt",
+      "question_id": "q11_repeat_customer_orders_by_store_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/sql.txt",
+      "status": "precomputed",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q12_orders_by_month_with_lifetime_spend_500_filter.txt",
+      "question_id": "q12_orders_by_month_with_lifetime_spend_500_filter",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/sql.txt",
+      "status": "precomputed",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q13_daily_orders_from_customers_with_10plus_orders_in_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q13_daily_orders_from_customers_with_10plus_orders_in_month.txt",
+      "question_id": "q13_daily_orders_from_customers_with_10plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q13_daily_orders_from_customers_with_10plus_orders_in_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.txt",
+      "status": "precomputed",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q13_daily_orders_from_customers_with_10plus_orders_in_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q14_revenue_from_customers_with_10plus_orders_same_store_month/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q14_revenue_from_customers_with_10plus_orders_same_store_month.txt",
+      "question_id": "q14_revenue_from_customers_with_10plus_orders_same_store_month",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q14_revenue_from_customers_with_10plus_orders_same_store_month/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q14_revenue_from_customers_with_10plus_orders_same_store_month/sql.txt",
+      "status": "precomputed",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q14_revenue_from_customers_with_10plus_orders_same_store_month/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q15_same_store_session_to_order_conversion_7d.txt",
+      "question_id": "q15_same_store_session_to_order_conversion_7d",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/sql.txt",
+      "status": "precomputed",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/stderr.txt"
+    },
+    {
+      "explain_stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q16_revenue_by_customer_segment_as_of_delivered_time/explain.stderr.txt",
+      "query_path": "comparisons/semantic_layers/metricflow/queries/q16_revenue_by_customer_segment_as_of_delivered_time.txt",
+      "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
+      "result_path": "comparisons/semantic_layers/shared/results/metricflow/q16_revenue_by_customer_segment_as_of_delivered_time/result.csv",
+      "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q16_revenue_by_customer_segment_as_of_delivered_time/sql.txt",
+      "status": "native",
+      "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q16_revenue_by_customer_segment_as_of_delivered_time/stderr.txt"
+    }
+  ]
+}

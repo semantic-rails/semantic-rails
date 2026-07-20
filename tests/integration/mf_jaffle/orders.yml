@@ -1,0 +1,51 @@
+# Orders fact — fixture table `jaffle_order` (one row per order).
+# Exercises the translator's main shapes: primary + foreign entities,
+# a time dimension, boolean/integer dimension inference, `expr: 1`
+# row counts (entity_count), plain sums, `sum_boolean`, and
+# `count_distinct` over a foreign key.
+version: 2
+
+semantic_models:
+  - name: orders
+    description: Order fact table at one row per completed order.
+    model: ref('jaffle_order')
+    defaults:
+      agg_time_dimension: ordered_at
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+      - name: store
+        type: foreign
+        expr: store_id
+    dimensions:
+      - name: ordered_at
+        type: time
+        type_params:
+          time_granularity: hour
+      - name: is_large_order
+        type: categorical
+        label: Is large order
+      - name: customer_order_number
+        type: categorical
+        label: Customer order number
+    measures:
+      - name: order_count
+        description: Count of orders placed.
+        expr: "1"
+        agg: sum
+      - name: revenue
+        description: Order revenue (cents).
+        expr: order_total_cents
+        agg: sum
+      - name: large_order_count
+        description: Orders that cleared the large-order threshold.
+        expr: is_large_order
+        agg: sum_boolean
+      - name: customers_with_orders
+        description: Distinct customers who placed at least one order.
+        expr: customer_id
+        agg: count_distinct

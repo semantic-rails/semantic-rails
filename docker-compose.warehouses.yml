@@ -1,0 +1,44 @@
+# Local warehouse infrastructure for the cross-dialect conformance suite
+# (tests/integration). Separate from docker-compose.yml on purpose — the
+# app compose stays untouched.
+#
+#   make warehouses-up      # start Postgres + ClickHouse
+#   make warehouses-down    # stop and remove volumes
+#
+# Credentials here are local-only test values; they match the defaults
+# documented in .env.example (SR_POSTGRES_*, SR_CLICKHOUSE_*). DuckLake
+# needs no service — it is the DuckDB extension with a local catalog and
+# data path. BigQuery / Databricks / MotherDuck / Athena are cloud-side.
+services:
+  postgres:
+    image: postgres:16
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_DB: sr_jaffle
+      POSTGRES_USER: sr_test
+      POSTGRES_PASSWORD: sr_test_pw
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sr_test -d sr_jaffle"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "127.0.0.1:8123:8123"
+    environment:
+      CLICKHOUSE_DB: sr_jaffle
+      CLICKHOUSE_USER: sr_test
+      CLICKHOUSE_PASSWORD: sr_test_pw
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

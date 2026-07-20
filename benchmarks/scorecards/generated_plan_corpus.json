@@ -1,0 +1,967 @@
+{
+  "summary": {
+    "total": 103,
+    "plan_status_ok": 98,
+    "plan_expected_pattern_fired": 84,
+    "plan_expected_pattern_fired_rate": 0.8155,
+    "plan_status_breakdown": {
+      "ok": 98,
+      "out_of_scope": 5
+    },
+    "by_pattern": {
+      "distribution_entity_value": {
+        "total": 5,
+        "fired": 0
+      },
+      "filtered_adoption_funnel": {
+        "total": 8,
+        "fired": 8
+      },
+      "inline_period_shift": {
+        "total": 34,
+        "fired": 30
+      },
+      "qualified_metric_rollup": {
+        "total": 46,
+        "fired": 46
+      },
+      "runtime_metric_arithmetic": {
+        "total": 5,
+        "fired": 0
+      },
+      "scoped_predicate_ratio": {
+        "total": 5,
+        "fired": 0
+      }
+    }
+  },
+  "cases": [
+    {
+      "intent": "80th percentile ARR by account",
+      "expected_pattern": "distribution_entity_value",
+      "generator": "distribution_entity_value.80th_pctl",
+      "plan_status": "out_of_scope",
+      "plan_pattern": "",
+      "plan_payload_bytes": 945,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "median ARR per account",
+      "expected_pattern": "distribution_entity_value",
+      "generator": "distribution_entity_value.median",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 1672,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "p80 ARR per account",
+      "expected_pattern": "distribution_entity_value",
+      "generator": "distribution_entity_value.p80",
+      "plan_status": "out_of_scope",
+      "plan_pattern": "",
+      "plan_payload_bytes": 885,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "p95 ARR per account",
+      "expected_pattern": "distribution_entity_value",
+      "generator": "distribution_entity_value.p95",
+      "plan_status": "out_of_scope",
+      "plan_pattern": "",
+      "plan_payload_bytes": 885,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "top decile ARR by account",
+      "expected_pattern": "distribution_entity_value",
+      "generator": "distribution_entity_value.decile",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 1652,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "adoption funnel by store",
+      "expected_pattern": "filtered_adoption_funnel",
+      "generator": "filtered_adoption_funnel.by_store_short",
+      "plan_status": "ok",
+      "plan_pattern": "filtered_adoption_funnel",
+      "plan_payload_bytes": 2538,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "adoption funnel for stores with order rate over 10%",
+      "expected_pattern": "filtered_adoption_funnel",
+      "generator": "filtered_adoption_funnel.with_threshold_10",
+      "plan_status": "ok",
+      "plan_pattern": "filtered_adoption_funnel",
+      "plan_payload_bytes": 3496,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "adoption funnel for stores with order rate over 25%",
+      "expected_pattern": "filtered_adoption_funnel",
+      "generator": "filtered_adoption_funnel.with_threshold_25",
+      "plan_status": "ok",
+      "plan_pattern": "filtered_adoption_funnel",
+      "plan_payload_bytes": 3379,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "signup to send adoption funnel",
+      "expected_pattern": "filtered_adoption_funnel",
+      "generator": "filtered_adoption_funnel.no_group",
+      "plan_status": "ok",
+      "plan_pattern": "filtered_adoption_funnel",
+      "plan_payload_bytes": 1660,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "signup to send adoption funnel by month",
+      "expected_pattern": "filtered_adoption_funnel",
+      "generator": "filtered_adoption_funnel.by_month",
+      "plan_status": "ok",
+      "plan_pattern": "filtered_adoption_funnel",
+      "plan_payload_bytes": 1691,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "signup to send adoption funnel by store",
+      "expected_pattern": "filtered_adoption_funnel",
+      "generator": "filtered_adoption_funnel.by_store",
+      "plan_status": "ok",
+      "plan_pattern": "filtered_adoption_funnel",
+      "plan_payload_bytes": 2249,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "signup to send adoption rate by store",
+      "expected_pattern": "filtered_adoption_funnel",
+      "generator": "filtered_adoption_funnel.rate_by_store",
+      "plan_status": "ok",
+      "plan_pattern": "filtered_adoption_funnel",
+      "plan_payload_bytes": 2407,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "signup to send conversion funnel",
+      "expected_pattern": "filtered_adoption_funnel",
+      "generator": "filtered_adoption_funnel.alt_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "filtered_adoption_funnel",
+      "plan_payload_bytes": 1666,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "active menu MoM",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.mom",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2175,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "active menu QoQ",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.qoq",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2193,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "active menu WoW",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.wow",
+      "plan_status": "ok",
+      "plan_pattern": "catalog_fallback",
+      "plan_payload_bytes": 1658,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "active menu YoY by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.yoy",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2197,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "active menu vs last month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.vs_last_month",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2268,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "active menu vs last year by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.vs_last_year",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2295,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "active menu year over year by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.yoy_long",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2206,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "drink orders MoM",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.label_variant",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2584,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "drink revenue YoY by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.label_variant",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2650,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "food orders MoM",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.label_variant",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2577,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "food revenue YoY by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.label_variant",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2630,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "gross order value YoY by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.label_variant",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2349,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "inventory MoM",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.mom",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2383,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "inventory QoQ",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.qoq",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2401,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "inventory WoW",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.wow",
+      "plan_status": "ok",
+      "plan_pattern": "catalog_fallback",
+      "plan_payload_bytes": 1767,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "inventory YoY by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.yoy",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2405,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "inventory vs last month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.vs_last_month",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2474,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "inventory vs last year by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.vs_last_year",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2501,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "inventory year over year by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.yoy_long",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2414,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "item revenue YoY by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.label_variant",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2633,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders MoM",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.mom",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2566,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders QoQ",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.qoq",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2584,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders WoW",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.wow",
+      "plan_status": "ok",
+      "plan_pattern": "catalog_fallback",
+      "plan_payload_bytes": 2052,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "orders YoY by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.yoy",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2588,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders vs last month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.vs_last_month",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2654,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders vs last year by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.vs_last_year",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2681,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders year over year by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.yoy_long",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2597,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue MoM",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.mom",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2529,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue QoQ",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.qoq",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2547,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue WoW",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.wow",
+      "plan_status": "ok",
+      "plan_pattern": "catalog_fallback",
+      "plan_payload_bytes": 1953,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "revenue YoY by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.yoy",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2551,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue vs last month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.vs_last_month",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2618,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue vs last year by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.vs_last_year",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2645,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue year over year by month",
+      "expected_pattern": "inline_period_shift",
+      "generator": "inline_period_shift.yoy_long",
+      "plan_status": "ok",
+      "plan_pattern": "inline_period_shift",
+      "plan_payload_bytes": 2560,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders by customers with at least 5 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4281,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders by customers with more than 20 items",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4286,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders by stores with at least 100 customers",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4354,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders by stores with at least 200 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4040,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "orders by stores with more than 50 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4118,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue by customers with at least 5 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4303,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue by customers with more than 20 items",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4265,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue by stores with at least 100 customers",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4251,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue by stores with at least 200 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4184,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "revenue by stores with more than 50 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.bare_phrase",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4136,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 customers by orders with at least 25 items",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3961,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 customers by orders with at least 25 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3960,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 customers by orders with at least 25 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4147,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 customers by revenue with at least 25 items",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3955,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 customers by revenue with at least 25 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3975,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 customers by revenue with at least 25 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4026,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 stores by orders with at least 25 customers",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4396,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 stores by orders with at least 25 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4177,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 stores by orders with at least 25 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4082,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 stores by revenue with at least 25 customers",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4273,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 stores by revenue with at least 25 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4194,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 10 stores by revenue with at least 25 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4213,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 customers by orders with more than 10 items",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3970,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 customers by orders with more than 10 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3998,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 customers by orders with more than 10 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4147,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 customers by revenue with more than 10 items",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3927,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 customers by revenue with more than 10 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3968,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 customers by revenue with more than 10 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4011,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 stores by orders with more than 10 customers",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4388,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 stores by orders with more than 10 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4171,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 stores by orders with more than 10 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3876,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 stores by revenue with more than 10 customers",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4272,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 stores by revenue with more than 10 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4202,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 20 stores by revenue with more than 10 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4211,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 customers by orders with more than 10 items",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3963,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 customers by orders with more than 10 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3991,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 customers by orders with more than 10 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4140,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 customers by revenue with more than 10 items",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3920,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 customers by revenue with more than 10 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3961,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 customers by revenue with more than 10 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4004,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 stores by orders with more than 10 customers",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4381,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 stores by orders with more than 10 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4164,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 stores by orders with more than 10 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 3869,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 stores by revenue with more than 10 customers",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4265,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 stores by revenue with more than 10 orders",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4195,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "top 5 stores by revenue with more than 10 sessions",
+      "expected_pattern": "qualified_metric_rollup",
+      "generator": "qualified_metric_rollup.top_n",
+      "plan_status": "ok",
+      "plan_pattern": "qualified_metric_rollup",
+      "plan_payload_bytes": 4204,
+      "plan_expected_pattern_fired": true
+    },
+    {
+      "intent": "email + sms + push total messages",
+      "expected_pattern": "runtime_metric_arithmetic",
+      "generator": "runtime_metric_arithmetic.no_group",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 2416,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "monthly total messages email sms push",
+      "expected_pattern": "runtime_metric_arithmetic",
+      "generator": "runtime_metric_arithmetic.monthly",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 2556,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "sum of email sms push messages by store",
+      "expected_pattern": "runtime_metric_arithmetic",
+      "generator": "runtime_metric_arithmetic.by_store",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 2470,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "total email sms push messages by month",
+      "expected_pattern": "runtime_metric_arithmetic",
+      "generator": "runtime_metric_arithmetic.alt_phrasing",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 2563,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "total messages (email + sms + push) by month",
+      "expected_pattern": "runtime_metric_arithmetic",
+      "generator": "runtime_metric_arithmetic.by_month",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 2575,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "% of accounts using both sms and push",
+      "expected_pattern": "scoped_predicate_ratio",
+      "generator": "scoped_predicate_ratio.accounts",
+      "plan_status": "out_of_scope",
+      "plan_pattern": "",
+      "plan_payload_bytes": 940,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "% of paying logos using both SMS and push",
+      "expected_pattern": "scoped_predicate_ratio",
+      "generator": "scoped_predicate_ratio.paying_logos",
+      "plan_status": "out_of_scope",
+      "plan_pattern": "",
+      "plan_payload_bytes": 996,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "pct of paying logos using sms and push channels",
+      "expected_pattern": "scoped_predicate_ratio",
+      "generator": "scoped_predicate_ratio.pct_phrasing",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 1752,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "ratio of paying logos with sms and push activity",
+      "expected_pattern": "scoped_predicate_ratio",
+      "generator": "scoped_predicate_ratio.ratio_phrasing",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 1733,
+      "plan_expected_pattern_fired": false
+    },
+    {
+      "intent": "share of paying logos sending sms and push",
+      "expected_pattern": "scoped_predicate_ratio",
+      "generator": "scoped_predicate_ratio.share_phrasing",
+      "plan_status": "ok",
+      "plan_pattern": "metric_by_dimension_rollup",
+      "plan_payload_bytes": 1735,
+      "plan_expected_pattern_fired": false
+    }
+  ]
+}

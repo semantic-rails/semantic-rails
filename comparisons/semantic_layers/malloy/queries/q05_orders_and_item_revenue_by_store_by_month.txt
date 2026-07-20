@@ -1,0 +1,2 @@
+compile -n q05_orders_and_item_revenue_by_store_by_month
+execute compiled SQL in DuckDB

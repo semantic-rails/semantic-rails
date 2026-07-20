@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-rails.com/schemas/validation_report.v1.json",
+  "title": "Semantic Rails Validation Report (v1)",
+  "description": "Common machine-readable report emitted by Semantic Rails validation bindings.",
+  "type": "object",
+  "required": [
+    "report_format_version",
+    "validator",
+    "input",
+    "ok",
+    "summary",
+    "issues"
+  ],
+  "properties": {
+    "report_format_version": {
+      "const": 1
+    },
+    "validator": {
+      "$ref": "#/$defs/Validator"
+    },
+    "input": {
+      "$ref": "#/$defs/InputIdentity"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "summary": {
+      "$ref": "#/$defs/Summary"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Issue"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Validator": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "InputIdentity": {
+      "type": "object",
+      "required": [
+        "contract_format_version",
+        "binding_kind",
+        "binding_version",
+        "legacy"
+      ],
+      "properties": {
+        "contract_format_version": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "binding_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "binding_version": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "legacy": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Summary": {
+      "type": "object",
+      "required": [
+        "package_count",
+        "resource_count",
+        "error_count",
+        "warning_count"
+      ],
+      "properties": {
+        "package_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resource_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warning_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "Issue": {
+      "type": "object",
+      "required": [
+        "code",
+        "severity",
+        "package_id",
+        "semantic_model_id",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning"
+          ]
+        },
+        "package_id": {
+          "type": "string"
+        },
+        "semantic_model_id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

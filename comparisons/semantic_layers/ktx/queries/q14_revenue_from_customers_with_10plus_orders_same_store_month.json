@@ -1,0 +1,14 @@
+{
+  "dimensions": [
+    {
+      "field": "revenue_from_high_frequency_store_customers.ordered_month",
+      "granularity": "month"
+    },
+    "revenue_from_high_frequency_store_customers.store_name"
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "revenue_from_high_frequency_store_customers.qualifying_revenue_usd"
+  ]
+}

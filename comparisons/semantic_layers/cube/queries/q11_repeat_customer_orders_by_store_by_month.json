@@ -1,0 +1,14 @@
+{
+  "measures": ["orders.orders"],
+  "dimensions": ["stores.store_name"],
+  "filters": [
+    { "member": "customers.lifetime_order_count", "operator": "gt", "values": ["1"] }
+  ],
+  "timeDimensions": [
+    { "dimension": "orders.ordered_at", "granularity": "month" }
+  ],
+  "order": {
+    "orders.ordered_at": "asc",
+    "stores.store_name": "asc"
+  }
+}

@@ -1,0 +1,1328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-rails.com/schemas/query_ir.preview.v2.json",
+  "title": "Semantic Rails Query IR (preview v2)",
+  "description": "Preview schema for Query IR version 2. This contract may change before promotion to a stable major.",
+  "type": "object",
+  "patternProperties": {
+    "^_": {
+      "description": "Underscore-prefixed annotation keys are allowed in examples and are ignored by the runtime."
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 2,
+      "description": "Preview Query IR version 2."
+    },
+    "select": {
+      "type": "array",
+      "description": "Projected output columns. Each item carries an expression and an output alias.",
+      "items": {
+        "$ref": "#/$defs/SelectItem"
+      }
+    },
+    "group_by": {
+      "type": "array",
+      "description": "Dimension ids to group by.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "where": {
+      "type": "array",
+      "description": "Dimension-level filters. Each item targets a dimension id with op/value. Expression-shaped filters belong in metric_filters.",
+      "items": {
+        "$ref": "#/$defs/WhereFilter"
+      }
+    },
+    "metric_filters": {
+      "type": "array",
+      "description": "Post-aggregation predicates. The canonical name — the layer does NOT accept a top-level 'having' key.",
+      "items": {
+        "$ref": "#/$defs/MetricFilter"
+      }
+    },
+    "order_by": {
+      "type": "array",
+      "description": "Output ordering. Each item must use the {field, direction} shape — NOT the select-style {expression, ...} shape. Field must resolve to a select alias, a group_by dimension id, the time-axis alias, or the literal 'time'.",
+      "items": {
+        "$ref": "#/$defs/OrderBy"
+      }
+    },
+    "limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Optional row cap on the final SELECT."
+    },
+    "time": {
+      "$ref": "#/$defs/TimeBlock"
+    },
+    "temporal_role_overrides": {
+      "type": "object",
+      "description": "Per-measure overrides keyed by measure id, value is the temporal_role id to bind.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "path_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preference": {
+          "type": "string",
+          "enum": [
+            "fewest_hops",
+            "newest_first",
+            "shortest_paths"
+          ]
+        },
+        "ask_if_ambiguous": {
+          "type": "boolean"
+        }
+      }
+    },
+    "policy_context": {
+      "$ref": "#/$defs/PolicyContext"
+    },
+    "limits": {
+      "$ref": "#/$defs/Limits"
+    },
+    "verbosity": {
+      "type": "string",
+      "enum": [
+        "minimal",
+        "compact",
+        "full"
+      ],
+      "description": "Response detail level. Default 'compact'."
+    },
+    "sql_profile": {
+      "type": "string",
+      "enum": [
+        "audit",
+        "compact",
+        "debug",
+        "off"
+      ],
+      "description": "SQL rendering profile. Default 'audit'. 'off' suppresses rendered_sql and sql_plan entirely."
+    },
+    "debug": {
+      "type": "boolean",
+      "description": "Opt-in raw SQL in error envelopes. Operator must also set SEMANTIC_RAILS_ALLOW_DEBUG_SQL."
+    },
+    "explain": {
+      "type": "boolean",
+      "description": "Include explain artifacts in the response."
+    },
+    "export": {
+      "type": "boolean",
+      "description": "Treat the query as an export (relaxes some sampling caps)."
+    },
+    "request_id": {
+      "type": "string",
+      "description": "Client-supplied id echoed in the response envelope and audit log."
+    }
+  },
+  "$defs": {
+    "SelectItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expression"
+      ],
+      "properties": {
+        "expression": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "as": {
+          "type": "string",
+          "description": "Output alias. Required when the expression does not have a deterministic default (e.g. arithmetic, ratios)."
+        }
+      }
+    },
+    "WhereFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field"
+      ],
+      "description": "Dimension-level filter. Pre-launch standardized on `field` (same key as order_by[].field). The legacy `dimension` key is rejected at runtime — see CHANGELOG.",
+      "properties": {
+        "field": {
+          "type": "string",
+          "description": "Dimension id (not a column name)."
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "=",
+            "!=",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "IN",
+            "NOT IN",
+            "LIKE",
+            "NOT LIKE",
+            "IS NULL",
+            "IS NOT NULL"
+          ],
+          "default": "="
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "description": "Comparison literal. Scalar for comparison/LIKE ops; a list of scalars for IN / NOT IN (a bare scalar is accepted as a one-element list); omitted for IS NULL / IS NOT NULL. Objects are rejected — inline expression thresholds belong in metric_predicate.value inside metric_filters."
+        }
+      }
+    },
+    "MetricFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expression"
+      ],
+      "properties": {
+        "expression": {
+          "$ref": "#/$defs/MetricFilterExpression"
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "=",
+            "!=",
+            "<",
+            "<=",
+            ">",
+            ">="
+          ],
+          "default": "="
+        },
+        "value": {}
+      }
+    },
+    "OrderBy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field"
+      ],
+      "properties": {
+        "field": {
+          "type": "string",
+          "description": "Must resolve to a select alias (`as`), a group_by dimension id, the time-axis output alias (e.g. `temporal_role.X__month`), or the literal string `time`."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "ASC",
+            "DESC",
+            "asc",
+            "desc"
+          ],
+          "default": "ASC"
+        }
+      }
+    },
+    "TimeBlock": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Query-level time anchor. The temporal_role names which clock to filter on; grain controls bucketing; fill enables dense rows.",
+      "additionalProperties": false,
+      "properties": {
+        "temporal_role": {
+          "type": "string"
+        },
+        "grain": {
+          "type": "string",
+          "enum": [
+            "",
+            "day",
+            "week",
+            "month",
+            "quarter",
+            "year",
+            "hour",
+            "minute"
+          ]
+        },
+        "start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO-8601 date or timestamp."
+        },
+        "end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO-8601 date or timestamp."
+        },
+        "range": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "last": {
+              "type": "object",
+              "description": "Relative range. Must be an object — string shorthand (e.g. '90 days') is rejected. Example: {\"unit\": \"day\", \"value\": 90}.",
+              "additionalProperties": false,
+              "required": [
+                "unit",
+                "value"
+              ],
+              "properties": {
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "day",
+                    "week",
+                    "month",
+                    "quarter",
+                    "year"
+                  ]
+                },
+                "value": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        },
+        "fill": {
+          "type": "boolean",
+          "default": false
+        },
+        "calendar_id": {
+          "type": "string",
+          "default": "default"
+        }
+      }
+    },
+    "PolicyContext": {
+      "type": "object",
+      "description": "Optional access-policy context. Other keys are passed through.",
+      "additionalProperties": true,
+      "properties": {
+        "environment": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "now": {
+          "type": "string",
+          "description": "ISO-8601 timestamp anchoring relative time ranges."
+        }
+      }
+    },
+    "Limits": {
+      "type": "object",
+      "description": "Per-request resource limits.",
+      "additionalProperties": false,
+      "properties": {
+        "statement_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_rows": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "SelectExpression": {
+      "description": "Discriminated union of expression shapes accepted inside `select[].expression`. The two kindless shorthands (`{measure}` and `{metric}`) are accepted by the runtime; explicit `kind` is preferred.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MeasureRefExpr"
+        },
+        {
+          "$ref": "#/$defs/MeasureRefKindShorthand"
+        },
+        {
+          "$ref": "#/$defs/AggregateExpr"
+        },
+        {
+          "$ref": "#/$defs/MetricRefExpr"
+        },
+        {
+          "$ref": "#/$defs/MetricRefKindShorthand"
+        },
+        {
+          "$ref": "#/$defs/ScopedAggregateExpr"
+        },
+        {
+          "$ref": "#/$defs/ConditionalAggregateExpr"
+        },
+        {
+          "$ref": "#/$defs/ArithmeticExpr"
+        },
+        {
+          "$ref": "#/$defs/RatioExpr"
+        },
+        {
+          "$ref": "#/$defs/CaseExpr"
+        },
+        {
+          "$ref": "#/$defs/LiteralExpr"
+        },
+        {
+          "$ref": "#/$defs/PriorPeriodExpr"
+        },
+        {
+          "$ref": "#/$defs/RollingExpr"
+        },
+        {
+          "$ref": "#/$defs/CumulativeExpr"
+        },
+        {
+          "$ref": "#/$defs/PeriodToDateExpr"
+        },
+        {
+          "$ref": "#/$defs/ConversionExpr"
+        },
+        {
+          "$ref": "#/$defs/DistributionExpr"
+        },
+        {
+          "$ref": "#/$defs/CallExpr"
+        },
+        {
+          "$ref": "#/$defs/BetweenExpr"
+        }
+      ]
+    },
+    "MetricFilterExpression": {
+      "description": "Discriminated union of expression shapes accepted inside `metric_filters[].expression`. The most common shape is `kind: metric_predicate`; arithmetic and ratio shapes are also accepted for derived comparisons.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MetricPredicateExpr"
+        },
+        {
+          "$ref": "#/$defs/MeasureRefExpr"
+        },
+        {
+          "$ref": "#/$defs/MeasureRefKindShorthand"
+        },
+        {
+          "$ref": "#/$defs/MetricRefExpr"
+        },
+        {
+          "$ref": "#/$defs/MetricRefKindShorthand"
+        },
+        {
+          "$ref": "#/$defs/ArithmeticExpr"
+        },
+        {
+          "$ref": "#/$defs/ComparisonExpr"
+        },
+        {
+          "$ref": "#/$defs/BooleanExpr"
+        },
+        {
+          "$ref": "#/$defs/BetweenExpr"
+        },
+        {
+          "$ref": "#/$defs/ConditionalAggregateExpr"
+        },
+        {
+          "$ref": "#/$defs/RatioExpr"
+        }
+      ]
+    },
+    "MeasureRefExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "measure"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "measure",
+            "measure_ref"
+          ]
+        },
+        "measure": {
+          "type": "string"
+        },
+        "aggregation": {
+          "type": "string"
+        },
+        "temporal_role": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "MeasureRefKindShorthand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "measure"
+      ],
+      "not": {
+        "required": [
+          "metric"
+        ]
+      },
+      "properties": {
+        "measure": {
+          "type": "string"
+        },
+        "aggregation": {
+          "type": "string"
+        },
+        "temporal_role": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "AggregateExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "measure"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "aggregate",
+            "semi_additive"
+          ]
+        },
+        "measure": {
+          "type": "string"
+        },
+        "aggregation": {
+          "type": "string"
+        },
+        "temporal_role": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "filter": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "MetricRefExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "metric"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "metric"
+        },
+        "metric": {
+          "type": "string"
+        }
+      }
+    },
+    "MetricRefKindShorthand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric"
+      ],
+      "not": {
+        "required": [
+          "measure"
+        ]
+      },
+      "properties": {
+        "metric": {
+          "type": "string"
+        }
+      }
+    },
+    "ScopedAggregateExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "measure"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "scoped_aggregate"
+        },
+        "measure": {
+          "type": "string"
+        },
+        "aggregation": {
+          "type": "string"
+        },
+        "temporal_role": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "where": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "predicates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "null_behavior": {
+          "type": "string"
+        },
+        "anchor": {
+          "type": "object",
+          "description": "Per-row event-anchored window: identifies the per-entity scalar temporal role around which the window is evaluated. Required alongside ``window``. SQL lowering is staged for a follow-up round; the parser + validator land in round 3.",
+          "additionalProperties": false,
+          "required": [
+            "temporal_role"
+          ],
+          "properties": {
+            "temporal_role": {
+              "type": "string",
+              "description": "Per-entity scalar temporal role id (e.g. ``temporal_role.jaffle_customer_first_order_at``)."
+            }
+          }
+        },
+        "window": {
+          "type": "object",
+          "description": "Bounded window around the anchor. Required alongside ``anchor``.",
+          "additionalProperties": false,
+          "required": [
+            "unit",
+            "value"
+          ],
+          "properties": {
+            "unit": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "quarter",
+                "year"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "forward",
+                "backward",
+                "around"
+              ],
+              "default": "forward"
+            }
+          }
+        }
+      }
+    },
+    "ConditionalAggregateExpr": {
+      "type": "object",
+      "description": "`aggregate_if(aggregation, condition[, value])` — shorthand for `<AGG>(CASE WHEN cond THEN value END)`. Compiles natively to `COUNT_IF(cond)` / `SUM_IF(value, cond)` on Snowflake, `COUNTIF(cond)` on BigQuery (when added), and the portable CASE WHEN form everywhere else. Constraint: column references inside `condition` and `value` must carry an explicit `entity` or `table` field — there is no surrounding measure to inherit entity from. The supported aggregations are `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `median`, `percentile`. `value` may be omitted only when `aggregation` is `count`. `condition` accepts any boolean expression (comparison/boolean/in/between/etc.); `value` accepts any scalar expression. The schema permits arbitrary objects here because the inner unions are too broad to encode uniformly; the runtime parser performs the full validation.",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "aggregation",
+        "condition"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "aggregate_if"
+        },
+        "aggregation": {
+          "type": "string",
+          "enum": [
+            "count",
+            "count_distinct",
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "median",
+            "percentile"
+          ]
+        },
+        "condition": {
+          "type": "object"
+        },
+        "value": {
+          "type": "object"
+        }
+      }
+    },
+    "BetweenExpr": {
+      "type": "object",
+      "description": "`between` / `not_between` — parse-time sugar for the canonical `expr >= low AND expr <= high` pattern (or `expr < low OR expr > high` when negated). The runtime desugars to a `BooleanExpr` fold of two `ComparisonExpr` nodes before lowering, so this kind never appears in the IR after parse. Use `kind: not_between` or set `negated: true` for the inverted form. `expr`, `low`, and `high` accept any expression — kept permissive at the schema layer; the parser validates shape.",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "expr",
+        "low",
+        "high"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "between",
+            "not_between"
+          ]
+        },
+        "expr": {
+          "type": "object"
+        },
+        "low": {
+          "type": "object"
+        },
+        "high": {
+          "type": "object"
+        },
+        "negated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ArithmeticExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "op",
+        "left",
+        "right"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "arithmetic",
+            "binary"
+          ]
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "add",
+            "subtract",
+            "multiply",
+            "divide",
+            "+",
+            "-",
+            "*",
+            "/",
+            "plus",
+            "minus",
+            "times"
+          ]
+        },
+        "left": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "right": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "null_behavior": {
+          "type": "string"
+        }
+      }
+    },
+    "ComparisonExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "op",
+        "left",
+        "right"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "comparison"
+        },
+        "op": {
+          "type": "string"
+        },
+        "left": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "right": {
+          "$ref": "#/$defs/SelectExpression"
+        }
+      }
+    },
+    "BooleanExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "op",
+        "args"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "boolean"
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "and",
+            "or",
+            "not",
+            "AND",
+            "OR",
+            "NOT"
+          ]
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SelectExpression"
+          }
+        }
+      }
+    },
+    "CallExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "call"
+        },
+        "name": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SelectExpression"
+          }
+        },
+        "distinct": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RatioExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "numerator",
+        "denominator"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "ratio"
+        },
+        "numerator": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "denominator": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "null_behavior": {
+          "type": "string"
+        }
+      }
+    },
+    "CaseExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "whens"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "case"
+        },
+        "whens": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "when",
+              "then"
+            ],
+            "properties": {
+              "when": {
+                "$ref": "#/$defs/SelectExpression"
+              },
+              "then": {
+                "$ref": "#/$defs/SelectExpression"
+              }
+            }
+          }
+        },
+        "else": {
+          "$ref": "#/$defs/SelectExpression"
+        }
+      }
+    },
+    "LiteralExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "literal"
+        },
+        "value": {}
+      }
+    },
+    "PriorPeriodExpr": {
+      "description": "Period-shifted measure for inline YoY / WoW / MoM-style projections. Two accepted shapes: (1) the canonical IR form with a nested ``input`` expression and a structured ``offset: {unit, value}``; (2) a user-facing shorthand that names a measure id directly, takes a scalar (signed) ``offset`` integer, and a top-level ``grain``. Both compile to a LAG window over the query's time grain — see docs/QUERY_IR_SCHEMA.md for the lowering details.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/PriorPeriodExprIR"
+        },
+        {
+          "$ref": "#/$defs/PriorPeriodExprShorthand"
+        }
+      ]
+    },
+    "PriorPeriodExprIR": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "input",
+        "offset"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "prior_period"
+        },
+        "input": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "offset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "unit",
+            "value"
+          ],
+          "properties": {
+            "unit": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "quarter",
+                "year"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "PriorPeriodExprShorthand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "measure",
+        "offset",
+        "grain"
+      ],
+      "description": "Shorthand: ``{kind: 'prior_period', measure: <id>, offset: <signed int>, grain: <unit>}``. The runtime normalises this to the IR shape; the sign of ``offset`` indicates direction (negative = backward, the typical case).",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "prior_period"
+        },
+        "measure": {
+          "type": "string",
+          "description": "Measure id. The shorthand wraps this as an aggregate with the supplied ``aggregation`` (default ``sum``)."
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Signed integer offset. Use ``-1`` for the immediately prior period at the named grain."
+        },
+        "grain": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "quarter",
+            "year"
+          ]
+        },
+        "aggregation": {
+          "type": "string",
+          "description": "Aggregation for the wrapped measure. Defaults to ``sum``."
+        }
+      }
+    },
+    "RollingExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "input",
+        "window"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "rolling"
+        },
+        "input": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "unit",
+            "value"
+          ],
+          "properties": {
+            "unit": {
+              "type": "string"
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "partition_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "CumulativeExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "input"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "cumulative"
+        },
+        "input": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "partition_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "window_scope": {
+          "type": "string"
+        }
+      }
+    },
+    "PeriodToDateExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "input",
+        "period"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "period_to_date"
+        },
+        "input": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "period": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "quarter",
+            "year"
+          ]
+        },
+        "partition_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ConversionExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "base",
+        "converted",
+        "entity",
+        "window",
+        "matching_mode"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "conversion"
+        },
+        "base": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "converted": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "entity": {
+          "type": "string"
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "unit",
+            "value"
+          ],
+          "properties": {
+            "unit": {
+              "type": "string"
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "matching_mode": {
+          "type": "string",
+          "enum": [
+            "first_converted_after_base",
+            "closest_converted_after_base"
+          ]
+        },
+        "matching": {
+          "type": "string"
+        },
+        "constant_properties": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dimension_bindings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "DistributionExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "function",
+        "over"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "distribution"
+        },
+        "function": {
+          "type": "string"
+        },
+        "over": {
+          "$ref": "#/$defs/EntityValueExpr"
+        },
+        "p": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "EntityValueExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "entity",
+        "input"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "entity_value"
+        },
+        "entity": {
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "where": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "MetricPredicateExpr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "entity",
+        "input",
+        "op"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "metric_predicate"
+        },
+        "entity": {
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/SelectExpression"
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "=",
+            "!=",
+            "<",
+            "<=",
+            ">",
+            ">="
+          ]
+        },
+        "value": {},
+        "scope_mode": {
+          "type": "string",
+          "enum": [
+            "contextual",
+            "entity_only"
+          ]
+        },
+        "time_grain": {
+          "type": "string"
+        },
+        "time_alignment": {
+          "type": "string",
+          "enum": [
+            "same_query_period",
+            "query_window",
+            "rolling_window_in_period"
+          ]
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "unit": {
+              "type": "string"
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

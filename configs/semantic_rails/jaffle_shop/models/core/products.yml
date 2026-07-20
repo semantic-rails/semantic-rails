@@ -1,0 +1,17 @@
+model:
+  id: products
+  relation: jaffle_product
+  entities:
+    product: {}
+  dimensions:
+    product_name:
+      as: dimension.jaffle_product_name
+      label: Product name
+      kind: categorical
+    product_type:
+      as: dimension.jaffle_product_type
+      label: Product type
+      kind: categorical
+      domain:
+        - jaffle
+        - beverage

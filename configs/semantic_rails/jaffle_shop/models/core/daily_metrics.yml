@@ -1,0 +1,88 @@
+model:
+  id: daily_metrics
+  kind: fact
+  relation: jaffle_daily_metric_rollup
+  time_entity: time
+  time_column: date_day
+  times:
+    date_day:
+      label: Daily metric day
+      column: date_day
+      kind: date
+      class: calendar_time
+      as: temporal_role.jaffle_daily_metric_day
+      dimension_id: dimension.jaffle_daily_metric_date_day
+      default: true
+  measures:
+    median_item_revenue_usd:
+      kind: aggregate
+      label: Median item revenue
+      expr: median_item_revenue_cents / 100.0
+      accumulation:
+        kind: stock
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: medium
+        change_risk: medium
+    rolling_7d_revenue_usd:
+      kind: aggregate
+      label: Rolling 7-day revenue
+      expr: rolling_7d_revenue_cents / 100.0
+      accumulation:
+        kind: stock
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium
+    rolling_28d_revenue_usd:
+      kind: aggregate
+      label: Rolling 28-day revenue
+      expr: rolling_28d_revenue_cents / 100.0
+      accumulation:
+        kind: stock
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium
+    revenue_mtd_usd:
+      kind: aggregate
+      label: Revenue MTD
+      expr: revenue_mtd_cents / 100.0
+      accumulation:
+        kind: stock
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium
+    revenue_qtd_usd:
+      kind: aggregate
+      label: Revenue QTD
+      expr: revenue_qtd_cents / 100.0
+      accumulation:
+        kind: stock
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium
+    revenue_ytd_usd:
+      kind: aggregate
+      label: Revenue YTD
+      expr: revenue_ytd_cents / 100.0
+      accumulation:
+        kind: stock
+      value_type: currency
+      currency: USD
+      meta:
+        owner_team: finance_analytics
+        review_priority: high
+        change_risk: medium

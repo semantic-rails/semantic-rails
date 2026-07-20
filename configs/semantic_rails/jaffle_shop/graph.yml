@@ -1,0 +1,185 @@
+graph:
+  entities:
+    customer:
+      label: Customer
+      key: [customer_id]
+      model: customers
+      # Guard against legacy aliases that used to identify customers.
+      # Authors who paste `cust_id` from a stale doc see a clear error
+      # rather than a silent dangling reference.
+      disallowed_names: [cust_id, custid, customerid]
+
+    store:
+      label: Store
+      key: [store_id]
+      model: stores
+
+    order:
+      label: Order
+      key: [order_id]
+      model: orders
+
+    item:
+      label: Item
+      key: [item_id]
+      model: order_items
+
+    product:
+      label: Product
+      key: [sku]
+      model: products
+
+    supply:
+      label: Supply
+      key: [supply_id]
+      model: supplies
+
+    customer_history:
+      label: Customer history
+      key: [customer_id, valid_from]
+      model: customer_history
+      allowed_as_root: false
+
+    store_inventory_snapshot:
+      label: Store inventory snapshot
+      key: [store_id, date_day]
+      model: store_inventory_snapshots
+
+    order_lifecycle:
+      label: Order lifecycle
+      key: [order_id]
+      model: order_lifecycle
+
+    storefront_session:
+      label: Storefront session
+      key: [session_id]
+      model: storefront_sessions
+
+    time:
+      label: Calendar
+      kind: time
+      key: [date_day]
+      model: calendar
+      allowed_as_root: false
+
+    fiscal_calendar:
+      label: Fiscal calendar
+      kind: time
+      key: [date_day]
+      model: fiscal_calendar
+      allowed_as_root: false
+
+    customer_segment_membership:
+      label: Customer segment membership
+      key: [membership_id]
+      model: customer_segment_membership
+      # The model opts out of inferred multi-hop joins via
+      # `entities.bridge: false`, so this entity is not reachable
+      # as a path target.
+      allowed_as_root: false
+
+  # Explicit relationships — only for pairs that need non-default rules.
+  # Default relationships (cardinality=many_to_one, safety=safe) are
+  # inferred from each model's entities: block.
+  relationships:
+    order_items_order:
+      id: relationship.order_items_order
+      entities: [item, order]
+      cardinality: many_to_one
+      rollup_safe:
+        reverse: [count_distinct]
+
+    orders_customer:
+      id: relationship.orders_customer
+      entities: [order, customer]
+      cardinality: many_to_one
+      path_preference: 10
+      rollup_safe:
+        reverse: [count_distinct]
+
+    orders_store:
+      id: relationship.orders_store
+      entities: [order, store]
+      cardinality: many_to_one
+      path_preference: 10
+      allowed_directions: [forward]
+
+    order_to_customer_history:
+      as: relationship.jaffle_order_customer_history
+      entities: [order, customer_history]
+      cardinality: many_to_one
+      target: [customer_id]
+      allowed_directions: [forward]
+      # SCD2 join — orders point at the customer_history row that was
+      # valid at the time the order was placed. The planner must rewrite
+      # the join with a temporal-validity predicate, so safety is
+      # `requires_rewrite` rather than the default `safe`.
+      safety: requires_rewrite
+      # Prefer this denormalized many_to_one over multi-hop alternatives
+      # (default path_preference is 100; lower wins).
+      path_preference: 50
+      # Per-direction rollup safety: forward (order → customer_history),
+      # additive aggregations roll up cleanly across the temporal slice.
+      # Reverse (customer_history → order) cannot fan out without the
+      # rewrite, so no aggregations are declared safe in that direction.
+      rollup_safe:
+        forward: [sum, count]
+        reverse: []
+      temporal_validity:
+        valid_from: jaffle_customer_history.valid_from
+        valid_to: jaffle_customer_history.valid_to
+
+    customer_history_customer:
+      id: relationship.customer_history_customer
+      entities: [customer_history, customer]
+      cardinality: many_to_one
+      allowed_directions: [forward]
+
+    customer_history_store:
+      id: relationship.customer_history_store
+      entities: [customer_history, store]
+      cardinality: many_to_one
+      via: [preferred_store_id]
+      target: [store_id]
+      allowed_directions: [forward]
+      label: Customer history preferred store
+      description: Role-specific preferred store relationship; not a generic customer-store traversal.
+
+    order_lifecycle_order:
+      id: relationship.order_lifecycle_order
+      entities: [order_lifecycle, order]
+      cardinality: many_to_one
+      allowed_directions: [forward]
+
+    order_lifecycle_customer:
+      id: relationship.order_lifecycle_customer
+      entities: [order_lifecycle, customer]
+      cardinality: many_to_one
+      allowed_directions: [forward]
+
+    order_lifecycle_store:
+      id: relationship.order_lifecycle_store
+      entities: [order_lifecycle, store]
+      cardinality: many_to_one
+      allowed_directions: [forward]
+
+    storefront_sessions_customer:
+      id: relationship.storefront_sessions_customer
+      entities: [storefront_session, customer]
+      cardinality: many_to_one
+      rollup_safe:
+        reverse: [count_distinct]
+
+    storefront_sessions_store:
+      id: relationship.storefront_sessions_store
+      entities: [storefront_session, store]
+      cardinality: many_to_one
+      allowed_directions: [forward]
+
+    storefront_sessions_order:
+      id: relationship.storefront_sessions_order
+      entities: [storefront_session, order]
+      cardinality: many_to_one
+      via: [converted_order_id]
+      target: [order_id]
+      allowed_directions: [forward]

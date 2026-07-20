@@ -1,0 +1,7 @@
+WITH revenue_from_high_frequency_store_customers__customer_store_months AS (
+SELECT customer_id, store_id, DATE_TRUNC('MONTH', ordered_at) AS ordered_month, COUNT(*) AS monthly_orders FROM comparison_orders GROUP BY 1, 2, 3
+),
+revenue_from_high_frequency_store_customers AS (
+SELECT o.order_id, DATE_TRUNC('MONTH', o.ordered_at) AS ordered_month, s.store_name, o.order_total_cents / 100.0 AS revenue_usd FROM comparison_orders AS o INNER JOIN revenue_from_high_frequency_store_customers__customer_store_months AS c ON o.customer_id = c.customer_id AND o.store_id = c.store_id AND DATE_TRUNC('MONTH', o.ordered_at) = c.ordered_month INNER JOIN comparison_stores AS s ON o.store_id = s.store_id WHERE c.monthly_orders > 10
+)
+SELECT DATE_TRUNC('MONTH', revenue_from_high_frequency_store_customers.ordered_month) AS ordered_month_month, revenue_from_high_frequency_store_customers.store_name AS store_name, SUM(revenue_from_high_frequency_store_customers.revenue_usd) AS qualifying_revenue_usd FROM revenue_from_high_frequency_store_customers GROUP BY DATE_TRUNC('MONTH', revenue_from_high_frequency_store_customers.ordered_month), revenue_from_high_frequency_store_customers.store_name ORDER BY 1, 2 LIMIT 5000

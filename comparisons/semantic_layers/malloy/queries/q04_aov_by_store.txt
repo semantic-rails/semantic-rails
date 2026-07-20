@@ -1,0 +1,2 @@
+compile -n q04_aov_by_store
+execute compiled SQL in DuckDB

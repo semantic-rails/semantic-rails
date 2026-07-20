@@ -1,0 +1,4 @@
+# Keep hash-pinned third-party audit evidence available while collapsing its
+# generated payloads in GitHub's default review view.
+comparisons/semantic_layers/cube/*.evidence linguist-generated=true
+comparisons/semantic_layers/cube/runtime-snapshot.json linguist-generated=true

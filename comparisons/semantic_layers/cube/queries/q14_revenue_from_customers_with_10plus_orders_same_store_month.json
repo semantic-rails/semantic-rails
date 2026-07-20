@@ -1,0 +1,11 @@
+{
+  "measures": ["high_frequency_store_orders.qualifying_revenue_usd"],
+  "dimensions": ["stores.store_name"],
+  "timeDimensions": [
+    { "dimension": "high_frequency_store_orders.ordered_at", "granularity": "month" }
+  ],
+  "order": {
+    "high_frequency_store_orders.ordered_at": "asc",
+    "stores.store_name": "asc"
+  }
+}

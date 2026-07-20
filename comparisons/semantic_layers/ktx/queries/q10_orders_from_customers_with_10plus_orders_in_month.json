@@ -1,0 +1,13 @@
+{
+  "dimensions": [
+    {
+      "field": "orders_from_high_frequency_customers_month.ordered_month",
+      "granularity": "month"
+    }
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "orders_from_high_frequency_customers_month.qualifying_orders"
+  ]
+}

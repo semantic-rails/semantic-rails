@@ -1,0 +1,2 @@
+compile -n q08_revenue_by_customer_segment_as_of_order_time
+execute compiled SQL in DuckDB

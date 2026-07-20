@@ -1,0 +1,93 @@
+metrics:
+  - name: orders
+    label: Orders
+    type: SIMPLE
+    type_params:
+      measure: orders
+
+  - name: revenue_usd
+    label: Revenue (USD)
+    type: SIMPLE
+    type_params:
+      measure: revenue_usd
+
+  - name: item_revenue_usd
+    label: Item Revenue (USD)
+    type: SIMPLE
+    type_params:
+      measure: item_revenue_usd
+
+  - name: new_customer_orders
+    label: New Customer Orders
+    type: SIMPLE
+    type_params:
+      measure: new_customer_orders
+
+  - name: delivered_revenue
+    label: Delivered Revenue
+    type: SIMPLE
+    type_params:
+      measure: delivered_revenue
+
+  - name: session_starts
+    label: Session Starts
+    type: SIMPLE
+    type_params:
+      measure: session_starts
+
+  - name: converted_sessions_7d
+    label: Converted Sessions Within 7 Days
+    type: SIMPLE
+    type_params:
+      measure: converted_sessions_7d
+
+  - name: qualifying_orders
+    label: Orders From Customers With 10+ Orders In Month
+    type: SIMPLE
+    type_params:
+      measure: qualifying_orders
+
+  - name: repeat_customer_orders
+    label: Repeat Customer Orders
+    type: SIMPLE
+    type_params:
+      measure: repeat_customer_orders
+
+  - name: filtered_orders_lifetime_spend_500
+    label: Orders With Lifetime Spend >= 500
+    type: SIMPLE
+    type_params:
+      measure: filtered_orders_lifetime_spend_500
+
+  - name: qualifying_revenue_usd_same_store
+    label: Revenue From Customers With 10+ Orders In Same Store-Month
+    type: SIMPLE
+    type_params:
+      measure: qualifying_revenue_usd_same_store
+
+  - name: same_store_converted_sessions_7d
+    label: Same Store Converted Sessions Within 7 Days
+    type: SIMPLE
+    type_params:
+      measure: same_store_converted_sessions_7d
+
+  - name: aov_usd
+    label: Average Order Value (USD)
+    type: ratio
+    type_params:
+      numerator: revenue_usd
+      denominator: orders
+
+  - name: session_to_order_conversion_rate_7d
+    label: Session To Order Conversion Rate (7d)
+    type: ratio
+    type_params:
+      numerator: converted_sessions_7d
+      denominator: session_starts
+
+  - name: same_store_session_to_order_conversion_rate_7d
+    label: Same Store Session To Order Conversion Rate (7d)
+    type: ratio
+    type_params:
+      numerator: same_store_converted_sessions_7d
+      denominator: session_starts

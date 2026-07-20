@@ -1,0 +1,54 @@
+model:
+  id: storefront_sessions
+  relation: jaffle_storefront_session
+  description: One row per browsing session before or around an order.
+  entities:
+    storefront_session: {}
+    customer: {}
+    store: {}
+    order:
+      expr: converted_order_id
+  times:
+    started_at:
+      label: Session started at
+      column: started_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_session_started_at
+      dimension_id: dimension.jaffle_session_started_at
+      default: true
+    converted_at:
+      label: Session converted at
+      column: converted_at
+      kind: timestamp
+      class: event_time
+      as: temporal_role.jaffle_session_converted_at
+      dimension_id: dimension.jaffle_session_converted_at
+  # Key dimensions for session_id / customer_id / store_id /
+  # converted_order_id auto-create from the entities: block above. No
+  # explicit `kind: id` dimension declarations required.
+  measures:
+    session_starts:
+      label: Session starts
+      description: Count of storefront sessions that started in the selected period.
+      kind: entity_count
+      entity_key: session_id
+      accumulation:
+        kind: event
+      value_type: count
+      meta:
+        owner_team: growth_analytics
+        review_priority: high
+        change_risk: medium
+    visiting_customer_count:
+      label: Visiting customers
+      description: Count of unique customers with at least one storefront session in the selected slice.
+      kind: entity_count
+      entity_key: customer_id
+      accumulation:
+        kind: event
+      value_type: count
+      meta:
+        owner_team: growth_analytics
+        review_priority: medium
+        change_risk: medium

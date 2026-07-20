@@ -1,0 +1,7 @@
+{
+  "measures": ["session_conversions_7d_same_store.same_store_session_to_order_conversion_rate_7d"],
+  "timeDimensions": [
+    { "dimension": "session_conversions_7d_same_store.started_at", "granularity": "month" }
+  ],
+  "order": { "session_conversions_7d_same_store.started_at": "asc" }
+}

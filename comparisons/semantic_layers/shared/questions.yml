@@ -1,0 +1,112 @@
+questions:
+  - id: q01_orders_by_month
+    title: Orders By Month
+    category: baseline
+    scope_level: required
+    business_question: How many orders did we have by month?
+    expected_semantics: Count distinct orders on the ordered timestamp at month grain.
+
+  - id: q02_revenue_by_store_by_month
+    title: Revenue By Store By Month
+    category: baseline
+    scope_level: required
+    business_question: What was revenue by store by month?
+    expected_semantics: Sum order revenue on ordered time, grouped by store and month.
+
+  - id: q03_item_revenue_by_product_type_by_month
+    title: Item Revenue By Product Type By Month
+    category: baseline
+    scope_level: required
+    business_question: What was item revenue by product type by month?
+    expected_semantics: Sum item-grain revenue grouped by product type and ordered month.
+
+  - id: q04_aov_by_store
+    title: Average Order Value By Store
+    category: baseline
+    scope_level: required
+    business_question: What is average order value by store?
+    expected_semantics: Revenue divided by orders grouped by store.
+
+  - id: q05_orders_and_item_revenue_by_store_by_month
+    title: Orders And Item Revenue In One Query
+    category: advanced_portable
+    scope_level: required
+    business_question: Show orders and item revenue in one query by store and month.
+    expected_semantics: Combine order-grain and item-grain metrics without silently fanning out order counts.
+
+  - id: q06_new_customer_orders_by_month
+    title: New Customer Orders By Month
+    category: advanced_portable
+    scope_level: required
+    business_question: How many new customer orders did we have by month?
+    expected_semantics: Count only first orders, using the ordered timestamp at month grain.
+
+  - id: q07_delivered_revenue_by_month
+    title: Delivered Revenue By Month
+    category: advanced_portable
+    scope_level: required
+    business_question: What was delivered revenue by month using delivered time instead of ordered time?
+    expected_semantics: Sum order revenue anchored to delivered timestamp, not ordered timestamp.
+
+  - id: q08_revenue_by_customer_segment_as_of_order_time
+    title: Revenue By Historical Customer Segment
+    category: differentiator
+    scope_level: stretch
+    business_question: What was revenue by customer segment at the time the order happened?
+    expected_semantics: Use a temporal-validity relationship from orders to customer history and preserve null when no valid history row exists.
+
+  - id: q09_session_to_order_conversion_7d
+    title: Session To Order Conversion Within 7 Days
+    category: differentiator
+    scope_level: stretch
+    business_question: What share of sessions converted to an order within 7 days?
+    expected_semantics: Match sessions to later orders for the same customer within a 7 day window.
+
+  - id: q10_orders_from_customers_with_10plus_orders_in_month
+    title: Orders From Customers With 10 Plus Orders In Month
+    category: differentiator
+    scope_level: stretch
+    business_question: What was order volume from customers with more than 10 orders in the same month?
+    expected_semantics: Use an aggregate-on-aggregate predicate scoped to customer and month, then count qualifying orders.
+
+  - id: q11_repeat_customer_orders_by_store_by_month
+    title: Repeat Customer Orders By Store By Month
+    category: edge_capability
+    scope_level: stretch
+    business_question: How many repeat customer orders did we have by store by month?
+    expected_semantics: Count orders from customers whose lifetime order count is greater than one, while preserving outer store and month grouping.
+
+  - id: q12_orders_by_month_with_lifetime_spend_500_filter
+    title: Orders By Month With Lifetime Spend Filter
+    category: edge_capability
+    scope_level: stretch
+    business_question: How many orders did we have by month after applying a query-time filter for customers with lifetime spend of at least 500 USD?
+    expected_semantics: Apply a query-time customer-scoped predicate over lifetime spend without requiring a separately authored published metric for the filtered result.
+
+  - id: q13_daily_orders_from_customers_with_10plus_orders_in_month
+    title: Daily Orders From Customers With 10 Plus Orders In Month
+    category: edge_capability
+    scope_level: stretch
+    business_question: What was the daily order volume from customers who placed more than 10 orders in the containing month?
+    expected_semantics: Evaluate the predicate at customer plus month scope, then return the qualifying orders at day grain.
+
+  - id: q14_revenue_from_customers_with_10plus_orders_same_store_month
+    title: Revenue From Customers With 10 Plus Orders In Same Store Month
+    category: edge_capability
+    scope_level: stretch
+    business_question: What was revenue by store by month from customers who placed more than 10 orders in that same store-month?
+    expected_semantics: Evaluate the qualifying predicate at customer plus month plus store scope, then sum qualifying revenue without losing the outer grouping context.
+
+  - id: q15_same_store_session_to_order_conversion_7d
+    title: Same Store Session To Order Conversion Within 7 Days
+    category: edge_capability
+    scope_level: stretch
+    business_question: What share of sessions converted to an order at the same store within 7 days?
+    expected_semantics: Match sessions to later orders for the same customer within a 7 day window and require the store property to match across the event pair.
+
+  - id: q16_revenue_by_customer_segment_as_of_delivered_time
+    title: Revenue By Historical Customer Segment As Of Delivered Time
+    category: edge_capability
+    scope_level: stretch
+    business_question: What was delivered revenue by customer segment as of delivered time?
+    expected_semantics: Use delivered time as the business clock for the measure and for the temporal-valid join into customer history.

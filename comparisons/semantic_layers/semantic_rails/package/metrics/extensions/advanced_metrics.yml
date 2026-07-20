@@ -1,0 +1,137 @@
+metrics:
+  # Filtered aggregates — order_count and revenue restricted to a customer
+  # cohort. The metric_predicate scopes the cohort filter to the customer
+  # entity using the documented scope_mode semantics:
+  # - entity_only: cohort decided once per customer using lifetime stats
+  # - contextual:  cohort re-evaluated per query period
+
+  repeat_customer_orders:
+    label: Repeat customer orders
+    description: Orders placed by customers whose lifetime order count is greater than one.
+    kind: aggregate
+    value_type: count
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: growth_analytics
+      review_priority: medium
+      change_risk: high
+    expression:
+      kind: aggregate
+      measure: order_count
+      aggregation: count_distinct
+      filter:
+        all:
+          - expression:
+              kind: metric_predicate
+              entity: entity.jaffle_customer
+              scope_mode: entity_only
+              input:
+                measure: lifetime_order_count
+              op: ">"
+              value: 1
+
+  orders_from_customers_with_10plus_orders_in_period:
+    label: Orders from customers with 10+ orders in period
+    description: Orders from customers who place more than 10 orders in the same calendar month as the order.
+    kind: aggregate
+    value_type: count
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: growth_analytics
+      review_priority: medium
+      change_risk: high
+    expression:
+      kind: aggregate
+      measure: order_count
+      aggregation: count_distinct
+      filter:
+        all:
+          - expression:
+              kind: metric_predicate
+              entity: entity.jaffle_customer
+              scope_mode: contextual
+              time_grain: month
+              input:
+                measure: order_count
+              op: ">"
+              value: 10
+
+  revenue_from_customers_with_10plus_orders_in_period:
+    label: Revenue from customers with 10+ orders in period
+    description: Revenue from customers who place more than 10 orders in the same calendar month as the order.
+    kind: aggregate
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: growth_analytics
+      review_priority: medium
+      change_risk: high
+    expression:
+      kind: aggregate
+      measure: revenue_usd
+      aggregation: sum
+      filter:
+        all:
+          - expression:
+              kind: metric_predicate
+              entity: entity.jaffle_customer
+              scope_mode: contextual
+              time_grain: month
+              input:
+                measure: order_count
+              op: ">"
+              value: 10
+
+  # Conversion-rate metrics — codify session→order funnel semantics with
+  # 7-day window and same-store variant.
+
+  session_to_order_conversion_rate_7d:
+    label: Session to order conversion rate (7d)
+    description: Share of sessions that lead to an order from the same customer within seven days.
+    kind: conversion
+    value_type: percent
+    temporal_role: temporal_role.jaffle_session_started_at
+    meta:
+      owner_team: growth_analytics
+      review_priority: high
+      change_risk: high
+    expression:
+      kind: conversion
+      entity: entity.jaffle_customer
+      window:
+        unit: day
+        value: 7
+      matching_mode: first_converted_after_base
+      base:
+        kind: aggregate
+        measure: session_starts
+      converted:
+        kind: aggregate
+        measure: order_count
+
+  session_to_order_conversion_rate_7d_same_store:
+    label: Session to order conversion rate (7d, same store)
+    description: Same-store conversion — like the 7d rate but the order must occur at the same store as the session.
+    kind: conversion
+    value_type: percent
+    temporal_role: temporal_role.jaffle_session_started_at
+    meta:
+      owner_team: growth_analytics
+      review_priority: high
+      change_risk: high
+    expression:
+      kind: conversion
+      entity: entity.jaffle_customer
+      window:
+        unit: day
+        value: 7
+      matching_mode: first_converted_after_base
+      constant_properties:
+        - dimension.jaffle_store_name
+      base:
+        kind: aggregate
+        measure: session_starts
+      converted:
+        kind: aggregate
+        measure: order_count

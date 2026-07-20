@@ -1,0 +1,650 @@
+
+> semantic-layer-cube-comparison@1.0.0 dev
+> node index.js
+
+🔥 Cube Store (1.6.32) is assigned to 3030 port.
+🔓 Authentication checks are disabled in developer mode. Please use NODE_ENV=production to enable it.
+🦅 Dev environment available at http://localhost:4000
+🔗 Cube SQL (pg) is listening on 0.0.0.0:15432
+Cube 1.6.32 is listening on 4000
+[32mPerforming query[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1
+[32mPerforming query[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1
+2026-04-07T03:04:57.599Z INFO  [cubestored] <pid:14980> Cube Store version 1.6.32
+2026-04-07T03:04:57.601Z INFO  [cubestore::http::status] <pid:14980> Serving status probes at 0.0.0.0:3031
+2026-04-07T03:04:57.601Z INFO  [cubestore::metastore::rocks_fs] <pid:14980> Creating metastore from scratch in <REPO>/comparisons/semantic_layers/cube/.cubestore/data/metastore
+2026-04-07T03:04:57.610Z INFO  [cubestore::http] <pid:14980> Http Server is listening on 0.0.0.0:3030
+2026-04-07T03:04:57.610Z INFO  [cubestore::mysql] <pid:14980> MySQL port open on 0.0.0.0:13306
+[32mExecuting SQL[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1
+--
+  SELECT FLOOR((UNIX_TIMESTAMP()) / 10) as refresh_key
+--
+[32mExecuting SQL[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1
+--
+  SELECT FLOOR((UNIX_TIMESTAMP()) / 10) as refresh_key
+--
+[32mPerforming query completed[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1 (1200ms)
+[32mPerforming query[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1
+[32mPerforming query completed[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1 (1203ms)
+[32mExecuting SQL[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1
+--
+  SELECT
+      DATE_TRUNC('month', timezone('UTC', "orders".ordered_at::timestamptz)) "orders__ordered_at_month", count(distinct "orders".order_id) "orders__orders"
+    FROM
+      comparison_orders AS "orders"  GROUP BY 1 ORDER BY 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1 (38ms)
+[32mLoad Request Success[0m: a7ee8ac1-266d-455a-8105-9c0216ad3d12-span-1 (1267ms)
+--
+{
+  "measures": [
+    "orders.orders"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "orders.ordered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 6f914eff-bda1-44e8-898d-4095f1994a9d-span-1
+[32mExecuting SQL[0m: 6f914eff-bda1-44e8-898d-4095f1994a9d-span-1
+--
+  SELECT
+      "stores".store_name "stores__store_name", DATE_TRUNC('month', timezone('UTC', "orders".ordered_at::timestamptz)) "orders__ordered_at_month", sum(order_total_cents / 100.0) "orders__revenue_usd"
+    FROM
+      comparison_orders AS "orders"
+LEFT JOIN comparison_stores AS "stores" ON "orders".store_id = "stores".store_id  GROUP BY 1, 2 ORDER BY 2 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 6f914eff-bda1-44e8-898d-4095f1994a9d-span-1 (16ms)
+[32mLoad Request Success[0m: 6f914eff-bda1-44e8-898d-4095f1994a9d-span-1 (23ms)
+--
+{
+  "measures": [
+    "orders.revenue_usd"
+  ],
+  "dimensions": [
+    "stores.store_name"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "orders.ordered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: c3d39be9-25d5-48ac-9074-0a5c40fedbf4-span-1
+[32mExecuting SQL[0m: c3d39be9-25d5-48ac-9074-0a5c40fedbf4-span-1
+--
+  SELECT
+      "order_items".product_type "order_items__product_type", DATE_TRUNC('month', timezone('UTC', "order_items".ordered_at::timestamptz)) "order_items__ordered_at_month", sum("order_items".item_revenue_cents / 100.0) "order_items__item_revenue_usd"
+    FROM
+      comparison_order_items AS "order_items"  GROUP BY 1, 2 ORDER BY 2 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: c3d39be9-25d5-48ac-9074-0a5c40fedbf4-span-1 (31ms)
+[32mLoad Request Success[0m: c3d39be9-25d5-48ac-9074-0a5c40fedbf4-span-1 (36ms)
+--
+{
+  "measures": [
+    "order_items.item_revenue_usd"
+  ],
+  "dimensions": [
+    "order_items.product_type"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "order_items.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "order_items.ordered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 6ed89abd-7b79-4b35-9bda-5f77a2832bd8-span-1
+[32mExecuting SQL[0m: 6ed89abd-7b79-4b35-9bda-5f77a2832bd8-span-1
+--
+  SELECT
+      "stores".store_name "stores__store_name", avg(order_total_cents / 100.0) "orders__aov_usd"
+    FROM
+      comparison_orders AS "orders"
+LEFT JOIN comparison_stores AS "stores" ON "orders".store_id = "stores".store_id  GROUP BY 1 ORDER BY 2 DESC LIMIT 10000
+--
+[32mPerforming query completed[0m: 6ed89abd-7b79-4b35-9bda-5f77a2832bd8-span-1 (3ms)
+[32mLoad Request Success[0m: 6ed89abd-7b79-4b35-9bda-5f77a2832bd8-span-1 (8ms)
+--
+{
+  "measures": [
+    "orders.aov_usd"
+  ],
+  "dimensions": [
+    "stores.store_name"
+  ],
+  "order": {
+    "orders.aov_usd": "desc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: cd6df6d4-a60a-44f3-8e50-bcb707fced86-span-1
+[32mExecuting SQL[0m: cd6df6d4-a60a-44f3-8e50-bcb707fced86-span-1
+--
+  SELECT
+      "stores".store_name "stores__store_name", DATE_TRUNC('month', timezone('UTC', "order_metrics".ordered_at::timestamptz)) "order_metrics__ordered_at_month", count(distinct "order_metrics".order_id) "order_metrics__orders", sum("order_metrics".item_revenue_usd) "order_metrics__item_revenue_usd"
+    FROM
+      (with item_totals as (
+  select
+    order_id,
+    sum(item_revenue_cents) as item_revenue_cents
+  from comparison_order_items
+  group by 1
+)
+select
+  o.order_id,
+  o.customer_id,
+  o.store_id,
+  o.ordered_at,
+  coalesce(i.item_revenue_cents, 0) / 100.0 as item_revenue_usd
+from comparison_orders as o
+left join item_totals as i
+  on o.order_id = i.order_id
+) AS "order_metrics"
+LEFT JOIN comparison_stores AS "stores" ON "order_metrics".store_id = "stores".store_id  GROUP BY 1, 2 ORDER BY 2 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: cd6df6d4-a60a-44f3-8e50-bcb707fced86-span-1 (43ms)
+[32mLoad Request Success[0m: cd6df6d4-a60a-44f3-8e50-bcb707fced86-span-1 (51ms)
+--
+{
+  "measures": [
+    "order_metrics.orders",
+    "order_metrics.item_revenue_usd"
+  ],
+  "dimensions": [
+    "stores.store_name"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "order_metrics.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "order_metrics.ordered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: f17deaa9-b90b-42e0-941f-0e06e801f361-span-1
+[32mExecuting SQL[0m: f17deaa9-b90b-42e0-941f-0e06e801f361-span-1
+--
+  SELECT
+      DATE_TRUNC('month', timezone('UTC', "orders".ordered_at::timestamptz)) "orders__ordered_at_month", count(distinct CASE WHEN "orders".is_new_customer_order THEN "orders".order_id END) "orders__new_customer_orders"
+    FROM
+      comparison_orders AS "orders"  GROUP BY 1 ORDER BY 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: f17deaa9-b90b-42e0-941f-0e06e801f361-span-1 (27ms)
+[32mLoad Request Success[0m: f17deaa9-b90b-42e0-941f-0e06e801f361-span-1 (41ms)
+--
+{
+  "measures": [
+    "orders.new_customer_orders"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "orders.ordered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: b2e1111c-e117-4e38-9fdd-6cd6cfb5bedc-span-1
+[32mExecuting SQL[0m: b2e1111c-e117-4e38-9fdd-6cd6cfb5bedc-span-1
+--
+  SELECT
+      DATE_TRUNC('month', timezone('UTC', "order_lifecycle".delivered_at::timestamptz)) "order_lifecycle__delivered_at_month", sum(order_total_cents / 100.0) "order_lifecycle__delivered_revenue"
+    FROM
+      comparison_order_lifecycle AS "order_lifecycle"  GROUP BY 1 ORDER BY 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: b2e1111c-e117-4e38-9fdd-6cd6cfb5bedc-span-1 (3ms)
+[32mLoad Request Success[0m: b2e1111c-e117-4e38-9fdd-6cd6cfb5bedc-span-1 (12ms)
+--
+{
+  "measures": [
+    "order_lifecycle.delivered_revenue"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "order_lifecycle.delivered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "order_lifecycle.delivered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 2269f27d-43bb-45f1-abf6-4fdb3a14d8ad-span-1
+[32mExecuting SQL[0m: 2269f27d-43bb-45f1-abf6-4fdb3a14d8ad-span-1
+--
+  SELECT
+      "customer_history".customer_segment "customer_history__customer_segment", DATE_TRUNC('month', timezone('UTC', "orders".ordered_at::timestamptz)) "orders__ordered_at_month", sum(order_total_cents / 100.0) "orders__revenue_usd"
+    FROM
+      comparison_orders AS "orders"
+LEFT JOIN comparison_customer_history AS "customer_history" ON "orders".customer_id = "customer_history".customer_id AND "orders".ordered_at >= "customer_history".valid_from AND ("orders".ordered_at < "customer_history".valid_to OR "customer_history".valid_to IS NULL)  GROUP BY 1, 2 ORDER BY 2 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 2269f27d-43bb-45f1-abf6-4fdb3a14d8ad-span-1 (17ms)
+[32mLoad Request Success[0m: 2269f27d-43bb-45f1-abf6-4fdb3a14d8ad-span-1 (22ms)
+--
+{
+  "measures": [
+    "orders.revenue_usd"
+  ],
+  "dimensions": [
+    "customer_history.customer_segment"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "orders.ordered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 45c4bd43-9615-4c23-b209-71f7fcfe6675-span-1
+[32mExecuting SQL[0m: 45c4bd43-9615-4c23-b209-71f7fcfe6675-span-1
+--
+  SELECT
+      DATE_TRUNC('month', timezone('UTC', "session_conversions_7d".started_at::timestamptz)) "session_conversions_7d__started_at_month", count(distinct CASE WHEN "session_conversions_7d".converted_within_7d THEN "session_conversions_7d".session_id END) * 1.0 / NULLIF(count(distinct "session_conversions_7d".session_id), 0) "session_conversions_7d__session_to_order_conversion_rate_7d"
+    FROM
+      (with matched as (
+  select
+    s.session_id,
+    s.customer_id,
+    s.store_id,
+    s.started_at,
+    min(o.ordered_at) as first_ordered_at
+  from comparison_storefront_sessions as s
+  left join comparison_orders as o
+    on s.customer_id = o.customer_id
+   and o.ordered_at >= s.started_at
+   and o.ordered_at < s.started_at + interval '7 day'
+  group by 1, 2, 3, 4
+)
+select
+  session_id,
+  customer_id,
+  store_id,
+  started_at,
+  case when first_ordered_at is not null then true else false end as converted_within_7d
+from matched
+) AS "session_conversions_7d"  GROUP BY 1 ORDER BY 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 45c4bd43-9615-4c23-b209-71f7fcfe6675-span-1 (4ms)
+[32mLoad Request Success[0m: 45c4bd43-9615-4c23-b209-71f7fcfe6675-span-1 (8ms)
+--
+{
+  "measures": [
+    "session_conversions_7d.session_to_order_conversion_rate_7d"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "session_conversions_7d.started_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "session_conversions_7d.started_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 935dfd04-f54d-4b20-a23f-257e2dea3d9f-span-1
+[32mExecuting SQL[0m: 935dfd04-f54d-4b20-a23f-257e2dea3d9f-span-1
+--
+  SELECT
+      DATE_TRUNC('month', timezone('UTC', "qualified_orders".ordered_month::timestamptz)) "qualified_orders__ordered_month_month", count(distinct "qualified_orders".order_id) "qualified_orders__qualifying_orders"
+    FROM
+      (with customer_months as (
+  select
+    customer_id,
+    date_trunc('month', ordered_at) as ordered_month,
+    count(*) as monthly_orders
+  from comparison_orders
+  group by 1, 2
+)
+select
+  o.order_id,
+  o.customer_id,
+  o.store_id,
+  o.ordered_at,
+  date_trunc('month', o.ordered_at) as ordered_month
+from comparison_orders as o
+inner join customer_months as c
+  on o.customer_id = c.customer_id
+ and date_trunc('month', o.ordered_at) = c.ordered_month
+where c.monthly_orders > 10
+) AS "qualified_orders"  GROUP BY 1 ORDER BY 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 935dfd04-f54d-4b20-a23f-257e2dea3d9f-span-1 (17ms)
+[32mLoad Request Success[0m: 935dfd04-f54d-4b20-a23f-257e2dea3d9f-span-1 (21ms)
+--
+{
+  "measures": [
+    "qualified_orders.qualifying_orders"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "qualified_orders.ordered_month",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "qualified_orders.ordered_month": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 8a41f6ed-791d-4b6e-981d-485f84044b8b-span-1
+[32mExecuting SQL[0m: 8a41f6ed-791d-4b6e-981d-485f84044b8b-span-1
+--
+  SELECT
+      "stores".store_name "stores__store_name", DATE_TRUNC('month', timezone('UTC', "orders".ordered_at::timestamptz)) "orders__ordered_at_month", count(distinct "orders".order_id) "orders__orders"
+    FROM
+      comparison_orders AS "orders"
+LEFT JOIN comparison_stores AS "stores" ON "orders".store_id = "stores".store_id
+LEFT JOIN comparison_customers AS "customers" ON "orders".customer_id = "customers".customer_id  WHERE ("customers".lifetime_order_count > CAST('1' AS DOUBLE)) GROUP BY 1, 2 ORDER BY 2 ASC, 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 8a41f6ed-791d-4b6e-981d-485f84044b8b-span-1 (23ms)
+[32mLoad Request Success[0m: 8a41f6ed-791d-4b6e-981d-485f84044b8b-span-1 (28ms)
+--
+{
+  "measures": [
+    "orders.orders"
+  ],
+  "dimensions": [
+    "stores.store_name"
+  ],
+  "filters": [
+    {
+      "member": "customers.lifetime_order_count",
+      "operator": "gt",
+      "values": [
+        "1"
+      ]
+    }
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "orders.ordered_at": "asc",
+    "stores.store_name": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 021971bd-2666-4028-9083-b51e8ed54c52-span-1
+[32mExecuting SQL[0m: 021971bd-2666-4028-9083-b51e8ed54c52-span-1
+--
+  SELECT
+      DATE_TRUNC('month', timezone('UTC', "orders".ordered_at::timestamptz)) "orders__ordered_at_month", count(distinct "orders".order_id) "orders__orders"
+    FROM
+      comparison_orders AS "orders"
+LEFT JOIN comparison_customers AS "customers" ON "orders".customer_id = "customers".customer_id  WHERE (lifetime_spend_cents / 100.0 >= CAST('500' AS DOUBLE)) GROUP BY 1 ORDER BY 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 021971bd-2666-4028-9083-b51e8ed54c52-span-1 (19ms)
+[32mLoad Request Success[0m: 021971bd-2666-4028-9083-b51e8ed54c52-span-1 (24ms)
+--
+{
+  "measures": [
+    "orders.orders"
+  ],
+  "filters": [
+    {
+      "member": "customers.lifetime_spend_usd",
+      "operator": "gte",
+      "values": [
+        "500"
+      ]
+    }
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "orders.ordered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: a54e167b-8ec3-4162-afdd-de9d4888d02c-span-1
+[32mExecuting SQL[0m: a54e167b-8ec3-4162-afdd-de9d4888d02c-span-1
+--
+  SELECT
+      DATE_TRUNC('day', timezone('UTC', "qualified_orders".ordered_at::timestamptz)) "qualified_orders__ordered_at_day", count(distinct "qualified_orders".order_id) "qualified_orders__qualifying_orders"
+    FROM
+      (with customer_months as (
+  select
+    customer_id,
+    date_trunc('month', ordered_at) as ordered_month,
+    count(*) as monthly_orders
+  from comparison_orders
+  group by 1, 2
+)
+select
+  o.order_id,
+  o.customer_id,
+  o.store_id,
+  o.ordered_at,
+  date_trunc('month', o.ordered_at) as ordered_month
+from comparison_orders as o
+inner join customer_months as c
+  on o.customer_id = c.customer_id
+ and date_trunc('month', o.ordered_at) = c.ordered_month
+where c.monthly_orders > 10
+) AS "qualified_orders"  GROUP BY 1 ORDER BY 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: a54e167b-8ec3-4162-afdd-de9d4888d02c-span-1 (17ms)
+[32mLoad Request Success[0m: a54e167b-8ec3-4162-afdd-de9d4888d02c-span-1 (21ms)
+--
+{
+  "measures": [
+    "qualified_orders.qualifying_orders"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "qualified_orders.ordered_at",
+      "granularity": "day"
+    }
+  ],
+  "order": {
+    "qualified_orders.ordered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 867fffd5-7017-4c29-bf47-642380c22f0e-span-1
+[32mExecuting SQL[0m: 867fffd5-7017-4c29-bf47-642380c22f0e-span-1
+--
+  SELECT
+      "stores".store_name "stores__store_name", DATE_TRUNC('month', timezone('UTC', "high_frequency_store_orders".ordered_at::timestamptz)) "high_frequency_store_orders__ordered_at_month", sum("high_frequency_store_orders".revenue_usd) "high_frequency_store_orders__qualifying_revenue_usd"
+    FROM
+      (with customer_store_months as (
+  select
+    customer_id,
+    store_id,
+    date_trunc('month', ordered_at) as ordered_month,
+    count(*) as monthly_orders
+  from comparison_orders
+  group by 1, 2, 3
+)
+select
+  o.order_id,
+  o.customer_id,
+  o.store_id,
+  o.ordered_at,
+  o.order_total_cents / 100.0 as revenue_usd
+from comparison_orders as o
+inner join customer_store_months as c
+  on o.customer_id = c.customer_id
+ and o.store_id = c.store_id
+ and date_trunc('month', o.ordered_at) = c.ordered_month
+where c.monthly_orders > 10
+) AS "high_frequency_store_orders"
+LEFT JOIN comparison_stores AS "stores" ON "high_frequency_store_orders".store_id = "stores".store_id  GROUP BY 1, 2 ORDER BY 2 ASC, 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 867fffd5-7017-4c29-bf47-642380c22f0e-span-1 (17ms)
+[32mLoad Request Success[0m: 867fffd5-7017-4c29-bf47-642380c22f0e-span-1 (21ms)
+--
+{
+  "measures": [
+    "high_frequency_store_orders.qualifying_revenue_usd"
+  ],
+  "dimensions": [
+    "stores.store_name"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "high_frequency_store_orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "high_frequency_store_orders.ordered_at": "asc",
+    "stores.store_name": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 03f9883d-6c34-406c-9e32-b0b701e246ca-span-1
+[32mExecuting SQL[0m: 03f9883d-6c34-406c-9e32-b0b701e246ca-span-1
+--
+  SELECT
+      DATE_TRUNC('month', timezone('UTC', "session_conversions_7d_same_store".started_at::timestamptz)) "session_conversions_7d_same_store__started_at_month", count(distinct CASE WHEN "session_conversions_7d_same_store".converted_within_7d THEN "session_conversions_7d_same_store".session_id END) * 1.0 / NULLIF(count(distinct "session_conversions_7d_same_store".session_id), 0) "session_conversions_7d_same_store__same_store_session_to_order_conversion_rate_7d"
+    FROM
+      (with matched as (
+  select
+    s.session_id,
+    s.customer_id,
+    s.store_id,
+    s.started_at,
+    min(o.ordered_at) as first_ordered_at
+  from comparison_storefront_sessions as s
+  left join comparison_orders as o
+    on s.customer_id = o.customer_id
+   and s.store_id = o.store_id
+   and o.ordered_at >= s.started_at
+   and o.ordered_at < s.started_at + interval '7 day'
+  group by 1, 2, 3, 4
+)
+select
+  session_id,
+  customer_id,
+  store_id,
+  started_at,
+  case when first_ordered_at is not null then true else false end as converted_within_7d
+from matched
+) AS "session_conversions_7d_same_store"  GROUP BY 1 ORDER BY 1 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 03f9883d-6c34-406c-9e32-b0b701e246ca-span-1 (3ms)
+[32mLoad Request Success[0m: 03f9883d-6c34-406c-9e32-b0b701e246ca-span-1 (7ms)
+--
+{
+  "measures": [
+    "session_conversions_7d_same_store.same_store_session_to_order_conversion_rate_7d"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "session_conversions_7d_same_store.started_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "session_conversions_7d_same_store.started_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--
+[32mPerforming query[0m: 84224311-15ea-416e-9f42-34ae6ffff761-span-1
+[32mExecuting SQL[0m: 84224311-15ea-416e-9f42-34ae6ffff761-span-1
+--
+  SELECT
+      "delivered_orders_with_customer_segment".customer_segment "delivered_orders_with_customer_segment__customer_segment", DATE_TRUNC('month', timezone('UTC', "delivered_orders_with_customer_segment".delivered_at::timestamptz)) "delivered_orders_with_customer_segment__delivered_at_month", sum("delivered_orders_with_customer_segment".delivered_revenue_usd) "delivered_orders_with_customer_segment__delivered_revenue"
+    FROM
+      (select
+  l.order_id,
+  l.store_id,
+  l.delivered_at,
+  h.customer_segment,
+  l.order_total_cents / 100.0 as delivered_revenue_usd
+from comparison_order_lifecycle as l
+left join comparison_customer_history as h
+  on l.customer_id = h.customer_id
+ and l.delivered_at >= h.valid_from
+ and (l.delivered_at < h.valid_to or h.valid_to is null)
+) AS "delivered_orders_with_customer_segment"  GROUP BY 1, 2 ORDER BY 2 ASC LIMIT 10000
+--
+[32mPerforming query completed[0m: 84224311-15ea-416e-9f42-34ae6ffff761-span-1 (2ms)
+[32mLoad Request Success[0m: 84224311-15ea-416e-9f42-34ae6ffff761-span-1 (5ms)
+--
+{
+  "measures": [
+    "delivered_orders_with_customer_segment.delivered_revenue"
+  ],
+  "dimensions": [
+    "delivered_orders_with_customer_segment.customer_segment"
+  ],
+  "timeDimensions": [
+    {
+      "dimension": "delivered_orders_with_customer_segment.delivered_at",
+      "granularity": "month"
+    }
+  ],
+  "order": {
+    "delivered_orders_with_customer_segment.delivered_at": "asc"
+  },
+  "cacheMode": "stale-if-slow",
+  "timezone": "UTC"
+}
+--

@@ -1,0 +1,5 @@
+{
+  "measures": ["orders.aov_usd"],
+  "dimensions": ["stores.store_name"],
+  "order": { "orders.aov_usd": "desc" }
+}

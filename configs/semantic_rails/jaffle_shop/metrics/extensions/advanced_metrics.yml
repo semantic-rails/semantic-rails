@@ -1,0 +1,160 @@
+metrics:
+  # Filtered aggregates — order_count restricted to a customer cohort.
+  #
+  # These earn governance because the filter is the *contract*: a caller
+  # asking for "repeat customer orders" should always get orders from
+  # customers whose lifetime order count > 1, never an unfiltered count.
+  # The metric_predicate scopes the filter to the customer entity in
+  # `entity_only` mode (the cohort is decided once per customer using
+  # their lifetime stats, independent of the query's time window).
+
+  sales.repeat_customer_orders:
+    as: metric.sales.repeat_customer_orders
+    label: Repeat customer orders
+    description: Orders placed by customers whose lifetime order count is greater than one.
+    kind: aggregate
+    temporal_role: temporal_role.jaffle_order_time
+    value_type: count
+    meta:
+      owner_team: growth_analytics
+      review_priority: medium
+      change_risk: high
+    expression:
+      kind: aggregate
+      measure: order_count
+      aggregation: count_distinct
+      filter:
+        all:
+          - expression:
+              kind: metric_predicate
+              entity: entity.jaffle_customer
+              scope_mode: entity_only
+              input:
+                measure: lifetime_order_count
+              op: ">"
+              value: 1
+
+  sales.high_value_customer_orders:
+    as: metric.sales.high_value_customer_orders
+    label: High value customer orders
+    description: Orders placed by customers whose lifetime spend is at least 100 USD.
+    kind: aggregate
+    temporal_role: temporal_role.jaffle_order_time
+    value_type: count
+    meta:
+      owner_team: growth_analytics
+      review_priority: medium
+      change_risk: high
+    expression:
+      kind: aggregate
+      measure: order_count
+      aggregation: count_distinct
+      filter:
+        all:
+          - expression:
+              kind: metric_predicate
+              entity: entity.jaffle_customer
+              scope_mode: entity_only
+              input:
+                measure: lifetime_spend_usd
+              op: ">="
+              value: 100
+
+  # Conversion-rate metrics — codify session→order funnel semantics.
+  #
+  # The `kind: conversion` AST pins the entity (customer), the window
+  # (7 days), the matching mode (first converted after base), and which
+  # measures count as base/converted events. None of that is implicit
+  # in the underlying session_starts and order_count measures.
+
+  sales.session_to_order_conversion_rate_7d:
+    as: metric.sales.session_to_order_conversion_rate_7d
+    label: Session to order conversion rate (7d)
+    description: Share of sessions that lead to an order from the same customer within seven days.
+    kind: conversion
+    temporal_role: temporal_role.jaffle_session_started_at
+    value_type: percent
+    comparison_family: session_conversion
+    comparison_mode: same_query
+    meta:
+      owner_team: growth_analytics
+      review_priority: high
+      change_risk: high
+    expression:
+      kind: conversion
+      entity: entity.jaffle_customer
+      window:
+        unit: day
+        value: 7
+      matching_mode: first_converted_after_base
+      base:
+        kind: aggregate
+        measure: session_starts
+      converted:
+        kind: aggregate
+        measure: order_count
+
+  sales.session_to_order_conversion_rate_7d_same_store:
+    as: metric.sales.session_to_order_conversion_rate_7d_same_store
+    label: Session to order conversion rate (7d, same store)
+    description: Same-store conversion — like the 7d rate but the order must occur at the same store as the session.
+    kind: conversion
+    temporal_role: temporal_role.jaffle_session_started_at
+    value_type: percent
+    comparison_family: session_conversion
+    comparison_mode: same_query
+    meta:
+      owner_team: growth_analytics
+      review_priority: high
+      change_risk: high
+    expression:
+      kind: conversion
+      entity: entity.jaffle_customer
+      window:
+        unit: day
+        value: 7
+      matching_mode: first_converted_after_base
+      constant_properties:
+        - dimension.jaffle_store_name
+      base:
+        kind: aggregate
+        measure: session_starts
+      converted:
+        kind: aggregate
+        measure: order_count
+
+  # Demonstrates a metric in a different namespace (`adoption.*`) that
+  # composes the same primitives as the sales conversions, but with a
+  # 28-day window and an "adoption funnel" framing. Useful as a
+  # lightweight stand-in for activation analyses on event streams.
+
+  adoption.signup_to_send_conversion_rate_28d:
+    as: metric.adoption.signup_to_send_conversion_rate_28d
+    label: Signup to Send adoption funnel (28d)
+    description: 28-day signup-to-Send adoption funnel. In this seed, session start stands in for signup and order placement stands in for the activated event.
+    kind: conversion
+    temporal_role: temporal_role.jaffle_session_started_at
+    value_type: percent
+    comparison_family: adoption_funnel
+    comparison_mode: same_query
+    meta:
+      owner_team: growth_analytics
+      review_priority: high
+      change_risk: high
+    expression:
+      kind: conversion
+      entity: entity.jaffle_customer
+      window:
+        unit: day
+        value: 28
+      matching_mode: first_converted_after_base
+      dimension_bindings:
+        dimension.jaffle_product_type:
+          side: converted
+          denominator: all_base_events
+      base:
+        kind: aggregate
+        measure: session_starts
+      converted:
+        kind: aggregate
+        measure: order_count

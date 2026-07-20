@@ -1,0 +1,73 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+
+⠹ Initiating query…
+✔ Success 🦄 - query completed after 0.09 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+WITH rss_10013_cte AS (
+  SELECT
+    store_name
+    , store_id AS store
+  FROM "jaffle_comparison"."main"."stores" stores_src_10000
+)
+
+SELECT
+  COALESCE(subq_7.metric_time__month, subq_15.metric_time__month) AS metric_time__month
+  , COALESCE(subq_7.store__store_name, subq_15.store__store_name) AS store__store_name
+  , MAX(subq_7.orders) AS orders
+  , MAX(subq_15.item_revenue_usd) AS item_revenue_usd
+FROM (
+  SELECT
+    subq_1.metric_time__month AS metric_time__month
+    , rss_10013_cte.store_name AS store__store_name
+    , SUM(subq_1.orders) AS orders
+  FROM (
+    SELECT
+      DATE_TRUNC('month', ordered_at) AS metric_time__month
+      , store_id AS store
+      , 1 AS orders
+    FROM "jaffle_comparison"."main"."orders" orders_src_10000
+  ) subq_1
+  LEFT OUTER JOIN
+    rss_10013_cte
+  ON
+    subq_1.store = rss_10013_cte.store
+  GROUP BY
+    subq_1.metric_time__month
+    , rss_10013_cte.store_name
+) subq_7
+FULL OUTER JOIN (
+  SELECT
+    subq_9.metric_time__month AS metric_time__month
+    , rss_10013_cte.store_name AS store__store_name
+    , SUM(subq_9.item_revenue_usd) AS item_revenue_usd
+  FROM (
+    SELECT
+      DATE_TRUNC('month', ordered_at) AS metric_time__month
+      , store_id AS store
+      , item_revenue_cents / 100.0 AS item_revenue_usd
+    FROM "jaffle_comparison"."main"."order_items" order_items_src_10000
+  ) subq_9
+  LEFT OUTER JOIN
+    rss_10013_cte
+  ON
+    subq_9.store = rss_10013_cte.store
+  GROUP BY
+    subq_9.metric_time__month
+    , rss_10013_cte.store_name
+) subq_15
+ON
+  (
+    subq_7.store__store_name = subq_15.store__store_name
+  ) AND (
+    subq_7.metric_time__month = subq_15.metric_time__month
+  )
+GROUP BY
+  COALESCE(subq_7.metric_time__month, subq_15.metric_time__month)
+  , COALESCE(subq_7.store__store_name, subq_15.store__store_name)
+ORDER BY metric_time__month
+

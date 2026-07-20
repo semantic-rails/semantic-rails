@@ -1,0 +1,92 @@
+[
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2016-09-01T00:00:00",
+    "REVENUE_USD": "18053.280000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2016-10-01T00:00:00",
+    "REVENUE_USD": "21923.950000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2016-11-01T00:00:00",
+    "REVENUE_USD": "27916.820000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2016-12-01T00:00:00",
+    "REVENUE_USD": "35677.600000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2017-01-01T00:00:00",
+    "REVENUE_USD": "45017.950000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2017-02-01T00:00:00",
+    "REVENUE_USD": "43358.120000"
+  },
+  {
+    "STORE_NAME": "Brooklyn",
+    "ORDERED_MONTH": "2017-03-01T00:00:00",
+    "REVENUE_USD": "24857.990000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2017-03-01T00:00:00",
+    "REVENUE_USD": "49092.330000"
+  },
+  {
+    "STORE_NAME": "Brooklyn",
+    "ORDERED_MONTH": "2017-04-01T00:00:00",
+    "REVENUE_USD": "35420.200000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2017-04-01T00:00:00",
+    "REVENUE_USD": "47896.790000"
+  },
+  {
+    "STORE_NAME": "Brooklyn",
+    "ORDERED_MONTH": "2017-05-01T00:00:00",
+    "REVENUE_USD": "41481.230000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2017-05-01T00:00:00",
+    "REVENUE_USD": "54589.120000"
+  },
+  {
+    "STORE_NAME": "Brooklyn",
+    "ORDERED_MONTH": "2017-06-01T00:00:00",
+    "REVENUE_USD": "47980.210000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2017-06-01T00:00:00",
+    "REVENUE_USD": "50398.660000"
+  },
+  {
+    "STORE_NAME": "Brooklyn",
+    "ORDERED_MONTH": "2017-07-01T00:00:00",
+    "REVENUE_USD": "49970.750000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2017-07-01T00:00:00",
+    "REVENUE_USD": "44886.440000"
+  },
+  {
+    "STORE_NAME": "Brooklyn",
+    "ORDERED_MONTH": "2017-08-01T00:00:00",
+    "REVENUE_USD": "59714.470000"
+  },
+  {
+    "STORE_NAME": "Philadelphia",
+    "ORDERED_MONTH": "2017-08-01T00:00:00",
+    "REVENUE_USD": "47657.120000"
+  }
+]

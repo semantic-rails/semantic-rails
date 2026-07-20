@@ -1,0 +1,143 @@
+metrics:
+  # ---------------------------------------------------------------
+  # Direct query-time time-series metrics.
+  #
+  # The `metrics/core/time_series_metrics.yml` file defines
+  # semi_additive metrics that wrap precomputed daily/monthly
+  # rollup measures. Those represent one valid pattern: when the
+  # underlying SQL is non-trivial (e.g. fiscal-aware MTD, custom
+  # calendar windows), pre-aggregate the value and pin its
+  # time-axis semantics with `kind: semi_additive`.
+  #
+  # The metrics below show the OTHER pattern: direct query-time
+  # rolling/prior_period/period_to_date over the primitive
+  # `revenue_usd` flow measure. The planner generates the window
+  # function or self-join on demand. No precomputed measure is
+  # required; the measure layer stays primitive and the metric
+  # layer pins the contract.
+  # ---------------------------------------------------------------
+
+  sales.gross_margin_pct:
+    as: metric.sales.gross_margin_pct
+    label: Gross margin (%)
+    description: >-
+      (gross_order_value_usd - order_cost_usd) / gross_order_value_usd
+      computed at the metric layer over two primitive flow measures.
+      Demonstrates `kind: derived` arithmetic over metric refs.
+    kind: derived
+    value_type: percent
+    temporal_role: temporal_role.jaffle_order_time
+    expression:
+      kind: binary
+      op: divide
+      null_behavior: null_if_zero
+      left:
+        kind: binary
+        op: subtract
+        left:
+          kind: aggregate
+          measure: measure.jaffle.gross_order_value_usd
+          aggregation: sum
+        right:
+          kind: aggregate
+          measure: measure.jaffle.order_cost_usd
+          aggregation: sum
+      right:
+        kind: aggregate
+        measure: measure.jaffle.gross_order_value_usd
+        aggregation: sum
+    meta:
+      owner_team: finance_analytics
+      review_priority: high
+      change_risk: medium
+
+  sales.rolling_7d_revenue_direct:
+    as: metric.sales.rolling_7d_revenue_direct
+    label: Rolling 7-day revenue (direct)
+    description: >-
+      Trailing 7-day sum of item_revenue_usd computed at query time via
+      `kind: rolling` over the primitive flow measure. The semi_additive
+      wrapper over a precomputed daily-rollup measure that previously
+      lived in time_series_metrics.yml was redundant and removed. The
+      item-grain source preserves product detail for product breakdowns
+      while still rolling up to total revenue when no product dimension
+      is requested.
+    kind: rolling
+    measure: item_revenue_usd
+    aggregation: sum
+    window:
+      unit: day
+      value: 7
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: medium
+      change_risk: medium
+
+  sales.rolling_7d_product_revenue_direct:
+    as: metric.sales.rolling_7d_product_revenue_direct
+    label: Rolling 7-day product revenue (direct)
+    description: >-
+      Trailing 7-day sum of item_revenue_usd computed at query time from
+      purchased item detail. Use this product-grain form when grouping
+      rolling revenue by product attributes.
+    kind: rolling
+    measure: item_revenue_usd
+    aggregation: sum
+    window:
+      unit: day
+      value: 7
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: medium
+      change_risk: medium
+
+  sales.prior_week_revenue_direct:
+    as: metric.sales.prior_week_revenue_direct
+    label: Prior-week revenue (direct)
+    description: >-
+      Revenue from 7 days ago, computed at query time via
+      `kind: prior_period` over the primitive `revenue_usd` measure.
+      The semi_additive wrapper over a precomputed monthly-rollup
+      measure was dropped from time_series_metrics.yml; this direct
+      form replaces it. The day-unit offset stays compatible with the
+      day-grain probe used by validate-config.
+    kind: prior_period
+    measure: revenue_usd
+    aggregation: sum
+    offset:
+      unit: day
+      value: 7
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: medium
+      change_risk: medium
+
+  sales.revenue_mtd_direct:
+    as: metric.sales.revenue_mtd_direct
+    label: Revenue MTD (direct)
+    description: >-
+      Month-to-date revenue, computed at query time via
+      `kind: period_to_date` over the primitive revenue_usd flow
+      measure. The semi_additive wrapper that previously lived in
+      time_series_metrics.yml has been dropped — this direct form
+      is the canonical surface.
+    kind: period_to_date
+    measure: revenue_usd
+    aggregation: sum
+    period: month
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.jaffle_order_time
+    meta:
+      owner_team: finance_analytics
+      review_priority: medium
+      change_risk: medium

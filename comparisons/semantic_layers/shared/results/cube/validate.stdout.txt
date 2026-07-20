@@ -1,0 +1,5 @@
+
+> semantic-layer-cube-comparison@1.0.0 validate
+> npx cubejs-cli validate -p model
+
+✅ Cube Schema is valid

@@ -1,0 +1,2 @@
+compile -n q07_delivered_revenue_by_month
+execute compiled SQL in DuckDB

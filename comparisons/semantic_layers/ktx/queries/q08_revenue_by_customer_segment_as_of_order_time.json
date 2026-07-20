@@ -1,0 +1,14 @@
+{
+  "dimensions": [
+    {
+      "field": "revenue_by_customer_segment_order_time.ordered_month",
+      "granularity": "month"
+    },
+    "revenue_by_customer_segment_order_time.customer_segment"
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "revenue_by_customer_segment_order_time.revenue_usd"
+  ]
+}

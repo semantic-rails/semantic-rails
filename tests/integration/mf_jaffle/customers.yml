@@ -1,0 +1,18 @@
+# MetricFlow semantic model (dbt schema-2 form) for the customer
+# dimension. `model:` points at the EXISTING conformance fixture table
+# (`jaffle_customer`) so the translated package runs over the same rows
+# already loaded into every warehouse by the conformance suite.
+version: 2
+
+semantic_models:
+  - name: customers
+    description: Customer dimension table for the Jaffle Shop.
+    model: ref('jaffle_customer')
+    entities:
+      - name: customer
+        type: primary
+        expr: customer_id
+    dimensions:
+      - name: customer_type
+        type: categorical
+        label: Customer type

@@ -1,0 +1,1531 @@
+{
+  "assumptions": [],
+  "dialect": "duckdb",
+  "disabled_options": [],
+  "errors": [],
+  "explain": {
+    "alias_resolution": {
+      "group_by": [],
+      "select": [
+        {
+          "alias": "filtered_orders",
+          "expression": {
+            "kind": "metric",
+            "metric": "metric.jaffle.orders"
+          }
+        }
+      ],
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "where": []
+    },
+    "chosen_paths": {},
+    "compile_stats": {
+      "cache_hit": false,
+      "cache_lookup_ms": 1.574,
+      "compile_ms": 0.918,
+      "dialect": "duckdb",
+      "physical_plan_nodes": 8
+    },
+    "fanout_strategy": {
+      "leaf_paths": {
+        "measure.jaffle.order_count": []
+      },
+      "root_paths": {},
+      "status": "ok"
+    },
+    "grain_analysis": {
+      "group_by": [],
+      "leaf_grains": {
+        "measure.jaffle.order_count": [
+          "temporal_role.jaffle_order_time__month"
+        ]
+      },
+      "measure_entities": [
+        "entity.jaffle_order"
+      ],
+      "root_entity": "entity.jaffle_order",
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      }
+    },
+    "logical_plan": {
+      "bound_measures": [
+        {
+          "aggregation": "count_distinct",
+          "aggregation_params": {},
+          "alias": "leaf__measure_jaffle_order_count__count_distinct",
+          "filter_spec": {},
+          "measure_id": "measure.jaffle.order_count",
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "window_spec": {}
+        }
+      ],
+      "candidate_paths": {},
+      "disabled_options": [],
+      "fanout_strategy": {
+        "leaf_paths": {
+          "measure.jaffle.order_count": []
+        },
+        "root_paths": {},
+        "status": "ok"
+      },
+      "grain_analysis": {
+        "group_by": [],
+        "leaf_grains": {
+          "measure.jaffle.order_count": [
+            "temporal_role.jaffle_order_time__month"
+          ]
+        },
+        "measure_entities": [
+          "entity.jaffle_order"
+        ],
+        "root_entity": "entity.jaffle_order",
+        "time": {
+          "calendar_id": "default",
+          "end": null,
+          "fill": false,
+          "grain": "month",
+          "start": null,
+          "temporal_role": "temporal_role.jaffle_order_time"
+        }
+      },
+      "group_by": [],
+      "measure_plans": [
+        {
+          "aggregate_relation_id": "",
+          "bound_measure": {
+            "aggregation": "count_distinct",
+            "aggregation_params": {},
+            "alias": "leaf__measure_jaffle_order_count__count_distinct",
+            "filter_spec": {},
+            "measure_id": "measure.jaffle.order_count",
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "window_spec": {}
+          },
+          "cte_name": "leaf_1",
+          "grain_keys": [
+            "temporal_role.jaffle_order_time__month"
+          ],
+          "path_selections": [],
+          "required_entities": [
+            "entity.jaffle_customer",
+            "entity.jaffle_order"
+          ],
+          "rewrite_strategy": "direct",
+          "source_entity": "entity.jaffle_order"
+        }
+      ],
+      "post_aggregation_exprs": {
+        "filtered_orders": {
+          "kind": "metric",
+          "metric": "metric.jaffle.orders"
+        }
+      },
+      "query": {
+        "debug": false,
+        "explain": false,
+        "export": false,
+        "group_by": [],
+        "limit": null,
+        "metric_filters": [
+          {
+            "expression": {
+              "entity": "entity.jaffle_customer",
+              "input": {
+                "kind": "metric",
+                "metric": "metric.jaffle.lifetime_spend"
+              },
+              "kind": "metric_predicate",
+              "op": ">=",
+              "scope_mode": "entity_only",
+              "value": 500
+            },
+            "op": "=",
+            "value": true
+          }
+        ],
+        "order_by": [
+          {
+            "direction": "ASC",
+            "field": "temporal_role.jaffle_order_time__month"
+          }
+        ],
+        "path_policy": {
+          "ask_if_ambiguous": true,
+          "preference": "fewest_hops"
+        },
+        "select": [
+          {
+            "as": "filtered_orders",
+            "expression": {
+              "kind": "metric",
+              "metric": "metric.jaffle.orders"
+            }
+          }
+        ],
+        "temporal_role_overrides": {},
+        "time": {
+          "calendar_id": "default",
+          "end": null,
+          "fill": false,
+          "grain": "month",
+          "start": null,
+          "temporal_role": "temporal_role.jaffle_order_time"
+        },
+        "version": 1,
+        "where": []
+      },
+      "resolved_ids": {
+        "group_by": [],
+        "select": [
+          {
+            "alias": "filtered_orders",
+            "expression": {
+              "kind": "metric",
+              "metric": "metric.jaffle.orders"
+            }
+          }
+        ],
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "where": []
+      },
+      "rewrite_steps": [],
+      "root_entity": "entity.jaffle_order",
+      "selected_paths": {},
+      "semantic_dag": {
+        "nodes": [
+          {
+            "details": {
+              "aggregation": "count_distinct",
+              "entity": "entity.jaffle_order",
+              "filter": {},
+              "measure": "measure.jaffle.order_count",
+              "temporal_roles": [
+                "temporal_role.jaffle_order_time"
+              ]
+            },
+            "id": "source_leaf_1",
+            "inputs": [],
+            "kind": "SourceLeaf",
+            "label": "metric.jaffle.orders"
+          },
+          {
+            "details": {
+              "metric": "metric.jaffle.orders"
+            },
+            "id": "metric_ref_2",
+            "inputs": [
+              "source_leaf_1"
+            ],
+            "kind": "MetricRef",
+            "label": "metric.jaffle.orders"
+          },
+          {
+            "details": {
+              "outputs": {
+                "filtered_orders": "metric_ref_2"
+              }
+            },
+            "id": "final_project",
+            "inputs": [
+              "metric_ref_2"
+            ],
+            "kind": "FinalProject",
+            "label": ""
+          }
+        ],
+        "outputs": {
+          "filtered_orders": "metric_ref_2"
+        },
+        "version": 1
+      },
+      "synthetic_measures": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      },
+      "version": 2
+    },
+    "normalized_query": {
+      "debug": false,
+      "explain": false,
+      "export": false,
+      "group_by": [],
+      "limit": null,
+      "metric_filters": [
+        {
+          "expression": {
+            "entity": "entity.jaffle_customer",
+            "input": {
+              "kind": "metric",
+              "metric": "metric.jaffle.lifetime_spend"
+            },
+            "kind": "metric_predicate",
+            "op": ">=",
+            "scope_mode": "entity_only",
+            "value": 500
+          },
+          "op": "=",
+          "value": true
+        }
+      ],
+      "order_by": [
+        {
+          "direction": "ASC",
+          "field": "temporal_role.jaffle_order_time__month"
+        }
+      ],
+      "path_policy": {
+        "ask_if_ambiguous": true,
+        "preference": "fewest_hops"
+      },
+      "select": [
+        {
+          "as": "filtered_orders",
+          "expression": {
+            "kind": "metric",
+            "metric": "metric.jaffle.orders"
+          }
+        }
+      ],
+      "temporal_role_overrides": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      },
+      "version": 1,
+      "where": []
+    },
+    "performance_plan": {
+      "aggregate_routing": {
+        "selected": [],
+        "selected_count": 0
+      },
+      "date_filter_pushdown": [
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": true,
+          "pushed_to_scan": true,
+          "relation": "jaffle_order",
+          "scan_id": "leaf_1_scan",
+          "time_filter": {
+            "calendar_id": "default",
+            "end": null,
+            "fill": false,
+            "grain": "month",
+            "start": null,
+            "temporal_role": "temporal_role.jaffle_order_time"
+          }
+        },
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": false,
+          "pushed_to_scan": false,
+          "relation": "jaffle_customer",
+          "scan_id": "leaf_1_predicate_1_scan_1",
+          "time_filter": {}
+        }
+      ],
+      "estimated_scan_relations": [
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": false,
+          "has_time_filter": true,
+          "large_relation_hint": false,
+          "measures": [
+            {
+              "aggregation": "count_distinct",
+              "alias": "leaf__measure_jaffle_order_count__count_distinct",
+              "measure_id": "measure.jaffle.order_count"
+            }
+          ],
+          "relation": "jaffle_order",
+          "scan_id": "leaf_1_scan",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        },
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": false,
+          "has_time_filter": false,
+          "large_relation_hint": false,
+          "measures": [
+            {
+              "aggregation": "last_value",
+              "measure_id": "measure.jaffle.lifetime_spend_usd"
+            }
+          ],
+          "relation": "jaffle_customer",
+          "scan_id": "leaf_1_predicate_1_scan_1",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_customer",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        }
+      ],
+      "execution_recommendation": "needs_acceleration_layer",
+      "full_outer_alignments": 0,
+      "joins_after_aggregate": [],
+      "joins_before_aggregate": [
+        {
+          "aggregate_id": "leaf_1",
+          "contracts": [],
+          "join_node": "leaf_1_predicate_joins",
+          "max_path_hops": 0,
+          "paths": [],
+          "reason": "aggregation_not_source_rollup_safe",
+          "safe_before_aggregate": false,
+          "strategy": "direct_aggregate"
+        }
+      ],
+      "large_scan_risk": {
+        "all_raw_scans_bounded": false,
+        "large_raw_relations": [],
+        "reasons": [
+          "unbounded_raw_primitive_scan"
+        ],
+        "risk": true,
+        "source_preaggregates": [],
+        "time_window_days": null
+      },
+      "notes": [],
+      "pre_aggregation_grain": {
+        "leaf_1": [
+          "temporal_role.jaffle_order_time__month"
+        ]
+      },
+      "raw_fact_count": 2,
+      "risk_level": "high",
+      "semantic_equivalence": "exact_primitives",
+      "version": 1
+    },
+    "physical_plan": {
+      "nodes": [
+        {
+          "details": {
+            "aggregate_relation_id": "",
+            "measures": [
+              {
+                "aggregation": "count_distinct",
+                "alias": "leaf__measure_jaffle_order_count__count_distinct",
+                "measure_id": "measure.jaffle.order_count"
+              }
+            ],
+            "omitted_semantic_root_entity": "",
+            "physical_anchor_entity": "entity.jaffle_order",
+            "relation": "jaffle_order",
+            "selected_relation": "jaffle_order",
+            "selected_relation_type": "raw",
+            "semantic_equivalence": "",
+            "source_entity": "entity.jaffle_order",
+            "time_grain": ""
+          },
+          "id": "leaf_1_scan",
+          "inputs": [],
+          "kind": "Scan",
+          "label": "Scan jaffle_order"
+        },
+        {
+          "details": {
+            "measure_filters": [],
+            "pushed_to_scan": true,
+            "query_filters": [],
+            "time_filter": {
+              "calendar_id": "default",
+              "end": null,
+              "fill": false,
+              "grain": "month",
+              "start": null,
+              "temporal_role": "temporal_role.jaffle_order_time"
+            }
+          },
+          "id": "leaf_1_filter",
+          "inputs": [
+            "leaf_1_scan"
+          ],
+          "kind": "Filter",
+          "label": ""
+        },
+        {
+          "details": {
+            "conversion_roles": [],
+            "measures": [
+              {
+                "aggregation": "last_value",
+                "measure_id": "measure.jaffle.lifetime_spend_usd"
+              }
+            ],
+            "metric_recipes": [
+              "metric.jaffle.lifetime_spend"
+            ],
+            "predicate": {
+              "entity": "entity.jaffle_customer",
+              "input": {
+                "kind": "metric",
+                "metric": "metric.jaffle.lifetime_spend"
+              },
+              "kind": "metric_predicate",
+              "op": ">=",
+              "scope_mode": "entity_only",
+              "value": 500
+            },
+            "predicate_input": {
+              "kind": "metric",
+              "metric": "metric.jaffle.lifetime_spend"
+            },
+            "relation": "jaffle_customer",
+            "selected_relation": "jaffle_customer",
+            "selected_relation_type": "raw",
+            "source_entity": "entity.jaffle_customer"
+          },
+          "id": "leaf_1_predicate_1_scan_1",
+          "inputs": [],
+          "kind": "Scan",
+          "label": "Scan predicate source jaffle_customer"
+        },
+        {
+          "details": {
+            "measure_filters": [],
+            "pushed_to_scan": false,
+            "query_filters": [],
+            "time_filter": {}
+          },
+          "id": "leaf_1_predicate_1_filter_1",
+          "inputs": [
+            "leaf_1_predicate_1_scan_1"
+          ],
+          "kind": "Filter",
+          "label": ""
+        },
+        {
+          "details": {
+            "entity": "entity.jaffle_customer",
+            "keys": [
+              "dimension.jaffle_customer_id"
+            ],
+            "op": ">=",
+            "scope_mode": "entity_only",
+            "source_scan_count": 1,
+            "value": 500
+          },
+          "id": "leaf_1_predicate_set_1",
+          "inputs": [
+            "leaf_1_predicate_1_filter_1"
+          ],
+          "kind": "PredicateSet",
+          "label": ""
+        },
+        {
+          "details": {
+            "contracts": [],
+            "join_type": "INNER",
+            "predicate_sets": [
+              "leaf_1_predicate_set_1"
+            ],
+            "predicates": [
+              {
+                "entity": "entity.jaffle_customer",
+                "input": {
+                  "kind": "metric",
+                  "metric": "metric.jaffle.lifetime_spend"
+                },
+                "kind": "metric_predicate",
+                "op": ">=",
+                "scope_mode": "entity_only",
+                "value": 500
+              }
+            ],
+            "reason": "metric_predicate_entity_sets"
+          },
+          "id": "leaf_1_predicate_joins",
+          "inputs": [
+            "leaf_1_filter",
+            "leaf_1_predicate_set_1"
+          ],
+          "kind": "Join",
+          "label": ""
+        },
+        {
+          "details": {
+            "aggregate_placement": {
+              "reason": "aggregation_not_source_rollup_safe",
+              "strategy": "direct_aggregate"
+            },
+            "aggregate_relation_id": "",
+            "folded_measure_count": 1,
+            "grain": [
+              "temporal_role.jaffle_order_time__month"
+            ],
+            "measures": [
+              {
+                "aggregation": "count_distinct",
+                "alias": "leaf__measure_jaffle_order_count__count_distinct",
+                "measure_id": "measure.jaffle.order_count"
+              }
+            ]
+          },
+          "id": "leaf_1",
+          "inputs": [
+            "leaf_1_predicate_joins"
+          ],
+          "kind": "Aggregate",
+          "label": ""
+        },
+        {
+          "details": {
+            "key_aliases": [
+              "temporal_role.jaffle_order_time__month"
+            ],
+            "outputs": [
+              "filtered_orders"
+            ],
+            "projection_wrappers": "pruned_when_no_metric_filters_or_order_by"
+          },
+          "id": "final_project",
+          "inputs": [
+            "leaf_1"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "optimizations": [
+        {
+          "kind": "filter_pushdown",
+          "status": "applied",
+          "target": "leaf_1_scan"
+        },
+        {
+          "kind": "metric_predicate_source_accounting",
+          "predicate_sets": [
+            "leaf_1_predicate_set_1"
+          ],
+          "status": "applied",
+          "target": "leaf_1_predicate_joins"
+        },
+        {
+          "kind": "source_aggregate_placement",
+          "reason": "aggregation_not_source_rollup_safe",
+          "status": "direct_aggregate",
+          "target": "leaf_1"
+        }
+      ],
+      "outputs": {
+        "filtered_orders": "final_project",
+        "leaf__measure_jaffle_order_count__count_distinct": "leaf_1"
+      },
+      "version": 1
+    },
+    "rendered_sql": "WITH leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base AS (\nSELECT\n  jaffle_customer.customer_id AS g1,\n  jaffle_customer.customer_id AS __snapshot_key_1,\n  jaffle_customer.first_order_at AS __snapshot_order,\n  jaffle_customer.lifetime_spend_cents / 100.0 AS __snapshot_value\nFROM jaffle_customer\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 AS __snapshot_key_1,\n  MAX(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1 AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  SUM(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_value) AS m1\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nINNER JOIN leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete ON leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.g1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_key_1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order = leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_order\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1\n),\nleaf_1__lifetime_spend_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_spend_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_spend_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 500\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nINNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON jaffle_order.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS filtered_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
+    "rewrite_strategy": {
+      "status": "direct",
+      "steps": []
+    },
+    "semantic_dag": {
+      "nodes": [
+        {
+          "details": {
+            "aggregation": "count_distinct",
+            "entity": "entity.jaffle_order",
+            "filter": {},
+            "measure": "measure.jaffle.order_count",
+            "temporal_roles": [
+              "temporal_role.jaffle_order_time"
+            ]
+          },
+          "id": "source_leaf_1",
+          "inputs": [],
+          "kind": "SourceLeaf",
+          "label": "metric.jaffle.orders"
+        },
+        {
+          "details": {
+            "metric": "metric.jaffle.orders"
+          },
+          "id": "metric_ref_2",
+          "inputs": [
+            "source_leaf_1"
+          ],
+          "kind": "MetricRef",
+          "label": "metric.jaffle.orders"
+        },
+        {
+          "details": {
+            "outputs": {
+              "filtered_orders": "metric_ref_2"
+            }
+          },
+          "id": "final_project",
+          "inputs": [
+            "metric_ref_2"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "outputs": {
+        "filtered_orders": "metric_ref_2"
+      },
+      "version": 1
+    },
+    "sql_plan": {
+      "ctes": [
+        {
+          "name": "leaf_1",
+          "query": {
+            "ctes": [
+              {
+                "name": "leaf_1__lifetime_spend_customer_source_1",
+                "query": {
+                  "ctes": [
+                    {
+                      "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1",
+                      "query": {
+                        "ctes": [
+                          {
+                            "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                            "query": {
+                              "ctes": [],
+                              "distinct": false,
+                              "from_table": {
+                                "alias": "",
+                                "name": "jaffle_customer"
+                              },
+                              "group_by": [],
+                              "having": [],
+                              "joins": [],
+                              "limit": null,
+                              "order_by": [],
+                              "qualify": [],
+                              "select": [
+                                {
+                                  "alias": "g1",
+                                  "expression": {
+                                    "parts": [
+                                      "jaffle_customer",
+                                      "customer_id"
+                                    ]
+                                  }
+                                },
+                                {
+                                  "alias": "__snapshot_key_1",
+                                  "expression": {
+                                    "parts": [
+                                      "jaffle_customer",
+                                      "customer_id"
+                                    ]
+                                  }
+                                },
+                                {
+                                  "alias": "__snapshot_order",
+                                  "expression": {
+                                    "parts": [
+                                      "jaffle_customer",
+                                      "first_order_at"
+                                    ]
+                                  }
+                                },
+                                {
+                                  "alias": "__snapshot_value",
+                                  "expression": {
+                                    "left": {
+                                      "parts": [
+                                        "jaffle_customer",
+                                        "lifetime_spend_cents"
+                                      ]
+                                    },
+                                    "op": "/",
+                                    "right": {
+                                      "value": 100.0
+                                    }
+                                  }
+                                }
+                              ],
+                              "where": []
+                            }
+                          },
+                          {
+                            "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
+                            "query": {
+                              "ctes": [],
+                              "distinct": false,
+                              "from_table": {
+                                "alias": "",
+                                "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base"
+                              },
+                              "group_by": [
+                                {
+                                  "parts": [
+                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                    "g1"
+                                  ]
+                                },
+                                {
+                                  "parts": [
+                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                    "__snapshot_key_1"
+                                  ]
+                                }
+                              ],
+                              "having": [],
+                              "joins": [],
+                              "limit": null,
+                              "order_by": [],
+                              "qualify": [],
+                              "select": [
+                                {
+                                  "alias": "g1",
+                                  "expression": {
+                                    "parts": [
+                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                      "g1"
+                                    ]
+                                  }
+                                },
+                                {
+                                  "alias": "__snapshot_key_1",
+                                  "expression": {
+                                    "parts": [
+                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                      "__snapshot_key_1"
+                                    ]
+                                  }
+                                },
+                                {
+                                  "alias": "__snapshot_order",
+                                  "expression": {
+                                    "args": [
+                                      {
+                                        "parts": [
+                                          "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                          "__snapshot_order"
+                                        ]
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "MAX"
+                                  }
+                                }
+                              ],
+                              "where": []
+                            }
+                          }
+                        ],
+                        "distinct": false,
+                        "from_table": {
+                          "alias": "",
+                          "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base"
+                        },
+                        "group_by": [
+                          {
+                            "parts": [
+                              "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                              "g1"
+                            ]
+                          }
+                        ],
+                        "having": [],
+                        "joins": [
+                          {
+                            "join_type": "INNER",
+                            "on": {
+                              "left": {
+                                "left": {
+                                  "left": {
+                                    "parts": [
+                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                      "g1"
+                                    ]
+                                  },
+                                  "op": "IS NOT DISTINCT FROM",
+                                  "right": {
+                                    "parts": [
+                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
+                                      "g1"
+                                    ]
+                                  }
+                                },
+                                "op": "AND",
+                                "right": {
+                                  "left": {
+                                    "parts": [
+                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                      "__snapshot_key_1"
+                                    ]
+                                  },
+                                  "op": "IS NOT DISTINCT FROM",
+                                  "right": {
+                                    "parts": [
+                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
+                                      "__snapshot_key_1"
+                                    ]
+                                  }
+                                }
+                              },
+                              "op": "AND",
+                              "right": {
+                                "left": {
+                                  "parts": [
+                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                    "__snapshot_order"
+                                  ]
+                                },
+                                "op": "=",
+                                "right": {
+                                  "parts": [
+                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
+                                    "__snapshot_order"
+                                  ]
+                                }
+                              }
+                            },
+                            "table": {
+                              "alias": "",
+                              "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete"
+                            }
+                          }
+                        ],
+                        "limit": null,
+                        "order_by": [],
+                        "qualify": [],
+                        "select": [
+                          {
+                            "alias": "g1",
+                            "expression": {
+                              "parts": [
+                                "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                "g1"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "m1",
+                            "expression": {
+                              "args": [
+                                {
+                                  "parts": [
+                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
+                                    "__snapshot_value"
+                                  ]
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "SUM"
+                            }
+                          }
+                        ],
+                        "where": []
+                      }
+                    }
+                  ],
+                  "distinct": false,
+                  "from_table": {
+                    "alias": "base",
+                    "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1"
+                  },
+                  "group_by": [],
+                  "having": [],
+                  "joins": [],
+                  "limit": null,
+                  "order_by": [],
+                  "qualify": [],
+                  "select": [
+                    {
+                      "alias": "dimension.jaffle_customer_id",
+                      "expression": {
+                        "parts": [
+                          "base",
+                          "g1"
+                        ]
+                      }
+                    },
+                    {
+                      "alias": "__predicate_value",
+                      "expression": {
+                        "parts": [
+                          "base",
+                          "m1"
+                        ]
+                      }
+                    }
+                  ],
+                  "where": []
+                }
+              },
+              {
+                "name": "leaf_1__qualified_customers_by_lifetime_spend_1",
+                "query": {
+                  "ctes": [],
+                  "distinct": true,
+                  "from_table": {
+                    "alias": "predicate_source",
+                    "name": "leaf_1__lifetime_spend_customer_source_1"
+                  },
+                  "group_by": [],
+                  "having": [],
+                  "joins": [],
+                  "limit": null,
+                  "order_by": [],
+                  "qualify": [],
+                  "select": [
+                    {
+                      "alias": "dimension.jaffle_customer_id",
+                      "expression": {
+                        "parts": [
+                          "predicate_source",
+                          "dimension.jaffle_customer_id"
+                        ]
+                      }
+                    }
+                  ],
+                  "where": [
+                    {
+                      "left": {
+                        "parts": [
+                          "predicate_source",
+                          "__predicate_value"
+                        ]
+                      },
+                      "op": ">=",
+                      "right": {
+                        "value": 500
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "jaffle_order"
+            },
+            "group_by": [
+              {
+                "args": [
+                  {
+                    "value": "month"
+                  },
+                  {
+                    "expr": {
+                      "parts": [
+                        "jaffle_order",
+                        "ordered_at"
+                      ]
+                    },
+                    "type_name": "TIMESTAMP"
+                  }
+                ],
+                "distinct": false,
+                "name": "DATE_TRUNC"
+              }
+            ],
+            "having": [],
+            "joins": [
+              {
+                "join_type": "INNER",
+                "on": {
+                  "left": {
+                    "parts": [
+                      "jaffle_order",
+                      "customer_id"
+                    ]
+                  },
+                  "op": "=",
+                  "right": {
+                    "parts": [
+                      "leaf_1__qualified_customers_by_lifetime_spend_1",
+                      "dimension.jaffle_customer_id"
+                    ]
+                  }
+                },
+                "table": {
+                  "alias": "",
+                  "name": "leaf_1__qualified_customers_by_lifetime_spend_1"
+                }
+              }
+            ],
+            "limit": null,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "t",
+                "expression": {
+                  "args": [
+                    {
+                      "value": "month"
+                    },
+                    {
+                      "expr": {
+                        "parts": [
+                          "jaffle_order",
+                          "ordered_at"
+                        ]
+                      },
+                      "type_name": "TIMESTAMP"
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "DATE_TRUNC"
+                }
+              },
+              {
+                "alias": "m1",
+                "expression": {
+                  "args": [
+                    {
+                      "parts": [
+                        "jaffle_order",
+                        "order_id"
+                      ]
+                    }
+                  ],
+                  "distinct": true,
+                  "name": "COUNT"
+                }
+              }
+            ],
+            "where": []
+          }
+        }
+      ],
+      "distinct": false,
+      "from_table": {
+        "alias": "base",
+        "name": "leaf_1"
+      },
+      "group_by": [],
+      "having": [],
+      "joins": [],
+      "limit": null,
+      "order_by": [
+        {
+          "direction": "ASC",
+          "expression": {
+            "parts": [
+              "t"
+            ]
+          }
+        }
+      ],
+      "qualify": [],
+      "select": [
+        {
+          "alias": "temporal_role.jaffle_order_time__month",
+          "expression": {
+            "parts": [
+              "base",
+              "t"
+            ]
+          }
+        },
+        {
+          "alias": "filtered_orders",
+          "expression": {
+            "parts": [
+              "base",
+              "m1"
+            ]
+          }
+        }
+      ],
+      "where": []
+    }
+  },
+  "freshness_as_of": "",
+  "freshness_by_leaf": [],
+  "logical_plan": {
+    "bound_measures": [
+      {
+        "aggregation": "count_distinct",
+        "aggregation_params": {},
+        "alias": "leaf__measure_jaffle_order_count__count_distinct",
+        "filter_spec": {},
+        "measure_id": "measure.jaffle.order_count",
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "window_spec": {}
+      }
+    ],
+    "candidate_paths": {},
+    "disabled_options": [],
+    "fanout_strategy": {
+      "leaf_paths": {
+        "measure.jaffle.order_count": []
+      },
+      "root_paths": {},
+      "status": "ok"
+    },
+    "grain_analysis": {
+      "group_by": [],
+      "leaf_grains": {
+        "measure.jaffle.order_count": [
+          "temporal_role.jaffle_order_time__month"
+        ]
+      },
+      "measure_entities": [
+        "entity.jaffle_order"
+      ],
+      "root_entity": "entity.jaffle_order",
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      }
+    },
+    "group_by": [],
+    "measure_plans": [
+      {
+        "aggregate_relation_id": "",
+        "bound_measure": {
+          "aggregation": "count_distinct",
+          "aggregation_params": {},
+          "alias": "leaf__measure_jaffle_order_count__count_distinct",
+          "filter_spec": {},
+          "measure_id": "measure.jaffle.order_count",
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "window_spec": {}
+        },
+        "cte_name": "leaf_1",
+        "grain_keys": [
+          "temporal_role.jaffle_order_time__month"
+        ],
+        "path_selections": [],
+        "required_entities": [
+          "entity.jaffle_customer",
+          "entity.jaffle_order"
+        ],
+        "rewrite_strategy": "direct",
+        "source_entity": "entity.jaffle_order"
+      }
+    ],
+    "post_aggregation_exprs": {
+      "filtered_orders": {
+        "kind": "metric",
+        "metric": "metric.jaffle.orders"
+      }
+    },
+    "query": {
+      "debug": false,
+      "explain": false,
+      "export": false,
+      "group_by": [],
+      "limit": null,
+      "metric_filters": [
+        {
+          "expression": {
+            "entity": "entity.jaffle_customer",
+            "input": {
+              "kind": "metric",
+              "metric": "metric.jaffle.lifetime_spend"
+            },
+            "kind": "metric_predicate",
+            "op": ">=",
+            "scope_mode": "entity_only",
+            "value": 500
+          },
+          "op": "=",
+          "value": true
+        }
+      ],
+      "order_by": [
+        {
+          "direction": "ASC",
+          "field": "temporal_role.jaffle_order_time__month"
+        }
+      ],
+      "path_policy": {
+        "ask_if_ambiguous": true,
+        "preference": "fewest_hops"
+      },
+      "select": [
+        {
+          "as": "filtered_orders",
+          "expression": {
+            "kind": "metric",
+            "metric": "metric.jaffle.orders"
+          }
+        }
+      ],
+      "temporal_role_overrides": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      },
+      "version": 1,
+      "where": []
+    },
+    "resolved_ids": {
+      "group_by": [],
+      "select": [
+        {
+          "alias": "filtered_orders",
+          "expression": {
+            "kind": "metric",
+            "metric": "metric.jaffle.orders"
+          }
+        }
+      ],
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "where": []
+    },
+    "rewrite_steps": [],
+    "root_entity": "entity.jaffle_order",
+    "selected_paths": {},
+    "semantic_dag": {
+      "nodes": [
+        {
+          "details": {
+            "aggregation": "count_distinct",
+            "entity": "entity.jaffle_order",
+            "filter": {},
+            "measure": "measure.jaffle.order_count",
+            "temporal_roles": [
+              "temporal_role.jaffle_order_time"
+            ]
+          },
+          "id": "source_leaf_1",
+          "inputs": [],
+          "kind": "SourceLeaf",
+          "label": "metric.jaffle.orders"
+        },
+        {
+          "details": {
+            "metric": "metric.jaffle.orders"
+          },
+          "id": "metric_ref_2",
+          "inputs": [
+            "source_leaf_1"
+          ],
+          "kind": "MetricRef",
+          "label": "metric.jaffle.orders"
+        },
+        {
+          "details": {
+            "outputs": {
+              "filtered_orders": "metric_ref_2"
+            }
+          },
+          "id": "final_project",
+          "inputs": [
+            "metric_ref_2"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "outputs": {
+        "filtered_orders": "metric_ref_2"
+      },
+      "version": 1
+    },
+    "synthetic_measures": {},
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_order_time"
+    },
+    "version": 2
+  },
+  "methodology_hints": [],
+  "normalized_query": {
+    "debug": false,
+    "explain": false,
+    "export": false,
+    "group_by": [],
+    "limit": null,
+    "metric_filters": [
+      {
+        "expression": {
+          "entity": "entity.jaffle_customer",
+          "input": {
+            "kind": "metric",
+            "metric": "metric.jaffle.lifetime_spend"
+          },
+          "kind": "metric_predicate",
+          "op": ">=",
+          "scope_mode": "entity_only",
+          "value": 500
+        },
+        "op": "=",
+        "value": true
+      }
+    ],
+    "order_by": [
+      {
+        "direction": "ASC",
+        "field": "temporal_role.jaffle_order_time__month"
+      }
+    ],
+    "path_policy": {
+      "ask_if_ambiguous": true,
+      "preference": "fewest_hops"
+    },
+    "select": [
+      {
+        "as": "filtered_orders",
+        "expression": {
+          "kind": "metric",
+          "metric": "metric.jaffle.orders"
+        }
+      }
+    ],
+    "temporal_role_overrides": {},
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_order_time"
+    },
+    "version": 1,
+    "where": []
+  },
+  "ok": true,
+  "output_columns": [
+    {
+      "display_label": "Order time",
+      "field": "temporal_role.jaffle_order_time__month",
+      "semantic_id": "temporal_role.jaffle_order_time",
+      "sql_alias": "temporal_role.jaffle_order_time__month",
+      "type": "time"
+    },
+    {
+      "display_label": "Orders",
+      "field": "filtered_orders",
+      "semantic_id": "metric.jaffle.orders",
+      "sql_alias": "filtered_orders",
+      "type": "count"
+    }
+  ],
+  "policy_effects": [],
+  "provenance_summary": {
+    "policy_effects": [],
+    "rewrite_status": "direct",
+    "root_entity": "entity.jaffle_order",
+    "selected_paths": [],
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_order_time"
+    }
+  },
+  "query": {
+    "metric_filters": [
+      {
+        "expression": {
+          "entity": "entity.jaffle_customer",
+          "input": {
+            "metric": "metric.jaffle.lifetime_spend"
+          },
+          "kind": "metric_predicate",
+          "op": ">=",
+          "scope_mode": "entity_only",
+          "value": 500
+        },
+        "op": "=",
+        "value": true
+      }
+    ],
+    "order_by": [
+      {
+        "direction": "ASC",
+        "field": "temporal_role.jaffle_order_time__month"
+      }
+    ],
+    "select": [
+      {
+        "as": "filtered_orders",
+        "expression": {
+          "metric": "metric.jaffle.orders"
+        }
+      }
+    ],
+    "time": {
+      "grain": "month",
+      "temporal_role": "temporal_role.jaffle_order_time"
+    },
+    "version": 1
+  },
+  "recovery_hints": [],
+  "request_context": {},
+  "sql_profile": "audit",
+  "status": "ok",
+  "timing_ms": 4.38,
+  "trace": {
+    "fallback": {
+      "reason": "",
+      "semantic_drift": false,
+      "used": false
+    },
+    "intent_slots": {
+      "filters": [],
+      "grouping": [],
+      "qualification": [],
+      "target": [],
+      "time": {}
+    },
+    "markdown": "### Semantic Trace\n- Target: metric.jaffle.orders\n- Grouping: no grouping\n- Filters: 1\n- Relationship paths: 0\n- SQL: available",
+    "selected": {
+      "filters": [
+        {
+          "field": "metric_filter",
+          "op": "=",
+          "value": true
+        }
+      ],
+      "group_by": [],
+      "paths": [],
+      "rewrite_status": "",
+      "root_entity": "entity.jaffle_order",
+      "sql_available": true,
+      "subjects": [
+        "metric.jaffle.orders"
+      ]
+    }
+  },
+  "version": 2,
+  "warehouse": "duckdb",
+  "warehouse_capabilities": {
+    "date_diff": true,
+    "date_trunc": true,
+    "median": true,
+    "null_safe_equality": true,
+    "percentile_cont": true,
+    "qualify": false,
+    "snapshot_row_selection": "aggregate_join",
+    "timestamp_type": "TIMESTAMP"
+  },
+  "warnings": []
+}

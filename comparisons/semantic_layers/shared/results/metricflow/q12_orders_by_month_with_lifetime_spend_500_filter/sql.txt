@@ -1,0 +1,21 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+✔ Success 🦄 - query completed after 0.08 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+SELECT
+  metric_time__month
+  , SUM(filtered_orders_lifetime_spend_500) AS filtered_orders_lifetime_spend_500
+FROM (
+  SELECT
+    DATE_TRUNC('month', ordered_at) AS metric_time__month
+    , 1 AS filtered_orders_lifetime_spend_500
+  FROM "jaffle_comparison"."main"."high_value_orders_500" high_value_orders_500_src_10000
+) subq_2
+GROUP BY
+  metric_time__month
+ORDER BY metric_time__month
+

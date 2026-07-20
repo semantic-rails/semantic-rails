@@ -1,0 +1,1 @@
+query --metrics qualifying_orders --group-by metric_time__day --order metric_time__day

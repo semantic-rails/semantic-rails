@@ -1,0 +1,52 @@
+cubes:
+  - name: high_frequency_store_orders
+    sql: |
+      with customer_store_months as (
+        select
+          customer_id,
+          store_id,
+          date_trunc('month', ordered_at) as ordered_month,
+          count(*) as monthly_orders
+        from comparison_orders
+        group by 1, 2, 3
+      )
+      select
+        o.order_id,
+        o.customer_id,
+        o.store_id,
+        o.ordered_at,
+        o.order_total_cents / 100.0 as revenue_usd
+      from comparison_orders as o
+      inner join customer_store_months as c
+        on o.customer_id = c.customer_id
+       and o.store_id = c.store_id
+       and date_trunc('month', o.ordered_at) = c.ordered_month
+      where c.monthly_orders > 10
+
+    joins:
+      - name: stores
+        relationship: many_to_one
+        sql: "{CUBE}.store_id = {stores.store_id}"
+
+    dimensions:
+      - name: order_id
+        sql: order_id
+        type: string
+        primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: string
+
+      - name: store_id
+        sql: store_id
+        type: string
+
+      - name: ordered_at
+        sql: ordered_at
+        type: time
+
+    measures:
+      - name: qualifying_revenue_usd
+        sql: revenue_usd
+        type: sum

@@ -1,0 +1,13 @@
+{
+  "dimensions": [
+    {
+      "field": "daily_orders_from_high_frequency_customers_month.ordered_day",
+      "granularity": "day"
+    }
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "daily_orders_from_high_frequency_customers_month.qualifying_orders"
+  ]
+}

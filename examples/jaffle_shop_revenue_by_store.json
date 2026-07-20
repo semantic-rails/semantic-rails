@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "measure": "measure.jaffle.revenue_usd"
+      },
+      "as": "revenue_usd"
+    }
+  ],
+  "group_by": ["dimension.jaffle_store_name"],
+  "order_by": [
+    {
+      "field": "revenue_usd",
+      "direction": "DESC"
+    }
+  ],
+  "limit": 5
+}

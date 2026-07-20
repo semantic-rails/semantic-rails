@@ -1,0 +1,377 @@
+name: jaffle_semantic_comparison
+description: Concise Snowflake Semantic Views representation of the Jaffle comparison slice.
+
+tables:
+  # Baseline tables
+  - name: orders
+    description: One row per completed customer order.
+    base_table:
+      database: ANALYTICS
+      schema: SEMANTIC_COMPARISON
+      table: COMPARISON_ORDERS
+    dimensions:
+      - name: order_id
+        description: Unique order identifier.
+        expr: order_id
+        data_type: VARCHAR
+        unique: true
+      - name: customer_id
+        description: Customer identifier.
+        expr: customer_id
+        data_type: VARCHAR
+      - name: store_id
+        description: Store identifier.
+        expr: store_id
+        data_type: VARCHAR
+      - name: is_new_customer_order
+        description: Whether this order is the customer's first order.
+        expr: is_new_customer_order
+        data_type: BOOLEAN
+    time_dimensions:
+      - name: ordered_at
+        description: Order timestamp.
+        expr: ordered_at
+        data_type: TIMESTAMP
+      - name: ordered_date
+        description: Order date.
+        expr: ordered_date
+        data_type: DATE
+    facts:
+      - name: order_total_usd
+        description: Row-level order total in USD.
+        expr: order_total_cents / 100.0
+        data_type: NUMBER
+    metrics:
+      - name: orders
+        description: Count of orders.
+        expr: COUNT(order_id)
+      - name: revenue_usd
+        description: Sum of order revenue.
+        expr: SUM(order_total_cents / 100.0)
+      - name: new_customer_orders
+        description: Count of first orders.
+        expr: COUNT_IF(is_new_customer_order)
+
+  - name: order_items
+    description: One row per order line item.
+    base_table:
+      database: ANALYTICS
+      schema: SEMANTIC_COMPARISON
+      table: COMPARISON_ORDER_ITEMS
+    dimensions:
+      - name: item_id
+        description: Unique item identifier.
+        expr: item_id
+        data_type: VARCHAR
+        unique: true
+      - name: order_id
+        description: Parent order identifier.
+        expr: order_id
+        data_type: VARCHAR
+      - name: product_name
+        description: Product name.
+        expr: product_name
+        data_type: VARCHAR
+      - name: product_type
+        description: Product type.
+        expr: product_type
+        data_type: VARCHAR
+      - name: store_id
+        description: Store identifier copied from the order.
+        expr: store_id
+        data_type: VARCHAR
+    time_dimensions:
+      - name: ordered_at
+        description: Parent order timestamp.
+        expr: ordered_at
+        data_type: TIMESTAMP
+    facts:
+      - name: item_revenue_row_usd
+        description: Row-level item revenue in USD.
+        expr: item_revenue_cents / 100.0
+        data_type: NUMBER
+    metrics:
+      - name: item_revenue_usd
+        description: Sum of item revenue.
+        expr: SUM(item_revenue_cents / 100.0)
+
+  - name: customers
+    description: One row per customer.
+    base_table:
+      database: ANALYTICS
+      schema: SEMANTIC_COMPARISON
+      table: COMPARISON_CUSTOMERS
+    dimensions:
+      - name: customer_id
+        description: Unique customer identifier.
+        expr: customer_id
+        data_type: VARCHAR
+        unique: true
+      - name: customer_name
+        description: Customer name.
+        expr: customer_name
+        data_type: VARCHAR
+      - name: customer_type
+        description: Current customer type label.
+        expr: customer_type
+        data_type: VARCHAR
+    time_dimensions:
+      - name: first_order_at
+        description: First order timestamp.
+        expr: first_order_at
+        data_type: TIMESTAMP
+
+  - name: stores
+    description: One row per store.
+    base_table:
+      database: ANALYTICS
+      schema: SEMANTIC_COMPARISON
+      table: COMPARISON_STORES
+    dimensions:
+      - name: store_id
+        description: Unique store identifier.
+        expr: store_id
+        data_type: VARCHAR
+        unique: true
+      - name: store_name
+        description: Human-readable store name.
+        expr: store_name
+        data_type: VARCHAR
+    time_dimensions:
+      - name: opened_at
+        description: Store opening timestamp.
+        expr: opened_at
+        data_type: TIMESTAMP
+
+  # Stretch tables
+  - name: customer_history
+    description: Historical customer segment states.
+    base_table:
+      database: ANALYTICS
+      schema: SEMANTIC_COMPARISON
+      table: COMPARISON_CUSTOMER_HISTORY
+    dimensions:
+      - name: customer_id
+        description: Customer identifier.
+        expr: customer_id
+        data_type: VARCHAR
+      - name: customer_segment
+        description: Historical segment label.
+        expr: customer_segment
+        data_type: VARCHAR
+      - name: preferred_store_id
+        description: Preferred store identifier during the validity window.
+        expr: preferred_store_id
+        data_type: VARCHAR
+    time_dimensions:
+      - name: valid_from
+        description: Start of segment validity.
+        expr: valid_from
+        data_type: TIMESTAMP
+      - name: valid_to
+        description: End of segment validity.
+        expr: valid_to
+        data_type: TIMESTAMP
+
+  - name: order_lifecycle
+    description: Alternate order lifecycle clock.
+    base_table:
+      database: ANALYTICS
+      schema: SEMANTIC_COMPARISON
+      table: COMPARISON_ORDER_LIFECYCLE
+    dimensions:
+      - name: order_id
+        description: Order identifier.
+        expr: order_id
+        data_type: VARCHAR
+        unique: true
+      - name: customer_id
+        description: Customer identifier.
+        expr: customer_id
+        data_type: VARCHAR
+      - name: store_id
+        description: Store identifier.
+        expr: store_id
+        data_type: VARCHAR
+    time_dimensions:
+      - name: ordered_at
+        description: Ordered timestamp.
+        expr: ordered_at
+        data_type: TIMESTAMP
+      - name: prepared_at
+        description: Prepared timestamp.
+        expr: prepared_at
+        data_type: TIMESTAMP
+      - name: delivered_at
+        description: Delivered timestamp.
+        expr: delivered_at
+        data_type: TIMESTAMP
+    metrics:
+      - name: delivered_revenue
+        description: Revenue anchored to delivered time.
+        expr: SUM(order_total_cents / 100.0)
+
+  - name: storefront_sessions
+    description: One row per storefront session.
+    base_table:
+      database: ANALYTICS
+      schema: SEMANTIC_COMPARISON
+      table: COMPARISON_STOREFRONT_SESSIONS
+    dimensions:
+      - name: session_id
+        description: Session identifier.
+        expr: session_id
+        data_type: VARCHAR
+        unique: true
+      - name: customer_id
+        description: Customer identifier.
+        expr: customer_id
+        data_type: VARCHAR
+      - name: store_id
+        description: Store identifier.
+        expr: store_id
+        data_type: VARCHAR
+      - name: converted_order_id
+        description: Converted order identifier when present.
+        expr: converted_order_id
+        data_type: VARCHAR
+    time_dimensions:
+      - name: started_at
+        description: Session start timestamp.
+        expr: started_at
+        data_type: TIMESTAMP
+      - name: converted_at
+        description: Conversion timestamp when present.
+        expr: converted_at
+        data_type: TIMESTAMP
+    metrics:
+      - name: session_starts
+        description: Count of sessions.
+        expr: COUNT(session_id)
+
+relationships:
+  - name: orders_to_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: customer_id
+        right_column: customer_id
+
+  - name: orders_to_stores
+    left_table: orders
+    right_table: stores
+    relationship_columns:
+      - left_column: store_id
+        right_column: store_id
+
+  - name: order_items_to_orders
+    left_table: order_items
+    right_table: orders
+    relationship_columns:
+      - left_column: order_id
+        right_column: order_id
+
+  - name: order_lifecycle_to_orders
+    left_table: order_lifecycle
+    right_table: orders
+    relationship_columns:
+      - left_column: order_id
+        right_column: order_id
+
+  - name: storefront_sessions_to_customers
+    left_table: storefront_sessions
+    right_table: customers
+    relationship_columns:
+      - left_column: customer_id
+        right_column: customer_id
+
+  - name: storefront_sessions_to_orders
+    left_table: storefront_sessions
+    right_table: orders
+    relationship_columns:
+      - left_column: converted_order_id
+        right_column: order_id
+
+metrics:
+  - name: aov_usd
+    description: Average order value.
+    expr: orders.revenue_usd / NULLIF(orders.orders, 0)
+
+verified_queries:
+  - name: q01_orders_by_month
+    question: How many orders did we have by month?
+    sql: |
+      SELECT *
+      FROM SEMANTIC_VIEW(
+        ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON
+        DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month
+        METRICS orders.orders
+      );
+
+  - name: q05_orders_and_item_revenue_by_store_by_month
+    question: Show orders and item revenue in one query by store and month.
+    sql: |
+      SELECT *
+      FROM SEMANTIC_VIEW(
+        ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON
+        DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month
+        METRICS orders.orders, order_items.item_revenue_usd
+      );
+
+  - name: q08_revenue_by_customer_segment_as_of_order_time
+    question: What was revenue by customer segment at the time the order happened?
+    sql: |
+      -- Executed as verified SQL because the as-of validity predicate remains
+      -- outside the clean SEMANTIC_VIEW(...) surface in this comparison pack.
+      SELECT
+        DATE_TRUNC('month', o.ordered_at) AS ordered_month,
+        h.customer_segment,
+        SUM(o.order_total_cents / 100.0) AS revenue_usd
+      FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o
+      LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h
+        ON o.customer_id = h.customer_id
+       AND o.ordered_at >= h.valid_from
+       AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)
+      GROUP BY 1, 2;
+
+  - name: q09_session_to_order_conversion_7d
+    question: What share of sessions converted to an order within 7 days?
+    sql: |
+      WITH matched_sessions AS (
+        SELECT
+          s.session_id,
+          DATE_TRUNC('month', s.started_at) AS session_month,
+          MIN(o.ordered_at) AS first_ordered_at
+        FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s
+        LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o
+          ON o.customer_id = s.customer_id
+         AND o.ordered_at >= s.started_at
+         AND o.ordered_at < DATEADD(day, 7, s.started_at)
+        GROUP BY 1, 2
+      )
+      SELECT
+        session_month,
+        COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS conversion_rate_7d
+      FROM matched_sessions
+      GROUP BY 1;
+
+  - name: q10_orders_from_customers_with_10plus_orders_in_month
+    question: What was order volume from customers with more than 10 orders in the same month?
+    sql: |
+      WITH customer_months AS (
+        SELECT
+          customer_id,
+          DATE_TRUNC('month', ordered_at) AS ordered_month,
+          COUNT(*) AS monthly_orders
+        FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS
+        GROUP BY 1, 2
+      )
+      SELECT
+        DATE_TRUNC('month', o.ordered_at) AS ordered_month,
+        COUNT(*) AS qualifying_orders
+      FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o
+      INNER JOIN customer_months AS c
+        ON o.customer_id = c.customer_id
+       AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month
+      WHERE c.monthly_orders > 10
+      GROUP BY 1;

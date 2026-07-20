@@ -1,0 +1,58 @@
+tests:
+  store_order_snapshot:
+    kind: query_matches_snapshot
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.order_count}
+          as: orders
+      group_by: [dimension.jaffle_store_name]
+      order_by:
+        - field: dimension.jaffle_store_name
+          direction: ASC
+      limit: 10
+    expected_rows:
+      - dimension.jaffle_store_name: Brooklyn
+        orders: 21465
+      - dimension.jaffle_store_name: Philadelphia
+        orders: 38187
+
+  monthly_revenue_columns:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: revenue_usd
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+      order_by:
+        - field: time
+          direction: ASC
+      limit: 5
+    columns: [temporal_role.jaffle_order_time__month, revenue_usd]
+
+  aov_by_customer_type_row_bounds:
+    kind: query_row_count_bounds
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.aov_usd}
+          as: aov_usd
+      group_by: [dimension.jaffle_customer_type]
+      limit: 10
+    min_rows: 2
+    max_rows: 2
+
+  duplicate_alias_rejected:
+    kind: validate_fails_with_code
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.order_count}
+          as: value
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: value
+      limit: 5
+    code: DUPLICATE_OUTPUT_ALIAS

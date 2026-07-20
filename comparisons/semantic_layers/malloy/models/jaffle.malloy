@@ -1,0 +1,317 @@
+# Baseline sources keep the 4-table core concise and query-first.
+source: stores is jaffle.table('comparison_stores') extend {
+  primary_key: store_id
+}
+
+source: customers is jaffle.table('comparison_customers') extend {
+  primary_key: customer_id
+}
+
+source: order_items is jaffle.table('comparison_order_items') extend {
+  primary_key: item_id
+
+  dimension: ordered_month is ordered_at.month
+
+  measure: item_revenue_usd is item_revenue_cents.sum() / 100.0
+}
+
+source: orders is jaffle.table('comparison_orders') extend {
+  primary_key: order_id
+
+  join_one: stores with store_id
+  join_one: customers with customer_id
+  join_many: order_items on order_id = order_items.order_id
+
+  dimension: ordered_month is ordered_at.month
+
+  measure: orders is count()
+  measure: revenue_usd is order_total_cents.sum() / 100.0
+  measure: aov_usd is order_total_cents.avg() / 100.0
+  measure: new_customer_orders is count() { where: is_new_customer_order = true }
+}
+
+# Stretch scope adds an alternate clock plus SQL-backed workaround sources.
+source: order_lifecycle is jaffle.table('comparison_order_lifecycle') extend {
+  primary_key: order_id
+
+  join_one: stores with store_id
+
+  dimension: delivered_month is delivered_at.month
+
+  measure: delivered_revenue_usd is order_total_cents.sum() / 100.0
+}
+
+source: orders_with_customer_segment is jaffle.sql("""
+  select
+    o.order_id,
+    o.ordered_at,
+    date_trunc('month', o.ordered_at) as ordered_month,
+    s.store_name,
+    h.customer_segment,
+    o.order_total_cents / 100.0 as revenue_usd
+  from comparison_orders as o
+  left join comparison_stores as s
+    on o.store_id = s.store_id
+  left join comparison_customer_history as h
+    on o.customer_id = h.customer_id
+   and o.ordered_at >= h.valid_from
+   and (h.valid_to is null or o.ordered_at < h.valid_to)
+""") extend {
+  primary_key: order_id
+
+  measure: revenue_total_usd is revenue_usd.sum()
+}
+
+source: session_conversions_7d is jaffle.sql("""
+  with matched as (
+    select
+      s.session_id,
+      s.started_at,
+      date_trunc('month', s.started_at) as session_month,
+      min(o.ordered_at) as first_ordered_at
+    from comparison_storefront_sessions as s
+    left join comparison_orders as o
+      on s.customer_id = o.customer_id
+     and o.ordered_at >= s.started_at
+     and o.ordered_at < s.started_at + interval '7 day'
+    group by 1, 2, 3
+  )
+  select
+    session_id,
+    session_month,
+    first_ordered_at is not null as converted_within_7d
+  from matched
+""") extend {
+  primary_key: session_id
+
+  measure: sessions is count()
+  measure: converted_sessions is count() { where: converted_within_7d = true }
+  measure: conversion_rate_7d is converted_sessions / sessions
+}
+
+source: orders_from_high_frequency_customers is jaffle.sql("""
+  with customer_months as (
+    select
+      customer_id,
+      date_trunc('month', ordered_at) as ordered_month,
+      count(*) as monthly_orders
+    from comparison_orders
+    group by 1, 2
+  )
+  select
+    o.order_id,
+    date_trunc('day', o.ordered_at) as ordered_day,
+    date_trunc('month', o.ordered_at) as ordered_month
+  from comparison_orders as o
+  inner join customer_months as c
+    on o.customer_id = c.customer_id
+   and date_trunc('month', o.ordered_at) = c.ordered_month
+  where c.monthly_orders > 10
+""") extend {
+  primary_key: order_id
+
+  measure: qualifying_orders is count()
+}
+
+source: revenue_from_high_frequency_store_customers is jaffle.sql("""
+  with customer_store_months as (
+    select
+      customer_id,
+      store_id,
+      date_trunc('month', ordered_at) as ordered_month,
+      count(*) as monthly_orders
+    from comparison_orders
+    group by 1, 2, 3
+  )
+  select
+    o.order_id,
+    date_trunc('month', o.ordered_at) as ordered_month,
+    s.store_name,
+    o.order_total_cents / 100.0 as revenue_usd
+  from comparison_orders as o
+  inner join customer_store_months as c
+    on o.customer_id = c.customer_id
+   and o.store_id = c.store_id
+   and date_trunc('month', o.ordered_at) = c.ordered_month
+  inner join comparison_stores as s
+    on o.store_id = s.store_id
+  where c.monthly_orders > 10
+""") extend {
+  primary_key: order_id
+
+  measure: qualifying_revenue_usd is revenue_usd.sum()
+}
+
+source: session_conversions_7d_same_store is jaffle.sql("""
+  with matched as (
+    select
+      s.session_id,
+      date_trunc('month', s.started_at) as session_month,
+      min(o.ordered_at) as first_ordered_at
+    from comparison_storefront_sessions as s
+    left join comparison_orders as o
+      on s.customer_id = o.customer_id
+     and s.store_id = o.store_id
+     and o.ordered_at >= s.started_at
+     and o.ordered_at < s.started_at + interval '7 day'
+    group by 1, 2
+  )
+  select
+    session_id,
+    session_month,
+    first_ordered_at is not null as converted_within_7d
+  from matched
+""") extend {
+  primary_key: session_id
+
+  measure: sessions is count()
+  measure: same_store_converted_sessions is count() { where: converted_within_7d = true }
+  measure: same_store_conversion_rate_7d is same_store_converted_sessions / sessions
+}
+
+source: delivered_orders_with_customer_segment is jaffle.sql("""
+  select
+    l.order_id,
+    date_trunc('month', l.delivered_at) as delivered_month,
+    h.customer_segment,
+    l.order_total_cents / 100.0 as delivered_revenue_usd
+  from comparison_order_lifecycle as l
+  left join comparison_customer_history as h
+    on l.customer_id = h.customer_id
+   and l.delivered_at >= h.valid_from
+   and (h.valid_to is null or l.delivered_at < h.valid_to)
+""") extend {
+  primary_key: order_id
+
+  measure: delivered_revenue_total_usd is delivered_revenue_usd.sum()
+}
+
+query: q01_orders_by_month is orders -> {
+  group_by: ordered_month
+  aggregate: orders
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q02_revenue_by_store_by_month is orders -> {
+  group_by:
+    ordered_month
+    stores.store_name
+  aggregate: revenue_usd
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q03_item_revenue_by_product_type_by_month is order_items -> {
+  group_by:
+    ordered_month
+    product_type
+  aggregate: item_revenue_usd
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q04_aov_by_store is orders -> {
+  group_by: stores.store_name
+  aggregate: aov_usd
+  order_by: aov_usd desc
+  limit: 5000
+}
+
+query: q05_orders_and_item_revenue_by_store_by_month is orders -> {
+  group_by:
+    ordered_month
+    stores.store_name
+  aggregate:
+    orders
+    order_items.item_revenue_usd
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q06_new_customer_orders_by_month is orders -> {
+  group_by: ordered_month
+  aggregate: new_customer_orders
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q07_delivered_revenue_by_month is order_lifecycle -> {
+  group_by: delivered_month
+  aggregate: delivered_revenue_usd
+  order_by: delivered_month asc
+  limit: 5000
+}
+
+query: q08_revenue_by_customer_segment_as_of_order_time is orders_with_customer_segment -> {
+  group_by:
+    ordered_month
+    customer_segment
+  aggregate: revenue_total_usd
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q09_session_to_order_conversion_7d is session_conversions_7d -> {
+  group_by: session_month
+  aggregate: conversion_rate_7d
+  order_by: session_month asc
+  limit: 5000
+}
+
+query: q10_orders_from_customers_with_10plus_orders_in_month is orders_from_high_frequency_customers -> {
+  group_by: ordered_month
+  aggregate: qualifying_orders
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q11_repeat_customer_orders_by_store_by_month is orders -> {
+  group_by:
+    ordered_month
+    stores.store_name
+  where: customers.lifetime_order_count > 1
+  aggregate: orders
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q12_orders_by_month_with_lifetime_spend_500_filter is orders -> {
+  group_by: ordered_month
+  where: customers.lifetime_spend_cents / 100.0 >= 500
+  aggregate: orders
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q13_daily_orders_from_customers_with_10plus_orders_in_month is orders_from_high_frequency_customers -> {
+  group_by: ordered_day
+  aggregate: qualifying_orders
+  order_by: ordered_day asc
+  limit: 5000
+}
+
+query: q14_revenue_from_customers_with_10plus_orders_same_store_month is revenue_from_high_frequency_store_customers -> {
+  group_by:
+    ordered_month
+    store_name
+  aggregate: qualifying_revenue_usd
+  order_by: ordered_month asc
+  limit: 5000
+}
+
+query: q15_same_store_session_to_order_conversion_7d is session_conversions_7d_same_store -> {
+  group_by: session_month
+  aggregate: same_store_conversion_rate_7d
+  order_by: session_month asc
+  limit: 5000
+}
+
+query: q16_revenue_by_customer_segment_as_of_delivered_time is delivered_orders_with_customer_segment -> {
+  group_by:
+    delivered_month
+    customer_segment
+  aggregate: delivered_revenue_total_usd
+  order_by: delivered_month asc
+  limit: 5000
+}

@@ -1,0 +1,9 @@
+{
+  "connections": {
+    "jaffle": {
+      "is": "duckdb",
+      "databasePath": "../shared/data/jaffle_comparison.duckdb",
+      "readOnly": true
+    }
+  }
+}

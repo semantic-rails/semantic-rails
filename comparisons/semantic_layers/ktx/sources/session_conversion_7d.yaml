@@ -1,0 +1,31 @@
+name: session_conversion_7d
+sql: |
+  with matched as (
+    select
+      s.session_id,
+      date_trunc('month', s.started_at) as session_month,
+      min(o.ordered_at) as first_ordered_at
+    from comparison_storefront_sessions as s
+    left join comparison_orders as o
+      on s.customer_id = o.customer_id
+     and o.ordered_at >= s.started_at
+     and o.ordered_at < s.started_at + interval '7 day'
+    group by 1, 2
+  )
+  select
+    session_id,
+    session_month,
+    case when first_ordered_at is not null then 1.0 else 0.0 end as converted_within_7d
+  from matched
+grain: [session_id]
+columns:
+  - name: session_id
+    type: string
+  - name: session_month
+    type: time
+    role: time
+  - name: converted_within_7d
+    type: number
+measures:
+  - name: session_to_order_conversion_rate_7d
+    expr: avg(converted_within_7d)

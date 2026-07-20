@@ -1,0 +1,1 @@
+query --metrics filtered_orders_lifetime_spend_500 --group-by metric_time__month --order metric_time__month

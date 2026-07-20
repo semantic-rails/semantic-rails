@@ -1,0 +1,23 @@
+segments:
+  customer.high_value:
+    id: segment.jaffle.high_value_customers
+    name: jaffle.Customer.high_value_customers
+    label: High-value customers
+    description: Customers whose lifetime spend is at least 100 USD.
+    entity: entity.jaffle_customer
+    basis_metric: metric.sales.customer_count
+    preview_dimensions:
+      - dimension.jaffle_customer_name
+      - dimension.jaffle_customer_type
+    membership:
+      metric_filters:
+        - expression:
+            kind: metric_predicate
+            entity: entity.jaffle_customer
+            scope_mode: entity_only
+            input:
+              measure: measure.jaffle.lifetime_spend_usd
+            op: ">="
+            value: 100
+          op: "="
+          value: true

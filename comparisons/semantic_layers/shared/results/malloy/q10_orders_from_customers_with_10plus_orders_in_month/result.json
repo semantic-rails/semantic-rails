@@ -1,0 +1,50 @@
+[
+  {
+    "ordered_month": "2016-09-01",
+    "qualifying_orders": 755
+  },
+  {
+    "ordered_month": "2016-10-01",
+    "qualifying_orders": 1073
+  },
+  {
+    "ordered_month": "2016-11-01",
+    "qualifying_orders": 1517
+  },
+  {
+    "ordered_month": "2016-12-01",
+    "qualifying_orders": 2017
+  },
+  {
+    "ordered_month": "2017-01-01",
+    "qualifying_orders": 2449
+  },
+  {
+    "ordered_month": "2017-02-01",
+    "qualifying_orders": 2203
+  },
+  {
+    "ordered_month": "2017-03-01",
+    "qualifying_orders": 3863
+  },
+  {
+    "ordered_month": "2017-04-01",
+    "qualifying_orders": 4498
+  },
+  {
+    "ordered_month": "2017-05-01",
+    "qualifying_orders": 5653
+  },
+  {
+    "ordered_month": "2017-06-01",
+    "qualifying_orders": 4620
+  },
+  {
+    "ordered_month": "2017-07-01",
+    "qualifying_orders": 4972
+  },
+  {
+    "ordered_month": "2017-08-01",
+    "qualifying_orders": 6561
+  }
+]

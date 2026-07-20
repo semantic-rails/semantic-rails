@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        id: filter
+        with:
+          filters: |
+            backend:
+              - ".github/workflows/**"
+              - "CHANGELOG.md"
+              - "CODE_OF_CONDUCT.md"
+              - "CONTRIBUTING.md"
+              - "LICENSE"
+              - "SECURITY.md"
+              - "SUPPORT.md"
+              - "configs/**"
+              - "data/**"
+              - "comparisons/semantic_layers/cube/**"
+              - "comparisons/semantic_layers/malloy/**"
+              - "pyproject.toml"
+              - "README.md"
+              - "scripts/**"
+              - "schemas/**"
+              - "semantic_rails/**"
+              - "mf2sr/**"
+              - "tests/**"
+              - "uv.lock"
+            docs:
+              - "README.md"
+              - "docs/**"
+
+  backend:
+    name: Backend (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dev --locked
+      - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
+      - run: uv run semantic-rails parse-config --package jaffle_shop
+      - run: uv run semantic-rails validate-config --package jaffle_shop --quiet
+      - run: uv run semantic-rails test-package --package jaffle_shop
+      - if: matrix.python-version == '3.12'
+        run: uv run python scripts/generate_contract_artifacts.py --check
+      # Release-readiness check only needs to run once (covers hygiene,
+      # prelaunch gaps, and v1 completion).
+      - if: matrix.python-version == '3.12'
+        run: uv run python scripts/verify_release_readiness.py
+
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dev --locked
+      - name: ruff check
+        run: uv run ruff check .
+      - name: ruff format check
+        run: uv run ruff format --check .
+      - name: mypy
+        run: uv run mypy semantic_rails
+
+  security:
+    name: Security audit
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dev --locked
+      - name: pip-audit (core and all warehouse extras)
+        # Export every supported install surface without the editable
+        # self-install, then audit the complete locked dependency graph.
+        # --quiet suppresses the "Resolved N packages" header that pip-audit
+        # would otherwise treat as a requirement specifier.
+        run: |
+          uv export --quiet --format requirements-txt --all-extras --no-emit-project --no-dev \
+            > requirements-audit.txt
+          uv run pip-audit -r requirements-audit.txt --strict
+      - name: npm audit (Malloy comparison harness)
+        run: |
+          npm ci --prefix comparisons/semantic_layers/malloy
+          npm audit --prefix comparisons/semantic_layers/malloy --audit-level=high
+      - name: Verify captured Cube evidence (offline, no npm install)
+        run: python3 comparisons/semantic_layers/cube/scripts/verify_evidence.py
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.docs == 'true' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dev --locked
+      - run: uv run python scripts/verify_release_readiness.py
+
+  all-checks:
+    name: All checks pass
+    if: ${{ always() }}
+    needs: [changes, backend, lint, security, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed or was cancelled
+        # Skipped jobs (from path filters) count as success.
+        # Every required job (backend, lint, security, docs) must
+        # succeed for the gate to pass. The `lint` job runs ruff +
+        # mypy and IS required — they were continue-on-error during
+        # the round-six cleanup but are now load-bearing.
+        run: |
+          results='${{ toJSON(needs) }}'
+          echo "$results"
+          python3 - <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTS"])
+          bad = {n: r["result"] for n, r in needs.items()
+                 if r["result"] in ("failure", "cancelled")}
+          if bad:
+              print(f"Failed jobs: {bad}", file=sys.stderr)
+              sys.exit(1)
+          print("All required jobs passed or were skipped.")
+          EOF
+        env:
+          RESULTS: ${{ toJSON(needs) }}

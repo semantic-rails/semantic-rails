@@ -1,0 +1,1 @@
+query --metrics delivered_revenue --group-by metric_time__month,customer__customer_segment --order metric_time__month

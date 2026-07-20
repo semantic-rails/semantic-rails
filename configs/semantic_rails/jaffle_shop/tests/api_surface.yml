@@ -1,0 +1,61 @@
+# Coverage of the public HTTP surface that the YAML test runner can
+# reach. The runner kinds (query_returns_columns, query_row_count_bounds,
+# query_matches_snapshot, validate_fails_with_code, explain_contains,
+# metric_equals_query) wire to:
+#
+#   POST /api/v1/query     — covered by query_* and metric_equals_query
+#   POST /api/v1/validate  — covered by validate_fails_with_code
+#   compile's explain payload — covered by explain_contains
+#
+# Endpoints that have no YAML test-runner kind:
+#   /discover, /inspect, /build-options, /valid-values, /plan,
+#   /compile, /segment-validate, /segment-explain, /segment-preview
+# are exercised end-to-end by tests/semantic_rails/test_http_and_smoke.py
+# and tests/semantic_rails/test_segments.py at the pytest layer.
+
+tests:
+  # /api/v1/query — group_by + measure aggregation
+  query_revenue_by_store_returns_columns:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: revenue_usd
+      group_by: [dimension.jaffle_store_name]
+      order_by:
+        - field: dimension.jaffle_store_name
+          direction: ASC
+      limit: 5
+    columns: [dimension.jaffle_store_name, revenue_usd]
+
+  # /api/v1/query — direct metric ref (rolling)
+  query_rolling_metric_returns_columns:
+    kind: query_returns_columns
+    query:
+      version: 1
+      select:
+        - expression: {metric: metric.sales.rolling_7d_revenue_direct}
+          as: rev_7d
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: day
+      order_by:
+        - field: temporal_role.jaffle_order_time__day
+          direction: ASC
+      limit: 3
+    columns: [temporal_role.jaffle_order_time__day, rev_7d]
+
+  # compile's explain payload — verifies path provenance contains the expected
+  # join. Different from the explain test in tests/explain.yml which
+  # asserts a specific relationship; this one asserts the broader
+  # provenance summary structure (selected_paths key present).
+  explain_query_surfaces_provenance:
+    kind: explain_contains
+    query:
+      version: 1
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: r
+      group_by: [dimension.jaffle_store_name]
+    text: selected_paths

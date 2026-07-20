@@ -1,0 +1,51 @@
+metrics:
+  # Governed access patterns. Local keys are namespaced under `sales.` to
+  # match the public IDs that external systems and the blind-agent corpus
+  # reference. `as:` pins those IDs across the V1 migration so callers
+  # don't break.
+
+  sales.orders:
+    as: metric.sales.orders
+    label: Orders
+    description: Count of TPCH orders.
+    kind: aggregate
+    measure: order_count
+    value_type: count
+    temporal_role: temporal_role.tpch_order_date
+    meta:
+      owner_team: sales_analytics
+      review_priority: high
+      change_risk: low
+
+  sales.revenue:
+    as: metric.sales.revenue
+    label: Revenue
+    description: Total order value from O_TOTALPRICE.
+    kind: aggregate
+    measure: revenue
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.tpch_order_date
+    meta:
+      owner_team: sales_analytics
+      review_priority: high
+      change_risk: medium
+
+  sales.average_order_value:
+    as: metric.sales.average_order_value
+    label: Average order value
+    description: Revenue divided by orders for the selected TPCH slice.
+    kind: ratio
+    # Disambiguate via fully-qualified measure IDs because the local keys
+    # `revenue` and `order_count` collide with the top-level metric tails
+    # (`metric.sales.revenue`, `metric.sales.orders`).
+    numerator: measure.tpch.revenue
+    denominator: measure.tpch.order_count
+    null_behavior: null_if_zero
+    value_type: currency
+    currency: USD
+    temporal_role: temporal_role.tpch_order_date
+    meta:
+      owner_team: sales_analytics
+      review_priority: high
+      change_risk: medium

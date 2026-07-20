@@ -1,0 +1,60 @@
+# Demonstrates the canonical policy kinds. Each kind drives a
+# different runtime behavior in semantic_rails/policies.py:
+#   - package_release  — labels the package's release status
+#   - object_visibility — hides matching objects from discovery/inspect
+#   - object_access     — denies or redacts at query time
+#   - protected_object  — pins an object as protected in the named env
+#   - metric_constraint — restricts allowed query cuts for scoped users
+semantic_policies:
+  - id: policy.jaffle.release_label
+    kind: package_release
+    config:
+      label: stable
+
+  - id: policy.jaffle.hide_pretax_lifetime_spend
+    kind: object_visibility
+    object_ids:
+      - measure.jaffle.lifetime_spend_before_tax_usd
+    audiences: [ops]
+    action: hidden
+    rationale: >-
+      Pre-tax lifetime spend is a finance-only measure. Hide it from
+      ops audiences so it does not appear in catalog/discover/inspect.
+
+  - id: policy.jaffle.redact_revenue_for_external
+    kind: object_access
+    object_ids:
+      - measure.jaffle.revenue_usd
+    audiences: [external_partner]
+    action: redact
+    rationale: >-
+      Raw revenue is sensitive. External partner queries get a
+      redacted result; internal audiences pass through untouched.
+
+  - id: policy.jaffle.gtm_revenue_store_cuts
+    kind: metric_constraint
+    object_ids:
+      - measure.jaffle.revenue_usd
+      - metric.sales.cumulative_revenue
+    roles: [sales, csm]
+    allowed_group_by:
+      - dimension.jaffle_store_name
+    allowed_where:
+      - dimension.jaffle_store_name
+    allowed_temporal_roles:
+      - temporal_role.jaffle_order_time
+    allow_metric_filters: false
+    rationale: >-
+      Sales and CSM users can access top-line revenue for store-level
+      cuts only. Customer-level or metric-filtered cuts require a
+      finance/growth-reviewed semantic object or a broader role.
+
+  - id: policy.jaffle.protect_customer_history_in_production
+    kind: protected_object
+    object_ids:
+      - measure.jaffle.lifetime_spend_usd
+    environments: [production]
+    rationale: >-
+      The customer-history-driven lifetime spend measure must never
+      be silently mutated in production; protected_object pins it as
+      a release-gated artifact.

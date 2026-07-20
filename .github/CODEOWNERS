@@ -1,0 +1,27 @@
+# Public contract ownership
+/semantic_rails/contracts/ @wtremml18
+/schemas/ @wtremml18
+/scripts/generate_contract_artifacts.py @wtremml18
+/scripts/check_contract_compatibility.py @wtremml18
+/tests/semantic_rails/test_public_contracts.py @wtremml18
+/docs/CONTRACTS.md @wtremml18
+/docs/QUERY_IR_SCHEMA.md @wtremml18
+
+# Public embedding and MCP boundaries
+/semantic_rails/embedding.py @wtremml18
+/semantic_rails/mcp*.py @wtremml18
+/semantic_rails/architect_*.py @wtremml18
+/docs/EMBEDDING.md @wtremml18
+/docs/MCP_INTERFACE.md @wtremml18
+/docs/ARCHITECT_MCP.md @wtremml18
+
+# Package identity and release controls
+/pyproject.toml @wtremml18
+/semantic_rails/__init__.py @wtremml18
+/.github/workflows/ci.yml @wtremml18
+/.github/workflows/publish.yml @wtremml18
+/.github/workflows/release-readiness.yml @wtremml18
+/scripts/verify_package_distribution.py @wtremml18
+/scripts/verify_published_release.py @wtremml18
+/scripts/verify_release_readiness.py @wtremml18
+/docs/RELEASE_CHECKLIST.md @wtremml18

@@ -1,0 +1,58 @@
+[
+  [
+    {
+      "status": "Statement executed successfully."
+    }
+  ],
+  [
+    {
+      "status": "Statement executed successfully."
+    }
+  ],
+  [
+    {
+      "status": "Statement executed successfully."
+    }
+  ],
+  [
+    {
+      "status": "Statement executed successfully."
+    }
+  ],
+  [
+    {
+      "TABLE_NAME": "COMPARISON_CUSTOMERS",
+      "ROW_COUNT": 939
+    },
+    {
+      "TABLE_NAME": "COMPARISON_CUSTOMER_HISTORY",
+      "ROW_COUNT": 7
+    },
+    {
+      "TABLE_NAME": "COMPARISON_ORDERS",
+      "ROW_COUNT": 59652
+    },
+    {
+      "TABLE_NAME": "COMPARISON_ORDER_ITEMS",
+      "ROW_COUNT": 95368
+    },
+    {
+      "TABLE_NAME": "COMPARISON_ORDER_LIFECYCLE",
+      "ROW_COUNT": 11
+    },
+    {
+      "TABLE_NAME": "COMPARISON_STOREFRONT_SESSIONS",
+      "ROW_COUNT": 10
+    },
+    {
+      "TABLE_NAME": "COMPARISON_STORES",
+      "ROW_COUNT": 5
+    }
+  ],
+  [
+    {
+      "MIN_ORDERED_AT": "2016-09-01T07:00:00",
+      "MAX_ORDERED_AT": "2017-08-31T19:32:00"
+    }
+  ]
+]

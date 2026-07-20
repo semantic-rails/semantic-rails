@@ -1,0 +1,17 @@
+{
+  "dimensions": [
+    {
+      "field": "orders.ordered_at",
+      "granularity": "month"
+    },
+    "stores.store_name"
+  ],
+  "filters": [
+    "customers.lifetime_order_count > 1"
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "orders.orders"
+  ]
+}

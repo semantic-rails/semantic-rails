@@ -1,0 +1,78 @@
+model:
+  id: store_inventory_snapshots
+  relation: jaffle_store_inventory_snapshot
+  entities:
+    store_inventory_snapshot: {}
+    store: {}
+    time: {}
+  times:
+    date_day:
+      label: Inventory snapshot day
+      column: date_day
+      kind: date
+      class: as_of_time
+      as: temporal_role.jaffle_inventory_day
+      dimension_id: dimension.jaffle_inventory_date_day
+      default: true
+  # The store_id key dimension auto-creates from graph.entities.store.key.
+  measures:
+    inventory_on_hand_eop:
+      kind: aggregate
+      label: Inventory on hand (end of period)
+      description: Inventory on hand evaluated at the end of each reporting period.
+      expr:
+        kind: column
+        column: inventory_on_hand
+      accumulation:
+        kind: stock
+        snapshot: end_of_period
+      value_type: number
+      meta:
+        owner_team: operations_analytics
+        review_priority: high
+        change_risk: high
+    inventory_on_hand_sop:
+      kind: aggregate
+      label: Inventory on hand (start of period)
+      description: Inventory on hand evaluated at the start of each reporting period.
+      expr:
+        kind: column
+        column: inventory_on_hand
+      accumulation:
+        kind: stock
+        snapshot: start_of_period
+      value_type: number
+      meta:
+        owner_team: operations_analytics
+        review_priority: high
+        change_risk: high
+    active_menu_count_eop:
+      kind: aggregate
+      label: Active menu count (end of period)
+      description: Number of active menu items at the end of each reporting period.
+      expr:
+        kind: column
+        column: active_menu_count
+      accumulation:
+        kind: stock
+        snapshot: end_of_period
+      value_type: count
+      meta:
+        owner_team: operations_analytics
+        review_priority: high
+        change_risk: high
+    open_store_count_eop:
+      kind: aggregate
+      label: Open store count (end of period)
+      description: Number of stores open at the end of each reporting period.
+      expr:
+        kind: column
+        column: open_store_count
+      accumulation:
+        kind: stock
+        snapshot: end_of_period
+      value_type: count
+      meta:
+        owner_team: operations_analytics
+        review_priority: medium
+        change_risk: high

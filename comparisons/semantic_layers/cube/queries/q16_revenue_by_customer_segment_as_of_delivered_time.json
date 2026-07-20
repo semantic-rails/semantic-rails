@@ -1,0 +1,8 @@
+{
+  "measures": ["delivered_orders_with_customer_segment.delivered_revenue"],
+  "dimensions": ["delivered_orders_with_customer_segment.customer_segment"],
+  "timeDimensions": [
+    { "dimension": "delivered_orders_with_customer_segment.delivered_at", "granularity": "month" }
+  ],
+  "order": { "delivered_orders_with_customer_segment.delivered_at": "asc" }
+}

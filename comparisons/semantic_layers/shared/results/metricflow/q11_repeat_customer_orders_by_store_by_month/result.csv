@@ -1,0 +1,19 @@
+metric_time__month,store__store_name,repeat_customer_orders
+2016-09-01 00:00:00,Philadelphia,1367
+2016-10-01 00:00:00,Philadelphia,1685
+2016-11-01 00:00:00,Philadelphia,2280
+2016-12-01 00:00:00,Philadelphia,2862
+2017-01-01 00:00:00,Philadelphia,3410
+2017-02-01 00:00:00,Philadelphia,3357
+2017-03-01 00:00:00,Brooklyn,2092
+2017-03-01 00:00:00,Philadelphia,3986
+2017-04-01 00:00:00,Philadelphia,3746
+2017-04-01 00:00:00,Brooklyn,2850
+2017-05-01 00:00:00,Brooklyn,3565
+2017-05-01 00:00:00,Philadelphia,4391
+2017-06-01 00:00:00,Brooklyn,3963
+2017-06-01 00:00:00,Philadelphia,3916
+2017-07-01 00:00:00,Philadelphia,3385
+2017-07-01 00:00:00,Brooklyn,4053
+2017-08-01 00:00:00,Philadelphia,3801
+2017-08-01 00:00:00,Brooklyn,4937

@@ -1,0 +1,24 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+✔ Success 🦄 - query completed after 0.08 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+SELECT
+  metric_time__month
+  , item__product_type
+  , SUM(item_revenue_usd) AS item_revenue_usd
+FROM (
+  SELECT
+    DATE_TRUNC('month', ordered_at) AS metric_time__month
+    , product_type AS item__product_type
+    , item_revenue_cents / 100.0 AS item_revenue_usd
+  FROM "jaffle_comparison"."main"."order_items" order_items_src_10000
+) subq_2
+GROUP BY
+  metric_time__month
+  , item__product_type
+ORDER BY metric_time__month
+

@@ -1,0 +1,2 @@
+compile -n q12_orders_by_month_with_lifetime_spend_500_filter
+execute compiled SQL in DuckDB

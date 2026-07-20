@@ -1,0 +1,122 @@
+[
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2016-09-01T00:00:00",
+    "ITEM_REVENUE_USD": "9061.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2016-09-01T00:00:00",
+    "ITEM_REVENUE_USD": "7971.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2016-10-01T00:00:00",
+    "ITEM_REVENUE_USD": "10720.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2016-10-01T00:00:00",
+    "ITEM_REVENUE_USD": "9964.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2016-11-01T00:00:00",
+    "ITEM_REVENUE_USD": "14103.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2016-11-01T00:00:00",
+    "ITEM_REVENUE_USD": "12235.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2016-12-01T00:00:00",
+    "ITEM_REVENUE_USD": "17850.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2016-12-01T00:00:00",
+    "ITEM_REVENUE_USD": "15810.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2017-01-01T00:00:00",
+    "ITEM_REVENUE_USD": "21814.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2017-01-01T00:00:00",
+    "ITEM_REVENUE_USD": "20658.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2017-02-01T00:00:00",
+    "ITEM_REVENUE_USD": "21474.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2017-02-01T00:00:00",
+    "ITEM_REVENUE_USD": "19432.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2017-03-01T00:00:00",
+    "ITEM_REVENUE_USD": "38272.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2017-03-01T00:00:00",
+    "ITEM_REVENUE_USD": "31946.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2017-04-01T00:00:00",
+    "ITEM_REVENUE_USD": "42250.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2017-04-01T00:00:00",
+    "ITEM_REVENUE_USD": "36996.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2017-05-01T00:00:00",
+    "ITEM_REVENUE_USD": "49250.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2017-05-01T00:00:00",
+    "ITEM_REVENUE_USD": "42138.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2017-06-01T00:00:00",
+    "ITEM_REVENUE_USD": "50528.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2017-06-01T00:00:00",
+    "ITEM_REVENUE_USD": "43155.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2017-07-01T00:00:00",
+    "ITEM_REVENUE_USD": "49309.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2017-07-01T00:00:00",
+    "ITEM_REVENUE_USD": "41087.000000"
+  },
+  {
+    "PRODUCT_TYPE": "beverage",
+    "ORDERED_MONTH": "2017-08-01T00:00:00",
+    "ITEM_REVENUE_USD": "56756.000000"
+  },
+  {
+    "PRODUCT_TYPE": "jaffle",
+    "ORDERED_MONTH": "2017-08-01T00:00:00",
+    "ITEM_REVENUE_USD": "45623.000000"
+  }
+]

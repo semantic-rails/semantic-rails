@@ -1,0 +1,1 @@
+SELECT DATE_TRUNC('MONTH', orders.ordered_at) AS ordered_at_month, stores.store_name AS store_name, SUM(orders.order_total_cents / 100.0) AS revenue_usd FROM comparison_orders AS orders JOIN comparison_stores AS stores ON orders.store_id = stores.store_id GROUP BY DATE_TRUNC('MONTH', orders.ordered_at), stores.store_name ORDER BY 1, 2 LIMIT 5000

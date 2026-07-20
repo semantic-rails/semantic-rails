@@ -1,0 +1,31 @@
+cubes:
+  - name: order_lifecycle
+    sql_table: comparison_order_lifecycle
+
+    joins:
+      - name: stores
+        relationship: many_to_one
+        sql: "{CUBE}.store_id = {stores.store_id}"
+
+    dimensions:
+      - name: order_id
+        sql: order_id
+        type: string
+        primary_key: true
+
+      - name: store_id
+        sql: store_id
+        type: string
+
+      - name: delivered_at
+        sql: delivered_at
+        type: time
+
+      - name: prepared_at
+        sql: prepared_at
+        type: time
+
+    measures:
+      - name: delivered_revenue
+        sql: "order_total_cents / 100.0"
+        type: sum

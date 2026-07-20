@@ -1,0 +1,21 @@
+model:
+  id: customers
+  relation: SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER
+  description: TPCH customers joined to market segment and geography.
+  entities:
+    customer: {}
+    nation:
+      expr: C_NATIONKEY
+  dimensions:
+    customer_market_segment:
+      as: dimension.tpch_customer_market_segment
+      label: Customer market segment
+      column: C_MKTSEGMENT
+      kind: categorical
+      description: TPCH customer market segment.
+    customer_name:
+      as: dimension.tpch_customer_name
+      label: Customer name
+      column: C_NAME
+      kind: categorical
+      description: TPCH customer display name.

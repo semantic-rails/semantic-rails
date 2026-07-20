@@ -1,0 +1,493 @@
+{
+  "benchmark": "plan",
+  "corpus": "scripts/blind_agent_corpus.json",
+  "summary": {
+    "case_count": 16,
+    "expected_answer_count": 15,
+    "actionable_expected_answers": 15,
+    "expected_semantic_id_hits": 15,
+    "expected_query_patch_hits": 15,
+    "status_breakdown": {
+      "low_confidence": 1,
+      "ok": 14,
+      "out_of_scope": 1
+    },
+    "detail_best_total_bytes": 48117,
+    "detail_full_total_bytes": 79029,
+    "max_detail_best_bytes": 5563,
+    "plan_latency_p95_ms": 100.99129200079915,
+    "plan_warmed_compile_cache_hit_p95_ms": 3.238041999793495,
+    "gate_thresholds": {
+      "max_best_bytes": 6500,
+      "max_cache_hit_p95_ms": 25.0
+    }
+  },
+  "cases": [
+    {
+      "name": "top_stores_by_revenue",
+      "intent": "What are the top stores by revenue?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.revenue_usd"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ]
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "metric_by_dimension_rollup",
+      "full_pattern": "metric_by_dimension_rollup",
+      "actionable": true,
+      "best_bytes": 2556,
+      "full_bytes": 4052,
+      "plan_ms": 56.2647079996168,
+      "compile_cache_hit": true,
+      "compile_ms": 1.375457999529317,
+      "compile_lookup_ms": 0.642,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "new_customer_orders_trending",
+      "intent": "How are new customer orders trending over time?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.new_customer_order_count"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {
+        "time": {
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "grain": "month"
+        }
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "metric_by_dimension_rollup",
+      "full_pattern": "metric_by_dimension_rollup",
+      "actionable": true,
+      "best_bytes": 2629,
+      "full_bytes": 4837,
+      "plan_ms": 52.97983299988118,
+      "compile_cache_hit": true,
+      "compile_ms": 1.224624999849766,
+      "compile_lookup_ms": 0.569,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "food_vs_drink_share",
+      "intent": "What share of revenue comes from food vs drink?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "metric.sales.food_revenue_share",
+        "metric.sales.drink_revenue_share"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {},
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "inline_comparison",
+      "full_pattern": "inline_comparison",
+      "actionable": true,
+      "best_bytes": 2373,
+      "full_bytes": 4356,
+      "plan_ms": 52.767084000151954,
+      "compile_cache_hit": true,
+      "compile_ms": 1.6867909998836694,
+      "compile_lookup_ms": 0.835,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "historical_revenue_by_segment",
+      "intent": "Which customer segments drove the most historical revenue?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.revenue_usd"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_customer_history_segment"
+        ],
+        "time": {
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "grain": "month"
+        }
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "metric_by_dimension_rollup",
+      "full_pattern": "metric_by_dimension_rollup",
+      "actionable": true,
+      "best_bytes": 3000,
+      "full_bytes": 4673,
+      "plan_ms": 59.188166999774694,
+      "compile_cache_hit": true,
+      "compile_ms": 1.8243329996039392,
+      "compile_lookup_ms": 0.804,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "ordered_vs_delivered_revenue",
+      "intent": "Compare delivered revenue by delivered month versus ordered month.",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.delivered_revenue_usd",
+        "measure.jaffle.revenue_usd"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {},
+      "status": "low_confidence",
+      "full_status": "low_confidence",
+      "pattern": "inline_comparison",
+      "full_pattern": "inline_comparison",
+      "actionable": true,
+      "best_bytes": 3292,
+      "full_bytes": 6124,
+      "plan_ms": 58.545708000565355,
+      "compile_cache_hit": null,
+      "compile_ms": 0.0,
+      "compile_lookup_ms": 0.0,
+      "compile_attempted": false,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "inventory_levels_by_store",
+      "intent": "What are end-of-month inventory levels by store?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.inventory_on_hand_eop"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ]
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "metric_by_dimension_rollup",
+      "full_pattern": "metric_by_dimension_rollup",
+      "actionable": true,
+      "best_bytes": 3091,
+      "full_bytes": 4923,
+      "plan_ms": 57.24275000011403,
+      "compile_cache_hit": true,
+      "compile_ms": 1.9652080000014394,
+      "compile_lookup_ms": 1.005,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "repeat_customer_orders",
+      "intent": "How many repeat-customer orders do we have?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "metric.sales.repeat_customer_orders"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {},
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "metric_by_dimension_rollup",
+      "full_pattern": "metric_by_dimension_rollup",
+      "actionable": true,
+      "best_bytes": 2525,
+      "full_bytes": 4582,
+      "plan_ms": 44.06079099953786,
+      "compile_cache_hit": true,
+      "compile_ms": 1.4110419997450663,
+      "compile_lookup_ms": 0.693,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "session_to_order_conversion_rate",
+      "intent": "What is the session-to-order conversion rate?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "metric.sales.session_to_order_conversion_rate_7d"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {},
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "metric_by_dimension_rollup",
+      "full_pattern": "metric_by_dimension_rollup",
+      "actionable": true,
+      "best_bytes": 2084,
+      "full_bytes": 4598,
+      "plan_ms": 44.663207999292354,
+      "compile_cache_hit": true,
+      "compile_ms": 1.4999590002844343,
+      "compile_lookup_ms": 0.808,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "active_menu_snapshot_for_high_activity_stores",
+      "intent": "Give me the sum of active menu snapshot at the store dimension for stores that have done more than one order and more than one session grouped by month.",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.active_menu_count_eop",
+        "measure.jaffle.order_count",
+        "measure.jaffle.session_starts",
+        "entity.jaffle_store",
+        "dimension.jaffle_store_name"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ],
+        "time": {
+          "temporal_role": "temporal_role.jaffle_inventory_day",
+          "grain": "month"
+        }
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "qualified_metric_rollup",
+      "full_pattern": "qualified_metric_rollup",
+      "actionable": true,
+      "best_bytes": 5563,
+      "full_bytes": 7595,
+      "plan_ms": 119.99337500037655,
+      "compile_cache_hit": true,
+      "compile_ms": 3.238041999793495,
+      "compile_lookup_ms": 1.766,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "signup_to_send_adoption_for_high_order_rate_stores",
+      "intent": "Give me the 28D adoption funnel from signup to Send for stores that have an order rate of over 90% grouped by month.",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "metric.adoption.signup_to_send_conversion_rate_28d",
+        "metric.sales.session_to_order_conversion_rate_7d_same_store",
+        "entity.jaffle_store",
+        "dimension.jaffle_store_name"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ],
+        "metric_filters": [
+          {
+            "expression": {
+              "kind": "metric_predicate",
+              "entity": "entity.jaffle_store",
+              "scope_mode": "contextual",
+              "input": {
+                "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
+              },
+              "op": ">",
+              "value": 0.9
+            },
+            "op": "=",
+            "value": true
+          }
+        ],
+        "time": {
+          "temporal_role": "temporal_role.jaffle_session_started_at",
+          "grain": "month"
+        }
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "filtered_adoption_funnel",
+      "full_pattern": "filtered_adoption_funnel",
+      "actionable": true,
+      "best_bytes": 3609,
+      "full_bytes": 6196,
+      "plan_ms": 100.99129200079915,
+      "compile_cache_hit": true,
+      "compile_ms": 3.4223749999000574,
+      "compile_lookup_ms": 1.98,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "monthly_orders_from_customers_with_10plus_orders",
+      "intent": "What is the monthly order volume for customers who made more than 10 purchases in that month?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.order_count",
+        "entity.jaffle_customer"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {
+        "time": {
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "grain": "month"
+        }
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "qualified_metric_rollup",
+      "full_pattern": "qualified_metric_rollup",
+      "actionable": true,
+      "best_bytes": 4026,
+      "full_bytes": 6008,
+      "plan_ms": 80.46600000034232,
+      "compile_cache_hit": true,
+      "compile_ms": 2.012208999985887,
+      "compile_lookup_ms": 1.023,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "daily_orders_from_customers_with_10plus_orders_in_month",
+      "intent": "What is the daily order volume for customers who made more than 10 purchases in that month?",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.order_count",
+        "entity.jaffle_customer"
+      ],
+      "forbidden_ids": [],
+      "expected_query_patch": {
+        "time": {
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "grain": "day"
+        }
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "qualified_metric_rollup",
+      "full_pattern": "qualified_metric_rollup",
+      "actionable": true,
+      "best_bytes": 4103,
+      "full_bytes": 6081,
+      "plan_ms": 79.79620800051634,
+      "compile_cache_hit": true,
+      "compile_ms": 1.8354160001763375,
+      "compile_lookup_ms": 1.027,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "adversarial_fake_ids_route_to_real_revenue",
+      "intent": "Use metric.sales.moon_revenue and dimension.jaffle_mars_colony_id for revenue by store.",
+      "expected": "answer",
+      "expected_resolved_ids": [
+        "measure.jaffle.revenue_usd"
+      ],
+      "forbidden_ids": [
+        "metric.sales.moon_revenue",
+        "dimension.jaffle_mars_colony_id"
+      ],
+      "expected_query_patch": {
+        "group_by": [
+          "dimension.jaffle_store_name"
+        ]
+      },
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "metric_by_dimension_rollup",
+      "full_pattern": "metric_by_dimension_rollup",
+      "actionable": true,
+      "best_bytes": 3072,
+      "full_bytes": 5115,
+      "plan_ms": 83.65508300084912,
+      "compile_cache_hit": true,
+      "compile_ms": 1.644292000491987,
+      "compile_lookup_ms": 0.861,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "scope_reject_linux_kernel",
+      "intent": "compile the linux kernel",
+      "expected": "reject",
+      "status": "out_of_scope",
+      "full_status": "out_of_scope",
+      "pattern": "",
+      "full_pattern": "",
+      "actionable": false,
+      "best_bytes": 846,
+      "full_bytes": 846,
+      "plan_ms": 7.505333000153769,
+      "compile_cache_hit": null,
+      "compile_ms": 0.0,
+      "compile_lookup_ms": 0.0,
+      "compile_attempted": false,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "simple_aov_by_store",
+      "intent": "average order value by store",
+      "expected": "answer",
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "metric_by_dimension_rollup",
+      "full_pattern": "metric_by_dimension_rollup",
+      "actionable": true,
+      "best_bytes": 2500,
+      "full_bytes": 4225,
+      "plan_ms": 66.28166600057739,
+      "compile_cache_hit": true,
+      "compile_ms": 2.0021249993078527,
+      "compile_lookup_ms": 1.028,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    },
+    {
+      "name": "ambiguous_customer_status",
+      "intent": "monthly orders by customer status",
+      "expected": "answer",
+      "status": "ok",
+      "full_status": "ok",
+      "pattern": "catalog_fallback",
+      "full_pattern": "catalog_fallback",
+      "actionable": true,
+      "best_bytes": 2848,
+      "full_bytes": 4818,
+      "plan_ms": 95.52200000052835,
+      "compile_cache_hit": true,
+      "compile_ms": 1.090332999410748,
+      "compile_lookup_ms": 0.509,
+      "compile_attempted": true,
+      "missing_expected_ids": [],
+      "forbidden_hits": [],
+      "missing_expected_query_patch": []
+    }
+  ]
+}

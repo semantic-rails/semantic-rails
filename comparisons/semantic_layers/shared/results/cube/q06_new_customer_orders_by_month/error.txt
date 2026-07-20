@@ -1,0 +1,1 @@
+{"error":"Error: Catalog Error: Table with name comparison_orders does not exist!\nDid you mean \"raw_stores\"?\n\nLINE 4:       comparison_orders AS \"orders\"  GROUP BY 1 ORDER BY 1 ASC...\n              ^","requestId":"bad2db42-05e2-4c23-97fc-23d15332c748-span-1"}
