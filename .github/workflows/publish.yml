@@ -124,6 +124,13 @@ jobs:
       - name: Create GitHub Release from the PyPI-verified bytes
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job intentionally does not check out the repo — it publishes
+          # the artifact bytes that `post-publish` already verified against
+          # PyPI. Without a git remote to infer from, `gh` exits with
+          # "fatal: not a git repository"; it does not fall back to
+          # GITHUB_REPOSITORY. `--verify-tag` and `--generate-notes` are
+          # resolved server-side, so GH_REPO is all that is needed.
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             release-assets/github/*.whl \
