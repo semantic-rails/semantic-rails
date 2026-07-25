@@ -494,3 +494,61 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
         asyncio.run(app.aclose())
         set_audit_sink(previous_sink)
         set_policy_context_resolver(HeaderPolicyContextResolver())
+
+
+# --- cross-origin access is opt-in ------------------------------------------
+#
+# Binding to loopback does not protect this server: a page in the operator's
+# own browser can reach 127.0.0.1. With `Access-Control-Allow-Origin: *` as
+# the default and auth off by default, any website could read the catalog and
+# run queries as the operator. Cross-origin access now has to be configured.
+
+
+def test_cors_origin_header_defaults_to_no_cross_origin_access(monkeypatch):
+    from semantic_rails.http_core import cors_origin_header
+
+    monkeypatch.delenv("SEMANTIC_RAILS_CORS_ORIGINS", raising=False)
+    assert cors_origin_header(None) == ""
+    assert cors_origin_header("https://attacker.example") == ""
+
+
+def test_cors_wildcard_still_available_as_an_explicit_choice(monkeypatch):
+    from semantic_rails.http_core import cors_origin_header
+
+    monkeypatch.setenv("SEMANTIC_RAILS_CORS_ORIGINS", "*")
+    assert cors_origin_header("https://anything.example") == "*"
+
+
+def test_cors_allow_list_echoes_only_listed_origins(monkeypatch):
+    from semantic_rails.http_core import cors_origin_header
+
+    monkeypatch.setenv("SEMANTIC_RAILS_CORS_ORIGINS", "https://a.example, https://b.example")
+    assert cors_origin_header("https://b.example") == "https://b.example"
+    assert cors_origin_header("https://attacker.example") == ""
+
+
+def test_streamable_http_rejects_any_browser_origin_when_unconfigured(monkeypatch):
+    """The Origin guard was previously dead: it tested the truthiness of
+    `cors_origin_header`, which returned the string "*" by default."""
+    monkeypatch.delenv("SEMANTIC_RAILS_CORS_ORIGINS", raising=False)
+    response = _request(
+        RecordingAdapter(),
+        {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        headers={**MCP_HEADERS, "Origin": "https://attacker.example"},
+    )
+
+    assert response.status == 403
+    assert response.payload
+    assert response.payload["error"]["code"] == -32003
+
+
+def test_streamable_http_still_serves_clients_that_send_no_origin(monkeypatch):
+    """Non-browser MCP clients (Claude Desktop, curl) send no Origin."""
+    monkeypatch.delenv("SEMANTIC_RAILS_CORS_ORIGINS", raising=False)
+    response = _request(
+        RecordingAdapter(),
+        {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        headers=MCP_HEADERS,
+    )
+
+    assert response.status == 200
