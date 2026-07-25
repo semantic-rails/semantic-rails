@@ -3852,7 +3852,9 @@ def compile_query(
     config = resolve_compile_config(plan, config)
     sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
     rendered = render_select_for_profile(
-        sql_ast, str(payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit")
+        sql_ast,
+        str(payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"),
+        dialect=dialect_for_warehouse(config.package.warehouse),
     )
     from .compiler_parts.sql_lowering import build_performance_plan, build_physical_plan
 

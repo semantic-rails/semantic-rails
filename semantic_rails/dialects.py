@@ -56,9 +56,38 @@ def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) ->
     )
 
 
+def backslash_escaped_string_literal(value: str) -> str:
+    """Quote ``value`` for dialects where ``\\`` escapes inside string literals.
+
+    Snowflake, BigQuery, ClickHouse and Databricks/Spark all treat a
+    backslash as introducing an escape sequence inside a single-quoted
+    literal. Doubling only the quote is therefore not enough: a value
+    ending in a backslash escapes the *closing* quote, so everything the
+    caller supplied after it is parsed as SQL rather than as data.
+
+    Backslashes are doubled before quotes so the doubling cannot be
+    applied to a quote-escape this function introduced itself.
+    """
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
 @dataclass(frozen=True)
 class SqlDialect:
     name: str
+
+    def quote_string_literal(self, value: str) -> str:
+        """Render ``value`` as a single-quoted SQL string literal.
+
+        Standard-conforming default: the single quote is the only
+        character with meaning inside a literal, and it is escaped by
+        doubling it. This is correct for DuckDB, MotherDuck, DuckLake,
+        Postgres (``standard_conforming_strings=on``, the default since
+        9.1) and Trino/Athena. Dialects that also honour backslash
+        escapes override this with
+        :func:`backslash_escaped_string_literal` — doubling backslashes
+        *here* would corrupt the value on these warehouses instead.
+        """
+        return "'" + value.replace("'", "''") + "'"
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlCall("QUANTILE_CONT", [expr, SqlLiteral(percentile)])
@@ -137,6 +166,9 @@ class SqlDialect:
 @dataclass(frozen=True)
 class SnowflakeDialect(SqlDialect):
     name: str = "snowflake"
+
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlWithinGroup(
@@ -451,6 +483,9 @@ class BigQueryDialect(SqlDialect):
 
     name: str = "bigquery"
 
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
+
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         """EXACT linear-interpolation percentile (DuckDB QUANTILE_CONT
         parity) as an aggregate expression.
@@ -625,6 +660,9 @@ class DatabricksDialect(SqlDialect):
     """
 
     name: str = "databricks"
+
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlWithinGroup(
@@ -840,6 +878,9 @@ class ClickHouseDialect(SqlDialect):
     """
 
     name: str = "clickhouse"
+
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         # ClickHouse parameterized-aggregate syntax:
