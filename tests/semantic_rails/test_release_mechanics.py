@@ -294,6 +294,28 @@ def test_publish_builds_once_and_transfers_exact_artifacts_through_post_publish(
     assert "release-assets/github/SHA256SUMS" in release_commands
 
 
+def test_gh_cli_steps_outside_a_checkout_pin_the_repository():
+    """`gh` infers the repo from the git remote, not from GITHUB_REPOSITORY.
+
+    A job that never checks out therefore has to pass GH_REPO explicitly, or
+    every `gh` call dies with "fatal: not a git repository". In the `release`
+    job that failure lands *after* PyPI has already accepted the upload, and
+    PyPI refuses re-uploads — so the recovery is to burn a version number.
+    """
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text(encoding="utf-8"))
+    for job_name, job in workflow["jobs"].items():
+        steps = list(job.get("steps", []) or [])
+        if any(step.get("uses", "").startswith("actions/checkout@") for step in steps):
+            continue
+        for step in steps:
+            if "gh " not in str(step.get("run", "")):
+                continue
+            env = {**(job.get("env") or {}), **(step.get("env") or {})}
+            assert "GH_REPO" in env, (
+                f"job {job_name!r} runs gh without checking out, so it must set GH_REPO"
+            )
+
+
 def test_post_publish_verifier_rejects_every_unexpected_release_file(monkeypatch):
     from scripts import verify_published_release as verifier
 

@@ -20,8 +20,15 @@ docker build -t semantic-rails:local .
 
 The image listens on port `8080` by default (`EXPOSE 8080`; override with
 `SEMANTIC_RAILS_HOST` / `SEMANTIC_RAILS_PORT`). Bind the published port to
-loopback unless you have configured API keys and a CORS allow-list — the API
-ships unauthenticated by default.
+loopback unless you have configured API keys — the API ships unauthenticated
+by default.
+
+Loopback binding keeps other *hosts* out; it does not keep *web pages* out.
+A page loaded in a browser on the same machine can reach `127.0.0.1`, so
+cross-origin browser access is off unless you set
+`SEMANTIC_RAILS_CORS_ORIGINS`. Requests carrying an `Origin` header are
+refused until you list the origins you trust; non-browser clients (the CLI,
+MCP stdio clients, `curl`) send no `Origin` and are unaffected.
 
 Run the Jaffle package:
 
@@ -59,7 +66,7 @@ docker compose up --build
 | `SEMANTIC_RAILS_API_KEYS` | Optional comma-separated bearer/API keys. Auth is disabled when unset. |
 | `SEMANTIC_RAILS_API_KEY_FILE` | Optional file containing comma- or newline-separated API keys. |
 | `SEMANTIC_RAILS_AUDIT_LOGS` | Set to `1`, `true`, `yes`, or `on` to emit JSON audit events to stderr. |
-| `SEMANTIC_RAILS_CORS_ORIGINS` | Comma-separated allow-list of browser origins. Unset (default) emits `Access-Control-Allow-Origin: *`. Set to `https://app.example.com,https://staging.example.com` for hosted browser-facing deployments; only matching `Origin` headers get the CORS response header. |
+| `SEMANTIC_RAILS_CORS_ORIGINS` | Comma-separated allow-list of browser origins. Unset (default) allows no cross-origin browser access: no `Access-Control-Allow-Origin` is sent and Origin-bearing requests to the MCP endpoints are refused with 403. Set to `https://app.example.com,https://staging.example.com` for hosted browser-facing deployments; only matching `Origin` headers get the CORS response header. The single value `*` restores wildcard access as an explicit, auditable opt-in. |
 | `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS` | Set to `1` to let `package.default_db` / `package.seed.*` point outside the package root (absolute paths or `..` segments). Off by default: shared packages are untrusted input, and external paths let a package read or replace files outside its own directory. Enable only for trusted local development. |
 | `SEMANTIC_RAILS_MAX_VALID_VALUES_LIMIT` | Ceiling for caller-supplied `valid-values` `limit`, default `1000`. Values above the ceiling are clamped on every transport. |
 | `SEMANTIC_RAILS_MAX_VALID_VALUES_OFFSET` | Ceiling for caller-supplied `valid-values` `offset`, default `100000`. |

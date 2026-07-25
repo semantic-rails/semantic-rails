@@ -122,9 +122,9 @@ PUBLIC_V1_ROUTES = [
 def cors_allowed_origins() -> tuple[str, ...]:
     """Parse `SEMANTIC_RAILS_CORS_ORIGINS` into a tuple of allowed origins.
 
-    Empty / unset means `*` (the OSS-friendly default). A comma-separated
-    list locks browser access to specific origins, which is what a hosted
-    deployment will want.
+    Empty / unset means no cross-origin browser access. A comma-separated
+    list opts specific origins in; the single value `*` opts every origin
+    in explicitly.
     """
     raw = os.environ.get("SEMANTIC_RAILS_CORS_ORIGINS", "").strip()
     if not raw:
@@ -137,15 +137,21 @@ def cors_origin_header(request_origin: str | None) -> str:
     request whose `Origin` header was `request_origin`.
 
     Logic:
-      - If no allow-list configured, return `*` (default OSS behavior).
-      - If `*` is in the allow-list explicitly, return `*`.
+      - If no allow-list is configured, return an empty string. Binding to
+        loopback is NOT a defence here: a page in the operator's own
+        browser can reach 127.0.0.1, so defaulting to `*` handed any
+        website the ability to drive the server as the operator — read the
+        catalog, compile, and run queries — with auth off by default.
+        Cross-origin access is now opt-in.
+      - If `*` is in the allow-list, return `*` — an explicit, auditable
+        choice rather than a default.
       - If the request's Origin matches the allow-list, echo it.
       - Otherwise return an empty string — the caller MUST NOT send the
         CORS header at all in that case (browsers reject the response).
     """
     allowed = cors_allowed_origins()
     if not allowed:
-        return "*"
+        return ""
     if "*" in allowed:
         return "*"
     origin = (request_origin or "").strip()

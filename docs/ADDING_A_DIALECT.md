@@ -67,7 +67,17 @@ Method-by-method checklist (compare against the warehouse docs):
 - [ ] `null_safe_eq` — `IS NOT DISTINCT FROM`, `EQUAL_NULL`, `<=>`, or CASE fallback
 - [ ] `conditional_aggregate` — native `COUNT_IF`-style forms (optional; the
       portable CASE default always works)
-- [ ] `timestamp_type_name` / `convert_timezone`
+- [ ] `timestamp_type_name`
+- [ ] `convert_timezone` — **required if the warehouse supports it**; there
+      is no portable spelling, so the base class raises
+      `REWRITE_NOT_SUPPORTED` rather than guessing. Skipping this means
+      packages using `times.<key>.column_timezone` get a structured error
+      on your warehouse instead of SQL that fails at execute time. Existing
+      forms: `CONVERT_TIMEZONE(src, tgt, ts)` (Snowflake, Databricks),
+      `timezone(tgt, timezone(src, ts))` (DuckDB, Postgres),
+      `DATETIME(TIMESTAMP(ts, src), tgt)` (BigQuery),
+      `toTimeZone(toDateTime(ts, src), tgt)` (ClickHouse),
+      `at_timezone(with_timezone(ts, src), tgt)` (Trino/Athena)
 - [ ] `capabilities()` — advertise what the warehouse can and can't do
 
 ## 2. Adapter — `semantic_rails/db_parts/redshift.py`
