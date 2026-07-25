@@ -242,6 +242,41 @@ def _expr_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
     return False
 
 
+def _dense_fill_zero_aliases(plan: LogicalPlan, config: PackageConfig) -> set[str]:
+    """Measure aliases whose value really is 0 where a dense row has no data.
+
+    Densifying a time series invents rows for periods the data never
+    covered. `SUM` over no rows is 0, so filling is right there. `AVG`,
+    `MIN`, `MAX` and semi-additive snapshots over no rows are *undefined* —
+    filling them with 0 reports a fabricated measurement that is
+    indistinguishable from a real one: a minimum below every observed
+    value, an average dragged toward zero, an inventory snapshot claiming
+    the warehouse was empty.
+
+    Aliases absent from `plan.measure_plans` — conversion expressions —
+    are excluded by construction. Those lower to
+    `numerator / NULLIF(denominator, 0)`, so a fill would claim a 0%
+    conversion rate for a period that simply had no sessions.
+
+    Same predicate as :func:`_expr_zero_on_missing`, which has always
+    gated the metric_filter projections.
+    """
+    measures = _measure_index(config)
+    zero_filled: set[str] = set()
+    for row in plan.measure_plans:
+        bound = row.bound_measure
+        measure = measures.get(bound.measure_id)
+        if measure is None:
+            continue
+        aggregation = (bound.aggregation or measure.default_aggregation or "").lower()
+        if (
+            aggregation in _ADDITIVE_ZERO_AGGREGATIONS
+            and measure.measure_class in _ZERO_ON_MISSING_MEASURE_CLASSES
+        ):
+            zero_filled.add(bound.alias)
+    return zero_filled
+
+
 def _query_key_aliases(plan: LogicalPlan) -> list[str]:
     aliases = list(plan.group_by)
     if plan.time:
@@ -3995,13 +4030,12 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         joins.append(
             SqlJoin(join_type="LEFT", table=SqlTableRef(name="leaf_base"), on=join_condition)
         )
+        zero_fill_aliases = _dense_fill_zero_aliases(plan, config)
         for alias in measure_aliases:
-            filled_fields.append(
-                SqlField(
-                    SqlCall("COALESCE", [SqlIdentifier(parts=["leaf_base", alias]), SqlLiteral(0)]),
-                    alias,
-                )
-            )
+            leaf_value: Any = SqlIdentifier(parts=["leaf_base", alias])
+            if alias in zero_fill_aliases:
+                leaf_value = SqlCall("COALESCE", [leaf_value, SqlLiteral(0)])
+            filled_fields.append(SqlField(leaf_value, alias))
         ctes.append(
             SqlCte(
                 name="series_base",
