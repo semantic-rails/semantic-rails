@@ -377,7 +377,38 @@ def make_mcp_http_handler(adapter: SemanticLayerMCPAdapter) -> type[BaseHTTPRequ
                 self, 401, _jsonrpc_error(None, -32001, "Missing or invalid bearer API key.")
             )
 
+        def _origin_ok(self) -> bool:
+            """Reject browser-originated requests unless an origin is allowed.
+
+            Same rule as the Streamable HTTP transport: a request carrying
+            an `Origin` came from a page, and with no allow-list configured
+            no page is allowed to drive this server. Non-browser MCP clients
+            send no Origin and are unaffected.
+            """
+            origin = self.headers.get("Origin")
+            return not origin or bool(cors_origin_header(origin))
+
+        def _forbidden_origin(self) -> None:
+            _send_json(
+                self,
+                403,
+                _jsonrpc_error(None, -32003, "Origin is not allowed for this MCP endpoint."),
+            )
+
+        def _content_type_ok(self) -> bool:
+            """Require a JSON content type on POST.
+
+            `text/plain`, `application/x-www-form-urlencoded` and
+            `multipart/form-data` are CORS "simple" content types, so a
+            cross-origin page can send them with no preflight. Requiring
+            JSON forces a preflight that `_origin_ok` then rejects.
+            """
+            raw = self.headers.get("Content-Type", "")
+            return raw.split(";", 1)[0].strip().lower() == "application/json"
+
         def do_OPTIONS(self) -> None:  # noqa: N802
+            if not self._origin_ok():
+                return self._forbidden_origin()
             return _send_empty(self, 204)
 
         def _unknown_route_error(self, status: int = 404) -> None:
@@ -391,6 +422,8 @@ def make_mcp_http_handler(adapter: SemanticLayerMCPAdapter) -> type[BaseHTTPRequ
             return _send_json(self, status, envelope)
 
         def do_GET(self) -> None:  # noqa: N802
+            if not self._origin_ok():
+                return self._forbidden_origin()
             if not self._auth_ok():
                 return self._unauthorized()
             route = _route(self)
@@ -433,10 +466,18 @@ def make_mcp_http_handler(adapter: SemanticLayerMCPAdapter) -> type[BaseHTTPRequ
             return self._unknown_route_error()
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._origin_ok():
+                return self._forbidden_origin()
             if not self._auth_ok():
                 return self._unauthorized()
             if _route(self) != "/mcp":
                 return self._unknown_route_error()
+            if not self._content_type_ok():
+                return _send_json(
+                    self,
+                    415,
+                    _jsonrpc_error(None, -32600, "Content-Type must be application/json."),
+                )
             # ``response`` is union-typed across this block: a single
             # JSON-RPC response object (dict), a batch (list), or
             # ``None`` for a notification-only batch. The dispatcher

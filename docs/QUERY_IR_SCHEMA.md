@@ -377,10 +377,13 @@ window where `N` is the offset expressed in grain rows. For a
 `semantic_rails/compiler_parts/post_aggregation.py:_compile_offset_window_expr`.
 
 The dense-fill machinery is engaged automatically when an offset
-window appears, so rows missing in the source are filled with zero
-before the LAG runs. The shift can therefore reach into months that
-have no orders without producing NULL gaps (it produces NULL only
-when the LAG reaches before the available data window).
+window appears, so rows missing in the source are filled before the
+LAG runs. Additive measures (`sum`, `count`, `count_distinct` over an
+additive, event-count or entity-count measure) fill with `0`; every
+other measure fills with `NULL`, because the value of `AVG`, `MIN`,
+`MAX` or a semi-additive snapshot over no rows is undefined, not zero.
+The shift can therefore reach into months that have no orders, and a
+gap there is reported as a gap rather than as a measurement.
 
 ### Worked example file
 
@@ -418,12 +421,20 @@ fact table.
 When `fill: true`, the runtime joins the aggregated result against a
 dense calendar spine generated for the requested `temporal_role` /
 `grain` / time window. Buckets with no source rows still appear in
-the output with the measure column set to `0` (or `NULL` for ratios
-and other null-preserving expressions). `fill: true` requires a
-`grain` — the calendar spine needs a step size — and it is engaged
-automatically by features that depend on dense rows (for example,
-the inline `prior_period` LAG window in the "Period shifts" section
-above).
+the output. What lands in the measure column depends on whether zero
+is that measure's honest value for "no rows contributed":
+
+| Measure | Filled with | Why |
+|---|---|---|
+| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0` | Zero is the additive identity — summing no rows really is 0. |
+| `avg`, `min`, `max`, `median`, `percentile` | `NULL` | Undefined over no rows. A filled `0` would be a fabricated measurement — a `min` below every value actually observed. |
+| semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
+| ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |
+
+`fill: true` requires a `grain` — the calendar spine needs a step
+size — and it is engaged automatically by features that depend on
+dense rows (for example, the inline `prior_period` LAG window in the
+"Period shifts" section above).
 
 ### Worked example — monthly query against a sparse table
 

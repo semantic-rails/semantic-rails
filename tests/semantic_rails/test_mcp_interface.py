@@ -881,3 +881,67 @@ def test_mcp_jsonrpc_error_envelope_populates_top_level_closest_valid_query(runt
     assert any(
         dict(h.get("closest_valid_query", {}) or {}) for h in structured.get("recovery_hints", [])
     ), "expected at least one hint to carry a closest_valid_query template"
+
+
+def test_legacy_mcp_http_handler_rejects_browser_origins(runtime_factory, monkeypatch):
+    """The stdlib handler had no Origin check at all.
+
+    With no allow-list configured, a request carrying an `Origin` came
+    from a page and must be refused — loopback binding is no defence
+    against the operator's own browser.
+    """
+    monkeypatch.delenv("SEMANTIC_RAILS_CORS_ORIGINS", raising=False)
+    runtime = runtime_factory("jaffle_shop")
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        with _serve_mcp_http(adapter) as base:
+            req = urllib.request.Request(
+                base + "/mcp",
+                data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "resources/list"}).encode(
+                    "utf-8"
+                ),
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://attacker.example",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(req)  # nosec - local test server only
+            assert exc.value.code == 403
+
+            # GET and OPTIONS are guarded on the same rule.
+            for method in ("GET", "OPTIONS"):
+                probe = urllib.request.Request(
+                    base + "/mcp",
+                    headers={"Origin": "https://attacker.example"},
+                    method=method,
+                )
+                with pytest.raises(urllib.error.HTTPError) as exc:
+                    urllib.request.urlopen(probe)  # nosec - local test server only
+                assert exc.value.code == 403
+    finally:
+        adapter.close()
+
+
+def test_legacy_mcp_http_handler_requires_a_json_content_type(runtime_factory, monkeypatch):
+    """`text/plain` is a CORS "simple" type — sendable cross-origin with no
+    preflight. Requiring JSON forces the preflight the Origin check blocks."""
+    monkeypatch.delenv("SEMANTIC_RAILS_CORS_ORIGINS", raising=False)
+    runtime = runtime_factory("jaffle_shop")
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        with _serve_mcp_http(adapter) as base:
+            req = urllib.request.Request(
+                base + "/mcp",
+                data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "resources/list"}).encode(
+                    "utf-8"
+                ),
+                headers={"Content-Type": "text/plain"},
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(req)  # nosec - local test server only
+            assert exc.value.code == 415
+    finally:
+        adapter.close()
