@@ -3774,62 +3774,9 @@ def _query_requires_dense_series(plan: LogicalPlan, config: PackageConfig) -> bo
 def _calendar_fill_binding(
     plan: LogicalPlan, config: PackageConfig, *, force: bool = False
 ) -> tuple[str, str] | None:
-    if not plan.time or (not plan.time.get("fill") and not force):
-        return None
-    grain = str(plan.time.get("grain", "") or "").lower()
-    if not grain:
-        raise SemanticLayerError("INVALID_QUERY", "time.fill requires query.time.grain")
+    from .compiler_parts.sql_lowering import _calendar_fill_binding as bind_calendar
 
-    column_by_grain = {
-        "day": "date_day",
-        "week": "week_start",
-        "month": "month_start",
-        "quarter": "quarter_start",
-        "year": "year_start",
-    }
-    if grain not in column_by_grain:
-        raise SemanticLayerError(
-            "REWRITE_NOT_SUPPORTED", f"time.fill does not support grain '{grain}'"
-        )
-
-    requested_calendar = str(plan.time.get("calendar_id", "default") or "default")
-    calendar_candidates = [row for row in config.entities if row.kind == "time"]
-    calendar_entity = next(
-        (
-            row
-            for row in calendar_candidates
-            if (row.calendar_id or "default") == requested_calendar
-        ),
-        None,
-    )
-    if calendar_entity is None:
-        if requested_calendar != "default":
-            raise SemanticLayerError(
-                "REWRITE_NOT_SUPPORTED",
-                f"Calendar '{requested_calendar}' is not available in the package",
-                details={"calendar_id": requested_calendar},
-            )
-        calendar_entity = next(iter(calendar_candidates), None)
-    if calendar_entity is None:
-        raise SemanticLayerError(
-            "REWRITE_NOT_SUPPORTED", "time.fill requires a calendar entity in the package"
-        )
-
-    calendar_column = column_by_grain[grain]
-    dimension = next(
-        (
-            row
-            for row in config.dimensions
-            if row.entity == calendar_entity.id and row.column == calendar_column
-        ),
-        None,
-    )
-    if dimension is None:
-        raise SemanticLayerError(
-            "REWRITE_NOT_SUPPORTED",
-            f"time.fill requires calendar dimension '{calendar_column}' on '{calendar_entity.id}'",
-        )
-    return calendar_entity.table, dimension.column
+    return bind_calendar(plan, config, force=force)
 
 
 def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
