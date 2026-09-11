@@ -2161,7 +2161,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.5.3" },
     { name = "google-cloud-bigquery", marker = "extra == 'all'", specifier = ">=3.41.0" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.41.0" },
-    { name = "mcp", specifier = ">=1.27.0" },
+    { name = "mcp", specifier = ">=1.27.0,<2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'all'", specifier = ">=3.3.4" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.3.4" },
     { name = "pyathena", marker = "extra == 'all'", specifier = ">=3.32.0" },
