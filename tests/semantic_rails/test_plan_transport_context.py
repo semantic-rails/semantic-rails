@@ -158,13 +158,26 @@ def test_plan_validates_with_trusted_policy_despite_caller_spoofs(governed_app, 
     assert status == 200
     assert plan["status"] == "low_confidence"
     assert plan["best"]["validation_ok"] is False
-    assert any(error["code"] == "POLICY_DENIED" for error in plan["why"]["errors"])
     assert not plan["next"].get("ready_for")
     assert plan["request_context"]["environment"] == "production"
     assert plan["request_context"]["roles"] == ["analyst"]
     assert "spoofed-user" not in json.dumps(plan)
     for query in _query_irs(plan):
         assert "policy_context" not in query
+
+    # A legal fallback for a different revenue measure can make the planner
+    # explain semantic drift first. Follow its public recovery path and prove
+    # the selected draft failed policy, not query structure or caller claims.
+    query = plan["best"]["query_ir"]
+    status, denied = _call(
+        governed_app, transport, "validate", {"query": query}, key="test-plan-prod"
+    )
+    assert status == 200
+    assert denied["ok"] is False
+    assert any(error["code"] == "POLICY_DENIED" for error in denied["errors"])
+    status, allowed = _call(governed_app, transport, "validate", {"query": query})
+    assert status == 200
+    assert allowed["ok"] is True
 
 
 @pytest.mark.parametrize("transport", ["rest", "mcp"])
