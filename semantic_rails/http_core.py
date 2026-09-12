@@ -513,9 +513,9 @@ class SemanticHTTPService:
                 **plan_payload(
                     self.runtime,
                     intent=payload.get("intent"),
-                    partial_query=query_payload(payload)
-                    if payload.get("query") or payload.get("policy_context")
-                    else None,
+                    # Plan is an intent envelope, never a flat Query IR.
+                    # Keep trusted context even when no query seed was supplied.
+                    partial_query=query_payload({**payload, "query": payload.get("query")}),
                     detail=str(payload.get("detail", "best") or "best"),
                     limit=coerce_int(payload.get("limit"), 3, field="limit", minimum=1),
                 ),

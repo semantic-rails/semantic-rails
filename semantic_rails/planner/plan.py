@@ -401,7 +401,10 @@ def _merge_partial_query(
     """
 
     partial = dict(partial_query or {})
-    policy_context = partial.pop("policy_context", None)
+    # Context is validation authority, not portable Query IR. _validate_query
+    # receives it separately so every draft remains governed without asking
+    # callers to replay trusted claims in a later compile/execute request.
+    partial.pop("policy_context", None)
     partial.pop("request_context", None)
     partial.pop("request_id", None)
     merged = dict(draft_query or {})
@@ -419,8 +422,6 @@ def _merge_partial_query(
             merged[key] = {**generated, **value}
         else:
             merged[key] = value
-    if policy_context:
-        merged["policy_context"] = policy_context
     return merged
 
 
