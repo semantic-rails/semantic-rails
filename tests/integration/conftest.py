@@ -48,9 +48,13 @@ def target(request: pytest.FixtureRequest) -> IntegrationTarget:
     return request.param
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def target_runtime(target: IntegrationTarget, jaffle_fixture: JaffleFixture):
-    """A Runtime for the target with the fixture loaded (idempotent)."""
+    """Own the target connection until this module finishes.
+
+    Release its DuckLake catalog attachment before another test module
+    constructs a runtime against the same environment-configured catalog.
+    """
     runtime = build_runtime(target, jaffle_fixture)
     if target.make_loader is not None:
         adapter = runtime._get_adapter()  # noqa: SLF001 - deliberate: loaders reuse the production connection path

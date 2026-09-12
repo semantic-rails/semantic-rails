@@ -96,7 +96,10 @@ SQL_FUNCTION_NAMES = frozenset(
         # Postgres extraction (used to compose date_diff arithmetic).
         "DATE_PART",
         "DATE_TRUNC",
-        # BigQuery DATETIME (naive timestamp) family.
+        # BigQuery DATETIME (naive timestamp) family. Bare DATETIME /
+        # TIMESTAMP are the two-argument constructors BigQuery uses for
+        # timezone conversion (it has no CONVERT_TIMEZONE).
+        "DATETIME",
         "DATETIME_ADD",
         "DATETIME_DIFF",
         "DATETIME_TRUNC",
@@ -142,14 +145,25 @@ SQL_FUNCTION_NAMES = frozenset(
         "SUM",
         "SUM_IF",
         # BigQuery TIMESTAMP family / Spark SQL timestamp arithmetic.
+        "TIMESTAMP",
         "TIMESTAMP_ADD",
         "TIMESTAMP_DIFF",
         "TIMESTAMP_TRUNC",
         "TIMESTAMPADD",
         "TIMESTAMPDIFF",
+        # Timezone conversion, one spelling per dialect family:
+        # DuckDB/Postgres `timezone(tz, ts)`, Trino/Athena
+        # `at_timezone(with_timezone(ts, src), tgt)`, ClickHouse
+        # `toTimeZone(toDateTime(ts, src), tgt)` (case-sensitive — see
+        # the canonical map below).
+        "AT_TIMEZONE",
+        "TIMEZONE",
+        "TO_DATE_TIME",
+        "TO_TIME_ZONE",
         "TRIM",
         "UNNEST",
         "UPPER",
+        "WITH_TIMEZONE",
     }
 )
 SQL_JOIN_TYPES = frozenset(
@@ -171,6 +185,8 @@ _FUNCTION_CANONICAL_NAMES = {
     "ARGMIN": "argMin",
     "QUANTILE_EXACT": "quantileExact",
     "QUANTILE_EXACT_INCLUSIVE": "quantileExactInclusive",
+    "TO_DATE_TIME": "toDateTime",
+    "TO_TIME_ZONE": "toTimeZone",
 }
 _FUNCTION_CANONICAL_VALUES = frozenset(_FUNCTION_CANONICAL_NAMES.values())
 _CAST_TYPE_RE = re.compile(r"^(?P<base>[A-Z_][A-Z0-9_]*)(?:\((?P<args>\d+(?:,\d+)?)\))?$")

@@ -265,3 +265,137 @@ def test_in_interval_and_exists_render_with_safe_typed_sql():
     )
     # Top-level SqlBinary inside a WHERE clause renders without redundant parens.
     assert '"right".account_id = src.account_id' in rendered_exists
+
+
+# --- string-literal escaping across dialects -------------------------------
+#
+# Doubling the single quote is enough on standard-conforming warehouses, but
+# Snowflake, BigQuery, ClickHouse and Databricks/Spark also honour backslash
+# escapes inside single-quoted literals. On those, a value ending in a
+# backslash escapes the closing quote and everything after it parses as SQL.
+
+_BACKSLASH_ESCAPING_WAREHOUSES = ("snowflake", "bigquery", "clickhouse", "databricks")
+_STANDARD_CONFORMING_WAREHOUSES = (
+    "duckdb",
+    "motherduck",
+    "ducklake",
+    "postgres",
+    "athena",
+)
+
+_HOSTILE_VALUES = (
+    "\\",
+    "\\' OR 1=1 --",
+    "ok\\",
+    "a'b",
+    "a\\'b",
+    "\\\\",
+    "'; DROP TABLE sensitive; --",
+)
+
+
+def _closes_exactly_once(rendered: str, *, backslash_escapes: bool) -> bool:
+    """Walk `rendered` the way the target warehouse's lexer would.
+
+    Returns True when the literal terminates at the final character and
+    nowhere earlier — i.e. nothing the caller supplied escaped into SQL.
+    """
+    assert rendered.startswith("'") and rendered.endswith("'")
+    i = 1
+    end = len(rendered) - 1
+    while i < end:
+        ch = rendered[i]
+        if backslash_escapes and ch == "\\":
+            i += 2  # consumes whatever follows, including a quote
+            continue
+        if ch == "'":
+            if i + 1 < end + 1 and rendered[i + 1] == "'":
+                i += 2
+                continue
+            return False  # closed early: the rest is live SQL
+        i += 1
+    return i == end
+
+
+@pytest.mark.parametrize("warehouse", _BACKSLASH_ESCAPING_WAREHOUSES)
+@pytest.mark.parametrize("value", _HOSTILE_VALUES)
+def test_backslash_dialects_neutralize_hostile_literals(warehouse: str, value: str):
+    from semantic_rails.dialects import dialect_for_warehouse
+
+    rendered = dialect_for_warehouse(warehouse).quote_string_literal(value)
+    assert _closes_exactly_once(rendered, backslash_escapes=True), (
+        f"{warehouse}: {value!r} -> {rendered} escaped the literal"
+    )
+
+
+@pytest.mark.parametrize("warehouse", _STANDARD_CONFORMING_WAREHOUSES)
+@pytest.mark.parametrize("value", _HOSTILE_VALUES)
+def test_standard_dialects_neutralize_hostile_literals(warehouse: str, value: str):
+    from semantic_rails.dialects import dialect_for_warehouse
+
+    rendered = dialect_for_warehouse(warehouse).quote_string_literal(value)
+    assert _closes_exactly_once(rendered, backslash_escapes=False), (
+        f"{warehouse}: {value!r} -> {rendered} escaped the literal"
+    )
+
+
+@pytest.mark.parametrize("warehouse", _STANDARD_CONFORMING_WAREHOUSES)
+def test_standard_dialects_do_not_corrupt_backslashes(warehouse: str):
+    """Doubling backslashes here would silently change the user's data."""
+    from semantic_rails.dialects import dialect_for_warehouse
+
+    assert dialect_for_warehouse(warehouse).quote_string_literal("C:\\tmp") == "'C:\\tmp'"
+
+
+def test_renderer_uses_the_bound_dialect_for_literals():
+    from semantic_rails.dialects import DuckDbDialect, SnowflakeDialect
+    from semantic_rails.renderer import use_dialect
+
+    literal = SqlLiteral("ok\\")
+    assert render_expr(literal) == "'ok\\'"  # unbound: standard-conforming
+    with use_dialect(DuckDbDialect()):
+        assert render_expr(literal) == "'ok\\'"
+    with use_dialect(SnowflakeDialect()):
+        assert render_expr(literal) == "'ok\\\\'"
+    # The binding is scoped, not sticky.
+    assert render_expr(literal) == "'ok\\'"
+
+
+def test_compile_binds_the_warehouse_dialect_for_literal_quoting(package_config_factory):
+    """Guards the `_render_string_literal` fallback from going unnoticed.
+
+    `render_expr` outside a binding escapes ANSI-style, which would
+    under-escape a Snowflake query. Compilation must therefore always bind
+    the package's dialect — assert it end to end rather than trusting the
+    single call site to stay wired.
+    """
+    import semantic_rails.compiler as compiler_module
+
+    seen: list[Any] = []
+    original = compiler_module.render_select_for_profile
+
+    def _spy(query: Any, profile: Any = None, **kwargs: Any) -> str:
+        seen.append(kwargs.get("dialect"))
+        return original(query, profile, **kwargs)
+
+    config, _ = package_config_factory("jaffle_shop")
+    registry = Registry(config)
+    compiler_module.render_select_for_profile = _spy
+    try:
+        compile_query(
+            config,
+            registry,
+            {
+                "select": [
+                    {
+                        "expression": {"kind": "metric", "metric": "metric.sales.aov_usd"},
+                        "alias": "aov",
+                    }
+                ]
+            },
+        )
+    finally:
+        compiler_module.render_select_for_profile = original
+
+    assert seen and seen[0] is not None, "compile_query must bind a dialect for rendering"
+    assert seen[0].name == config.package.warehouse

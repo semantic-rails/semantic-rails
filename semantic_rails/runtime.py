@@ -382,7 +382,71 @@ def _collect_expr_object_ids(expr_payload: dict[str, Any]) -> list[str]:
     return [item for item in object_ids if item]
 
 
-def _query_object_ids(payload: dict[str, Any]) -> list[str]:
+_OBJECT_REF_KEYS = ("measure", "metric", "field", "entity", "basis_metric")
+
+
+def _collect_spec_object_ids(spec: Any) -> list[str]:
+    """Object ids referenced anywhere inside a recipe's filter/window spec.
+
+    These specs are free-form nested mappings (``where`` entries, nested
+    ``metric_filters``, partition keys), so this walks them generically
+    rather than enumerating shapes — an unrecognized shape should
+    over-collect and deny, never under-collect and allow.
+    """
+    object_ids: list[str] = []
+    if isinstance(spec, dict):
+        for key, value in spec.items():
+            if key in _OBJECT_REF_KEYS and isinstance(value, str) and value:
+                object_ids.append(value)
+            else:
+                object_ids.extend(_collect_spec_object_ids(value))
+    elif isinstance(spec, (list, tuple)):
+        for item in spec:
+            object_ids.extend(_collect_spec_object_ids(item))
+    return object_ids
+
+
+def _expand_object_id_closure(config: Any, object_ids: list[str]) -> list[str]:
+    """Follow metric recipes so a metric cannot launder a governed measure.
+
+    Policies are declared against the objects an author governs — usually
+    measures. A query that names a *metric* touches those measures just as
+    surely, but names none of them, so matching on the query's syntactic
+    ids alone lets any curated metric walk straight through ``deny``,
+    ``redact`` and ``metric_constraint``. Enforcement therefore runs over
+    the transitive closure: every measure, metric and entity the named
+    objects actually resolve to.
+    """
+    recipes = {row.id: row for row in config.metric_recipes}
+    seen: set[str] = set()
+    ordered: list[str] = []
+    pending = list(object_ids)
+    while pending:
+        object_id = pending.pop(0)
+        if not object_id or object_id in seen:
+            continue
+        seen.add(object_id)
+        ordered.append(object_id)
+        recipe = recipes.get(object_id)
+        if recipe is None:
+            continue
+        # Recipes can reference other recipes; the `seen` guard makes a
+        # cyclic or diamond-shaped definition terminate.
+        pending.extend(_collect_expr_object_ids(expr_to_dict(recipe.expression)))
+        pending.extend(_collect_spec_object_ids(recipe.filter_spec))
+        pending.extend(_collect_spec_object_ids(recipe.window_spec))
+        if recipe.temporal_role:
+            pending.append(recipe.temporal_role)
+    return ordered
+
+
+def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
+    """Object ids a query touches, for policy matching.
+
+    Pass ``config`` wherever the result gates access — without it the
+    result is only the ids the caller spelled out, which is not what the
+    query reads. See :func:`_expand_object_id_closure`.
+    """
     query = normalize_query(payload)
     object_ids: list[str] = []
     for select_item in query.select:
@@ -396,7 +460,10 @@ def _query_object_ids(payload: dict[str, Any]) -> list[str]:
     if query.time is not None and query.time.temporal_role:
         object_ids.append(query.time.temporal_role)
     object_ids.extend(list(dict(query.temporal_role_overrides).values()))
-    return list(dict.fromkeys(item for item in object_ids if item))
+    deduped = list(dict.fromkeys(item for item in object_ids if item))
+    if config is None:
+        return deduped
+    return _expand_object_id_closure(config, deduped)
 
 
 def _policy_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1211,7 +1278,7 @@ def _methodology_hints(config, payload: dict[str, Any], compiled) -> list[dict[s
                         }
                     )
     if payload.get("export"):
-        object_ids = _query_object_ids(payload)
+        object_ids = _query_object_ids(payload, config)
         protected = []
         for measure in config.measures:
             if measure.id in object_ids and (
@@ -1712,7 +1779,7 @@ class Runtime:
             refusal = _scope_refusal(payload)
             if refusal is not None:
                 raise refusal
-            object_ids = _query_object_ids(payload)
+            object_ids = _query_object_ids(payload, self.config)
             policy_effects = enforce_query_policies(
                 self.config,
                 object_ids,
@@ -1812,7 +1879,7 @@ class Runtime:
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
-        object_ids = _query_object_ids(payload)
+        object_ids = _query_object_ids(payload, self.config)
         policy_effects = enforce_query_policies(
             self.config,
             object_ids,
@@ -1868,7 +1935,7 @@ class Runtime:
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
-        object_ids = _query_object_ids(payload)
+        object_ids = _query_object_ids(payload, self.config)
         policy_effects = enforce_query_policies(
             self.config,
             object_ids,
@@ -2206,7 +2273,7 @@ class Runtime:
         for derived in (preview_query, membership_query):
             for effect in enforce_query_policies(
                 self.config,
-                _query_object_ids(derived),
+                _query_object_ids(derived, self.config),
                 environment=str(context.get("environment", "")),
                 audience=str(context.get("audience", "")),
                 roles=context.get("roles", []),

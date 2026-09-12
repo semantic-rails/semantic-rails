@@ -9,6 +9,10 @@ module owns layout, indentation, identifier quoting, and CTE ordering.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import TYPE_CHECKING
 
 from .sql_ast import (
     SqlBinary,
@@ -46,6 +50,52 @@ from .sql_ast import (
     normalize_sql_sort_direction,
     normalize_sql_window_frame,
 )
+
+if TYPE_CHECKING:
+    from .dialects import SqlDialect
+
+# Which dialect's literal-quoting rules apply to the tree currently being
+# rendered. String literals are the one place where quoting is not portable:
+# Snowflake, BigQuery, ClickHouse and Databricks honour backslash escapes
+# inside single-quoted literals and the rest do not, so the same value has to
+# be escaped differently per warehouse. Every other dialect choice is already
+# baked into the AST by the lowering pass, which is why this is the only
+# dialect-aware hook in the renderer.
+#
+# It is a ContextVar rather than a parameter because `render_expr` recurses
+# through ~35 internal call sites; threading an argument through all of them
+# would add noise to every frame to serve one leaf node. Entry points set it
+# via `use_dialect`.
+_ACTIVE_DIALECT: ContextVar[SqlDialect | None] = ContextVar(
+    "semantic_rails_render_dialect", default=None
+)
+
+
+@contextmanager
+def use_dialect(dialect: SqlDialect | None) -> Iterator[None]:
+    """Bind ``dialect``'s literal-quoting rules for the duration of a render."""
+    token = _ACTIVE_DIALECT.set(dialect)
+    try:
+        yield
+    finally:
+        _ACTIVE_DIALECT.reset(token)
+
+
+def _render_string_literal(value: str) -> str:
+    """Quote a string literal using the active dialect's rules.
+
+    Falls back to standard-conforming escaping (double the quote, leave
+    backslashes alone) when no dialect is bound — that is correct for the
+    ANSI-conforming warehouses and is what a bare ``render_expr`` call in a
+    test gets. Production rendering always binds a dialect;
+    ``test_compile_binds_the_warehouse_dialect_for_literal_quoting`` guards
+    that so this fallback cannot silently under-escape a real query.
+    """
+    dialect = _ACTIVE_DIALECT.get()
+    if dialect is None:
+        return "'" + value.replace("'", "''") + "'"
+    return dialect.quote_string_literal(value)
+
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_WORDS = {
@@ -140,7 +190,7 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             return "TRUE" if expr.value else "FALSE"
         if isinstance(expr.value, (int, float)):
             return str(expr.value)
-        return "'" + str(expr.value).replace("'", "''") + "'"
+        return _render_string_literal(str(expr.value))
     if isinstance(expr, SqlCall):
         function_name = normalize_sql_function_name(expr.name)
         if expr.distinct:
@@ -383,11 +433,19 @@ def render_query(query: SqlQuery, *, flatten_ctes: bool = True) -> str:
     raise TypeError(f"Unsupported SQL query: {type(query)!r}")
 
 
-def render_select_for_profile(query: SqlSelect, profile: str | None = None) -> str:
-    normalized = str(profile or "audit").strip().lower()
-    if normalized == "debug":
-        return render_select(query, flatten_ctes=False)
-    rendered = render_select(query, flatten_ctes=True)
-    if normalized == "compact":
-        return re.sub(r"\s+", " ", rendered).strip()
-    return rendered
+def render_select_for_profile(
+    query: SqlSelect, profile: str | None = None, *, dialect: SqlDialect | None = None
+) -> str:
+    """Render ``query`` at the requested SQL profile.
+
+    ``dialect`` binds the warehouse's literal-quoting rules for the whole
+    render; callers compiling for a real warehouse must pass it.
+    """
+    with use_dialect(dialect):
+        normalized = str(profile or "audit").strip().lower()
+        if normalized == "debug":
+            return render_select(query, flatten_ctes=False)
+        rendered = render_select(query, flatten_ctes=True)
+        if normalized == "compact":
+            return re.sub(r"\s+", " ", rendered).strip()
+        return rendered

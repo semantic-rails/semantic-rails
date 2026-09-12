@@ -200,7 +200,7 @@ def _build_translated_runtime(
     )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def mf_runtime(target: IntegrationTarget, jaffle_fixture: JaffleFixture, mf_package_dir: Path):
     """A Runtime for the translated package on the current target.
 
@@ -208,6 +208,7 @@ def mf_runtime(target: IntegrationTarget, jaffle_fixture: JaffleFixture, mf_pack
     warehouse already carries the fixture (marker-table fingerprint
     matches), ``ensure_loaded`` is a single probe; otherwise it loads
     the same canonical parquet rows the conformance loaders use.
+    Module ownership releases the catalog before another module attaches it.
     """
     runtime = _build_translated_runtime(mf_package_dir, target, jaffle_fixture)
     if target.make_loader is not None:

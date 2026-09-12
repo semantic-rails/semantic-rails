@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .errors import SemanticLayerError
 from .sql_ast import (
     SqlBinary,
     SqlCall,
@@ -56,9 +57,38 @@ def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) ->
     )
 
 
+def backslash_escaped_string_literal(value: str) -> str:
+    """Quote ``value`` for dialects where ``\\`` escapes inside string literals.
+
+    Snowflake, BigQuery, ClickHouse and Databricks/Spark all treat a
+    backslash as introducing an escape sequence inside a single-quoted
+    literal. Doubling only the quote is therefore not enough: a value
+    ending in a backslash escapes the *closing* quote, so everything the
+    caller supplied after it is parsed as SQL rather than as data.
+
+    Backslashes are doubled before quotes so the doubling cannot be
+    applied to a quote-escape this function introduced itself.
+    """
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
 @dataclass(frozen=True)
 class SqlDialect:
     name: str
+
+    def quote_string_literal(self, value: str) -> str:
+        """Render ``value`` as a single-quoted SQL string literal.
+
+        Standard-conforming default: the single quote is the only
+        character with meaning inside a literal, and it is escaped by
+        doubling it. This is correct for DuckDB, MotherDuck, DuckLake,
+        Postgres (``standard_conforming_strings=on``, the default since
+        9.1) and Trino/Athena. Dialects that also honour backslash
+        escapes override this with
+        :func:`backslash_escaped_string_literal` — doubling backslashes
+        *here* would corrupt the value on these warehouses instead.
+        """
+        return "'" + value.replace("'", "''") + "'"
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlCall("QUANTILE_CONT", [expr, SqlLiteral(percentile)])
@@ -82,11 +112,29 @@ class SqlDialect:
         return SqlCall("DATE_TRUNC", [SqlLiteral(grain), self.timestamp_cast(ts_expr)])
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
-        # Generic fallback: CONVERT_TIMEZONE(source, target, expr) — Snowflake
-        # syntax; subclasses override for other dialects.
-        return SqlCall(
-            "CONVERT_TIMEZONE",
-            [SqlLiteral(source_tz), SqlLiteral(target_tz), ts_expr],
+        """Reinterpret a naive timestamp from ``source_tz`` into ``target_tz``.
+
+        There is no portable spelling for this, so there is no portable
+        default. The base used to emit Snowflake's
+        ``CONVERT_TIMEZONE(source, target, expr)`` for every warehouse,
+        which compiled fine and then failed at execute time on the seven
+        that do not have that function — including DuckDB, the reference
+        warehouse. Failing to compile is the honest outcome: a dialect
+        that supports the rewrite overrides this.
+        """
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            (
+                f"Warehouse '{self.name}' has no timezone-conversion rewrite, so "
+                f"`column_timezone` cannot be honored. Store the column in the "
+                f"target timezone, or drop `column_timezone` from the time binding."
+            ),
+            details={
+                "warehouse": self.name,
+                "rewrite": "convert_timezone",
+                "source_timezone": source_tz,
+                "target_timezone": target_tz,
+            },
         )
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
@@ -138,6 +186,9 @@ class SqlDialect:
 class SnowflakeDialect(SqlDialect):
     name: str = "snowflake"
 
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
+
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlWithinGroup(
             SqlCall("PERCENTILE_CONT", [SqlLiteral(percentile)]),
@@ -146,6 +197,12 @@ class SnowflakeDialect(SqlDialect):
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
         return SqlCall("MIN_BY", [expr, order_expr])
+
+    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
+        # Native: CONVERT_TIMEZONE(sourceTz, targetTz, ts). This spelling
+        # used to be the base-class default for every warehouse, which is
+        # why the other dialects needed correcting rather than adding.
+        return SqlCall("CONVERT_TIMEZONE", [SqlLiteral(source_tz), SqlLiteral(target_tz), ts_expr])
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
         return SqlCall("MAX_BY", [expr, order_expr])
@@ -191,6 +248,17 @@ class SnowflakeDialect(SqlDialect):
 class DuckDbDialect(SqlDialect):
     name: str = "duckdb"
 
+    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
+        # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
+        # `tz` and yields an instant; `timezone(tz, instant)` renders an
+        # instant back to naive wall-clock in `tz`. Nesting them therefore
+        # reinterprets source -> target. Verified on DuckDB 1.5.3:
+        # 2024-01-15 12:00 UTC -> 2024-01-15 07:00 America/New_York.
+        return SqlCall(
+            "timezone",
+            [SqlLiteral(target_tz), SqlCall("timezone", [SqlLiteral(source_tz), ts_expr])],
+        )
+
 
 @dataclass(frozen=True)
 class PostgresDialect(SqlDialect):
@@ -214,6 +282,17 @@ class PostgresDialect(SqlDialect):
     """
 
     name: str = "postgres"
+
+    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
+        # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
+        # `tz` and yields an instant; `timezone(tz, instant)` renders an
+        # instant back to naive wall-clock in `tz`. Nesting them therefore
+        # reinterprets source -> target. Verified on DuckDB 1.5.3:
+        # 2024-01-15 12:00 UTC -> 2024-01-15 07:00 America/New_York.
+        return SqlCall(
+            "timezone",
+            [SqlLiteral(target_tz), SqlCall("timezone", [SqlLiteral(source_tz), ts_expr])],
+        )
 
     # Fixed-length units expressed as a timestamp difference (PG renders
     # no bare INTERVAL literal through this AST, but `ts2 - ts1` IS an
@@ -451,6 +530,19 @@ class BigQueryDialect(SqlDialect):
 
     name: str = "bigquery"
 
+    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
+        # BigQuery has no CONVERT_TIMEZONE. TIMESTAMP(datetime, tz) reads a
+        # naive DATETIME as wall-clock in `tz`; DATETIME(timestamp, tz)
+        # renders it back to naive wall-clock in the target zone. This
+        # matches the DATETIME_* family the rest of this dialect uses.
+        return SqlCall(
+            "DATETIME",
+            [SqlCall("TIMESTAMP", [ts_expr, SqlLiteral(source_tz)]), SqlLiteral(target_tz)],
+        )
+
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
+
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         """EXACT linear-interpolation percentile (DuckDB QUANTILE_CONT
         parity) as an aggregate expression.
@@ -626,6 +718,14 @@ class DatabricksDialect(SqlDialect):
 
     name: str = "databricks"
 
+    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
+        # Databricks SQL provides a Snowflake-compatible
+        # convert_timezone(sourceTz, targetTz, ts).
+        return SqlCall("CONVERT_TIMEZONE", [SqlLiteral(source_tz), SqlLiteral(target_tz), ts_expr])
+
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
+
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlWithinGroup(
             SqlCall("PERCENTILE_CONT", [SqlLiteral(percentile)]),
@@ -717,6 +817,14 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
+
+    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
+        # Trino: with_timezone(naive_ts, tz) attaches a zone;
+        # at_timezone(instant, tz) re-renders it in the target zone.
+        return SqlCall(
+            "at_timezone",
+            [SqlCall("with_timezone", [ts_expr, SqlLiteral(source_tz)]), SqlLiteral(target_tz)],
+        )
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         # Trino has no exact percentile aggregate (APPROX_PERCENTILE is
@@ -840,6 +948,17 @@ class ClickHouseDialect(SqlDialect):
     """
 
     name: str = "clickhouse"
+
+    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
+        # ClickHouse: toDateTime(ts, tz) reads the value in `tz`;
+        # toTimeZone(dt, tz) re-renders it in the target zone.
+        return SqlCall(
+            "TO_TIME_ZONE",
+            [SqlCall("TO_DATE_TIME", [ts_expr, SqlLiteral(source_tz)]), SqlLiteral(target_tz)],
+        )
+
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         # ClickHouse parameterized-aggregate syntax:

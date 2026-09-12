@@ -70,6 +70,11 @@ def handle_streamable_http_request(
 ) -> MCPHTTPResponse:
     method = method.upper()
     origin = _header(headers, "Origin")
+    # MCP Streamable HTTP requires Origin validation to block DNS-rebinding
+    # and drive-by access from a page in the operator's own browser. With no
+    # allow-list configured `cors_origin_header` returns "", so every
+    # Origin-bearing (i.e. browser) request is rejected and non-browser
+    # clients — which send no Origin — are unaffected.
     if origin and not cors_origin_header(origin):
         return _error(403, -32003, "Origin is not allowed for this MCP endpoint.")
 

@@ -1357,3 +1357,85 @@ def test_order_lifecycle_covers_full_order_date_range(runtime_factory):
     finally:
         runtime.close()
     assert result["row_count"] >= 12
+
+
+def test_dense_fill_does_not_fabricate_zeros_for_non_additive_measures(runtime_factory):
+    """Densifying invents rows; it must not invent measurements.
+
+    `SUM` over no rows is 0, so filling is right. `MIN` over no rows is
+    undefined — a filled `0` is a fabricated minimum that sits below every
+    value actually observed, and nothing in the envelope marks it as
+    synthetic. Both measures ride the same dense spine here, so the two
+    fills have to differ within a single result set.
+    """
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        query = {
+            "version": 1,
+            "select": [
+                {
+                    "expression": {
+                        "measure": "measure.jaffle.lifetime_spend_before_tax_usd",
+                        "aggregation": "min",
+                    },
+                    "as": "min_spend",
+                },
+                {
+                    "expression": {
+                        "measure": "measure.jaffle.lifetime_order_count",
+                        "aggregation": "sum",
+                    },
+                    "as": "orders",
+                },
+            ],
+            "time": {
+                "temporal_role": "temporal_role.jaffle_customer_first_order_at",
+                "grain": "month",
+                "start": "2016-09-01 00:00:00",
+                "end": "2018-06-01 00:00:00",
+                "fill": True,
+            },
+        }
+
+        result = runtime.query(query)
+        rows = result["rows"]
+        empty = [row for row in rows if row["orders"] == 0]
+        populated = [row for row in rows if row["orders"] > 0]
+
+        assert empty, "range must extend past the data so some buckets are empty"
+        assert populated, "range must also cover buckets that carry data"
+
+        for row in empty:
+            assert row["min_spend"] is None, f"empty bucket reported a fabricated minimum: {row!r}"
+
+        # The additive measure keeps its identity fill.
+        assert all(row["orders"] == 0 for row in empty)
+
+        # And the fabricated value would have been detectable as wrong:
+        # every real minimum is strictly above zero.
+        assert all(row["min_spend"] > 0 for row in populated)
+    finally:
+        runtime.close()
+
+
+def test_dense_fill_still_zero_fills_additive_measures(runtime_factory):
+    """Guard the other direction: the fix must not turn every fill into NULL."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        query = {
+            "version": 1,
+            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "time": {
+                "temporal_role": "temporal_role.jaffle_order_time",
+                "grain": "day",
+                "start": "2016-08-25 00:00:00",
+                "end": "2016-09-03 00:00:00",
+                "fill": True,
+            },
+        }
+
+        rows = runtime.query(query)["rows"]
+        assert any(row["orders"] == 0 for row in rows)
+        assert not any(row["orders"] is None for row in rows)
+    finally:
+        runtime.close()

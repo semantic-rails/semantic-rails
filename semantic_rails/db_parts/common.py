@@ -240,7 +240,17 @@ def map_double_quoted_identifiers(sql: str, replace: Callable[[str], str]) -> st
     The renderer emits ANSI ``"identifier"`` quoting; the compiler
     renders string LITERALS with single quotes only, so a quote-aware
     scan (single-quoted spans copied verbatim, including ``''``
-    escapes) can safely rewrite every double-quoted span. Each
+    escapes) can safely rewrite every double-quoted span.
+
+    This scan deliberately does NOT treat ``\\`` as an escape, even
+    though its callers (BigQuery, Spark) are warehouses that do. It
+    stays correct because the renderer always emits backslashes
+    *doubled* on those dialects — see
+    :func:`semantic_rails.dialects.backslash_escaped_string_literal` —
+    so a lone ``\\'`` can never appear and the literal boundaries this
+    scan finds are the same ones the warehouse finds. Teaching it about
+    backslash escapes would instead break the ANSI-conforming callers,
+    where ``\\`` is an ordinary character. Each
     identifier's inner text (with ``""`` escapes collapsed) is passed
     to ``replace``; its return value is emitted verbatim in place of
     the original quoted span. Callers own the target quoting/escaping

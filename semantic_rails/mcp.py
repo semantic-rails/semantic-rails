@@ -2061,9 +2061,9 @@ class SemanticLayerMCPAdapter:
             lambda args: plan_payload(
                 self.runtime,
                 intent=str(args.get("intent", "")),
-                partial_query=_query_payload(args)
-                if args.get("query") or args.get("policy_context")
-                else None,
+                # Plan arguments are an envelope, not a flat Query IR.
+                # An absent seed must still carry the resolved policy context.
+                partial_query=_query_payload({**args, "query": args.get("query")}),
                 detail=str(args.get("detail", "best") or "best"),
                 limit=_coerce_int(args.get("limit"), 3, field="limit", minimum=1),
             ),
