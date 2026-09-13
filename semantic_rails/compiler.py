@@ -266,9 +266,7 @@ __all__ = [
     "_leaf_time_role",
     "_measure_count_distinct_key_columns",
     "_measure_index",
-    "_measure_leaf_select",
     "_measure_required_entities",
-    "_metric_filter_alias",
     "_namespace_sql_select",
     "_object_comparison_metadata",
     "_object_default_query_temporal_role",
@@ -294,9 +292,7 @@ __all__ = [
     "_preferred_path",
     "_preferred_root_order",
     "_public_time_spec",
-    "_query_key_aliases",
     "_query_metric_predicates",
-    "_query_requires_dense_series",
     "_query_target_entities",
     "_range_crosses_window_boundary",
     "_recipe_compatible_temporal_roles",
@@ -3633,141 +3629,6 @@ def plan_query(
         rewrite_steps=rewrite_steps,
         semantic_dag=_semantic_dag_for_query(query, config),
         synthetic_measures=dict(synthetic_measures),
-    )
-
-
-def _metric_filter_alias(index: int) -> str:
-    return f"metric_filter__{index + 1}"
-
-
-def _query_key_aliases(plan: LogicalPlan) -> list[str]:
-    aliases = list(plan.group_by)
-    if plan.time:
-        aliases.append(
-            plan.time["temporal_role"]
-            if not plan.time.get("grain")
-            else f"{plan.time['temporal_role']}__{plan.time['grain']}"
-        )
-    return aliases
-
-
-def _measure_leaf_select(
-    plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
-) -> SqlSelect:
-    entities = _entity_index(config)
-    dimensions = _dimension_index(config)
-    measures = _measure_index(config)
-    temporal_roles = _temporal_role_index(config)
-    query = plan.query
-    measure = measures[measure_plan.bound_measure.measure_id]
-
-    predicate_ctes: list[SqlCte] = []
-    predicate_joins: list[SqlJoin] = []
-    for index, predicate in enumerate(_all_metric_predicates(plan, measure_plan)):
-        ctes, join = _predicate_ctes_and_join(
-            predicate, index=index, plan=plan, measure_plan=measure_plan, config=config
-        )
-        predicate_ctes.extend(ctes)
-        predicate_joins.append(join)
-
-    select_fields: list[SqlField] = []
-    group_fields: list[Any] = []
-    time_alias = ""
-    leaf_time_role = _leaf_time_role(
-        measure_plan.bound_measure, normalize_query(plan.query), config
-    )
-    for dim_id in plan.group_by:
-        expr, alias = _resolve_dimension_expr(dim_id, config)
-        select_fields.append(SqlField(expr, alias))
-        group_fields.append(expr)
-    if plan.time:
-        time = dict(plan.time)
-        role = temporal_roles[leaf_time_role]
-        dim = dimensions[role.dimension]
-        raw_expr = _column_ref(entities[dim.entity].table, dim.column)
-        time_expr = (
-            dialect_for_warehouse(config.package.warehouse).date_trunc(time["grain"], raw_expr)
-            if time.get("grain")
-            else raw_expr
-        )
-        time_alias = (
-            time["temporal_role"]
-            if not time.get("grain")
-            else f"{time['temporal_role']}__{time['grain']}"
-        )
-        select_fields.append(SqlField(time_expr, time_alias))
-        group_fields.append(time_expr)
-
-    where_clauses: list[Any] = []
-    for item in list(query.get("where", []) or []):
-        expr, _ = _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(build_filter_condition(expr, item.get("op", "="), item.get("value")))
-    for item in _bound_filter_clauses(measure_plan.bound_measure, config):
-        expr, _ = _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(build_filter_condition(expr, item.get("op", "="), item.get("value")))
-    if plan.time:
-        time = dict(plan.time)
-        role = temporal_roles[leaf_time_role]
-        dim = dimensions[role.dimension]
-        raw_expr = _column_ref(entities[dim.entity].table, dim.column)
-        if time.get("start") is not None:
-            where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
-        if time.get("end") is not None:
-            where_clauses.append(SqlBinary(raw_expr, "<", SqlLiteral(time["end"])))
-
-    order_expr = None
-    if measure_plan.bound_measure.temporal_role:
-        role = temporal_roles[measure_plan.bound_measure.temporal_role]
-        time_dim = dimensions[role.dimension]
-        order_expr = _column_ref(entities[time_dim.entity].table, time_dim.column)
-
-    leaf_alias = _expression_alias(
-        MeasureRefExpr(
-            measure=measure.id,
-            aggregation=measure_plan.bound_measure.aggregation,
-            parameters=dict(measure_plan.bound_measure.aggregation_params),
-        ),
-        config,
-    )
-    select_fields.append(
-        SqlField(
-            _aggregation_expr(
-                _config_expr_to_sql(measure.expr, measure, config),
-                measure_plan.bound_measure.aggregation,
-                order_expr=order_expr,
-                parameters=measure_plan.bound_measure.aggregation_params,
-            ),
-            leaf_alias,
-        )
-    )
-    return SqlSelect(
-        ctes=predicate_ctes,
-        select=select_fields,
-        from_table=SqlTableRef(
-            name=(getattr(measure, "source_relation", "") or entities[measure.entity].table)
-        ),
-        joins=[
-            *_joins_for_paths(
-                measure.entity, measure_plan.path_selections, config, time_spec=plan.time
-            ),
-            *predicate_joins,
-        ],
-        where=where_clauses,
-        group_by=group_fields,
-    )
-
-
-def _query_requires_dense_series(plan: LogicalPlan, config: PackageConfig) -> bool:
-    if plan.time and plan.time.get("fill"):
-        return True
-    if any(
-        _expr_requires_dense_series(_parse_public_expr(expr), config)
-        for expr in plan.post_aggregation_exprs.values()
-    ):
-        return True
-    return any(
-        _expr_requires_dense_series(_parse_public_expr(dict(item["expression"])), config)
-        for item in list(plan.query.get("metric_filters", []) or [])
     )
 
 

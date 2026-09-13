@@ -344,8 +344,7 @@ def test_adapter_redacts_driver_errors(monkeypatch: pytest.MonkeyPatch):
     assert "jaffle_order" not in repr(details)
     assert "dapi-super-secret" not in str(exc.value)
     assert "dapi-super-secret" not in repr(details)
-    # Bounded driver text is allowed in the message.
-    assert "TABLE_OR_VIEW_NOT_FOUND" in str(exc.value)
+    assert "TABLE_OR_VIEW_NOT_FOUND" not in str(exc.value)
 
 
 def test_adapter_maps_missing_driver_to_missing_dependency(monkeypatch: pytest.MonkeyPatch):

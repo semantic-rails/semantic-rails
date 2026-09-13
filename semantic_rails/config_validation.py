@@ -28,7 +28,7 @@ from .dialects import (
 )
 from .errors import SemanticLayerError
 from .meta_contract import validate_meta_payload
-from .runtime import Runtime
+from .runtime import Runtime, runtime_request_scope
 from .semantic_collisions import semantic_collision_warnings
 from .yaml_loader import safe_load as yaml_safe_load
 
@@ -2113,61 +2113,35 @@ def _probe_query_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
     return query
 
 
+@runtime_request_scope
 def _run_probe(
     runtime: Runtime, *, kind: str, object_id: str, query: dict[str, Any]
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    # validate-config runs locally for the package owner. Opt in to the
-    # debug-authorized SQL surface so probe failures still include
-    # rendered SQL — that is the whole point of the probe.
-    #
-    # Raw-SQL authorization now requires three things (see
-    # ``runtime._debug_sql_authorized``): debug=true in the payload, the
-    # operator env opt-in, and the ``debug`` role. The probe is a
-    # trusted in-process caller, so we set the env var for the scope of
-    # this call and restore it afterwards.
-    probe_payload = dict(query)
-    probe_payload["debug"] = True
-    probe_policy = dict(probe_payload.get("policy_context", {}) or {})
-    existing_roles = probe_policy.get("roles") or []
-    if isinstance(existing_roles, (list, tuple, set)):
-        roles = list(existing_roles)
-    else:
-        roles = [str(existing_roles)]
-    if "debug" not in {str(role).strip().lower() for role in roles}:
-        roles.append("debug")
-    probe_policy["roles"] = roles
-    probe_payload["policy_context"] = probe_policy
-    previous_allow = os.environ.get("SEMANTIC_RAILS_ALLOW_DEBUG_SQL")
-    os.environ["SEMANTIC_RAILS_ALLOW_DEBUG_SQL"] = "1"
     try:
-        try:
-            runtime.query(probe_payload)
-            return {
-                "object_id": object_id,
-                "kind": kind,
-                "ok": True,
-                "query": query,
-                "timing_ms": round((time.perf_counter() - started) * 1000, 3),
-            }
-        except SemanticLayerError as exc:
-            result = {
-                "object_id": object_id,
-                "kind": kind,
-                "ok": False,
-                "query": query,
-                "timing_ms": round((time.perf_counter() - started) * 1000, 3),
-                "error": _error_payload(exc.code, str(exc), details=exc.details),
-            }
-            rendered_sql = str(exc.details.get("sql", "") or "").strip()
-            if rendered_sql:
-                result["rendered_sql"] = rendered_sql
-            return result
-    finally:
-        if previous_allow is None:
-            os.environ.pop("SEMANTIC_RAILS_ALLOW_DEBUG_SQL", None)
-        else:
-            os.environ["SEMANTIC_RAILS_ALLOW_DEBUG_SQL"] = previous_allow
+        runtime.query(query)
+        return {
+            "object_id": object_id,
+            "kind": kind,
+            "ok": True,
+            "query": query,
+            "timing_ms": round((time.perf_counter() - started) * 1000, 3),
+        }
+    except SemanticLayerError as exc:
+        result = {
+            "object_id": object_id,
+            "kind": kind,
+            "ok": False,
+            "query": query,
+            "timing_ms": round((time.perf_counter() - started) * 1000, 3),
+            "error": _error_payload(exc.code, str(exc), details=exc.details),
+        }
+        if exc.code == "QUERY_EXECUTION_ERROR":
+            # Package-owner diagnostics use the normal compile surface on the
+            # same runtime generation. Never change process-wide debug-SQL
+            # authorization or inject roles while other requests may be running.
+            result["rendered_sql"] = runtime.compile(query)["rendered_sql"]
+        return result
 
 
 def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:

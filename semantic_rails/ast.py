@@ -673,7 +673,7 @@ def _assert_unique_output_aliases(
         )
 
 
-_VALID_QUERY_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
+QUERY_INPUT_KEYS: frozenset[str] = frozenset(
     {
         # Canonical IR keys consumed by normalize_query.
         "version",
@@ -773,9 +773,7 @@ def _check_unknown_top_level_keys(payload: dict[str, Any]) -> None:
     # Treat underscore-prefixed keys (e.g. `_note`, `_comment`) as
     # documentation metadata — example fixtures use them inline to
     # explain shape. They never reach the SQL builder.
-    unknown = sorted(
-        key for key in set(payload) - _VALID_QUERY_TOP_LEVEL_KEYS if not key.startswith("_")
-    )
+    unknown = sorted(key for key in set(payload) - QUERY_INPUT_KEYS if not key.startswith("_"))
     if not unknown:
         return
     bad_key = unknown[0]
@@ -794,7 +792,7 @@ def _check_unknown_top_level_keys(payload: dict[str, Any]) -> None:
     else:
         hint["message"] = (
             f"Top-level key '{bad_key}' is not a recognized Query IR key. "
-            f"Valid top-level keys: {sorted(_VALID_QUERY_TOP_LEVEL_KEYS)}."
+            f"Valid top-level keys: {sorted(QUERY_INPUT_KEYS)}."
         )
         hint["suggested_query_ir_change"] = {"remove": [bad_key]}
     raise SemanticLayerError(
@@ -803,7 +801,7 @@ def _check_unknown_top_level_keys(payload: dict[str, Any]) -> None:
         details={
             "path": bad_key,
             "unsupported_keys": unknown,
-            "supported_keys": sorted(_VALID_QUERY_TOP_LEVEL_KEYS),
+            "supported_keys": sorted(QUERY_INPUT_KEYS),
             "recovery_hints": [hint],
         },
     )
