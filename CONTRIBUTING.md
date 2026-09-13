@@ -5,8 +5,10 @@
 This repo accepts changes only against the public `semantic_rails` runtime and its supported docs/package surface:
 
 - `semantic_rails/`
+- `mf2sr/` (MetricFlow import)
 - `configs/semantic_rails/`
 - `tests/semantic_rails/`
+- `tests/mf2sr/`
 - `docs/`
 
 ## Active Source Of Truth
@@ -21,6 +23,19 @@ This repo is intentionally centered on one active runtime and one active authore
 - Seed fixtures for the active package: `data/jaffle_csv/` and `data/seed_jaffle.sql`
 
 Everything else is supporting material, generated output, or archival history unless the docs explicitly say otherwise.
+
+This file is the sole contributor and agent guide. [docs/README.md](docs/README.md)
+indexes the maintained product documentation; [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+owns the engine design, and [docs/CONTRACTS.md](docs/CONTRACTS.md) owns public contract
+versioning. The generated contract artifacts must agree with the engine's producers.
+Keep Cloud identity, credential storage, billing, and tenant orchestration outside
+this public repository; transports share request shaping and wrap the same runtime.
+
+Update the owning document in the same PR as a behavior change. Put temporary audit
+findings, run receipts, and implementation plans in issues or PRs rather than new
+dated guidance files. Historical benchmark evidence records its tested version and
+does not override current code or maintained docs. Keep `AGENTS.md` as a pointer
+here instead of creating another set of contributor rules.
 
 ## Contributor Paths
 
@@ -73,7 +88,12 @@ The active runtime reseeds the DuckDB file when the expected tables are missing.
 Run these before opening a PR:
 
 ```bash
-uv run pytest -q tests/semantic_rails -n auto
+uv sync --group dev --locked
+uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy semantic_rails
+uv run python scripts/generate_contract_artifacts.py --check
 uv run python scripts/verify_release_readiness.py
 ```
 

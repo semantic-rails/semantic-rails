@@ -48,7 +48,7 @@ from .dialects import (
     supported_warehouses,
     warehouse_connector,
 )
-from .errors import SemanticLayerError
+from .errors import SemanticLayerError, query_execution_error
 from .schema import PackageMeta
 
 __all__ = [
@@ -176,6 +176,10 @@ class DuckDBAdapter(WarehouseAdapter):
         try:
             rows = self._db.query(sql, max_rows=_limit_max_rows(limits))
             return _clip_rows(rows, limits)
+        except SemanticLayerError:
+            raise
+        except Exception as exc:
+            raise query_execution_error({"engine": self.engine, "sql_redacted": True}) from exc
         finally:
             finished.set()
             if watchdog is not None:

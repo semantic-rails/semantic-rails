@@ -14,7 +14,7 @@ Conventions enforced here (mirroring the original Snowflake adapter):
   ``secret`` / ``api_key`` keys are rejected at normalization time.
 - Adapter-level errors never leak raw SQL, option values, or result
   rows. Error details carry the engine, connection kind, option KEYS,
-  and ``sql_redacted: True`` only; stderr-ish driver text is bounded.
+  and ``sql_redacted: True`` only; raw driver text is never public.
 """
 
 from __future__ import annotations
@@ -31,10 +31,8 @@ from ..dialects import (
     connection_option_errors,
     normalize_connection_option_name,
 )
-from ..errors import SemanticLayerError
+from ..errors import SemanticLayerError, query_execution_error
 from .base import QueryRows, WarehouseAdapter, _clip_rows, _limit_max_rows, _limit_timeout_seconds
-
-_ERROR_TEXT_MAX_CHARS = 500
 
 # Hard contract: package YAML must never carry literal credential text.
 # See docs/PACKAGE_AUTHORING.md "Secrets". Anything resembling a literal
@@ -42,13 +40,6 @@ _ERROR_TEXT_MAX_CHARS = 500
 FORBIDDEN_LITERAL_SECRET_KEYS = frozenset(
     {"password", "token", "private_key", "secret", "api_key", "credentials"}
 )
-
-
-def bounded_error_text(text: str) -> str:
-    cleaned = str(text or "").strip()
-    if len(cleaned) <= _ERROR_TEXT_MAX_CHARS:
-        return cleaned
-    return cleaned[:_ERROR_TEXT_MAX_CHARS] + " … [truncated]"
 
 
 def env_value(name: str, missing_env: list[str] | None = None) -> str:
@@ -454,11 +445,7 @@ class DbApiAdapter(WarehouseAdapter):
         except SemanticLayerError:
             raise
         except Exception as exc:
-            raise SemanticLayerError(
-                "QUERY_EXECUTION_ERROR",
-                f"{self.engine} query execution failed: {bounded_error_text(str(exc))}",
-                details=self._error_details(),
-            ) from exc
+            raise query_execution_error(self._error_details()) from exc
 
     def close(self) -> None:
         if self._conn is not None:

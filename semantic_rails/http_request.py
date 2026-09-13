@@ -31,32 +31,20 @@ from collections.abc import Mapping
 from typing import Any
 
 from .request_context import RequestContext
+from .request_payload import (
+    build_query_payload,
+    without_policy_context,
+)
+from .request_payload import (
+    clean_request_id as clean_request_id,
+)
+from .request_payload import (
+    coerce_bool as coerce_bool,
+)
 
 
 class HTTPInputError(ValueError):
     """Client request shape error that should be returned as a 400 envelope."""
-
-
-def clean_request_id(value: Any) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    cleaned = "".join(ch for ch in raw if ch.isprintable() and ch not in "\r\n")
-    return cleaned[:128]
-
-
-def coerce_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
 
 
 def coerce_int(value: Any, default: int, *, field: str, minimum: int | None = None) -> int:
@@ -201,14 +189,10 @@ def authoritative_request_payload(
 
     if "policy_context" in out:
         _object_payload(out.get("policy_context"), field="policy_context")
-    out.pop("policy_context", None)
     raw_query = out.get("query")
-    if isinstance(raw_query, Mapping):
-        query = dict(raw_query)
-        if "policy_context" in query:
-            _object_payload(query.get("policy_context"), field="query.policy_context")
-        query.pop("policy_context", None)
-        out["query"] = query
+    if isinstance(raw_query, Mapping) and "policy_context" in raw_query:
+        _object_payload(raw_query.get("policy_context"), field="query.policy_context")
+    out = without_policy_context(out)
     trusted = context.to_policy_context()
     if trusted:
         out["policy_context"] = trusted
@@ -228,24 +212,9 @@ def policy_context_payload(
 def query_payload(
     payload: Mapping[str, Any], context: RequestContext | None = None
 ) -> dict[str, Any]:
-    raw_query = payload.get("query", payload)
-    query = _object_payload(raw_query, field="query")
-    query.pop("request_id", None)
-    # Hoist response-shape knobs from the outer HTTP envelope into the
-    # query payload so runtime methods see them via `resolve_verbosity` /
-    # `resolve_sql_profile`. Mirrors the MCP `_query_payload` helper.
-    raw_payload = dict(payload or {})
-    if "verbosity" not in query and raw_payload.get("verbosity") not in (None, ""):
-        query["verbosity"] = raw_payload["verbosity"]
-    if "sql_profile" not in query and raw_payload.get("sql_profile") not in (None, ""):
-        query["sql_profile"] = raw_payload["sql_profile"]
-    nested_context = _object_payload(query.get("policy_context"), field="query.policy_context")
-    policy_context = policy_context_payload(payload, context)
-    if context is not None:
-        query.pop("policy_context", None)
-        if policy_context:
-            query["policy_context"] = policy_context
-    elif "policy_context" in query or policy_context:
-        nested_context.update(policy_context)
-        query["policy_context"] = nested_context
-    return query
+    return build_query_payload(
+        payload,
+        object_payload=_object_payload,
+        policy_context=policy_context_payload(payload, context),
+        replace_policy_context=context is not None,
+    )

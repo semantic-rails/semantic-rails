@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from contextlib import nullcontext
@@ -13,11 +14,13 @@ from semantic_rails import cli as cli_module
 from semantic_rails import config as config_module
 from semantic_rails.config import resolve_repo_path
 from semantic_rails.config_validation import (
+    _run_probe,
     parse_config_report,
     resolve_package_reference,
     validate_config_report,
 )
 from semantic_rails.db import Database, SnowflakeCliAdapter, load_csv_dir_to_duckdb
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.yaml_loader import safe_load as yaml12_safe_load
 
@@ -25,6 +28,32 @@ from semantic_rails.yaml_loader import safe_load as yaml12_safe_load
 def _write_yaml(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+@pytest.mark.parametrize("debug_setting", [None, "0", "1"])
+def test_probe_diagnostics_do_not_change_shared_debug_authority(
+    runtime_factory, monkeypatch, debug_setting
+):
+    setting_name = "SEMANTIC_RAILS_ALLOW_DEBUG_SQL"
+    if debug_setting is None:
+        monkeypatch.delenv(setting_name, raising=False)
+    else:
+        monkeypatch.setenv(setting_name, debug_setting)
+    runtime = runtime_factory("jaffle_shop")
+    query = {"version": 1, "policy_context": {"roles": ["finance"]}}
+
+    def fail(payload):
+        assert payload == query
+        assert os.environ.get(setting_name) == debug_setting
+        raise SemanticLayerError("QUERY_EXECUTION_ERROR", "Redacted failure")
+
+    monkeypatch.setattr(runtime, "query", fail)
+    monkeypatch.setattr(runtime, "compile", lambda payload: {"rendered_sql": "SELECT 1"})
+    result = _run_probe(runtime, kind="measure", object_id="measure.example", query=query)
+    assert result["rendered_sql"] == "SELECT 1"
+    assert result["error"]["message"] == "Redacted failure"
+    assert os.environ.get(setting_name) == debug_setting
+    assert query["policy_context"]["roles"] == ["finance"]
 
 
 def _minimal_package_payload(package_id: str) -> dict:

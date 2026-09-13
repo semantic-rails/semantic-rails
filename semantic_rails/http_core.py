@@ -29,7 +29,7 @@ from .diagnostics import (
     exception_issue,
 )
 from .dialects import dialect_for_warehouse
-from .errors import SemanticLayerError
+from .errors import SemanticLayerError, query_execution_error
 from .http_request import (
     HTTPInputError,
     _safe_request_context_payload,
@@ -341,7 +341,9 @@ class SemanticHTTPService:
                             "name": "warehouse",
                             "ok": False,
                             "warehouse": self.runtime.warehouse,
-                            "error": str(exc),
+                            "error": str(exc)
+                            if isinstance(exc, SemanticLayerError)
+                            else str(query_execution_error({"engine": self.runtime.warehouse})),
                         }
                     )
             ok = all(bool(check.get("ok")) for check in checks)

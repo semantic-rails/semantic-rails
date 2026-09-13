@@ -1739,7 +1739,7 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
             engine = "duckdb"
 
             def query(self, sql: str):
-                raise RuntimeError("duckdb adapter exploded for test")
+                raise RuntimeError("SYNTHETIC_DRIVER_SECRET: " + sql)
 
             def close(self) -> None:
                 return None
@@ -1762,6 +1762,8 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
             runtime.query(dict(base_query))
         details = dict(exc_info.value.details)
         assert exc_info.value.code == "QUERY_EXECUTION_ERROR"
+        assert "SYNTHETIC_DRIVER_SECRET" not in str(exc_info.value)
+        assert "SYNTHETIC_DRIVER_SECRET" in str(exc_info.value.__cause__)
         assert "sql" not in details, "raw SQL leaked in default error details"
         assert details.get("sql_redacted") is True
         assert details.get("sql_sha256")

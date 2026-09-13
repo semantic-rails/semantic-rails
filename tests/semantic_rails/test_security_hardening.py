@@ -18,10 +18,14 @@ from types import SimpleNamespace
 import pytest
 
 from semantic_rails.api import AppState, Handler
-from semantic_rails.db import SnowflakeCliAdapter
+from semantic_rails.db import DuckDBAdapter, SnowflakeCliAdapter, SnowflakeNativeAdapter
+from semantic_rails.db_parts.bigquery import BigQueryNativeAdapter
+from semantic_rails.db_parts.clickhouse import ClickHouseAdapter
+from semantic_rails.db_parts.postgres import PostgresAdapter
 from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.http_core import MAX_REQUEST_BODY_BYTES
+from semantic_rails.http_core import MAX_REQUEST_BODY_BYTES, SemanticHTTPService
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import _read_json
 from semantic_rails.metadata_parts.valid_values import (
     max_valid_values_limit,
@@ -70,6 +74,79 @@ def test_warning_silent_with_custom_resolver(capsys):
 # --- F3: Snowflake CLI error redaction + envelope scrub ------------------
 
 
+@pytest.mark.parametrize(
+    "adapter_type,connection_method",
+    [
+        (PostgresAdapter, "_connection"),
+        (BigQueryNativeAdapter, "client"),
+        (ClickHouseAdapter, "_client_handle"),
+        (SnowflakeNativeAdapter, "_connection"),
+        (DuckDBAdapter, ""),
+        (SnowflakeCliAdapter, ""),
+    ],
+)
+def test_driver_failures_stay_private_across_public_envelopes(
+    adapter_type, connection_method, runtime_factory, monkeypatch, caplog
+):
+    sql = "SELECT SYNTHETIC_PRIVATE_COLUMN FROM SYNTHETIC_PRIVATE_TABLE"
+    private_message = f"SYNTHETIC_PASSWORD=pw; {sql}; SYNTHETIC_ROW=secret"
+    original = RuntimeError(private_message)
+
+    def fail(*args, **kwargs):
+        raise original
+
+    adapter = adapter_type.__new__(adapter_type)
+    adapter.options = {}
+    adapter.connection_name = "test"
+    if connection_method:
+        monkeypatch.setattr(adapter, connection_method, fail)
+    elif adapter_type is DuckDBAdapter:
+        adapter._db = SimpleNamespace(query=fail)
+    else:
+        monkeypatch.setattr(
+            "semantic_rails.db.subprocess.run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1, stdout=private_message, stderr=private_message
+            ),
+        )
+
+    with pytest.raises(SemanticLayerError) as captured:
+        adapter.query(sql)
+    error = captured.value
+    assert error.code == "QUERY_EXECUTION_ERROR"
+    assert error.details["sql_redacted"] is True
+    if adapter_type is not SnowflakeCliAdapter:
+        assert error.__cause__ is original
+
+    runtime = runtime_factory("jaffle_shop")
+    service = SemanticHTTPService(runtime)
+    http_payload, status = service.exception_payload(error, stage="http")
+    assert status == 400
+    mcp_payload = SemanticLayerMCPAdapter(runtime)._error_response(error, {})
+    for payload in (http_payload, mcp_payload):
+        assert "SYNTHETIC_" not in json.dumps(payload)
+        assert payload["errors"][0]["code"] == "QUERY_EXECUTION_ERROR"
+    assert "SYNTHETIC_" not in caplog.text
+
+
+def test_segment_driver_failure_keeps_segment_identity(runtime_factory, monkeypatch):
+    runtime = runtime_factory("jaffle_shop")
+    adapter = DuckDBAdapter.__new__(DuckDBAdapter)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("SYNTHETIC_PRIVATE_DRIVER_MESSAGE")
+
+    adapter._db = SimpleNamespace(query=fail)
+    monkeypatch.setattr(runtime, "_get_adapter", lambda: adapter)
+    with pytest.raises(SemanticLayerError) as captured:
+        runtime.segment_preview("segment.jaffle.high_value_customers", limit=1)
+    error = captured.value
+    assert error.details["segment_id"] == "segment.jaffle.high_value_customers"
+    assert error.details["sql_redacted"] is True
+    assert "sql" not in error.details
+    assert "SYNTHETIC_" not in json.dumps(exception_issue(error, stage="execute"))
+
+
 def test_snowflake_cli_failure_details_have_no_raw_output(monkeypatch):
     monkeypatch.setattr(
         "semantic_rails.db.subprocess.run",
@@ -89,8 +166,8 @@ def test_snowflake_cli_failure_details_have_no_raw_output(monkeypatch):
     assert details["sql_redacted"] is True
     assert details["option_keys"] == ["warehouse"]
     assert details["exit_code"] == 1
-    # stderr is surfaced through the message, but bounded.
-    assert "SQL compilation error" in str(exc.value)
+    # Driver text may contain SQL and credentials even when short.
+    assert "SQL compilation error" not in str(exc.value)
     assert len(str(exc.value)) < 700
 
 

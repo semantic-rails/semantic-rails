@@ -22,6 +22,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from .ast import QUERY_INPUT_KEYS
 from .catalog_service import resolve_catalog
 from .diagnostics import enrich_object_not_found, exception_issue
 from .errors import SemanticLayerError
@@ -39,6 +40,16 @@ from .request_context import (
     context_from_policy_context,
     emit_audit_event,
     request_context_payload,
+)
+from .request_payload import (
+    build_query_payload,
+    without_policy_context,
+)
+from .request_payload import (
+    clean_request_id as _clean_request_id,
+)
+from .request_payload import (
+    coerce_bool as _coerce_bool,
 )
 from .runtime import Runtime
 
@@ -764,14 +775,6 @@ def list_prompt_definitions() -> list[dict[str, Any]]:
     return copy.deepcopy(list(MCP_PROMPT_DEFINITIONS))
 
 
-def _clean_request_id(value: Any) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    cleaned = "".join(ch for ch in raw if ch.isprintable() and ch not in "\r\n")
-    return cleaned[:128]
-
-
 _CATALOG_VERBOSITIES: frozenset[str] = frozenset({"summary", "minimal", "compact", "full"})
 
 
@@ -808,56 +811,6 @@ def _tool_required_properties(tool_name: str) -> tuple[list[str], list[str]]:
     return [], []
 
 
-# ---------------------------------------------------------------------------
-# Argument strictness contract
-# ---------------------------------------------------------------------------
-#
-# Eight rounds of blind-agent probing found three different strictness
-# models across the 13 MCP tools. The contract advertised in
-# ``inputSchema.additionalProperties`` didn't match the runtime
-# behavior on the six tools that have to accept ``policy_context`` and
-# top-level Query-IR passthrough — typos on those tools silently
-# resolved to empty responses.
-#
-# The uniform contract:
-#
-# * **strict-reject** tools raise ``INVALID_MCP_ARGUMENTS`` on any
-#   unknown argument (today's behavior on the five segment / catalog
-#   tools).
-# * **warn-and-ignore** tools emit a per-tool ``*_UNKNOWN_ARG`` warning
-#   with ``closest_matches`` and continue. These are the tools that
-#   need passthrough — rejecting all unknown keys would break
-#   legitimate ``policy_context`` / top-level IR usage.
-#
-# The ``additionalProperties`` flag on each ``inputSchema`` is now a
-# documentation hint about HOW to react to unknowns, not WHETHER to
-# react. The ``_TOOL_KNOWN_ARGS`` table below is the source of truth.
-
-_IR_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
-    {
-        "version",
-        "select",
-        "group_by",
-        "where",
-        "metric_filters",
-        "order_by",
-        "limit",
-        "time",
-        "temporal_role_overrides",
-        "path_policy",
-        "debug",
-        "explain",
-        "export",
-        # Envelope keys that ``normalize_query`` accepts on a top-level
-        # IR payload alongside the canonical IR keys.
-        "policy_context",
-        "limits",
-        "verbosity",
-        "sql_profile",
-    }
-)
-
-
 def _tool_known_args(tool_name: str) -> frozenset[str]:
     """Source of truth for the legitimate argument keys per tool.
 
@@ -867,7 +820,7 @@ def _tool_known_args(tool_name: str) -> frozenset[str]:
       tool's envelope.
     * For tools that accept top-level Query-IR passthrough
       (``validate``, ``compile``, ``execute``), the canonical IR keys
-      declared in :data:`_IR_TOP_LEVEL_KEYS` so callers can skip the
+      declared in :data:`semantic_rails.ast.QUERY_INPUT_KEYS` so callers can skip the
       ``query`` wrapper without tripping the unknown-arg check. Query
       IR's own additional-keys gate (in ``ast.py``) handles unknown IR
       keys separately — no double-validation here.
@@ -879,7 +832,7 @@ def _tool_known_args(tool_name: str) -> frozenset[str]:
         known = set((schema.get("properties") or {}).keys())
         known.add("request_id")
         if tool_name in {"validate", "compile", "execute"}:
-            known.update(_IR_TOP_LEVEL_KEYS)
+            known.update(QUERY_INPUT_KEYS)
         return frozenset(known)
     return frozenset()
 
@@ -890,46 +843,18 @@ _TOOL_KNOWN_ARGS: dict[str, frozenset[str]] = {
 
 _ROW_FORMATS: frozenset[str] = frozenset({"records", "columns"})
 
-# Strict-reject tools — unknown args raise ``INVALID_MCP_ARGUMENTS``.
-# These tools have ``additionalProperties: false`` and no passthrough
-# needs (no ``policy_context``, no top-level IR keys).
+# Tool schemas own unknown-argument behavior. Query-IR passthrough keys
+# come from the parser, so adding an IR field needs no second transport list.
 _STRICT_REJECT_TOOLS: frozenset[str] = frozenset(
-    {
-        "capabilities",
-        "catalog",
-        "segment-validate",
-        "segment-explain",
-        "segment-preview",
-    }
+    definition.name
+    for definition in TOOL_DEFINITIONS
+    if not definition.input_schema.get("additionalProperties", True)
 )
-
-# Warn-and-ignore tools — unknown args emit a ``<TOOL>_UNKNOWN_ARG``
-# warning and continue. These tools accept ``policy_context`` and/or
-# top-level Query-IR passthrough; rejecting unknown keys outright
-# would break those legitimate uses.
-_WARN_AND_IGNORE_TOOLS: frozenset[str] = frozenset(
-    {
-        "discover",
-        "build-options",
-        "inspect",
-        "valid-values",
-        "plan",
-        "validate",
-        "compile",
-        "execute",
-    }
+_WARN_AND_IGNORE_TOOLS: frozenset[str] = (
+    frozenset(definition.name for definition in TOOL_DEFINITIONS) - _STRICT_REJECT_TOOLS
 )
-
-# Per-tool warning code for the generic unknown-argument signal.
 _UNKNOWN_ARG_WARNING_CODE: dict[str, str] = {
-    "discover": "DISCOVER_UNKNOWN_ARG",
-    "build-options": "BUILD_OPTIONS_UNKNOWN_ARG",
-    "inspect": "INSPECT_UNKNOWN_ARG",
-    "valid-values": "VALID_VALUES_UNKNOWN_ARG",
-    "plan": "PLAN_UNKNOWN_ARG",
-    "validate": "VALIDATE_UNKNOWN_ARG",
-    "compile": "COMPILE_UNKNOWN_ARG",
-    "execute": "EXECUTE_UNKNOWN_ARG",
+    name: f"{name.replace('-', '_').upper()}_UNKNOWN_ARG" for name in _WARN_AND_IGNORE_TOOLS
 }
 
 
@@ -1187,12 +1112,7 @@ def _arguments_with_trusted_context(
     if context is None:
         return out
 
-    out.pop("policy_context", None)
-    raw_query = out.get("query")
-    if isinstance(raw_query, Mapping):
-        query = dict(raw_query)
-        query.pop("policy_context", None)
-        out["query"] = query
+    out = without_policy_context(out)
 
     # The transport owns correlation identity too. Do not let a JSON-RPC
     # argument disagree with the request context recorded in audit events.
@@ -1205,25 +1125,11 @@ def _arguments_with_trusted_context(
 
 
 def _query_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    query = _object_argument(payload.get("query", payload), field="query")
-    query.pop("request_id", None)
-    # Hoist verbosity / sql_profile out of the outer MCP argument envelope
-    # into the query payload — the runtime reads these from the query dict
-    # via `resolve_verbosity` / `resolve_sql_profile`. Existing in-query
-    # values (callers who put them inside `query` themselves) win.
-    raw_payload = dict(payload or {})
-    if "verbosity" not in query and raw_payload.get("verbosity") not in (None, ""):
-        query["verbosity"] = raw_payload["verbosity"]
-    if "sql_profile" not in query and raw_payload.get("sql_profile") not in (None, ""):
-        query["sql_profile"] = raw_payload["sql_profile"]
-    policy_context = _policy_context_payload(payload)
-    if "policy_context" in query or policy_context:
-        query_policy_context = _object_argument(
-            query.get("policy_context"), field="query.policy_context"
-        )
-        query_policy_context.update(policy_context)
-        query["policy_context"] = query_policy_context
-    return query
+    return build_query_payload(
+        payload,
+        object_payload=_object_argument,
+        policy_context=_policy_context_payload(payload),
+    )
 
 
 def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1302,20 +1208,6 @@ def _coerce_kinds(value: Any) -> list[str]:
     raise _argument_error(
         "MCP argument 'kinds' must be a string or array of strings.", field="kinds", value=value
     )
-
-
-def _coerce_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
 
 
 def _coerce_int(value: Any, default: int, *, field: str, minimum: int | None = None) -> int:

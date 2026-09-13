@@ -28,10 +28,9 @@ import re
 from typing import Any
 
 from ..dialects import BIGQUERY_CONNECTION_OPTIONS
-from ..errors import SemanticLayerError
+from ..errors import SemanticLayerError, query_execution_error
 from .base import WarehouseAdapter, _clip_rows, _limit_timeout_seconds
 from .common import (
-    bounded_error_text,
     import_driver,
     map_double_quoted_identifiers,
     normalize_connection_options,
@@ -211,13 +210,8 @@ class BigQueryNativeAdapter(WarehouseAdapter):
         except SemanticLayerError:
             raise
         except Exception as exc:
-            # Redacted envelope: engine, connection kind, option KEYS,
-            # and bounded driver text only — never option values, raw
-            # SQL, or result rows.
-            raise SemanticLayerError(
-                "QUERY_EXECUTION_ERROR",
-                f"BigQuery query execution failed: {bounded_error_text(str(exc))}",
-                details=redacted_error_details(self.engine, self.connection_kind, self.options),
+            raise query_execution_error(
+                redacted_error_details(self.engine, self.connection_kind, self.options)
             ) from exc
 
     def close(self) -> None:
