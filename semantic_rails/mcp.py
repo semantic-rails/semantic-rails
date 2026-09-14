@@ -1427,7 +1427,7 @@ class SemanticLayerMCPAdapter:
         )
         request_id = request_context.request_id if request_context is not None else ""
         if uri == "semantic-rails://capabilities":
-            payload = {
+            payload: dict[str, Any] = {
                 "interface_version": MCP_INTERFACE_VERSION,
                 "package_id": self.package_id,
                 "tools": self.list_tools(),
@@ -1617,7 +1617,7 @@ class SemanticLayerMCPAdapter:
         # but we defensively never want diagnostics enrichment to mask
         # the original error.
         with contextlib.suppress(Exception):
-            exc = enrich_object_not_found(exc, self.runtime.config)
+            exc = enrich_object_not_found(exc, self.runtime._config)
         issue = exception_issue(exc, stage="mcp")
         out = self._envelope(
             {

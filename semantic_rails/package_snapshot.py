@@ -44,7 +44,10 @@ class CapturedSource:
     def fingerprint(self) -> str:
         digest = hashlib.sha256()
         for name, data in self.files:
-            digest.update(name.encode("utf-8"))
+            encoded_name = name.encode("utf-8")
+            digest.update(len(encoded_name).to_bytes(8, "big"))
+            digest.update(encoded_name)
+            digest.update(len(data).to_bytes(8, "big"))
             digest.update(data)
         return digest.hexdigest()
 

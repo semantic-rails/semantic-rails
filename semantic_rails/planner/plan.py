@@ -107,7 +107,7 @@ def plan_payload(
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
         catalog_tokens = _catalog_token_index(
-            runtime.config,
+            runtime._config,
             search_index=runtime._get_catalog_search_index(),
         )
         passes, overlap = _intent_passes_relevance_floor(intent_str, catalog_tokens)
@@ -124,7 +124,7 @@ def plan_payload(
         grounded, _strong = _intent_passes_grounding_floor(
             intent_str,
             catalog_tokens,
-            weak_tokens=_weak_grounding_tokens(runtime.config),
+            weak_tokens=_weak_grounding_tokens(runtime._config),
         )
         if not grounded:
             sample = sorted(catalog_tokens)[:30]
@@ -1005,7 +1005,7 @@ def _query_contains_conversion(runtime: Any, query: dict[str, Any]) -> bool:
 
     conversion_metric_ids = {
         str(recipe.id)
-        for recipe in getattr(runtime.config, "metric_recipes", []) or []
+        for recipe in getattr(runtime._config, "metric_recipes", []) or []
         if isinstance(recipe.expression, ConversionExpr)
     }
 
@@ -1089,7 +1089,7 @@ def _conversion_intent_why(
         return None
     conversion_metrics = [
         {"id": str(recipe.id), "label": str(getattr(recipe, "label", "") or "")}
-        for recipe in getattr(runtime.config, "metric_recipes", []) or []
+        for recipe in getattr(runtime._config, "metric_recipes", []) or []
         if isinstance(recipe.expression, ConversionExpr)
     ]
     hints: list[dict[str, Any]] = [

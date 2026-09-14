@@ -46,7 +46,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     target_terms = _target_measure_terms(text, terms)
     if not target_terms:
         return None
-    governed_metric = _preferred_metric(runtime.config, target_terms)
+    governed_metric = _preferred_metric(runtime._config, target_terms)
     if governed_metric is not None and ("growth" in terms or "rate" in terms):
         return None
     # Avoid stealing the qualified rollup path — those carry a threshold.
@@ -57,7 +57,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     threshold = _threshold_from_text(text)
     if threshold is not None and not _is_implicit_active_threshold(threshold, target_terms):
         return None
-    measure = _preferred_measure(runtime.config, target_terms)
+    measure = _preferred_measure(runtime._config, target_terms)
     if measure is None or not measure.default_temporal_role:
         return None
 
@@ -108,7 +108,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         ],
         "time": time_spec,
     }
-    group_by = _maybe_group_by(runtime.config, text)
+    group_by = _maybe_group_by(runtime._config, text)
     if group_by:
         query["group_by"] = group_by
     _add_order(query)

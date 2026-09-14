@@ -22,7 +22,7 @@ from ._protocol import IntentPattern
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
-    config = runtime.config
+    config = runtime._config
     wants_distribution = "p80" in terms or "percentile" in terms or "80th" in terms
     if not wants_distribution or "arr" not in terms:
         return None

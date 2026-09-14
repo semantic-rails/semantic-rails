@@ -19,7 +19,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from .package_snapshot import capture_package_source
 
-COMPILER_CACHE_VERSION = "semantic-rails-compiler-v2-physical-plan-1"
+COMPILER_CACHE_VERSION = "semantic-rails-compiler-v3-prepared-sql-1"
 
 
 @dataclass

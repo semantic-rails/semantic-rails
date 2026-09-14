@@ -28,6 +28,7 @@ from .dialects import (
 )
 from .errors import SemanticLayerError
 from .meta_contract import validate_meta_payload
+from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
 from .runtime import Runtime, runtime_request_scope
 from .semantic_collisions import semantic_collision_warnings
 from .yaml_loader import safe_load as yaml_safe_load
@@ -1970,14 +1971,34 @@ def _package_payload(ref: PackageReference, config=None) -> dict[str, Any]:
 def parse_config_report(
     ref: PackageReference, *, progress: ProgressFn | None = None
 ) -> tuple[dict[str, Any], Any | None]:
+    report, snapshot = parse_snapshot_report(ref, progress=progress)
+    return report, snapshot.config if snapshot else None
+
+
+def parse_snapshot_report(
+    ref: PackageReference, *, progress: ProgressFn | None = None
+) -> tuple[dict[str, Any], LoadedPackageSnapshot | None]:
     if progress is not None:
         progress(f"Parsing package: {ref.display_name}")
-    messages = validate_runtime_package(Path(ref.source_path))
+    snapshot = None
+    try:
+        source = capture_package_source(ref.source_path)
+        messages = validate_runtime_package(Path(ref.source_path))
+        if not messages:
+            snapshot = load_package_snapshot(ref.source_path)
+            if snapshot.source_fingerprint != source.fingerprint:
+                messages.append(
+                    "Package sources changed during validation; retry after writes complete."
+                )
+                snapshot = None
+    except SemanticLayerError as exc:
+        messages = [str(exc)]
     warnings: list[dict[str, Any]] = []
     errors = [_error_payload("INVALID_CONFIG", message) for message in messages]
     config = None
     if not errors:
-        config = load_package_config(ref.source_path)
+        assert snapshot is not None
+        config = snapshot.config
         for warning in _compiled_package_warnings(config, Path(ref.source_path)):
             if isinstance(warning, dict):
                 warnings.append(dict(warning))
@@ -1997,7 +2018,10 @@ def parse_config_report(
         "warnings": warnings,
         "errors": errors,
     }
-    return report, config
+    if snapshot is not None:
+        report["package_hash"] = snapshot.source_fingerprint
+        report["semantic_fingerprint"] = snapshot.semantic_fingerprint
+    return report, snapshot
 
 
 def _probe_query_for_measure(measure) -> dict[str, Any]:
@@ -2084,7 +2108,7 @@ def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
         compatible_roles = list(recipe.compatible_temporal_roles or [])
         default_roles = [
             role.id
-            for role in runtime.config.temporal_roles
+            for role in runtime._config.temporal_roles
             if role.default_query_time_axis and role.id in compatible_roles
         ]
         if default_roles:
@@ -2108,7 +2132,7 @@ def _probe_query_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
         "select": [{"expression": {"metric": recipe.id}, "as": "probe_value"}],
         "limit": 0,
     }
-    if _requires_query_time(recipe.expression, runtime.config):
+    if _requires_query_time(recipe.expression, runtime._config):
         query["time"] = _default_time_spec_for_metric(recipe, runtime)
     return query
 
@@ -2174,8 +2198,9 @@ def validate_config_report(
     parse_report: dict[str, Any] | None = None,
     runtime: Runtime | None = None,
 ) -> dict[str, Any]:
+    snapshot = runtime.snapshot if runtime is not None else None
     if parse_report is None:
-        parse_report, _ = parse_config_report(ref, progress=progress)
+        parse_report, snapshot = parse_snapshot_report(ref, progress=progress)
     warnings = list(parse_report["warnings"])
     if not parse_report["ok"]:
         return {
@@ -2198,14 +2223,19 @@ def validate_config_report(
 
     should_close_runtime = runtime is None
     if runtime is None:
-        runtime = Runtime(ref.package_id) if ref.package_id else Runtime.from_path(ref.source_path)
+        snapshot = snapshot or load_package_snapshot(ref.source_path)
+        if parse_report.get("package_hash") != snapshot.source_fingerprint:
+            raise SemanticLayerError(
+                "INVALID_CONFIG", "Package sources changed after parsing; retry validation."
+            )
+        runtime = Runtime.from_snapshot(snapshot, package_id=ref.package_id)
     try:
         probes: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        total_measures = len(runtime.config.measures)
-        total_metrics = len(runtime.config.metric_recipes)
+        total_measures = len(runtime._config.measures)
+        total_metrics = len(runtime._config.metric_recipes)
 
-        for index, measure in enumerate(runtime.config.measures, start=1):
+        for index, measure in enumerate(runtime._config.measures, start=1):
             if progress is not None:
                 progress(f"Validating measure {index}/{total_measures}: {measure.id}")
             probe = _run_probe(
@@ -2230,7 +2260,7 @@ def validate_config_report(
                 if progress is not None:
                     progress(f"WARNING measure failed: {measure.id} ({probe['error']['code']})")
 
-        for index, recipe in enumerate(runtime.config.metric_recipes, start=1):
+        for index, recipe in enumerate(runtime._config.metric_recipes, start=1):
             if progress is not None:
                 progress(f"Validating metric {index}/{total_metrics}: {recipe.id}")
             probe = _run_metric_probe(recipe, runtime)
@@ -2254,7 +2284,7 @@ def validate_config_report(
         failed = len(probes) - passed
         return {
             "ok": failed == 0,
-            "package": _package_payload(ref, runtime.config),
+            "package": _package_payload(ref, runtime._config),
             "parse": parse_report,
             "summary": {
                 "measures_total": total_measures,

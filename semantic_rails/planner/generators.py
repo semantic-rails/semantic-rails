@@ -291,7 +291,7 @@ def _select_expr_for_choice(runtime: Any, chosen: dict[str, Any]) -> dict[str, A
 
     if chosen["kind"] == "metric":
         return {"expression": {"metric": chosen["id"]}, "as": chosen["label"]}
-    measure = _config_maps(runtime.config)["measures"][chosen["id"]]
+    measure = _config_maps(runtime._config)["measures"][chosen["id"]]
     return {
         "expression": {"measure": chosen["id"], "aggregation": measure.default_aggregation},
         "as": chosen["label"],
@@ -420,12 +420,12 @@ def _choose_group_dimensions(
 
     if chosen_group_dim:
         return [chosen_group_dim]
-    selection = _selection_context(runtime.config, query)
+    selection = _selection_context(runtime._config, query)
     group_dims: list[str] = []
     covered_terms: set[str] = set()
     for dimension_terms in _requested_grouping_terms(text):
         if _is_temporal_grouping_term(dimension_terms) or _term_matches_value_domain(
-            runtime.config, dimension_terms
+            runtime._config, dimension_terms
         ):
             continue
         dimension_tokens = set(_tokenize(dimension_terms))
@@ -452,7 +452,7 @@ def _choose_group_dimensions(
         chosen = ""
         for row in matched_rows:
             availability = _availability_for_object(
-                runtime.config, selection["root_entity"], str(row["id"]), "dimension"
+                runtime._config, selection["root_entity"], str(row["id"]), "dimension"
             )
             if availability["available"]:
                 chosen = str(row["id"])
@@ -535,8 +535,8 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
     candidates: list[dict[str, Any]] = []
     filter_terms: list[str] = []
     lowered_text = str(text or "").lower()
-    maps = _config_maps(runtime.config)
-    selection = _selection_context(runtime.config, query)
+    maps = _config_maps(runtime._config)
+    selection = _selection_context(runtime._config, query)
     selected_text_parts: list[str] = []
     for select in list(query.get("select", []) or []):
         selected_text_parts.append(str(select.get("as", "") or ""))
@@ -631,7 +631,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
         if not dim_id or dim is None:
             return
         availability = _availability_for_object(
-            runtime.config, selection["root_entity"], dim_id, "dimension"
+            runtime._config, selection["root_entity"], dim_id, "dimension"
         )
         if not availability["available"]:
             return
@@ -677,7 +677,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
                 continue
             seen_value_keys.add(key)
             _add_candidate(row, match_key=filter_term)
-    for domain in runtime.config.value_domains:
+    for domain in runtime._config.value_domains:
         for value in list(domain.values or []):
             value_phrases = [
                 str(value.value),

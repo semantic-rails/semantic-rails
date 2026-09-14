@@ -190,7 +190,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if not match:
         return None
 
-    config = runtime.config
+    config = runtime._config
     left_text = match.group("left").strip()
     right_text = match.group("right").strip()
     # Whole-intent token bag — the share/ratio hint can sit on either

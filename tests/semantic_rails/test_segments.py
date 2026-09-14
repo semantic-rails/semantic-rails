@@ -62,7 +62,8 @@ def test_runtime_segment_validate_and_preview(runtime_factory):
 
 def test_segment_operations_enforce_policy_context_before_metadata_or_rows(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
-    runtime.config.semantic_policies.append(
+    config = runtime.config
+    config.semantic_policies.append(
         SemanticPolicyConfig(
             id="policy.test.hide_customer_segment",
             kind="object_visibility",
@@ -71,6 +72,14 @@ def test_segment_operations_enforce_policy_context_before_metadata_or_rows(runti
             action="hidden",
         )
     )
+    old_runtime = runtime
+    runtime = type(old_runtime).from_config(
+        config,
+        source_path=old_runtime.source_path,
+        package_id=old_runtime.package_id,
+        prefer_package_root_assets=old_runtime.prefer_package_root_assets,
+    )
+    old_runtime.close()
     context = {"audience": "external", "tenant": "tenant-a"}
     try:
         validated = runtime.segment_validate(
