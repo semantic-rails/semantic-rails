@@ -20,8 +20,6 @@ Conventions (shared machinery in :mod:`semantic_rails.db_parts.common`):
 
 from __future__ import annotations
 
-import hashlib
-import re
 from typing import Any
 
 from ..dialects import POSTGRES_CONNECTION_OPTIONS
@@ -29,7 +27,6 @@ from ..errors import SemanticLayerError
 from .base import WarehouseAdapter
 from .common import (
     DbApiAdapter,
-    float_nullif_divisions,
     import_driver,
     int_option,
     normalize_connection_options,
@@ -40,65 +37,6 @@ from .common import (
 
 _LABEL = "Postgres"
 _DEFAULT_PORT = 5432
-
-
-# ---------------------------------------------------------------------------
-# PostgreSQL compatibility pass — two semantics-preserving rewrites of the
-# compiler's rendered SQL, applied just before execution. Both compensate
-# for hard PostgreSQL limits the portable SQL AST cannot express: the
-# identifier shortening below, plus the shared literal-aware
-# `common.float_nullif_divisions` pass with PG's DOUBLE PRECISION cast.
-# The pass never touches string literals.
-# ---------------------------------------------------------------------------
-
-# NAMEDATALEN-1: PostgreSQL silently truncates longer identifiers, which
-# makes two long compiler-generated CTE names that share a 63-byte prefix
-# collide ("WITH query name ... specified more than once").
-_MAX_IDENTIFIER_BYTES = 63
-_IDENT_HASH_CHARS = 10
-
-# Tokens: single-quoted literal | quoted identifier | bare identifier.
-_SQL_TOKEN_RE = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")+\"|[A-Za-z_][A-Za-z0-9_]*")
-
-
-def _shortened_identifier(name: str) -> str:
-    """Deterministically shorten a too-long identifier, keeping a readable
-    prefix and a content hash so distinct names stay distinct and every
-    reference to the same name rewrites identically."""
-    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:_IDENT_HASH_CHARS]
-    keep = _MAX_IDENTIFIER_BYTES - _IDENT_HASH_CHARS - 1
-    return f"{name[:keep]}_{digest}"
-
-
-def _shorten_long_identifiers(sql: str) -> str:
-    """Rewrite identifiers longer than 63 bytes (quoted or bare) to a
-    hash-suffixed 63-byte form. PostgreSQL truncates ALL identifiers —
-    quoted ones included — at NAMEDATALEN-1 bytes, so without this two
-    long CTE names differing only after byte 63 collide. SQL keywords
-    are never this long and string literals are skipped, so the rewrite
-    is name-renaming only."""
-
-    def _replace(match: re.Match[str]) -> str:
-        token = match.group(0)
-        if token.startswith("'"):
-            return token  # string literal — data, never rewritten
-        if token.startswith('"'):
-            inner = token[1:-1].replace('""', '"')
-            if len(inner.encode("utf-8")) <= _MAX_IDENTIFIER_BYTES:
-                return token
-            return '"' + _shortened_identifier(inner).replace('"', '""') + '"'
-        if len(token.encode("utf-8")) <= _MAX_IDENTIFIER_BYTES:
-            return token
-        return _shortened_identifier(token)
-
-    return _SQL_TOKEN_RE.sub(_replace, sql)
-
-
-def _postgres_compat_sql(sql: str) -> str:
-    # PostgreSQL integer division truncates (1 / 4 = 0) while DuckDB's
-    # `/` is always float division; the shared pass casts the compiler's
-    # NULLIF guard to PG's float type, DOUBLE PRECISION.
-    return float_nullif_divisions(_shorten_long_identifiers(sql), cast_type="DOUBLE PRECISION")
 
 
 class _DdlTolerantCursor:
@@ -208,9 +146,6 @@ class PostgresAdapter(DbApiAdapter):
             connection_kind=self.connection_kind,
         )
         return _DdlTolerantConnection(driver.connect(**self._connect_kwargs()))
-
-    def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        return super().query(_postgres_compat_sql(sql), limits=limits)
 
     def _apply_statement_timeout(self, cursor: Any, timeout_seconds: int) -> None:
         cursor.execute(f"SET statement_timeout = {int(timeout_seconds) * 1000}")

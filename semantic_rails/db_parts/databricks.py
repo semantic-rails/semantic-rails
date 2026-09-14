@@ -30,44 +30,14 @@ from ..errors import SemanticLayerError
 from .base import WarehouseAdapter
 from .common import (
     DbApiAdapter,
-    float_nullif_divisions,
     import_driver,
     normalize_connection_options,
     option_or_env,
     require_missing_env,
-    rewrite_double_quoted_identifiers,
     secret_value,
 )
 
 _SCHEME_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
-
-
-# ---------------------------------------------------------------------------
-# Databricks compatibility pass — two semantics-preserving rewrites of the
-# compiler's rendered SQL, applied just before execution (same pattern as
-# the Postgres adapter's compat pass). Both compensate for Spark SQL
-# behaviors the portable SQL AST cannot express; neither touches string
-# literals. Both are the shared literal-aware helpers in db_parts.common:
-#
-# 1. Identifier quoting: Spark SQL parses double-quoted tokens as STRING
-#    LITERALS, so the renderer's ANSI "identifier" quoting (e.g.
-#    dot-carrying aliases like AS "dimension.jaffle_product_type") would
-#    silently select a constant string. `rewrite_double_quoted_identifiers`
-#    re-quotes every double-quoted identifier with backticks; the
-#    compiler renders string LITERALS with single quotes only, so the
-#    scan never touches data.
-#
-# 2. Ratio precision: Spark SQL's DECIMAL / DECIMAL stays DECIMAL with a
-#    REDUCED result scale (observed live: a DECIMAL(18,3) revenue share
-#    came back with scale 6, e.g. 0.064117 vs the reference
-#    0.06411688069979533), so ratio metrics silently lose precision
-#    against DuckDB's always-float `/`. `float_nullif_divisions` casts
-#    the compiler's NULLIF divide-by-zero guard to Spark's DOUBLE.
-# ---------------------------------------------------------------------------
-
-
-def _databricks_compat_sql(sql: str) -> str:
-    return float_nullif_divisions(rewrite_double_quoted_identifiers(sql), cast_type="DOUBLE")
 
 
 def _server_hostname(host: str) -> str:
@@ -152,9 +122,6 @@ class DatabricksNativeAdapter(DbApiAdapter):
             connection_kind=self.connection_kind,
         )
         return driver.connect(**self._connect_kwargs())
-
-    def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        return super().query(_databricks_compat_sql(sql), limits=limits)
 
     def _apply_statement_timeout(self, cursor: Any, timeout_seconds: int) -> None:
         cursor.execute(f"SET STATEMENT_TIMEOUT = {int(timeout_seconds)}")

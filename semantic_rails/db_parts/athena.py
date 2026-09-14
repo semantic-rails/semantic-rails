@@ -2,9 +2,8 @@
 
 PyAthena is a PEP 249 driver, so the adapter is a thin
 :class:`~semantic_rails.db_parts.common.DbApiAdapter` subclass: it
-implements ``_create_connection`` plus a documented, literal-aware
-Trino compatibility pass over the rendered SQL (see
-``_athena_compat_sql``). Connection locators
+implements ``_create_connection``. SQL preparation belongs to the dialect.
+Connection locators
 (``region`` / ``s3_staging_dir``) may be literals or env-indirected
 (``*_env``); AWS credentials are NEVER connection options — they come
 from the ambient boto3 credential chain (``AWS_ACCESS_KEY_ID`` /
@@ -17,7 +16,6 @@ False and the runtime surfaces best-effort-limit warnings.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from ..dialects import ATHENA_CONNECTION_OPTIONS
@@ -25,67 +23,13 @@ from ..errors import SemanticLayerError
 from .base import WarehouseAdapter
 from .common import (
     DbApiAdapter,
-    float_nullif_divisions,
     import_driver,
-    literal_spans,
     normalize_connection_options,
     option_or_env,
     require_missing_env,
 )
 
 _LABEL = "Athena"
-
-
-# ---------------------------------------------------------------------------
-# Athena (Trino) compatibility pass — two semantics-preserving rewrites of
-# the compiler's rendered SQL, applied just before execution. Both
-# compensate for hard Trino behaviors the portable SQL AST cannot express
-# (mirrors the documented pattern in semantic_rails/db_parts/postgres.py):
-# the temporal-literal typing below, plus the shared literal-aware
-# `common.float_nullif_divisions` pass with Trino's DOUBLE cast (Trino
-# integer division truncates and decimal division keeps the operand
-# scale, while DuckDB's `/` is always float division).
-# The pass never rewrites text INSIDE string literals.
-# ---------------------------------------------------------------------------
-
-# A comparison operator immediately followed by a single-quoted ISO
-# date / timestamp literal — the exact shape of the compiler's
-# time-window predicates (`ts >= '2016-09-01' AND ts < '2017-01-01'`).
-_ISO_TEMPORAL_LITERAL = r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)?"
-_COMPARE_TEMPORAL_RE = re.compile(
-    rf"(?P<op><=|>=|<>|!=|<|>|=)(?P<ws>\s*)'(?P<lit>{_ISO_TEMPORAL_LITERAL})'"
-)
-
-
-def _typed_temporal_comparison_literals(sql: str) -> str:
-    """Tag ISO date/timestamp literals in comparisons as ``TIMESTAMP``.
-
-    The compiler renders time-window bounds as bare string literals
-    (``ts >= '2016-09-01'``). DuckDB implicitly coerces the varchar to
-    the column's temporal type; Trino refuses with ``TYPE_MISMATCH:
-    Cannot apply operator: timestamp(3) <= varchar(10)``. Rewriting the
-    literal to ``TIMESTAMP '2016-09-01'`` restores the comparison with
-    DuckDB's semantics (DATE operands still compare fine — Trino
-    coerces DATE to TIMESTAMP). Only literals that (a) immediately
-    follow a comparison operator and (b) parse as an ISO date or
-    timestamp are touched, and operators inside string literals are
-    skipped — ordinary string comparisons are never rewritten."""
-    spans = literal_spans(sql)
-
-    def _inside_literal(position: int) -> bool:
-        return any(start <= position < end for start, end in spans)
-
-    def _replace(match: re.Match[str]) -> str:
-        if _inside_literal(match.start()):
-            return match.group(0)
-        op, ws, lit = match.group("op"), match.group("ws"), match.group("lit")
-        return f"{op}{ws or ' '}TIMESTAMP '{lit}'"
-
-    return _COMPARE_TEMPORAL_RE.sub(_replace, sql)
-
-
-def _athena_compat_sql(sql: str) -> str:
-    return float_nullif_divisions(_typed_temporal_comparison_literals(sql), cast_type="DOUBLE")
 
 
 class AthenaAdapter(DbApiAdapter):
@@ -143,9 +87,6 @@ class AthenaAdapter(DbApiAdapter):
             schema_name=self.options.get("database") or "default",
             work_group=self.options.get("workgroup") or None,
         )
-
-    def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        return super().query(_athena_compat_sql(sql), limits=limits)
 
 
 def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:

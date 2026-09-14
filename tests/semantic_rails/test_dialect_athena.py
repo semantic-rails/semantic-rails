@@ -368,14 +368,14 @@ def test_create_warehouse_adapter_selects_athena(monkeypatch: pytest.MonkeyPatch
 
 
 def test_athena_compat_casts_nullif_ratio_guard_to_double():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     sql = "SELECT a / NULLIF(b, 0) AS ratio FROM t"
     assert _athena_compat_sql(sql) == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) AS ratio FROM t"
 
 
 def test_athena_compat_rewrites_nested_nullif_divisions():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     sql = "SELECT x / NULLIF(y / NULLIF(z, 0), 0) FROM t"
     assert _athena_compat_sql(sql) == (
@@ -384,7 +384,7 @@ def test_athena_compat_rewrites_nested_nullif_divisions():
 
 
 def test_athena_compat_skips_string_literals():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     sql = "SELECT 'a / NULLIF(b, 0)' AS doc, c / NULLIF(d, 0) FROM t"
     assert _athena_compat_sql(sql) == (
@@ -393,7 +393,7 @@ def test_athena_compat_skips_string_literals():
 
 
 def test_athena_compat_handles_quotes_and_parens_inside_guard():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     sql = "SELECT a / NULLIF(SUM(CASE WHEN s = ')''(' THEN n END), 0) FROM t"
     assert _athena_compat_sql(sql) == (
@@ -402,14 +402,14 @@ def test_athena_compat_handles_quotes_and_parens_inside_guard():
 
 
 def test_athena_compat_leaves_unbalanced_tail_untouched():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     sql = "SELECT a / NULLIF(b, 0"  # malformed — never rewrite blindly
     assert _athena_compat_sql(sql) == sql
 
 
 def test_athena_compat_leaves_plain_division_alone():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     sql = "SELECT a / b, NULLIF(c, 0) FROM t"
     assert _athena_compat_sql(sql) == sql
@@ -418,7 +418,7 @@ def test_athena_compat_leaves_plain_division_alone():
 def test_athena_compat_tags_temporal_comparison_literals_as_timestamp():
     # Trino refuses `timestamp >= varchar` (DuckDB coerces), so the
     # compiler's time-window bounds gain an explicit TIMESTAMP tag.
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     sql = "WHERE t.ordered_at >= '2016-09-01'\n  AND t.ordered_at < '2017-01-01'"
     assert _athena_compat_sql(sql) == (
@@ -427,7 +427,7 @@ def test_athena_compat_tags_temporal_comparison_literals_as_timestamp():
 
 
 def test_athena_compat_tags_full_timestamp_literals_and_all_operators():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     for op in ("=", "!=", "<>", "<", ">", "<=", ">="):
         assert _athena_compat_sql(f"WHERE ts {op} '2016-09-01 12:30:00.123'") == (
@@ -436,7 +436,7 @@ def test_athena_compat_tags_full_timestamp_literals_and_all_operators():
 
 
 def test_athena_compat_leaves_non_temporal_and_tagged_literals_alone():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     for sql in (
         "WHERE name = 'Brooklyn' AND code = '2016-09'",  # not ISO dates
@@ -448,7 +448,7 @@ def test_athena_compat_leaves_non_temporal_and_tagged_literals_alone():
 
 
 def test_athena_compat_skips_comparisons_inside_string_literals():
-    from semantic_rails.db_parts.athena import _athena_compat_sql
+    from semantic_rails.sql_preparation import _athena_compat_sql
 
     sql = "SELECT 'note: x >= ''2016-09-01''' AS doc, ts < '2016-10-01' FROM t"
     assert _athena_compat_sql(sql) == (

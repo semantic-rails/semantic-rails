@@ -19,8 +19,6 @@ from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.db import create_warehouse_adapter
 from semantic_rails.db_parts.bigquery import (
     BigQueryNativeAdapter,
-    _bigquery_compat_sql,
-    _safe_field_name,
     create_adapter,
 )
 from semantic_rails.dialects import BigQueryDialect, dialect_for_warehouse, warehouse_connector
@@ -29,6 +27,7 @@ from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.schema import ConnectionSpec, PackageMeta, SeedSpec
 from semantic_rails.sql_ast import SqlBinary, SqlIdentifier, SqlLiteral
+from semantic_rails.sql_preparation import _bigquery_compat_sql, _safe_field_name
 
 DIALECT = BigQueryDialect()
 

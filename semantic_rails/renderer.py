@@ -439,7 +439,8 @@ def render_select_for_profile(
     """Render ``query`` at the requested SQL profile.
 
     ``dialect`` binds the warehouse's literal-quoting rules for the whole
-    render; callers compiling for a real warehouse must pass it.
+    render; callers compiling for a real warehouse must pass it. The compiler
+    then calls ``dialect.prepare_query`` to finalize executable SQL and aliases.
     """
     with use_dialect(dialect):
         normalized = str(profile or "audit").strip().lower()

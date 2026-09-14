@@ -12,9 +12,12 @@ re-exported through :mod:`semantic_rails.db`.
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
+
+from ..sql_preparation import PreparedQuery
 
 
 @runtime_checkable
@@ -78,6 +81,27 @@ class WarehouseAdapter(ABC):
         """
         raise NotImplementedError
 
+    def query_prepared(
+        self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Execute a compiled statement, preserving legacy custom adapters.
+
+        Built-in adapters with SQL compatibility rules override this method to
+        send the prepared SQL directly to their driver without rewriting it.
+        """
+        parameters: Mapping[str, inspect.Parameter]
+        try:
+            parameters = inspect.signature(self.query).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_limits = "limits" in parameters or any(
+            item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values()
+        )
+        rows = (
+            self.query(prepared.sql, limits=limits) if accepts_limits else self.query(prepared.sql)
+        )
+        return restore_column_names(rows, prepared)
+
     @abstractmethod
     def close(self) -> None:
         raise NotImplementedError
@@ -124,3 +148,16 @@ def _limit_timeout_milliseconds(limits: dict[str, Any] | None) -> int:
     if ms <= 0:
         return 0
     return ms
+
+
+def restore_column_names(
+    rows: list[dict[str, Any]], prepared: PreparedQuery
+) -> list[dict[str, Any]]:
+    """Restore semantic aliases without losing a bounded fetch's truncation flag."""
+    if not prepared.column_mapping:
+        return rows
+    names = dict(prepared.column_mapping)
+    return QueryRows(
+        [{names.get(key, key): value for key, value in row.items()} for row in rows],
+        truncated=bool(getattr(rows, "truncated", False)),
+    )

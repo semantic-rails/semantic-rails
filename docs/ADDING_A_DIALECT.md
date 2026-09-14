@@ -90,7 +90,6 @@ only write `_create_connection()` plus the timeout hooks:
 ```python
 from .common import (
     DbApiAdapter,
-    float_nullif_divisions,
     import_driver,
     normalize_connection_options,
     option_or_env,
@@ -136,12 +135,6 @@ class RedshiftAdapter(DbApiAdapter):
     def _reset_statement_timeout(self, cursor):
         cursor.execute("RESET statement_timeout")
 
-    def query(self, sql, *, limits=None):
-        # Redshift truncates integer division like Postgres/Trino —
-        # reuse the shared ratio-guard compat pass (see "Compat passes").
-        return super().query(
-            float_nullif_divisions(sql, cast_type="DOUBLE PRECISION"), limits=limits
-        )
 
 
 def create_adapter(package, *, db_path=""):
@@ -161,34 +154,36 @@ Non-DB-API drivers (BigQuery client, clickhouse-connect) subclass
 `normalize_connection_options`, `secret_value`, `env_value`,
 `option_or_env` (literal-or-`*_env` locator resolution), `int_option`,
 `import_driver`, `require_missing_env`,
-`redacted_error_details`, `rows_from_cursor`, and the compat-pass
-helpers `float_nullif_divisions` / `rewrite_double_quoted_identifiers` /
-`map_double_quoted_identifiers` from `db_parts.common`, plus
+`redacted_error_details`, and `rows_from_cursor` from `db_parts.common`, plus
 `_clip_rows` / `_limit_timeout_seconds` / `_limit_timeout_milliseconds` from
-`db_parts.base` — never
-copy-paste them. Translate driver failures with `errors.query_execution_error`;
+`db_parts.base`. Translate driver failures with `errors.query_execution_error`;
 never include driver messages or stderr in public errors, because they may
 contain SQL, result values, or credentials.
 
-**Compat passes.** When the warehouse has a hard limit the portable
-SQL AST cannot express, the adapter may rewrite the compiler's
-rendered SQL just before execution — the postgres adapter is the
-precedent (`_postgres_compat_sql`: 63-byte identifier shortening for
-NAMEDATALEN truncation + float-casting `x / NULLIF(y, 0)` so integer
-ratios don't truncate). Four shipped passes to compare:
-`_postgres_compat_sql`, `_bigquery_compat_sql` (backtick re-quoting +
-deterministic legalization of illegal field names, with result-row
-keys mapped back to the original aliases), `_databricks_compat_sql`
-(shared backtick rewrite + float NULLIF division), and
-`_athena_compat_sql` (`TIMESTAMP`-typing bare ISO literals in
-comparisons + float NULLIF division). Three rules: every rewrite is
-**semantics-preserving**, **literal-aware** (a quote-aware scan copies
-single-quoted string literals verbatim — the compiler renders string
-literals with single quotes only), and **documented** with the exact
-warehouse limit it compensates for. Backtick dialects reuse the shared
-`rewrite_double_quoted_identifiers` helper from `db_parts.common`
-instead of writing their own scan (BigQuery is the one exception: its
-scan also has to legalize field names, so it carries its own).
+**Final SQL preparation.** The compiler renders the selected profile, then calls
+`SqlDialect.prepare_query` to produce a driver-free `PreparedQuery`: the exact
+executable SQL and an immutable mapping from physical result columns to semantic
+aliases. Compile, explain, performance analysis, and execution use that statement.
+Warehouse syntax and precision rules live in `sql_preparation.py`; add a rule
+there when introducing a dialect that needs final preparation. For example,
+Redshift's `x / NULLIF(y, 0)` requires the shared `float_nullif_divisions` pass
+with `cast_type="DOUBLE PRECISION"` to preserve fractional ratios.
+
+Existing preparation covers PostgreSQL's 63-byte identifiers and floating-point
+ratios; BigQuery's backticks and legal field names; Databricks backticks and ratio
+precision; Athena temporal comparisons and ratios; and Snowflake ratio precision.
+Every rewrite must preserve intended semantics, skip literal contents, and document
+the warehouse behavior it compensates for. Reuse the quote-aware helpers in
+`sql_preparation.py` instead of implementing another scanner.
+
+`query_prepared(prepared, limits=...)` sends `prepared.sql` unchanged to the driver
+and restores result aliases with `restore_column_names`. Session timeout commands
+and row limits remain adapter concerns. `DbApiAdapter` supplies both this path and
+legacy `query(sql, limits=...)`, which prepares direct SQL calls once. Non-DB-API
+adapters needing preparation follow the BigQuery or Snowflake implementation.
+The base `WarehouseAdapter.query_prepared` delegates to `query` for existing custom
+adapters that have no SQL transformations. Test compile/explain SQL against the
+statement captured at the driver boundary, including alias restoration and limits.
 
 Rules every adapter follows:
 
