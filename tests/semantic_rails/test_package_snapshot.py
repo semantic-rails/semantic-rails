@@ -296,7 +296,7 @@ def test_in_memory_source_identity_and_table_binding_ignore_cache_order(tmp_path
         try:
             result = runtime.compile(query)
             assert result["ok"] is True
-            assert result["compile_stats"]["compile_cache_hit"] is False
+            assert result["compile_stats"]["cache_hit"] is False
             sql.append(result["rendered_sql"])
         finally:
             runtime.close()
