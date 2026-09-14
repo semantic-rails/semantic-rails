@@ -257,3 +257,15 @@ def test_distribution_sidecar_does_not_become_semantic_authority(portable):
     # Source identity covers the newly added file; the artifact attests the
     # captured generation before publication, not a self-referential digest.
     assert after["provenance"]["source_fingerprint"] != before["provenance"]["source_fingerprint"]
+
+
+def test_definitions_share_snapshot_canonicalization_for_metadata(portable):
+    from datetime import date
+
+    corpus, report = portable
+    config = load_package_snapshot(report.package_dir).config
+    config.metric_recipes[0].meta["reviewed_at"] = date(2026, 1, 1)
+    snapshot = LoadedPackageSnapshot.from_config(config)
+    artifact = export_metric_portability(snapshot, namespace=corpus["namespace"])
+    _validate(artifact)
+    assert artifact["metrics"][0]["definition"]["meta"]["reviewed_at"] == "2026-01-01"
