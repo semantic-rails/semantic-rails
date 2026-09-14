@@ -4,8 +4,8 @@ Exposes :func:`load_package_config`, :func:`list_package_ids`,
 :func:`get_package_path`, and ``repo_root`` helpers. Reads each
 package's ``package.yml`` / ``graph.yml`` / ``models/*.yml`` set,
 applies operational-contract overlays, parses expressions, and returns
-a typed :class:`semantic_rails.schema.PackageConfig`. Caches loaded
-configs by path via ``@lru_cache``.
+a typed :class:`semantic_rails.schema.PackageConfig` from one captured
+:class:`LoadedPackageSnapshot`. Only package-discovery paths are cached.
 """
 
 from __future__ import annotations

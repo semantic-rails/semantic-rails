@@ -254,3 +254,83 @@ def test_custom_adapter_without_limits_keeps_legacy_signature():
 
     prepared = PreparedQuery("SELECT 1", (("physical", "semantic"),))
     assert LegacyAdapter().query_prepared(prepared, limits={"max_rows": 1}) == [{"semantic": 1}]
+
+
+def test_runtime_query_segment_and_live_values_execute_prepared_sql(package_config, monkeypatch):
+    from semantic_rails.metadata_parts.valid_values import valid_values_payload
+    from semantic_rails.runtime import Runtime
+
+    config = replace(
+        package_config,
+        package=replace(
+            package_config.package,
+            warehouse="bigquery",
+            connection=ConnectionSpec(kind="bigquery_native"),
+        ),
+    )
+    runtime = Runtime.from_config(
+        config, source_path=resolve_repo_path("configs/semantic_rails/jaffle_shop")
+    )
+    adapter = BigQueryNativeAdapter()
+    statements = []
+    customer_id = "dimension.jaffle_customer_id"
+    store_name = "dimension.jaffle_store_name"
+    mapping = dict(
+        prepare_query(
+            f'SELECT 1 AS "{customer_id}", 1 AS "{store_name}"', "bigquery"
+        ).column_mapping
+    )
+    reverse = {value: key for key, value in mapping.items()}
+
+    def query(sql, *, job_config):
+        statements.append(sql)
+        rows = (
+            [{"member_count": 1}]
+            if sql.startswith("SELECT COUNT(*)")
+            else [
+                {reverse[customer_id]: 1, reverse[store_name]: "Portland", "anchor": 3, "aov": 12.5}
+            ]
+        )
+        return SimpleNamespace(result=lambda: rows)
+
+    adapter._client = SimpleNamespace(query=query, close=lambda: None)
+    monkeypatch.setattr(
+        adapter, "_bigquery", lambda: SimpleNamespace(QueryJobConfig=SimpleNamespace)
+    )
+    monkeypatch.setattr(
+        "semantic_rails.db_parts.bigquery.prepare_query", _forbid_second_preparation
+    )
+    runtime.set_adapter(adapter)
+    request = {
+        "version": 1,
+        "select": [{"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov"}],
+        "group_by": [store_name],
+        "sql_profile": "compact",
+    }
+    try:
+        compiled = runtime.compile(request)
+        result = runtime.query(request)
+        assert statements == [compiled["rendered_sql"]]
+        assert result["rows"][0][store_name] == "Portland"
+        assert (
+            result["semantic_fingerprint"]
+            == compiled["semantic_fingerprint"]
+            == runtime.snapshot.semantic_fingerprint
+        )
+        preview = runtime.segment_preview("segment.jaffle.high_value_customers")
+        assert statements[-2:] == [preview["rendered_sql"], preview["count_sql"]]
+        assert preview["rows"][0][customer_id] == 1
+        assert preview["member_count"] == 1
+        before = len(statements)
+        values = valid_values_payload(
+            runtime,
+            dimension_id=store_name,
+            query=request,
+            allow_live_query=True,
+            include_counts=True,
+        )
+        assert len(statements) == before + 1
+        assert values["values"][0] == {"value": "Portland", "label": "Portland", "count": 3}
+        assert values["provenance"]["semantic_fingerprint"] == runtime.snapshot.semantic_fingerprint
+    finally:
+        runtime.close()

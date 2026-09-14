@@ -474,7 +474,7 @@ def parse_intent(runtime: Any, intent: str) -> IntentIR:
     """
 
     text = str(intent or "").lower()
-    config = getattr(runtime, "config", None)
+    config = getattr(runtime, "_config", None)
     if config is None:
         return IntentIR(intent=intent, terms=frozenset(_runtime_composition_terms(text)))
 

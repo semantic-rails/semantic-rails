@@ -154,7 +154,9 @@ class LoadedPackageSnapshot:
         semantic = semantic_payload(config)
         return cls(
             source_path=source_path,
-            source_fingerprint=_json_fingerprint(canonicalize_semantics(config)),
+            source_fingerprint=_json_fingerprint(canonicalize_semantics(config)).removeprefix(
+                "sha256:"
+            ),
             semantic_fingerprint=_json_fingerprint(semantic),
             provenance=(),
             source_kind="in_memory",

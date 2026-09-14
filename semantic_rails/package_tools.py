@@ -1324,13 +1324,26 @@ def _diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
 
 
 def _impacted_metric_ids(config, changes: list[dict[str, Any]]) -> list[str]:
-    changed_ids = {row["object_id"] for row in changes}
-    impacted: list[str] = []
-    for recipe in config.metric_recipes:
-        serialized = json.dumps(expr_to_dict(recipe.expression), sort_keys=True)
-        if recipe.id in changed_ids or any(changed_id in serialized for changed_id in changed_ids):
-            impacted.append(recipe.id)
-    return sorted(set(impacted))
+    # Graph, policy, temporal and domain changes can affect dynamic plan choices;
+    # without a selected query, conservatively review every metric.
+    if any(
+        row["behavior_change"] and row["kind"] not in {"measures", "metrics"} for row in changes
+    ):
+        return sorted(recipe.id for recipe in config.metric_recipes)
+    affected = {row["object_id"] for row in changes}
+    expressions = {
+        recipe.id: json.dumps(expr_to_dict(recipe.expression), sort_keys=True)
+        for recipe in config.metric_recipes
+    }
+    while True:
+        discovered = {
+            key
+            for key, expression in expressions.items()
+            if any(changed in expression for changed in affected)
+        }
+        if discovered.issubset(affected):
+            return sorted(set(expressions) & affected)
+        affected.update(discovered)
 
 
 def _impact_markdown(

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import inspect
 import json
 import os
 import re
@@ -53,6 +52,7 @@ from .db import (
     load_csv_dir_to_duckdb,
     seed_db,
 )
+from .db_parts.base import query_with_limits, restore_column_names
 from .diagnostics import (
     enrich_expression_ast_error,
     enrich_object_not_found,
@@ -80,6 +80,7 @@ from .runtime_parts.responses import (
 )
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
+from .sql_preparation import PreparedQuery
 
 __all__ = [
     "CachedCompilation",
@@ -634,32 +635,15 @@ def _normalize_query_limits(raw: Any) -> dict[str, Any]:
     return normalized
 
 
-def _adapter_query(adapter: Any, sql: str, *, limits: dict[str, Any]) -> list[dict[str, Any]]:
-    """Call ``adapter.query`` with ``limits=`` only when the adapter
-    accepts it.
-
-    The built-in DuckDB and Snowflake adapters accept ``limits=`` to
-    apply per-request statement timeouts and row caps. Older custom
-    adapters with the legacy ``query(sql)`` signature would raise
-    ``TypeError: unexpected keyword argument 'limits'`` if we always
-    passed it, breaking integrations that worked before the runtime
-    grew per-request limits. Detect the signature once and call the
-    adapter accordingly. The hosting story relies on this: third-party
-    warehouse adapters must keep working without forking the runtime.
-    """
-    try:
-        signature = inspect.signature(adapter.query)
-    except (TypeError, ValueError):
-        signature = None
-    accepts_limits = False
-    if signature is not None:
-        params = signature.parameters
-        if "limits" in params:
-            accepts_limits = True
-        else:
-            accepts_limits = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-    rows = adapter.query(sql, limits=limits) if accepts_limits else adapter.query(sql)
-    return rows if isinstance(rows, list) else list(rows)
+def _adapter_query(
+    adapter: Any, query: str | PreparedQuery, *, limits: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if isinstance(query, PreparedQuery):
+        execute = getattr(adapter, "query_prepared", None)
+        if execute is not None:
+            return execute(query, limits=limits)
+        return restore_column_names(query_with_limits(adapter, query.sql, limits=limits), query)
+    return query_with_limits(adapter, query, limits=limits)
 
 
 def _data_coverage_probe(
@@ -2026,7 +2010,7 @@ class Runtime:
                             },
                         }
                     )
-                rows = _adapter_query(adapter, compiled["sql"], limits=limits)
+                rows = _adapter_query(adapter, compiled["prepared_query"], limits=limits)
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -2072,6 +2056,8 @@ class Runtime:
         }
         metadata = compile_response_metadata(self, payload, compiled)
         execute_keep = {
+            "semantic_fingerprint",
+            "source_fingerprint",
             "sql_profile",
             "warehouse",
             "dialect",
@@ -2318,13 +2304,18 @@ class Runtime:
                     query_policy_effects.append(effect)
         preview_compiled = compile_query(self._config, self.registry, preview_query)
         membership_compiled = compile_query(self._config, self.registry, membership_query)
+        dialect = dialect_for_warehouse(self.warehouse)
+        count_shell = dialect.prepare_query(
+            'SELECT COUNT(*) AS "member_count" FROM (__SR_MEMBERSHIP__) AS "segment_members"'
+        )
+        count_prepared = PreparedQuery(
+            count_shell.sql.replace("__SR_MEMBERSHIP__", membership_compiled["sql"])
+        )
         adapter = self._get_adapter()
         try:
             with self._query_lock:
-                rows = adapter.query(preview_compiled["sql"])
-                count_rows = adapter.query(
-                    f'SELECT COUNT(*) AS "member_count" FROM ({membership_compiled["sql"]}) AS "segment_members"'
-                )
+                rows = _adapter_query(adapter, preview_compiled["prepared_query"], limits={})
+                count_rows = _adapter_query(adapter, count_prepared, limits={})
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -2358,6 +2349,9 @@ class Runtime:
             "request_context": request_context_payload(context),
             "derived_query": preview_query,
             "rendered_sql": preview_compiled["sql"],
+            "count_sql": count_prepared.sql,
+            "semantic_fingerprint": self.snapshot.semantic_fingerprint,
+            "source_fingerprint": self.snapshot.source_fingerprint,
             "logical_plan": asdict(preview_compiled["logical_plan"]),
             "sql_plan": asdict(preview_compiled["sql_ast"]),
             "explain": asdict(preview_compiled["explain"]),

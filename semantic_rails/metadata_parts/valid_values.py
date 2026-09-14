@@ -228,7 +228,11 @@ def valid_values_payload(
         "value_source_type": "live_query",
         "estimated_cost": "query",
         "anchor_measure": anchor_measure_id,
-        "provenance": {"anchor_measure": anchor_measure_id},
+        "provenance": {
+            "anchor_measure": anchor_measure_id,
+            "semantic_fingerprint": runtime.snapshot.semantic_fingerprint,
+            "source_fingerprint": runtime.snapshot.source_fingerprint,
+        },
     }
 
 
