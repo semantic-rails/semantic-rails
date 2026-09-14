@@ -33,6 +33,8 @@ class RequestContext:
     roles: tuple[str, ...] = field(default_factory=tuple)
     environment: str = ""
     audience: str = ""
+    metric_allowlist: tuple[str, ...] | None = None
+    dimension_allowlist: tuple[str, ...] | None = None
 
     def to_policy_context(self) -> dict[str, Any]:
         payload = {
@@ -43,10 +45,17 @@ class RequestContext:
             "environment": self.environment,
             "audience": self.audience,
         }
-        return {key: value for key, value in payload.items() if value not in ("", [], None)}
+        payload = {key: value for key, value in payload.items() if value not in ("", [], None)}
+        for key in ("metric_allowlist", "dimension_allowlist"):
+            value = getattr(self, key)
+            if value is not None:
+                payload[key] = list(value)
+        return payload
 
     def to_public_dict(self) -> dict[str, Any]:
         payload = {"request_id": self.request_id, **self.to_policy_context()}
+        payload.pop("metric_allowlist", None)
+        payload.pop("dimension_allowlist", None)
         return {key: value for key, value in payload.items() if value not in ("", [], None)}
 
 
@@ -76,6 +85,18 @@ def _header(headers: Mapping[str, Any] | None, *names: str) -> str:
     return ""
 
 
+def _resource_allowlist(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        from .errors import SemanticLayerError
+
+        raise SemanticLayerError("RESOURCE_ACCESS_DENIED", "Resource access is not permitted.")
+    return tuple(sorted(set(item.strip() for item in value)))
+
+
 def context_from_policy_context(
     policy_context: Mapping[str, Any] | None, *, request_id: str = ""
 ) -> RequestContext:
@@ -88,6 +109,8 @@ def context_from_policy_context(
         roles=_split_roles(raw.get("roles", raw.get("role", ""))),
         environment=str(raw.get("environment", "") or "").strip(),
         audience=str(raw.get("audience", "") or "").strip(),
+        metric_allowlist=_resource_allowlist(raw.get("metric_allowlist")),
+        dimension_allowlist=_resource_allowlist(raw.get("dimension_allowlist")),
     )
 
 
@@ -113,6 +136,8 @@ def context_from_headers(
         environment=_header(headers, "X-Semantic-Environment", "X-Environment")
         or body_context.environment,
         audience=_header(headers, "X-Semantic-Audience", "X-Audience") or body_context.audience,
+        metric_allowlist=body_context.metric_allowlist,
+        dimension_allowlist=body_context.dimension_allowlist,
     )
 
 
