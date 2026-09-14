@@ -25,6 +25,7 @@ from .sql_ast import (
     SqlOrderTerm,
     SqlWithinGroup,
 )
+from .sql_preparation import PreparedQuery, prepare_query
 
 
 def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) -> Any:
@@ -75,6 +76,10 @@ def backslash_escaped_string_literal(value: str) -> str:
 @dataclass(frozen=True)
 class SqlDialect:
     name: str
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        """Finalize the executable statement and result-column mapping."""
+        return prepare_query(sql, self.name)
 
     def quote_string_literal(self, value: str) -> str:
         """Render ``value`` as a single-quoted SQL string literal.

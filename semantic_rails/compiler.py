@@ -3659,11 +3659,14 @@ def compile_query(
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)
     sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
+    dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,
         str(payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"),
-        dialect=dialect_for_warehouse(config.package.warehouse),
+        dialect=dialect,
     )
+    prepared = dialect.prepare_query(rendered)
+    rendered = prepared.sql
     from .compiler_parts.sql_lowering import build_performance_plan, build_physical_plan
 
     physical_plan = build_physical_plan(plan, config)
@@ -3708,6 +3711,7 @@ def compile_query(
         "logical_plan": plan,
         "sql_ast": sql_ast,
         "sql": rendered,
+        "prepared_query": prepared,
         "explain": explain,
         "physical_plan": physical_plan,
         "performance_plan": performance_plan,
