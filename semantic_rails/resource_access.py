@@ -11,10 +11,11 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from .ast import normalize_query
-from .errors import SemanticLayerError
+from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr
 from .policies import enforce_query_policies
 from .request_context import RequestContext, context_from_policy_context
@@ -25,6 +26,58 @@ def access_denied() -> SemanticLayerError:
     # Do not distinguish missing resources from ungranted resources or reveal
     # package policy names, dependencies, or nearest-match suggestions.
     return SemanticLayerError("RESOURCE_ACCESS_DENIED", "Resource access is not permitted.")
+
+
+def _public_error(exc: SemanticLayerError) -> SemanticLayerError:
+    if exc.code in {
+        "RESOURCE_ACCESS_DENIED",
+        "POLICY_DENIED",
+        "OBJECT_NOT_FOUND",
+        "AMBIGUOUS_ALIAS",
+    }:
+        return access_denied()
+    if exc.code == "QUERY_EXECUTION_ERROR":
+        return query_execution_error({})
+    # Preserve actionable operational/validation codes; package-generated
+    # messages, details, and recovery candidates may name hidden objects.
+    code = exc.code if exc.code in ERROR_CODES else "INVALID_QUERY"
+    return SemanticLayerError(code, "The requested operation could not be completed.")
+
+
+def _capabilities(access: ResourceAccess) -> dict[str, Any]:
+    from .metadata_parts.capabilities import _EXPRESSION_SHAPES
+
+    available = any(row["kind"] == "metric" for row in access.visible_rows())
+    return {
+        "package_id": access.config.package.package_id,
+        "package": {
+            "id": access.config.package.package_id,
+            "package_id": access.config.package.package_id,
+            "name": access.config.package.name,
+        },
+        "schema_version": access.config.version,
+        "capabilities": [{"kind": "granted_metric_queries", "available": True, "reason": ""}]
+        if available
+        else [],
+        "unsupported_capabilities": [
+            {
+                "kind": kind,
+                "available": False,
+                "reason": "Unavailable with restricted metric grants.",
+            }
+            for kind in (
+                "raw_expressions",
+                "segments",
+                "valid_values",
+                "general_intent_composition",
+            )
+        ],
+        "expression_shapes": [
+            dict(shape) for shape in _EXPRESSION_SHAPES if shape["name"] == "metric"
+        ]
+        if available
+        else [],
+    }
 
 
 def _references(value: Any) -> set[str]:
@@ -214,6 +267,8 @@ _BUCKETS = {
 
 
 def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
+    from .metadata import format_catalog_payload
+
     rows = access.visible_rows()
     kind, search = kwargs.get("kind", ""), str(kwargs.get("search", "")).lower()
     rows = [
@@ -225,31 +280,16 @@ def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
     grouped = {
         bucket: [row for row in rows if row["kind"] == kind] for kind, bucket in _BUCKETS.items()
     }
-    meta = {
-        "package": {
-            "package_id": access.config.package.package_id,
-            "name": access.config.package.name,
-        },
-        "schema_version": access.config.version,
-        "view": kwargs.get("view", "summary"),
-        "verbosity": kwargs.get("verbosity", "compact"),
-    }
-    result: dict[str, Any] = {
-        "meta": meta,
-        "counts": {key: len(value) for key, value in grouped.items()},
-        "capabilities": [],
-        "unsupported_capabilities": [],
-    }
-    if kwargs.get("verbosity") == "summary":
-        result.update(
-            {
-                f"{kind}_ids": [row["id"] for row in grouped[bucket]]
-                for kind, bucket in _BUCKETS.items()
-            }
-        )
-    else:
-        result.update(grouped)
-    return result
+    capabilities = _capabilities(access)
+    return format_catalog_payload(
+        grouped,
+        package=capabilities["package"],
+        schema_version=access.config.version,
+        view=kwargs.get("view", "summary"),
+        verbosity=kwargs.get("verbosity", "compact"),
+        supported_capabilities=capabilities["capabilities"],
+        unsupported_capabilities=capabilities["unsupported_capabilities"],
+    )
 
 
 def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -265,7 +305,16 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         overlap = terms & tokens
         if terms and not overlap:
             continue
-        rows.append({**row, "score": len(overlap), "match_reasons": []})
+        starter = (
+            {"select": [{"expression": {"metric": row["id"]}, "as": "value"}]}
+            if row["kind"] == "metric"
+            else {"group_by": [row["id"]]}
+            if row["kind"] == "dimension"
+            else {}
+        )
+        rows.append(
+            {**row, "score": len(overlap), "match_reasons": [], "starter_query_patch": starter}
+        )
     rows.sort(key=lambda row: (-row["score"], row["id"]))
     limit = max(1, int(kwargs.get("limit", 10)))
     return {
@@ -394,11 +443,12 @@ def run_authorized_operation(
             access.enforce_query(payload)
             result = operation(runtime, *args, **kwargs)
             if not result.get("ok", False):
-                raise access_denied()
+                first: dict[str, Any] = next(iter(result.get("errors") or []), {})
+                raise _public_error(SemanticLayerError(str(first.get("code", "INVALID_QUERY")), ""))
             # Execution metadata can contain dependency IDs, related metrics,
             # policies and diagnostic suggestions. Expose only the result and
             # requested SQL in the bounded resource-grant contract.
-            return {
+            response = {
                 key: value
                 for key, value in result.items()
                 if key
@@ -414,8 +464,32 @@ def run_authorized_operation(
                     "timing_ms",
                     "warehouse",
                     "dialect",
+                    "sql_profile",
                 }
             }
+            from .runtime_parts.responses import output_columns
+
+            # Reuse the engine's descriptor builder even when minimal verbosity
+            # omitted it. It uses the authorized query, not expanded recipes.
+            columns = output_columns(
+                access.config,
+                {"explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict())},
+            )
+            permitted = set(access.context.metric_allowlist or ()) | set(
+                access.context.dimension_allowlist or ()
+            )
+            response["output_columns"] = [
+                {
+                    key: value
+                    for key, value in column.items()
+                    if key in {"field", "semantic_id", "display_label", "sql_alias", "type"}
+                }
+                for column in columns
+                if column.get("semantic_id") in permitted
+            ]
+            return response
+        if name == "capabilities_payload":
+            return _capabilities(access)
         if name in {"catalog_payload", "resolve_catalog"}:
             return _catalog(access, kwargs)
         if name == "discover_payload":
@@ -459,17 +533,18 @@ def run_authorized_operation(
         # New operations carrying restricted authority must explicitly choose
         # their access semantics before they can run.
         raise access_denied()
-    except SemanticLayerError:
+    except SemanticLayerError as exc:
+        public = _public_error(exc)
         if name == "validate":
             return {
                 "ok": False,
                 "status": "error",
                 "errors": [
                     {
-                        "code": "RESOURCE_ACCESS_DENIED",
-                        "message": "Resource access is not permitted.",
+                        "code": public.code,
+                        "message": str(public),
                     }
                 ],
                 "request_context": access.context.to_public_dict(),
             }
-        raise access_denied() from None
+        raise public from None

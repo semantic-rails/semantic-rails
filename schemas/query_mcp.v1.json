@@ -197,6 +197,19 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "request_id": {
             "type": "string"
           }

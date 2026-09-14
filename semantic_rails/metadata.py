@@ -1202,9 +1202,39 @@ def catalog_payload(
             alias_index.setdefault(alias_key, [])
             if row["id"] not in alias_index[alias_key]:
                 alias_index[alias_key].append(row["id"])
+    return format_catalog_payload(
+        grouped,
+        package=catalog["package"],
+        schema_version=runtime.config.version,
+        view=view,
+        verbosity=verbosity,
+        supported_capabilities=supported_capabilities,
+        unsupported_capabilities=unsupported_capabilities,
+        aliases=aliases,
+        alias_index=alias_index,
+    )
+
+
+def format_catalog_payload(
+    grouped: dict[str, Any],
+    *,
+    package: dict[str, Any],
+    schema_version: Any,
+    view: str,
+    verbosity: str,
+    supported_capabilities: list[dict[str, Any]],
+    unsupported_capabilities: list[dict[str, Any]],
+    aliases: dict[str, list[str]] | None = None,
+    alias_index: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Format already-authorized rows without reading package internals.
+
+    Shared by ordinary catalogs and restricted public projections so caps,
+    counts, full retrieval, and verbosity keep the same response contract.
+    """
     grouped["meta"] = {
-        "package": catalog["package"],
-        "schema_version": runtime.config.version,
+        "package": package,
+        "schema_version": schema_version,
         "view": view,
         "verbosity": verbosity,
     }
@@ -1219,7 +1249,16 @@ def catalog_payload(
         # ``kind_map`` (kind→bucket) reversed gives bucket→singular kind
         # so id-list keys read naturally as ``measure_ids``, ``entity_ids``
         # etc. rather than tripping over irregular plurals.
-        bucket_to_kind = {bucket: kind for kind, bucket in kind_map.items()}
+        bucket_to_kind = {
+            "entities": "entity",
+            "dimensions": "dimension",
+            "measures": "measure",
+            "segments": "segment",
+            "temporal_roles": "temporal_role",
+            "relationships": "relationship",
+            "value_domains": "value_domain",
+            "metrics": "metric",
+        }
         summary_payload: dict[str, Any] = {
             "meta": grouped["meta"],
             "counts": {
@@ -1257,8 +1296,8 @@ def catalog_payload(
     elif verbosity_norm == "full":
         # Full verbosity is opt-in: keep the alias maps for typo-resolution
         # and emit every matching row uncapped.
-        grouped["aliases"] = aliases
-        grouped["alias_index"] = alias_index
+        grouped["aliases"] = aliases or {}
+        grouped["alias_index"] = alias_index or {}
     else:
         # Compact (the default). Round four dropped ``alias_index`` and
         # ``aliases`` here — both grew unbounded with the catalog and

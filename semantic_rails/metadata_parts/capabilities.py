@@ -259,7 +259,9 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
 
 
 @runtime_request_scope
-def capabilities_payload(runtime: Runtime) -> dict[str, Any]:
+def capabilities_payload(
+    runtime: Runtime, *, policy_context: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Public capabilities envelope — the cheap-orientation surface."""
 
     supported, unsupported = _capability_payload(runtime.config)
