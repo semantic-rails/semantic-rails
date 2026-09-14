@@ -13,7 +13,7 @@ import pytest
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.catalog_service import resolve_catalog
 from semantic_rails.db import WarehouseAdapter
-from semantic_rails.errors import SemanticLayerError
+from semantic_rails.errors import SemanticLayerError, query_execution_error
 from semantic_rails.expressions import MetricRecipeRefExpr, RatioExpr
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -363,7 +363,11 @@ def test_authenticated_asgi_grants_roundtrip_and_revoke(
                             "arguments": arguments,
                         },
                     }
-                response = await client.post(route, json=body, headers=headers)
+                response = (
+                    await client.get(route, headers=headers)
+                    if operation == "capabilities" and transport == "rest"
+                    else await client.post(route, json=body, headers=headers)
+                )
                 result = response.json()
                 return result["result"]["structuredContent"] if transport == "mcp" else result
 
@@ -391,6 +395,9 @@ def test_authenticated_asgi_grants_roundtrip_and_revoke(
             )
             assert AOV not in json.dumps(catalogs[0])
             assert CUSTOMERS not in json.dumps(catalogs[1])
+            capabilities = await call("capabilities", {"policy_context": spoof})
+            assert [row["name"] for row in capabilities["expression_shapes"]] == ["metric"]
+            assert "default_db" not in json.dumps(capabilities)
 
     try:
         asyncio.run(run())
@@ -468,3 +475,129 @@ def test_transport_trusted_context_overrides_nested_grant_forgery(
         assert AOV not in json.dumps(result)
         assert SECRET_DIMENSION not in json.dumps(result)
     assert not runtime.adapter.statements
+
+
+@pytest.mark.parametrize("transport", ["http", "mcp"])
+def test_business_wording_consumer_flow_retains_columns_and_starters(runtime_factory, transport):
+    runtime = runtime_factory("jaffle_shop")
+    trusted = context()
+    adapter = SemanticLayerMCPAdapter(runtime)
+    service = SemanticHTTPService(runtime)
+
+    def call(operation, arguments):
+        if transport == "mcp":
+            return adapter.call_tool(operation, arguments, request_context=trusted)
+        result, _ = service.handle(
+            "POST",
+            "/query" if operation == "execute" else f"/{operation}",
+            arguments,
+            context=trusted,
+        )
+        return result
+
+    try:
+        catalog = call("catalog", {"verbosity": "compact"})["catalog"]
+        assert catalog["meta"]["package"]["package_id"] == runtime.package_id
+        assert catalog["counts_total"]["metrics"] == 1
+        discovered = call("discover", {"terms": "customer", "limit": 1})
+        starter = discovered["metrics"][0]["starter_query_patch"]
+        assert starter["select"][0]["expression"] == {"metric": CUSTOMERS}
+        plan = call("plan", {"intent": "Show me customer count by customer type"})
+        assert plan["status"] == "ok"
+        portable = plan["best"]["query_ir"]
+        assert portable["group_by"] == [DIMENSION]
+        expected_fields = [DIMENSION, "value"]
+        for operation in ["validate", "compile", "execute"]:
+            result = call(operation, {"query": {**portable, "limit": 1}, "verbosity": "compact"})
+            assert result["ok"]
+            assert [column["field"] for column in result["output_columns"]] == expected_fields
+            assert [column["semantic_id"] for column in result["output_columns"]] == [
+                DIMENSION,
+                CUSTOMERS,
+            ]
+            assert all(
+                column["display_label"] and column["type"] for column in result["output_columns"]
+            )
+            assert "lineage" not in json.dumps(result["output_columns"])
+            if operation == "execute":
+                assert len(result["rows"]) == result["row_count"] == 1
+                assert set(result["rows"][0]) == set(expected_fields)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_restricted_empty_columnar_result_retains_schema(granted_runtime, monkeypatch, verbosity):
+    monkeypatch.setattr(granted_runtime.adapter, "query", lambda sql, **kwargs: [])
+    portable = {"select": [{"expression": {"metric": CUSTOMERS}, "as": "customers"}]}
+    result = SemanticLayerMCPAdapter(granted_runtime).call_tool(
+        "execute",
+        {"query": portable, "row_format": "columns", "verbosity": verbosity},
+        request_context=context(),
+    )
+    assert result["ok"]
+    assert result["columns"] == ["customers"]
+    assert result["rows"] == []
+    assert result["output_columns"][0]["semantic_id"] == CUSTOMERS
+
+
+def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(granted_runtime):
+    runtime = granted_runtime
+    source = next(row for row in runtime.config.metric_recipes if row.id == CUSTOMERS)
+    clones = [
+        replace(source, id=f"metric.public.item_{i:03d}", label=f"Item {i:03d}") for i in range(205)
+    ]
+    runtime.config.metric_recipes.extend(clones)
+    ctx = RequestContext(metric_allowlist=tuple(row.id for row in clones))
+    compact = resolve_catalog(runtime, policy_context=ctx.to_policy_context(), verbosity="compact")
+    assert compact["counts_total"]["metrics"] == 205
+    assert compact["counts"]["metrics"] == len(compact["metrics"]) == 200
+    assert compact["truncated"]
+    full = resolve_catalog(runtime, policy_context=ctx.to_policy_context(), verbosity="full")
+    assert len(full["metrics"]) == 205
+    filtered = resolve_catalog(
+        runtime, policy_context=ctx.to_policy_context(), verbosity="compact", search="Item 204"
+    )
+    assert filtered["counts_total"]["metrics"] == 1
+    assert filtered["metrics"][0]["id"] == "metric.public.item_204"
+    assert AOV not in json.dumps(full)
+
+
+@pytest.mark.parametrize("transport", ["http", "mcp"])
+@pytest.mark.parametrize("metric", [CUSTOMERS, ""])
+def test_capabilities_obey_trusted_grants_and_hide_package_operations(
+    granted_runtime, transport, metric
+):
+    runtime = granted_runtime
+    trusted = context(metric)
+    if transport == "http":
+        result, _ = SemanticHTTPService(runtime).handle("GET", "/capabilities", context=trusted)
+    else:
+        result = SemanticLayerMCPAdapter(runtime).call_tool(
+            "capabilities", {}, request_context=trusted
+        )
+    serialized = json.dumps(result)
+    assert "default_db" not in serialized
+    assert "connection" not in serialized
+    assert "seed" not in serialized
+    assert "aggregate" not in {row["name"] for row in result["expression_shapes"]}
+    assert [row["name"] for row in result["expression_shapes"]] == (["metric"] if metric else [])
+    if transport == "http":
+        assert result["warehouse"] == result["dialect"] == "duckdb"
+        assert {row["path"] for row in result["routes"]} >= {"/api/v1/catalog", "/api/v1/compile"}
+        assert "/api/v1/valid-values" not in {row["path"] for row in result["routes"]}
+
+
+def test_restricted_warehouse_failure_keeps_safe_operational_code(granted_runtime, monkeypatch):
+    def failing_query(sql, *, limits=None):
+        raise query_execution_error(
+            {"engine": "duckdb", "sql": "SELECT private", "options": {"secret": "hidden"}}
+        )
+
+    monkeypatch.setattr(granted_runtime.adapter, "query", failing_query)
+    with pytest.raises(SemanticLayerError) as exc:
+        granted_runtime.query(query())
+    assert exc.value.code == "QUERY_EXECUTION_ERROR"
+    assert "Warehouse query execution failed" in str(exc.value)
+    assert "private" not in json.dumps(exc.value.details)
+    assert "hidden" not in json.dumps(exc.value.details)
