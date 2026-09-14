@@ -1168,11 +1168,11 @@ def test_validate_config_runs_snowflake_probes_with_adapter(
     _write_minimal_snowflake_package(package_dir)
     queries: list[str] = []
 
-    def _fake_query(self, sql: str, *, limits=None):
-        queries.append(sql)
+    def _fake_query(self, prepared, *, limits=None):
+        queries.append(prepared.sql)
         return []
 
-    monkeypatch.setattr(SnowflakeCliAdapter, "query", _fake_query)
+    monkeypatch.setattr(SnowflakeCliAdapter, "query_prepared", _fake_query)
 
     report = validate_config_report(resolve_package_reference(path=str(package_dir)))
 

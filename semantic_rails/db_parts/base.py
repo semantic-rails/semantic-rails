@@ -89,22 +89,28 @@ class WarehouseAdapter(ABC):
         Built-in adapters with SQL compatibility rules override this method to
         send the prepared SQL directly to their driver without rewriting it.
         """
-        parameters: Mapping[str, inspect.Parameter]
-        try:
-            parameters = inspect.signature(self.query).parameters
-        except (TypeError, ValueError):
-            parameters = {}
-        accepts_limits = "limits" in parameters or any(
-            item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values()
-        )
-        rows = (
-            self.query(prepared.sql, limits=limits) if accepts_limits else self.query(prepared.sql)
-        )
+        rows = query_with_limits(self, prepared.sql, limits=limits)
         return restore_column_names(rows, prepared)
 
     @abstractmethod
     def close(self) -> None:
         raise NotImplementedError
+
+
+def query_with_limits(
+    adapter: Any, sql: str, *, limits: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Preserve query(sql) integrations while forwarding limits where supported."""
+    parameters: Mapping[str, inspect.Parameter]
+    try:
+        parameters = inspect.signature(adapter.query).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_limits = "limits" in parameters or any(
+        item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values()
+    )
+    rows = adapter.query(sql, limits=limits) if accepts_limits else adapter.query(sql)
+    return rows if isinstance(rows, list) else list(rows)
 
 
 def _clip_rows(rows: list[dict[str, Any]], limits: dict[str, Any] | None) -> list[dict[str, Any]]:

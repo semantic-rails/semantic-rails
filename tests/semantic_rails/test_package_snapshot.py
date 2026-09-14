@@ -185,6 +185,7 @@ def test_impact_uses_captured_current_semantics_and_complete_fields(tmp_path, mo
     change = next(row for row in report["changes"] if row["object_id"] == config.dimensions[0].id)
     assert "column" in change["changed_fields"]
     assert change["behavior_change"] is True
+    assert report["impact"]["impacted_metrics"] == sorted(row.id for row in config.metric_recipes)
 
 
 def test_validation_rejects_source_edits_during_checks(tmp_path, monkeypatch):
