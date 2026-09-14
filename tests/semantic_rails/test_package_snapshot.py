@@ -222,3 +222,21 @@ def test_package_artifact_rejects_changed_semantics_before_writing(tmp_path):
             ref, output_path=str(target), manifest=manifest, config=snapshot.config
         )
     assert not target.exists()
+
+
+def test_package_check_rejects_edits_during_example_execution(tmp_path, monkeypatch):
+    from semantic_rails import package_tools
+    from semantic_rails.config_validation import resolve_package_reference
+
+    path = copy_package_config(tmp_path, "jaffle_shop")
+    ref = resolve_package_reference(path=str(path))
+    run_examples = package_tools.run_examples_report
+
+    def run_and_edit(*args, **kwargs):
+        result = run_examples(*args, **kwargs)
+        _rename_package(path, "changed during examples")
+        return result
+
+    monkeypatch.setattr(package_tools, "run_examples_report", run_and_edit)
+    with pytest.raises(SemanticLayerError, match="changed during the package check"):
+        package_tools.check_package_report(ref)

@@ -846,6 +846,11 @@ def check_package_report(
         and example_report["ok"]
         and test_report["ok"]
     )
+    if package_fingerprint(ref.source_path) != snapshot.source_fingerprint:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Package sources changed during the package check; retry after writes complete.",
+        )
     manifest = package_manifest(ref, snapshot=snapshot, checks=checks)
     artifact: dict[str, Any] = {}
     if artifact_path and ok:
