@@ -62,6 +62,14 @@ def granted_runtime(package_config_factory):
         runtime.close()
 
 
+def _replace_test_config(runtime, config, request):
+    replacement = Runtime.from_config(config, source_path=runtime.source_path)
+    replacement.set_adapter(RecordingAdapter())
+    replacement.set_compile_cache(runtime._compile_cache)
+    request.addfinalizer(replacement.close)
+    return replacement
+
+
 def context(metric=CUSTOMERS, dimensions=(DIMENSION,)):
     return RequestContext(
         actor="subject",
@@ -252,14 +260,15 @@ def test_restricted_plan_does_not_silently_drop_unsupported_intent(granted_runti
     assert not granted_runtime.adapter.statements
 
 
-def test_grants_and_revocation_are_checked_before_cached_compilation(granted_runtime):
+def test_grants_and_revocation_are_checked_before_cached_compilation(granted_runtime, request):
     runtime = granted_runtime
     allowed = query(verbosity="full")
     assert not runtime.compile(allowed)["compile_stats"]["cache_hit"]
     assert runtime.compile(allowed)["compile_stats"]["cache_hit"]
     with pytest.raises(SemanticLayerError):
         runtime.compile(query(ctx=context(AOV), verbosity="full"))
-    runtime.config.semantic_policies.append(
+    config = runtime.config
+    config.semantic_policies.append(
         SemanticPolicyConfig(
             id="policy.private",
             kind="object_access",
@@ -269,6 +278,7 @@ def test_grants_and_revocation_are_checked_before_cached_compilation(granted_run
             action="deny",
         )
     )
+    runtime = _replace_test_config(runtime, config, request)
     with pytest.raises(SemanticLayerError) as exc:
         runtime.compile(allowed)
     assert "private" not in str(exc.value)
@@ -277,7 +287,7 @@ def test_grants_and_revocation_are_checked_before_cached_compilation(granted_run
 
 def test_parallel_catalogs_do_not_mutate_runtime(granted_runtime):
     runtime = granted_runtime
-    config, registry = runtime.config, runtime.registry
+    config, registry, snapshot = runtime.config, runtime.registry, runtime.snapshot
     metrics = [CUSTOMERS, AOV] * 8
 
     def call(metric):
@@ -288,19 +298,23 @@ def test_parallel_catalogs_do_not_mutate_runtime(granted_runtime):
     with ThreadPoolExecutor(max_workers=4) as pool:
         outputs = list(pool.map(call, metrics))
     assert [[row["id"] for row in output] for output in outputs] == [[metric] for metric in metrics]
-    assert runtime.config is config
+    assert runtime.config == config
+    assert runtime.snapshot is snapshot
     assert runtime.registry is registry
 
 
-def test_package_policy_follows_nested_internal_recipe_dependencies(granted_runtime, monkeypatch):
+def test_package_policy_follows_nested_internal_recipe_dependencies(
+    granted_runtime, monkeypatch, request
+):
     runtime = granted_runtime
-    runtime.config.metric_recipes[:] = [
+    config = runtime.config
+    config.metric_recipes[:] = [
         replace(row, expression=RatioExpr(MetricRecipeRefExpr(AOV), MetricRecipeRefExpr(AOV)))
         if row.id == CUSTOMERS
         else row
-        for row in runtime.config.metric_recipes
+        for row in config.metric_recipes
     ]
-    runtime.config.semantic_policies.append(
+    config.semantic_policies.append(
         SemanticPolicyConfig(
             id="policy.hidden_recipe",
             kind="object_access",
@@ -308,6 +322,7 @@ def test_package_policy_follows_nested_internal_recipe_dependencies(granted_runt
             action="deny",
         )
     )
+    runtime = _replace_test_config(runtime, config, request)
     monkeypatch.setattr(
         runtime, "_compile", lambda *args, **kwargs: pytest.fail("denied dependency compiled")
     )
@@ -541,13 +556,15 @@ def test_restricted_empty_columnar_result_retains_schema(granted_runtime, monkey
     assert result["output_columns"][0]["semantic_id"] == CUSTOMERS
 
 
-def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(granted_runtime):
+def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(granted_runtime, request):
     runtime = granted_runtime
     source = next(row for row in runtime.config.metric_recipes if row.id == CUSTOMERS)
     clones = [
         replace(source, id=f"metric.public.item_{i:03d}", label=f"Item {i:03d}") for i in range(205)
     ]
-    runtime.config.metric_recipes.extend(clones)
+    config = runtime.config
+    config.metric_recipes.extend(clones)
+    runtime = _replace_test_config(runtime, config, request)
     ctx = RequestContext(metric_allowlist=tuple(row.id for row in clones))
     compact = resolve_catalog(runtime, policy_context=ctx.to_policy_context(), verbosity="compact")
     assert compact["counts_total"]["metrics"] == 205
