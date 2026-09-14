@@ -19,6 +19,8 @@ surface warnings without aborting the run.
 from __future__ import annotations
 
 import ast as pyast
+import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -73,6 +75,8 @@ class TranslationReport:
     models_emitted: list[str] = field(default_factory=list)
     metrics_emitted: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Optional export evidence: digest of parsed input plus translation losses.
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 def translate(
@@ -174,6 +178,15 @@ def translate(
             grouped = {name: doc for name, doc in entries}
             (metrics_dir / f"{owner}.yml").write_text(_dump_yaml({"metrics": grouped}))
 
+    report.provenance = {
+        "format_version": 1,
+        "framework": "metricflow",
+        "parsed_input_hash": "sha256:"
+        + hashlib.sha256(
+            json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str).encode()
+        ).hexdigest(),
+        "warnings": list(report.warnings),
+    }
     return report
 
 

@@ -56,6 +56,7 @@ def test_every_json_schema_is_well_formed() -> None:
         "query_ir.preview.v2.json",
         "query_ir.v1.json",
         "semantic_contract.v1.json",
+        "metric_portability.v1.json",
         "validation_report.v1.json",
     ):
         jsonschema.Draft202012Validator.check_schema(load_contract(name))
@@ -303,7 +304,7 @@ def test_export_contract_wraps_unexpected_loader_shape_errors(monkeypatch) -> No
     def broken_loader(_path):
         raise KeyError("raw-internal-reference")
 
-    monkeypatch.setattr(producer, "load_package_config", broken_loader)
+    monkeypatch.setattr(producer, "load_package_snapshot", broken_loader)
     with pytest.raises(SemanticLayerError) as exc:
         producer.export_semantic_contract(JAFFLE_SHOP)
 

@@ -46,6 +46,8 @@ REQUIRED_WHEEL_SUFFIXES = {
     "semantic_rails/contracts/query_ir.v1.json",
     "semantic_rails/contracts/query_mcp.v1.json",
     "semantic_rails/contracts/semantic_contract.v1.json",
+    "semantic_rails/contracts/metric_portability.v1.json",
+    "semantic_rails/contracts/fixtures/metric_portability.v1.json",
     "semantic_rails/contracts/validation_report.v1.json",
 }
 
@@ -228,7 +230,7 @@ def _assert_sdist_contents(sdist: Path) -> None:
         f"{root}/NOTICE",
         f"{root}/semantic_rails/__init__.py",
         *{
-            f"{root}/semantic_rails/contracts/{Path(suffix).name}"
+            f"{root}/{suffix}"
             for suffix in REQUIRED_WHEEL_SUFFIXES
             if suffix.startswith("semantic_rails/contracts/")
         },
@@ -267,8 +269,9 @@ def _assert_installed_wheel(wheel: Path, work_dir: Path) -> None:
             str(python),
             "-c",
             (
-                "from semantic_rails.contracts import CONTRACT_NAMES, load_contract; "
-                "assert all(load_contract(name) for name in CONTRACT_NAMES)"
+                "from semantic_rails.contracts import CONTRACT_NAMES, load_contract, load_contract_fixture; "
+                "assert all(load_contract(name) for name in CONTRACT_NAMES); "
+                "assert load_contract_fixture('metric_portability.v1.json')['expected_metric_ids']"
             ),
         ],
         cwd=work_dir,

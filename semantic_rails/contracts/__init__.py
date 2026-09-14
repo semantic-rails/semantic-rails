@@ -18,6 +18,10 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from .metric_portability import (
+    compare_metric_portability,
+    export_metric_portability,
+)
 from .producer import (
     CONTRACT_FORMAT_VERSION,
     export_semantic_contract,
@@ -28,6 +32,9 @@ __all__ = [
     "CONTRACT_FORMAT_VERSION",
     "CONTRACT_NAMES",
     "contract_path",
+    "compare_metric_portability",
+    "export_metric_portability",
+    "load_contract_fixture",
     "export_semantic_contract",
     "load_contract",
     "semantic_contract_fingerprint",
@@ -38,6 +45,7 @@ CONTRACT_NAMES = (
     "architect_mcp.v1.json",
     "http_api.v1.openapi.json",
     "package.v1.json",
+    "metric_portability.v1.json",
     "query_ir.preview.v2.json",
     "query_ir.v1.json",
     "query_mcp.v1.json",
@@ -67,3 +75,12 @@ def load_contract(name: str) -> dict[str, Any]:
         raise ValueError(f"Unknown Semantic Rails contract {name!r}")
     resource = files(__package__).joinpath(name)
     return dict(json.loads(resource.read_text(encoding="utf-8")))
+
+
+def load_contract_fixture(name: str) -> dict[str, Any]:
+    """Load the versioned, engine-owned consumer conformance corpus."""
+    if name != "metric_portability.v1.json":
+        raise ValueError(f"Unknown Semantic Rails contract fixture {name!r}")
+    return dict(
+        json.loads(files(__package__).joinpath("fixtures", name).read_text(encoding="utf-8"))
+    )

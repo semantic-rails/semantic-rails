@@ -110,7 +110,7 @@ include = ["semantic_rails", "semantic_rails.*", "mf2sr", "mf2sr.*"]
 # Ship the PEP 561 marker so type checkers consume the package's inline
 # annotations from the wheel.
 [tool.setuptools.package-data]
-semantic_rails = ["py.typed", "contracts/*.json"]
+semantic_rails = ["py.typed", "contracts/*.json", "contracts/fixtures/*.json"]
 mf2sr = ["py.typed"]
 
 [tool.setuptools.data-files]
