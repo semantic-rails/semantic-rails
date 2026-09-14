@@ -240,3 +240,21 @@ def test_package_check_rejects_edits_during_example_execution(tmp_path, monkeypa
     monkeypatch.setattr(package_tools, "run_examples_report", run_and_edit)
     with pytest.raises(SemanticLayerError, match="changed during the package check"):
         package_tools.check_package_report(ref)
+
+
+def test_single_file_capture_binds_example_and_test_companions(tmp_path):
+    from semantic_rails.package_snapshot import capture_package_source
+
+    package = tmp_path / "package.yml"
+    package.write_text("schema_version: 1\npackage: {id: demo}\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "examples").mkdir()
+    companion = tmp_path / "tests" / "metric.yml"
+    companion.write_text("tests: {expected: 1}\n")
+    (tmp_path / "examples" / "query.yml").write_text("examples: {}\n")
+    before = capture_package_source(package)
+    assert set(dict(before.files)) == {"package.yml", "tests/metric.yml", "examples/query.yml"}
+    companion.write_text("tests: {expected: 2}\n")
+    assert capture_package_source(package).fingerprint != before.fingerprint
+    (tmp_path / "unrelated.yml").write_text("package: another\n")
+    assert "unrelated.yml" not in dict(capture_package_source(package).files)
