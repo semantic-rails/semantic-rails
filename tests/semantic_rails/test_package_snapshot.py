@@ -258,3 +258,49 @@ def test_single_file_capture_binds_example_and_test_companions(tmp_path):
     assert capture_package_source(package).fingerprint != before.fingerprint
     (tmp_path / "unrelated.yml").write_text("package: another\n")
     assert "unrelated.yml" not in dict(capture_package_source(package).files)
+
+
+def test_in_memory_source_identity_and_table_binding_ignore_cache_order(tmp_path):
+    from dataclasses import replace
+
+    from semantic_rails.cache import LruCompiledSqlCache
+    from semantic_rails.compiler_parts.bind import _resolve_column_entity
+    from semantic_rails.expressions import ColumnRefExpr
+    from semantic_rails.package_snapshot import LoadedPackageSnapshot
+    from semantic_rails.runtime import Runtime
+
+    path = copy_package_config(tmp_path, "jaffle_shop")
+    config = load_package_config(str(path))
+    customer = config.entities[0]
+    alias = replace(customer, id="entity.customer_copy", aliases=[])
+    measure = config.measures[0]
+    reference = ColumnRefExpr(column="customer_id", table=customer.table)
+    measures = [replace(measure, expr=reference), *config.measures[1:]]
+    first = replace(config, entities=[alias, *config.entities], measures=measures)
+    second = replace(config, entities=[*config.entities, alias], measures=measures)
+    snapshots = [
+        LoadedPackageSnapshot.from_config(item, source_path=str(path)) for item in (first, second)
+    ]
+    assert snapshots[0].source_fingerprint != snapshots[1].source_fingerprint
+    assert snapshots[0].semantic_fingerprint == snapshots[1].semantic_fingerprint
+    query = {
+        "version": 1,
+        "select": [{"expression": {"measure": measure.id}, "as": "n"}],
+        "verbosity": "full",
+    }
+    cache = LruCompiledSqlCache()
+    sql = []
+    for snapshot in snapshots:
+        runtime = Runtime.from_snapshot(snapshot)
+        runtime.set_compile_cache(cache)
+        try:
+            result = runtime.compile(query)
+            assert result["ok"] is True
+            assert result["compile_stats"]["compile_cache_hit"] is False
+            sql.append(result["rendered_sql"])
+        finally:
+            runtime.close()
+        with pytest.raises(SemanticLayerError, match="multiple entities") as error:
+            _resolve_column_entity(reference, snapshot.config)
+        assert error.value.details["entity_ids"] == sorted([customer.id, alias.id])
+    assert sql[0] == sql[1]

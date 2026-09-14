@@ -4,6 +4,7 @@ import weakref
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..errors import SemanticLayerError
 from ..schema import (
     DimensionConfig,
     EntityConfig,
@@ -25,7 +26,7 @@ class PackageAnalysis:
     recipes: dict[str, MetricConfig]
     temporal_roles: dict[str, TemporalRoleConfig]
     relationships: dict[str, RelationshipConfig]
-    table_to_entity: dict[str, str]
+    table_to_entities: dict[str, tuple[str, ...]]
     graph: GraphIndex
     path_preferences: dict[tuple[str, str], list[str]]
     temporal_relationship_ids: set[str]
@@ -35,6 +36,9 @@ class PackageAnalysis:
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:
+        tables: dict[str, set[str]] = {}
+        for entity in config.entities:
+            tables.setdefault(entity.table, set()).add(entity.id)
         relationships = {row.id: row for row in config.relationships}
         graph: GraphIndex = {}
         for rel in config.relationships:
@@ -53,7 +57,7 @@ class PackageAnalysis:
             recipes={row.id: row for row in config.metric_recipes},
             temporal_roles={row.id: row for row in config.temporal_roles},
             relationships=relationships,
-            table_to_entity={row.table: row.id for row in config.entities},
+            table_to_entities={table: tuple(sorted(ids)) for table, ids in tables.items()},
             graph=graph,
             path_preferences={
                 (row.source_entity, row.target_entity): list(row.relationship_path)
@@ -113,8 +117,19 @@ def _relationship_index(config: PackageConfig) -> dict[str, RelationshipConfig]:
     return get_package_analysis(config).relationships
 
 
-def _table_to_entity(config: PackageConfig) -> dict[str, str]:
-    return get_package_analysis(config).table_to_entity
+def _resolve_table_entity(config: PackageConfig, table: str, *, owner: str = "") -> str | None:
+    candidates = get_package_analysis(config).table_to_entities.get(table, ())
+    if owner in candidates:
+        return owner
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Table reference '{table}' maps to multiple entities; specify an explicit entity.",
+            details={"table": table, "entity_ids": list(candidates)},
+        )
+    return None
 
 
 def _default_temporal_role(measure: MeasureConfig) -> str:

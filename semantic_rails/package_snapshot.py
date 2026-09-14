@@ -105,15 +105,22 @@ def capture_package_source(path: str | Path) -> CapturedSource:
     )
 
 
-def canonicalize_semantics(value: Any) -> Any:
+def canonicalize_semantics(value: Any, *, sort_objects: bool = True) -> Any:
     """Canonical parsed values; only object collections are reordered by ID."""
     if is_dataclass(value) and not isinstance(value, type):
         value = asdict(value)
     if isinstance(value, Mapping):
-        return {str(key): canonicalize_semantics(item) for key, item in sorted(value.items())}
+        return {
+            str(key): canonicalize_semantics(item, sort_objects=sort_objects)
+            for key, item in sorted(value.items())
+        }
     if isinstance(value, (list, tuple)):
-        items = [canonicalize_semantics(item) for item in value]
-        if items and all(isinstance(item, dict) and item.get("id") for item in items):
+        items = [canonicalize_semantics(item, sort_objects=sort_objects) for item in value]
+        if (
+            sort_objects
+            and items
+            and all(isinstance(item, dict) and item.get("id") for item in items)
+        ):
             return sorted(items, key=lambda item: str(item["id"]))
         return items
     if isinstance(value, (str, int, float, bool)) or value is None:
@@ -168,9 +175,9 @@ class LoadedPackageSnapshot:
         semantic = semantic_payload(config)
         return cls(
             source_path=source_path,
-            source_fingerprint=_json_fingerprint(canonicalize_semantics(config)).removeprefix(
-                "sha256:"
-            ),
+            source_fingerprint=_json_fingerprint(
+                canonicalize_semantics(config, sort_objects=False)
+            ).removeprefix("sha256:"),
             semantic_fingerprint=_json_fingerprint(semantic),
             provenance=(),
             source_kind="in_memory",
