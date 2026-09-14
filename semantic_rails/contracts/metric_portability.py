@@ -7,7 +7,6 @@ import json
 import re
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from semantic_rails import __version__
 from semantic_rails.config import LoadedPackageSnapshot, load_package_snapshot
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import expr_to_dict
+from semantic_rails.package_snapshot import canonicalize_semantics
 
 METRIC_PORTABILITY_VERSION = 1
 QUERY_IR_SCHEMA = "https://semantic-rails.com/schemas/query_ir.v1.json"
@@ -29,8 +29,12 @@ def _hash(value: Any) -> str:
 
 
 def _definition(row: Any, expression_field: str) -> dict[str, Any]:
-    definition = {key: value for key, value in asdict(row).items() if key not in _PRESENTATION}
-    definition[expression_field] = expr_to_dict(getattr(row, expression_field))
+    definition = {
+        key: value for key, value in canonicalize_semantics(row).items() if key not in _PRESENTATION
+    }
+    definition[expression_field] = canonicalize_semantics(
+        expr_to_dict(getattr(row, expression_field))
+    )
     return definition
 
 
