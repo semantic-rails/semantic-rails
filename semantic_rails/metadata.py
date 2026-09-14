@@ -829,7 +829,7 @@ def _predicate_metadata(
 def _object_card(
     runtime: Runtime, object_id: str, partial_query: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    config = runtime.config
+    config = runtime._config
     maps = _config_maps(config)
     partial_query = dict(partial_query or {})
     policy_context = _policy_context(partial_query)
@@ -1015,7 +1015,7 @@ def _summary_row(
     verbosity: str = "compact",
     partial_query: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    config = runtime.config
+    config = runtime._config
     payload = dict(obj.get("payload", {}) or {})
     payload.update(_metric_object_payload(config, str(obj["id"]), str(obj["kind"])))
     if verbosity != "full":
@@ -1127,10 +1127,10 @@ def catalog_payload(
     policy_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     catalog = runtime.catalog()
-    supported_capabilities, unsupported_capabilities = _capability_payload(runtime.config)
+    supported_capabilities, unsupported_capabilities = _capability_payload(runtime._config)
     context = _policy_context({"policy_context": dict(policy_context or {})})
     hidden_ids = hidden_object_ids(
-        runtime.config,
+        runtime._config,
         environment=str(context.get("environment", "")),
         audience=str(context.get("audience", "")),
         roles=context.get("roles", []),
@@ -1205,7 +1205,7 @@ def catalog_payload(
     return format_catalog_payload(
         grouped,
         package=catalog["package"],
-        schema_version=runtime.config.version,
+        schema_version=runtime._config.version,
         view=view,
         verbosity=verbosity,
         supported_capabilities=supported_capabilities,
@@ -2030,7 +2030,7 @@ def discover_payload(
     limit: int = 10,
     enforce_scope: bool = False,
 ) -> dict[str, Any]:
-    config = runtime.config
+    config = runtime._config
     search_index = runtime._get_catalog_search_index()
     search_terms = SearchTerms.from_text(terms)
     partial_query = dict(partial_query or {})
@@ -2667,7 +2667,7 @@ def inspect_payload(
 
 
 def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[str, Any]:
-    config = runtime.config
+    config = runtime._config
     policy_context = _policy_context(partial_query)
     hidden_ids = hidden_object_ids(
         config,
@@ -2783,7 +2783,7 @@ def build_options_payload(
     limit: int = 10,
 ) -> dict[str, Any]:
     base = _valid_next_base(runtime, partial_query)
-    config = runtime.config
+    config = runtime._config
     maps = _config_maps(config)
     raw_query = dict(partial_query or {})
 
@@ -3238,7 +3238,7 @@ def build_options_payload(
 def _select_expr_for_choice(runtime: Runtime, chosen: dict[str, Any]) -> dict[str, Any]:
     if chosen["kind"] == "metric":
         return {"expression": {"metric": chosen["id"]}, "as": chosen["label"]}
-    measure = _config_maps(runtime.config)["measures"][chosen["id"]]
+    measure = _config_maps(runtime._config)["measures"][chosen["id"]]
     return {
         "expression": {"measure": chosen["id"], "aggregation": measure.default_aggregation},
         "as": chosen["label"],
@@ -3449,7 +3449,7 @@ def _starter_query_patches(
         #      only ID recommended_dimensions still get a scaffold)
         # ID-typed dimensions are skipped at every stage — they don't
         # have value_domains in practice and produce misleading scaffolds.
-        config = runtime.config
+        config = runtime._config
         candidate_dim_ids: list[str] = []
         for entry in list(card.get("recommended_filters", []) or []):
             dim_id = str(
@@ -3594,20 +3594,20 @@ def _choose_group_dimensions(
     ]
     if chosen_group_dim:
         return [chosen_group_dim]
-    selection = _selection_context(runtime.config, query)
+    selection = _selection_context(runtime._config, query)
     group_dims: list[str] = []
     covered_terms: set[str] = set()
     for phrase, dim_id in keyword_dimensions:
-        if phrase in text and dim_id in _config_maps(runtime.config)["dimensions"]:
+        if phrase in text and dim_id in _config_maps(runtime._config)["dimensions"]:
             availability = _availability_for_object(
-                runtime.config, selection["root_entity"], dim_id, "dimension"
+                runtime._config, selection["root_entity"], dim_id, "dimension"
             )
             if availability["available"]:
                 group_dims.append(dim_id)
                 covered_terms.update(_tokenize(phrase))
     for dimension_terms in _requested_grouping_terms(text):
         if _is_temporal_grouping_term(dimension_terms) or _term_matches_value_domain(
-            runtime.config, dimension_terms
+            runtime._config, dimension_terms
         ):
             continue
         dimension_tokens = set(_tokenize(dimension_terms))
@@ -3637,7 +3637,7 @@ def _choose_group_dimensions(
         chosen: str = ""
         for row in matched_rows:
             availability = _availability_for_object(
-                runtime.config, selection["root_entity"], str(row["id"]), "dimension"
+                runtime._config, selection["root_entity"], str(row["id"]), "dimension"
             )
             if availability["available"]:
                 chosen = str(row["id"])

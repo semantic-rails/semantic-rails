@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .cache import package_fingerprint
+from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 
 MANIFEST_DIR = ".compiled"
 MANIFEST_FILE = "manifest.json"
@@ -68,7 +68,13 @@ def write_manifest(runtime, *, variants: tuple[tuple[str, str], ...] = DEFAULT_V
     # Local import to avoid a top-level cycle (metadata imports cache).
     from .metadata import catalog_payload
 
-    fingerprint = package_fingerprint(runtime.source_path)
+    with runtime.request_scope():
+        return _write_loaded_manifest(runtime, variants=variants, catalog_payload=catalog_payload)
+
+
+def _write_loaded_manifest(runtime, *, variants, catalog_payload) -> Path:
+    snapshot = runtime.snapshot
+    fingerprint = snapshot.source_fingerprint
     catalogs: dict[str, dict[str, Any]] = {}
     for view, verbosity in variants:
         key = f"{view}|{verbosity}"
@@ -81,6 +87,9 @@ def write_manifest(runtime, *, variants: tuple[tuple[str, str], ...] = DEFAULT_V
         "package_id": runtime.package_id,
         "source_path": runtime.source_path,
         "fingerprint": fingerprint,
+        "semantic_fingerprint": snapshot.semantic_fingerprint,
+        "provenance": dict(snapshot.provenance),
+        "source_kind": snapshot.source_kind,
         "variants": [list(v) for v in variants],
         "catalogs": catalogs,
     }
@@ -94,7 +103,9 @@ def write_manifest(runtime, *, variants: tuple[tuple[str, str], ...] = DEFAULT_V
     return manifest_path(runtime.source_path)
 
 
-def load_manifest(source_path: str) -> dict[str, Any] | None:
+def load_manifest(
+    source_path: str, *, snapshot: LoadedPackageSnapshot | None = None
+) -> dict[str, Any] | None:
     """Load a manifest if present AND its fingerprint matches sources.
 
     Returns ``None`` if disabled (``SR_DEV_NO_MANIFEST``), missing, or
@@ -116,8 +127,12 @@ def load_manifest(source_path: str) -> dict[str, Any] | None:
         return None
     if payload.get("schema_version") != 1:
         return None
-    current = package_fingerprint(source_path)
-    if payload.get("fingerprint") != current:
+    snapshot = snapshot or load_package_snapshot(source_path)
+    if (
+        payload.get("fingerprint") != snapshot.source_fingerprint
+        or payload.get("semantic_fingerprint") != snapshot.semantic_fingerprint
+        or payload.get("source_kind") != snapshot.source_kind
+    ):
         return None
     catalogs = payload.get("catalogs", {}) or {}
     payload["catalog_json"] = {

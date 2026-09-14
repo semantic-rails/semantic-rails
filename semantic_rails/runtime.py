@@ -68,6 +68,7 @@ from .errors import SemanticLayerError, query_execution_error
 from .expressions import expr_to_dict
 from .fanout import build_hop_profile
 from .ir import ValidationReport
+from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects
 from .registry import Registry
 from .request_context import context_from_policy_context, request_context_payload
@@ -1323,7 +1324,7 @@ class Runtime:
         # resolves relative assets against its own package root so a
         # relative default_db never lands in the repo checkout.
         self._init_loaded(
-            config=get_package_config(package_id),
+            snapshot=load_package_snapshot(source_path),
             package_id=package_id,
             source_path=source_path,
             prefer_package_root_assets=not project_managed_source(source_path),
@@ -1332,9 +1333,8 @@ class Runtime:
     @classmethod
     def from_path(cls, path: str) -> Runtime:
         source_path = os.path.abspath(path)
-        return cls.from_config(
-            load_package_config(source_path),
-            source_path=source_path,
+        return cls.from_snapshot(
+            load_package_snapshot(source_path),
             prefer_package_root_assets=not _is_repo_managed_source(source_path),
         )
 
@@ -1347,7 +1347,21 @@ class Runtime:
         package_id: str = "",
         prefer_package_root_assets: bool | None = None,
     ) -> Runtime:
-        source_path = os.path.abspath(source_path)
+        return cls.from_snapshot(
+            LoadedPackageSnapshot.from_config(config, source_path=os.path.abspath(source_path)),
+            package_id=package_id,
+            prefer_package_root_assets=prefer_package_root_assets,
+        )
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: LoadedPackageSnapshot,
+        *,
+        package_id: str = "",
+        prefer_package_root_assets: bool | None = None,
+    ) -> Runtime:
+        source_path = snapshot.source_path
         prefer_assets = (
             not _is_repo_managed_source(source_path)
             if prefer_package_root_assets is None
@@ -1355,7 +1369,7 @@ class Runtime:
         )
         runtime = cls.__new__(cls)
         runtime._init_loaded(
-            config=config,
+            snapshot=snapshot,
             package_id=package_id,
             source_path=source_path,
             prefer_package_root_assets=prefer_assets,
@@ -1363,17 +1377,24 @@ class Runtime:
         return runtime
 
     def _init_loaded(
-        self, *, config, package_id: str, source_path: str, prefer_package_root_assets: bool
+        self,
+        *,
+        snapshot: LoadedPackageSnapshot,
+        package_id: str,
+        source_path: str,
+        prefer_package_root_assets: bool,
     ) -> None:
+        self._snapshot = snapshot
+        config = snapshot.config
         self.package_id = package_id or config.package.package_id
         self.source_path = source_path
         self.package_root = package_root_for_source(source_path)
         self.prefer_package_root_assets = prefer_package_root_assets
-        self.config = config
-        self.registry = Registry(self.config)
-        self.warehouse = str(self.config.package.warehouse or "duckdb").strip().lower() or "duckdb"
+        self._config: Any = config
+        self.registry = Registry(snapshot.config)
+        self.warehouse = str(self._config.package.warehouse or "duckdb").strip().lower() or "duckdb"
         self.db_path = (
-            self._resolve_asset_path(self.config.package.default_db, kind="default_db")
+            self._resolve_asset_path(self._config.package.default_db, kind="default_db")
             if self.warehouse == "duckdb"
             else ""
         )
@@ -1394,13 +1415,22 @@ class Runtime:
         # adapter creation, execution, replacement, and close are serialized
         # until a future session-pool abstraction can provide per-task handles.
         self._query_lock = RLock()
-        self._package_fingerprint = package_fingerprint(source_path)
+        self._package_fingerprint = snapshot.source_fingerprint
         self._compile_cache: CompiledSqlCache = LruCompiledSqlCache(
             maxsize=int(os.environ.get("SEMANTIC_RAILS_COMPILE_CACHE_SIZE", "512"))
         )
         # Lazily loaded on first access; None = not yet looked up,
         # False = looked up and absent/stale (don't retry this call).
         self._manifest: dict[str, Any] | None | bool = None
+
+    @property
+    def snapshot(self) -> LoadedPackageSnapshot:
+        return self._snapshot
+
+    @property
+    def config(self):
+        """An isolated configuration view; use from_config or reload to replace semantics."""
+        return self.snapshot.config
 
     @contextlib.contextmanager
     def request_scope(self):
@@ -1457,7 +1487,7 @@ class Runtime:
         return repo_candidate
 
     def _expected_tables(self) -> set[str]:
-        return {str(row.table) for row in self.config.entities if str(row.table).strip()}
+        return {str(row.table) for row in self._config.entities if str(row.table).strip()}
 
     def _db_matches_package(self) -> bool:
         if self.warehouse != "duckdb":
@@ -1481,7 +1511,7 @@ class Runtime:
     def _ensure_db(self) -> None:
         if self.warehouse != "duckdb":
             return
-        seed = self.config.package.seed
+        seed = self._config.package.seed
         if self._db_matches_package():
             return
         src = self._resolve_asset_path(seed.source, kind="seed_source")
@@ -1539,8 +1569,9 @@ class Runtime:
             )
         with self._state_gate.write(), self._query_lock, self._cache_lock:
             previous_fingerprint = self._package_fingerprint
-            new_config = load_package_config(self.source_path)
-            new_fingerprint = package_fingerprint(self.source_path)
+            new_snapshot = load_package_snapshot(self.source_path)
+            new_config = new_snapshot.config
+            new_fingerprint = new_snapshot.source_fingerprint
             # Replace cached state. Drop the adapter so it reconnects with
             # the refreshed connection config on the next query.
             if self.adapter is not None:
@@ -1548,13 +1579,14 @@ class Runtime:
                 with contextlib.suppress(Exception):
                     self.adapter.close()
                 self.adapter = None
-            self.config = new_config
-            self.registry = Registry(self.config)
+            self._snapshot = new_snapshot
+            self._config = new_config
+            self.registry = Registry(new_snapshot.config)
             self.warehouse = (
-                str(self.config.package.warehouse or "duckdb").strip().lower() or "duckdb"
+                str(self._config.package.warehouse or "duckdb").strip().lower() or "duckdb"
             )
             self.db_path = (
-                self._resolve_asset_path(self.config.package.default_db, kind="default_db")
+                self._resolve_asset_path(self._config.package.default_db, kind="default_db")
                 if self.warehouse == "duckdb"
                 else ""
             )
@@ -1572,6 +1604,7 @@ class Runtime:
             "source_path": self.source_path,
             "previous_fingerprint": previous_fingerprint,
             "package_fingerprint": new_fingerprint,
+            "semantic_fingerprint": new_snapshot.semantic_fingerprint,
             "changed": previous_fingerprint != new_fingerprint,
         }
 
@@ -1584,7 +1617,7 @@ class Runtime:
             if self.adapter is None:
                 if self.warehouse == "duckdb":
                     self._ensure_db()
-                self.adapter = create_warehouse_adapter(self.config.package, db_path=self.db_path)
+                self.adapter = create_warehouse_adapter(self._config.package, db_path=self.db_path)
             return self.adapter
 
     def set_adapter(self, adapter: WarehouseAdapter) -> None:
@@ -1631,7 +1664,7 @@ class Runtime:
 
         with self._cache_lock:
             if self._manifest is None:
-                loaded = load_manifest(self.source_path)
+                loaded = load_manifest(self.source_path, snapshot=self.snapshot)
                 self._manifest = loaded if loaded is not None else False
         manifest = self._manifest
         if not isinstance(manifest, dict):
@@ -1647,7 +1680,7 @@ class Runtime:
             if self._catalog_cache is None:
                 dialect = dialect_for_warehouse(self.warehouse)
                 self._catalog_cache = {
-                    "package": asdict(self.config.package),
+                    "package": asdict(self._config.package),
                     "objects": [asdict(obj) for obj in self.registry.list_objects()],
                     "compiler": {
                         "dialect": dialect.name,
@@ -1667,7 +1700,7 @@ class Runtime:
                             "ratio_null_behavior": ["null_if_zero"],
                         },
                         "aggregate_relation_candidates": [
-                            asdict(row) for row in self.config.aggregate_relations
+                            asdict(row) for row in self._config.aggregate_relations
                         ],
                         "physical_plan_nodes": [
                             "Scan",
@@ -1697,7 +1730,7 @@ class Runtime:
 
         with self._cache_lock:
             if self._catalog_search_index is None:
-                self._catalog_search_index = CatalogSearchIndex.from_config(self.config)
+                self._catalog_search_index = CatalogSearchIndex.from_config(self._config)
             return self._catalog_search_index
 
     def resolve(self, term: str, *, kind: str = "") -> dict[str, Any]:
@@ -1709,7 +1742,7 @@ class Runtime:
                 obj_kind = str(obj.get("kind", ""))
                 if obj_kind in {"metric", "measure"}:
                     payload = dict(obj.get("payload", {}) or {})
-                    payload.update(_metric_payload(self.config, str(obj.get("id", "")), obj_kind))
+                    payload.update(_metric_payload(self._config, str(obj.get("id", "")), obj_kind))
                     obj["payload"] = payload
                     resolved = {**resolved, "object": obj}
                 self._resolve_cache[key] = deepcopy(resolved)
@@ -1730,7 +1763,7 @@ class Runtime:
             normalized_query=normalized,
             warehouse=self.warehouse,
             relation_profile=str(
-                self.config.package.connection.name or self.config.package.default_db or ""
+                self._config.package.connection.name or self._config.package.default_db or ""
             ),
             render_profile=str(
                 payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"
@@ -1757,7 +1790,7 @@ class Runtime:
                 "compile_stats": stats,
                 "explain": replace(cached.compiled["explain"], compile_stats=stats),
             }
-        compiled = compile_query(self.config, self.registry, payload)
+        compiled = compile_query(self._config, self.registry, payload)
         stats = {
             **dict(compiled.get("compile_stats", {}) or {}),
             "cache_hit": False,
@@ -1782,9 +1815,9 @@ class Runtime:
             refusal = _scope_refusal(payload)
             if refusal is not None:
                 raise refusal
-            object_ids = _query_object_ids(payload, self.config)
+            object_ids = _query_object_ids(payload, self._config)
             policy_effects = enforce_query_policies(
-                self.config,
+                self._config,
                 object_ids,
                 environment=str(policy_context.get("environment", "")),
                 audience=str(policy_context.get("audience", "")),
@@ -1801,21 +1834,21 @@ class Runtime:
                 explain=asdict(compiled["explain"]),
             )
             out = asdict(report)
-            freshness_rows = _freshness_by_leaf(self.config, compiled)
+            freshness_rows = _freshness_by_leaf(self._config, compiled)
             out["status"] = "ok"
-            out["warnings"] = _compiled_warnings(self.config, compiled, payload)
+            out["warnings"] = _compiled_warnings(self._config, compiled, payload)
             out["errors"] = []
             out["query"] = dict(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
             out["assumptions"] = []
-            out["methodology_hints"] = _methodology_hints(self.config, payload, compiled)
+            out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
             out["freshness_by_leaf"] = freshness_rows
             out["freshness_as_of"] = _freshness_as_of(freshness_rows)
             out["policy_effects"] = policy_effects
             out["request_context"] = request_context_payload(policy_context)
             out["provenance_summary"] = provenance_summary(
-                self.config, compiled["logical_plan"], policy_effects=policy_effects
+                self._config, compiled["logical_plan"], policy_effects=policy_effects
             )
             metadata = compile_response_metadata(self, payload, compiled)
             # validate has historically returned a curated subset of the
@@ -1839,7 +1872,7 @@ class Runtime:
                 out, verbosity=verbosity, sql_profile=sql_profile, kind="validate"
             )
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self.config)
+            exc = _enrich_runtime_error(exc, self._config)
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
                 version=2,
@@ -1882,9 +1915,9 @@ class Runtime:
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
-        object_ids = _query_object_ids(payload, self.config)
+        object_ids = _query_object_ids(payload, self._config)
         policy_effects = enforce_query_policies(
-            self.config,
+            self._config,
             object_ids,
             environment=str(policy_context.get("environment", "")),
             audience=str(policy_context.get("audience", "")),
@@ -1894,27 +1927,27 @@ class Runtime:
         try:
             compiled = self._compile(payload, policy_context=policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self.config) from exc
-        freshness_rows = _freshness_by_leaf(self.config, compiled)
+            raise _enrich_runtime_error(exc, self._config) from exc
+        freshness_rows = _freshness_by_leaf(self._config, compiled)
         out = {
             "ok": True,
             "status": "ok",
             "errors": [],
-            "warnings": _compiled_warnings(self.config, compiled, payload),
+            "warnings": _compiled_warnings(self._config, compiled, payload),
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
             "assumptions": [],
-            "methodology_hints": _methodology_hints(self.config, payload, compiled),
+            "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
             "policy_effects": policy_effects,
             "request_context": request_context_payload(policy_context),
             "provenance_summary": provenance_summary(
-                self.config, compiled["logical_plan"], policy_effects=policy_effects
+                self._config, compiled["logical_plan"], policy_effects=policy_effects
             ),
             "hop_profile": build_hop_profile(
-                self.config,
+                self._config,
                 root_entity=compiled["logical_plan"].root_entity,
                 selected_paths=compiled["logical_plan"].selected_paths,
                 candidate_paths=compiled["logical_plan"].candidate_paths,
@@ -1938,9 +1971,9 @@ class Runtime:
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
-        object_ids = _query_object_ids(payload, self.config)
+        object_ids = _query_object_ids(payload, self._config)
         policy_effects = enforce_query_policies(
-            self.config,
+            self._config,
             object_ids,
             environment=str(policy_context.get("environment", "")),
             audience=str(policy_context.get("audience", "")),
@@ -1950,8 +1983,8 @@ class Runtime:
         try:
             compiled = self._compile(payload, policy_context=policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self.config) from exc
-        freshness_rows = _freshness_by_leaf(self.config, compiled)
+            raise _enrich_runtime_error(exc, self._config) from exc
+        freshness_rows = _freshness_by_leaf(self._config, compiled)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
         # from the request envelope through to the warehouse adapter. Hosted
         # operators use this to enforce per-tenant policies without forking;
@@ -2017,19 +2050,19 @@ class Runtime:
             "explain": asdict(compiled["explain"]),
             "status": "ok",
             "errors": [],
-            "warnings": [*_compiled_warnings(self.config, compiled, payload), *limits_warnings],
+            "warnings": [*_compiled_warnings(self._config, compiled, payload), *limits_warnings],
             "recovery_hints": [],
             "assumptions": [],
-            "methodology_hints": _methodology_hints(self.config, payload, compiled),
+            "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
             "policy_effects": policy_effects,
             "request_context": request_context_payload(policy_context),
             "provenance_summary": provenance_summary(
-                self.config, compiled["logical_plan"], policy_effects=policy_effects
+                self._config, compiled["logical_plan"], policy_effects=policy_effects
             ),
             "hop_profile": build_hop_profile(
-                self.config,
+                self._config,
                 root_entity=compiled["logical_plan"].root_entity,
                 selected_paths=compiled["logical_plan"].selected_paths,
                 candidate_paths=compiled["logical_plan"].candidate_paths,
@@ -2095,7 +2128,7 @@ class Runtime:
                 with self._query_lock:
                     actual_data_coverage = _data_coverage_probe(
                         self._get_adapter(),
-                        self.config,
+                        self._config,
                         root_entity=root_entity,
                         temporal_role=str(time_block.get("temporal_role", "") or ""),
                         limits=limits,
@@ -2165,7 +2198,7 @@ class Runtime:
         self, segment_id: str, context: dict[str, Any]
     ) -> list[dict[str, Any]]:
         return enforce_query_policies(
-            self.config,
+            self._config,
             [segment_id],
             environment=str(context.get("environment", "")),
             audience=str(context.get("audience", "")),
@@ -2180,7 +2213,7 @@ class Runtime:
         context = context_from_policy_context(policy_context).to_policy_context()
         try:
             segment_policy_effects = self._segment_policy_effects(segment_id, context)
-            normalized = normalize_segment(self.config, segment_id)
+            normalized = normalize_segment(self._config, segment_id)
             derived_query = build_segment_query(normalized, include_preview_dimensions=True)
             if context:
                 derived_query["policy_context"] = context
@@ -2201,7 +2234,7 @@ class Runtime:
             validation["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return validation
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self.config)
+            exc = _enrich_runtime_error(exc, self._config)
             # Route through `exception_issue` so the soft-fail envelope
             # carries the same `recovery_hints` + `closest_matches` +
             # `severity/stage/object_ids/...` fields that the MCP error
@@ -2228,7 +2261,7 @@ class Runtime:
     ) -> dict[str, Any]:
         context = context_from_policy_context(policy_context).to_policy_context()
         segment_policy_effects = self._segment_policy_effects(segment_id, context)
-        normalized = normalize_segment(self.config, segment_id)
+        normalized = normalize_segment(self._config, segment_id)
         derived_query = build_segment_query(normalized, include_preview_dimensions=True)
         if context:
             derived_query["policy_context"] = context
@@ -2263,7 +2296,7 @@ class Runtime:
         limit = max(1, min(int(limit), max_rows if max_rows > 0 else 1_000))
         context = context_from_policy_context(policy_context).to_policy_context()
         segment_policy_effects = self._segment_policy_effects(segment_id, context)
-        normalized = normalize_segment(self.config, segment_id)
+        normalized = normalize_segment(self._config, segment_id)
         preview_query = build_segment_query(
             normalized, include_preview_dimensions=True, limit=limit
         )
@@ -2274,8 +2307,8 @@ class Runtime:
         query_policy_effects: list[dict[str, Any]] = []
         for derived in (preview_query, membership_query):
             for effect in enforce_query_policies(
-                self.config,
-                _query_object_ids(derived, self.config),
+                self._config,
+                _query_object_ids(derived, self._config),
                 environment=str(context.get("environment", "")),
                 audience=str(context.get("audience", "")),
                 roles=context.get("roles", []),
@@ -2283,8 +2316,8 @@ class Runtime:
             ):
                 if effect not in query_policy_effects:
                     query_policy_effects.append(effect)
-        preview_compiled = compile_query(self.config, self.registry, preview_query)
-        membership_compiled = compile_query(self.config, self.registry, membership_query)
+        preview_compiled = compile_query(self._config, self.registry, preview_query)
+        membership_compiled = compile_query(self._config, self.registry, membership_query)
         adapter = self._get_adapter()
         try:
             with self._query_lock:

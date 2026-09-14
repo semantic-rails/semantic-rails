@@ -349,7 +349,8 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
     set_audit_sink(sink)
     monkeypatch.setenv("SEMANTIC_RAILS_AUDIT_LOGS", "1")
     app = SemanticLayerASGIApp(package_id="jaffle_shop")
-    app.runtime.config.semantic_policies.append(
+    config = app.runtime.config
+    config.semantic_policies.append(
         SemanticPolicyConfig(
             id="policy.test.hide_segment_from_ops",
             kind="object_visibility",
@@ -358,6 +359,15 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
             action="hidden",
         )
     )
+    old_runtime = app.runtime
+    app.runtime = type(old_runtime).from_config(
+        config,
+        source_path=old_runtime.source_path,
+        package_id=old_runtime.package_id,
+        prefer_package_root_assets=old_runtime.prefer_package_root_assets,
+    )
+    old_runtime.close()
+    app.mcp_adapter.runtime = app.runtime
     try:
         status, _, body = asyncio.run(
             _asgi_mcp_call(

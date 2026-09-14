@@ -39,14 +39,14 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     threshold = _threshold_from_text(text)
     if threshold is None:
         return None
-    entity = _qualifying_entity(runtime.config, terms, text=text)
+    entity = _qualifying_entity(runtime._config, terms, text=text)
     if entity is None:
         return None
 
     target_terms = _target_measure_terms(text, terms)
     if not target_terms:
         return None
-    target_measure = _preferred_measure(runtime.config, target_terms)
+    target_measure = _preferred_measure(runtime._config, target_terms)
     if target_measure is None or not target_measure.default_temporal_role:
         return None
 
@@ -54,7 +54,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     predicate_term_groups = _predicate_metric_terms(text, terms, target_terms)
     for metric_terms in predicate_term_groups:
         target = _preferred_predicate_target(
-            runtime.config, metric_terms, target_measure=target_measure
+            runtime._config, metric_terms, target_measure=target_measure
         )
         if target is not None and getattr(target, "id", "") not in {
             getattr(row, "id", "") for row in predicate_targets
@@ -89,7 +89,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             ],
             "time": time_spec,
         }
-        group_by = _maybe_group_by(runtime.config, text, target_terms=target_terms)
+        group_by = _maybe_group_by(runtime._config, text, target_terms=target_terms)
         if group_by:
             placeholder_query["group_by"] = group_by
         if is_top:
@@ -164,7 +164,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         "aggregation": _aggregation_from_text(text, terms, target_measure),
         "predicates": predicates,
     }
-    product_filter = _product_filter(runtime.config, "account") if "arr" in target_terms else None
+    product_filter = _product_filter(runtime._config, "account") if "arr" in target_terms else None
     if product_filter is not None:
         expression["where"] = [product_filter]
 
@@ -182,7 +182,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         "time": time_spec,
         "metric_filters": metric_filters,
     }
-    group_by = _maybe_group_by(runtime.config, text, target_terms=target_terms)
+    group_by = _maybe_group_by(runtime._config, text, target_terms=target_terms)
     if group_by:
         query["group_by"] = group_by
     if is_top:
@@ -198,7 +198,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         _resolved(entity),
     ]
     if group_by:
-        dim = _object_by_id(runtime.config.dimensions, group_by[0])
+        dim = _object_by_id(runtime._config.dimensions, group_by[0])
         if dim is not None:
             resolved.append(_resolved(dim))
     return RuntimeCompositionDraft(

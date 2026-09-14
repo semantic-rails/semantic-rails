@@ -26,7 +26,7 @@ from ._protocol import IntentPattern
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
-    config = runtime.config
+    config = runtime._config
     wants_pct = "%" in str(text or "") or bool({"pct", "share", "ratio"} & terms)
     if not wants_pct or not {"sms", "push"} <= terms:
         return None

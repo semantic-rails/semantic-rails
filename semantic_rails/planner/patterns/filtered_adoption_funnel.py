@@ -30,10 +30,10 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if not wants_adoption:
         return None
     metric = _object_by_id(
-        runtime.config.metric_recipes, "metric.adoption.signup_to_send_conversion_rate_28d"
+        runtime._config.metric_recipes, "metric.adoption.signup_to_send_conversion_rate_28d"
     )
     if metric is None:
-        metric = _metric(runtime.config, ["signup", "send", "adoption", "funnel"])
+        metric = _metric(runtime._config, ["signup", "send", "adoption", "funnel"])
     if metric is None:
         return None
 
@@ -48,10 +48,10 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if getattr(metric, "temporal_role", ""):
         query["time"] = _time_spec(metric.temporal_role, text)
 
-    group_by = _maybe_group_by(runtime.config, text)
-    entity = _qualifying_entity(runtime.config, terms, text=text)
+    group_by = _maybe_group_by(runtime._config, text)
+    entity = _qualifying_entity(runtime._config, terms, text=text)
     if not group_by and entity is not None and entity.id == "entity.jaffle_store":
-        dim = _dimension(runtime.config, ["store", "name"])
+        dim = _dimension(runtime._config, ["store", "name"])
         group_by = [dim.id] if dim is not None else []
     if group_by:
         query["group_by"] = group_by
@@ -65,11 +65,11 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         and ("rate" in terms or "pct" in terms)
     ):
         predicate_metric = _object_by_id(
-            runtime.config.metric_recipes,
+            runtime._config.metric_recipes,
             "metric.sales.session_to_order_conversion_rate_7d_same_store",
         )
         if predicate_metric is None:
-            predicate_metric = _metric(runtime.config, ["session", "order", "conversion", "rate"])
+            predicate_metric = _metric(runtime._config, ["session", "order", "conversion", "rate"])
         if predicate_metric is not None:
             op, value = threshold
             query["metric_filters"] = [
@@ -94,7 +94,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if entity is not None:
         resolved.append(_resolved(entity))
     for dim_id in group_by:
-        dim = _object_by_id(runtime.config.dimensions, dim_id)
+        dim = _object_by_id(runtime._config.dimensions, dim_id)
         if dim is not None:
             resolved.append(_resolved(dim))
 

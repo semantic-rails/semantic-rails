@@ -412,6 +412,8 @@ def compile_response_metadata(
     dialect = dialect_for_warehouse(runtime.warehouse)
 
     out: dict[str, Any] = {
+        "semantic_fingerprint": runtime.snapshot.semantic_fingerprint,
+        "source_fingerprint": runtime.snapshot.source_fingerprint,
         "sql_profile": sql_profile,
         "warehouse": runtime.warehouse,
         "dialect": dialect.name,
@@ -426,17 +428,17 @@ def compile_response_metadata(
         # filter step has it to reference if asked.
         return out
 
-    columns = output_columns(runtime.config, compiled)
+    columns = output_columns(runtime._config, compiled)
     if verbosity == "compact":
         out["output_columns"] = _strip_output_column_lineage(columns)
-        out["trace"] = semantic_trace(runtime.config, compiled)
+        out["trace"] = semantic_trace(runtime._config, compiled)
         return out
 
     # verbosity == "full"
     out["output_columns"] = columns
-    out["trace"] = semantic_trace(runtime.config, compiled)
+    out["trace"] = semantic_trace(runtime._config, compiled)
     out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
-    out["semantic_summary"] = semantic_summary(runtime.config, compiled)
+    out["semantic_summary"] = semantic_summary(runtime._config, compiled)
     out["performance_plan"] = asdict(compiled["performance_plan"])
     out["physical_plan"] = asdict(compiled["physical_plan"])
     return out
