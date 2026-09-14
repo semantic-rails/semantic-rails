@@ -26,7 +26,20 @@ _SOURCE_EXCLUDED_DIRS = {".git", ".pytest_cache", ".uv-cache", "__pycache__", ".
 
 def _source_files(path: str) -> list[str]:
     if os.path.isfile(path):
-        return [path]
+        # Single-file packages execute sibling examples/tests just like directory
+        # packages. Bind those inputs too, without absorbing unrelated packages.
+        root = os.path.dirname(path)
+        return sorted(
+            [
+                path,
+                *(
+                    source
+                    for companion in ("examples", "tests")
+                    if os.path.isdir(os.path.join(root, companion))
+                    for source in _source_files(os.path.join(root, companion))
+                ),
+            ]
+        )
     files: list[str] = []
     for root, dirs, names in os.walk(path):
         dirs[:] = sorted(name for name in dirs if name not in _SOURCE_EXCLUDED_DIRS)
@@ -76,7 +89,8 @@ def capture_package_source(path: str | Path) -> CapturedSource:
 
     def read() -> tuple[tuple[str, bytes], ...]:
         return tuple(
-            (os.path.relpath(name, root), Path(name).read_bytes()) for name in _source_files(source)
+            (Path(name).relative_to(root).as_posix(), Path(name).read_bytes())
+            for name in _source_files(source)
         )
 
     for _ in range(3):
