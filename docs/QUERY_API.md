@@ -165,6 +165,63 @@ The Query IR, policy engine, and HTTP envelope do not change — the resolver is
 integration seam. The default `HeaderPolicyContextResolver` remains the OSS behavior so a
 single-user local install needs no additional configuration.
 
+### Restricted Metric Grants
+
+An identity-derived resolver may additionally set `RequestContext.metric_allowlist`
+and `dimension_allowlist` to tuples of canonical semantic IDs. `metric_allowlist=None`
+retains unrestricted local behavior; an empty tuple denies every metric. With an
+explicit metric allowlist, missing or empty dimension grants allow no caller-selected
+dimensions. Dimension grants may contain dimension and temporal-role IDs. Neither
+grant list is returned in the public `request_context` envelope. Roles and audience
+continue to mean business policy attributes; hosts enforce operation permissions
+separately before invoking the engine.
+
+Restricted queries select explicit metric references, such as
+`{"expression": {"metric": "metric.sales.customer_count"}, "as": "customers"}`.
+The allowed recipe can read its internal dependencies, subject to package access
+policies. Callers cannot select those measures or columns independently. Grouping,
+filters, and explicit time roles require corresponding dimension grants. Raw measures,
+column/conditional aggregates, runtime expression composition, metric filters,
+temporal-role overrides, and dimension-only queries are unavailable in this bounded
+contract. Denial occurs before compilation or warehouse access, including cache hits.
+
+Catalog, discovery, inspection, and build options return a small projection containing
+only visible metric/dimension/temporal-role IDs and labels. Restricted planning matches
+explicit visible names, labels, or IDs, emits a direct metric reference, and can include
+explicit granted dimensions. General pattern composition, segment operations, and
+valid-value lookups are unavailable for restricted grants. Plans contain portable Query
+IR; each subsequent request must independently resolve its trusted grants. Restricted
+compile/query results retain SQL and result rows but omit package-wide diagnostics,
+dependency descriptions, and related-object suggestions. Requests cannot replace the
+resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
+
+Restricted responses reuse the ordinary catalog formatter and output-column builder.
+Compact catalogs retain the 200-row cap per kind, `counts`, `counts_total`, and
+`truncated` indicators; use `verbosity=full` or `search`/`kind` filters to retrieve the
+remaining visible objects. Discovery respects `limit` and returns runnable metric
+`starter_query_patch` values. Catalog/discovery do not offer cursor or offset paging;
+query `limit` bounds rows, while the separately documented valid-values `offset` API
+remains unavailable under restricted grants. Output descriptors retain `field`,
+`semantic_id`, `display_label`, `sql_alias`, and `type`, including for empty results,
+but omit lineage. MCP `row_format=columns` therefore retains its schema on zero rows.
+
+For example, after discovering the granted Customer count metric and Customer type
+dimension, `plan("Show me customer count by customer type")` produces portable Query IR
+that can pass through validate, compile, and execute. Additional unsupported intent
+clauses return an unrealizable plan. This is a bounded planning contract, not full
+parity with the general expression and segment workflows.
+
+The full metadata builders and planner cannot simply run before filtering their output:
+they enumerate all package measures and recipes, emit related-object references and
+diagnostic candidates, and may lower a named metric to an independently queryable
+measure. Restricted operations therefore project candidates before planning and use
+the shared formatter only after authorization. Compilation still uses the same engine
+and immutable package; it is never performed against a truncated dependency graph.
+Context-aware capabilities advertise the available metric-reference shape and omit
+package connection, seed, and filesystem settings. Authorization errors remain opaque;
+safe operational codes such as `QUERY_EXECUTION_ERROR` remain distinguishable without
+returning warehouse or package-generated error details.
+
 ### Raw SQL In Error Envelopes
 
 `QUERY_EXECUTION_ERROR` envelopes redact the rendered SQL by default (sha256 + outline +

@@ -408,6 +408,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         input_schema=_schema(
             {
                 "request_id": {"type": "string"},
+                "policy_context": POLICY_CONTEXT_SCHEMA,
             }
         ),
     ),
@@ -1696,7 +1697,9 @@ class SemanticLayerMCPAdapter:
     def _handle_capabilities(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(
             arguments,
-            lambda args: capabilities_payload(self.runtime),
+            lambda args: capabilities_payload(
+                self.runtime, policy_context=_policy_context_payload(args)
+            ),
         )
 
     def _handle_catalog(self, arguments: dict[str, Any]) -> dict[str, Any]:

@@ -180,8 +180,10 @@ def runtime_request_scope(operation: Callable[..., Any]) -> Callable[..., Any]:
 
     @wraps(operation)
     def wrapped(runtime: Runtime, *args: Any, **kwargs: Any) -> Any:
+        from .resource_access import run_authorized_operation
+
         with runtime.request_scope():
-            return operation(runtime, *args, **kwargs)
+            return run_authorized_operation(operation, runtime, args, kwargs)
 
     return wrapped
 
@@ -2064,7 +2066,7 @@ class Runtime:
                 or time_block.get("range")
                 or time_block.get("temporal_role")
             )
-            if has_time_filter:
+            if has_time_filter and policy_context.get("metric_allowlist") is None:
                 root_entity = ""
                 provenance = out.get("provenance_summary") or {}
                 if isinstance(provenance, dict):
