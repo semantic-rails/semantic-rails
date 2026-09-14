@@ -352,7 +352,10 @@ The framed source fingerprint includes relative source paths and bytes. The
 semantic fingerprint identifies the canonical parsed semantics, excluding
 connection settings, seed configuration, and local database paths. Entity relations
 and warehouse semantics remain significant. In-memory configs have their own
-identity and make no claim to match files on disk. Compiled manifests include both
+identity that preserves exact typed-list ordering and make no claim to match files
+on disk. When several entities share a physical table, a measure binds its own
+entity; other table-only references require an explicit entity instead of choosing
+whichever entry appeared last. Compiled manifests include both
 identities and source provenance; stale artifacts fall back to the loaded runtime.
 Package checks reject edits during validation, and artifact builds verify captured
 source bytes against the validated manifest before writing them.
