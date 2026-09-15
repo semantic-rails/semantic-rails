@@ -269,3 +269,13 @@ def test_definitions_share_snapshot_canonicalization_for_metadata(portable):
     artifact = export_metric_portability(snapshot, namespace=corpus["namespace"])
     _validate(artifact)
     assert artifact["metrics"][0]["definition"]["meta"]["reviewed_at"] == "2026-01-01"
+
+
+def test_kindless_metric_inputs_and_nested_labels_are_classified_correctly():
+    from semantic_rails.contracts.metric_portability import _metric_refs, _strip_presentation
+
+    assert _metric_refs({"filter": {"input": {"metric": "metric.a.b"}}}) == {"metric.a.b"}
+    assert _metric_refs({"kind": "metric", "metric": "metric.a.c"}) == {"metric.a.c"}
+    assert _metric_refs({"input": {"measure": "measure.x", "metric": "ignored"}}) == set()
+    row = {"id": "vd", "label": "Store", "values": [{"value": "a", "label": "A", "aliases": ["x"]}]}
+    assert _strip_presentation(row) == {"id": "vd", "values": [{"value": "a"}]}

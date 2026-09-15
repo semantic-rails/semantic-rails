@@ -828,7 +828,7 @@ def main(argv: list[str] | None = None) -> int:
     for required_release_command in (
         "uv run python scripts/benchmark_plan.py --gate --output dist/agentic-governance-scorecard.json --markdown-output dist/agentic-governance-scorecard.md",
         "uv run semantic-rails check --package jaffle_shop --artifact dist/jaffle_shop.semantic-rails.tar.gz",
-        "uv build --out-dir dist",
+        "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD) uv build --out-dir dist",
         "uv run python scripts/verify_package_distribution.py --dist-dir dist --no-build",
         "uv run python scripts/verify_release_readiness.py",
     ):
@@ -839,7 +839,7 @@ def main(argv: list[str] | None = None) -> int:
 
     publish = read(".github/workflows/publish.yml")
     for required_publish_marker in (
-        "uv build --out-dir dist",
+        "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD) uv build --out-dir dist",
         "scripts/verify_package_distribution.py --dist-dir dist --no-build",
         "scripts/verify_published_release.py",
         "cp release-assets/python/* schemas/*.json release-assets/github/",
