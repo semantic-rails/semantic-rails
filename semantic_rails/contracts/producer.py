@@ -9,15 +9,12 @@ framework-owned ``binding`` section.
 from __future__ import annotations
 
 import ast
-import hashlib
-import json
 from collections.abc import Mapping
-from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
 from semantic_rails import __version__
-from semantic_rails.config import _load_package_source, load_package_config, normalize_package
+from semantic_rails.config import LoadedPackageSnapshot, load_package_snapshot
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import expr_to_dict, parse_config_expression
 
@@ -39,32 +36,9 @@ _DIMENSION_TYPES = {
 }
 
 
-def _canonicalize(value: Any) -> Any:
-    """Return a deterministic JSON-compatible representation.
-
-    Object collections emitted by the loader are canonicalized by ``id`` so
-    moving equivalent definitions between project files does not change the
-    semantic fingerprint. Other lists retain order because order can be
-    meaningful (for example relationship paths and case-expression branches).
-    """
-
-    if is_dataclass(value):
-        value = asdict(value)  # type: ignore[arg-type]
-    if isinstance(value, Mapping):
-        return {str(key): _canonicalize(item) for key, item in sorted(value.items())}
-    if isinstance(value, (list, tuple)):
-        items = [_canonicalize(item) for item in value]
-        if items and all(isinstance(item, dict) and item.get("id") for item in items):
-            return sorted(items, key=lambda item: str(item["id"]))
-        return items
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
-
-
-def _load_validated_config(path: str | Path) -> Any:
+def _load_validated_snapshot(path: str | Path | LoadedPackageSnapshot) -> LoadedPackageSnapshot:
     try:
-        return load_package_config(str(path))
+        return load_package_snapshot(path)
     except SemanticLayerError:
         raise
     except (KeyError, TypeError, ValueError) as exc:
@@ -79,20 +53,7 @@ def _load_validated_config(path: str | Path) -> Any:
         ) from exc
 
 
-def _semantic_snapshot(path: str | Path) -> dict[str, Any]:
-    config = _load_validated_config(path)
-    snapshot = _canonicalize(config)
-    # Physical connection and seed locators are deployment configuration, not
-    # semantic meaning. Excluding them prevents a credential-env-var rename or
-    # local database path from invalidating every dbt/SQLMesh contract.
-    package = dict(snapshot.get("package", {}) or {})
-    for key in ("connection", "default_db", "seed"):
-        package.pop(key, None)
-    snapshot["package"] = package
-    return snapshot
-
-
-def semantic_contract_fingerprint(path: str | Path) -> str:
+def semantic_contract_fingerprint(path: str | Path | LoadedPackageSnapshot) -> str:
     """Return the engine-owned semantic fingerprint for a project.
 
     The digest is SHA-256 over canonical JSON of the *loaded* PackageConfig,
@@ -102,13 +63,7 @@ def semantic_contract_fingerprint(path: str | Path) -> str:
     configuration changes.
     """
 
-    encoded = json.dumps(
-        _semantic_snapshot(path),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+    return _load_validated_snapshot(path).semantic_fingerprint
 
 
 def _expression_columns(raw: Any) -> set[str]:
@@ -352,7 +307,7 @@ def _resources_from_normalized(
     return resources
 
 
-def export_semantic_contract(path: str | Path) -> dict[str, Any]:
+def export_semantic_contract(path: str | Path | LoadedPackageSnapshot) -> dict[str, Any]:
     """Export a framework-neutral validation contract from a project.
 
     ``path`` may name a split project directory or a single-file package.
@@ -362,10 +317,10 @@ def export_semantic_contract(path: str | Path) -> dict[str, Any]:
     engine-specific envelope.
     """
 
-    source = str(Path(path).expanduser().resolve())
-    config = _load_validated_config(source)
-    authored = _load_package_source(source)
-    normalized = normalize_package(authored)
+    snapshot = _load_validated_snapshot(path)
+    config = snapshot.config
+    authored = snapshot.authored
+    normalized = snapshot.normalized
     package_raw = dict(normalized.get("package", {}) or {})
     namespace = str(
         package_raw.get("namespace") or package_raw.get("id") or config.package.package_id
@@ -374,7 +329,7 @@ def export_semantic_contract(path: str | Path) -> dict[str, Any]:
         "package_id": config.package.package_id,
         "namespace": namespace,
         "package_schema_version": config.version,
-        "semantic_hash": semantic_contract_fingerprint(source),
+        "semantic_hash": snapshot.semantic_fingerprint,
         "resources": _resources_from_normalized(
             normalized,
             authored=authored,

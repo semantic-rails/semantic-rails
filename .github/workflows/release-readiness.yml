@@ -30,7 +30,7 @@ jobs:
       - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
       - run: uv run python scripts/benchmark_plan.py --gate --output dist/agentic-governance-scorecard.json --markdown-output dist/agentic-governance-scorecard.md
       - run: uv run semantic-rails check --package jaffle_shop --artifact dist/jaffle_shop.semantic-rails.tar.gz
-      - run: uv build --out-dir dist
+      - run: SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD) uv build --out-dir dist
       - run: uv run python scripts/verify_package_distribution.py --dist-dir dist --no-build
       - name: Verify release surface and tag/version agreement
         run: |

@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## Unreleased
 
+No unreleased changes.
+
+## 0.2.1 — 2026-09-15 — Authorized execution, immutable snapshots and metric portability
+
 ### Added
 
 - A packaged, versioned public contract bundle for package authoring, stable and

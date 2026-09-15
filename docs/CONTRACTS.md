@@ -13,6 +13,7 @@ of those exact released bytes, not an independently edited registry.
 | `package.v1.json` | Engine | Stable project/package major |
 | `query_ir.v1.json` | Engine | Stable Query IR v1 |
 | `query_ir.preview.v2.json` | Engine | Preview; may change before v2 |
+| `metric_portability.v1.json` | Engine | Stable read-only metric catalog for BI bindings |
 | `semantic_contract.v1.json` | Engine | Stable framework-neutral validation payload |
 | `validation_report.v1.json` | Engine | Stable cross-validator report envelope |
 | `http_api.v1.openapi.json` | Engine | Stable `/api/v1` operations and envelope |
@@ -50,6 +51,62 @@ binding schema composes with
 `https://semantic-rails.com/schemas/semantic_contract.v1.json` and narrows the
 extension for its framework. An integration must not independently parse
 Semantic Rails YAML or redefine `semantic_hash`.
+
+## Metric portability for BI consumers
+
+`export_metric_portability(path_or_snapshot)` produces the read-only
+`metric_portability.v1.json` projection from the same immutable loaded snapshot
+as the validation contract. The existing `export-contract` CLI selects it with
+`--format metrics`; the default remains the native validation contract.
+
+A saved BI binding identifies a metric by **package namespace and canonical
+metric ID**. Moving or reformatting source files does not change that identity.
+Renaming the namespace or ID is an explicit breaking replacement; v1 does not
+promise rename stability or globally unique customer namespaces. Hosted apps
+must additionally retain their authenticated tenant/package selector.
+`semantic_hash`, `definition_hash`, and source fingerprints are change evidence,
+never metric IDs or access tokens.
+
+Definitions are projections of the engine's loaded metric and measure models.
+The contract references the existing Query IR v1 expression and query schemas;
+it does not introduce a second expression language or authorize evaluation
+outside the engine. `query_template` requests a metric by reference. Candidate
+grouping/filter dimensions and temporal grains describe loaded capabilities;
+combinations, warehouse support, policy, and permissions still require runtime
+validation. The [small BI card example](../examples/bi_consumer/metric_card.py)
+persists the identity and calls an injected authenticated executor.
+
+`compare_metric_portability(before, after)` classifies saved catalog changes:
+metric additions are additive; removal/rename, definition changes, capabilities
+changes, and engine-version changes require requalification. Display or source
+formatting edits are metadata changes. A metric definition hash includes its
+transitive metric recipes and a conservative hash of all supporting package
+semantics, including measures, relations, policies, and temporal configuration.
+Consequently an unrelated supporting-object edit may also require review;
+compatibility is not a proof of numerical equivalence. Unknown contract majors,
+duplicate IDs, or inconsistent definition hashes fail closed. The comparison ignores
+unknown optional top-level fields; a changed field meaning requires a new major and
+consumer dual-read qualification before rollout.
+
+Snapshots constructed with `LoadedPackageSnapshot.from_config` contain no
+authored namespace; callers must supply `namespace=` explicitly on export.
+File-backed snapshots derive it from the captured authored package and reject
+an override that would retarget metric identity.
+
+The MetricFlow translator's `TranslationReport.provenance` supplies a versioned
+parsed-input digest and loss/unsupported-feature warnings. Pass it explicitly
+as `import_provenance` when exporting to preserve that evidence. It records the
+input to translation, not a signed claim about subsequent author edits. The
+installed `load_contract_fixture("metric_portability.v1.json")` corpus drives
+engine and native-adapter conformance without independent fixture copies.
+Native dbt macros and SQLMesh graph checks still run without the engine;
+translation/export is an optional authoring step outside their runtime.
+
+This full-package author/export artifact contains physical expressions and
+supporting definitions. Cloud distribution must use full-package author rights
+and immutable package-version identity. A restricted BI principal must use the
+grant-aware runtime discovery/query surfaces, not this unfiltered artifact.
+No authorization claim in an artifact grants access to data.
 
 ## Compatibility rules
 
