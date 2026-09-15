@@ -334,3 +334,22 @@ def test_runtime_query_segment_and_live_values_execute_prepared_sql(package_conf
         assert values["provenance"]["semantic_fingerprint"] == runtime.snapshot.semantic_fingerprint
     finally:
         runtime.close()
+
+
+def test_legacy_adapters_are_fenced_by_max_rows():
+    from semantic_rails.runtime import _adapter_query
+    from semantic_rails.sql_preparation import prepare_query
+
+    class LegacyAdapter:
+        engine = "legacy"
+
+        def query(self, sql):
+            return [{"n": index} for index in range(5)]
+
+    prepared = prepare_query("SELECT 1 AS n", "duckdb")
+    for rows in (
+        WarehouseAdapter.query_prepared(LegacyAdapter(), prepared, limits={"max_rows": 2}),
+        _adapter_query(LegacyAdapter(), prepared, limits={"max_rows": 2}),
+    ):
+        assert len(rows) == 2 and getattr(rows, "truncated", False) is True
+    assert len(_adapter_query(LegacyAdapter(), prepared, limits={})) == 5

@@ -23,6 +23,14 @@ from typing import Any
 
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 
+
+def _engine_version() -> str:
+    """Precomputed catalogs are only valid for the engine that produced them."""
+    from semantic_rails import __version__
+
+    return __version__
+
+
 MANIFEST_DIR = ".compiled"
 MANIFEST_FILE = "manifest.json"
 FINGERPRINT_FILE = "sources.sha256"
@@ -84,6 +92,7 @@ def _write_loaded_manifest(runtime, *, variants, catalog_payload) -> Path:
 
     payload = {
         "schema_version": 1,
+        "engine_version": _engine_version(),
         "package_id": runtime.package_id,
         "source_path": runtime.source_path,
         "fingerprint": fingerprint,
@@ -125,7 +134,7 @@ def load_manifest(
         payload = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
-    if payload.get("schema_version") != 1:
+    if payload.get("schema_version") != 1 or payload.get("engine_version") != _engine_version():
         return None
     snapshot = snapshot or load_package_snapshot(source_path)
     if (

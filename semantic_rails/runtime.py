@@ -52,7 +52,7 @@ from .db import (
     load_csv_dir_to_duckdb,
     seed_db,
 )
-from .db_parts.base import query_with_limits, restore_column_names
+from .db_parts.base import query_with_limits
 from .diagnostics import (
     enrich_expression_ast_error,
     enrich_object_not_found,
@@ -642,7 +642,7 @@ def _adapter_query(
         execute = getattr(adapter, "query_prepared", None)
         if execute is not None:
             return execute(query, limits=limits)
-        return restore_column_names(query_with_limits(adapter, query.sql, limits=limits), query)
+        return WarehouseAdapter.query_prepared(adapter, query, limits=limits)
     return query_with_limits(adapter, query, limits=limits)
 
 
@@ -1346,11 +1346,12 @@ class Runtime:
         prefer_package_root_assets: bool | None = None,
     ) -> Runtime:
         source_path = snapshot.source_path
-        prefer_assets = (
-            not _is_repo_managed_source(source_path)
-            if prefer_package_root_assets is None
-            else prefer_package_root_assets
-        )
+        if prefer_package_root_assets is None:
+            # Same rule as Runtime(package_id): registered packages in the repo
+            # checkout or the installed share root keep the shared data/ root.
+            managed = project_managed_source if package_id else _is_repo_managed_source
+            prefer_package_root_assets = not managed(source_path)
+        prefer_assets = prefer_package_root_assets
         runtime = cls.__new__(cls)
         runtime._init_loaded(
             snapshot=snapshot,
