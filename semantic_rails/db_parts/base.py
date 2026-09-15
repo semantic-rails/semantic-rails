@@ -89,7 +89,7 @@ class WarehouseAdapter(ABC):
         Built-in adapters with SQL compatibility rules override this method to
         send the prepared SQL directly to their driver without rewriting it.
         """
-        rows = query_with_limits(self, prepared.sql, limits=limits)
+        rows = _clip_rows(query_with_limits(self, prepared.sql, limits=limits), limits)
         return restore_column_names(rows, prepared)
 
     @abstractmethod

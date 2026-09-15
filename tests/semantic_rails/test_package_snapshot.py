@@ -304,3 +304,38 @@ def test_in_memory_source_identity_and_table_binding_ignore_cache_order(tmp_path
             _resolve_column_entity(reference, snapshot.config)
         assert error.value.details["entity_ids"] == sorted([customer.id, alias.id])
     assert sql[0] == sql[1]
+
+
+def test_registered_snapshot_runtime_keeps_the_shared_asset_rule(tmp_path, monkeypatch):
+    from semantic_rails import runtime as runtime_module
+
+    path = copy_package_config(tmp_path, "jaffle_shop")
+    snapshot = load_package_snapshot(path)
+    monkeypatch.setattr(runtime_module, "project_managed_source", lambda source: True)
+    monkeypatch.setattr(runtime_module, "_is_repo_managed_source", lambda source: False)
+    registered = runtime_module.Runtime.from_snapshot(snapshot, package_id="jaffle_shop")
+    try:
+        assert registered.prefer_package_root_assets is False
+    finally:
+        registered.close()
+    by_path = runtime_module.Runtime.from_snapshot(snapshot)
+    try:
+        assert by_path.prefer_package_root_assets is True
+    finally:
+        by_path.close()
+
+
+def test_manifest_from_another_engine_version_is_ignored(tmp_path, monkeypatch):
+    import semantic_rails
+    from semantic_rails.manifest import load_manifest, write_manifest
+    from semantic_rails.runtime import Runtime
+
+    path = copy_package_config(tmp_path, "jaffle_shop")
+    runtime = Runtime.from_path(path)
+    try:
+        write_manifest(runtime)
+        assert load_manifest(path, snapshot=runtime.snapshot) is not None
+        monkeypatch.setattr(semantic_rails, "__version__", "0.0.0+other")
+        assert load_manifest(path, snapshot=runtime.snapshot) is None
+    finally:
+        runtime.close()
