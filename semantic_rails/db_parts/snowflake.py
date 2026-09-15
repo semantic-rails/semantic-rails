@@ -21,17 +21,18 @@ from ..dialects import (
     snowflake_native_direct_connect_errors,
 )
 from ..errors import SemanticLayerError, query_execution_error
+from ..sql_preparation import PreparedQuery, prepare_query
 from .base import (
     ConnectionCredentialProvider,
     WarehouseAdapter,
     _clip_rows,
     _limit_timeout_seconds,
+    restore_column_names,
 )
 from .common import (
     env_value as _env_value,
 )
 from .common import (
-    float_nullif_divisions,
     normalize_connection_options,
     require_missing_env,
     rows_from_cursor,
@@ -79,11 +80,13 @@ class SnowflakeCliAdapter(WarehouseAdapter):
         self.options = _normalize_snowflake_cli_options(options or {})
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+
+    def query_prepared(
+        self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         timeout_s = _limit_timeout_seconds(limits)
-        # Same DOUBLE-cast ratio compat pass as the native adapter (see
-        # SnowflakeNativeAdapter.query) — keeps both Snowflake paths on
-        # the cross-warehouse parity contract.
-        effective_sql = float_nullif_divisions(sql, cast_type="DOUBLE")
+        effective_sql = prepared.sql
         if timeout_s > 0:
             # Snowflake supports session-level statement timeout via ALTER SESSION.
             # Compose a multi-statement script so the timeout is set then released.
@@ -113,7 +116,7 @@ class SnowflakeCliAdapter(WarehouseAdapter):
             details.setdefault("connection", self.connection_name)
             details.setdefault("sql_redacted", True)
             raise SemanticLayerError(exc.code, str(exc), details=details) from exc
-        return _clip_rows(rows, limits)
+        return restore_column_names(_clip_rows(rows, limits), prepared)
 
     def close(self) -> None:
         return None
@@ -320,21 +323,20 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
         return self._conn
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+
+    def query_prepared(
+        self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         timeout_s = _limit_timeout_seconds(limits)
-        # Documented, literal-aware compat pass (same as the Postgres /
-        # Databricks / Athena adapters): Snowflake NUMBER/NUMBER division
-        # reduces the result scale (~6 digits live), drifting ratio metrics
-        # off the cross-warehouse parity contract; cast the compiler's
-        # `x / NULLIF(y, 0)` guard to DOUBLE.
-        effective_sql = float_nullif_divisions(sql, cast_type="DOUBLE")
         try:
             cursor = self._connection().cursor()
             try:
                 if timeout_s > 0:
                     cursor.execute(f"alter session set statement_timeout_in_seconds = {timeout_s}")
-                cursor.execute(effective_sql)
+                cursor.execute(prepared.sql)
                 rows = rows_from_cursor(cursor, limits=limits)
-                return _clip_rows(rows, limits)
+                return restore_column_names(_clip_rows(rows, limits), prepared)
             finally:
                 if timeout_s > 0:
                     with contextlib.suppress(Exception):  # best-effort reset

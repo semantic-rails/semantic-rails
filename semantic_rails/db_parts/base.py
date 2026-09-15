@@ -12,9 +12,12 @@ re-exported through :mod:`semantic_rails.db`.
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
+
+from ..sql_preparation import PreparedQuery
 
 
 @runtime_checkable
@@ -78,9 +81,36 @@ class WarehouseAdapter(ABC):
         """
         raise NotImplementedError
 
+    def query_prepared(
+        self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Execute a compiled statement, preserving legacy custom adapters.
+
+        Built-in adapters with SQL compatibility rules override this method to
+        send the prepared SQL directly to their driver without rewriting it.
+        """
+        rows = _clip_rows(query_with_limits(self, prepared.sql, limits=limits), limits)
+        return restore_column_names(rows, prepared)
+
     @abstractmethod
     def close(self) -> None:
         raise NotImplementedError
+
+
+def query_with_limits(
+    adapter: Any, sql: str, *, limits: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Preserve query(sql) integrations while forwarding limits where supported."""
+    parameters: Mapping[str, inspect.Parameter]
+    try:
+        parameters = inspect.signature(adapter.query).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_limits = "limits" in parameters or any(
+        item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values()
+    )
+    rows = adapter.query(sql, limits=limits) if accepts_limits else adapter.query(sql)
+    return rows if isinstance(rows, list) else list(rows)
 
 
 def _clip_rows(rows: list[dict[str, Any]], limits: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -124,3 +154,16 @@ def _limit_timeout_milliseconds(limits: dict[str, Any] | None) -> int:
     if ms <= 0:
         return 0
     return ms
+
+
+def restore_column_names(
+    rows: list[dict[str, Any]], prepared: PreparedQuery
+) -> list[dict[str, Any]]:
+    """Restore semantic aliases without losing a bounded fetch's truncation flag."""
+    if not prepared.column_mapping:
+        return rows
+    names = dict(prepared.column_mapping)
+    return QueryRows(
+        [{names.get(key, key): value for key, value in row.items()} for row in rows],
+        truncated=bool(getattr(rows, "truncated", False)),
+    )

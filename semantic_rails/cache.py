@@ -11,14 +11,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any, Protocol, runtime_checkable
 
-COMPILER_CACHE_VERSION = "semantic-rails-compiler-v2-physical-plan-1"
+from .package_snapshot import capture_package_source
+
+COMPILER_CACHE_VERSION = "semantic-rails-compiler-v3-prepared-sql-1"
 
 
 @dataclass
@@ -96,32 +97,7 @@ def stable_json_hash(payload: Any) -> str:
 
 
 def package_fingerprint(path: str) -> str:
-    root = os.path.abspath(path)
-    hasher = hashlib.sha256()
-    if os.path.isfile(root):
-        candidates = [root]
-        base_dir = os.path.dirname(root)
-    else:
-        base_dir = root
-        candidates = []
-        for current_root, dirs, files in os.walk(root):
-            dirs[:] = [
-                item
-                for item in dirs
-                if item not in {".git", ".pytest_cache", ".uv-cache", "__pycache__", ".compiled"}
-            ]
-            for filename in files:
-                if filename.endswith((".yml", ".yaml", ".json", ".toml")):
-                    candidates.append(os.path.join(current_root, filename))
-    for filename in sorted(candidates):
-        relpath = os.path.relpath(filename, base_dir)
-        hasher.update(relpath.encode("utf-8"))
-        try:
-            with open(filename, "rb") as handle:
-                hasher.update(handle.read())
-        except FileNotFoundError:
-            continue
-    return hasher.hexdigest()
+    return capture_package_source(path).fingerprint
 
 
 def compilation_cache_key(

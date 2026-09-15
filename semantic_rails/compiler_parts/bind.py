@@ -54,7 +54,7 @@ from .indexes import (
     _entity_index,
     _measure_index,
     _recipe_index,
-    _table_to_entity,
+    _resolve_table_entity,
 )
 from .paths import _column_ref
 
@@ -231,7 +231,7 @@ def _resolve_expr_entity(ref: ColumnRefExpr, measure: MeasureConfig, config: Pac
     if ref.entity:
         return ref.entity
     if ref.table:
-        entity_id = _table_to_entity(config).get(ref.table)
+        entity_id = _resolve_table_entity(config, ref.table, owner=measure.entity)
         if entity_id:
             return entity_id
         raise SemanticLayerError(
@@ -799,7 +799,7 @@ def _resolve_column_entity(ref: ColumnRefExpr, config: PackageConfig) -> str:
     if ref.entity:
         return ref.entity
     if ref.table:
-        entity_id = _table_to_entity(config).get(ref.table)
+        entity_id = _resolve_table_entity(config, ref.table)
         if entity_id:
             return entity_id
         raise SemanticLayerError(

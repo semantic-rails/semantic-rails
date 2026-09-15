@@ -437,7 +437,7 @@ def run_authorized_operation(
     payload = _context_payload(name, args, kwargs)
     if (payload.get("policy_context") or {}).get("metric_allowlist") is None:
         return operation(runtime, *args, **kwargs)
-    access = ResourceAccess.from_context(runtime.config, payload.get("policy_context"))
+    access = ResourceAccess.from_context(runtime._config, payload.get("policy_context"))
     try:
         if name in {"validate", "compile", "query"}:
             access.enforce_query(payload)

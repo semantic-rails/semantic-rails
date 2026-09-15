@@ -283,7 +283,7 @@ def _query_contains_prior_period(runtime: Any, query: dict[str, Any]) -> bool:
         metric_id = node.get("metric") or node.get("metric_recipe")
         if isinstance(metric_id, str) and metric_id:
             metric_ids.add(metric_id)
-    for recipe in getattr(runtime.config, "metric_recipes", []) or []:
+    for recipe in getattr(runtime._config, "metric_recipes", []) or []:
         if str(getattr(recipe, "id", "") or "") not in metric_ids:
             continue
         if isinstance(getattr(recipe, "expression", None), PriorPeriodExpr):
@@ -366,8 +366,8 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
     if len(pieces) < 2:
         return []
     rows = [
-        *getattr(runtime.config, "measures", []),
-        *getattr(runtime.config, "metric_recipes", []),
+        *getattr(runtime._config, "measures", []),
+        *getattr(runtime._config, "metric_recipes", []),
     ]
     matches: list[dict[str, Any]] = []
     for piece in pieces:

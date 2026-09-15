@@ -23,16 +23,14 @@ Connection contract:
 
 from __future__ import annotations
 
-import hashlib
-import re
 from typing import Any
 
 from ..dialects import BIGQUERY_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError, query_execution_error
-from .base import WarehouseAdapter, _clip_rows, _limit_timeout_seconds
+from ..sql_preparation import PreparedQuery, prepare_query
+from .base import WarehouseAdapter, _clip_rows, _limit_timeout_seconds, restore_column_names
 from .common import (
     import_driver,
-    map_double_quoted_identifiers,
     normalize_connection_options,
     option_or_env,
     redacted_error_details,
@@ -42,70 +40,6 @@ from .common import (
 _ENGINE = "bigquery"
 _KIND = "bigquery_native"
 _LABEL = "BigQuery"
-
-
-# ---------------------------------------------------------------------------
-# GoogleSQL compatibility pass — two semantics-preserving rewrites of the
-# compiler's rendered SQL, applied just before execution (mirroring the
-# Postgres adapter's documented compat pass). Both compensate for hard
-# GoogleSQL limits the portable SQL AST cannot express; string literals
-# (single-quoted, including '' escapes) are never touched.
-#
-# 1. The renderer emits ANSI "double-quoted" identifiers (e.g.
-#    AS "dimension.jaffle_store_name"); GoogleSQL treats double quotes
-#    as STRING LITERALS, so every double-quoted identifier is re-quoted
-#    with backticks (shared helper semantics).
-# 2. BigQuery column names — even backtick-quoted, even with flexible
-#    column names enabled — may not contain '.' or other punctuation
-#    ("Invalid field name … allowed characters"). Compiler aliases like
-#    "dimension.jaffle_store_name" are therefore unrepresentable as
-#    output fields. Each illegal identifier is rewritten to a
-#    deterministic legal name (sanitized prefix + content hash, à la
-#    the Postgres long-identifier shortening) so every reference —
-#    alias definition, GROUP BY, ORDER BY, outer SELECT — rewrites
-#    identically, and the adapter maps result-row keys BACK to the
-#    original names so callers see the contract aliases unchanged.
-# ---------------------------------------------------------------------------
-
-# Legal BigQuery column-name characters (conservative classic set —
-# letters, digits, underscore; must not start with a digit).
-_LEGAL_FIELD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_IDENT_HASH_CHARS = 10
-_MAX_FIELD_CHARS = 128  # well under BigQuery's 300-char field limit
-
-
-def _safe_field_name(name: str) -> str:
-    """Deterministic legal column name for an illegal identifier: a
-    sanitized readable prefix plus a content hash, so distinct names
-    stay distinct and every reference rewrites identically."""
-    sanitized = re.sub(r"[^A-Za-z0-9_]", "_", name)
-    if not sanitized or sanitized[0].isdigit():
-        sanitized = "_" + sanitized
-    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:_IDENT_HASH_CHARS]
-    keep = _MAX_FIELD_CHARS - _IDENT_HASH_CHARS - 1
-    return f"{sanitized[:keep]}_{digest}"
-
-
-def _bigquery_compat_sql(sql: str) -> tuple[str, dict[str, str]]:
-    """Backtick-requote identifiers and legalize illegal field names.
-
-    Returns ``(rewritten_sql, alias_map)`` where ``alias_map`` maps each
-    substituted safe name back to the original identifier, for restoring
-    result-row keys. The quote-aware scan (single-quoted literals copied
-    verbatim) is the shared
-    :func:`semantic_rails.db_parts.common.map_double_quoted_identifiers`
-    core; only the legalization + alias mapping is BigQuery-specific.
-    """
-    alias_map: dict[str, str] = {}
-
-    def _requote(name: str) -> str:
-        if _LEGAL_FIELD_RE.match(name):
-            return "`" + name + "`"
-        safe = _safe_field_name(name)
-        alias_map[safe] = name
-        return "`" + safe + "`"
-
-    return map_double_quoted_identifiers(sql, _requote), alias_map
 
 
 class BigQueryNativeAdapter(WarehouseAdapter):
@@ -190,6 +124,11 @@ class BigQueryNativeAdapter(WarehouseAdapter):
 
     # -- WarehouseAdapter contract ---------------------------------------
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+
+    def query_prepared(
+        self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         timeout_s = _limit_timeout_seconds(limits)
         try:
             client = self.client()
@@ -200,13 +139,9 @@ class BigQueryNativeAdapter(WarehouseAdapter):
                 job_config.default_dataset = default_dataset
             if timeout_s > 0:
                 job_config.job_timeout_ms = timeout_s * 1000
-            compat_sql, alias_map = _bigquery_compat_sql(sql)
-            job = client.query(compat_sql, job_config=job_config)
-            rows = [
-                {alias_map.get(key, key): value for key, value in row.items()}
-                for row in job.result()
-            ]
-            return _clip_rows(rows, limits)
+            job = client.query(prepared.sql, job_config=job_config)
+            rows = [dict(row.items()) for row in job.result()]
+            return restore_column_names(_clip_rows(rows, limits), prepared)
         except SemanticLayerError:
             raise
         except Exception as exc:

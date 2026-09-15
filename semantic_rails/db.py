@@ -50,9 +50,11 @@ from .dialects import (
 )
 from .errors import SemanticLayerError, query_execution_error
 from .schema import PackageMeta
+from .sql_preparation import PreparedQuery
 
 __all__ = [
     "Database",
+    "PreparedQuery",
     "DuckDBAdapter",
     "ConnectionCredentialProvider",
     "SnowflakeCliAdapter",

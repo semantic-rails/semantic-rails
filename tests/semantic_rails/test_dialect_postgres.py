@@ -448,7 +448,7 @@ def test_create_adapter_rejects_unknown_connection_kind():
 
 
 def test_compat_pass_shortens_colliding_long_identifiers():
-    from semantic_rails.db_parts.postgres import _postgres_compat_sql
+    from semantic_rails.sql_preparation import prepare_query
 
     name_a = "conversion_leaf_1__" + "a" * 50 + "_first"
     name_b = "conversion_leaf_1__" + "a" * 50 + "_second"
@@ -457,7 +457,7 @@ def test_compat_pass_shortens_colliding_long_identifiers():
         f"WITH {name_a} AS (SELECT 1 AS v), {name_b} AS (SELECT 2 AS v)\n"
         f"SELECT {name_a}.v FROM {name_a} CROSS JOIN {name_b}"
     )
-    rewritten = _postgres_compat_sql(sql)
+    rewritten = prepare_query(sql, "postgres").sql
 
     new_names = {
         token
@@ -476,27 +476,28 @@ def test_compat_pass_shortens_colliding_long_identifiers():
 
 
 def test_compat_pass_keeps_short_identifiers_and_literals_untouched():
-    from semantic_rails.db_parts.postgres import _postgres_compat_sql
+    from semantic_rails.sql_preparation import prepare_query
 
     long_in_literal = "x" * 80
     sql = f"SELECT name FROM jaffle_order WHERE name = '{long_in_literal}'"
-    assert _postgres_compat_sql(sql) == sql
+    assert prepare_query(sql, "postgres").sql == sql
 
 
 def test_compat_pass_casts_nullif_divisions_to_float():
-    from semantic_rails.db_parts.postgres import _postgres_compat_sql
+    from semantic_rails.sql_preparation import prepare_query
 
     sql = "SELECT a / NULLIF(b, 0) AS r FROM t"
     assert (
-        _postgres_compat_sql(sql) == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE PRECISION) AS r FROM t"
+        prepare_query(sql, "postgres").sql
+        == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE PRECISION) AS r FROM t"
     )
 
 
 def test_compat_pass_handles_nested_nullif_divisions_and_literals():
-    from semantic_rails.db_parts.postgres import _postgres_compat_sql
+    from semantic_rails.sql_preparation import prepare_query
 
     sql = "SELECT a / NULLIF(b / NULLIF(c, 0), 0), ') / NULLIF(' FROM t"
-    assert _postgres_compat_sql(sql) == (
+    assert prepare_query(sql, "postgres").sql == (
         "SELECT a / CAST(NULLIF(b / CAST(NULLIF(c, 0) AS DOUBLE PRECISION), 0)"
         " AS DOUBLE PRECISION), ') / NULLIF(' FROM t"
     )

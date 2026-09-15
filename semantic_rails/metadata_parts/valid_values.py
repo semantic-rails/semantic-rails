@@ -75,7 +75,7 @@ def _anchor_measure_id(runtime: Runtime, dimension: str, query: dict[str, Any] |
     probe_where = list(probe.get("where", []) or [])
     probe_time = dict(probe.get("time", {}) or {}) or None
     reasons: list[dict[str, Any]] = []
-    for measure in runtime.config.measures:
+    for measure in runtime._config.measures:
         candidate = {
             "select": [
                 {
@@ -92,7 +92,7 @@ def _anchor_measure_id(runtime: Runtime, dimension: str, query: dict[str, Any] |
         if probe_time is not None:
             candidate["time"] = probe_time
         try:
-            compile_query(runtime.config, runtime.registry, candidate)
+            compile_query(runtime._config, runtime.registry, candidate)
             return measure.id
         except SemanticLayerError as exc:
             reasons.append({"measure": measure.id, "code": exc.code, "message": str(exc)})
@@ -117,7 +117,7 @@ def valid_values_payload(
 ) -> dict[str, Any]:
     limit = max(1, min(int(limit), max_valid_values_limit()))
     offset = max(0, min(int(offset), max_valid_values_offset()))
-    config = runtime.config
+    config = runtime._config
     policy_context = _policy_context(query)
     hidden_ids = hidden_object_ids(
         config,
@@ -228,7 +228,11 @@ def valid_values_payload(
         "value_source_type": "live_query",
         "estimated_cost": "query",
         "anchor_measure": anchor_measure_id,
-        "provenance": {"anchor_measure": anchor_measure_id},
+        "provenance": {
+            "anchor_measure": anchor_measure_id,
+            "semantic_fingerprint": runtime.snapshot.semantic_fingerprint,
+            "source_fingerprint": runtime.snapshot.source_fingerprint,
+        },
     }
 
 

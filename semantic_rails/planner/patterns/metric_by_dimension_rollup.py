@@ -61,7 +61,7 @@ _TIME_SERIES_PHRASES = (
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
-    config = runtime.config
+    config = runtime._config
     lowered = str(text or "").lower()
     target_focus = _target_focus_text(text)
     target_focus_terms = set(_tokens(target_focus))

@@ -20,6 +20,7 @@ from .db import (
     ConnectionCredentialProvider,
     Database,
     DuckDBAdapter,
+    PreparedQuery,
     SnowflakeCliAdapter,
     SnowflakeNativeAdapter,
     WarehouseAdapter,
@@ -46,6 +47,7 @@ from .errors import SemanticLayerError
 from .http_core import API_VERSION, PUBLIC_V1_ROUTES, SemanticHTTPService
 from .mcp import MCP_INTERFACE_VERSION, SemanticLayerMCPAdapter
 from .mcp_server import MCP_PROTOCOL_VERSION, handle_jsonrpc_message
+from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .package_tools import run_package_tests_report
 from .request_context import (
     AuditSink,
@@ -78,6 +80,7 @@ __all__ = [
     "Database",
     "DuckDBAdapter",
     "HeaderPolicyContextResolver",
+    "LoadedPackageSnapshot",
     "LruCompiledSqlCache",
     "MCP_INTERFACE_VERSION",
     "MCP_PROTOCOL_VERSION",
@@ -86,6 +89,7 @@ __all__ = [
     "PUBLIC_V1_ROUTES",
     "PackageReference",
     "PolicyContextResolver",
+    "PreparedQuery",
     "RequestContext",
     "Runtime",
     "SNOWFLAKE_CLI_CONNECTION_OPTIONS",
@@ -107,6 +111,7 @@ __all__ = [
     "get_audit_sink",
     "get_policy_context_resolver",
     "handle_jsonrpc_message",
+    "load_package_snapshot",
     "normalize_connection_options",
     "parse_config_report",
     "request_context_payload",
