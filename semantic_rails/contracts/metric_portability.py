@@ -40,11 +40,10 @@ def _definition(row: Any, expression_field: str) -> dict[str, Any]:
 
 def _metric_refs(value: Any) -> set[str]:
     if isinstance(value, Mapping):
-        found = (
-            {str(value["metric"])}
-            if value.get("kind") == "metric" and value.get("metric")
-            else set()
-        )
+        # Predicate inputs may use the loader's kindless {"metric": id} shorthand.
+        metric = value.get("metric")
+        kindless = "kind" not in value and "measure" not in value
+        found = {str(metric)} if metric and (value.get("kind") == "metric" or kindless) else set()
         return found.union(*(_metric_refs(item) for item in value.values()))
     if isinstance(value, list):
         return set().union(*(_metric_refs(item) for item in value))
@@ -80,12 +79,28 @@ def _context(snapshot: LoadedPackageSnapshot) -> dict[str, Any]:
     for key, value in context.items():
         if isinstance(value, list):
             context[key] = [
-                {field: item for field, item in row.items() if field not in _PRESENTATION}
-                if isinstance(row, dict) and "id" in row
-                else row
+                _strip_presentation(row) if isinstance(row, dict) and "id" in row else row
                 for row in value
             ]
     return context
+
+
+def _strip_presentation(row: Mapping[str, Any]) -> dict[str, Any]:
+    # Value-domain entries carry their own display fields one level down.
+    cleaned: dict[str, Any] = {}
+    for field, item in row.items():
+        if field in _PRESENTATION:
+            continue
+        if (
+            isinstance(item, list)
+            and item
+            and all(isinstance(entry, dict) and "value" in entry for entry in item)
+        ):
+            item = [
+                {name: entry[name] for name in entry if name not in _PRESENTATION} for entry in item
+            ]
+        cleaned[field] = item
+    return cleaned
 
 
 def export_metric_portability(
