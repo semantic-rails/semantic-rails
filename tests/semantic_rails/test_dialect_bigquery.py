@@ -426,11 +426,11 @@ def test_adapter_redacts_query_errors(monkeypatch: pytest.MonkeyPatch):
     assert details["connection_kind"] == "bigquery_native"
     assert details["option_keys"] == ["dataset", "project"]
     assert details["sql_redacted"] is True
-    # Option VALUES and raw SQL never leak; driver text is bounded.
+    # Driver text, option values, and raw SQL never reach public errors.
     assert "demo-project" not in repr(details)
     assert "secret_column" not in repr(details)
     assert "secret_column" not in str(exc.value)
-    assert "[truncated]" in str(exc.value)
+    assert "boom" not in str(exc.value)
 
 
 def test_adapter_maps_missing_driver_to_missing_dependency(monkeypatch: pytest.MonkeyPatch):

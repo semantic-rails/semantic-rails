@@ -10,7 +10,7 @@ Conventions (shared machinery in :mod:`semantic_rails.db_parts.common`):
   (``password_file``); literal secret keys are rejected at
   normalization time.
 - Errors are redacted — engine, connection kind, option KEYS,
-  ``sql_redacted``, and bounded driver text only.
+  ``sql_redacted`` only; driver text stays private.
 - psycopg is an optional extra (``semantic-rails[postgres]``), imported
   lazily so a missing driver maps to ``MISSING_DEPENDENCY``.
 - The connection defaults its namespace from ``schema`` via

@@ -160,13 +160,15 @@ Non-DB-API drivers (BigQuery client, clickhouse-connect) subclass
 `WarehouseAdapter` directly but still reuse the shared machinery —
 `normalize_connection_options`, `secret_value`, `env_value`,
 `option_or_env` (literal-or-`*_env` locator resolution), `int_option`,
-`import_driver`, `require_missing_env`, `bounded_error_text`,
+`import_driver`, `require_missing_env`,
 `redacted_error_details`, `rows_from_cursor`, and the compat-pass
 helpers `float_nullif_divisions` / `rewrite_double_quoted_identifiers` /
 `map_double_quoted_identifiers` from `db_parts.common`, plus
 `_clip_rows` / `_limit_timeout_seconds` / `_limit_timeout_milliseconds` from
 `db_parts.base` — never
-copy-paste them.
+copy-paste them. Translate driver failures with `errors.query_execution_error`;
+never include driver messages or stderr in public errors, because they may
+contain SQL, result values, or credentials.
 
 **Compat passes.** When the warehouse has a hard limit the portable
 SQL AST cannot express, the adapter may rewrite the compiler's

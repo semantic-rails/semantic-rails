@@ -22,10 +22,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..dialects import CLICKHOUSE_CONNECTION_OPTIONS
-from ..errors import SemanticLayerError
+from ..errors import SemanticLayerError, query_execution_error
 from .base import WarehouseAdapter, _clip_rows, _limit_timeout_seconds
 from .common import (
-    bounded_error_text,
     import_driver,
     int_option,
     normalize_connection_options,
@@ -117,13 +116,8 @@ class ClickHouseAdapter(WarehouseAdapter):
         except SemanticLayerError:
             raise
         except Exception as exc:
-            # Redacted error envelope: engine, connection kind, option
-            # KEYS, bounded driver text — never option values, raw SQL,
-            # or result rows.
-            raise SemanticLayerError(
-                "QUERY_EXECUTION_ERROR",
-                f"ClickHouse query execution failed: {bounded_error_text(str(exc))}",
-                details=redacted_error_details(self.engine, self.connection_kind, self.options),
+            raise query_execution_error(
+                redacted_error_details(self.engine, self.connection_kind, self.options)
             ) from exc
 
     def close(self) -> None:

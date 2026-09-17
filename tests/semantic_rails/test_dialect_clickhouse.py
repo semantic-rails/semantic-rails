@@ -257,8 +257,7 @@ def test_adapter_redacts_query_errors(monkeypatch: pytest.MonkeyPatch):
     assert details["option_keys"] == sorted(_adapter_options())
     assert details["sql_redacted"] is True
     assert "sql" not in details
-    # Bounded driver text, never option values or the raw SQL.
-    assert "[truncated]" in str(exc.value)
+    assert "boom" not in str(exc.value)
     assert "super-secret" not in str(exc.value)
     assert "secret_table" not in repr(details)
 

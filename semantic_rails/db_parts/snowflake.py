@@ -20,15 +20,12 @@ from ..dialects import (
     normalize_connection_option_name,
     snowflake_native_direct_connect_errors,
 )
-from ..errors import SemanticLayerError
+from ..errors import SemanticLayerError, query_execution_error
 from .base import (
     ConnectionCredentialProvider,
     WarehouseAdapter,
     _clip_rows,
     _limit_timeout_seconds,
-)
-from .common import (
-    bounded_error_text as _bounded_error_text,
 )
 from .common import (
     env_value as _env_value,
@@ -98,17 +95,8 @@ class SnowflakeCliAdapter(WarehouseAdapter):
         cmd = build_snowflake_cli_command(self.connection_name, effective_sql, self.options)
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
-            # Mirror the native adapter's redacted error shape: connection
-            # NAME and option KEYS only, never option values, raw SQL, or
-            # full stdout (which can carry result rows). stderr is bounded
-            # into the message so authors still see Snowflake's compile
-            # error; the runtime re-attaches raw SQL only when the request
-            # asks for it AND the caller has the `debug` role.
-            message = _bounded_error_text(result.stderr) or "snow sql failed"
-            raise SemanticLayerError(
-                "QUERY_EXECUTION_ERROR",
-                f"Snowflake query execution failed: {message}",
-                details={
+            raise query_execution_error(
+                {
                     "engine": self.engine,
                     "connection_kind": "snowflake_cli",
                     "connection": self.connection_name,
@@ -355,10 +343,8 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
         except SemanticLayerError:
             raise
         except Exception as exc:
-            raise SemanticLayerError(
-                "QUERY_EXECUTION_ERROR",
-                f"Snowflake native query execution failed: {exc}",
-                details={
+            raise query_execution_error(
+                {
                     "engine": self.engine,
                     "connection_kind": "snowflake_native",
                     "connection": self.connection_name,

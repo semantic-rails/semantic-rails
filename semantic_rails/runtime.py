@@ -64,7 +64,7 @@ from .diagnostics import (
     semantic_issue,
 )
 from .dialects import dialect_for_warehouse
-from .errors import SemanticLayerError
+from .errors import SemanticLayerError, query_execution_error
 from .expressions import expr_to_dict
 from .fanout import build_hop_profile
 from .ir import ValidationReport
@@ -598,7 +598,8 @@ def _query_execution_error_details(
         details["sql_redacted"] = True
     if extra:
         for key, value in extra.items():
-            if key not in {"sql"}:  # never let extra leak raw sql back in
+            if key not in {"sql", "sql_redacted", "sql_debug_authorized"}:
+                # The runtime owns SQL disclosure, including its authorization flags.
                 details[key] = value
     return details
 
@@ -1991,17 +1992,16 @@ class Runtime:
                         }
                     )
                 rows = _adapter_query(adapter, compiled["sql"], limits=limits)
-        except SemanticLayerError:
-            raise
         except Exception as exc:
-            raise SemanticLayerError(
-                "QUERY_EXECUTION_ERROR",
-                f"Query execution failed: {exc}",
-                details=_query_execution_error_details(
+            if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
+                raise
+            raise query_execution_error(
+                _query_execution_error_details(
                     engine=self.warehouse_engine,
                     sql=compiled["sql"],
                     payload=payload,
                     policy_context=policy_context,
+                    extra=exc.details if isinstance(exc, SemanticLayerError) else None,
                 ),
             ) from exc
         out: dict[str, Any] = {
@@ -2290,13 +2290,20 @@ class Runtime:
                 count_rows = adapter.query(
                     f'SELECT COUNT(*) AS "member_count" FROM ({membership_compiled["sql"]}) AS "segment_members"'
                 )
-        except SemanticLayerError:
-            raise
         except Exception as exc:
-            raise SemanticLayerError(
-                "QUERY_EXECUTION_ERROR",
-                f"Segment preview failed: {exc}",
-                details={"engine": self.warehouse_engine, "segment_id": segment_id},
+            if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
+                raise
+            raise query_execution_error(
+                _query_execution_error_details(
+                    engine=self.warehouse_engine,
+                    sql=preview_compiled["sql"],
+                    payload={},
+                    policy_context=context,
+                    extra={
+                        **(exc.details if isinstance(exc, SemanticLayerError) else {}),
+                        "segment_id": segment_id,
+                    },
+                )
             ) from exc
         visible_rows = strip_segment_preview_metric(list(rows))
         member_count = int(count_rows[0].get("member_count", 0)) if count_rows else 0

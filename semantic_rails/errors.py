@@ -19,6 +19,20 @@ class SemanticLayerError(Exception):
         self.details = dict(details or {})
 
 
+def query_execution_error(details: dict[str, Any]) -> SemanticLayerError:
+    """Translate driver failures without serializing driver text or credentials.
+
+    Callers supply only structural metadata and retain the original exception
+    as ``__cause__`` for in-process diagnostics. Raw driver messages can include
+    SQL, rows, connection strings, and secrets; truncating them is not redaction.
+    """
+    return SemanticLayerError(
+        "QUERY_EXECUTION_ERROR",
+        "Warehouse query execution failed. Check warehouse query history and operator diagnostics.",
+        details=details,
+    )
+
+
 ERROR_CODES = {
     "AMBIGUOUS_ALIAS",
     "AMBIGUOUS_PATH",

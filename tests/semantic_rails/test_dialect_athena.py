@@ -334,8 +334,7 @@ def test_athena_adapter_redacts_driver_errors(monkeypatch: pytest.MonkeyPatch):
     assert "sql" not in details
     assert "us-east-1" not in repr(details)
     assert "super_secret_column" not in repr(details)
-    # Bounded driver text still reaches the message for authors.
-    assert "SYNTAX_ERROR" in str(exc.value)
+    assert "SYNTAX_ERROR" not in str(exc.value)
 
 
 def test_create_warehouse_adapter_selects_athena(monkeypatch: pytest.MonkeyPatch):
