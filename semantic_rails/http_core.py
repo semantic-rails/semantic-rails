@@ -53,7 +53,7 @@ from .metadata import (
     inspect_payload,
     valid_values_payload,
 )
-from .metadata_parts.capabilities import _EXPRESSION_SHAPES
+from .metadata_parts.capabilities import _EXPRESSION_SHAPES, capabilities_payload
 from .planner import plan_payload
 from .request_context import (
     RequestContext,
@@ -356,8 +356,27 @@ class SemanticHTTPService:
                 "checks": checks,
             }
 
-    def capabilities_payload(self) -> dict[str, Any]:
+    def capabilities_payload(self, context: RequestContext | None = None) -> dict[str, Any]:
         with self.runtime.request_scope():
+            if context is not None and context.metric_allowlist is not None:
+                dialect = dialect_for_warehouse(self.runtime.warehouse)
+                return {
+                    "ok": True,
+                    "supported_api_versions": [API_VERSION],
+                    "route_prefix": "/api/v1",
+                    "routes": [
+                        row
+                        for row in PUBLIC_V1_ROUTES
+                        if "segment-" not in row["path"]
+                        and not row["path"].endswith("/valid-values")
+                    ],
+                    "warehouse": self.runtime.warehouse,
+                    "dialect": dialect.name,
+                    "warehouse_capabilities": dialect.capabilities(),
+                    **capabilities_payload(
+                        self.runtime, policy_context=context.to_policy_context()
+                    ),
+                }
             catalog = resolve_catalog(self.runtime, view="summary", verbosity="compact")
             dialect = dialect_for_warehouse(self.runtime.warehouse)
             package = dict(catalog["meta"]["package"])
@@ -423,7 +442,7 @@ class SemanticHTTPService:
             payload = self.ready_payload(headers)
             return payload, 200 if payload["ok"] else 503
         if route == "/capabilities":
-            return self.capabilities_payload(), 200
+            return self.capabilities_payload(context), 200
         if route == "/catalog":
             policy_context = {
                 "environment": str(query_params.get("environment", "")),
