@@ -317,7 +317,7 @@ The runtime compiles a request through these stages:
 4. Build `LogicalPlan` and leaf measure plans.
 5. Lower `LogicalPlan` into typed SQL AST.
 6. Render SQL text from the SQL AST.
-7. Execute the rendered SQL against DuckDB.
+7. Execute the prepared SQL against the configured warehouse.
 
 Important planner behaviors:
 
@@ -335,6 +335,39 @@ Important planner behaviors:
 - contextual `time_grain` overrides are limited to coarser deterministic ancestor buckets on the same calendar
 - supported conversion requests compile as event-pair matching subplans
 - unsupported conversion requests fail semantically rather than silently degrading into ratios
+
+### Loaded semantics and executable SQL
+
+`load_package_snapshot(path)` captures a stable source inventory and parses it
+once into a `LoadedPackageSnapshot`. Its authored, normalized, typed config, and
+canonical semantic views come from those captured bytes. Each public view is an
+isolated copy. `Runtime.from_snapshot(snapshot)` reuses that generation; runtime
+requests, catalog manifests, package comparisons, and semantic exports bind to its
+identity. Reload replaces the complete generation under the existing state gate.
+Editing `runtime.config` changes only the returned copy: use `Runtime.from_config`
+for an explicit replacement or `reload()` to load edited sources. Engine internals
+use the private owned config, avoiding repeated copies on query paths.
+
+The framed source fingerprint includes relative source paths and bytes. The
+semantic fingerprint identifies the canonical parsed semantics, excluding
+connection settings, seed configuration, and local database paths. Entity relations
+and warehouse semantics remain significant. In-memory configs have their own
+identity that preserves exact typed-list ordering and make no claim to match files
+on disk. When several entities share a physical table, a measure binds its own
+entity; other table-only references require an explicit entity instead of choosing
+whichever entry appeared last. Compiled manifests include both
+identities and source provenance; stale artifacts fall back to the loaded runtime.
+Package checks reject edits during validation, and artifact builds verify captured
+source bytes against the validated manifest before writing them.
+
+The compiler's final dialect preparation creates a frozen `PreparedQuery` containing
+executable SQL and physical-to-semantic column mappings. Compile and explain expose
+that SQL; built-in adapters execute it unchanged through `query_prepared`, restoring
+semantic aliases in result rows. Session timeout commands and row-fetch limits remain
+adapter concerns. Legacy direct `query(sql)` calls use the same preparation once.
+Segment preview and count execute their prepared statements independently; the
+preview response includes both statements. Live valid-values uses the ordinary
+query path and includes the loaded semantic identity in its provenance.
 
 ### Compile Cache Seam
 

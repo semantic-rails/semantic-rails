@@ -21,9 +21,7 @@ from __future__ import annotations
 
 import importlib
 import os
-import re
 from abc import abstractmethod
-from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
@@ -32,7 +30,15 @@ from ..dialects import (
     normalize_connection_option_name,
 )
 from ..errors import SemanticLayerError, query_execution_error
-from .base import QueryRows, WarehouseAdapter, _clip_rows, _limit_max_rows, _limit_timeout_seconds
+from ..sql_preparation import PreparedQuery, prepare_query
+from .base import (
+    QueryRows,
+    WarehouseAdapter,
+    _clip_rows,
+    _limit_max_rows,
+    _limit_timeout_seconds,
+    restore_column_names,
+)
 
 # Hard contract: package YAML must never carry literal credential text.
 # See docs/PACKAGE_AUTHORING.md "Secrets". Anything resembling a literal
@@ -225,149 +231,6 @@ def import_driver(module_name: str, *, extra: str, engine: str, connection_kind:
         ) from exc
 
 
-def map_double_quoted_identifiers(sql: str, replace: Callable[[str], str]) -> str:
-    """Quote-aware scanning core for identifier-re-quoting compat passes.
-
-    The renderer emits ANSI ``"identifier"`` quoting; the compiler
-    renders string LITERALS with single quotes only, so a quote-aware
-    scan (single-quoted spans copied verbatim, including ``''``
-    escapes) can safely rewrite every double-quoted span.
-
-    This scan deliberately does NOT treat ``\\`` as an escape, even
-    though its callers (BigQuery, Spark) are warehouses that do. It
-    stays correct because the renderer always emits backslashes
-    *doubled* on those dialects — see
-    :func:`semantic_rails.dialects.backslash_escaped_string_literal` —
-    so a lone ``\\'`` can never appear and the literal boundaries this
-    scan finds are the same ones the warehouse finds. Teaching it about
-    backslash escapes would instead break the ANSI-conforming callers,
-    where ``\\`` is an ordinary character. Each
-    identifier's inner text (with ``""`` escapes collapsed) is passed
-    to ``replace``; its return value is emitted verbatim in place of
-    the original quoted span. Callers own the target quoting/escaping
-    (see :func:`rewrite_double_quoted_identifiers` and the BigQuery
-    adapter's alias-legalizing variant).
-    """
-    out: list[str] = []
-    i = 0
-    n = len(sql)
-    while i < n:
-        ch = sql[i]
-        if ch == "'":
-            j = i + 1
-            while j < n:
-                if sql[j] == "'":
-                    if j + 1 < n and sql[j + 1] == "'":
-                        j += 2
-                        continue
-                    break
-                j += 1
-            out.append(sql[i : j + 1])
-            i = j + 1
-            continue
-        if ch == '"':
-            j = i + 1
-            ident: list[str] = []
-            while j < n:
-                if sql[j] == '"':
-                    if j + 1 < n and sql[j + 1] == '"':
-                        ident.append('"')
-                        j += 2
-                        continue
-                    break
-                ident.append(sql[j])
-                j += 1
-            out.append(replace("".join(ident)))
-            i = j + 1
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-def rewrite_double_quoted_identifiers(sql: str, *, quote: str = "`") -> str:
-    """Re-quote double-quoted identifiers for backtick dialects.
-
-    Spark SQL and BigQuery treat double quotes as string literals and
-    need backticks; see :func:`map_double_quoted_identifiers` for the
-    scanning contract.
-    """
-    return map_double_quoted_identifiers(
-        sql, lambda name: quote + name.replace(quote, quote + quote) + quote
-    )
-
-
-_DIVIDE_NULLIF_RE = re.compile(r"/\s*NULLIF\s*\(")
-_SINGLE_QUOTED_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
-
-
-def literal_spans(sql: str) -> list[tuple[int, int]]:
-    """Spans of single-quoted string literals (with ``''`` escapes)."""
-    return [m.span() for m in _SINGLE_QUOTED_LITERAL_RE.finditer(sql)]
-
-
-def float_nullif_divisions(sql: str, *, cast_type: str = "DOUBLE") -> str:
-    """Make ``x / NULLIF(y, 0)`` divide as floats, matching DuckDB.
-
-    The compiler guards every ratio it emits with exactly this idiom,
-    and DuckDB's ``/`` is always float division. Several warehouses
-    diverge — integer division truncates (Postgres, Trino: ``1 / 4 =
-    0``) or DECIMAL division loses scale (Spark, Trino) — so
-    count-over-count ratios (conversion rates, shares) silently
-    collapse or lose precision. Rewriting the guard to
-    ``CAST(NULLIF(y, 0) AS <cast_type>)`` promotes the whole division
-    to floating point with no effect on already-float ratios.
-    ``cast_type`` is the warehouse's float-ish type — ``DOUBLE``
-    (Spark, Trino) or ``DOUBLE PRECISION`` (Postgres).
-
-    Quote-aware paren matching; ``/ NULLIF(`` occurrences inside
-    single-quoted literals are skipped and nested occurrences are
-    rewritten recursively.
-    """
-    spans = literal_spans(sql)
-
-    def _inside_literal(position: int) -> bool:
-        return any(start <= position < end for start, end in spans)
-
-    out: list[str] = []
-    pos = 0
-    while True:
-        match = _DIVIDE_NULLIF_RE.search(sql, pos)
-        if match is None:
-            out.append(sql[pos:])
-            return "".join(out)
-        if _inside_literal(match.start()):
-            out.append(sql[pos : match.end()])
-            pos = match.end()
-            continue
-        depth = 1
-        index = match.end()
-        in_string = False
-        while index < len(sql) and depth:
-            char = sql[index]
-            if in_string:
-                if char == "'":
-                    if index + 1 < len(sql) and sql[index + 1] == "'":
-                        index += 1  # escaped quote inside the literal
-                    else:
-                        in_string = False
-            elif char == "'":
-                in_string = True
-            elif char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-            index += 1
-        if depth:  # unbalanced parens — leave the tail untouched
-            out.append(sql[pos:])
-            return "".join(out)
-        out.append(sql[pos : match.start()])
-        out.append("/ CAST(NULLIF(")
-        out.append(float_nullif_divisions(sql[match.end() : index - 1], cast_type=cast_type))
-        out.append(f") AS {cast_type})")
-        pos = index
-
-
 def rows_from_cursor(cursor: Any, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Map a DB-API cursor's fetched rows to a list of dicts."""
     columns = [str(col[0]) for col in list(cursor.description or [])]
@@ -427,6 +290,11 @@ class DbApiAdapter(WarehouseAdapter):
         return redacted_error_details(self.engine, self.connection_kind, self.options)
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+
+    def query_prepared(
+        self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         timeout_s = _limit_timeout_seconds(limits)
         use_timeout = timeout_s > 0 and self.supports_statement_timeout
         try:
@@ -434,9 +302,9 @@ class DbApiAdapter(WarehouseAdapter):
             try:
                 if use_timeout:
                     self._apply_statement_timeout(cursor, timeout_s)
-                cursor.execute(sql)
+                cursor.execute(prepared.sql)
                 rows = rows_from_cursor(cursor, limits=limits)
-                return _clip_rows(rows, limits)
+                return restore_column_names(_clip_rows(rows, limits), prepared)
             finally:
                 if use_timeout:
                     with suppress(Exception):

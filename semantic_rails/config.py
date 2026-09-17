@@ -4,8 +4,8 @@ Exposes :func:`load_package_config`, :func:`list_package_ids`,
 :func:`get_package_path`, and ``repo_root`` helpers. Reads each
 package's ``package.yml`` / ``graph.yml`` / ``models/*.yml`` set,
 applies operational-contract overlays, parses expressions, and returns
-a typed :class:`semantic_rails.schema.PackageConfig`. Caches loaded
-configs by path via ``@lru_cache``.
+a typed :class:`semantic_rails.schema.PackageConfig` from one captured
+:class:`LoadedPackageSnapshot`. Only package-discovery paths are cached.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from .operational import (
     normalize_operational_payload,
     validate_operational_payload,
 )
+from .package_snapshot import CapturedSource, LoadedPackageSnapshot, load_package_snapshot
 from .schema import (
     DEFAULT_PATH_HOP_LIMIT,
     MAX_PATH_HOP_LIMIT,
@@ -61,7 +62,7 @@ from .schema import (
     ValueDomainConfig,
     ValueDomainValue,
 )
-from .yaml_loader import load_yaml_file
+from .yaml_loader import load_yaml_file, safe_load
 
 __all__ = [
     "AccumulationConfig",
@@ -97,6 +98,8 @@ __all__ = [
     "load_meta_contract",
     "load_operational_contract",
     "load_package_config",
+    "load_package_snapshot",
+    "LoadedPackageSnapshot",
     "load_yaml_file",
     "merge_operational_payloads",
     "normalize_operational_payload",
@@ -482,14 +485,26 @@ def _normalize_examples(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
     return text_examples, entries
 
 
-def _merge_package_dir(path: str) -> dict[str, Any]:
+def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> dict[str, Any]:
+    contents = captured.contents if captured is not None else None
+
+    def is_file(filename: str) -> bool:
+        return filename in contents if contents is not None else os.path.isfile(filename)
+
+    def load(filename: str) -> dict[str, Any]:
+        return (
+            dict(safe_load(contents[filename]) or {})
+            if contents is not None
+            else _load_yaml_file(filename)
+        )
+
     package_path = os.path.join(path, "package.yml")
-    if not os.path.isfile(package_path):
+    if not is_file(package_path):
         raise SemanticLayerError(
             "INVALID_CONFIG", f"Package directory '{path}' is missing package.yml"
         )
 
-    raw = _load_yaml_file(package_path)
+    raw = load(package_path)
     merged: dict[str, Any] = dict(raw)
     merged.setdefault("defaults", {})
     merged.setdefault("graph", {})
@@ -508,8 +523,8 @@ def _merge_package_dir(path: str) -> dict[str, Any]:
         ("caveats.yml", "semantic_caveats"),
     ):
         full = os.path.join(path, filename)
-        if os.path.isfile(full):
-            doc = _load_yaml_file(full)
+        if is_file(full):
+            doc = load(full)
             list_keys = {"semantic_policies", "semantic_caveats"}
             value = doc.get(key, doc if key in list_keys else {})
             # `semantic_policies:` and `semantic_caveats:` are lists; every other
@@ -521,6 +536,13 @@ def _merge_package_dir(path: str) -> dict[str, Any]:
                 merged[key] = dict(value or {})
 
     def _yaml_files(root: str) -> list[str]:
+        if contents is not None:
+            prefix = root + os.sep
+            return sorted(
+                name
+                for name in contents
+                if name.startswith(prefix) and name.endswith((".yml", ".yaml"))
+            )
         files: list[str] = []
         for current_root, dirnames, filenames in os.walk(root):
             dirnames.sort()
@@ -530,10 +552,10 @@ def _merge_package_dir(path: str) -> dict[str, Any]:
         return files
 
     models_dir = os.path.join(path, "models")
-    if os.path.isdir(models_dir):
+    if captured is not None or os.path.isdir(models_dir):
         models = dict(merged.get("models", {}) or {})
         for file_path in _yaml_files(models_dir):
-            doc = _load_yaml_file(file_path)
+            doc = load(file_path)
             if "models" in doc:
                 model_docs = dict(doc.get("models", {}) or {})
             else:
@@ -553,10 +575,10 @@ def _merge_package_dir(path: str) -> dict[str, Any]:
         merged["models"] = models
 
     relations_dir = os.path.join(path, "relations")
-    if os.path.isdir(relations_dir):
+    if captured is not None or os.path.isdir(relations_dir):
         relations = dict(merged.get("relations", {}) or {})
         for file_path in _yaml_files(relations_dir):
-            doc = _load_yaml_file(file_path)
+            doc = load(file_path)
             if "relations" in doc:
                 relation_docs = dict(doc.get("relations", {}) or {})
             else:
@@ -578,10 +600,10 @@ def _merge_package_dir(path: str) -> dict[str, Any]:
         merged["relations"] = relations
 
     metrics_dir = os.path.join(path, "metrics")
-    if os.path.isdir(metrics_dir):
+    if captured is not None or os.path.isdir(metrics_dir):
         metrics = dict(merged.get("metrics", {}) or {})
         for file_path in _yaml_files(metrics_dir):
-            doc = _load_yaml_file(file_path)
+            doc = load(file_path)
             if "metrics" in doc:
                 metric_docs = dict(doc.get("metrics", {}) or {})
             else:
@@ -597,10 +619,10 @@ def _merge_package_dir(path: str) -> dict[str, Any]:
         merged["metrics"] = metrics
 
     segments_dir = os.path.join(path, "segments")
-    if os.path.isdir(segments_dir):
+    if captured is not None or os.path.isdir(segments_dir):
         segments = dict(merged.get("segments", {}) or {})
         for file_path in _yaml_files(segments_dir):
-            doc = _load_yaml_file(file_path)
+            doc = load(file_path)
             if "segments" in doc:
                 segment_docs = dict(doc.get("segments", {}) or {})
             else:
@@ -617,9 +639,11 @@ def _merge_package_dir(path: str) -> dict[str, Any]:
     return merged
 
 
-def _load_package_source(path: str) -> dict[str, Any]:
-    if os.path.isdir(path):
-        return _merge_package_dir(path)
+def _load_package_source(path: str, *, captured: CapturedSource | None = None) -> dict[str, Any]:
+    if captured.is_directory if captured is not None else os.path.isdir(path):
+        return _merge_package_dir(path, captured=captured)
+    if captured is not None:
+        return dict(safe_load(captured.contents[path]) or {})
     return _load_yaml_file(path)
 
 
@@ -2951,15 +2975,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     return config
 
 
-def load_package_config(path: str) -> PackageConfig:
-    raw = _load_package_source(path)
-    version = int(raw.get("schema_version", 0))
-    if version != 1:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"{path}: schema_version must be 1 (got {version!r})",
-        )
-    return _parse_package(normalize_package(raw), path=path)
+def load_package_config(path: str | LoadedPackageSnapshot) -> PackageConfig:
+    return load_package_snapshot(path).config
 
 
 @lru_cache(maxsize=1)

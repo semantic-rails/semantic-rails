@@ -37,7 +37,7 @@ def _active_patterns(runtime: Any) -> list[Any]:
     """
 
     disabled: set[str] = set()
-    package = getattr(getattr(runtime, "config", None), "package", None)
+    package = getattr(getattr(runtime, "_config", None), "package", None)
     if package is not None:
         planner_cfg = getattr(package, "planner", None)
         if planner_cfg is not None:

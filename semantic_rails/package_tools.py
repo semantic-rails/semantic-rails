@@ -21,9 +21,15 @@ from typing import Any
 
 from .cache import package_fingerprint
 from .config import load_package_config, package_root_for_source, repo_root, resolve_repo_path
-from .config_validation import PackageReference, parse_config_report, validate_config_report
+from .config_validation import (
+    PackageReference,
+    parse_config_report,
+    parse_snapshot_report,
+    validate_config_report,
+)
 from .errors import SemanticLayerError
 from .expressions import expr_to_dict
+from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import package_release_labels
 from .renderer import _quote_ident
 from .runtime import Runtime
@@ -153,9 +159,18 @@ def _artifact_file_rows(source_path: str, *, config: Any | None = None) -> list[
 
 
 def package_manifest(
-    ref: PackageReference, *, config: Any | None = None, checks: dict[str, Any] | None = None
+    ref: PackageReference,
+    *,
+    config: Any | None = None,
+    checks: dict[str, Any] | None = None,
+    snapshot: LoadedPackageSnapshot | None = None,
 ) -> dict[str, Any]:
-    config = config or load_package_config(ref.source_path)
+    snapshot = snapshot or load_package_snapshot(ref.source_path)
+    if config is not None and config != snapshot.config:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", "Manifest config does not match the loaded source snapshot."
+        )
+    config = snapshot.config
     return {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "artifact_kind": "semantic_rails_package",
@@ -173,7 +188,9 @@ def package_manifest(
             "project": "semantic-rails",
             "version": _semantic_rails_version(),
         },
-        "package_hash": package_fingerprint(ref.source_path),
+        "package_hash": snapshot.source_fingerprint,
+        "semantic_fingerprint": snapshot.semantic_fingerprint,
+        "source_provenance": dict(snapshot.provenance),
         "source": {
             "layout": "directory" if Path(ref.source_path).is_dir() else "file",
             "files": [
@@ -234,6 +251,30 @@ def _write_package_artifact(
 ) -> dict[str, Any]:
     config = config or load_package_config(ref.source_path)
     _require_companion_assets(ref, config)
+    file_rows = _artifact_file_rows(ref.source_path, config=config)
+    for _, arcname in file_rows:
+        member = PurePosixPath(arcname)
+        if member.is_absolute() or ".." in member.parts:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"Refusing to write artifact member outside the package root: {arcname!r}",
+                details={"arcname": arcname},
+            )
+    captured = [
+        (source_file, arcname, source_file.read_bytes()) for source_file, arcname in file_rows
+    ]
+    if package_fingerprint(ref.source_path) != manifest["package_hash"]:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", "Package sources changed after validation; retry the package check."
+        )
+    import hashlib
+
+    provenance = manifest.get("source_provenance", {})
+    for _, arcname, data in captured:
+        if arcname in provenance and hashlib.sha256(data).hexdigest() != provenance[arcname]:
+            raise SemanticLayerError(
+                "INVALID_CONFIG", "Package sources changed while building the artifact."
+            )
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True, default=str).encode("utf-8")
@@ -241,15 +282,10 @@ def _write_package_artifact(
         info = tarfile.TarInfo(ARTIFACT_MANIFEST_NAME)
         info.size = len(manifest_bytes)
         archive.addfile(info, fileobj=io.BytesIO(manifest_bytes))
-        for source_file, arcname in _artifact_file_rows(ref.source_path, config=config):
-            member = PurePosixPath(arcname)
-            if member.is_absolute() or ".." in member.parts:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"Refusing to write artifact member outside the package root: {arcname!r}",
-                    details={"arcname": arcname},
-                )
-            archive.add(source_file, arcname=f"package/{arcname}", recursive=False)
+        for source_file, arcname, data in captured:
+            member_info = archive.gettarinfo(str(source_file), arcname=f"package/{arcname}")
+            member_info.size = len(data)
+            archive.addfile(member_info, fileobj=io.BytesIO(data))
     return {
         "path": str(target),
         "manifest_path": ARTIFACT_MANIFEST_NAME,
@@ -722,7 +758,8 @@ def check_package_report(
     base_ref: str = "",
     artifact_path: str = "",
 ) -> dict[str, Any]:
-    parse_report, config = parse_config_report(ref)
+    parse_report, snapshot = parse_snapshot_report(ref)
+    config = snapshot.config if snapshot else None
     if config is None:
         blockers = [{"check": "parse", **dict(error)} for error in list(parse_report["errors"])]
         return {
@@ -742,7 +779,8 @@ def check_package_report(
             "blockers": blockers,
         }
 
-    runtime = Runtime.from_config(config, source_path=ref.source_path, package_id=ref.package_id)
+    assert snapshot is not None
+    runtime = Runtime.from_snapshot(snapshot, package_id=ref.package_id)
     try:
         validate_report = validate_config_report(ref, parse_report=parse_report, runtime=runtime)
         reachability_report = check_warehouse_column_reachability_report(
@@ -757,7 +795,7 @@ def check_package_report(
     finally:
         runtime.close()
     impact = (
-        impact_report(ref, compare_path=compare_path, base_ref=base_ref)
+        impact_report(ref, compare_path=compare_path, base_ref=base_ref, snapshot=snapshot)
         if (compare_path or base_ref) and parse_report["ok"]
         else {
             "changes": [],
@@ -808,7 +846,12 @@ def check_package_report(
         and example_report["ok"]
         and test_report["ok"]
     )
-    manifest = package_manifest(ref, config=config, checks=checks)
+    if package_fingerprint(ref.source_path) != snapshot.source_fingerprint:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Package sources changed during the package check; retry after writes complete.",
+        )
+    manifest = package_manifest(ref, snapshot=snapshot, checks=checks)
     artifact: dict[str, Any] = {}
     if artifact_path and ok:
         artifact = _write_package_artifact(
@@ -876,29 +919,45 @@ def build_package_artifact_report(
 
 
 def diff_package_report(
-    ref: PackageReference, *, compare_path: str = "", base_ref: str = ""
+    ref: PackageReference,
+    *,
+    compare_path: str = "",
+    base_ref: str = "",
+    snapshot: LoadedPackageSnapshot | None = None,
 ) -> dict[str, Any]:
-    current_config = load_package_config(ref.source_path)
-    current_snapshot = _package_snapshot(current_config)
+    snapshot = snapshot or load_package_snapshot(ref.source_path)
+    current_config = snapshot.config
+    current_snapshot = _package_snapshot(snapshot)
     other_path, compare_label = _comparison_source(
         ref.source_path, compare_path=compare_path, base_ref=base_ref
     )
-    previous_config = load_package_config(other_path)
-    previous_snapshot = _package_snapshot(previous_config)
+    previous = load_package_snapshot(other_path)
+    previous_snapshot = _package_snapshot(previous)
     diff = _diff_snapshots(previous_snapshot, current_snapshot)
     return {
         "ok": True,
         "package": {"id": current_config.package.package_id, "source_path": ref.source_path},
-        "comparison": {"label": compare_label, "source_path": other_path},
+        "comparison": {
+            "label": compare_label,
+            "source_path": other_path,
+            "semantic_fingerprint": previous.semantic_fingerprint,
+        },
+        "semantic_fingerprint": snapshot.semantic_fingerprint,
+        "package_hash": snapshot.source_fingerprint,
         **diff,
     }
 
 
 def impact_report(
-    ref: PackageReference, *, compare_path: str = "", base_ref: str = ""
+    ref: PackageReference,
+    *,
+    compare_path: str = "",
+    base_ref: str = "",
+    snapshot: LoadedPackageSnapshot | None = None,
 ) -> dict[str, Any]:
-    diff = diff_package_report(ref, compare_path=compare_path, base_ref=base_ref)
-    current_config = load_package_config(ref.source_path)
+    snapshot = snapshot or load_package_snapshot(ref.source_path)
+    diff = diff_package_report(ref, compare_path=compare_path, base_ref=base_ref, snapshot=snapshot)
+    current_config = snapshot.config
     impacted_metrics = _impacted_metric_ids(current_config, diff["changes"])
     reviewer_teams = sorted(
         {
@@ -1186,118 +1245,29 @@ def _load_named_entries(
     return entries
 
 
-def _package_snapshot(config) -> dict[str, Any]:
-    return {
-        "package": {
-            "id": config.package.package_id,
-            "environments": list(config.package.environments),
-            "release_labels": package_release_labels(config),
-        },
-        "measures": {
-            row.id: {
-                "entity": row.entity,
-                # The expression and physical source are the highest-risk
-                # edits an author can make to a measure; without them in the
-                # snapshot, `diff-package` reports "0 changes" for a
-                # redefined measure SQL expression.
-                "expression": expr_to_dict(row.expr),
-                "source_relation": row.source_relation,
-                "row_grain": list(row.row_grain),
-                "accumulation": {
-                    "kind": row.accumulation.kind,
-                    "snapshot": row.accumulation.snapshot,
-                },
-                "default_aggregation": row.default_aggregation,
-                "allowed_aggregations": list(row.allowed_aggregations),
-                "default_temporal_role": row.default_temporal_role,
-                "compatible_temporal_roles": list(row.compatible_temporal_roles),
-                "comparison_family": row.comparison_family,
-                "comparison_mode": row.comparison_mode,
-                "meta": dict(row.meta),
-            }
-            for row in config.measures
-        },
-        "metrics": {
-            row.id: {
-                "kind": row.kind,
-                "temporal_role": row.temporal_role,
-                "compatible_temporal_roles": list(row.compatible_temporal_roles),
-                "comparison_family": row.comparison_family,
-                "comparison_mode": row.comparison_mode,
-                "expression": expr_to_dict(row.expression),
-                "meta": dict(row.meta),
-            }
-            for row in config.metric_recipes
-        },
-        "relationships": {
-            row.id: {
-                "source_entity": row.source_entity,
-                "target_entity": row.target_entity,
-                "cardinality": row.cardinality,
-                "target_key_type": row.target_key_type,
-                "source_key_role": row.source_key_role,
-                "target_key_role": row.target_key_role,
-                "join_semantics": row.join_semantics,
-                "safety": row.safety,
-                "temporal_validity": dict(row.temporal_validity),
-            }
-            for row in config.relationships
-        },
-        "entities": {
-            row.id: {
-                # Repointing an entity at a different physical relation is a
-                # behavior change and must surface in diff/impact reports.
-                "table": row.table,
-                "allowed_as_root": row.allowed_as_root,
-                "key": list(row.key),
-                "key_roles": dict(row.key_roles),
-                "foreign_keys": {key: list(value) for key, value in row.foreign_keys.items()},
-                "foreign_key_roles": dict(row.foreign_key_roles),
-            }
-            for row in config.entities
-        },
-        "dimensions": {
-            row.id: {"entity": row.entity, "value_domain": row.value_domain}
-            for row in config.dimensions
-        },
-        "policies": {
-            row.id: {
-                "kind": row.kind,
-                "object_ids": list(row.object_ids),
-                "action": row.action,
-                "rationale": row.rationale,
-                "config": dict(row.config),
-            }
-            for row in config.semantic_policies
-        },
-        "caveats": {
-            row.id: {
-                "kind": row.kind,
-                "message": row.message,
-                "object_ids": list(row.object_ids),
-                "entity_values": [dict(item) for item in row.entity_values],
-                "time": dict(row.time),
-                "audiences": list(row.audiences),
-                "environments": list(row.environments),
-                "severity": row.severity,
-                "owner": row.owner,
-            }
-            for row in config.semantic_caveats
-        },
+def _package_snapshot(snapshot: LoadedPackageSnapshot) -> dict[str, Any]:
+    """Review the complete canonical semantics, without a second field allowlist."""
+    names = {
+        "metric_recipes": "metrics",
+        "semantic_policies": "policies",
+        "semantic_caveats": "caveats",
     }
+    sections = {}
+    for name, value in snapshot.semantic.items():
+        if isinstance(value, list) and all(isinstance(row, dict) and "id" in row for row in value):
+            rows = {row["id"]: dict(row) for row in value}
+            if name == "measures":
+                for row in rows.values():
+                    row["expression"] = row.pop("expr")
+        else:
+            rows = {name: value if isinstance(value, dict) else {"value": value}}
+        sections[names.get(name, name)] = rows
+    return sections
 
 
 def _diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
-    for section in (
-        "entities",
-        "dimensions",
-        "relationships",
-        "measures",
-        "metrics",
-        "policies",
-        "caveats",
-    ):
+    for section in sorted(set(before) | set(after)):
         before_rows = dict(before.get(section, {}) or {})
         after_rows = dict(after.get(section, {}) or {})
         # Caveats are advisory by contract: they never alter SQL, rows, or
@@ -1359,13 +1329,26 @@ def _diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
 
 
 def _impacted_metric_ids(config, changes: list[dict[str, Any]]) -> list[str]:
-    changed_ids = {row["object_id"] for row in changes}
-    impacted: list[str] = []
-    for recipe in config.metric_recipes:
-        serialized = json.dumps(expr_to_dict(recipe.expression), sort_keys=True)
-        if recipe.id in changed_ids or any(changed_id in serialized for changed_id in changed_ids):
-            impacted.append(recipe.id)
-    return sorted(set(impacted))
+    # Graph, policy, temporal and domain changes can affect dynamic plan choices;
+    # without a selected query, conservatively review every metric.
+    if any(
+        row["behavior_change"] and row["kind"] not in {"measures", "metrics"} for row in changes
+    ):
+        return sorted(recipe.id for recipe in config.metric_recipes)
+    affected = {row["object_id"] for row in changes}
+    expressions = {
+        recipe.id: json.dumps(expr_to_dict(recipe.expression), sort_keys=True)
+        for recipe in config.metric_recipes
+    }
+    while True:
+        discovered = {
+            key
+            for key, expression in expressions.items()
+            if any(changed in expression for changed in affected)
+        }
+        if discovered.issubset(affected):
+            return sorted(set(expressions) & affected)
+        affected.update(discovered)
 
 
 def _impact_markdown(

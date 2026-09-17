@@ -200,7 +200,7 @@ def _claims_config() -> PackageConfig:
 def test_top_n_group_by_phrase_uses_after_by_as_measure_target() -> None:
     """CMS-style phrasing must not let group words pick the target measure."""
 
-    runtime = SimpleNamespace(config=_claims_config())
+    runtime = SimpleNamespace(_config=_claims_config())
     result = compose(runtime, "Top five primary diagnosis codes by claim paid amount")
 
     assert result.pattern == "metric_by_dimension_rollup"

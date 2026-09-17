@@ -19,7 +19,7 @@ from ._protocol import IntentPattern
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
-    config = runtime.config
+    config = runtime._config
     wants_messages = bool({"email", "sms", "push"} <= terms) and bool(
         {"total", "sum", "message"} & terms
     )

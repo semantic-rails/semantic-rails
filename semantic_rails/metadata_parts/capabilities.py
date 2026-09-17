@@ -264,10 +264,10 @@ def capabilities_payload(
 ) -> dict[str, Any]:
     """Public capabilities envelope — the cheap-orientation surface."""
 
-    supported, unsupported = _capability_payload(runtime.config)
+    supported, unsupported = _capability_payload(runtime._config)
     return {
         "package_id": runtime.package_id,
-        "schema_version": runtime.config.version,
+        "schema_version": runtime._config.version,
         "capabilities": supported,
         "unsupported_capabilities": unsupported,
         "expression_shapes": [dict(shape) for shape in _EXPRESSION_SHAPES],

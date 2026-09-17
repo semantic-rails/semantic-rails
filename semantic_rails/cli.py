@@ -819,7 +819,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                     "name": "warehouse_config",
                     "ok": True,
                     "warehouse": runtime.warehouse,
-                    "connection_kind": runtime.config.package.connection.kind,
+                    "connection_kind": runtime._config.package.connection.kind,
                     "connectivity_checked": False,
                 }
             )

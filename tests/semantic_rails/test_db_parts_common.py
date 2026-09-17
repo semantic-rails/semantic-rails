@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from semantic_rails.db_parts.common import (
+    option_or_env,
+)
+from semantic_rails.sql_preparation import (
     float_nullif_divisions,
     map_double_quoted_identifiers,
-    option_or_env,
     rewrite_double_quoted_identifiers,
 )
 

@@ -39,7 +39,8 @@ def governed_app(package_config_factory, monkeypatch):
     set_policy_context_resolver(IdentityResolver())
     _, package_path = package_config_factory("jaffle_shop")
     app = SemanticLayerASGIApp(path=str(package_path), max_workers=1)
-    app.runtime.config.semantic_policies.append(
+    config = app.runtime.config
+    config.semantic_policies.append(
         SemanticPolicyConfig(
             id="policy.test.production_revenue_hold",
             kind="object_access",
@@ -49,6 +50,15 @@ def governed_app(package_config_factory, monkeypatch):
             action="deny",
         )
     )
+    old_runtime = app.runtime
+    app.runtime = type(old_runtime).from_config(
+        config,
+        source_path=old_runtime.source_path,
+        package_id=old_runtime.package_id,
+        prefer_package_root_assets=old_runtime.prefer_package_root_assets,
+    )
+    old_runtime.close()
+    app.mcp_adapter.runtime = app.runtime
     try:
         yield app
     finally:

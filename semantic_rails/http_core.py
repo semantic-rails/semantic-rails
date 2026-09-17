@@ -213,9 +213,9 @@ class SemanticHTTPService:
         if isinstance(exc, HTTPInputError):
             return self.invalid_request_payload(str(exc)), 400
         if isinstance(exc, SemanticLayerError):
-            enriched = enrich_object_not_found(exc, self.runtime.config)
-            enriched = enrich_expression_ast_error(enriched, self.runtime.config)
-            enriched = enrich_path_not_found(enriched, self.runtime.config)
+            enriched = enrich_object_not_found(exc, self.runtime._config)
+            enriched = enrich_expression_ast_error(enriched, self.runtime._config)
+            enriched = enrich_path_not_found(enriched, self.runtime._config)
             error_issue = exception_issue(enriched, stage=stage)
             return {
                 "ok": False,
@@ -308,7 +308,7 @@ class SemanticHTTPService:
 
     def health_payload(self) -> dict[str, Any]:
         with self.runtime.request_scope():
-            config = self.runtime.config
+            config = self.runtime._config
             return {
                 "ok": True,
                 "service": "semantic-rails",
@@ -323,7 +323,7 @@ class SemanticHTTPService:
     def ready_payload(self, headers: Mapping[str, Any] | None) -> dict[str, Any]:
         with self.runtime.request_scope():
             checks: list[dict[str, Any]] = []
-            config = self.runtime.config
+            config = self.runtime._config
             checks.append(
                 {"name": "package_loaded", "ok": True, "package_id": config.package.package_id}
             )
@@ -386,7 +386,7 @@ class SemanticHTTPService:
                 "supported_api_versions": [API_VERSION],
                 "route_prefix": "/api/v1",
                 "routes": list(PUBLIC_V1_ROUTES),
-                "schema_version": self.runtime.config.version,
+                "schema_version": self.runtime._config.version,
                 "package": package,
                 "warehouse": self.runtime.warehouse,
                 "dialect": dialect.name,
