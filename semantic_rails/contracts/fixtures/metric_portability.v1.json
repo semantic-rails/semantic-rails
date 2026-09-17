@@ -1,0 +1,79 @@
+{
+  "fixture_format_version": 1,
+  "package_id": "portable_customers",
+  "namespace": "portable",
+  "framework_input": {
+    "semantic_models": [
+      {
+        "name": "customers",
+        "node_relation": {
+          "alias": "customers"
+        },
+        "entities": [
+          {
+            "name": "customer",
+            "type": "primary",
+            "expr": "customer_id"
+          }
+        ],
+        "dimensions": [
+          {
+            "name": "customer_name",
+            "type": "categorical"
+          }
+        ],
+        "measures": [
+          {
+            "name": "customer_count",
+            "agg": "count_distinct",
+            "expr": "customer_id"
+          }
+        ]
+      }
+    ],
+    "metrics": [
+      {
+        "name": "customer_count",
+        "type": "simple",
+        "description": "Distinct customers",
+        "type_params": {
+          "measure": {
+            "name": "customer_count"
+          }
+        }
+      }
+    ]
+  },
+  "seed_sql": "CREATE TABLE customers (customer_id INTEGER, customer_name VARCHAR); INSERT INTO customers VALUES (1, 'Ada'), (2, 'Grace'), (3, 'Margaret');\n",
+  "expected_metric_ids": [
+    "metric.portable.customer_count"
+  ],
+  "expected_value": 3,
+  "compatibility_cases": [
+    {
+      "change": "source_comment",
+      "classification": "metadata",
+      "code": "SOURCE_PROVENANCE_CHANGED"
+    },
+    {
+      "change": "metric_label",
+      "classification": "metadata",
+      "code": "METRIC_PRESENTATION_CHANGED"
+    },
+    {
+      "change": "add_metric",
+      "classification": "additive",
+      "code": "METRIC_ADDED"
+    },
+    {
+      "change": "measure_expression",
+      "classification": "breaking",
+      "code": "METRIC_DEFINITION_CHANGED"
+    },
+    {
+      "change": "rename_metric",
+      "classification": "breaking",
+      "code": "METRIC_REMOVED"
+    }
+  ]
+}

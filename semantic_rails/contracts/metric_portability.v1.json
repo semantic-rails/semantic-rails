@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-rails.com/schemas/metric_portability.v1.json",
+  "title": "Semantic Rails metric portability (v1)",
+  "description": "Read-only BI projection of loaded engine semantics. Identity is package.namespace plus metric.id. Queries execute by metric reference in the governed engine; this is not an independently executable semantic package or an authorization grant.",
+  "type": "object",
+  "required": [
+    "contract_format_version",
+    "producer",
+    "package",
+    "context_hash",
+    "metrics",
+    "measures",
+    "query_capabilities",
+    "provenance"
+  ],
+  "properties": {
+    "contract_format_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "producer": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "const": "semantic-rails"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "package": {
+      "type": "object",
+      "required": [
+        "id",
+        "namespace",
+        "schema_version",
+        "semantic_hash"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "semantic_hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      }
+    },
+    "context_hash": {
+      "$ref": "#/$defs/Hash",
+      "description": "Conservative fingerprint of supporting execution semantics, excluding presentation and deployment locators. This is a change detector, never stable identity."
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "description",
+          "definition",
+          "definition_hash",
+          "query_template"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "definition": {
+            "type": "object",
+            "required": [
+              "id",
+              "kind",
+              "expression",
+              "value_type"
+            ],
+            "description": "Canonical read-only projection of the loaded MetricConfig. Expression uses the existing Query IR AST; other normalized fields retain engine meanings. Consumers must not evaluate this as SQL.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "query_ir.v1.json#/$defs/SelectExpression"
+              },
+              "value_type": {
+                "type": "string"
+              }
+            }
+          },
+          "definition_hash": {
+            "$ref": "#/$defs/Hash"
+          },
+          "query_template": {
+            "$ref": "query_ir.v1.json"
+          }
+        }
+      }
+    },
+    "measures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "expr",
+          "default_aggregation"
+        ],
+        "description": "Read-only loaded measure definitions for explaining metric references. Physical expressions are author-level source metadata.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "expr": {
+            "type": "object"
+          },
+          "default_aggregation": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "query_capabilities": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "version",
+        "runtime_validation_required",
+        "groupable_dimensions",
+        "filterable_dimensions",
+        "temporal_roles"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "https://semantic-rails.com/schemas/query_ir.v1.json"
+        },
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "runtime_validation_required": {
+          "const": true
+        },
+        "groupable_dimensions": {
+          "$ref": "#/$defs/Ids",
+          "description": "Candidate dimension IDs; connectivity, semantics and authorization still require runtime validation."
+        },
+        "filterable_dimensions": {
+          "$ref": "#/$defs/Ids"
+        },
+        "temporal_roles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "supported_grains",
+              "timezone"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "supported_grains": {
+                "$ref": "#/$defs/Ids"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "source_fingerprint",
+        "import"
+      ],
+      "properties": {
+        "source_fingerprint": {
+          "$ref": "#/$defs/Hash"
+        },
+        "import": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "format_version",
+                "framework",
+                "parsed_input_hash",
+                "warnings"
+              ],
+              "properties": {
+                "format_version": {
+                  "type": "integer",
+                  "const": 1
+                },
+                "framework": {
+                  "const": "metricflow"
+                },
+                "parsed_input_hash": {
+                  "$ref": "#/$defs/Hash"
+                },
+                "warnings": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "Ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

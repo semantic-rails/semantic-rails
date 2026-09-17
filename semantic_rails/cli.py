@@ -35,7 +35,7 @@ from .config_validation import (
     resolve_package_reference,
     validate_config_report,
 )
-from .contracts import export_semantic_contract
+from .contracts import export_metric_portability, export_semantic_contract
 from .dev_cli import add_developer_cli, cmd_init_project, run_interactive_shell
 from .diagnostics import exception_issue
 from .errors import SemanticLayerError
@@ -977,7 +977,12 @@ def cmd_export_contract(args: argparse.Namespace) -> None:
     """Emit the canonical framework-neutral semantic validation contract."""
 
     ref = resolve_package_reference(package_id=args.package, path=args.path)
-    payload = export_semantic_contract(ref.source_path)
+    exporter = (
+        export_metric_portability
+        if getattr(args, "format", "validation") == "metrics"
+        else export_semantic_contract
+    )
+    payload = exporter(ref.source_path)
     rendered = json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
     if args.output:
         output = Path(args.output).expanduser()
@@ -1308,6 +1313,12 @@ def main() -> None:
         ),
     )
     _add_config_reference_args(p_export_contract, package_choices)
+    p_export_contract.add_argument(
+        "--format",
+        choices=["validation", "metrics"],
+        default="validation",
+        help="Validation contract (default) or read-only v1 metric portability catalog.",
+    )
     p_export_contract.add_argument(
         "--output",
         "-o",

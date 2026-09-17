@@ -176,7 +176,7 @@ Build and verify the exact wheel and sdist before publishing:
 
 ```bash
 uv build --out-dir dist
-uv pip install --python .venv/bin/python --reinstall dist/semantic_rails-0.2.0-py3-none-any.whl
+uv pip install --python .venv/bin/python --reinstall dist/semantic_rails-0.2.1-py3-none-any.whl
 uv run python scripts/verify_package_distribution.py --dist-dir dist --no-build
 ```
 

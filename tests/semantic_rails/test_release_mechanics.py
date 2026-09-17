@@ -339,12 +339,13 @@ def test_post_publish_verifier_rejects_every_unexpected_release_file(monkeypatch
 def test_release_readiness_derives_version_and_rejects_mismatched_tag():
     from scripts.verify_release_readiness import project_version, validate_release_tag
 
-    assert project_version() == _pyproject()["project"]["version"] == "0.2.0"
+    version = _pyproject()["project"]["version"]
+    assert project_version() == version
     errors: list[str] = []
     validate_release_tag(errors, "v9.9.9")
-    assert errors and "v0.2.0" in errors[0]
+    assert errors and f"v{version}" in errors[0]
     errors.clear()
-    validate_release_tag(errors, "v0.2.0")
+    validate_release_tag(errors, f"v{version}")
     assert errors == []
 
 
