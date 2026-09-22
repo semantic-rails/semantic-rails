@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ## Unreleased
 
-No unreleased changes.
+Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
 ## 0.2.1 — 2026-09-15 — Authorized execution, immutable snapshots and metric portability
 

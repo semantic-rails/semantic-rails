@@ -32,6 +32,7 @@ jobs:
             backend:
               - ".github/workflows/**"
               - "CHANGELOG.md"
+              - "changelog.d/**"
               - "CODE_OF_CONDUCT.md"
               - "CONTRIBUTING.md"
               - "LICENSE"
@@ -74,6 +75,7 @@ jobs:
           prune-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --locked
+      - run: uv run python scripts/changelog_fragments.py check
       - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
       - run: uv run semantic-rails parse-config --package jaffle_shop
       - run: uv run semantic-rails validate-config --package jaffle_shop --quiet

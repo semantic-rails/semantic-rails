@@ -18,6 +18,9 @@ remaining controls live in GitHub or PyPI and must be confirmed by a repository 
 
 ## Every release
 
+- In the release PR, fold `changelog.d/` into `CHANGELOG.md` with
+  `uv run python scripts/changelog_fragments.py release --version <project.version> --date <YYYY-MM-DD> --title "<theme>"`
+  and review the new section before tagging. The publish workflow rejects unfolded fragments.
 - Make the release PR green, including Python, lint/type, Python and npm security audits, docs,
   the planner benchmark, clean-wheel installation, and package tests.
 - Run `python scripts/generate_contract_artifacts.py --check` and

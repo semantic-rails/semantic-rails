@@ -523,6 +523,13 @@ def validate_release_tag(errors: list[str], tag: str) -> None:
         errors.append(f"release tag {tag!r} must exactly match project version {expected!r}")
 
 
+def validate_changelog_folded(errors: list[str], tag: str, root: Path = REPO_ROOT) -> None:
+    """A tagged release must have folded every changelog.d/ fragment into CHANGELOG.md."""
+    unfolded = sorted(p.name for p in (root / "changelog.d").glob("*") if p.name != "README.md")
+    if tag and unfolded:
+        errors.append(f"release tag {tag!r} has unfolded changelog.d/ fragments: {unfolded}")
+
+
 def validate_prelaunch_gaps(errors: list[str]) -> None:
     if (REPO_ROOT / "ui_demo").exists():
         errors.append("ui_demo/ workbench surface must not be present")
@@ -716,6 +723,7 @@ def main(argv: list[str] | None = None) -> int:
     validate_prelaunch_gaps(errors)
     validate_v1_completion(errors)
     validate_release_tag(errors, args.tag)
+    validate_changelog_folded(errors, args.tag)
 
     license_text = read("LICENSE")
     if (
