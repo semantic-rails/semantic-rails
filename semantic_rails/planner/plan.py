@@ -235,7 +235,12 @@ def plan_payload(
     # detected but could not resolve (and nothing else bounded the
     # query), the draft answers a *different* question than the user
     # asked. Downgrade instead of marking it ready to execute.
-    time_why = _unresolved_time_why(intent_str, best_draft.query) if best_ok else None
+    time_why = (
+        _unresolved_time_why(intent_str, partial_query)
+        or _start_dropped_why(best.get("start_dropped"))
+        if best_ok
+        else None
+    )
     # Same honesty principle for intent shape: a conversion/funnel ask
     # answered with a non-conversion metric (e.g. AOV) is a confidently
     # wrong answer, not a best effort. Downgrade and point at the
@@ -377,12 +382,70 @@ def _planned_row(
             "blocked": True,
         }
     validation = _validate_query(runtime, merged_draft.query, partial_query)
+    start_dropped = ""
+    time_spec = merged_draft.query.get("time")
+    caller_time = (partial_query or {}).get("time")
+    if (
+        not validation["ok"]
+        and _codes(validation) & _LOOKBACK_TIME_CODES
+        and isinstance(time_spec, dict)
+        and time_spec.get("start")
+        and not (isinstance(caller_time, dict) and caller_time.get("start"))
+    ):
+        # The metric looks back over earlier periods, so the engine can't
+        # bound time.start. Keep the end: the draft runs, returns every
+        # period up to it, and plan says so.
+        unbounded = {**time_spec}
+        start_dropped = str(unbounded.pop("start"))
+        retry = replace(merged_draft, query={**merged_draft.query, "time": unbounded})
+        retry_validation = _validate_query(runtime, retry.query, partial_query)
+        if retry_validation["ok"]:
+            merged_draft, validation = retry, retry_validation
+        else:
+            start_dropped = ""
     return {
         "status": "ok" if validation["ok"] else "low_confidence",
         "draft": merged_draft,
         "pattern": pattern,
         "validation": validation,
         "blocked": False,
+        "start_dropped": start_dropped,
+    }
+
+
+# Validation codes for a bounded time.start that a lookback metric can't take.
+_LOOKBACK_TIME_CODES = frozenset(
+    {"WINDOWED_TIME_FILTER_UNSUPPORTED", "CUMULATIVE_TIME_FILTER_UNSUPPORTED"}
+)
+
+
+def _codes(validation: dict[str, Any]) -> set[str]:
+    return {
+        str(issue.get("code", ""))
+        for issue in list(validation.get("errors") or [])
+        if isinstance(issue, dict)
+    }
+
+
+def _start_dropped_why(start: Any) -> dict[str, Any] | None:
+    """Explain a window whose start a lookback metric couldn't take."""
+
+    if not start:
+        return None
+    return {
+        "code": "TIME_WINDOW_START_DROPPED",
+        "message": (
+            f"The question's window starts {start}, but this metric looks back over earlier "
+            "periods, so the query can't bound time.start. best.query_ir returns every period "
+            f"up to time.end; keep only the rows from {start} on."
+        ),
+        "details": {"path": "time.start", "requested_start": start},
+        "recovery_hints": [
+            {
+                "kind": "filter_rows_after_execution",
+                "message": f"Execute best.query_ir and keep the rows dated {start} or later.",
+            }
+        ],
     }
 
 
@@ -943,14 +1006,16 @@ def _structural_precheck(query: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _unresolved_time_why(intent: str, query: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a ``why`` envelope when the intent's time scope got dropped.
+def _unresolved_time_why(
+    intent: str, partial_query: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Return a ``why`` envelope when the intent's time scope wasn't resolved.
 
-    Triggers only when (a) the intent contains a temporal phrase the
-    window resolver could not turn into bounds, and (b) the realized IR
-    carries no time window from anywhere else (resolved phrase, caller's
-    ``partial_query``). The shape mirrors the pattern ``blocked_reason``
-    envelope ({code, message, details, recovery_hints}).
+    Triggers when the intent contains a time phrase the window resolver
+    didn't turn into bounds, whatever window the draft happens to carry:
+    only an explicit window in the caller's ``partial_query`` settles it.
+    The shape mirrors the pattern ``blocked_reason`` envelope ({code,
+    message, details, recovery_hints}).
     """
 
     from ._base import _SUPPORTED_WINDOW_FORMS, _unresolved_time_phrases  # noqa: WPS433
@@ -958,15 +1023,17 @@ def _unresolved_time_why(intent: str, query: dict[str, Any]) -> dict[str, Any] |
     phrases = _unresolved_time_phrases(intent)
     if not phrases:
         return None
-    time_spec = query.get("time") if isinstance(query, dict) else None
-    if isinstance(time_spec, dict) and any(time_spec.get(key) for key in ("start", "end", "range")):
+    caller_time = (partial_query or {}).get("time")
+    if isinstance(caller_time, dict) and any(
+        caller_time.get(key) for key in ("start", "end", "range")
+    ):
         return None
     return {
         "code": "TIME_WINDOW_UNRESOLVED",
         "message": (
             "The intent names a time window the planner could not resolve; "
-            "best.query_ir is NOT time-bounded and would answer a different "
-            "(unbounded) question if executed as-is."
+            "best.query_ir does not carry that window and would answer a "
+            "different question if executed as-is."
         ),
         "details": {
             "path": "time",

@@ -138,9 +138,15 @@ need full diagnostics. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
-`plan` resolves calendar windows (years, half years, quarters, months and days) and
-relative ones ("last 7 days"). A question that names a window it can't resolve, such as
-"2017 vs 2016", returns `low_confidence` with `why.code="TIME_WINDOW_UNRESOLVED"`.
+`plan` resolves a time window only when the question names exactly one, in a form it reads
+unambiguously: a year after "in", "for" or "during", consecutive years, a quarter or half with a
+year, a month or month range with a year, days with a year, an ISO date, or a relative window
+("last 7 days"). Anything else, such as a bound ("before 2017", "since March 2017"), a qualifier
+("early 2017"), a comparison year ("2017 vs 2016"), a numeric date (4/3/2017) or two windows at
+once, returns `low_confidence` with `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases it
+couldn't resolve, never a window narrowed or widened to the nearest form that parses. A metric
+that looks back over earlier periods can't take a bounded `time.start`; `plan` then keeps the
+end and returns `why.code="TIME_WINDOW_START_DROPPED"` with the start to filter by.
 Use `detail="full"` only when you need alternatives or blocked drafts.
 
 Use `compile` and read its `explain` payload to review relationship paths before executing a
