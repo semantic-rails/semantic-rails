@@ -1419,7 +1419,7 @@ def _validate_split_package(
             "package": package_root.get("package"),
             "graph": graph_root.get("graph"),
             "models": models,
-            **_loader_metrics_and_segments(path),
+            **_loader_metrics_and_segments(path, errors),
         },
         path_label=str(path),
         errors=errors,
@@ -1441,20 +1441,30 @@ def _validate_split_package(
     return errors
 
 
-def _loader_metrics_and_segments(path: Path) -> dict[str, Any]:
+def _loader_metrics_and_segments(path: Path, errors: list[str]) -> dict[str, Any]:
     """The metric and segment specs the loader reads from a package directory.
 
     Uses the loader's own source capture and merge, so the shape checks see every
     supported layout (specs in package.yml, root metrics.yml and segments.yml, and
     files under metrics/ and segments/: a mapping, a `metric:`/`segment:` wrapper or
     a bare spec), skip the directories the loader skips, and check the copy the
-    loader keeps when a key is defined twice. A package the merge can't read fails
-    the load step instead.
+    loader keeps when a key is defined twice. If the merge fails, that is an error:
+    the checks can't run, even when a later load succeeds.
     """
     try:
         source = capture_package_source(path)
         merged = _merge_package_dir(source.source_path, captured=source)
-    except (SemanticLayerError, yaml.YAMLError, OSError, TypeError, ValueError, AttributeError):
+    except (
+        SemanticLayerError,
+        yaml.YAMLError,
+        OSError,
+        TypeError,
+        ValueError,
+        AttributeError,
+    ) as exc:
+        add_error(
+            errors, f"{path}: can't read the metric and segment specs to check their keys: {exc}"
+        )
         return {"metrics": {}, "segments": {}}
     return {"metrics": merged.get("metrics"), "segments": merged.get("segments")}
 

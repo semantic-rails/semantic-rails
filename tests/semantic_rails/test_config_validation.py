@@ -12,6 +12,7 @@ import yaml
 
 from semantic_rails import cli as cli_module
 from semantic_rails import config as config_module
+from semantic_rails import config_validation as config_validation_module
 from semantic_rails.config import resolve_repo_path
 from semantic_rails.config_validation import (
     _run_probe,
@@ -2348,3 +2349,32 @@ def test_key_checks_accept_a_relative_package_path(package_config_factory, monke
 
     assert len(errors) == 1, errors
     assert "has 'where' outside membership:" in errors[0]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("read failed"),
+        SemanticLayerError(
+            "INVALID_CONFIG", "Package sources changed during loading; retry after writes complete."
+        ),
+    ],
+    ids=["os-error", "sources-changed"],
+)
+def test_key_checks_fail_closed_when_their_merge_fails(
+    package_config_factory, monkeypatch, failure
+):
+    # Only the key checks' merge fails; the package itself still loads. The checks must
+    # not be skipped silently.
+    _, package_dir = package_config_factory("jaffle_shop")
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(config_validation_module, "_merge_package_dir", fail)
+
+    errors = validate_runtime_package(Path(package_dir))
+    assert len(errors) == 1, errors
+    assert "can't read the metric and segment specs to check their keys" in errors[0]
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+    assert report["ok"] is False
