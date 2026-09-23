@@ -30,6 +30,7 @@ def _conversion_query(
     dimension_bindings: dict | None = None,
     base_measure: str = "measure.jaffle.order_count",
     converted_measure: str = "measure.jaffle.order_count",
+    entity: str = "entity.jaffle_customer",
 ) -> dict:
     base: dict = {"kind": "aggregate", "measure": base_measure}
     converted: dict = {"kind": "aggregate", "measure": converted_measure}
@@ -41,7 +42,7 @@ def _conversion_query(
         base["window"] = base_window
     expression: dict = {
         "kind": "conversion",
-        "entity": "entity.jaffle_customer",
+        "entity": entity,
         "window": {"unit": "day", "value": 28},
         "matching_mode": "first_converted_after_base",
         "base": base,
@@ -320,12 +321,37 @@ def test_operand_measure_spelling_its_key_in_another_case_is_rejected(tmp_path):
     assert "counts column 'ORDER_ID', not the key 'order_id'" in error["message"]
 
 
+def test_operand_measure_counting_the_key_column_of_another_entity_is_rejected(tmp_path):
+    counted = {"kind": "column", "column": "order_id", "entity": "entity.jaffle_order_lifecycle"}
+    runtime = _runtime_with_measure(
+        tmp_path, "orders.yml", "lifecycle_order_count", {**_EVENT_COUNT, "expr": counted}
+    )
+    report = runtime.validate(
+        _conversion_query(base_measure="measure.jaffle.lifecycle_order_count")
+    )
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert (
+        "counts column 'order_id' of 'entity.jaffle_order_lifecycle', not the key 'order_id'"
+        in error["message"]
+    )
+
+
 def test_fact_model_operand_measure_is_rejected(tmp_path):
     # A fact-model entity_count measure counts its time column, which is also the time
     # entity's key, but it counts rows of the fact relation, not of the calendar table
     # that conversion lowering reads.
+    # Matched on the time entity, which the measure can reach, it used to validate and read
+    # the calendar table instead of the rollup.
     runtime = _runtime_with_measure(tmp_path, "daily_metrics.yml", "rollup_day_count", _EVENT_COUNT)
-    report = runtime.validate(_conversion_query(base_measure="measure.jaffle.rollup_day_count"))
+    report = runtime.validate(
+        _conversion_query(
+            base_measure="measure.jaffle.rollup_day_count",
+            converted_measure="measure.jaffle.rollup_day_count",
+            entity="entity.jaffle_time",
+        )
+    )
     assert report["ok"] is False
     error = report["errors"][0]
     assert error["code"] == "CONVERSION_NOT_SUPPORTED"

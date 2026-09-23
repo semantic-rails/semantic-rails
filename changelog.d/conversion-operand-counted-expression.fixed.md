@@ -1,7 +1,8 @@
 - A conversion operand whose measure counts anything other than its entity's
   rows is now rejected with `CONVERSION_NOT_SUPPORTED`: a measure that counts an
   expression, such as an `entity_count` measure with a `CASE WHEN ... THEN key
-  END` filter, a column other than the entity's key, or a fact model's rows.
+  END` filter, a column other than the entity's key (spelled as the entity
+  declares it, case included), or a fact model's rows.
   Before, the conversion counted every row of the entity and silently dropped
   the measure's definition. On `jaffle_shop`, a new-customer-order-to-large-order
   rate with `large_order_count` as the converted operand came out as 1.0
