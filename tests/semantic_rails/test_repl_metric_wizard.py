@@ -73,8 +73,13 @@ def _terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     backend.set_backend(None)
 
 
-def _shop(tmp_path: Path, *, order_times: tuple[str, ...] = ("ordered_at",)) -> Path:
-    """The starter package (events, on occurred_at) plus an orders model and a customers model."""
+def _shop(
+    tmp_path: Path, *, order_times: tuple[str, ...] = ("ordered_at",), calendar: bool = False
+) -> Path:
+    """The starter package (events, on occurred_at) plus an orders model and a customers model.
+
+    ``calendar`` adds a date spine, which rolling windows and prior periods need.
+    """
 
     project = Path(
         scaffold.create_project_report(
@@ -150,8 +155,41 @@ def _shop(tmp_path: Path, *, order_times: tuple[str, ...] = ("ordered_at",)) -> 
             "model": model_id,
             "allowed_as_root": True,
         }
+    if calendar:
+        _add_calendar(project, graph)
     (project / "graph.yml").write_text(yaml.safe_dump(graph, sort_keys=False), encoding="utf-8")
     return project
+
+
+def _add_calendar(project: Path, graph: dict[str, Any]) -> None:
+    model = {
+        "id": "calendar",
+        "relation": "calendar",
+        "calendar_id": "default",
+        "entities": {"time": {}},
+        "times": {
+            "date_day": {
+                "label": "Calendar day",
+                "column": "date_day",
+                "kind": "date",
+                "class": "calendar_time",
+            }
+        },
+        "dimensions": {
+            f"{grain}_start": {"label": f"Calendar {grain} start", "kind": "date"}
+            for grain in ("week", "month", "quarter", "year")
+        },
+    }
+    (project / "models" / "core" / "calendar.yml").write_text(
+        yaml.safe_dump({"model": model}, sort_keys=False), encoding="utf-8"
+    )
+    graph["graph"]["entities"]["time"] = {
+        "label": "Calendar",
+        "kind": "time",
+        "key": ["date_day"],
+        "model": "calendar",
+        "allowed_as_root": False,
+    }
 
 
 def _author_metric(project: Path, answers: dict[str, Any]) -> tuple[_Script, dict[str, Any]]:
@@ -330,3 +368,146 @@ def test_cancelling_the_metric_also_takes_back_the_measure_made_for_it(
     assert "Authoring cancelled; no files changed." in capsys.readouterr().out
     assert undo == []
     assert _tree_bytes(project) == before
+
+
+REVENUE_OFFSET = {"unit": "year", "value": 1}
+GROWTH_AGGREGATE = {"kind": "aggregate", "measure": "measure.shop.revenue", "aggregation": "sum"}
+GROWTH_PRIOR = {"kind": "prior_period", "input": GROWTH_AGGREGATE, "offset": REVENUE_OFFSET}
+
+
+@pytest.mark.parametrize(
+    ("recipe", "answers", "expected", "value_type"),
+    [
+        ("Running total", {}, {"kind": "cumulative"}, "currency"),
+        (
+            "Rolling window",
+            {"Window unit": "Weeks", "Window length": "4"},
+            {"kind": "rolling", "window": {"unit": "week", "value": 4}},
+            "currency",
+        ),
+        (
+            "Period to date",
+            {"Period": "Quarter to date"},
+            {"kind": "period_to_date", "period": "quarter"},
+            "currency",
+        ),
+        (
+            "Prior period",
+            {},
+            {"kind": "prior_period", "offset": {"unit": "month", "value": 1}},
+            "currency",
+        ),
+        (
+            "Growth",
+            {"Compare with how far back": "Years"},
+            {
+                "kind": "derived",
+                "expression": {
+                    "kind": "binary",
+                    "op": "divide",
+                    "null_behavior": "null_if_zero",
+                    "left": {
+                        "kind": "binary",
+                        "op": "subtract",
+                        "left": GROWTH_AGGREGATE,
+                        "right": GROWTH_PRIOR,
+                    },
+                    "right": GROWTH_PRIOR,
+                },
+            },
+            "percent",
+        ),
+    ],
+)
+def test_every_recipe_over_time_writes_a_metric_that_parses_and_compiles(
+    tmp_path: Path,
+    recipe: str,
+    answers: dict[str, Any],
+    expected: dict[str, Any],
+    value_type: str,
+) -> None:
+    from semantic_rails.runtime import Runtime
+
+    project = _shop(tmp_path, calendar=True)
+
+    _, metric = _author_metric(
+        project,
+        {"Metric key": "timed", "Metric recipe": recipe, "Measure": "revenue - ", **answers},
+    )
+
+    assert {key: metric[key] for key in expected} == expected
+    if expected["kind"] != "derived":
+        assert metric["measure"] == "measure.shop.revenue"
+    assert metric["value_type"] == value_type
+    assert metric["temporal_role"] == "temporal_role.shop_order_ordered_at"
+    compiled = Runtime.from_path(str(project)).compile(
+        {
+            "version": 1,
+            "select": [{"expression": {"metric": "metric.shop.timed"}}],
+            # A rolling window is read at its own unit; a 4-week window has no month grain.
+            "time": {
+                "temporal_role": metric["temporal_role"],
+                "grain": dict(metric.get("window", {})).get("unit", "month"),
+            },
+        }
+    )
+    assert compiled.get("ok", True) and "SELECT" in str(compiled.get("rendered_sql") or "")
+
+
+def test_recipes_that_need_a_calendar_are_offered_only_with_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script, _ = _author_metric(
+        _shop(tmp_path), {"Metric key": "total", "Measure to publish": "revenue - "}
+    )
+
+    assert [option.split(" - ")[0] for option in script.options["Metric recipe"]] == [
+        "Aggregate",
+        "Ratio",
+        "Running total",
+        "Period to date",
+    ]
+    assert "need a calendar table in the package" in capsys.readouterr().out
+
+
+def test_a_recipe_over_time_needs_a_time_axis(tmp_path: Path) -> None:
+    from semantic_rails.errors import SemanticLayerError
+
+    project = _shop(tmp_path)
+    backend.set_backend(
+        _Script(
+            {
+                "Metric key": "customers_to_date",
+                "Metric recipe": "Running total",
+                "Measure": "customer_count - ",
+            }
+        )
+    )
+
+    with pytest.raises(SemanticLayerError, match="Running total needs a time axis"):
+        shell._handle_repl_line(
+            "author metric", PackageReference(source_path=str(project)), undo_stack=[]
+        )
+    assert not (project / "metrics" / "core" / "customers_to_date.yml").exists()
+
+
+def test_changing_the_recipe_drops_the_old_recipes_fields(tmp_path: Path) -> None:
+    project = _shop(tmp_path, calendar=True)
+    _author_metric(
+        project,
+        {"Metric key": "revenue_7d", "Metric recipe": "Rolling window", "Measure": "revenue - "},
+    )
+
+    _, metric = _author_metric(
+        project,
+        {
+            "Metric key": "revenue_7d",
+            "Manage and update this existing metric?": True,
+            "Metric recipe": "Aggregate",
+            "Measure to publish": "revenue - ",
+            "Update this metric?": True,
+        },
+    )
+
+    assert metric["kind"] == "aggregate"
+    assert "window" not in metric

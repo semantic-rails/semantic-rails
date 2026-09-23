@@ -539,14 +539,29 @@ def _metric_change(
     recommended_key = str(recommended_measure.get("key", "metric")) if measures else "metric"
     key, label, existing = _author_identity(project, inventory, "metric", recommended_key)
     current = dict(existing.get("spec", {}) or {}) if existing else {}
+    has_calendar = any(
+        (row.get("spec", {}) or {}).get("kind") == "time"
+        for row in _inventory_items(inventory, "entity")
+    )
+    recipes = [
+        ("aggregate", "Aggregate - publish one measure as a stable KPI"),
+        ("ratio", "Ratio - divide one measure/metric by another"),
+        *(
+            (recipe, text)
+            for recipe, text in _TIME_RECIPES.items()
+            if has_calendar or recipe not in _CALENDAR_RECIPES
+        ),
+    ]
+    if not has_calendar:
+        print(
+            "  Rolling windows, prior periods and growth need a calendar table in the package; "
+            "they appear here once it has one."
+        )
     metric_kind = _author_choice(
         "Metric recipe",
-        [
-            ("aggregate", "Aggregate - publish one measure as a stable KPI"),
-            ("ratio", "Ratio - divide one measure/metric by another"),
-        ],
+        recipes,
         default=str(current.get("kind", "aggregate"))
-        if current.get("kind") in {"aggregate", "ratio"}
+        if current.get("kind") in {value for value, _ in recipes}
         else "aggregate",
     )
     description = _author_prompt(
@@ -571,7 +586,7 @@ def _metric_change(
         },
     }
     if metric_kind == "aggregate":
-        for stale_key in ("numerator", "denominator", "null_behavior", "expression"):
+        for stale_key in _KIND_FIELDS - {"measure", "aggregation"}:
             spec.pop(stale_key, None)
         source_default = str(current.get("measure", ""))
         if not source_default and any(str(row.get("key", "")) == key for row in measures):
@@ -592,10 +607,38 @@ def _metric_change(
         ]
         value_default = str(current.get("value_type") or _value_type_of(selected) or "number")
         example = f"What is {label.lower()} by month?"
+    elif metric_kind in _TIME_RECIPES:
+        for stale_key in _KIND_FIELDS:
+            spec.pop(stale_key, None)
+        selected = _select_inventory_item(
+            "Measure",
+            measures,
+            default_key=str(current.get("measure", "")) or None,
+            create=create_measure,
+        )
+        inputs = [selected]
+        if not _metric_time_role(inventory, inputs, current=str(current.get("temporal_role", ""))):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{_TIME_RECIPES[metric_kind].split(' - ')[0]} needs a time axis, and "
+                f"`{selected.get('model_key') or selected.get('key')}` has no time column. "
+                "Add one with `author time`, then try again.",
+            )
+        example = _time_recipe(spec, metric_kind, selected, current, label)
+        value_options = [
+            ("number", "Number"),
+            ("currency", "Currency"),
+            ("percent", "Percent"),
+            ("count", "Count"),
+        ]
+        value_default = (
+            "percent"
+            if metric_kind == "growth"
+            else str(current.get("value_type") or _value_type_of(selected) or "number")
+        )
     else:
-        spec.pop("measure", None)
-        spec.pop("aggregation", None)
-        spec.pop("expression", None)
+        for stale_key in _KIND_FIELDS - {"numerator", "denominator", "null_behavior"}:
+            spec.pop(stale_key, None)
         operands: list[dict[str, Any]] = []
         seen_operand_ids: set[str] = set()
         for row in [*measures, *metrics]:
@@ -684,6 +727,112 @@ def _metric_change(
         apply=lambda: project.upsert_metric(metric_key=key, spec=spec, group="core", replace=True),
         next_action=f"Try `ask {example}`.",
     )
+
+
+# The wizard's recipes over time; "growth" is written as a derived metric.
+_TIME_RECIPES = {
+    "cumulative": "Running total - the measure from the start of the data to each period",
+    "rolling": "Rolling window - the measure over a trailing window, such as 7 days",
+    "period_to_date": "Period to date - month-, quarter- or year-to-date",
+    "prior_period": "Prior period - the measure one or more periods earlier",
+    "growth": "Growth - the change against a prior period, as a percent",
+}
+# These read a date spine: the engine needs a calendar entity (`kind: time`) to fill gaps.
+_CALENDAR_RECIPES = frozenset({"rolling", "prior_period", "growth"})
+# Fields that belong to one recipe; switching recipes drops the others.
+_KIND_FIELDS = frozenset(
+    {
+        "measure",
+        "aggregation",
+        "numerator",
+        "denominator",
+        "null_behavior",
+        "expression",
+        "window",
+        "offset",
+        "period",
+    }
+)
+_UNITS = [
+    ("day", "Days"),
+    ("week", "Weeks"),
+    ("month", "Months"),
+    ("quarter", "Quarters"),
+    ("year", "Years"),
+]
+
+
+def _time_recipe(
+    spec: dict[str, Any],
+    recipe: str,
+    measure: dict[str, Any],
+    current: dict[str, Any],
+    label: str,
+) -> str:
+    """Fill ``spec`` for one recipe over time; returns an example question for it."""
+
+    measure_id = str(measure.get("id") or measure.get("key", ""))
+    name = label.lower()
+    if recipe == "cumulative":
+        spec.update({"kind": "cumulative", "measure": measure_id})
+        return f"What is {name} by month?"
+    if recipe == "rolling":
+        window = dict(current.get("window", {}) or {})
+        unit = _author_choice("Window unit", _UNITS[:3], default=str(window.get("unit") or "day"))
+        length = _author_count(
+            "Window length", default=int(window.get("value") or {"day": 7, "week": 4}.get(unit, 3))
+        )
+        spec.update(
+            {"kind": "rolling", "measure": measure_id, "window": {"unit": unit, "value": length}}
+        )
+        return f"What is {name} by {unit}?"
+    if recipe == "period_to_date":
+        period = _author_choice(
+            "Period",
+            [("month", "Month to date"), ("quarter", "Quarter to date"), ("year", "Year to date")],
+            default=str(current.get("period") or "month"),
+        )
+        spec.update({"kind": "period_to_date", "measure": measure_id, "period": period})
+        return f"What is {name} by day?"
+    offset = dict(current.get("offset", {}) or {})
+    unit = _author_choice(
+        "Compare with how far back", _UNITS, default=str(offset.get("unit") or "month")
+    )
+    back = _author_count(f"How many {unit}s back", default=int(offset.get("value") or 1))
+    step = {"unit": unit, "value": back}
+    if recipe == "prior_period":
+        spec.update({"kind": "prior_period", "measure": measure_id, "offset": step})
+        return f"What was {name} by {unit}?"
+    now = {"kind": "aggregate", "measure": measure_id, "aggregation": _aggregation_of(measure)}
+    then = {"kind": "prior_period", "input": dict(now), "offset": step}
+    spec.update(
+        {
+            "kind": "derived",
+            "expression": {
+                "kind": "binary",
+                "op": "divide",
+                "null_behavior": "null_if_zero",
+                "left": {"kind": "binary", "op": "subtract", "left": now, "right": then},
+                "right": dict(then),
+            },
+        }
+    )
+    return f"How did {name} change by {unit}?"
+
+
+def _aggregation_of(measure: dict[str, Any]) -> str:
+    spec = dict(measure.get("spec", {}) or {})
+    if spec.get("kind") == "entity_count":
+        return "count_distinct"
+    return str(spec.get("default_agg") or "sum")
+
+
+def _author_count(label: str, *, default: int) -> int:
+    while True:
+        raw = _author_prompt(label, str(default))
+        if raw.isdigit() and int(raw) > 0:
+            return int(raw)
+        print("Enter a whole number greater than 0.")
 
 
 def _value_type_of(row: dict[str, Any]) -> str:
