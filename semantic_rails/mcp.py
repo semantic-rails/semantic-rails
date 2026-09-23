@@ -489,7 +489,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "Return the stable object card for one id — label, description, "
             "search terms, related dimensions, valid temporal roles, "
             "policy/validity windows. Recommended loop position: 2 (after "
-            "'discover', before composing Query IR). Gotcha: 'object_id' "
+            "'discover', before composing Query IR). Verbosity: 'minimal' "
+            "(default) states each fact once with one starter patch; "
+            "'compact' and 'full' return the whole card. Gotcha: 'object_id' "
             "must be a full id like 'measure.jaffle.revenue_usd', not a "
             "label — use 'discover' first if you only have a phrase."
         ),
@@ -497,7 +499,11 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             {
                 "object_id": {"type": "string"},
                 "query": QUERY_SCHEMA_SLIM,
-                "verbosity": {"type": "string", "default": "compact"},
+                "verbosity": {
+                    "type": "string",
+                    "enum": ["minimal", "compact", "full"],
+                    "default": "minimal",
+                },
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
             },
@@ -2027,7 +2033,7 @@ class SemanticLayerMCPAdapter:
                 partial_query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
-                verbosity=str(args.get("verbosity", "compact")),
+                verbosity=str(args.get("verbosity", "minimal") or "minimal"),
             ),
         )
 

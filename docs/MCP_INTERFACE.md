@@ -131,6 +131,11 @@ genuinely need descriptions or the alias index.
 cards with match reasons, starter patches and comparison metadata. When the question uses an object's whole name ("revenue by store"), that object ranks
 above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
 
+`inspect` states each fact once by default (`verbosity="minimal"`). It leaves out fields that
+repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
+the label, empty fields, and every starter patch after the first. Request `verbosity="compact"` or
+`"full"` for the whole card.
+
 `validate`, `compile`, and `execute` accept either `{"query": {...}}` or a Query IR
 object directly. Metadata tools accept the same request fields documented in
 [QUERY_API.md](QUERY_API.md), including optional `policy_context`.

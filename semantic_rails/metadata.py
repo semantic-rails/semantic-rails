@@ -2737,13 +2737,67 @@ def inspect_payload(
     partial_query: dict[str, Any] | None = None,
     verbosity: str = "compact",
 ) -> dict[str, Any]:
+    """Return one object's card.
+
+    ``compact`` and ``full`` return the whole card. ``minimal`` (the MCP
+    default) returns the same information once: see ``_slim_inspect_card``.
+    """
+
     partial_query = dict(partial_query or {})
-    return {
+    payload: dict[str, Any] = {
         "object_id": object_id,
         "verbosity": verbosity,
         "query_state": _query_state(partial_query),
         "card": _object_card(runtime, object_id, partial_query),
     }
+    if verbosity == "minimal":
+        payload["card"] = _slim_inspect_card(payload["card"])
+        if not payload["query_state"]:
+            payload.pop("query_state")
+    return payload
+
+
+# Card fields that repeat another field: object_type repeats kind,
+# usage_summary repeats the aggregation guidance beside it, and top_values
+# repeats sample_values.
+_INSPECT_DUPLICATE_FIELDS = frozenset({"object_type", "usage_summary", "top_values"})
+# Fields holding Query IR or tool arguments, kept verbatim: an empty value
+# inside them can be meaningful.
+_INSPECT_VERBATIM_FIELDS = frozenset(
+    {"starter_query_patches", "derived_query_summary", "starter_preview_request"}
+)
+
+
+def _without_empty(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned = {key: _without_empty(item) for key, item in value.items()}
+        return {key: item for key, item in cleaned.items() if item not in (None, "", [], {})}
+    if isinstance(value, list):
+        return [_without_empty(item) for item in value]
+    return value
+
+
+def _slim_inspect_card(card: dict[str, Any]) -> dict[str, Any]:
+    """The card with each fact once: no duplicated fields, no empty fields,
+    and only the first starter patch (the others extend it with a clause
+    the agent can add itself)."""
+
+    slim: dict[str, Any] = {}
+    for key, value in card.items():
+        if key in _INSPECT_DUPLICATE_FIELDS:
+            continue
+        value = value if key in _INSPECT_VERBATIM_FIELDS else _without_empty(value)
+        if value in (None, "", [], {}):
+            continue
+        slim[key] = value
+    if slim.get("description") == slim.get("label"):
+        slim.pop("description", None)
+    meta = slim.get("meta")
+    if isinstance(meta, dict) and meta.get("review_priority") == slim.get("review_priority"):
+        slim.pop("review_priority", None)
+    if slim.get("starter_query_patches"):
+        slim["starter_query_patches"] = slim["starter_query_patches"][:1]
+    return slim
 
 
 def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[str, Any]:
