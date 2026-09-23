@@ -1338,6 +1338,47 @@ def format_catalog_payload(
     return grouped
 
 
+# Name words that carry units or aggregation rather than meaning; a name
+# is covered by the question's terms without them.
+_NAME_UNIT_TOKENS: frozenset[str] = frozenset(
+    {"usd", "eur", "gbp", "count", "total", "amount", "num", "number", "pct", "percent"}
+)
+
+
+# Words that say how to slice rather than what to measure; they don't count
+# toward the share of the question a name covers.
+_COVERAGE_IGNORED_TOKENS: frozenset[str] = frozenset(
+    {"day", "week", "month", "quarter", "year", "daily", "weekly", "monthly", "quarterly", "yearly"}
+)
+
+
+def _name_coverage(candidate: Mapping[str, Any], tokens: Iterable[str]) -> float:
+    """Share of the question's words covered by the candidate's label or name.
+
+    Zero unless the label or the name is made entirely of question words; a
+    namespace prefix ("jaffle.") and unit words ("usd", "count") don't count.
+    """
+
+    words = {
+        token
+        for token in tokens
+        if token not in _INTENT_STOPWORDS
+        and token not in _COVERAGE_IGNORED_TOKENS
+        and not token.isdigit()
+    }
+    singulars = {token[:-1] for token in words if token.endswith("s") and len(token) > 3}
+    if not words:
+        return 0.0
+    best = 0.0
+    for field in ("label", "name"):
+        value = str(candidate.get(field, "") or "").lower().rsplit(".", 1)[-1]
+        name_words = {token for token in re.split(r"[^a-z0-9]+", value) if token}
+        name_words -= _NAME_UNIT_TOKENS
+        if name_words and name_words <= words | singulars:
+            best = max(best, min(1.0, len(name_words) / len(words)))
+    return best
+
+
 # Compact-view per-bucket row cap. Sized so a 7-kind catalog stays under
 # ~5K tokens even with all buckets full. Callers asking for the full
 # inventory request ``verbosity=full``.
@@ -1424,6 +1465,14 @@ def _relevance_score(
             if _contains_token(document.comparison_fields, candidate_token):
                 score += 6.0 * idf_weight
                 reasons.append(f"comparison metadata matched '{candidate_token}'")
+    coverage = _name_coverage(candidate, tokens)
+    if coverage:
+        # The candidate's whole name is in the question ("revenue by store"
+        # covers Revenue, not Delivered revenue), so it outranks near
+        # duplicates that add a qualifier the question never used. The more
+        # of the question the name covers, the larger the boost.
+        score += 30.0 * coverage
+        reasons.append("name covered by terms")
     if candidate.get("available", True):
         score += 3.0
     review_priority = (
@@ -2627,32 +2676,56 @@ def discover_payload(
 _MINIMAL_DISCOVER_RECORD_KEYS = (
     "id",
     "kind",
+    "label",
     "score",
     "default_temporal_role",
     "available",
 )
+# Enough of a description to tell near-duplicates apart ("Revenue" vs
+# "Delivered revenue"), without shipping the whole card.
+_MINIMAL_DESCRIPTION_CHARS = 120
 
 
 def _slim_discover_minimal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Trim each bucket to {id, kind, score, default_temporal_role,
-    available, match_reasons[:2]}. Drops verbose strings (description,
-    label, name, topics, blocked_reason, recommended_next_actions,
-    comparison metadata, starter_query_patch). Internal callers that
-    need the full row should request verbosity='compact' (the default)."""
+    """Trim each bucket to a slim card: {id, kind, label, score,
+    description (first 120 characters), default_temporal_role, available},
+    plus blocked_reason when the candidate is unavailable.
+
+    Drops ranking and debug detail (match_reasons, topics, comparison
+    metadata, recommended_next_actions) and the starter_query_patch, which
+    follows from id and kind. Callers that need the full card request
+    verbosity='compact'."""
+
+    def _slim_value(row: dict[str, Any]) -> dict[str, Any]:
+        slim = {k: row[k] for k in ("id", "kind", "dimension_id", "value", "score") if k in row}
+        if isinstance(slim.get("score"), float):
+            slim["score"] = round(slim["score"], 1)
+        return slim
 
     def _slim(row: dict[str, Any]) -> dict[str, Any]:
-        slim = {k: row[k] for k in _MINIMAL_DISCOVER_RECORD_KEYS if k in row}
-        reasons = row.get("match_reasons") or []
-        if reasons:
-            slim["match_reasons"] = list(reasons)[:2]
+        # The blocked bucket mixes object cards and dimension values.
+        if row.get("kind") == "dimension_value":
+            slim = _slim_value(row)
+        else:
+            slim = {k: row[k] for k in _MINIMAL_DISCOVER_RECORD_KEYS if k in row}
+            if isinstance(slim.get("score"), float):
+                slim["score"] = round(slim["score"], 1)
+            description = " ".join(str(row.get("description") or "").split())
+            if description and description != str(row.get("label") or ""):
+                if len(description) > _MINIMAL_DESCRIPTION_CHARS:
+                    description = description[: _MINIMAL_DESCRIPTION_CHARS - 1].rstrip() + "…"
+                slim["description"] = description
+        # Without the reason, an agent can't tell "unavailable" from a bug.
+        if row.get("blocked_reason"):
+            slim["blocked_reason"] = row["blocked_reason"]
         return slim
 
     for bucket in ("measures", "metrics", "segments", "dimensions", "entities", "blocked"):
         rows = payload.get(bucket) or []
         payload[bucket] = [_slim(row) for row in rows if isinstance(row, dict)]
-    # `dimension_values` is a different shape — keep its existing slimmer
-    # ('id', 'dimension', 'values' sample). Leave it alone for now;
-    # there's no equivalent verbosity gate downstream.
+    payload["dimension_values"] = [
+        _slim(row) for row in payload.get("dimension_values") or [] if isinstance(row, dict)
+    ]
     return payload
 
 

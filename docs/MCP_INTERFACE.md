@@ -125,6 +125,12 @@ genuinely need descriptions or the alias index.
 
 `alias_index` and `aliases` ship only at `verbosity=full` — agents who need typo-resolution opt in explicitly.
 
+`discover` returns slim cards by default, five per kind: `id`, `kind`, `label`, `score`, a
+`description` trimmed to 120 characters, `default_temporal_role` and `available`, plus
+`blocked_reason` for a candidate that isn't available. Request `verbosity="compact"` for full
+cards with match reasons, starter patches and comparison metadata. When the question uses an object's whole name ("revenue by store"), that object ranks
+above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
+
 `validate`, `compile`, and `execute` accept either `{"query": {...}}` or a Query IR
 object directly. Metadata tools accept the same request fields documented in
 [QUERY_API.md](QUERY_API.md), including optional `policy_context`.

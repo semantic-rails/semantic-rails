@@ -453,11 +453,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         description=(
             "Rank semantic objects against business terms (e.g. 'revenue', "
             "'aov by store'). Returns measures, metrics, dimensions, and "
-            "entities scored with 'match_reasons'. Recommended loop "
+            "entities, up to 'limit' (default 5) per kind. Recommended loop "
             "position: 1 (after the user's question). Pick best id, then "
-            "'inspect'. Verbosity: 'minimal' trims each row to "
-            "{id,kind,score,default_temporal_role,available,match_reasons} "
-            "(cheap orientation); 'compact' (default) ships full cards. "
+            "'inspect'. Verbosity: 'minimal' (default) returns slim cards "
+            "{id,kind,label,score,description,default_temporal_role,available}, "
+            "plus blocked_reason when unavailable; 'compact' returns full cards "
+            "with match_reasons and starter patches. "
             "Gotcha: nonsense or out-of-scope terms return an "
             "'out_of_scope' or 'low_relevance' block with empty buckets — "
             "branch on those before assuming a candidate."
@@ -470,8 +471,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 },
                 "query": QUERY_SCHEMA_SLIM,
                 "stage": {"type": "string"},
-                "verbosity": {"type": "string", "default": "compact"},
-                "limit": {"type": "integer", "default": 10, "minimum": 1},
+                "verbosity": {
+                    "type": "string",
+                    "enum": ["minimal", "compact", "full"],
+                    "default": "minimal",
+                },
+                "limit": {"type": "integer", "default": 5, "minimum": 1},
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
             },
@@ -1959,7 +1964,7 @@ class SemanticLayerMCPAdapter:
             # ranked result. For the MCP boundary, cap the limit at 3
             # for empty terms so the response stays small and the warning
             # carries the real signal.
-            effective_limit = _coerce_int(args.get("limit"), 10, field="limit", minimum=1)
+            effective_limit = _coerce_int(args.get("limit"), 5, field="limit", minimum=1)
             if not terms_str.strip():
                 effective_limit = min(effective_limit, 3)
             payload = discover_payload(
@@ -1970,7 +1975,7 @@ class SemanticLayerMCPAdapter:
                 if args.get("query") or args.get("policy_context")
                 else None,
                 stage=str(args.get("stage", "")),
-                verbosity=str(args.get("verbosity", "compact")),
+                verbosity=str(args.get("verbosity", "minimal") or "minimal"),
                 limit=effective_limit,
                 enforce_scope=True,
             )

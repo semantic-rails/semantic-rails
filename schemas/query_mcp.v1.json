@@ -351,7 +351,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities scored with 'match_reasons'. Recommended loop position: 1 (after the user's question). Pick best id, then 'inspect'. Verbosity: 'minimal' trims each row to {id,kind,score,default_temporal_role,available,match_reasons} (cheap orientation); 'compact' (default) ships full cards. Gotcha: nonsense or out-of-scope terms return an 'out_of_scope' or 'low_relevance' block with empty buckets — branch on those before assuming a candidate.",
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' (default 5) per kind. Recommended loop position: 1 (after the user's question). Pick best id, then 'inspect'. Verbosity: 'minimal' (default) returns slim cards {id,kind,label,score,description,default_temporal_role,available}, plus blocked_reason when unavailable; 'compact' returns full cards with match_reasons and starter patches. Gotcha: nonsense or out-of-scope terms return an 'out_of_scope' or 'low_relevance' block with empty buckets — branch on those before assuming a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -369,7 +369,7 @@
             ]
           },
           "limit": {
-            "default": 10,
+            "default": 5,
             "minimum": 1,
             "type": "integer"
           },
@@ -401,7 +401,12 @@
             "type": "string"
           },
           "verbosity": {
-            "default": "compact",
+            "default": "minimal",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
             "type": "string"
           }
         },
