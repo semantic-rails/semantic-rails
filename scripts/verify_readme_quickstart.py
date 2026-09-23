@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import shlex
 import shutil
 import subprocess
@@ -270,6 +271,26 @@ def expect(result: subprocess.CompletedProcess[str], *needles: str) -> str:
     return f"output lacks {missing}" if missing else ""
 
 
+PROTOCOL_VERSION = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def initialize_problem(reply: dict[str, object]) -> str:
+    """Why an MCP initialize reply isn't a successful handshake, or "" if it is one."""
+    if "error" in reply:
+        return f"initialize returned an error: {str(reply['error'])[:200]}"
+    result = reply.get("result")
+    if not isinstance(result, dict):
+        return "initialize returned no result"
+    version = result.get("protocolVersion")
+    if not isinstance(version, str) or not PROTOCOL_VERSION.match(version):
+        return f"initialize negotiated no protocol version: {version!r}"
+    if not isinstance(result.get("serverInfo"), dict) or not isinstance(
+        result.get("capabilities"), dict
+    ):
+        return "initialize result lacks serverInfo or capabilities"
+    return ""
+
+
 def mcp_handshake(env: Environment, timeout: float = MCP_TIMEOUT_SECONDS) -> str:
     """Initialize the stdio server the README registers with agents and list its tools.
 
@@ -308,7 +329,7 @@ def mcp_handshake(env: Environment, timeout: float = MCP_TIMEOUT_SECONDS) -> str
                 return reply
 
     try:
-        call(
+        initialized = call(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -320,6 +341,9 @@ def mcp_handshake(env: Environment, timeout: float = MCP_TIMEOUT_SECONDS) -> str
                 },
             }
         )
+        problem = initialize_problem(initialized)
+        if problem:
+            return f"stdio handshake failed: {problem}"
         process.stdin.write(
             json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
         )

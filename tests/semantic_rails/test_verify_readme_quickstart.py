@@ -237,13 +237,53 @@ WORKING = textwrap.dedent(
         if "id" not in message:
             continue
         if message["method"] == "initialize":
-            result = {"protocolVersion": "2025-06-18", "capabilities": {}}
+            result = {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "fake", "version": "1"}}
         else:
             names = ["discover", "validate", "compile", "execute"]
             result = {"tools": [{"name": name} for name in names]}
         print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
     """
 )
+
+
+def server_answering_initialize_with(reply: str) -> str:
+    """A server whose initialize reply is `reply` and whose tools/list is otherwise valid."""
+    return textwrap.dedent(
+        f"""\
+        import json, sys
+        for line in sys.stdin:
+            message = json.loads(line)
+            if "id" not in message:
+                continue
+            if message["method"] == "initialize":
+                answer = dict({reply}, jsonrpc="2.0", id=message["id"])
+            else:
+                names = ["discover", "validate", "compile", "execute"]
+                answer = {{"jsonrpc": "2.0", "id": message["id"],
+                          "result": {{"tools": [{{"name": name}} for name in names]}}}}
+            print(json.dumps(answer), flush=True)
+        """
+    )
+
+
+@pytest.mark.parametrize(
+    ("reply", "reason"),
+    [
+        ('{"error": {"code": -32602, "message": "Unsupported protocol version"}}', "an error"),
+        ('{"result": {}}', "no protocol version"),
+        ('{"result": {"protocolVersion": "2025-06-18"}}', "lacks serverInfo"),
+        ('{"result": "ok"}', "no result"),
+    ],
+    ids=["error", "empty result", "no serverInfo", "not an object"],
+)
+def test_mcp_handshake_fails_when_initialize_does_not_succeed(
+    tmp_path: Path, reply: str, reason: str
+) -> None:
+    # tools/list would pass on its own; a failed initialize must still fail the step.
+    detail = quickstart.mcp_handshake(
+        Server(tmp_path, server_answering_initialize_with(reply)), timeout=10
+    )
+    assert detail.startswith("stdio handshake failed:") and reason in detail, detail
 
 
 def test_mcp_handshake_gives_up_on_a_server_that_never_answers(tmp_path: Path) -> None:
