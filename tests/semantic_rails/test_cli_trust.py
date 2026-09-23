@@ -462,6 +462,7 @@ def test_ask_prints_a_warning_repeated_for_each_measure_once(
     plan = {"ok": True, "best": {"query_ir": {"select": [{"expression": {"metric": "m.aov"}}]}}}
     monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: _RatioRuntime())
     monkeypatch.setattr(dev_cli, "plan_payload", lambda *_a, **_k: plan)
+    monkeypatch.setattr(dev_cli, "resolve_catalog", lambda *_a, **_k: {})
 
     report = dev_cli.ask_report(
         PackageReference(source_path="/nowhere"), question="aov", execute=True
