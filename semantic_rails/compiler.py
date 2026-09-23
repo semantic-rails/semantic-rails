@@ -120,7 +120,7 @@ from .ir import (
 )
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
-from .renderer import _quote_ident, render_select_for_profile
+from .renderer import render_select_for_profile
 from .schema import (
     AggregateRelationConfig,
     DimensionConfig,
@@ -2424,21 +2424,22 @@ def _conversion_operand_problem(measure: MeasureConfig, entity: Any) -> tuple[st
     key = list(entity.key) if entity is not None else []
     table = entity.table if entity is not None else ""
     counted = measure.expr
+    # Named so a case difference shows: some warehouses (ClickHouse) are case-sensitive.
+    the_key = f"the key '{key[0]}'" if len(key) == 1 else "the key"
     if not isinstance(counted, ColumnRefExpr):
         return (
-            f"counts an expression, not the key of '{measure.entity}'",
+            f"counts an expression, not {the_key} of '{measure.entity}'",
             "Use a measure that counts the entity key and restrict the operand with "
             "'filter', for example filter: {all: [{field: <dimension id>, op: '=', "
             "value: ...}]}.",
         )
     events_hint = "Use a measure that counts the key of the entity whose rows are the events."
     if not (
-        len(key) == 1
-        and _same_sql_column(counted.column, key[0])
+        [counted.column] == key
         and counted.entity in {"", measure.entity}
         and counted.table in {"", table}
     ):
-        return f"counts column '{counted.column}', not the key of '{measure.entity}'", events_hint
+        return f"counts column '{counted.column}', not {the_key} of '{measure.entity}'", events_hint
     if measure.source_relation not in {"", table}:
         return (
             f"counts rows of '{measure.source_relation}', not of the '{measure.entity}' "
@@ -2446,15 +2447,6 @@ def _conversion_operand_problem(measure: MeasureConfig, entity: Any) -> tuple[st
             events_hint,
         )
     return None
-
-
-def _same_sql_column(name: str, other: str) -> bool:
-    """Whether two column names reach the same column: SQL folds unquoted names' case."""
-    return name == other or (
-        name.lower() == other.lower()
-        and _quote_ident(name) == name
-        and _quote_ident(other) == other
-    )
 
 
 def _conversion_dimension_paths(

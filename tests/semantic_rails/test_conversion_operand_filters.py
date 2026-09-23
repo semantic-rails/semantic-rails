@@ -291,10 +291,8 @@ _EVENT_COUNT = {"kind": "entity_count", "accumulation": {"kind": "event"}, "valu
     [
         {"expr": {"kind": "column", "column": "order_id", "entity": "entity.jaffle_order"}},
         {"expr": "jaffle_order.order_id"},
-        # Unquoted identifiers fold case in SQL, so this is the same column.
-        {"entity_key": "ORDER_ID"},
     ],
-    ids=["entity-qualified", "table-qualified", "upper-case"],
+    ids=["entity-qualified", "table-qualified"],
 )
 def test_operand_measure_counting_its_key_is_accepted_however_it_is_written(tmp_path, counted):
     runtime = _runtime_with_measure(
@@ -307,6 +305,19 @@ def test_operand_measure_counting_its_key_is_accepted_however_it_is_written(tmp_
     plain = runtime.query(_conversion_query(**filters))["rows"]
     assert 0 < plain[0]["a_then_b_conversion_rate"] < 1
     assert keyed == plain
+
+
+def test_operand_measure_spelling_its_key_in_another_case_is_rejected(tmp_path):
+    # ClickHouse treats ORDER_ID and order_id as different columns, so the key must
+    # match exactly; the message shows both spellings.
+    runtime = _runtime_with_measure(
+        tmp_path, "orders.yml", "upper_order_count", {**_EVENT_COUNT, "entity_key": "ORDER_ID"}
+    )
+    report = runtime.validate(_conversion_query(base_measure="measure.jaffle.upper_order_count"))
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert "counts column 'ORDER_ID', not the key 'order_id'" in error["message"]
 
 
 def test_fact_model_operand_measure_is_rejected(tmp_path):
