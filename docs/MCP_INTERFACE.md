@@ -518,6 +518,7 @@ provider bills.
 uv run python scripts/mcp_context.py                  # report, then fail on any gate
 uv run python scripts/mcp_context.py --markdown       # tables for a PR description
 uv run python scripts/mcp_context.py --write-baseline # after an intended change
+uv run python scripts/mcp_context.py --eval-file PATH # score a copy of a frozen split
 ```
 
 `tests/semantic_rails/test_mcp_context.py` runs the same gates in CI. Their data lives in
@@ -525,30 +526,42 @@ uv run python scripts/mcp_context.py --write-baseline # after an intended change
 
 | Gate | Fails when |
 |---|---|
-| Context budgets (`budgets.json`) | A measured size exceeds its budget by more than 2% (and at least 8 tokens), a size has no budget, or a budgeted size is no longer measured. |
-| Planner accuracy (`plan_accuracy_baseline.json`) | A gold case's `plan(detail="query")` outcome gets worse. |
+| Context budgets (`budgets.json`) | A measured size exceeds its budget by more than 2% (and at least 8 tokens), a count such as the number of tools exceeds its budget at all, a size has no budget, or a budgeted size is no longer measured. |
+| Planner accuracy (`plan_accuracy_baseline.json`) | A gold case's `plan(detail="query")` outcome gets worse, or a wrong case gets a slot wrong that it used to get right. |
 | Gold answers | A gold query fails, its rows no longer match the frozen answer, or a listed alternative answers differently. |
-| Frozen eval set | `eval_jaffle.jsonl` changes. |
+| Frozen eval set | `eval_jaffle.jsonl` no longer matches `DEV_SET_SHA256` in the script. |
 
 The budgets cover `tools/list`, the `initialize` instructions, the resource and prompt lists, every
 resource read, one call per tool at its defaults (including an `execute` of a time window without a
-grain), four error envelopes, and two scripted three-question sessions. A scripted call that fails
-when it should succeed, or the reverse, stops the measurement rather than counting as a smaller
-response. Architect MCP tool-list sizes are recorded under `tracked` and are not gated.
+grain), four common mistakes, and two scripted three-question sessions. Three of the mistakes fail
+with a specific error code; the fourth, a misspelled `discover` argument, succeeds with a warning.
+A scripted call that fails when it should succeed (or the reverse), or that reports a different
+code, stops the measurement rather than counting as a smaller response. Architect MCP tool-list
+sizes are recorded under `tracked` and are not gated.
 
 Each planner outcome is one of:
 
-- `pass`: the drafted query matches the gold query's measures and metrics, grouping, time role,
-  grain, window, filters and limit (and, for rankings, the sort), or an unanswerable question is
-  refused as `out_of_scope` or `unrealizable`.
+- `pass`: the drafted query matches the gold query, or a listed alternative, in every slot that can
+  change its rows: measures and metrics, grouping, time role, grain, window, `fill`, calendar,
+  filters, metric filters, temporal role overrides, path policy and limit, plus the sort for
+  rankings. Its rows must also match the frozen answer. An unanswerable question passes when `plan`
+  refuses it as `out_of_scope` or `unrealizable`.
 - `wrong_flagged`: the draft is wrong, but the response says so with a non-`ok` status or a warning.
 - `wrong_silent`: the draft is wrong and the response reports `ok` with no warnings.
 
-A `plan` call that fails outright stops the run instead of being graded.
+A `plan` call that fails outright stops the run instead of being graded. The baseline records
+each case's outcome and the slots it gets wrong (`answer` when every slot matches but the rows
+don't), so a case that is already wrong can't quietly get worse.
 
 When a change is intended, such as a smaller response or a planner fix, run `--write-baseline` and
 commit the updated budgets or outcomes with it. The report lists sizes under budget and cases that
-improved, so savings get locked in.
+improved, so savings get locked in. A budget moves only when its size moves beyond the tolerance,
+and `--write-baseline` refuses to run while a gold answer fails or the eval set has changed.
+
+The release workflows also run `scripts/benchmark_plan.py --gate` over the blind-agent corpus.
+That gate checks that plans are actionable, carry the expected IDs and Query IR fields, stay
+smaller than `detail="full"`, and hit the compile cache. This one checks drafted queries against
+gold answers and tells flagged mistakes from silent ones.
 
 ### Eval Set
 
@@ -557,12 +570,13 @@ windows, rankings, multi-value filters, near-duplicate metrics, ratios, time exp
 metric, out-of-scope questions and misspellings. Each answerable case has a hand-written gold query,
 any equivalent alternatives, and its frozen answer. Answers compare as sets of rows whose columns
 are named by what they hold (a measure or metric, a dimension, or the time bucket), so aliases and
-column order don't matter but a value in the wrong column does. Numbers match within a relative
-tolerance of 1e-6, row order counts only for rankings, and time buckets count only for trends.
+column order don't matter but a value in the wrong column does. A dimension pinned to one value by
+a filter is left out, as it adds only a constant column. Numbers match within a relative tolerance
+of 1e-8, row order counts only for rankings, and time buckets count only for trends.
 
 A held-out split of 12 more questions is kept outside the repository so the planner can't be tuned
-against it. `HELDOUT_SET_SHA256` in the script commits to its content, and `--eval-file` rejects a
-copy that doesn't match.
+against it. `HELDOUT_SET_SHA256` in the script commits to its content. `--eval-file` scores a file
+only when it matches the dev or held-out digest, unless `--allow-unfrozen` is passed.
 
 ## Production Readiness
 

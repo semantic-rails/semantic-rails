@@ -1,5 +1,5 @@
 {
- "description": "Ceilings for scripts/mcp_context.py measurements, in tokens = round(chars / 4). Gated metrics fail CI above budget + max(8, budget * tolerance); tracked ones are reported only. Regenerate with --write-baseline and review the diff.",
+ "description": "Ceilings for scripts/mcp_context.py measurements, in tokens = round(chars / 4). Gated token metrics fail CI above budget + max(8, budget * tolerance), counts above budget; tracked ones are reported only. Regenerate with --write-baseline and review the diff.",
  "tolerance": 0.02,
  "gated": {
   "query.default.build_options_tokens": 3842,
@@ -21,7 +21,7 @@
   "query.error.discover_unknown_argument_tokens": 2813,
   "query.error.inspect_label_not_id_tokens": 558,
   "query.error.validate_fanout_tokens": 3371,
-  "query.error.validate_unknown_dimension_tokens": 425,
+  "query.error.validate_unknown_dimension_tokens": 649,
   "query.instructions_tokens": 0,
   "query.prompts_list_tokens": 225,
   "query.resource.capabilities_tokens": 10207,

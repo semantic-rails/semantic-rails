@@ -21,17 +21,20 @@ Two gates read the files under ``tests/semantic_rails/mcp_context/``:
   gated metric exceeds its budget by more than the tolerance. Architect MCP
   sizes are tracked but not gated.
 * ``eval_jaffle.jsonl`` is the frozen gold question set, and
-  ``plan_accuracy_baseline.json`` records each case's planner outcome. A run
-  fails when a case's outcome gets worse or a gold query's answer changes.
+  ``plan_accuracy_baseline.json`` records each case's planner outcome and the
+  slots it gets wrong. A run fails when a case's outcome gets worse, when a
+  wrong case gets another slot wrong, or when a gold query's answer changes.
 
 Usage::
 
     uv run python scripts/mcp_context.py               # report + gates
     uv run python scripts/mcp_context.py --markdown    # tables for a PR
     uv run python scripts/mcp_context.py --write-baseline
+    uv run python scripts/mcp_context.py --eval-file PATH
 
 ``--write-baseline`` rewrites both baseline files from the current run; review
-the diff before committing it.
+the diff before committing it. ``--eval-file`` scores a copy of a frozen split
+(such as the held-out one) and prints aggregates only.
 """
 
 from __future__ import annotations
@@ -48,9 +51,10 @@ import shutil
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -62,14 +66,18 @@ CONTEXT_DIR = REPO_ROOT / "tests" / "semantic_rails" / "mcp_context"
 BUDGETS_PATH = CONTEXT_DIR / "budgets.json"
 EVAL_SET_PATH = CONTEXT_DIR / "eval_jaffle.jsonl"
 PLAN_BASELINE_PATH = CONTEXT_DIR / "plan_accuracy_baseline.json"
+# Digest of the frozen dev split, EVAL_SET_PATH. Change a case only through a
+# reviewed revision of the eval set, and update this digest in that change.
+DEV_SET_SHA256 = "9b5b8693dac9ab61f85c3496edd1785f024e3cfed35a0b7183e27cc19a640d0a"
 # Commitment to the held-out split: 12 more cases kept outside this repository
 # so the planner can't be tuned against them. ``--eval-file`` checks a copy.
 HELDOUT_SET_SHA256 = "ce5ef85b14f8b92a3f6944a55dd4657631ddde104006dcb50178fd0800027730"
 
 PACKAGE_ID = "jaffle_shop"
 DEFAULT_TOLERANCE = 0.02
-# Budgets also allow this many tokens of slack, so small metrics (an empty
-# instructions string, a short error) don't fail on a one-word change.
+# Token budgets also allow this many tokens of slack, so small metrics (an
+# empty instructions string, a short error) don't fail on a one-word change.
+# Counts, such as the number of tools, get no slack.
 ABSOLUTE_SLACK_TOKENS = 8
 # Gold queries run with an explicit row limit so a default MCP row cap can't
 # truncate the reference answer.
@@ -108,7 +116,7 @@ def temporary_fixture() -> Iterator[Path]:
 # Token accounting
 # ---------------------------------------------------------------------------
 
-_TIMING_RE = re.compile(r'("timing_ms"\s*:\s*)-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?')
+_TIMING_RE = re.compile(r'("[A-Za-z0-9_]*_ms"\s*:\s*)-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?')
 
 
 def approx_tokens(text: str) -> int:
@@ -118,8 +126,9 @@ def approx_tokens(text: str) -> int:
 def normalize_volatile(text: str) -> str:
     """Pin run-to-run noise to a fixed width so sizes are reproducible.
 
-    ``timing_ms`` is the only field whose width varies between identical runs;
-    request ids are fixed-width hex.
+    Timings (``timing_ms``, ``compile_ms`` and any other ``*_ms`` field) are
+    the only values whose width varies between identical runs; request ids
+    are fixed-width hex.
     """
 
     return _TIMING_RE.sub(r"\g<1>10.000", text)
@@ -333,15 +342,22 @@ DEFAULT_PROBES: list[Step] = [
     ("segment_preview", "segment-preview", {"segment_id": SEGMENT}),
 ]
 
-# Typical agent mistakes, each with whether the call should still succeed.
-# Errors should be small and sent once.
-ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool]] = [
-    ("inspect_label_not_id", "inspect", {"object_id": "revenue"}, False),
+# Typical agent mistakes, each with whether the call should still succeed and
+# the code it should report. Errors should be small and sent once.
+ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool, str]] = [
+    ("inspect_label_not_id", "inspect", {"object_id": "revenue"}, False, "OBJECT_NOT_FOUND"),
     (
         "validate_unknown_dimension",
         "validate",
-        {"query": {**Q1, "group_by": ["dimension.jaffle_store"]}},
+        {
+            "query": {
+                **Q1,
+                "group_by": ["dimension.jaffle_store"],
+                "order_by": [{"field": "time", "direction": "ASC"}],
+            }
+        },
         False,
+        "OBJECT_NOT_FOUND",
     ),
     (
         "validate_fanout",
@@ -354,8 +370,10 @@ ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool]] = [
             }
         },
         False,
+        "MIXED_GRAIN_INVALID",
     ),
-    ("discover_unknown_argument", "discover", {"term": "revenue"}, True),
+    # A misspelled argument is ignored with a warning, not an error.
+    ("discover_unknown_argument", "discover", {"term": "revenue"}, True, "DISCOVER_UNKNOWN_ARG"),
 ]
 
 
@@ -364,23 +382,33 @@ class MeasurementError(RuntimeError):
 
 
 def _measured_call(
-    client: QueryMCPClient, name: str, tool: str, arguments: dict[str, Any], *, ok: bool = True
+    client: QueryMCPClient,
+    name: str,
+    tool: str,
+    arguments: dict[str, Any],
+    *,
+    ok: bool = True,
+    code: str = "",
 ) -> tuple[int, int]:
     """Call a tool and return its (structured, text) tokens.
 
-    A call that fails when it should succeed (or the reverse) raises instead:
-    a broken tool must not look like a smaller response.
+    A call that fails when it should succeed (or the reverse), or that
+    doesn't report the expected code, raises instead: a broken tool must not
+    look like a smaller response.
     """
 
     result = client.call_tool(tool, arguments)
     payload = result.get("structuredContent")
-    succeeded = (
-        isinstance(payload, Mapping) and payload.get("ok") is True and not result.get("isError")
-    )
-    if succeeded != ok:
-        errors = payload.get("errors") if isinstance(payload, Mapping) else None
-        codes = [issue.get("code") for issue in errors or [] if isinstance(issue, Mapping)]
-        raise MeasurementError(f"{name}: {tool} ok={succeeded}, expected ok={ok}; errors={codes}")
+    payload = payload if isinstance(payload, Mapping) else {}
+    succeeded = payload.get("ok") is True and not result.get("isError")
+    issues = payload.get("errors" if not ok else "warnings") or []
+    codes = [issue.get("code") for issue in issues if isinstance(issue, Mapping)]
+    if succeeded != ok or (code and code not in codes):
+        raise MeasurementError(
+            f"{name}: {tool} ok={succeeded}, expected ok={ok}"
+            + (f" with {code}" if code else "")
+            + f"; reported {codes}"
+        )
     return result_tokens(result)
 
 
@@ -425,9 +453,9 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
             default_text.append(text_tokens)
         metrics["query.default.max_structured_tokens"] = max(default_structured)
         metrics["query.default.max_text_tokens"] = max(default_text)
-        for name, tool, arguments, ok in ERROR_PROBES:
+        for name, tool, arguments, ok, code in ERROR_PROBES:
             metrics[f"query.error.{name}_tokens"] = _measured_call(
-                client, name, tool, arguments, ok=ok
+                client, name, tool, arguments, ok=ok, code=code
             )[0]
     for session, steps in SESSIONS.items():
         # A fresh runtime per session, so one session's caches can't shrink
@@ -486,7 +514,9 @@ def load_budgets(path: Path = BUDGETS_PATH) -> dict[str, Any]:
     return budgets
 
 
-def _slack(budget: int, tolerance: float) -> int:
+def _slack(metric: str, budget: int, tolerance: float) -> int:
+    if not metric.endswith("_tokens"):
+        return 0
     return max(ABSOLUTE_SLACK_TOKENS, math.ceil(budget * tolerance))
 
 
@@ -518,14 +548,31 @@ def check_budgets(
             status = "unbudgeted"
         elif value is None:
             status = "unmeasured"
-        elif value > budget + _slack(budget, tolerance):
+        elif value > budget + _slack(name, budget, tolerance):
             status = "over"
-        elif value < budget - _slack(budget, tolerance):
+        elif value < budget - _slack(name, budget, tolerance):
             status = "under"
         else:
             status = "ok"
         checks.append(BudgetCheck(name, value, budget, status))
     return checks
+
+
+def rebaseline(
+    metrics: Mapping[str, int], previous: Mapping[str, int], tolerance: float
+) -> dict[str, int]:
+    """New budgets for ``metrics``: an old budget stays while the value is within its slack.
+
+    Only real changes move a budget, so rebaselining after an unrelated
+    change doesn't churn every noisy metric.
+    """
+
+    budgets: dict[str, int] = {}
+    for name, value in sorted(metrics.items()):
+        budget = previous.get(name)
+        within = budget is not None and abs(value - budget) <= _slack(name, budget, tolerance)
+        budgets[name] = budget if within and budget is not None else value
+    return budgets
 
 
 # ---------------------------------------------------------------------------
@@ -627,13 +674,31 @@ def _bound(value: Any) -> str | None:
 
 
 def _filter_parts(item: Mapping[str, Any]) -> tuple[str, str, list[str]]:
-    op = str(item.get("op") or "=").strip().upper()
+    op = " ".join(str(item.get("op") or "=").upper().split())
     value = item.get("value")
-    values = list(value) if isinstance(value, (list, tuple)) else [value]
-    op_class = {"=": "in", "IN": "in", "!=": "not_in", "<>": "not_in", "NOT IN": "not_in"}.get(
-        op, op
-    )
+    if isinstance(value, (list, tuple)):
+        # "=" with a list compares against the list's text, not its members.
+        values = list(value)
+        op_class = {"IN": "in", "NOT IN": "not_in"}.get(op, op)
+    else:
+        values = [value]
+        op_class = {"=": "in", "IN": "in", "!=": "not_in", "<>": "not_in", "NOT IN": "not_in"}.get(
+            op, op
+        )
     return str(item.get("field")), op_class, sorted(compact_json(v) for v in values)
+
+
+def _pinned_dimensions(normalized: Mapping[str, Any]) -> set[str]:
+    """Dimensions a filter pins to a single value.
+
+    Grouping by one doesn't change the answer: it adds a constant column.
+    """
+
+    return {
+        field
+        for field, op_class, values in map(_filter_parts, normalized["where"])
+        if op_class == "in" and len(values) == 1
+    }
 
 
 def query_slots(
@@ -642,10 +707,10 @@ def query_slots(
     """Reduce a Query IR to the slots a question constrains.
 
     Slots come from the engine's own normalization, so shorthand and
-    canonical spellings of the same query compare equal. Grouping by a
-    dimension that a filter pins to one value doesn't change the answer, so
-    such dimensions are left out of ``group_by``. Order only matters for
-    ranking questions.
+    canonical spellings of the same query compare equal. Every field that can
+    change the rows is a slot. Grouping by a dimension that a filter pins to
+    one value doesn't change the answer, so such dimensions are left out of
+    ``group_by``. Order only matters for ranking questions.
     """
 
     from semantic_rails.ast import normalize_query
@@ -658,15 +723,18 @@ def query_slots(
         aliases[str(item["as"])] = signature
         select.append(signature)
     filters = [_filter_parts(item) for item in normalized["where"]]
-    pinned = {field for field, op_class, values in filters if op_class == "in" and len(values) == 1}
     time = normalized.get("time") or {}
     start, end = _bound(time.get("start")), _bound(time.get("end"))
     slots: dict[str, Any] = {
         "select": sorted(select),
-        "group_by": sorted(set(normalized["group_by"]) - pinned),
+        "group_by": sorted(set(normalized["group_by"]) - _pinned_dimensions(normalized)),
         "time_role": time.get("temporal_role") or None,
         "grain": time.get("grain") or None,
         "window": [start, end] if start or end else None,
+        "fill": bool(time.get("fill")),
+        "calendar_id": time.get("calendar_id") or "default",
+        "temporal_role_overrides": normalized["temporal_role_overrides"],
+        "path_policy": normalized["path_policy"],
         "where": sorted(compact_json(parts) for parts in filters),
         "metric_filters": sorted(
             compact_json(_canonical_expression(item, aggregations))
@@ -691,7 +759,7 @@ def query_slots(
 def mismatched_slots(
     case: Mapping[str, Any], query: Mapping[str, Any], aggregations: Mapping[str, str]
 ) -> list[str]:
-    """Slots where ``query`` differs from the gold query and every alternative."""
+    """Slots where ``query`` differs from the closest of the gold query and its alternatives."""
 
     ordered = bool(case.get("ordered"))
     try:
@@ -699,15 +767,11 @@ def mismatched_slots(
     except Exception:  # noqa: BLE001 - an unparseable plan is a wrong plan
         return ["invalid_query"]
     candidates = [case["gold_query"], *(case.get("alternatives") or [])]
-    best: list[str] | None = None
+    diffs = []
     for candidate in candidates:
         expected = query_slots(candidate, aggregations, ordered=ordered)
-        diff = [slot for slot, value in expected.items() if actual.get(slot) != value]
-        if not diff:
-            return []
-        if best is None:
-            best = diff
-    return best or []
+        diffs.append([slot for slot, value in expected.items() if actual.get(slot) != value])
+    return min(diffs, key=len)
 
 
 @dataclass(frozen=True)
@@ -724,17 +788,40 @@ class EvaluationError(RuntimeError):
     """``plan`` failed outright, so its answer can't be graded."""
 
 
+# Runs a drafted query; returns its answer table, or None when it doesn't run in full.
+AnswerOf = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
+# Mismatches that say nothing about individual slots: the plan drafted no
+# query, or one the engine can't parse.
+WHOLE_QUERY_MISMATCHES = frozenset({"refused", "invalid_query"})
+
+
+def _returns_frozen_answer(case: Mapping[str, Any], answer: Mapping[str, Any] | None) -> bool:
+    frozen = case.get("gold_result")
+    return (
+        isinstance(frozen, Mapping)
+        and answer is not None
+        and answers_match(frozen, answer, ordered=bool(case.get("ordered")))
+    )
+
+
 def score_plan_response(
-    case: Mapping[str, Any], response: Mapping[str, Any], aggregations: Mapping[str, str]
+    case: Mapping[str, Any],
+    response: Mapping[str, Any],
+    aggregations: Mapping[str, str],
+    *,
+    answer_of: AnswerOf,
 ) -> PlanOutcome:
     """Grade one ``plan(detail="query")`` response against its gold case.
 
-    ``pass`` means the plan matched the gold slots, or refused an unanswerable
-    question as ``out_of_scope`` or ``unrealizable``. A wrong plan is
-    ``wrong_flagged`` when the response signals doubt (a non-``ok`` status or
-    any warning) and ``wrong_silent`` when it reports ``ok`` with no warnings.
-    A failed call (an error envelope, or no recognizable status) raises
-    ``EvaluationError`` rather than scoring as a refusal or a flagged answer.
+    ``pass`` means the plan matched the gold slots and its query, run through
+    ``answer_of``, returns the frozen answer; or that it refused an
+    unanswerable question as ``out_of_scope`` or ``unrealizable``. A plan
+    whose slots match but whose rows don't is wrong in slot ``answer``. A
+    wrong plan is ``wrong_flagged`` when the response signals doubt (a
+    non-``ok`` status or any warning) and ``wrong_silent`` when it reports
+    ``ok`` with no warnings. A failed call (an error envelope, or no
+    recognizable status) raises ``EvaluationError`` rather than scoring as a
+    refusal or a flagged answer.
     """
 
     status = str(response.get("status") or "")
@@ -759,10 +846,25 @@ def score_plan_response(
             outcome, mismatched = wrong, ("refused",)
         else:
             diff = tuple(mismatched_slots(case, query, aggregations))
+            if not diff and not _returns_frozen_answer(case, answer_of(query)):
+                diff = ("answer",)
             outcome, mismatched = (PASS, ()) if not diff else (wrong, diff)
     return PlanOutcome(
         str(case["id"]), str(case.get("category", "")), outcome, status, warnings, mismatched
     )
+
+
+def _drafted_answer(
+    client: QueryMCPClient,
+    query: Mapping[str, Any],
+    *,
+    case: Mapping[str, Any],
+    aggregations: Mapping[str, str],
+) -> dict[str, Any] | None:
+    try:
+        return query_answer(client, query, case, aggregations)
+    except ValueError:
+        return None
 
 
 def run_plan_accuracy(package_path: Path, cases: Sequence[Mapping[str, Any]]) -> list[PlanOutcome]:
@@ -773,6 +875,7 @@ def run_plan_accuracy(package_path: Path, cases: Sequence[Mapping[str, Any]]) ->
                 case,
                 client.tool_payload("plan", {"intent": case["question"], "detail": "query"}),
                 aggregations,
+                answer_of=partial(_drafted_answer, client, case=case, aggregations=aggregations),
             )
             for case in cases
         ]
@@ -786,23 +889,35 @@ def plan_summary(outcomes: Sequence[PlanOutcome]) -> dict[str, int]:
 def plan_regressions(
     outcomes: Sequence[PlanOutcome], baseline: Mapping[str, Any]
 ) -> tuple[list[str], list[str]]:
-    """Return (regressions, improvements) against the recorded baseline."""
+    """Return (regressions, improvements) against the recorded baseline.
 
-    recorded: Mapping[str, str] = baseline.get("cases", {})
+    A case regresses when its outcome gets worse, or when it gets a slot
+    wrong that it used to get right, even if it was already wrong.
+    """
+
+    recorded: Mapping[str, Mapping[str, Any]] = baseline.get("cases", {})
     regressions: list[str] = []
     improvements: list[str] = []
     for outcome in outcomes:
-        before = recorded.get(outcome.case_id)
-        if before is None:
+        entry = recorded.get(outcome.case_id)
+        if entry is None:
             regressions.append(f"{outcome.case_id}: no baseline outcome recorded")
             continue
+        before = str(entry.get("outcome"))
+        was_wrong = set(entry.get("mismatched") or ())
+        new_slots = sorted(set(outcome.mismatched) - was_wrong)
+        if was_wrong & WHOLE_QUERY_MISMATCHES:
+            new_slots = []
+        fixed_slots = sorted(was_wrong - set(outcome.mismatched))
+        detail = f"(status={outcome.status}, mismatched={list(outcome.mismatched)})"
         if OUTCOME_RANK[outcome.outcome] < OUTCOME_RANK[before]:
-            regressions.append(
-                f"{outcome.case_id}: {before} -> {outcome.outcome} "
-                f"(status={outcome.status}, mismatched={list(outcome.mismatched)})"
-            )
+            regressions.append(f"{outcome.case_id}: {before} -> {outcome.outcome} {detail}")
+        elif new_slots:
+            regressions.append(f"{outcome.case_id}: now also wrong in {new_slots} {detail}")
         elif OUTCOME_RANK[outcome.outcome] > OUTCOME_RANK[before]:
             improvements.append(f"{outcome.case_id}: {before} -> {outcome.outcome}")
+        elif fixed_slots:
+            improvements.append(f"{outcome.case_id}: no longer wrong in {fixed_slots}")
     missing = sorted(set(recorded) - {outcome.case_id for outcome in outcomes})
     regressions.extend(f"{case_id}: case no longer evaluated" for case_id in missing)
     return regressions, improvements
@@ -817,7 +932,7 @@ _MIDNIGHT_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[T ]00:00:00$")
 # Relative tolerance for numeric answers. Warehouse sums of doubles differ in
 # the last bits between runs, and cent-valued data sits exactly on rounding
 # boundaries, so answers are compared with a tolerance, never by hash.
-ANSWER_REL_TOL = 1e-6
+ANSWER_REL_TOL = 1e-8
 TIME_COLUMN = "time"
 
 
@@ -870,7 +985,8 @@ def answer_table(
     expression, a grouping column by its dimension id, and the time bucket by
     ``"time"``, kept only when the question asks for a trend. Aliases and
     column order therefore don't matter, but which value sits in which column
-    does.
+    does. A dimension that a filter pins to one value is left out, as it is
+    from the ``group_by`` slot.
     """
 
     from semantic_rails.ast import normalize_query
@@ -880,12 +996,13 @@ def answer_table(
         str(item["as"]): _value_column(item["expression"], aggregations)
         for item in normalized["select"]
     }
+    pinned = _pinned_dimensions(normalized)
     named: dict[str, str] = {}
     for key in dict.fromkeys(str(key) for row in rows for key in row):
         if key.startswith("temporal_role."):
             if trend:
                 named[key] = TIME_COLUMN
-        else:
+        elif key not in pinned:
             named[key] = select.get(key, key)
     order = sorted(named, key=named.__getitem__)
     return {
@@ -937,17 +1054,19 @@ def _same_row(expected: Sequence[Any], actual: Sequence[Any]) -> bool:
 def answers_match(expected: Mapping[str, Any], actual: Mapping[str, Any], *, ordered: bool) -> bool:
     """Answer equivalence: same columns and rows, numbers within ``ANSWER_REL_TOL``.
 
-    Row order matters only for ranking questions.
+    Row order matters only for ranking questions. Both sides are
+    canonicalized, so a hand-edited ``939`` still equals ``939.0``.
     """
 
     alignment = _column_alignment(expected["columns"], actual["columns"])
     if alignment is None or len(expected["rows"]) != len(actual["rows"]):
         return False
-    rows = [[row[index] for index in alignment] for row in actual["rows"]]
+    wanted = [[_canonical_value(value) for value in row] for row in expected["rows"]]
+    rows = [[_canonical_value(row[index]) for index in alignment] for row in actual["rows"]]
     if ordered:
-        return all(map(_same_row, expected["rows"], rows))
+        return all(map(_same_row, wanted, rows))
     remaining = list(rows)
-    for row in expected["rows"]:
+    for row in wanted:
         index = next(
             (i for i, candidate in enumerate(remaining) if _same_row(row, candidate)), None
         )
@@ -957,20 +1076,22 @@ def answers_match(expected: Mapping[str, Any], actual: Mapping[str, Any], *, ord
     return True
 
 
-def gold_answer(
+def query_answer(
     client: QueryMCPClient,
     query: Mapping[str, Any],
     case: Mapping[str, Any],
     aggregations: Mapping[str, str],
 ) -> dict[str, Any]:
+    """Execute ``query`` and reduce its rows to an answer table for ``case``."""
+
     payload = client.tool_payload(
         "execute", {"query": {**dict(query), "limits": {"max_rows": GOLD_MAX_ROWS}}}
     )
     if not payload.get("ok"):
         codes = [issue.get("code") for issue in payload.get("errors") or []]
-        raise ValueError(f"{case['id']}: gold query failed: {codes}")
+        raise ValueError(f"{case['id']}: query failed: {codes}")
     if payload.get("truncated"):
-        raise ValueError(f"{case['id']}: gold answer was truncated")
+        raise ValueError(f"{case['id']}: answer was truncated")
     return answer_table(
         payload.get("rows") or [], query, aggregations, trend=bool(case.get("trend"))
     )
@@ -987,7 +1108,7 @@ def check_gold_answers(package_path: Path, cases: Sequence[Mapping[str, Any]]) -
                 continue
             ordered = bool(case.get("ordered"))
             try:
-                actual = gold_answer(client, case["gold_query"], case, aggregations)
+                actual = query_answer(client, case["gold_query"], case, aggregations)
                 frozen = case.get("gold_result")
                 if not actual["rows"]:
                     problems.append(f"{case['id']}: gold answer is empty")
@@ -996,7 +1117,7 @@ def check_gold_answers(package_path: Path, cases: Sequence[Mapping[str, Any]]) -
                 ):
                     problems.append(f"{case['id']}: gold answer no longer matches the frozen one")
                 for index, alternative in enumerate(case.get("alternatives") or []):
-                    answer = gold_answer(client, alternative, case, aggregations)
+                    answer = query_answer(client, alternative, case, aggregations)
                     if not answers_match(actual, answer, ordered=ordered):
                         problems.append(f"{case['id']}: alternative {index} answers differently")
             except ValueError as exc:
@@ -1017,7 +1138,7 @@ def fill_gold_results(path: Path, package_path: Path) -> None:
         for case in cases:
             if case["expect"] != "answer":
                 continue
-            answer = gold_answer(client, case["gold_query"], case, aggregations)
+            answer = query_answer(client, case["gold_query"], case, aggregations)
             rows = [[_stored_value(value) for value in row] for row in answer["rows"]]
             if not case.get("ordered"):
                 rows.sort(key=lambda row: [_sort_key(value) for value in row])
@@ -1030,6 +1151,22 @@ def fill_gold_results(path: Path, package_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def plan_baseline_json(outcomes: Sequence[PlanOutcome], cases: Sequence[Mapping[str, Any]]) -> str:
+    """The plan baseline document, one case per line so a change is a one-line diff."""
+
+    entries = [
+        f"  {json.dumps(o.case_id)}: "
+        + json.dumps({"outcome": o.outcome, "mismatched": list(o.mismatched)})
+        for o in outcomes
+    ]
+    return (
+        "{\n"
+        f' "eval_set_sha256": {json.dumps(eval_set_digest(cases))},\n'
+        f' "summary": {json.dumps(plan_summary(outcomes))},\n'
+        ' "cases": {\n' + ",\n".join(entries) + "\n }\n}\n"
+    )
+
+
 def write_baseline(
     metrics: Mapping[str, int], outcomes: Sequence[PlanOutcome], cases: Sequence[Mapping[str, Any]]
 ) -> None:
@@ -1038,24 +1175,24 @@ def write_baseline(
     document = {
         "description": (
             "Ceilings for scripts/mcp_context.py measurements, in tokens = round(chars / 4). "
-            "Gated metrics fail CI above budget + max(8, budget * tolerance); tracked ones are "
-            "reported only. Regenerate with --write-baseline and review the diff."
+            "Gated token metrics fail CI above budget + max(8, budget * tolerance), counts "
+            "above budget; tracked ones are reported only. Regenerate with --write-baseline "
+            "and review the diff."
         ),
         "tolerance": tolerance,
-        "gated": {
-            name: value for name, value in sorted(metrics.items()) if name.startswith("query.")
-        },
-        "tracked": {
-            name: value for name, value in sorted(metrics.items()) if name.startswith("architect.")
-        },
+        "gated": rebaseline(
+            {name: value for name, value in metrics.items() if name.startswith("query.")},
+            budgets.get("gated", {}),
+            tolerance,
+        ),
+        "tracked": rebaseline(
+            {name: value for name, value in metrics.items() if name.startswith("architect.")},
+            budgets.get("tracked", {}),
+            tolerance,
+        ),
     }
     BUDGETS_PATH.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
-    baseline = {
-        "eval_set_sha256": eval_set_digest(cases),
-        "summary": plan_summary(outcomes),
-        "cases": {outcome.case_id: outcome.outcome for outcome in outcomes},
-    }
-    PLAN_BASELINE_PATH.write_text(json.dumps(baseline, indent=1) + "\n", encoding="utf-8")
+    PLAN_BASELINE_PATH.write_text(plan_baseline_json(outcomes, cases), encoding="utf-8")
 
 
 def _markdown_table(headers: Sequence[str], rows: Iterable[Sequence[Any]]) -> str:
@@ -1119,7 +1256,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--eval-file",
         type=Path,
-        help="Score another eval file (for example a held-out split); prints aggregates only.",
+        help=(
+            "Score a copy of a frozen split (such as the held-out one) instead; "
+            "prints aggregates only."
+        ),
+    )
+    parser.add_argument(
+        "--allow-unfrozen",
+        action="store_true",
+        help="With --eval-file, score a file that matches neither frozen split.",
     )
     parser.add_argument(
         "--fill-gold-results",
@@ -1135,23 +1280,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.eval_file:
             cases = load_eval_cases(args.eval_file)
-            problems = check_gold_answers(package, cases)
-            summary = plan_summary(run_plan_accuracy(package, cases))
             digest = eval_set_digest(cases)
-            heldout = any(case.get("split") == "heldout" for case in cases)
-            print(
-                json.dumps(
-                    {
-                        "eval_set_sha256": digest,
-                        "matches_heldout_commitment": digest == HELDOUT_SET_SHA256,
-                        "plan": summary,
-                        "gold_problems": len(problems),
-                    },
-                    indent=1,
+            frozen = {DEV_SET_SHA256: "dev", HELDOUT_SET_SHA256: "heldout"}.get(digest)
+            report: dict[str, Any] = {"eval_set_sha256": digest, "frozen_split": frozen}
+            if frozen is None and not args.allow_unfrozen:
+                # A modified copy of a split isn't that split, whatever its labels say.
+                print(json.dumps(report, indent=1))
+                print(
+                    "FAIL eval file matches neither frozen split; "
+                    "pass --allow-unfrozen to score it anyway",
+                    file=sys.stderr,
                 )
-            )
-            # A held-out copy that doesn't match the commitment isn't the frozen split.
-            return 1 if problems or (heldout and digest != HELDOUT_SET_SHA256) else 0
+                return 1
+            problems = check_gold_answers(package, cases)
+            report["plan"] = plan_summary(run_plan_accuracy(package, cases))
+            report["gold_problems"] = len(problems)
+            print(json.dumps(report, indent=1))
+            return 1 if problems else 0
         cases = load_eval_cases()
         metrics = measure_query_mcp(package)
         with tempfile.TemporaryDirectory(prefix="mcp-context-architect-") as workspace:
@@ -1159,7 +1304,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         outcomes = run_plan_accuracy(package, cases)
         gold_problems = check_gold_answers(package, cases)
 
+    eval_problems = []
+    if eval_set_digest(cases) != DEV_SET_SHA256:
+        eval_problems.append(
+            f"{EVAL_SET_PATH.relative_to(REPO_ROOT)} changed; update DEV_SET_SHA256 "
+            "only in a reviewed revision of the eval set"
+        )
+    eval_problems += [f"gold {item}" for item in gold_problems]
+
     if args.write_baseline:
+        if eval_problems:
+            for item in eval_problems:
+                print(f"FAIL {item}", file=sys.stderr)
+            print("baselines not written: fix the eval set first", file=sys.stderr)
+            return 1
         write_baseline(metrics, outcomes, cases)
         print(
             f"wrote {BUDGETS_PATH.relative_to(REPO_ROOT)} and {PLAN_BASELINE_PATH.relative_to(REPO_ROOT)}"
@@ -1176,7 +1334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"budget {c.metric}: {c.value} vs {c.budget} ({c.status})" for c in checks if c.failed
     ]
     failures += [f"plan regression {item}" for item in regressions]
-    failures += [f"gold {item}" for item in gold_problems]
+    failures += eval_problems
     for item in improvements:
         print(f"improved (run --write-baseline to lock in): {item}")
     for check in checks:
