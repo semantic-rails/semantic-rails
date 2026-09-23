@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from ..architect_service import ArchitectMutation
 from ..cli.common import _default_ref, _is_terminal, _ref_display, _repl_capabilities, _repl_color
 from ..cli.output import (
     _authoring_error_messages,
@@ -27,7 +26,7 @@ from ..cli.reports import (
 from ..config import package_root_for_source
 from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
-from .authoring import _authoring_warehouse, _run_authoring_flow
+from .authoring import Undoable, _authoring_warehouse, _run_authoring_flow
 from .backend import current_backend, pickers_available
 from .prompts import _author_confirm, _AuthoringCancelled
 
@@ -38,7 +37,7 @@ def run_interactive_shell(*, package: str = "", path: str = "") -> None:
         path=path,
         interactive=_is_terminal(sys.stdin) and _is_terminal(sys.stdout),
     )
-    undo_stack: list[ArchitectMutation] = []
+    undo_stack: list[Undoable] = []
     current_backend()  # an unusable SEMANTIC_RAILS_UI fails here, before the banner
     _print_repl_welcome(current_ref)
     while True:
@@ -109,7 +108,7 @@ def _handle_repl_line(
     line: str,
     current_ref: PackageReference,
     *,
-    undo_stack: list[ArchitectMutation] | None = None,
+    undo_stack: list[Undoable] | None = None,
 ) -> PackageReference:
     command, _, rest = line.partition(" ")
     command = command.strip().lower()

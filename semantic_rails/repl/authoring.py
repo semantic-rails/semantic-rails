@@ -5,8 +5,10 @@ metrics and segments.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 
@@ -28,6 +30,46 @@ from .prompts import (
 _AUTHORING_KINDS = ("model", "dimension", "time", "measure", "metric", "segment")
 
 
+class Undoable(Protocol):
+    """What the REPL's `undo` needs from an authoring change."""
+
+    @property
+    def report(self) -> dict[str, Any]: ...
+
+    @property
+    def project_path(self) -> Path: ...
+
+    def undo(self) -> dict[str, Any]: ...
+
+
+@dataclass
+class _Mutations:
+    """Changes one wizard run made (a measure, then the metric that uses it).
+
+    ``undo`` restores them newest first, so one `undo` takes back the whole run.
+    """
+
+    parts: list[ArchitectMutation]
+
+    @property
+    def report(self) -> dict[str, Any]:
+        return self.parts[-1].report
+
+    @property
+    def project_path(self) -> Path:
+        return self.parts[-1].project_path
+
+    def undo(self) -> dict[str, Any]:
+        changed: list[str] = []
+        report: dict[str, Any] = {}
+        for part in reversed(self.parts):
+            report = part.undo()
+            if report.get("status") == "undo_conflict":
+                return report
+            changed.extend(str(path) for path in report.get("changed_files", []) or [])
+        return {**report, "changed_files": sorted(set(changed))}
+
+
 _AUTHORING_ALIASES = {
     "entity": "model",
     "model/entity": "model",
@@ -44,7 +86,7 @@ def _run_authoring_flow(
     current_ref: PackageReference,
     *,
     requested_kind: str = "",
-) -> ArchitectMutation | None:
+) -> Undoable | None:
     try:
         if not sys.stdin.isatty():
             raise SemanticLayerError(
@@ -332,6 +374,17 @@ def _author_measure(
     ref: PackageReference,
     before_warnings: set[str],
 ) -> ArchitectMutation:
+    return _measure_change(project, inventory, ref, before_warnings)[0]
+
+
+def _measure_change(
+    project: ArchitectProject,
+    inventory: dict[str, Any],
+    ref: PackageReference,
+    before_warnings: set[str],
+) -> tuple[ArchitectMutation, str, str]:
+    """Run the measure wizard; returns the change, the measure key and its model."""
+
     model = _select_model(inventory)
     key, label, existing = _author_identity(
         project, inventory, "measure", "revenue", parent=str(model.get("key", ""))
@@ -416,7 +469,7 @@ def _author_measure(
             measure["currency"] = _author_prompt(
                 "Currency code", str(current.get("currency", "USD"))
             ).upper()
-    return _apply_authoring_change(
+    mutation = _apply_authoring_change(
         project,
         ref,
         before_warnings,
@@ -429,6 +482,7 @@ def _author_measure(
         apply=lambda: _upsert_nested_model(project, model, measures={key: measure}),
         next_action="Publish this primitive as a stable KPI with `author metric`.",
     )
+    return mutation, key, str(model.get("key", ""))
 
 
 def _author_metric(
@@ -436,20 +490,53 @@ def _author_metric(
     inventory: dict[str, Any],
     ref: PackageReference,
     before_warnings: set[str],
+) -> Undoable:
+    created: list[ArchitectMutation] = []
+    try:
+        mutation = _metric_change(project, inventory, ref, before_warnings, created)
+    except BaseException:
+        # Cancelling the metric also takes back a measure made for it, so the
+        # "no files changed" that follows stays true.
+        for part in reversed(created):
+            part.undo()
+        raise
+    return _Mutations([*created, mutation]) if created else mutation
+
+
+def _metric_change(
+    project: ArchitectProject,
+    inventory: dict[str, Any],
+    ref: PackageReference,
+    before_warnings: set[str],
+    created: list[ArchitectMutation],
 ) -> ArchitectMutation:
+    def new_measure() -> dict[str, Any]:
+        mutation, key, model = _measure_change(project, inventory, ref, before_warnings)
+        created.append(mutation)
+        before_warnings.update(_authoring_warning_messages(mutation.report.get("parse", {})))
+        inventory.clear()
+        inventory.update(project.inventory())
+        print("Back to the metric.")
+        return next(
+            row
+            for row in _inventory_items(inventory, "measure")
+            if str(row.get("key", "")) == key and str(row.get("model_key", "")) == model
+        )
+
+    create_measure = ("Create a new measure first", new_measure)
     measures = _inventory_items(inventory, "measure")
     metrics = _inventory_items(inventory, "metric")
-    if not measures:
+    if not measures and not _inventory_items(inventory, "model"):
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            "Add a primitive measure first with `author measure`, then create a governed metric.",
+            "Add a model with `author model` first; a metric publishes one of its measures.",
         )
     published_measures = {str((row.get("spec", {}) or {}).get("measure", "")) for row in metrics}
     recommended_measure = next(
         (row for row in measures if str(row.get("key", "")) not in published_measures),
-        measures[0],
+        measures[0] if measures else {},
     )
-    recommended_key = str(recommended_measure.get("key", "metric"))
+    recommended_key = str(recommended_measure.get("key", "metric")) if measures else "metric"
     key, label, existing = _author_identity(project, inventory, "metric", recommended_key)
     current = dict(existing.get("spec", {}) or {}) if existing else {}
     metric_kind = _author_choice(
@@ -466,36 +553,6 @@ def _author_metric(
         "Business definition",
         str(current.get("description", f"Governed definition of {label.lower()}.")),
     )
-    matching_measure = next(
-        (row for row in measures if str(row.get("key", "")) == key),
-        None,
-    )
-    value_default = str(
-        current.get("value_type")
-        or ((matching_measure or {}).get("spec", {}) or {}).get("value_type")
-        or "number"
-    )
-    value_options = [
-        ("number", "Number"),
-        ("currency", "Currency"),
-        ("percent", "Percent"),
-        ("count", "Count"),
-    ]
-    if metric_kind == "ratio":
-        value_options = [
-            ("percent", "Percent or share"),
-            ("ratio", "Dimensionless ratio"),
-            ("currency", "Currency per unit"),
-        ]
-        if value_default not in {value for value, _ in value_options}:
-            value_default = "percent"
-    value_type = _author_choice(
-        "Result type",
-        value_options,
-        default=value_default
-        if value_default in {value for value, _ in value_options}
-        else value_options[0][0],
-    )
     namespace = _authoring_namespace(project)
     metric_id = str(current.get("as") or current.get("id") or "")
     if not metric_id:
@@ -506,7 +563,6 @@ def _author_metric(
         "label": label,
         "description": description,
         "kind": metric_kind,
-        "value_type": value_type,
         "meta": {
             "owner_team": "analytics",
             "review_priority": "medium",
@@ -518,14 +574,23 @@ def _author_metric(
         for stale_key in ("numerator", "denominator", "null_behavior", "expression"):
             spec.pop(stale_key, None)
         source_default = str(current.get("measure", ""))
-        if not source_default and matching_measure is not None:
+        if not source_default and any(str(row.get("key", "")) == key for row in measures):
             source_default = key
         selected = _select_inventory_item(
             "Measure to publish",
             measures,
             default_key=source_default or None,
+            create=create_measure,
         )
         spec["measure"] = str(selected.get("id") or selected.get("key", ""))
+        inputs = [selected]
+        value_options = [
+            ("number", "Number"),
+            ("currency", "Currency"),
+            ("percent", "Percent"),
+            ("count", "Count"),
+        ]
+        value_default = str(current.get("value_type") or _value_type_of(selected) or "number")
         example = f"What is {label.lower()} by month?"
     else:
         spec.pop("measure", None)
@@ -547,7 +612,7 @@ def _author_metric(
         if not numerator_default and any(str(row.get("key", "")) == key for row in operands):
             numerator_default = key
         numerator = _select_inventory_item(
-            "Numerator", operands, default_key=numerator_default or None
+            "Numerator", operands, default_key=numerator_default or None, create=create_measure
         )
         denominator_options = [
             row
@@ -555,21 +620,18 @@ def _author_metric(
             if str(row.get("id") or row.get("key", ""))
             != str(numerator.get("id") or numerator.get("key", ""))
         ]
-        if not denominator_options:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                "A ratio needs two distinct measures or metrics. Add another primitive first.",
-            )
         denominator_default = str(current.get("denominator", ""))
-        if not any(
+        if denominator_options and not any(
             denominator_default in {str(row.get("key", "")), str(row.get("id", ""))}
             for row in denominator_options
         ):
-            denominator_default = str(
-                denominator_options[0].get("id") or denominator_options[0].get("key", "")
-            )
+            suggested = _suggested_denominator(inventory, numerator, denominator_options)
+            denominator_default = str(suggested.get("id") or suggested.get("key", ""))
         denominator = _select_inventory_item(
-            "Denominator", denominator_options, default_key=denominator_default
+            "Denominator",
+            denominator_options,
+            default_key=denominator_default,
+            create=create_measure,
         )
         spec.update(
             {
@@ -578,12 +640,29 @@ def _author_metric(
                 "null_behavior": "null_if_zero",
             }
         )
+        inputs = [numerator, denominator]
+        value_options = [
+            ("percent", "Percent or share"),
+            ("ratio", "Dimensionless ratio"),
+            ("currency", "Currency per unit"),
+        ]
+        value_default = str(current.get("value_type") or "")
+        if value_default not in {value for value, _ in value_options}:
+            value_default = _ratio_value_type(numerator, denominator)
         example = f"How does {label.lower()} trend by month?"
+    value_type = _author_choice(
+        "Result type",
+        value_options,
+        default=value_default
+        if value_default in {value for value, _ in value_options}
+        else value_options[0][0],
+    )
+    spec["value_type"] = value_type
     if value_type == "currency":
         spec["currency"] = _author_prompt(
             "Currency code", str(current.get("currency", "USD"))
         ).upper()
-    temporal = _default_temporal_reference(inventory)
+    temporal = _metric_time_role(inventory, inputs, current=str(current.get("temporal_role", "")))
     if temporal:
         spec["temporal_role"] = temporal
     spec["examples"] = [example]
@@ -604,6 +683,88 @@ def _author_metric(
         preview={"metrics": {key: spec}},
         apply=lambda: project.upsert_metric(metric_key=key, spec=spec, group="core", replace=True),
         next_action=f"Try `ask {example}`.",
+    )
+
+
+def _value_type_of(row: dict[str, Any]) -> str:
+    spec = dict(row.get("spec", {}) or {})
+    if spec.get("kind") == "entity_count":
+        return "count"
+    return str(spec.get("value_type", "") or "")
+
+
+def _ratio_value_type(numerator: dict[str, Any], denominator: dict[str, Any]) -> str:
+    """Revenue per order is currency; a share of like with like is a percent; else a ratio."""
+
+    top, bottom = _value_type_of(numerator), _value_type_of(denominator)
+    if top == "currency" and bottom in {"count", "number"}:
+        return "currency"
+    if top and top == bottom and top in {"count", "currency"}:
+        return "percent"
+    return "ratio"
+
+
+def _suggested_denominator(
+    inventory: dict[str, Any], numerator: dict[str, Any], options: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Prefer a count on the numerator's own model, then anything on that model or clock."""
+
+    model = str(numerator.get("model_key", "") or "")
+    clocks = set(_time_roles_of(inventory, numerator))
+    related = [
+        row
+        for row in options
+        if (model and str(row.get("model_key", "")) == model)
+        or (clocks and clocks & set(_time_roles_of(inventory, row)))
+    ]
+    counts = [row for row in related if _value_type_of(row) == "count"]
+    return (counts or related or options)[0]
+
+
+def _time_roles_of(inventory: dict[str, Any], row: dict[str, Any]) -> list[str]:
+    """The clocks one metric input can be reported on, its model's default first."""
+
+    if row.get("kind") == "metric":
+        role = str((row.get("spec", {}) or {}).get("temporal_role", "") or "")
+        return [role] if role else []
+    model = str(row.get("model_key", "") or "")
+    times = [
+        time
+        for time in _inventory_items(inventory, "time")
+        if model and time.get("model_key") == model
+    ]
+    times.sort(key=lambda time: not bool((time.get("spec", {}) or {}).get("default")))
+    return [str(time.get("id") or time.get("key") or "") for time in times]
+
+
+def _metric_time_role(
+    inventory: dict[str, Any], inputs: list[dict[str, Any]], *, current: str = ""
+) -> str:
+    """The time axis a metric follows: its inputs' clock, never another model's.
+
+    A metric used to take the package's default clock, so a metric on orders
+    could be reported on the starter's event time. Now the first input's
+    model decides. When the inputs offer more than one clock, the person picks.
+    """
+
+    candidates: list[str] = []
+    for row in inputs:
+        for role in _time_roles_of(inventory, row):
+            if role and role not in candidates:
+                candidates.append(role)
+    if not candidates:
+        return current
+    if len(candidates) == 1:
+        return candidates[0]
+    labels = {
+        str(time.get("id") or time.get("key") or ""): f"{time.get('label') or time.get('key')}"
+        f" ({time.get('model_key')})"
+        for time in _inventory_items(inventory, "time")
+    }
+    return _author_choice(
+        "Time axis for this metric",
+        [(role, labels.get(role, role)) for role in candidates],
+        default=current if current in candidates else candidates[0],
     )
 
 
@@ -883,13 +1044,19 @@ def _select_model(inventory: dict[str, Any]) -> dict[str, Any]:
     return _select_inventory_item("Model to extend", models)
 
 
+_CREATE = "new"
+
+
 def _select_inventory_item(
     label: str,
     rows: list[dict[str, Any]],
     *,
     default_key: str | None = "",
+    create: tuple[str, Callable[[], dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    if not rows:
+    """Pick one inventory row. ``create`` adds a last option that makes a new one instead."""
+
+    if not rows and create is None:
         raise SemanticLayerError("INVALID_CONFIG", f"No choices are available for {label.lower()}")
     visible = list(rows)
     # Arrow-key pickers filter as you type; plain prompts ask for search words first.
@@ -951,11 +1118,15 @@ def _select_inventory_item(
             description += f" - {row['parent']}"
         options.append((value, f"{key} - {description}"))
         lookup[value] = row
+    if create is not None:
+        options.append((_CREATE, create[0]))
     selected = _author_choice(
         label,
         options,
-        default=str(default_index + 1) if default_index is not None else "",
+        default=str(default_index + 1) if default_index is not None and visible else "",
     )
+    if selected == _CREATE and create is not None:
+        return create[1]()
     return lookup[selected]
 
 
@@ -998,17 +1169,6 @@ def _authoring_warehouse(ref: PackageReference) -> str:
     except (OSError, yaml.YAMLError):
         return "configured"
     return str((raw.get("package", {}) or {}).get("warehouse", "configured") or "configured")
-
-
-def _default_temporal_reference(inventory: dict[str, Any]) -> str:
-    times = _inventory_items(inventory, "time")
-    if not times:
-        return ""
-    selected = next(
-        (row for row in times if bool((row.get("spec", {}) or {}).get("default"))),
-        times[0],
-    )
-    return str(selected.get("id") or selected.get("key") or "")
 
 
 def _author_scalar(value: str) -> Any:
