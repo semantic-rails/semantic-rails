@@ -10,8 +10,9 @@ lint:
 	uv run ruff check .
 	uv run ruff format --check .
 
+# Applies every available fix, then formats; `make lint` reports what is left.
 format:
-	uv run ruff check --fix .
+	uv run ruff check --fix --exit-zero .
 	uv run ruff format .
 
 typecheck:

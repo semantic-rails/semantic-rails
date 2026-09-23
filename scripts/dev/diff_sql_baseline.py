@@ -6,11 +6,12 @@ level and row order is unspecified without ORDER BY, so the right contract is:
   - Same set of rows (after sorting by stringified key)
   - All numeric cells within FP_TOL_REL/FP_TOL_ABS
 
-SQL strings WILL differ — that's the point of the SQL-quality refactor — and
-are reported only for inspection.
+SQL strings may differ after a SQL-quality refactor and must not after a pure
+code move; they are listed for inspection. A metric that is missing, or that no
+longer compiles or runs, fails the diff; one that newly succeeds is noted.
 
 Usage:
-    python scripts/diff_sql_baseline.py /tmp/sql_baseline_golden.json /tmp/sql_baseline.json
+    uv run python scripts/dev/diff_sql_baseline.py /tmp/sql_baseline_golden.json /tmp/sql_baseline.json
 """
 
 from __future__ import annotations
@@ -98,11 +99,12 @@ def main(golden_path: str, after_path: str) -> int:
 
     row_diffs: list[str] = []
     sql_changes: list[str] = []
-    coverage_issues: list[str] = []
+    regressions: list[str] = []
+    coverage_notes: list[str] = []
 
     for metric_id in sorted(golden):
         if metric_id not in after:
-            coverage_issues.append(f"{metric_id}: missing post-fix")
+            regressions.append(f"{metric_id}: missing post-fix")
             continue
         g = golden[metric_id]
         a = after[metric_id]
@@ -111,11 +113,13 @@ def main(golden_path: str, after_path: str) -> int:
             if not _rows_equivalent(g["query"]["rows"], a["query"]["rows"]):
                 row_diffs.append(metric_id)
         elif "query" in g and "query" not in a:
-            coverage_issues.append(f"{metric_id}: query failed post-fix ({a.get('query_error')})")
+            regressions.append(f"{metric_id}: query failed post-fix ({a.get('query_error')})")
         elif "query" not in g and "query" in a:
-            coverage_issues.append(
+            coverage_notes.append(
                 f"{metric_id}: query newly succeeds (was: {g.get('query_error')})"
             )
+        if "compile" in g and "compile" not in a:
+            regressions.append(f"{metric_id}: compile failed post-fix ({a.get('compile_error')})")
 
         g_sql = g.get("compile", {}).get("sql")
         a_sql = a.get("compile", {}).get("sql")
@@ -132,9 +136,15 @@ def main(golden_path: str, after_path: str) -> int:
             print(f"    after  first 2 rows: {a_rows[:2]}")
         return 1
 
-    if coverage_issues:
-        print("WARN coverage:")
-        for c in coverage_issues:
+    if regressions:
+        print(f"FAIL: {len(regressions)} metric(s) regressed:")
+        for r in regressions:
+            print(f"  - {r}")
+        return 1
+
+    if coverage_notes:
+        print("NOTE coverage:")
+        for c in coverage_notes:
             print(f"  - {c}")
 
     print(

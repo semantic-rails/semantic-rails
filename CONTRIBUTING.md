@@ -117,6 +117,7 @@ uv run python scripts/verify_package_distribution.py
 # (see scripts/dev/README.md):
 make complexity
 uv run python scripts/dev/capture_sql_baseline.py /tmp/sql_baseline_golden.json
+uv run python scripts/dev/capture_dialect_sql.py /tmp/dialect_sql_golden.json
 ```
 
 For the Snowflake showcase package, see
