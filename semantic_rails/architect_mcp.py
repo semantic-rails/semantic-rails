@@ -112,6 +112,17 @@ def _read_only_annotations(title: str) -> ToolAnnotations:
     )
 
 
+def _query_annotations(title: str) -> ToolAnnotations:
+    """Read-only like the query server's execute: it may reach an external warehouse."""
+    return ToolAnnotations(
+        title=title,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+
+
 def _mutation_annotations(title: str) -> ToolAnnotations:
     return ToolAnnotations(
         title=title,
@@ -1127,6 +1138,117 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                 idempotency_key=idempotency_key,
                 dry_run=dry_run,
             )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert example"),
+        description=(
+            "Preview or atomically upsert an example question in examples/<file_name>: spec "
+            "takes question, query and optionally expected_shape (columns, min_rows, max_rows). "
+            "The query must compile against the package. spec merges into an existing example "
+            "unless replace is true."
+        ),
+    )
+    def upsert_example(
+        project_path: str,
+        example_key: str,
+        spec: dict[str, Any],
+        expected_revision: str,
+        idempotency_key: str,
+        file_name: str = "core.yml",
+        replace: bool = False,
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            return _mutation_result(
+                ArchitectProject(project_path, workspace_root=root)
+                .upsert_example(
+                    example_key=example_key,
+                    spec=spec,
+                    file_name=file_name,
+                    replace=replace,
+                    validate_after=True,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert package test"),
+        description=(
+            "Preview or atomically upsert a package test in tests/<file_name>. spec.kind is "
+            "query_returns_columns (query, columns), query_row_count_bounds (query, min_rows "
+            "and/or max_rows), query_matches_snapshot (query, expected_rows), "
+            "validate_fails_with_code (query, code), explain_contains (query, text) or "
+            "metric_equals_query (metric_query, expected_query). Queries must compile, and a "
+            "validate_fails_with_code query must fail with its code. capture_snapshot: true "
+            "runs a query_matches_snapshot query against the warehouse and writes its rows (up "
+            "to 200) as expected_rows. spec merges into an existing test unless replace is true."
+        ),
+    )
+    def upsert_test(
+        project_path: str,
+        test_key: str,
+        spec: dict[str, Any],
+        expected_revision: str,
+        idempotency_key: str,
+        file_name: str = "core.yml",
+        replace: bool = False,
+        capture_snapshot: bool = False,
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            return _mutation_result(
+                ArchitectProject(project_path, workspace_root=root)
+                .upsert_test(
+                    test_key=test_key,
+                    spec=spec,
+                    file_name=file_name,
+                    replace=replace,
+                    capture_snapshot=capture_snapshot,
+                    validate_after=True,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
+    @mcp.tool(
+        annotations=_query_annotations("Preview query"),
+        description=(
+            "Run a semantic query against the package's warehouse and return at most max_rows "
+            "rows (default 20, at most 200), with truncated when there were more. Values are "
+            "real warehouse data. Like runtime validation, this may build a seeded DuckDB "
+            "database."
+        ),
+    )
+    def preview_query(
+        project_path: str, query: dict[str, Any], max_rows: int = 20
+    ) -> dict[str, Any]:
+        try:
+            return ArchitectProject(project_path, workspace_root=root).preview_query(
+                query, max_rows=max_rows
+            )
+        except Exception as exc:
+            return _report_error(exc)
 
     @mcp.tool(
         annotations=_mutation_annotations("Remove object"),

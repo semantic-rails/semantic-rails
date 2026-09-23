@@ -17,6 +17,8 @@ import re
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -80,6 +82,15 @@ _KEPT_ON_REPLACE = ("id", "entities", "calendar_id")
 
 # Package checks: example questions and package tests.
 _CHECKS = ("example", "test")
+TEST_KINDS = (
+    "query_returns_columns",
+    "query_row_count_bounds",
+    "query_matches_snapshot",
+    "validate_fails_with_code",
+    "explain_contains",
+    "metric_equals_query",
+)
+MAX_PREVIEW_ROWS = 200
 
 _INVENTORY_KINDS = {
     "model": "models",
@@ -1932,6 +1943,261 @@ class ArchitectProject:
             }
         return impact
 
+    def upsert_example(
+        self,
+        *,
+        example_key: str,
+        spec: dict[str, Any],
+        file_name: str = "core.yml",
+        replace: bool = False,
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Create or update an example question in ``examples/<file_name>``.
+
+        ``spec`` takes ``question``, ``query`` and optionally ``expected_shape``
+        (``columns``, ``min_rows``, ``max_rows``); it merges into an existing
+        example unless ``replace``. The query must compile against the package.
+        """
+        return self._upsert_check(
+            "example",
+            example_key,
+            spec,
+            file_name=file_name,
+            replace=replace,
+            validate_after=validate_after,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
+        )
+
+    def upsert_test(
+        self,
+        *,
+        test_key: str,
+        spec: dict[str, Any],
+        file_name: str = "core.yml",
+        replace: bool = False,
+        capture_snapshot: bool = False,
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Create or update a package test in ``tests/<file_name>``.
+
+        ``spec.kind`` is one of ``TEST_KINDS``, with that kind's fields (see
+        ``docs/ARCHITECT_MCP.md``); it merges into an existing test unless
+        ``replace``. Queries must compile, and a ``validate_fails_with_code``
+        query must fail with its ``code``. ``capture_snapshot`` runs a
+        ``query_matches_snapshot`` query against the warehouse and writes its
+        rows (at most 200) as ``expected_rows``.
+        """
+        return self._upsert_check(
+            "test",
+            test_key,
+            spec,
+            file_name=file_name,
+            replace=replace,
+            capture_snapshot=capture_snapshot,
+            validate_after=validate_after,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
+        )
+
+    def preview_query(self, query: dict[str, Any], *, max_rows: int = 20) -> dict[str, Any]:
+        """Run ``query`` against the package's warehouse and return at most ``max_rows`` rows.
+
+        ``max_rows`` is capped at 200. Values come back JSON-ready: numbers as
+        int or float, dates and times as ISO strings. Like runtime validation,
+        this may build a seeded DuckDB database.
+        """
+        cap = max(1, min(int(max_rows), MAX_PREVIEW_ROWS))
+        payload = deepcopy(dict(query or {}))
+        limit = payload.get("limit")
+        payload["limit"] = min(int(limit), cap + 1) if limit else cap + 1
+        rows, columns = self._query_rows(payload)
+        return {
+            "ok": True,
+            "project_path": str(self.project_path),
+            "columns": columns,
+            "rows": [{key: _json_value(value) for key, value in row.items()} for row in rows[:cap]],
+            "row_count": min(len(rows), cap),
+            "truncated": len(rows) > cap,
+        }
+
+    def _query_rows(self, query: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+        from .runtime import Runtime
+
+        runtime = Runtime.from_path(str(self.project_path))
+        try:
+            result = runtime.query(query)
+        finally:
+            runtime.close()
+        rows = [dict(row) for row in result["rows"]]
+        columns = list(rows[0]) if rows else list(result.get("output_columns", []) or [])
+        return rows, [
+            str(column.get("name", column)) if isinstance(column, dict) else str(column)
+            for column in columns
+        ]
+
+    def _upsert_check(
+        self,
+        kind: str,
+        key: str,
+        spec: dict[str, Any],
+        *,
+        file_name: str,
+        replace: bool,
+        capture_snapshot: bool = False,
+        validate_after: bool,
+        expected_revision: str | None,
+        idempotency_key: str | None,
+        dry_run: bool,
+    ) -> ArchitectMutation:
+        """Upsert an example or a package test after checking its queries."""
+        intent = {
+            "operation": f"upsert_{kind}",
+            f"{kind}_key": key,
+            "spec": spec,
+            "file_name": file_name,
+            "replace": replace,
+            **({"capture_snapshot": True} if capture_snapshot else {}),
+        }
+        expected, idempotency, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay
+        name = str(key or "").strip()
+        if not name:
+            raise SemanticLayerError("INVALID_CONFIG", f"{kind}_key is required")
+        plural = f"{kind}s"
+        raw = self._raw_inventory()
+        existing = self._find_raw(raw[plural], name)
+        path = (
+            existing.source_path
+            if existing is not None
+            else self._target_path(
+                f"{plural}/{_slug(str(file_name).rsplit('.', 1)[0], fallback='core')}.yml"
+            )
+        )
+        documents = self._load_documents(path)
+        current = dict(existing.spec if existing is not None else {})
+        merged = (
+            deepcopy(dict(spec or {})) if replace else {**current, **deepcopy(dict(spec or {}))}
+        )
+        if capture_snapshot:
+            if merged.get("kind") != "query_matches_snapshot":
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", "capture_snapshot applies to kind: query_matches_snapshot"
+                )
+            rows, _ = self._query_rows(dict(merged.get("query") or {}))
+            if len(rows) > MAX_PREVIEW_ROWS:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"the query returns {len(rows)} rows; a snapshot keeps at most "
+                    f"{MAX_PREVIEW_ROWS}, so add a limit",
+                )
+            merged["expected_rows"] = [
+                {column: _yaml_value(value) for column, value in row.items()} for row in rows
+            ]
+        self._check_queries(kind, name, merged)
+        self._store_mapping_object(documents[path], existing, wrapper=plural, key=name, spec=merged)
+        return self._commit(
+            documents,
+            kind=kind,
+            key=name,
+            existed=existing is not None,
+            source_file=self._relative(existing.source_path) if existing else "",
+            target_file=self._relative(path),
+            validate_after=validate_after,
+            expected_revision=expected,
+            idempotency_key=idempotency,
+            dry_run=dry_run,
+            intent=intent,
+        )
+
+    def _check_queries(self, kind: str, name: str, spec: dict[str, Any]) -> None:
+        """Refuse an example or test whose queries the package cannot answer."""
+        from .runtime import Runtime
+
+        test_kind = str(spec.get("kind", "") or "") if kind == "test" else ""
+        if kind == "test" and test_kind not in TEST_KINDS:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"test kind must be one of {', '.join(TEST_KINDS)} (got {test_kind!r})",
+                details={"test": name},
+            )
+        required = {
+            "": ("question", "query"),
+            "query_returns_columns": ("query", "columns"),
+            "query_row_count_bounds": ("query",),
+            "query_matches_snapshot": ("query", "expected_rows"),
+            "validate_fails_with_code": ("query", "code"),
+            "explain_contains": ("query", "text"),
+            "metric_equals_query": ("expected_query",),
+        }[test_kind]
+        missing = [field for field in required if spec.get(field) in (None, "", [], {})]
+        if (
+            test_kind == "query_row_count_bounds"
+            and spec.get("min_rows") is None
+            and (spec.get("max_rows") is None)
+        ):
+            missing.append("min_rows or max_rows")
+        if test_kind == "metric_equals_query" and not (
+            spec.get("metric_query") or spec.get("query")
+        ):
+            missing.append("metric_query")
+        if missing:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{kind} {name!r} needs {', '.join(missing)}",
+                details={kind: name, "missing": missing},
+            )
+        queries = (
+            {
+                "metric_query": spec.get("metric_query") or spec.get("query"),
+                "expected_query": spec.get("expected_query"),
+            }
+            if test_kind == "metric_equals_query"
+            else {"query": spec.get("query")}
+        )
+        checked: dict[str, dict[str, Any]] = {}
+        for field_name, query in queries.items():
+            if not isinstance(query, dict):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", f"{kind} {name!r}: {field_name} must be a query object"
+                )
+            checked[field_name] = query
+        runtime = Runtime.from_path(str(self.project_path))
+        try:
+            if test_kind == "validate_fails_with_code":
+                result = runtime.validate(dict(spec["query"]))
+                code = str((result.get("errors") or [{}])[0].get("code", "") or "")
+                if result.get("ok") or code != str(spec["code"]):
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"test {name!r} expects the query to fail with {spec['code']}, but it "
+                        + (f"fails with {code}" if code else "is valid"),
+                        details={"test": name, "expected": spec["code"], "actual": code},
+                    )
+                return
+            for field_name, query in checked.items():
+                try:
+                    runtime.compile(deepcopy(query))
+                except Exception as exc:  # an engine crash refuses the query too
+                    code = getattr(exc, "code", type(exc).__name__)
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"{kind} {name!r}: the {field_name.replace('_', ' ')} does not compile "
+                        f"({code}: {exc})",
+                        details={kind: name, "error": {"code": code, "message": str(exc)}},
+                    ) from exc
+        finally:
+            runtime.close()
+
     def write_file(
         self,
         *,
@@ -2484,6 +2750,22 @@ def _defined_as(singular: str, fallback: str, spec: dict[str, Any], *, single: b
     if single:
         return str(spec.get("name") or spec.get("id") or fallback)
     return fallback
+
+
+def _yaml_value(value: Any) -> Any:
+    """A warehouse value as YAML can hold it, and as package tests compare it."""
+    if isinstance(value, bool) or value is None or isinstance(value, (str, int, date)):
+        return value
+    if isinstance(value, (float, Decimal)):
+        number = float(value)
+        return int(number) if number.is_integer() else number
+    return str(value)
+
+
+def _json_value(value: Any) -> Any:
+    """A warehouse value as JSON can hold it."""
+    value = _yaml_value(value)
+    return value.isoformat() if isinstance(value, date) else value
 
 
 def _issue(exc: SemanticLayerError) -> dict[str, Any]:

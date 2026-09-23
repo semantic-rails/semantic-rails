@@ -121,6 +121,32 @@ The usual mutation contract applies (`expected_revision`, `idempotency_key`, `dr
 parse gate rolls back a change the package cannot load, such as one that breaks a pinned route.
 Python callers use `ArchitectProject.upsert_relationship`.
 
+## Examples, Package Tests and Query Previews
+
+`upsert_example` writes an example question to `examples/<file_name>` (`core.yml` by default):
+`spec` takes `question`, `query` and optionally `expected_shape` (`columns`, `min_rows`,
+`max_rows`). `upsert_test` writes a package test to `tests/<file_name>`; `spec.kind` is one of:
+
+| Kind | Fields |
+|---|---|
+| `query_returns_columns` | `query`, `columns` |
+| `query_row_count_bounds` | `query`, `min_rows` and/or `max_rows` |
+| `query_matches_snapshot` | `query`, `expected_rows` |
+| `validate_fails_with_code` | `query`, `code` |
+| `explain_contains` | `query`, `text` |
+| `metric_equals_query` | `metric_query`, `expected_query` |
+
+Both tools compile every query against the package before writing and refuse one that does not
+compile. A `validate_fails_with_code` query must fail with its `code`. Both merge into an existing
+entry, which stays in its file, unless `replace` is true. `upsert_test` with `capture_snapshot:
+true` runs a `query_matches_snapshot` query against the warehouse and writes its rows (at most 200)
+as `expected_rows`. Snapshots compare numbers by value, so a DECIMAL result such as `12.7500` matches
+the `12.75` YAML holds.
+
+`preview_query` runs a semantic query against the package's warehouse and returns at most
+`max_rows` rows (default 20, at most 200), with `truncated` when there were more. Its values are
+real warehouse data; like runtime validation, it may build a seeded DuckDB database.
+
 ## Removing and Replacing Objects
 
 `remove_object` removes a model, dimension, time, measure, metric, segment, relationship, example or
@@ -185,6 +211,9 @@ the model's times to an existing calendar, as `time.calendar_id` queries expect.
 - `upsert_relationship`
 - `upsert_metric`
 - `upsert_segment`
+- `upsert_example`
+- `upsert_test`
+- `preview_query`
 - `remove_object`
 - `archive_project_file`
 - `validate_project`

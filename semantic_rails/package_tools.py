@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import re
 import subprocess
 import tarfile
 import tempfile
 from collections.abc import Iterable
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -1414,5 +1416,16 @@ def _extract_package_from_git(source_path: str, base_ref: str) -> str:
 
 
 def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized = [dict(row) for row in rows]
+    normalized = [{key: _canonical_number(value) for key, value in row.items()} for row in rows]
     return sorted(normalized, key=lambda row: json.dumps(row, sort_keys=True, default=str))
+
+
+def _canonical_number(value: Any) -> Any:
+    """One form per number, so a DECIMAL result matches the int or float YAML loads."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return value
+    if isinstance(value, Decimal) and not value.is_finite():
+        return float(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return value
+    return int(value) if value == int(value) else float(value)
