@@ -36,6 +36,8 @@ from .config_validation import (
 )
 from .contracts import export_metric_portability, export_semantic_contract
 from .dev_cli import (
+    _is_bundled_ref,
+    _package_display,
     add_developer_cli,
     cmd_init_project,
     default_package_ref,
@@ -667,6 +669,7 @@ def cmd_mcp_setup(args: argparse.Namespace) -> None:
             "id": runtime.package_id,
             "source_path": runtime.source_path,
             "warehouse": runtime.warehouse,
+            "bundled": _is_bundled_ref(ref),
         },
         "mcp": mcp,
         "client_config": {
@@ -692,7 +695,7 @@ def _print_mcp_setup_report(payload: dict[str, Any]) -> None:
     mcp = dict(payload.get("mcp", {}) or {})
     config = dict(payload.get("client_config", {}) or {})
     print("Semantic Rails MCP setup")
-    print(f"Package: {package.get('id') or package.get('source_path')}")
+    print(f"Package: {_package_display(package)}")
     print(
         f"MCP check: {'ok' if payload.get('ok') else 'failed'} ({mcp.get('tool_count', 0)} tools)"
     )
@@ -1134,7 +1137,10 @@ def main() -> None:
         description=(
             "Semantic Rails CLI — inspect, validate, compile, and execute "
             "Semantic Rails packages. See docs/QUERY_API.md and docs/CAPABILITIES.md "
-            "for the agent loop and supported runtime surfaces."
+            "for the agent loop and supported runtime surfaces. Commands use --package "
+            "or --path, else the package directory you are in, else the local profile "
+            "(semantic-rails profile init); with none of these they stop and list how to "
+            "choose one. The bundled jaffle_shop sample package is used only when named."
         ),
     )
     from semantic_rails import __version__
