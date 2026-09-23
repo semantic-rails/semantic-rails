@@ -8,15 +8,22 @@ MCP clients while keeping writes scoped to a configured workspace root.
 from __future__ import annotations
 
 import argparse
+import hmac
+import ipaddress
+import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.applications import Starlette
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .architect_service import ArchitectProject
 from .architect_transactions import (
@@ -40,6 +47,17 @@ DEFAULT_ARCHITECT_PORT = 8010
 DEFAULT_WORKSPACE_ROOT = repo_root()
 ARCHITECT_INTERFACE_VERSION = "v1"
 ArchitectTransport = Literal["stdio", "sse", "streamable-http"]
+# The network transports can write files, so they require a bearer token.
+ARCHITECT_TOKEN_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN"
+ARCHITECT_TOKEN_FILE_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN_FILE"
+MIN_ARCHITECT_TOKEN_LENGTH = 32
+# RFC 6750 b64token: what a client can send in an Authorization header.
+_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
+_TOKEN_HINT = (
+    "create one without printing it: (umask 077; python3 -c "
+    '"import secrets; print(secrets.token_urlsafe(32))" > ~/.config/semantic-rails/architect.token)'
+)
+_LOOPBACK_NAMES = ("127.0.0.1", "localhost", "[::1]")
 
 
 class ProjectSetupAnswers(BaseModel):
@@ -706,9 +724,189 @@ def _resolve_compare_path(compare_path: str, *, workspace_root: Path) -> str:
     return str(_resolve_project_path(compare_path, workspace_root=workspace_root))
 
 
-def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None = None) -> FastMCP:
+def _bind_kind(host: str) -> Literal["loopback", "wildcard", "concrete"]:
+    name = host.strip().strip("[]").lower()
+    if name == "localhost":
+        return "loopback"
+    try:
+        address = ipaddress.ip_address(int(name) if name.isdigit() else name)
+    except ValueError:
+        return "wildcard" if not name else "concrete"
+    if address.is_unspecified:
+        return "wildcard"
+    return "loopback" if address.is_loopback else "concrete"
+
+
+def _url_host(host: str) -> str:
+    """The host a client should dial for a server bound to ``host``.
+
+    A wildcard bind is dialed over loopback in the same address family: an IPv6
+    listener (``::``) does not accept IPv4 connections.
+    """
+    name = host.strip().strip("[]")
+    if _bind_kind(host) == "wildcard":
+        return "[::1]" if ":" in name else "127.0.0.1"
+    return f"[{name}]" if ":" in name else name
+
+
+def _transport_security(host: str) -> TransportSecuritySettings:
+    """Host/Origin (DNS-rebinding) checks for the network transports.
+
+    Loopback names are always allowed, as in the MCP SDK's loopback default,
+    and so is the address the server binds to, unless it is a wildcard
+    (``0.0.0.0``, ``::``): then only loopback names pass, e.g. a container
+    port-forwarded to localhost. Each name is allowed with and without a port.
+    """
+    names = list(_LOOPBACK_NAMES)
+    if _bind_kind(host) != "wildcard":
+        name = _url_host(host)
+        if name.lower() not in names:
+            names.append(name)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[*names, *(f"{name}:*" for name in names)],
+        allowed_origins=[*(f"http://{name}" for name in names)]
+        + [f"http://{name}:*" for name in names],
+    )
+
+
+def _check_token(token: str) -> str:
+    if len(token) < MIN_ARCHITECT_TOKEN_LENGTH:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"the Architect MCP token must be at least {MIN_ARCHITECT_TOKEN_LENGTH} characters; "
+            f"{_TOKEN_HINT}",
+        )
+    if not _TOKEN_PATTERN.fullmatch(token):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "the Architect MCP token may contain only letters, digits and - . _ ~ + / "
+            "(optionally ending in =), the characters a bearer token header can carry",
+        )
+    return token
+
+
+def load_architect_token(token_file: str = "") -> str:
+    """Return the network transports' bearer token, or "" when none is configured.
+
+    Sources, first match wins: ``token_file`` (``--token-file``), the file named
+    by ``SEMANTIC_RAILS_ARCHITECT_TOKEN_FILE``, then ``SEMANTIC_RAILS_ARCHITECT_TOKEN``.
+    A configured token must be at least 32 characters of RFC 6750 token text.
+    """
+    path = token_file or os.environ.get(ARCHITECT_TOKEN_FILE_ENV, "")
+    if path:
+        resolved = Path(path).expanduser()
+        try:
+            token = resolved.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"cannot read the Architect MCP token file {str(resolved)!r}: "
+                f"{exc.strerror or type(exc).__name__}",
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"the Architect MCP token file {str(resolved)!r} is not UTF-8 text",
+            ) from exc
+        if not token:
+            raise SemanticLayerError(
+                "INVALID_CONFIG", f"the Architect MCP token file {str(resolved)!r} is empty"
+            )
+        return _check_token(token)
+    token = os.environ.get(ARCHITECT_TOKEN_ENV, "").strip()
+    return _check_token(token) if token else ""
+
+
+class _BearerTokenGate:
+    """Reject HTTP requests without ``Authorization: Bearer <token>`` before MCP sees them."""
+
+    def __init__(self, app: ASGIApp, token: str) -> None:
+        self._app = app
+        self._token = _check_token(token).encode("ascii")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            await self._app(scope, receive, send)
+            return
+        if scope["type"] != "http":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        supplied = b""
+        values = [
+            value for name, value in scope.get("headers", []) if name.lower() == b"authorization"
+        ]
+        # More than one Authorization header is ambiguous, so it never authenticates.
+        if len(values) == 1 and values[0][:7].lower() == b"bearer ":
+            supplied = values[0][7:].strip()
+        if not supplied or not hmac.compare_digest(supplied, self._token):
+            body = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32001, "message": "Missing or invalid bearer token."},
+                }
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                        (b"www-authenticate", b"Bearer"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self._app(scope, receive, send)
+
+
+class ArchitectMCPServer(FastMCP[Any]):
+    """FastMCP whose HTTP apps always sit behind the Architect bearer-token gate.
+
+    Every way to serve the network transports (``run("sse")``,
+    ``run("streamable-http")``, ``sse_app()``, ``streamable_http_app()``) goes
+    through these overrides, so none serves without ``bearer_token`` set to a
+    valid token.
+    """
+
+    bearer_token: str = ""
+
+    def sse_app(self, mount_path: str | None = None) -> Starlette:
+        return self._gated(super().sse_app(mount_path))
+
+    def streamable_http_app(self) -> Starlette:
+        return self._gated(super().streamable_http_app())
+
+    def _gated(self, app: Starlette) -> Starlette:
+        if not self.bearer_token:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "the Architect MCP network transports require a bearer token; "
+                "set bearer_token or use run_architect_mcp_server",
+            )
+        app.add_middleware(_BearerTokenGate, token=_check_token(self.bearer_token))
+        return app
+
+
+def architect_http_app(
+    server: ArchitectMCPServer, transport: Literal["sse", "streamable-http"], token: str
+) -> Starlette:
+    """The ASGI app for a network transport, behind the bearer-token gate."""
+    server.bearer_token = _check_token(token)
+    return server.sse_app() if transport == "sse" else server.streamable_http_app()
+
+
+def create_architect_mcp_server(
+    *,
+    workspace_root: str | os.PathLike[str] | None = None,
+    host: str = "127.0.0.1",
+    port: int = DEFAULT_ARCHITECT_PORT,
+) -> ArchitectMCPServer:
     root = _server_workspace_root(workspace_root)
-    mcp = FastMCP(
+    mcp = ArchitectMCPServer(
         name="Semantic Rails Architect MCP",
         instructions=(
             "Use architect_guidance and project_status before editing. Prefer setup_project_dialog "
@@ -716,6 +914,9 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
             "All writes are scoped to the configured workspace root and this server does not manage "
             "cloud service processes."
         ),
+        host=host,
+        port=port,
+        transport_security=_transport_security(host),
     )
 
     @mcp.prompt()
@@ -1206,6 +1407,9 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
             "--workspace-root",
             str(root),
         ]
+        # Network transports require a bearer token. The server and the client
+        # both read it from the environment; this payload never carries it.
+        auth_headers = {"Authorization": f"Bearer ${{{ARCHITECT_TOKEN_ENV}}}"}
         return {
             "ok": True,
             "server_name": "semantic-rails-architect",
@@ -1219,16 +1423,28 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                 "cwd": str(root),
             },
             "http": {
-                "url": f"http://{host}:{port}{url_path}",
+                "url": f"http://{_url_host(host)}:{port}{url_path}",
                 "command": [sys.executable, *http_args],
                 "cwd": str(root),
+                "headers": auth_headers,
             },
             "sse": {
-                "url": f"http://{host}:{port}/sse",
+                "url": f"http://{_url_host(host)}:{port}/sse",
                 "command": [sys.executable, *sse_args],
                 "cwd": str(root),
+                "headers": auth_headers,
             },
-            "note": "Use port 8010 by default so the Architect MCP does not collide with the query MCP or local semantic-rails API.",
+            "auth": {
+                "required_for": ["sse", "streamable-http"],
+                "token_env": ARCHITECT_TOKEN_ENV,
+                "token_file_env": ARCHITECT_TOKEN_FILE_ENV,
+                "min_length": MIN_ARCHITECT_TOKEN_LENGTH,
+            },
+            "note": (
+                "Use port 8010 by default so the Architect MCP does not collide with the query MCP "
+                f"or local semantic-rails API. HTTP and SSE need {ARCHITECT_TOKEN_ENV} (or a token "
+                "file) set for both the server and the client."
+            ),
         }
 
     return mcp
@@ -1240,11 +1456,29 @@ def run_architect_mcp_server(
     host: str = "127.0.0.1",
     port: int = DEFAULT_ARCHITECT_PORT,
     workspace_root: str = DEFAULT_WORKSPACE_ROOT,
+    token_file: str = "",
 ) -> None:
-    server = create_architect_mcp_server(workspace_root=workspace_root)
-    server.settings.host = host
-    server.settings.port = port
-    server.run(transport)
+    server = create_architect_mcp_server(workspace_root=workspace_root, host=host, port=port)
+    if transport == "stdio":
+        server.run("stdio")
+        return
+    token = load_architect_token(token_file)
+    if not token:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"the {transport} transport requires a bearer token of at least "
+            f"{MIN_ARCHITECT_TOKEN_LENGTH} characters: pass --token-file, or set "
+            f"{ARCHITECT_TOKEN_FILE_ENV} or {ARCHITECT_TOKEN_ENV}; {_TOKEN_HINT}. "
+            "Clients send it as 'Authorization: Bearer <token>'.",
+        )
+    import uvicorn
+
+    uvicorn.run(
+        architect_http_app(server, transport, token),
+        host=host,
+        port=port,
+        log_level=server.settings.log_level.lower(),
+    )
 
 
 def main() -> None:
@@ -1253,11 +1487,26 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_ARCHITECT_PORT)
     parser.add_argument("--workspace-root", default=DEFAULT_WORKSPACE_ROOT)
+    parser.add_argument(
+        "--token-file",
+        default="",
+        help=(
+            "file holding the bearer token the network transports require "
+            f"(or set {ARCHITECT_TOKEN_FILE_ENV} or {ARCHITECT_TOKEN_ENV})"
+        ),
+    )
     args = parser.parse_args()
     transport: ArchitectTransport = args.transport
-    run_architect_mcp_server(
-        transport=transport, host=args.host, port=args.port, workspace_root=args.workspace_root
-    )
+    try:
+        run_architect_mcp_server(
+            transport=transport,
+            host=args.host,
+            port=args.port,
+            workspace_root=args.workspace_root,
+            token_file=args.token_file,
+        )
+    except SemanticLayerError as exc:
+        parser.error(str(exc))
 
 
 if __name__ == "__main__":  # pragma: no cover
