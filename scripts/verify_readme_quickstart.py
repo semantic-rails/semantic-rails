@@ -3,7 +3,10 @@
 
 The commands below install the latest release from PyPI, not this checkout, so the
 check shows whether the README works for a new user today. Each command must appear
-verbatim in README.md: editing one without the other fails the check.
+verbatim, as whole lines of a README code block: editing one without the other fails
+the check. The Claude Code and Codex registration lines are held to the same rule, and
+the check starts the stdio server they register. Claude Desktop's `mcp setup`, the
+Cursor config and the MetricFlow import are not run here.
 
 Environments:
   --image IMAGE  a fresh container (`docker run`), removed afterwards; repeatable.
@@ -50,7 +53,10 @@ ASK = 'uvx semantic-rails ask --path ./my_package "total amount by event type" -
 TOOL_INSTALL = "uv tool install semantic-rails"
 VENV_BLOCK = "uv venv --python 3.12\nsource .venv/bin/activate\nuv pip install semantic-rails"
 MCP_STDIO = 'uvx semantic-rails mcp stdio --path "$PWD/my_package"'
-DOCUMENTED = (TRY, INIT, VALIDATE, ASK, TOOL_INSTALL, VENV_BLOCK, MCP_STDIO)
+# The README registers MCP_STDIO with these clients; the check runs the server they start.
+CLAUDE_ADD = f"claude mcp add semantic-rails -- {MCP_STDIO}"
+CODEX_ADD = f"codex mcp add semantic-rails -- {MCP_STDIO}"
+DOCUMENTED = (TRY, INIT, VALIDATE, ASK, TOOL_INSTALL, VENV_BLOCK, CLAUDE_ADD, CODEX_ADD)
 
 ASK_WITHOUT_PATH = 'uvx semantic-rails ask "total amount by event type" --run'
 FALLBACK_WARNING = "commands fall back to the bundled `jaffle_shop` package"
@@ -111,7 +117,12 @@ class Container(Environment):
             capture_output=True,
             text=True,
         )
-        bootstrap = self.run(BOOTSTRAP)
+        try:
+            bootstrap = self.run(BOOTSTRAP)
+        except BaseException:
+            # A timeout here must not leave a `sleep infinity` container behind.
+            self.close()
+            raise
         if bootstrap.returncode:
             self.close()
             raise RuntimeError(
@@ -154,7 +165,7 @@ class Local(Environment):
             raise RuntimeError("--local needs uv and uvx on PATH")
         self.name = f"local ({sys.platform})"
         self.root = Path(tempfile.mkdtemp(prefix="sr-quickstart-"))
-        for directory in ("home", "bin", "work", "cache"):
+        for directory in ("home", "bin", "work", "cache", "tmp"):
             (self.root / directory).mkdir()
         (self.root / "bin" / "uv").symlink_to(uv)
         (self.root / "bin" / "uvx").symlink_to(uvx)
@@ -162,6 +173,7 @@ class Local(Environment):
             "HOME": str(self.root / "home"),
             "PATH": f"{self.root / 'bin'}:/usr/bin:/bin",
             "UV_CACHE_DIR": str(self.root / "cache"),
+            "TMPDIR": str(self.root / "tmp"),
             "TERM": "dumb",
         }
 
@@ -264,8 +276,8 @@ def mcp_handshake(env: Environment, timeout: float = MCP_TIMEOUT_SECONDS) -> str
     The whole exchange has one deadline: a server that stays alive without answering
     fails this step instead of hanging the run.
     """
-    package = f"{env.workdir()}/my_package"
-    argv = ["uvx", "semantic-rails", "mcp", "stdio", "--path", package]
+    # The command the README registers with Claude Code and Codex, run from its workdir.
+    argv = shlex.split(MCP_STDIO.replace("$PWD", env.workdir()))
     if isinstance(env, Local):
         argv[0] = str(env.root / "bin" / "uvx")
     process = env.popen(argv)
@@ -370,6 +382,37 @@ def python_trap(env: Environment, readme: str) -> str:
     return f"{NOTE}bare uv venv used {found} and failed, as the README warns"
 
 
+def code_blocks(markdown: str) -> list[list[str]]:
+    """The lines of each fenced code block, with runs of whitespace collapsed."""
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("```"):
+            if current is None:
+                current = []
+            else:
+                blocks.append(current)
+                current = None
+        elif current is not None:
+            current.append(" ".join(line.split()))
+    return blocks
+
+
+def undocumented(markdown: str) -> list[str]:
+    """Checked commands that aren't whole, consecutive lines of one README code block."""
+    blocks = code_blocks(markdown)
+    missing = []
+    for command in DOCUMENTED:
+        lines = [" ".join(line.split()) for line in command.splitlines()]
+        if not any(
+            block[start : start + len(lines)] == lines
+            for block in blocks
+            for start in range(len(block))
+        ):
+            missing.append(command)
+    return missing
+
+
 def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
 
@@ -445,9 +488,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.image and not args.local:
         parser.error("choose at least one --image or --local")
 
-    # Compare with whitespace collapsed: README prose wraps mid-sentence.
-    readme = " ".join((REPO_ROOT / "README.md").read_text(encoding="utf-8").split())
-    missing = [command for command in DOCUMENTED if " ".join(command.split()) not in readme]
+    markdown = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    # The warnings are prose, which wraps mid-sentence: compare with whitespace collapsed.
+    readme = " ".join(markdown.split())
+    missing = undocumented(markdown)
     if missing:
         for command in missing:
             print(f"README.md no longer contains: {command!r}", file=sys.stderr)

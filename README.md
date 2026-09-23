@@ -39,9 +39,10 @@ uvx semantic-rails ask --path ./my_package "total amount by event type" --run
 `init` writes a runnable starter package (YAML models, metrics, examples, tests and
 CSV data). Edit it to describe your own tables, then rerun `project validate`.
 
-Pass `--path` (or `--package`) on every command for now. Without it, and without a
-saved profile, commands fall back to the bundled `jaffle_shop` package: `ask` answers
-from it and `project validate` validates it, both exiting 0.
+Pass `--path` on every command for now. Without it, and without a saved profile,
+commands fall back to the bundled `jaffle_shop` package: `ask` answers from it and
+`project validate` validates it, both exiting 0. (`--package` only names a bundled
+package, such as `jaffle_shop`.)
 
 To keep a `semantic-rails` command on your PATH instead of running it through `uvx`:
 
@@ -68,7 +69,9 @@ environment. On Windows, activate the environment with `.venv\Scripts\activate`;
 doesn't cover Windows yet.
 
 The interactive wizard, `semantic-rails setup --interactive`, walks through the same
-steps and can register the MCP server with Claude Desktop or Codex. Inside
+steps and can register the MCP server with Claude Desktop or Codex. Run it from an
+installed `semantic-rails`, not through `uvx`, for the reason given under
+[Claude Desktop](#connect-your-agent) below. Inside
 `semantic-rails repl`, type `author` to add models, dimensions, measures, metrics and
 segments with previews and validation.
 
@@ -160,32 +163,42 @@ tools and offer caching or pre-aggregation. Semantic Rails is narrower: an engin
 built around the agent loop above, which you can run locally or embed.
 
 The [comparison pack](comparisons/semantic_layers/) runs the same 16 questions
-through six layers. It compares capability, not performance, and its support labels
-are provisional. Read its methodology disclosure first: 9 of the 16 questions were
-chosen to exercise primitives Semantic Rails ships, and Semantic Rails is also the
-reference its answers are checked against. Its
+through six layers: Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views
+and KtX. It compares capability, not performance, and its support labels are
+provisional. Read its methodology disclosure first: 9 of the 16 questions were chosen
+to exercise primitives Semantic Rails ships, and Semantic Rails is also the reference
+its answers are checked against. Its
 [output consistency check](comparisons/semantic_layers/shared/results/validation/output_consistency.md)
-currently reports 14 of the 16 answers matching across all six layers.
+currently reports 14 of the 16 answers matching across all six layers. On the other
+two, the other five layers agree with each other and Semantic Rails differs, because
+the layers didn't answer them from the same data.
 
 Coming from MetricFlow? Translate a MetricFlow YAML directory or a dbt
-`semantic_manifest.json` into a package. Anything that doesn't translate is listed
+`semantic_manifest.json` into a new package. Anything that doesn't translate is listed
 as a warning.
 
 ```bash
 uvx semantic-rails import --from metricflow --source target/semantic_manifest.json \
-  --output . --package-id my_package
+  --output . --package-id my_dbt_package
 ```
+
+The imported package targets DuckDB and names a seed script,
+`data/seed_my_dbt_package.sql`, that the import doesn't create. Before
+`project validate`, replace `seed` with your warehouse's `connection` (see
+[`package.yml`](docs/PACKAGE_AUTHORING.md#packageyml)) or add that script.
 
 ## Warehouses
 
-DuckDB is included. Add a connector only when you need it:
+DuckDB is included. Add a connector only when you need it, for example Postgres:
 
 ```bash
-uv tool install 'semantic-rails[postgres]'     # also: snowflake, bigquery, databricks, athena, clickhouse
-uv pip install 'semantic-rails[all]'           # every connector, into the active environment
+uv tool install 'semantic-rails[postgres]'
 ```
 
-MotherDuck and DuckLake use the core `duckdb` dependency. Keep secrets in environment
+The other connector extras are `snowflake`, `bigquery`, `databricks`, `athena` and
+`clickhouse`, and `all` installs every connector. In a project environment, use
+`uv pip install 'semantic-rails[all]'`. MotherDuck and DuckLake use the core `duckdb`
+dependency. Keep secrets in environment
 variables or files, not in package YAML. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 and [docs/ADDING_A_DIALECT.md](docs/ADDING_A_DIALECT.md).
 
@@ -195,8 +208,9 @@ Semantic Rails collects no telemetry and has no update check. The engine opens
 network connections only to:
 
 - the warehouses configured in your package's `connection` block;
-- DuckDB's extension repository (extensions.duckdb.org), when a MotherDuck or
-  DuckLake package needs a DuckDB extension;
+- DuckDB's extension repository (extensions.duckdb.org): DuckDB downloads an
+  extension it doesn't bundle the first time a query needs one, for example for
+  MotherDuck, DuckLake or remote files;
 - its own local MCP server, when `semantic-rails mcp start` or `mcp status` checks
   that server's `/health` endpoint.
 

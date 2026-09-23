@@ -168,6 +168,7 @@ def test_bare_venv_check_stays_inside_its_own_run(
     first, second = quickstart.Local(), quickstart.Local()
     try:
         assert first.root != second.root
+        assert Path(first.env["TMPDIR"]).is_relative_to(first.root)
         venv, other = first.scratch("bare-venv"), second.scratch("bare-venv")
         assert venv != other
         assert Path(venv).is_relative_to(first.root)
@@ -203,9 +204,11 @@ class Server(quickstart.Environment):
     def __init__(self, tmp_path: Path, code: str) -> None:
         self.tmp_path = tmp_path
         self.code = code
+        self.argv: list[str] = []
         self.process: subprocess.Popen[str] | None = None
 
     def popen(self, argv: list[str]) -> subprocess.Popen[str]:
+        self.argv = argv
         self.process = subprocess.Popen(
             [sys.executable, "-c", self.code],
             stdin=subprocess.PIPE,
@@ -256,9 +259,42 @@ def test_mcp_handshake_passes_a_server_that_lists_the_query_tools(tmp_path: Path
     env = Server(tmp_path, WORKING)
     assert quickstart.mcp_handshake(env, timeout=10) == ""
     assert env.process is not None and env.process.poll() is not None
+    # It starts the server the README registers, from the environment's workdir.
+    package = f"{tmp_path}/my_package"
+    assert env.argv == ["uvx", "semantic-rails", "mcp", "stdio", "--path", package]
 
 
 def test_every_checked_command_is_in_the_readme() -> None:
-    readme = " ".join((quickstart.REPO_ROOT / "README.md").read_text(encoding="utf-8").split())
-    missing = [c for c in quickstart.DOCUMENTED if " ".join(c.split()) not in readme]
-    assert not missing
+    markdown = (quickstart.REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert quickstart.undocumented(markdown) == []
+
+
+def test_commands_must_be_whole_lines_of_a_code_block() -> None:
+    fenced = "```bash\n" + "\n".join(quickstart.DOCUMENTED) + "\n```\n"
+    assert quickstart.undocumented(fenced) == []
+    # A flag appended to a checked command, or a registration line without its `--`.
+    extended = fenced.replace(quickstart.TRY, f"{quickstart.TRY} --limit 0")
+    assert quickstart.undocumented(extended) == [quickstart.TRY]
+    unseparated = fenced.replace("semantic-rails -- uvx", "semantic-rails uvx")
+    assert quickstart.undocumented(unseparated) == [quickstart.CLAUDE_ADD, quickstart.CODEX_ADD]
+    # A command quoted in prose doesn't count.
+    assert quickstart.TRY in quickstart.undocumented(f"Run `{quickstart.TRY}`.")
+    # The venv lines must stay together, in order.
+    split = fenced.replace("source .venv/bin/activate\n", "")
+    assert quickstart.undocumented(split) == [quickstart.VENV_BLOCK]
+
+
+def test_a_bootstrap_timeout_removes_the_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[:2] == ["docker", "exec"]:
+            raise subprocess.TimeoutExpired(argv, 600)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(quickstart.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired):
+        quickstart.Container("ubuntu:24.04")
+    name = calls[0][calls[0].index("--name") + 1]
+    assert calls[-1] == ["docker", "rm", "-f", name]
