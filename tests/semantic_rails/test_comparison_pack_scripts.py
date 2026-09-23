@@ -119,20 +119,27 @@ def test_headline_reports_mismatches_and_who_disagrees() -> None:
         item["comparison_status"] = "mismatched"
         item["agreement_groups"] = [["semantic_rails"], [layer for layer in LAYERS[1:]]]
     claims = _claims(items)
-    assert claims[0].startswith("14 of 16 questions return matching normalized outputs")
-    assert "2 do not match: q07" in claims[0]
+    assert claims[0].startswith(
+        "On 14 of 16 questions, all 6 layers return the same normalized outputs as the "
+        "independent answer key."
+    )
+    assert "On 2, at least one layer differs: q07" in claims[0]
     assert claims[1] == (
         "On q07 and q16: MetricFlow, Cube, Malloy, Snowflake Semantic Views and KtX agree "
         "with each other; Semantic Rails differs."
     )
-    assert "Shared questions (q01-q07): 6 of 7 match." in claims[2]
-    assert "Semantic-Rails-targeted questions (q08-q16): 8 of 9 match." in claims[2]
+    slices = next(claim for claim in claims if claim.startswith("Shared questions"))
+    assert "Shared questions (q01-q07): 6 of 7 match." in slices
+    assert "Semantic-Rails-targeted questions (q08-q16): 8 of 9 match." in slices
 
 
 def test_headline_when_everything_matches() -> None:
     claims = _claims([_question(qid) for qid in SHARED + TARGETED])
-    assert claims[0] == "All 16 questions return matching normalized outputs across all 6 layers."
-    assert not any(claim.startswith("On ") for claim in claims)
+    assert claims[0] == (
+        "On all 16 questions, all 6 layers return the same normalized outputs as the "
+        "independent answer key."
+    )
+    assert not any(claim.startswith("On q") for claim in claims)
 
 
 def test_unsupported_layer_is_named_and_empty_slices_are_skipped() -> None:
@@ -143,7 +150,7 @@ def test_unsupported_layer_is_named_and_empty_slices_are_skipped() -> None:
     unsupported["current_layers"].remove("malloy")
     items[2] = unsupported
     claims = _claims(items)
-    assert "across the layers that executed them" in claims[0]
+    assert "the layers that executed them on the current dataset" in claims[0]
     assert "Malloy did not execute q03." in claims
     assert not any("were chosen to exercise features" in claim for claim in claims)
 
@@ -205,13 +212,13 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
     }
     claims = _claims(items, stale=stale)
     assert claims[0] == (
-        "All 16 questions return matching normalized outputs across the 5 layers run on the "
-        "current dataset."
+        "On all 16 questions, the 5 layers run on the current dataset return the same "
+        "normalized outputs as the independent answer key."
     )
     assert claims[1] == (
         "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not "
-        "been re-run, so it is left out of that count. Its capture matches on 14 questions and "
-        "differs on: q07, q16."
+        "been re-run, so it is left out of that count. Its capture matches the answer key on 14 "
+        "questions and differs on: q07, q16."
     )
 
 
@@ -262,13 +269,26 @@ def _run_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snowflake: d
             ],
         }
         (layer_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    key_dir = tmp_path / "results" / "oracle"
+    key_dir.mkdir(parents=True)
+    (key_dir / "q01_x.json").write_text(
+        json.dumps([{"month": "2016-09-01", "orders": 5}]), encoding="utf-8"
+    )
+    key_summary = {
+        "dataset_fingerprint": "fp-now",
+        "questions": [{"question_id": "q01_x", "result_path": "results/oracle/q01_x.json"}],
+    }
+    (key_dir / "summary.json").write_text(json.dumps(key_summary), encoding="utf-8")
+    maps = {layer: {"q01_x": {"month": "order_month", "orders": "orders"}} for layer in layers}
+    (tmp_path / "column_maps.yml").write_text(json.dumps(maps), encoding="utf-8")
     for name, value in {
         "REPO_ROOT": tmp_path,
         "RESULTS_ROOT": tmp_path / "results",
         "QUESTIONS_PATH": tmp_path / "questions.yml",
         "OUTPUT_DIR": tmp_path / "validation",
+        "COLUMN_MAPS_PATH": tmp_path / "column_maps.yml",
         "RUNNABLE_LAYERS": layers,
-        "RESULT_DIRS": {layer: layer for layer in layers},
+        "RESULT_DIRS": {layer: layer for layer in layers} | {validator.ANSWER_KEY: "oracle"},
         "QUESTION_FIELDS": {"q01_x": ["month", "orders"]},
         "dataset_fingerprint": lambda: "fp-now",
     }.items():
@@ -319,3 +339,22 @@ def test_snowflake_runner_records_the_loaded_fingerprint(tmp_path, monkeypatch) 
     runner.main()
     summary = json.loads((tmp_path / "results" / "summary.json").read_text())
     assert summary["dataset_fingerprint"] == "fp-now"
+
+
+def test_a_missing_mapped_column_fails_instead_of_being_guessed() -> None:
+    rows = [{"ordered_month": "2016-09-01", "orders": 5}]
+    columns = {"month": "order_month", "orders": "orders"}
+    with pytest.raises(SystemExit, match="'order_month' for 'month' is missing"):
+        validator._normalize_rows("q01_orders_by_month", rows, columns)
+
+
+def test_column_maps_cover_every_field_of_every_layer() -> None:
+    maps = validator._load_column_maps()
+    for layer in validator.RUNNABLE_LAYERS:
+        for question_id, fields in validator.QUESTION_FIELDS.items():
+            assert sorted(maps[layer][question_id]) == sorted(fields)
+
+
+def test_every_question_has_an_answer_key_query() -> None:
+    oracle = SCRIPTS.parent / "oracle"
+    assert sorted(path.stem for path in oracle.glob("*.sql")) == sorted(validator.QUESTION_FIELDS)

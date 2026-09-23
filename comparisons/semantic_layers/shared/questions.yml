@@ -1,3 +1,8 @@
+# Shared definitions that every layer and the answer key (shared/oracle/) use.
+definitions:
+  revenue: Order total in US dollars, including tax (order_total_cents / 100).
+  item_revenue: Product price per item row in US dollars (item_revenue_cents / 100).
+
 questions:
   - id: q01_orders_by_month
     title: Orders By Month

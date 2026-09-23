@@ -1,0 +1,92 @@
+[
+  {
+    "month": "2016-09-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 18053.28
+  },
+  {
+    "month": "2016-10-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 21923.95
+  },
+  {
+    "month": "2016-11-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 27916.82
+  },
+  {
+    "month": "2016-12-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 35677.6
+  },
+  {
+    "month": "2017-01-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 45017.95
+  },
+  {
+    "month": "2017-02-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 43358.12
+  },
+  {
+    "month": "2017-03-01",
+    "store_name": "Brooklyn",
+    "revenue_usd": 24857.99
+  },
+  {
+    "month": "2017-03-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 49092.33
+  },
+  {
+    "month": "2017-04-01",
+    "store_name": "Brooklyn",
+    "revenue_usd": 35420.2
+  },
+  {
+    "month": "2017-04-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 47896.79
+  },
+  {
+    "month": "2017-05-01",
+    "store_name": "Brooklyn",
+    "revenue_usd": 41481.23
+  },
+  {
+    "month": "2017-05-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 54589.12
+  },
+  {
+    "month": "2017-06-01",
+    "store_name": "Brooklyn",
+    "revenue_usd": 47980.21
+  },
+  {
+    "month": "2017-06-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 50398.66
+  },
+  {
+    "month": "2017-07-01",
+    "store_name": "Brooklyn",
+    "revenue_usd": 49970.75
+  },
+  {
+    "month": "2017-07-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 44886.44
+  },
+  {
+    "month": "2017-08-01",
+    "store_name": "Brooklyn",
+    "revenue_usd": 59714.47
+  },
+  {
+    "month": "2017-08-01",
+    "store_name": "Philadelphia",
+    "revenue_usd": 47657.12
+  }
+]

@@ -32,7 +32,7 @@ For runnable layers, each question should include:
 - the query/request shape
 - generated SQL when the tool exposes it
 - a normalized result artifact
-- a consistency check against the other executed layers after normalization
+- a check against the independent answer key (`shared/oracle/`) after normalization, reading each layer's columns through `shared/column_maps.yml`
 - notes on any caveats or compromises
 
 ## Scale-Up View

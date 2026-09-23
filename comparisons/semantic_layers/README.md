@@ -7,17 +7,25 @@ compare latency, token use or cost. It runs without touching the active
 
 ## Read This First
 
-- **Output check: all 16 questions return matching normalized outputs across the five layers
-  run on the current dataset** (Semantic Rails, MetricFlow, Cube, Malloy and KtX). Every layer
-  reads the same `comparison_*` views. Cube's answers come from re-executing the SQL that Cube
+- **Output check: on all 16 questions, the five layers run on the current dataset return the
+  same normalized outputs as an independent answer key** (Semantic Rails, MetricFlow, Cube,
+  Malloy and KtX). No layer is the reference: the answer key is SQL written against the same
+  views without seeing any layer's models or outputs (see *Independent Answer Key* below). Every
+  layer reads the same `comparison_*` views. Cube's answers come from re-executing the SQL that Cube
   1.6.32 generated, because Cube itself can't be reinstalled until the captured lockfile's
   dependency advisories are resolved. On every question whose data didn't change, that replay
   returns exactly the rows Cube returned.
 - **Snowflake Semantic Views is a stale capture.** It ran on 2026-04-07 on an earlier dataset,
   whose lifecycle view held only the 11 hand-authored lifecycle rows, and it can't be re-run
-  without a live account. The output check reports it separately: it matches on 14 questions
-  and differs on q07 and q16, the two questions that read lifecycle data. The per-question report
-  is [`shared/results/validation/output_consistency.md`](shared/results/validation/output_consistency.md).
+  without a live account. The output check reports it separately: it matches the answer key on
+  14 questions and differs on q07 and q16, the two questions that read lifecycle data. The
+  per-question report is
+  [`shared/results/validation/output_consistency.md`](shared/results/validation/output_consistency.md).
+- **This data can't test every intended semantic.** Delivered time never moves an order into
+  another month, no customer orders at two stores, all 10 sessions are at one store on one day,
+  and customer history covers 4 customers. On q07, q14, q15 and q16 in particular, matching the
+  answer key is weak evidence that a layer implements the intended rule; see
+  [`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md).
 - **9 of the 16 questions target Semantic Rails features.** q08-q16 (`scope_level: stretch`) were
   chosen to exercise primitives Semantic Rails ships: metric predicates, temporal-validity joins,
   event-pair and same-store conversion, and contextual entity-graph inheritance. They are a
@@ -87,6 +95,22 @@ each layer today. It is not a ranking.
 | KtX | 9 workaround | SQL-backed sources and query-level filters |
 
 Output check: 9 of 9 match across the five layers run on the current dataset.
+
+## Independent Answer Key
+
+`shared/oracle/` holds one SQL query per question, written directly against the shared
+`comparison_*` views; no layer generated it. An agent wrote it from `questions.yml`, the view
+definitions and the raw data, without seeing any layer's models, SQL or outputs. It derives
+"first order", "lifetime", "more than 10 orders in the month" and "converted within 7 days" from
+order and session facts instead of the precomputed flags and rollups. A second agent that didn't
+write it reviewed every query against the question text and re-derived the answers independently.
+[`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md) states the rule for each question and
+every interpretation choice.
+
+`shared/scripts/run_oracle.py` runs the answer key on the current dataset. The output check
+compares every layer, Semantic Rails included, with it. Each layer's result columns are mapped to
+the answer's fields explicitly in `shared/column_maps.yml`; a missing column fails the check
+instead of being guessed from its name.
 
 ## What This Pack Does Not Measure
 
@@ -178,9 +202,10 @@ Output check: 9 of 9 match across the five layers run on the current dataset.
    uv run python comparisons/semantic_layers/snowflake_semantic_views/scripts/run_questions.py
    ```
 
-6. Validate deterministic outputs across the runnable layers:
+6. Answer every question with the independent answer key, then check every layer against it:
 
    ```bash
+   uv run python comparisons/semantic_layers/shared/scripts/run_oracle.py
    uv run python comparisons/semantic_layers/shared/scripts/validate_output_consistency.py
    ```
 
@@ -193,7 +218,8 @@ Output check: 9 of 9 match across the five layers run on the current dataset.
 ## Where To Start
 
 - Read `shared/methodology.md` for the support labels and fairness rules.
-- Read `shared/results/validation/output_consistency.md` for the cross-layer output check.
+- Read `shared/oracle/SEMANTICS.md` for the answer key's rule for each question.
+- Read `shared/results/validation/output_consistency.md` for each layer's check against the answer key.
 - Open `shared/capability_matrix.json` for the row-by-row support summary and the generated
   claims.
 - Open `shared/comparison_data.json` for the per-layer excerpts and headline findings.
