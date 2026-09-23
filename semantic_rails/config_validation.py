@@ -392,6 +392,12 @@ _SEGMENT_KEYS: frozenset[str] = frozenset(
         "topics",
     }
 )
+# The keys the loader reads from a segment's `membership:` block.
+_SEGMENT_MEMBERSHIP_KEYS: frozenset[str] = frozenset(
+    {"where", "metric_filters", "time", "temporal_role_overrides", "path_policy"}
+)
+# Membership spellings from other tools, and the key that holds such conditions.
+_SEGMENT_MEMBERSHIP_ALIASES: dict[str, str] = {"dimension_filters": "where", "filters": "where"}
 
 # Fields each metric kind requires when the expression AST is not
 # authored directly. Keeps the "metric produced no expression" error
@@ -718,6 +724,34 @@ def _check_metric_shape(
         )
 
 
+def _check_segment_shape(
+    segment_key: str, spec: dict[str, Any], *, path_label: str, errors: list[str]
+) -> None:
+    label = f"{path_label}: segment '{segment_key}'"
+    for key in sorted(_SEGMENT_MEMBERSHIP_KEYS & set(spec)):
+        add_error(
+            errors,
+            f"{label} has {key!r} outside membership: — the loader reads membership.{key} "
+            f"only, so the segment would ignore it; move it under membership:",
+        )
+    top_level = {key: value for key, value in spec.items() if key not in _SEGMENT_MEMBERSHIP_KEYS}
+    _unknown_key_errors(top_level, _SEGMENT_KEYS, label=label, errors=errors)
+    membership = spec.get("membership")
+    if not isinstance(membership, dict):
+        return
+    for key in sorted(_SEGMENT_MEMBERSHIP_ALIASES.keys() & set(membership)):
+        add_error(
+            errors,
+            f"{label} membership has unknown key {key!r} — the loader ignores it, so the "
+            f"segment would select every member; write these conditions under "
+            f"membership.{_SEGMENT_MEMBERSHIP_ALIASES[key]} as {{field, op, value}} rows",
+        )
+    rest = {
+        key: value for key, value in membership.items() if key not in _SEGMENT_MEMBERSHIP_ALIASES
+    }
+    _unknown_key_errors(rest, _SEGMENT_MEMBERSHIP_KEYS, label=f"{label} membership", errors=errors)
+
+
 def _check_package_shapes(
     raw: dict[str, Any], *, path_label: str, errors: list[str], top_level: bool = True
 ) -> None:
@@ -783,12 +817,7 @@ def _check_package_shapes(
     if isinstance(segments, dict):
         for segment_key, spec in segments.items():
             if isinstance(spec, dict):
-                _unknown_key_errors(
-                    spec,
-                    _SEGMENT_KEYS,
-                    label=f"{path_label}: segment '{segment_key}'",
-                    errors=errors,
-                )
+                _check_segment_shape(str(segment_key), spec, path_label=path_label, errors=errors)
 
 
 def _connection_options_from_mapping(
@@ -1372,8 +1401,8 @@ def _validate_split_package(
             "package": package_root.get("package"),
             "graph": graph_root.get("graph"),
             "models": models,
-            "metrics": metrics_raw,
-            "segments": segments_raw,
+            "metrics": {key: spec for key, (_, spec) in metrics_raw.items()},
+            "segments": {key: spec for key, (_, spec) in segments_raw.items()},
         },
         path_label=str(path),
         errors=errors,

@@ -1346,6 +1346,9 @@ with a structured `INVALID_CONFIG` error (`details.missing_assets` +
   no key dimensions, the `basis_metric` is unknown or rooted on another entity,
   or a preview dimension is unknown, not groupable, or belongs to another entity.
 - The query that `segment-validate` derives from it does not compile.
+- It has a key the loader doesn't read, such as `where` or `metric_filters` written
+  outside `membership:`, or an unknown key inside it. Unknown keys in metric files
+  are rejected the same way.
 
 ### Semantic collision warnings
 

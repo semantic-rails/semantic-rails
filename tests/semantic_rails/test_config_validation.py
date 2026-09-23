@@ -2089,3 +2089,81 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
     )
     report, config = parse_config_report(resolve_package_reference(path=str(package_file)))
     assert (report["ok"], config) == (False, None)
+
+
+# Directory packages used to hand metric and segment specs to the shape check as
+# (path, spec) pairs, which it skipped, so unknown keys there passed validation.
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (
+            lambda segment: segment.update(
+                where=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+            ),
+            "has 'where' outside membership:",
+        ),
+        (
+            lambda segment: segment["membership"].update(
+                metric_filter=segment["membership"].pop("metric_filters")
+            ),
+            "membership has unknown key 'metric_filter'",
+        ),
+        (
+            lambda segment: segment["membership"].update(
+                dimension_filters=[
+                    {"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}
+                ]
+            ),
+            "write these conditions under membership.where",
+        ),
+    ],
+    ids=["where-outside-membership", "membership-typo", "dimension-filters"],
+)
+def test_directory_validation_rejects_unknown_segment_keys(
+    package_config_factory, mutate, expected
+):
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert expected in errors[0]
+
+
+def test_directory_validation_rejects_unknown_metric_keys(package_config_factory):
+    _, package_dir = package_config_factory("jaffle_shop")
+    metric_file = Path(package_dir) / "metrics" / "core" / "core_metrics.yml"
+    raw = yaml.safe_load(metric_file.read_text(encoding="utf-8"))
+    metric_key = next(iter(raw["metrics"]))
+    raw["metrics"][metric_key]["valeu_type"] = "number"
+    _write_yaml(metric_file, raw)
+
+    errors = validate_runtime_package(Path(package_dir))
+
+    assert len(errors) == 1, errors
+    assert f"metric '{metric_key}' has unknown key 'valeu_type'" in errors[0]
+    assert "did you mean 'value_type'?" in errors[0]
+
+
+def test_single_file_validation_rejects_unknown_membership_keys(tmp_path: Path):
+    package_file = tmp_path / "monolithic.yml"
+    _write_monolithic_package(package_file, "monolithic_demo")
+    payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
+    payload["segments"] = {
+        "big_orders": {
+            "id": "segment.demo.big_orders",
+            "entity": "order",
+            "basis_metric": "metric.sales.orders",
+            "membership": {
+                "filters": [{"field": "dimension.demo_order_id", "op": ">", "value": 1}]
+            },
+        }
+    }
+    _write_yaml(package_file, payload)
+
+    errors = validate_runtime_package(package_file)
+
+    assert len(errors) == 1, errors
+    assert "segment 'big_orders' membership has unknown key 'filters'" in errors[0]
