@@ -136,6 +136,11 @@ repeat another one (`object_type`, `usage_summary`, `top_values`), a description
 the label, empty fields, and every starter patch after the first. Request `verbosity="compact"` or
 `"full"` for the whole card.
 
+The segment tools honor the same minimal default as `validate`, `compile` and `execute`.
+`segment-validate` returns validity, the segment's definition and its derived query;
+`segment-explain` adds the rendered SQL; `segment-preview` returns member rows, the preview and
+member counts, and the derived query. Request `verbosity="full"` for the compiler plans.
+
 `validate`, `compile`, and `execute` accept either `{"query": {...}}` or a Query IR
 object directly. Metadata tools accept the same request fields documented in
 [QUERY_API.md](QUERY_API.md), including optional `policy_context`.

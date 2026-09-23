@@ -351,7 +351,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' (default 5) per kind. Recommended loop position: 1 (after the user's question). Pick best id, then 'inspect'. Verbosity: 'minimal' (default) returns slim cards {id,kind,label,score,description,default_temporal_role,available}, plus blocked_reason when unavailable; 'compact' returns full cards with match_reasons and starter patches. Gotcha: nonsense or out-of-scope terms return an 'out_of_scope' or 'low_relevance' block with empty buckets — branch on those before assuming a candidate.",
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind. Recommended loop position: 1 (after the user's question). Pick best id, then 'inspect'. verbosity='compact' returns full cards with match_reasons and starter patches. Gotcha: nonsense or out-of-scope terms return an 'out_of_scope' or 'low_relevance' block with empty buckets — branch on those before assuming a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -455,7 +455,7 @@
         "readOnlyHint": true,
         "title": "Inspect"
       },
-      "description": "Return the stable object card for one id — label, description, search terms, related dimensions, valid temporal roles, policy/validity windows. Recommended loop position: 2 (after 'discover', before composing Query IR). Verbosity: 'minimal' (default) states each fact once with one starter patch; 'compact' and 'full' return the whole card. Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
+      "description": "Return one object's card: label, description, aggregations or values, temporal roles, related objects, policy. Recommended loop position: 2 (after 'discover', before composing Query IR). verbosity='compact' returns the whole card. Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -1228,6 +1228,14 @@
           },
           "segment_id": {
             "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -1299,6 +1307,14 @@
             "type": "string"
           },
           "segment_id": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "enum": [
+              "minimal",
+              "full"
+            ],
             "type": "string"
           }
         },
@@ -1376,6 +1392,14 @@
             "type": "string"
           },
           "segment_id": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "enum": [
+              "minimal",
+              "full"
+            ],
             "type": "string"
           }
         },
