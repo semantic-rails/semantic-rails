@@ -123,13 +123,13 @@ def _query_annotations(title: str) -> ToolAnnotations:
     )
 
 
-def _mutation_annotations(title: str) -> ToolAnnotations:
+def _mutation_annotations(title: str, *, open_world: bool = False) -> ToolAnnotations:
     return ToolAnnotations(
         title=title,
         readOnlyHint=False,
         destructiveHint=True,
         idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=open_world,
     )
 
 
@@ -1183,7 +1183,7 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
             )
 
     @mcp.tool(
-        annotations=_mutation_annotations("Upsert package test"),
+        annotations=_mutation_annotations("Upsert package test", open_world=True),
         description=(
             "Preview or atomically upsert a package test in tests/<file_name>. spec.kind is "
             "query_returns_columns (query, columns), query_row_count_bounds (query, min_rows "

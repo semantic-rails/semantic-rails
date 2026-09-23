@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import math
 import os
 import re
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -2016,9 +2017,7 @@ class ArchitectProject:
         this may build a seeded DuckDB database.
         """
         cap = max(1, min(int(max_rows), MAX_PREVIEW_ROWS))
-        payload = deepcopy(dict(query or {}))
-        limit = payload.get("limit")
-        payload["limit"] = min(int(limit), cap + 1) if limit else cap + 1
+        payload = _capped(query, cap)
         rows, columns = self._query_rows(payload)
         return {
             "ok": True,
@@ -2040,7 +2039,9 @@ class ArchitectProject:
         rows = [dict(row) for row in result["rows"]]
         columns = list(rows[0]) if rows else list(result.get("output_columns", []) or [])
         return rows, [
-            str(column.get("name", column)) if isinstance(column, dict) else str(column)
+            str(column.get("field") or column.get("name") or column)
+            if isinstance(column, dict)
+            else str(column)
             for column in columns
         ]
 
@@ -2093,16 +2094,19 @@ class ArchitectProject:
                 raise SemanticLayerError(
                     "INVALID_CONFIG", "capture_snapshot applies to kind: query_matches_snapshot"
                 )
-            rows, _ = self._query_rows(dict(merged.get("query") or {}))
+            query = merged.get("query")
+            if not isinstance(query, dict):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", f"test {name!r}: query must be a query object"
+                )
+            rows, _ = self._query_rows(_capped(query, MAX_PREVIEW_ROWS))
             if len(rows) > MAX_PREVIEW_ROWS:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
-                    f"the query returns {len(rows)} rows; a snapshot keeps at most "
-                    f"{MAX_PREVIEW_ROWS}, so add a limit",
+                    f"the query returns more than {MAX_PREVIEW_ROWS} rows; a snapshot keeps at "
+                    "most that many, so add a limit",
                 )
-            merged["expected_rows"] = [
-                {column: _yaml_value(value) for column, value in row.items()} for row in rows
-            ]
+            merged["expected_rows"] = _snapshot_rows(rows)
         self._check_queries(kind, name, merged)
         self._store_mapping_object(documents[path], existing, wrapper=plural, key=name, spec=merged)
         return self._commit(
@@ -2130,35 +2134,19 @@ class ArchitectProject:
                 f"test kind must be one of {', '.join(TEST_KINDS)} (got {test_kind!r})",
                 details={"test": name},
             )
-        required = {
-            "": ("question", "query"),
-            "query_returns_columns": ("query", "columns"),
-            "query_row_count_bounds": ("query",),
-            "query_matches_snapshot": ("query", "expected_rows"),
-            "validate_fails_with_code": ("query", "code"),
-            "explain_contains": ("query", "text"),
-            "metric_equals_query": ("expected_query",),
-        }[test_kind]
-        missing = [field for field in required if spec.get(field) in (None, "", [], {})]
-        if (
-            test_kind == "query_row_count_bounds"
-            and spec.get("min_rows") is None
-            and (spec.get("max_rows") is None)
-        ):
-            missing.append("min_rows or max_rows")
-        if test_kind == "metric_equals_query" and not (
-            spec.get("metric_query") or spec.get("query")
-        ):
-            missing.append("metric_query")
-        if missing:
+        problems = _check_fields(test_kind, spec)
+        if problems:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"{kind} {name!r} needs {', '.join(missing)}",
-                details={kind: name, "missing": missing},
+                f"{kind} {name!r}: " + "; ".join(problems),
+                details={kind: name, "problems": problems},
             )
         queries = (
             {
-                "metric_query": spec.get("metric_query") or spec.get("query"),
+                # The runner reads metric_query when the key is there, else query.
+                "metric_query": spec["metric_query"]
+                if "metric_query" in spec
+                else spec.get("query"),
                 "expected_query": spec.get("expected_query"),
             }
             if test_kind == "metric_equals_query"
@@ -2752,20 +2740,144 @@ def _defined_as(singular: str, fallback: str, spec: dict[str, Any], *, single: b
     return fallback
 
 
-def _yaml_value(value: Any) -> Any:
-    """A warehouse value as YAML can hold it, and as package tests compare it."""
-    if isinstance(value, bool) or value is None or isinstance(value, (str, int, date)):
+def _capped(query: dict[str, Any], cap: int) -> dict[str, Any]:
+    """``query`` asking for at most ``cap + 1`` rows, to see whether there are more."""
+    payload = deepcopy(dict(query or {}))
+    limit = payload.get("limit")
+    if limit is None:
+        payload["limit"] = cap + 1
+    elif isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise SemanticLayerError(
+            "INVALID_QUERY", "limit must be a non-negative integer", details={"limit": limit}
+        )
+    else:
+        payload["limit"] = min(limit, cap + 1)
+    return payload
+
+
+def _snapshot_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Warehouse rows as a snapshot test holds them, checked to match themselves.
+
+    The check is the test runner's own: the rows, written to YAML and read
+    back, must compare equal to the warehouse rows.
+    """
+    from .package_tools import _normalize_rows
+
+    snapshot = [
+        {column: _snapshot_value(column, value) for column, value in row.items()} for row in rows
+    ]
+    reloaded = yaml.safe_load(yaml.safe_dump(snapshot, sort_keys=False, allow_unicode=True))
+    if _normalize_rows(reloaded or []) != _normalize_rows(rows):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "these rows don't read back from YAML as the same values, so a snapshot of them "
+            "could never pass; test them with query_returns_columns or query_row_count_bounds",
+        )
+    return snapshot
+
+
+def _snapshot_value(column: str, value: Any) -> Any:
+    """A warehouse value as YAML holds it, or a refusal naming the column."""
+    if value is None or isinstance(value, (bool, str, int, date)):
         return value
-    if isinstance(value, (float, Decimal)):
-        number = float(value)
-        return int(number) if number.is_integer() else number
-    return str(value)
+    if isinstance(value, (float, Decimal)) and _finite(value):
+        number = Decimal(repr(value)) if isinstance(value, float) else value
+        return int(number) if number == number.to_integral_value() else float(value)
+    if isinstance(value, (list, tuple)):
+        return [_snapshot_value(column, item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _snapshot_value(column, item) for key, item in value.items()}
+    raise SemanticLayerError(
+        "INVALID_CONFIG",
+        f"column {column!r} has {type(value).__name__} values, which a YAML snapshot can't hold "
+        "exactly; test it with query_returns_columns or query_row_count_bounds",
+        details={"column": column, "type": type(value).__name__},
+    )
+
+
+def _finite(value: float | Decimal) -> bool:
+    return value.is_finite() if isinstance(value, Decimal) else math.isfinite(value)
 
 
 def _json_value(value: Any) -> Any:
-    """A warehouse value as JSON can hold it."""
-    value = _yaml_value(value)
-    return value.isoformat() if isinstance(value, date) else value
+    """A warehouse value as JSON can hold it (NaN and infinities become null)."""
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, (float, Decimal)):
+        if not _finite(value):
+            return None
+        number = Decimal(repr(value)) if isinstance(value, float) else value
+        return int(number) if number == number.to_integral_value() else float(value)
+    if isinstance(value, (date, time)):
+        return value.isoformat()
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    return str(value)
+
+
+def _check_fields(test_kind: str, spec: dict[str, Any]) -> list[str]:
+    """What is missing or malformed in an example (test_kind "") or a test of that kind."""
+    problems: list[str] = []
+
+    def need(field: str, check: Any, expected: str) -> None:
+        if field not in spec or spec[field] is None:
+            problems.append(f"needs {field}")
+        elif not check(spec[field]):
+            problems.append(f"{field} must be {expected}")
+
+    def count(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    def strings(value: Any) -> bool:
+        return isinstance(value, list) and bool(value) and all(isinstance(v, str) for v in value)
+
+    def text(value: Any) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    def mapping(value: Any) -> bool:
+        return isinstance(value, dict)
+
+    if test_kind == "metric_equals_query":
+        need("metric_query" if "metric_query" in spec else "query", mapping, "a query object")
+        need("expected_query", mapping, "a query object")
+    else:
+        need("query", mapping, "a query object")
+    if test_kind == "":
+        if "question" in spec and not text(spec["question"]):
+            problems.append("question must be text")
+        shape = spec.get("expected_shape")
+        if shape is not None and not mapping(shape):
+            problems.append("expected_shape must be a mapping")
+        elif shape:
+            for field in ("min_rows", "max_rows"):
+                if field in shape and not count(shape[field]):
+                    problems.append(f"expected_shape.{field} must be a non-negative integer")
+            if "columns" in shape and not strings(shape["columns"]):
+                problems.append("expected_shape.columns must be a list of names")
+    elif test_kind == "query_returns_columns":
+        need("columns", strings, "a list of names")
+    elif test_kind == "query_row_count_bounds":
+        bounds = [field for field in ("min_rows", "max_rows") if spec.get(field) is not None]
+        if not bounds:
+            problems.append("needs min_rows or max_rows")
+        problems.extend(
+            f"{field} must be a non-negative integer" for field in bounds if not count(spec[field])
+        )
+        if len(bounds) == 2 and not problems and spec["min_rows"] > spec["max_rows"]:
+            problems.append("min_rows must not exceed max_rows")
+    elif test_kind == "query_matches_snapshot":
+        need(
+            "expected_rows",
+            lambda rows: isinstance(rows, list) and all(isinstance(row, dict) for row in rows),
+            "a list of rows",
+        )
+    elif test_kind == "validate_fails_with_code":
+        need("code", text, "an error code")
+    elif test_kind == "explain_contains":
+        need("text", text, "text")
+    return problems
 
 
 def _issue(exc: SemanticLayerError) -> dict[str, Any]:

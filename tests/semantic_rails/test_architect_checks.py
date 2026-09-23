@@ -191,11 +191,12 @@ def test_a_query_that_must_fail_is_checked_for_its_code(workspace: Path) -> None
     assert mutation.report["ok"] is True, mutation.report
 
 
-def test_examples_need_a_question_and_a_query_that_compiles(workspace: Path) -> None:
+def test_examples_need_a_query_that_compiles(workspace: Path) -> None:
     project = _project(workspace)
 
-    with pytest.raises(SemanticLayerError, match="needs question"):
-        project.upsert_example(example_key="e", spec={"query": _query("tax")})
+    # The runner doesn't need a question, and create_project's starter example has none.
+    unasked = project.upsert_example(example_key="tax_only", spec={"query": _query("tax")})
+    assert unasked.report["ok"] is True, unasked.report
     with pytest.raises(SemanticLayerError, match="does not compile"):
         project.upsert_example(
             example_key="e", spec={"question": "Refunds?", "query": _query("refunds")}
@@ -206,6 +207,102 @@ def test_examples_need_a_question_and_a_query_that_compiles(workspace: Path) -> 
             spec={"kind": "query_returns_columns", "query": _query("tax"), "columns": ["x"]},
             capture_snapshot=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        (
+            {"kind": "query_row_count_bounds", "query": _query("tax"), "min_rows": "many"},
+            "min_rows must be a non-negative integer",
+        ),
+        (
+            {
+                "kind": "query_row_count_bounds",
+                "query": _query("tax"),
+                "min_rows": 3,
+                "max_rows": 1,
+            },
+            "min_rows must not exceed max_rows",
+        ),
+        (
+            {"kind": "query_matches_snapshot", "query": _query("tax"), "expected_rows": "abc"},
+            "expected_rows must be a list of rows",
+        ),
+        (
+            {
+                "kind": "metric_equals_query",
+                "query": _query("tax"),
+                "metric_query": None,
+                "expected_query": _query("tax"),
+            },
+            "needs metric_query",
+        ),
+        (
+            {"kind": "query_returns_columns", "query": _query("tax"), "columns": "tax"},
+            "columns must be a list of names",
+        ),
+    ],
+)
+def test_fields_the_test_runner_would_crash_on_are_refused(
+    workspace: Path, spec: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(SemanticLayerError, match=message):
+        _project(workspace).upsert_test(test_key="t", spec=spec)
+
+
+def test_an_empty_snapshot_is_a_valid_test(workspace: Path) -> None:
+    query = _query("tax")
+    query["where"] = [{"field": COUNTRY, "op": "=", "value": "XX"}]
+
+    written = _project(workspace).upsert_test(
+        test_key="no_rows",
+        spec={"kind": "query_matches_snapshot", "query": query},
+        capture_snapshot=True,
+    )
+
+    assert written.report["ok"] is True, written.report
+    snapshot = _yaml(workspace / "shop" / "tests" / "core.yml")["tests"]["no_rows"]
+    assert snapshot["expected_rows"] == []
+
+
+def test_snapshots_hold_only_values_yaml_gives_back() -> None:
+    import uuid
+    from datetime import time
+
+    from semantic_rails.architect_service import _snapshot_rows
+
+    assert _snapshot_rows([{"tags": ["a", "b"], "n": Decimal("2.50")}]) == [
+        {"tags": ["a", "b"], "n": 2.5}
+    ]
+    for value in (uuid.uuid4(), time(10, 1), float("nan")):
+        with pytest.raises(SemanticLayerError, match="snapshot"):
+            _snapshot_rows([{"value": value}])
+    with pytest.raises(SemanticLayerError, match="don't read back"):
+        _snapshot_rows([{"exact": Decimal("12345678.123456789012")}])
+
+
+def test_numbers_compare_by_value_to_the_last_digit() -> None:
+    assert _normalize_rows([{"x": 1.5}]) != _normalize_rows([{"x": 2.5}])
+    assert _normalize_rows([{"x": Decimal("12345678.123456789012")}]) != _normalize_rows(
+        [{"x": Decimal("12345678.123456789013")}]
+    )
+    assert _normalize_rows([{"x": Decimal("0.10")}]) == _normalize_rows([{"x": 0.1}])
+
+
+def test_preview_limits_are_honoured_and_empty_results_name_their_columns(
+    workspace: Path,
+) -> None:
+    project = _project(workspace)
+    none = _query("order_count", limit=0)
+    nowhere = _query("order_count")
+    nowhere["where"] = [{"field": COUNTRY, "op": "=", "value": "XX"}]
+
+    assert project.preview_query(none)["row_count"] == 0
+    empty = project.preview_query(nowhere)
+    assert empty["rows"] == [] and empty["columns"] == [COUNTRY, "order_count"]
+    with pytest.raises(SemanticLayerError, match="limit must be a non-negative integer"):
+        project.preview_query({**_query("order_count"), "limit": "2"})
 
 
 def test_specs_merge_unless_replaced_and_stay_in_their_file(workspace: Path) -> None:

@@ -124,7 +124,7 @@ Python callers use `ArchitectProject.upsert_relationship`.
 ## Examples, Package Tests and Query Previews
 
 `upsert_example` writes an example question to `examples/<file_name>` (`core.yml` by default):
-`spec` takes `question`, `query` and optionally `expected_shape` (`columns`, `min_rows`,
+`spec` takes a `query`, and optionally a `question` and an `expected_shape` (`columns`, `min_rows`,
 `max_rows`). `upsert_test` writes a package test to `tests/<file_name>`; `spec.kind` is one of:
 
 | Kind | Fields |
@@ -136,12 +136,14 @@ Python callers use `ArchitectProject.upsert_relationship`.
 | `explain_contains` | `query`, `text` |
 | `metric_equals_query` | `metric_query`, `expected_query` |
 
-Both tools compile every query against the package before writing and refuse one that does not
-compile. A `validate_fails_with_code` query must fail with its `code`. Both merge into an existing
-entry, which stays in its file, unless `replace` is true. `upsert_test` with `capture_snapshot:
-true` runs a `query_matches_snapshot` query against the warehouse and writes its rows (at most 200)
-as `expected_rows`. Snapshots compare numbers by value, so a DECIMAL result such as `12.7500` matches
-the `12.75` YAML holds.
+Both tools check each field's type the way the test runner reads it, and compile every query
+against the package before writing, refusing one that doesn't compile. A `validate_fails_with_code`
+query must fail with its `code`. Both merge into an existing entry, which stays in its file, unless
+`replace` is true. `upsert_test` with `capture_snapshot: true` runs a `query_matches_snapshot` query
+against the warehouse (asking for at most 201 rows) and writes its rows, at most 200, as
+`expected_rows`. It refuses values a YAML snapshot can't give back exactly, such as UUIDs, times,
+NaN, or DECIMALs with more digits than a float holds. Snapshots compare numbers by value, so a
+DECIMAL result such as `12.7500` matches the `12.75` YAML holds.
 
 `preview_query` runs a semantic query against the package's warehouse and returns at most
 `max_rows` rows (default 20, at most 200), with `truncated` when there were more. Its values are

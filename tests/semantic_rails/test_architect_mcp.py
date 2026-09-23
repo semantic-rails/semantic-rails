@@ -99,7 +99,8 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
         assert tool.annotations.readOnlyHint is False
         assert tool.annotations.destructiveHint is True
         assert tool.annotations.idempotentHint is True
-        assert tool.annotations.openWorldHint is False
+        # capture_snapshot makes upsert_test query the warehouse.
+        assert tool.annotations.openWorldHint is (tool.name == "upsert_test")
 
 
 def test_setup_project_dialog_returns_noninteractive_draft(tmp_path: Path):

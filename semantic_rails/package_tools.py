@@ -1421,11 +1421,17 @@ def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _canonical_number(value: Any) -> Any:
-    """One form per number, so a DECIMAL result matches the int or float YAML loads."""
-    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+    """One form per number, so a DECIMAL result matches the int or float YAML loads.
+
+    Whole numbers become ints; others become normalized Decimals (a float by its
+    shortest repr), so DECIMAL digits beyond a float's precision still count.
+    """
+    if isinstance(value, bool) or not isinstance(value, (float, Decimal)):
         return value
-    if isinstance(value, Decimal) and not value.is_finite():
-        return float(value)
-    if isinstance(value, float) and not math.isfinite(value):
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return value
+        value = Decimal(repr(value))
+    elif not value.is_finite():
         return value
-    return int(value) if value == int(value) else float(value)
+    return int(value) if value == value.to_integral_value() else value.normalize()

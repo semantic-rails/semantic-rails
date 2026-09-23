@@ -2344,7 +2344,7 @@
       "annotations": {
         "destructiveHint": true,
         "idempotentHint": true,
-        "openWorldHint": false,
+        "openWorldHint": true,
         "readOnlyHint": false,
         "title": "Upsert package test"
       },
