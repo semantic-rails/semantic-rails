@@ -766,6 +766,8 @@ class _TimeWindow:
     bounds: dict[str, Any] = field(default_factory=dict)
     relative_unit: str = ""
     unresolved: tuple[str, ...] = ()
+    # Every span of the lowercased text read as time, resolved or not.
+    spans: tuple[tuple[int, int], ...] = ()
 
 
 def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
@@ -883,16 +885,17 @@ def _time_window(text: str) -> _TimeWindow:
         if not _overlaps(span, covered + unresolved_spans):
             unresolved_spans.append(span)
     distinct = {repr(bounds): (span, bounds, unit) for span, bounds, unit in windows}
+    time_spans = tuple(sorted(covered + unresolved_spans))
     if unresolved_spans or len(distinct) > 1:
         # Report every time phrase, resolved or not: resolving part of an
         # ambiguous question would answer a different one.
         spans = sorted(unresolved_spans + (covered if len(distinct) > 1 else []))
         phrases = list(dict.fromkeys(_phrase(lowered, span) for span in spans))
-        return _TimeWindow(unresolved=tuple(phrases))
+        return _TimeWindow(unresolved=tuple(phrases), spans=time_spans)
     if not distinct:
         return _TimeWindow()
     _span, bounds, unit = next(iter(distinct.values()))
-    return _TimeWindow(bounds=dict(bounds), relative_unit=unit)
+    return _TimeWindow(bounds=dict(bounds), relative_unit=unit, spans=time_spans)
 
 
 def _time_bounds_from_text(text: str) -> dict[str, Any]:

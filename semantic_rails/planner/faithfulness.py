@@ -14,11 +14,21 @@ structure.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
-from difflib import get_close_matches
 from typing import Any
 
-from ._base import _MONTH_NUMBERS, _TIME_UNITS, _object_text, _time_bounds_from_text, _tokens
+from ._base import (
+    _MONTH_NUMBERS,
+    _NUMBER_WORDS,
+    _ORDINALS,
+    _TERM_SYNONYMS,
+    _TIME_UNITS,
+    _object_text,
+    _time_bounds_from_text,
+    _time_window,
+    _tokens,
+)
 from .intent_ir import IntentIR
 
 
@@ -57,8 +67,8 @@ _RANK_RE = re.compile(
     re.IGNORECASE,
 )
 _PRIOR_PERIOD_RE = re.compile(
-    r"\b(?:compared\s+(?:with|to)|vs\.?|versus)\s+(?:the\s+)?"
-    r"(?:last|prior|previous)\s+(?:day|week|month|quarter|year|period)\b",
+    r"\b(?:compared\s+(?:with|to)|vs\.?|versus|against|alongside|along\s+with|next\s+to)\s+"
+    r"(?:the\s+)?(?:last|prior|previous)\s+(?:day|week|month|quarter|year|period)\b",
     re.IGNORECASE,
 )
 _NEGATION_RE = re.compile(
@@ -67,22 +77,28 @@ _NEGATION_RE = re.compile(
     re.IGNORECASE,
 )
 # Ranking requests: "top 5 products", "the 3 lowest-selling products", "the 5
-# customers who spent the most", "which store had the most orders".
-# "at least 10 orders" is a threshold, not a ranking.
-_SUPERLATIVE_RE = re.compile(
-    r"\b(?:top|bottom|highest|lowest|fewest|largest|smallest|biggest|best|worst|greatest)\b"
-    r"|(?<!at )\b(?:most|least)\b",
-    re.IGNORECASE,
+# customers who spent the most", "which store had the most orders", "rank
+# stores by revenue". "At least 10 orders" is a threshold and "the 5 most
+# recent months" a window; neither is a ranking.
+_SUPERLATIVES = frozenset(
+    {
+        "best",
+        "biggest",
+        "fewest",
+        "greatest",
+        "highest",
+        "largest",
+        "least",
+        "lowest",
+        "most",
+        "smallest",
+        "worst",
+    }
 )
-_ASCENDING_RE = re.compile(
-    r"\b(?:bottom|lowest|fewest|smallest|worst)\b|(?<!at )\bleast\b", re.IGNORECASE
-)
-_RANKED_NOUN_RE = re.compile(
-    r"\b(?:(?:top|bottom)\s+(?P<top>\d+)|the\s+(?P<count>\d+)|which(?:\s+(?P<which>\d+))?)\s+"
-    r"(?:(?:highest|lowest|most|least|best|worst|largest|smallest|biggest|greatest|fewest)"
-    r"(?:-[a-z]+)?\s+)?(?P<noun>[a-z][a-z-]*)(?:\s+(?P<noun2>[a-z][a-z-]*))?",
-    re.IGNORECASE,
-)
+_ASCENDING = frozenset({"bottom", "fewest", "least", "lowest", "smallest", "worst"})
+_RECENCY = frozenset({"earliest", "latest", "least-recent", "most-recent", "newest", "oldest"})
+_WORD_RE = re.compile(r"[a-z0-9]+(?:[-'][a-z0-9]+)*")
+_YEAR_NUMBER_RE = re.compile(r"(?:19|20)\d{2}")
 # Words that end a ranked noun phrase ("which store had ...", "top 5 products by ...").
 _PHRASE_BREAKS = frozenset(
     [
@@ -130,7 +146,72 @@ _PHRASE_BREAKS = frozenset(
         "spends",
     ]
 )
-_YEAR_NUMBER_RE = re.compile(r"^20\d{2}$")
+# Shares of a population: "the top decile of customers" is a threshold.
+_SHARE_WORDS = frozenset(
+    {
+        "decile",
+        "deciles",
+        "fifth",
+        "half",
+        "pct",
+        "percent",
+        "percentile",
+        "percentiles",
+        "quartile",
+        "quartiles",
+        "quintile",
+        "quintiles",
+        "third",
+        "tier",
+    }
+)
+# Words that can't be the thing ranked ("which one is ...", "which have ...").
+_NOT_RANKED = frozenset(
+    {
+        *_PHRASE_BREAKS,
+        *_SUPERLATIVES,
+        *_NUMBER_WORDS,
+        *_SHARE_WORDS,
+        "a",
+        "all",
+        "an",
+        "and",
+        "any",
+        "be",
+        "been",
+        "bottom",
+        "can",
+        "could",
+        "each",
+        "every",
+        "it",
+        "its",
+        "me",
+        "my",
+        "one",
+        "ones",
+        "or",
+        "our",
+        "should",
+        "some",
+        "the",
+        "their",
+        "them",
+        "these",
+        "they",
+        "this",
+        "those",
+        "to",
+        "top",
+        "us",
+        "we",
+        "what",
+        "will",
+        "would",
+        "you",
+        "your",
+    }
+)
 _SUBJECT_CONJUNCTION_RE = re.compile(r"\s+(?:and|plus)\s+|\s*,\s*", re.IGNORECASE)
 _SUBJECT_BOUNDARY_RE = re.compile(
     r"\s+(?:by|where|during|over\s+time|for\s+(?:customers?|stores?|accounts?|users?)|"
@@ -173,6 +254,54 @@ _NEGATIVE_OPS = frozenset(
         "NOT BETWEEN",
     }
 )
+# Filter ops that keep the values they name, and ops that drop them.
+_KEEPING_OPS = frozenset({"=", "==", "IN"})
+_EXCLUDING_OPS = frozenset({"!=", "<>", "NOT IN"})
+# Everyday words that are also values in some catalogs ("new", "all", "other",
+# "us", "open"). One names its value only next to a word of the value's
+# dimension ("new customers"); otherwise the PLAN_UNMATCHED_TERMS warning,
+# which never downgrades a plan, covers it.
+_EVERYDAY_WORDS = frozenset(
+    {
+        "active",
+        "all",
+        "any",
+        "average",
+        "best",
+        "big",
+        "closed",
+        "current",
+        "first",
+        "good",
+        "high",
+        "inactive",
+        "large",
+        "last",
+        "less",
+        "low",
+        "more",
+        "new",
+        "next",
+        "no",
+        "none",
+        "normal",
+        "old",
+        "open",
+        "other",
+        "others",
+        "same",
+        "small",
+        "standard",
+        "top",
+        "total",
+        "us",
+        "yes",
+    }
+)
+# Identifier words too generic to tie an everyday word to a dimension.
+_GENERIC_ID_WORDS = frozenset(
+    {"code", "dimension", "flag", "has", "id", "is", "key", "name", "status", "type", "value"}
+)
 
 
 def intent_faithfulness_why(
@@ -181,8 +310,13 @@ def intent_faithfulness_why(
     question: str,
     intent_ir: IntentIR,
     query: dict[str, Any],
+    partial_query: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Return a structured downgrade reason for high-confidence coverage gaps."""
+    """Return a structured downgrade reason for high-confidence coverage gaps.
+
+    A window in the caller's ``partial_query`` settles the question's time
+    window, as it does for ``TIME_WINDOW_UNRESOLVED``.
+    """
 
     gaps: list[CoverageGap] = []
 
@@ -300,9 +434,15 @@ def intent_faithfulness_why(
                 )
             )
 
-    gaps.extend(_time_window_gaps(text, query))
+    caller_time = (partial_query or {}).get("time")
+    if not (
+        isinstance(caller_time, dict)
+        and any(caller_time.get(key) for key in ("start", "end", "range"))
+    ):
+        gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_filter_value_gaps(runtime, text, query))
+    gaps.extend(_contradictory_filter_gaps(query))
 
     if not gaps:
         return None
@@ -325,18 +465,38 @@ def _time_block(query: dict[str, Any]) -> dict[str, Any]:
     return time if isinstance(time, dict) else {}
 
 
-def _time_window_gaps(text: str, query: dict[str, Any]) -> list[CoverageGap]:
-    """The question names a calendar or relative window the draft doesn't carry."""
+def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """The draft doesn't carry the window the question names, or carries another one."""
 
     expected = _time_bounds_from_text(text)
+    if not expected:
+        return []
+    last = (expected.get("range") or {}).get("last") or {}
+    # "alongside the previous month's revenue" names a prior-period
+    # comparison's offset, not a window, when the draft carries one.
+    if (
+        set(expected) == {"range"}
+        and last.get("value") == 1
+        and _query_contains_prior_period(runtime, query)
+    ):
+        return []
     time = _time_block(query)
-    if not expected or any(time.get(key) for key in ("start", "end", "range")):
+    carried = {key: time[key] for key in ("start", "end", "range") if time.get(key)}
+    differs = [key for key in carried if carried[key] != expected.get(key)]
+    missing = [key for key in expected if key not in carried]
+    # A lookback metric can't take a start; plan says so itself
+    # (TIME_WINDOW_START_DROPPED), keeping the end.
+    if carried and not differs and missing in ([], ["start"]):
         return []
     return [
         CoverageGap(
             kind="time_window_unrealized",
             clause=", ".join(f"{key}={value}" for key, value in expected.items()),
-            message="The question names a time window, but the draft is not bounded by it.",
+            message=(
+                "The question names a time window, but the draft's window is a different one."
+                if carried
+                else "The question names a time window, but the draft is not bounded by it."
+            ),
             expected={"time": expected},
             actual={"time": time or None},
             recovery_hint={
@@ -350,41 +510,198 @@ def _time_window_gaps(text: str, query: dict[str, Any]) -> list[CoverageGap]:
     ]
 
 
-def _ranking_request(text: str) -> dict[str, Any] | None:
-    """Parse "top N <noun>"-style requests into (limit, direction, noun)."""
+def _ranking_request(text: str, nouns: frozenset[str] = frozenset()) -> dict[str, Any] | None:
+    """Parse a ranking request into (clause, limit, direction, noun, requires_order).
 
-    if not _SUPERLATIVE_RE.search(text):
+    ``limit`` is None when the question fixes no count ("the top products"),
+    and ``direction`` is None when it fixes no order ("rank stores by
+    revenue"). A bare superlative ranks the noun after it only when that noun
+    is a time unit ("the highest revenue month"), follows a hyphenated
+    superlative ("best-selling products"), or follows "best"/"worst" and is
+    one of the catalog's dimension ``nouns`` ("the best store"): in "the
+    highest revenue", revenue is what is measured, not what is ranked.
+    """
+
+    words = _WORD_RE.findall(" ".join(str(text or "").lower().split()))
+    for index in range(len(words)):
+        request = _ranking_at(words, index, nouns)
+        if request is not None:
+            return request
+    return None
+
+
+def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str, Any] | None:
+    word = words[index]
+    before = words[index - 1] if index else ""
+    if word in {"rank", "ranking"}:
+        # "rank stores by revenue", "ranking of the stores by revenue"
+        start = index + 1
+        while start < len(words) and words[start] in {"all", "of", "our", "the"}:
+            start += 1
+        noun, end = _noun_phrase(words, start)
+        if noun and end < len(words) and words[end] == "by":
+            return _ranking(words, index, end, None, _stated_direction(words, end), noun, True)
         return None
-    match = next(
-        (
-            candidate
-            for candidate in _RANKED_NOUN_RE.finditer(text)
-            if not _YEAR_NUMBER_RE.match(
-                candidate.group("top") or candidate.group("count") or candidate.group("which") or ""
+    if word == "ranked" and index + 1 < len(words) and words[index + 1] == "by":
+        # "stores ranked by revenue"
+        if before and before not in _NOT_RANKED:
+            return _ranking(
+                words, index - 1, index + 2, None, _stated_direction(words, index), before, True
             )
-        ),
-        None,
-    )
-    if match is None:
         return None
-    words = [match.group("noun").lower()]
-    second = (match.group("noun2") or "").lower()
-    if second and second not in _PHRASE_BREAKS:
-        words.append(second)
-    head = words[-1]
-    raw_limit = match.group("top") or match.group("count") or match.group("which")
-    if raw_limit:
-        limit: int | None = int(raw_limit)
-    else:
-        # "which store had the most" asks for one; "which segments" for all of them.
-        limit = 1 if _singular(head) == head else None
-    phrase = match.group(0).split()
+    if word in {"top", "bottom"}:
+        # "top 5 products", "bottom three stores", "the top store", "top 2000 customers"
+        direction: str | None = "DESC" if word == "top" else "ASC"
+        cursor = index + 1
+        count = _count(words, cursor, years=True)
+        if count is not None:
+            cursor += 1
+        superlative = _superlative(words, cursor)
+        if superlative:
+            direction = superlative
+            cursor += 1
+        noun, end = _noun_phrase(words, cursor)
+        if not noun:
+            return None
+        limit = count if count is not None else (1 if _singular(noun) == noun else None)
+        return _ranking(words, index, end, limit, direction, noun, False)
+    count = _count(words, index, years=False)
+    if count is not None:
+        # "the 3 lowest-selling products", "5 best-selling products",
+        # "the 5 customers who spent the most"
+        cursor = index + 1
+        if _recency(words, cursor):
+            return None
+        superlative = _superlative(words, cursor)
+        if superlative:
+            cursor += 1
+        elif before != "the":
+            return None
+        noun, end = _noun_phrase(words, cursor)
+        direction = superlative or _superlative_after(words, end)
+        if not noun or not direction:
+            return None
+        start = index - 1 if before == "the" else index
+        return _ranking(words, start, end, count, direction, noun, False)
+    if word == "which":
+        # "which store had the most orders", "which of the stores ...",
+        # "which 2 stores ..."
+        cursor = index + 1
+        count = _count(words, cursor, years=False)
+        if count is not None:
+            cursor += 1
+        one = words[cursor : cursor + 1] == ["of"] and cursor + 1 < len(words)
+        if one:
+            cursor += 2 if words[cursor + 1] in {"our", "the", "these", "those"} else 1
+        noun, end = _noun_phrase(words, cursor)
+        direction = _superlative_after(words, end)
+        if not noun or not direction:
+            return None
+        limit = count if count is not None else (1 if one or _singular(noun) == noun else None)
+        return _ranking(words, index, end, limit, direction, noun, False)
+    superlative = _superlative(words, index)
+    if superlative:
+        # "the best-selling product", "the highest revenue month", "the best store"
+        noun, end = _noun_phrase(words, index + 1)
+        head = _singular(noun)
+        if noun and (
+            "-" in word or head in _TIME_UNITS or (word in {"best", "worst"} and head in nouns)
+        ):
+            start = index - 1 if before == "the" else index
+            return _ranking(
+                words, start, end, 1 if head == noun else None, superlative, noun, False
+            )
+    return None
+
+
+def _ranking(
+    words: list[str],
+    start: int,
+    end: int,
+    limit: int | None,
+    direction: str | None,
+    noun: str,
+    requires_order: bool,
+) -> dict[str, Any]:
     return {
-        "clause": " ".join(phrase[:-1] if second in _PHRASE_BREAKS else phrase),
+        "clause": " ".join(words[start:end]),
         "limit": limit,
-        "direction": "ASC" if _ASCENDING_RE.search(text) else "DESC",
-        "noun": head,
+        "direction": direction,
+        "noun": noun,
+        "requires_order": requires_order,
     }
+
+
+def _count(words: list[str], index: int, *, years: bool) -> int | None:
+    """The count at words[index] ("5", "five"); a 20xx number counts only after top/bottom."""
+
+    if index >= len(words):
+        return None
+    word = words[index]
+    if word in _NUMBER_WORDS:
+        return _NUMBER_WORDS[word]
+    if not word.isdigit() or (not years and _YEAR_NUMBER_RE.fullmatch(word)):
+        return None
+    return int(word)
+
+
+def _recency(words: list[str], index: int) -> bool:
+    """ "most recent", "latest": an ordering by time, which a window answers."""
+
+    if index >= len(words):
+        return False
+    if words[index] in _RECENCY:
+        return True
+    return words[index] in {"least", "most"} and words[index + 1 : index + 2] == ["recent"]
+
+
+def _superlative(words: list[str], index: int) -> str | None:
+    """The sort direction a superlative at words[index] asks for, if it ranks."""
+
+    if index >= len(words) or _recency(words, index):
+        return None
+    base = words[index].split("-", 1)[0]
+    if base not in _SUPERLATIVES:
+        return None
+    if base in {"least", "most"} and index and words[index - 1] == "at":
+        return None  # "at least 10 orders" is a threshold
+    return "ASC" if base in _ASCENDING else "DESC"
+
+
+def _superlative_after(words: list[str], start: int) -> str | None:
+    for index in range(start, len(words)):
+        direction = _superlative(words, index)
+        if direction:
+            return direction
+    return None
+
+
+def _stated_direction(words: list[str], start: int) -> str | None:
+    """The order a "rank ... by" request states, if any ("lowest first", "descending")."""
+
+    for word in words[start:]:
+        if word in {"asc", "ascending", "increasing"}:
+            return "ASC"
+        if word in {"desc", "descending", "decreasing"}:
+            return "DESC"
+    return _superlative_after(words, start)
+
+
+def _noun_phrase(words: list[str], start: int) -> tuple[str, int]:
+    """The ranked noun phrase at words[start]: its head word and the index after it."""
+
+    end = start
+    while (
+        end < len(words)
+        and end - start < 2
+        and words[end] not in _NOT_RANKED
+        and not words[end].isdigit()
+    ):
+        end += 1
+    if end == start:
+        return "", start
+    head = words[end - 1]
+    return (head[:-2] if head.endswith("'s") else head), end
 
 
 def _singular(word: str) -> str:
@@ -398,17 +715,23 @@ def _singular(word: str) -> str:
 def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
     """A ranking request loses its limit, its sort or the thing being ranked."""
 
-    request = _ranking_request(text)
+    config = runtime._config
+    request = _ranking_request(text, _dimension_nouns(config))
     if request is None:
         return []
     order_by = [row for row in list(query.get("order_by") or []) if isinstance(row, dict)]
     problems: list[str] = []
-    # Order only decides the answer when a limit cuts it off.
-    if request["limit"] is not None:
-        if query.get("limit") != request["limit"]:
-            problems.append("limit")
-        direction = str(order_by[0].get("direction", "ASC")).upper() if order_by else ""
-        if direction != request["direction"]:
+    if request["limit"] is not None and query.get("limit") != request["limit"]:
+        problems.append("limit")
+    # Order decides the answer when a limit cuts it off, or when it is the ask ("rank ...").
+    if request["limit"] is not None or request["requires_order"]:
+        first = order_by[0] if order_by else {}
+        direction = str(first.get("direction") or "ASC").upper()
+        if (
+            not first
+            or not _orders_by_a_value(first, query)
+            or (request["direction"] and direction != request["direction"])
+        ):
             problems.append("order")
     noun = _singular(request["noun"])
     time = _time_block(query)
@@ -416,7 +739,6 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
         if str(time.get("grain", "") or "") != noun:
             problems.append("ranked_time_grain")
     else:
-        config = runtime._config
         ranked = {
             str(row.id)
             for row in config.dimensions
@@ -439,6 +761,7 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
                 "limit": request["limit"],
                 "direction": request["direction"],
                 "ranked": request["noun"],
+                "order_by": "a selected value",
             },
             actual={
                 "limit": query.get("limit"),
@@ -457,49 +780,82 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
     ]
 
 
-def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
-    """Every governed value the question names must reach a filter.
+def _orders_by_a_value(order: dict[str, Any], query: dict[str, Any]) -> bool:
+    """Whether an order_by entry sorts by a selected value, not a group or the period."""
 
-    A value also counts as honored when the draft's chosen objects carry it
-    (for example "new customer orders" answered by a new-customer measure).
+    name = order.get("field")
+    if not isinstance(name, str):
+        return True
+    grouped = {str(item) for item in list(query.get("group_by") or [])}
+    return name != "time" and name not in grouped and not name.startswith("dimension.")
+
+
+def _dimension_nouns(config: Any) -> frozenset[str]:
+    return frozenset(
+        _singular(token)
+        for row in list(getattr(config, "dimensions", []) or [])
+        for token in _tokens(_core_text(row))
+    )
+
+
+def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """Every governed value the question names must reach the draft.
+
+    A value is honored by a filter that names it (either polarity), by
+    grouping on its dimension when no filter drops it, or by a chosen object
+    whose name carries the question's word for it ("new customer orders"
+    answered by a new-customer measure). Longer values mask the words inside
+    them ("New Orleans" is not "new"). Numbers, and everyday words not tied
+    to their dimension in the question, are left to the unmatched-terms
+    warning.
     """
 
-    lowered = str(text or "").lower()
-    filtered: set[str] = set()
-    for row in list(query.get("where") or []):
-        if isinstance(row, dict):
-            value = row.get("value")
-            for item in value if isinstance(value, list) else [value]:
-                filtered.add(str(item).lower())
     config = runtime._config
+    phrases = _value_phrases(config)
+    plain = _plain(text)
+    matches = _value_matches(plain, phrases)
+    if not matches:
+        return []
+    predicates = _field_predicates(query)
+    grouped = {str(item) for item in list(query.get("group_by") or [])}
     referenced = set(_referenced_ids(query))
-    object_tokens: set[str] = set()
-    for row in [*config.measures, *config.metric_recipes, *config.dimensions]:
-        if str(getattr(row, "id", "")) in referenced:
-            object_tokens.update(_tokens(_object_text(row)))
+    carried = {
+        token
+        for row in _catalog_rows(config)
+        if str(getattr(row, "id", "")) in referenced
+        for token in _tokens(_core_text(row))
+    }
+    said: list[str] = []
     missing: list[dict[str, Any]] = []
-    for domain in config.value_domains:
-        for value in list(domain.values or []):
-            phrases = [str(value.value), str(value.label), *[str(a) for a in value.aliases or []]]
-            phrases = [phrase.strip().lower() for phrase in phrases if str(phrase).strip()]
-            if not any(
-                re.search(rf"(?<![a-z0-9]){re.escape(phrase)}s?(?![a-z0-9])", lowered)
-                for phrase in phrases
-            ):
-                continue
-            if filtered & set(phrases) or any(set(_tokens(p)) <= object_tokens for p in phrases):
-                continue
-            if all(row["value"] != value.value for row in missing):
+    for span, phrase in matches:
+        rows = phrases[phrase]
+        if phrase in _EVERYDAY_WORDS and not _tied_to_dimension(config, plain, span, rows):
+            continue
+        if any(_value_honored(domain, value, predicates, grouped) for domain, value in rows):
+            continue
+        if set(_tokens(phrase)) <= carried:
+            continue
+        said.append(phrase)
+        for domain, value in rows:
+            entry = next((row for row in missing if row["value"] == value.value), None)
+            if entry is None:
                 missing.append({"value": value.value, "dimensions": list(domain.dimensions)})
+            else:
+                entry["dimensions"].extend(
+                    item for item in domain.dimensions if item not in entry["dimensions"]
+                )
     if not missing:
         return []
     return [
         CoverageGap(
             kind="filter_values_unrealized",
-            clause=", ".join(str(row["value"]) for row in missing),
-            message="The question names values that no filter in the draft uses.",
+            clause=", ".join(said),
+            message="The question names values that no filter or grouping in the draft uses.",
             expected={"values": missing},
-            actual={"where": list(query.get("where") or [])},
+            actual={
+                "where": list(query.get("where") or []),
+                "group_by": list(query.get("group_by") or []),
+            },
             recovery_hint={
                 "kind": "provide_filter_values",
                 "message": (
@@ -511,10 +867,198 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     ]
 
 
+def _plain(text: Any) -> str:
+    """Lowercase words separated by single spaces ("High_Value" -> "high value")."""
+
+    return " ".join(re.findall(r"[^\W_]+", str(text or "").lower()))
+
+
+def _value_phrases(config: Any) -> dict[str, list[tuple[Any, Any]]]:
+    """Each way the catalog writes a value, with the (domain, value) pairs it names."""
+
+    out: dict[str, list[tuple[Any, Any]]] = {}
+    for domain in list(getattr(config, "value_domains", []) or []):
+        for value in list(domain.values or []):
+            if _is_number(value.value):
+                continue
+            names = {_plain(item) for item in (value.value, value.label, *(value.aliases or []))}
+            for phrase in names:
+                if len(phrase) >= 2 and not _is_number(phrase):
+                    out.setdefault(phrase, []).append((domain, value))
+    return out
+
+
+def _is_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    return bool(re.fullmatch(r"[\d\s.,]+", str(value)))
+
+
+def _value_matches(
+    plain: str, phrases: dict[str, list[tuple[Any, Any]]]
+) -> list[tuple[tuple[int, int], str]]:
+    """Value mentions in the question, longest first, never overlapping."""
+
+    words = set(plain.split())
+    taken: list[tuple[int, int]] = []
+    found: list[tuple[tuple[int, int], str]] = []
+    for phrase in sorted(phrases, key=len, reverse=True):
+        parts = phrase.split()
+        if not set(parts[:-1]) <= words or not {parts[-1], f"{parts[-1]}s", f"{parts[-1]}es"} & (
+            words
+        ):
+            continue
+        for match in re.finditer(rf"(?<!\S){re.escape(phrase)}(?:e?s)?(?!\S)", plain):
+            span = match.span()
+            if not any(span[0] < end and start < span[1] for start, end in taken):
+                taken.append(span)
+                found.append((span, phrase))
+    return sorted(found)
+
+
+def _tied_to_dimension(
+    config: Any, plain: str, span: tuple[int, int], rows: list[tuple[Any, Any]]
+) -> bool:
+    """An everyday word sits next to a word of its value's dimension ("new customers")."""
+
+    neighbors = plain[: span[0]].split()[-1:] + plain[span[1] :].split()[:1]
+    near = {_singular(token) for token in _tokens(" ".join(neighbors))}
+    dimensions = {str(item) for domain, _value in rows for item in domain.dimensions}
+    generic = _GENERIC_ID_WORDS | _ubiquitous_words(config)
+    words = {
+        _singular(token)
+        for row in config.dimensions
+        if str(row.id) in dimensions
+        for token in _tokens(_core_text(row))
+    } - generic
+    # A shared stem of four letters or more ties them too ("members", "membership").
+    return any(
+        word == other or (min(len(word), len(other)) >= 4 and word.startswith(other))
+        for word in words
+        for other in near
+    )
+
+
+def _ubiquitous_words(config: Any) -> set[str]:
+    """Words in most dimension ids, such as a package prefix, which say nothing."""
+
+    rows = list(getattr(config, "dimensions", []) or [])
+    counts = Counter(token for row in rows for token in set(_tokens(_core_text(row))))
+    return {token for token, count in counts.items() if count * 2 > len(rows)}
+
+
+def _field_predicates(query: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """For each filtered field, anywhere in the draft: the values kept or dropped."""
+
+    out: dict[str, dict[str, Any]] = {}
+    for node in _dict_nodes(query):
+        name = node.get("field")
+        if not isinstance(name, str) or not ("op" in node or "value" in node):
+            continue
+        op = " ".join(str(node.get("op") or "=").upper().split())
+        raw = node.get("value")
+        values = {_plain(item) for item in (raw if isinstance(raw, list) else [raw])}
+        entry = out.setdefault(name, {"keeps": set(), "drops": set(), "other": False})
+        if op in _KEEPING_OPS:
+            entry["keeps"] |= values
+        elif op in _EXCLUDING_OPS:
+            entry["drops"] |= values
+        else:
+            entry["other"] = True
+    return out
+
+
+def _value_honored(
+    domain: Any, value: Any, predicates: dict[str, dict[str, Any]], grouped: set[str]
+) -> bool:
+    """A filter names the value, or its dimension is grouped and no filter drops it."""
+
+    names = {_plain(item) for item in (value.value, value.label, *(value.aliases or []))} - {""}
+    for dimension in (str(item) for item in domain.dimensions):
+        entry = predicates.get(dimension)
+        if entry is not None:
+            if names & (entry["keeps"] | entry["drops"]) or entry["other"]:
+                return True
+            if entry["keeps"]:
+                continue  # the filter keeps other values only
+        if dimension in grouped:
+            return True
+    return False
+
+
+def _contradictory_filter_gaps(query: dict[str, Any]) -> list[CoverageGap]:
+    """Filters on one field that keep values no row can match together."""
+
+    kept: dict[str, list[set[str]]] = {}
+    for row in list(query.get("where") or []):
+        if not isinstance(row, dict) or not isinstance(row.get("field"), str):
+            continue
+        if " ".join(str(row.get("op") or "=").upper().split()) not in _KEEPING_OPS:
+            continue
+        raw = row.get("value")
+        kept.setdefault(row["field"], []).append(
+            {str(item) for item in (raw if isinstance(raw, list) else [raw])}
+        )
+    conflicts = [
+        {"field": name, "values": sorted(set().union(*sets))}
+        for name, sets in kept.items()
+        if len(sets) > 1 and not set.intersection(*sets)
+    ]
+    if not conflicts:
+        return []
+    return [
+        CoverageGap(
+            kind="contradictory_filters",
+            clause="; ".join(
+                f"{row['field']} = " + " and ".join(row["values"]) for row in conflicts
+            ),
+            message=(
+                "The draft requires one field to equal different values at once, so it returns "
+                "no rows."
+            ),
+            expected={"filters": "one filter per field, op 'in' for several values"},
+            actual={"conflicts": conflicts},
+            recovery_hint={
+                "kind": "merge_filter_values",
+                "message": (
+                    "Filter each dimension once, with op 'in' and a list for several values (or "
+                    "group by it to compare them), then validate."
+                ),
+            },
+        )
+    ]
+
+
+def _core_text(row: Any) -> str:
+    """An object's id, name, label and aliases: the words that name it."""
+
+    return " ".join(
+        [
+            str(getattr(row, "id", "") or ""),
+            str(getattr(row, "name", "") or ""),
+            str(getattr(row, "label", "") or ""),
+            " ".join(str(alias) for alias in getattr(row, "aliases", []) or []),
+        ]
+    )
+
+
+def _catalog_rows(config: Any) -> list[Any]:
+    return [
+        *getattr(config, "measures", []),
+        *getattr(config, "metric_recipes", []),
+        *getattr(config, "dimensions", []),
+        *getattr(config, "entities", []),
+        *getattr(config, "segments", []),
+        *getattr(config, "temporal_roles", []),
+    ]
+
+
 def _referenced_ids(query: dict[str, Any]) -> list[str]:
     ids: list[str] = []
     for node in _dict_nodes(query):
-        for key in ("measure", "metric", "field", "temporal_role"):
+        for key in ("measure", "metric", "field", "temporal_role", "entity", "segment"):
             value = node.get(key)
             if isinstance(value, str) and value and value not in ids:
                 ids.append(value)
@@ -684,7 +1228,9 @@ def _unique_hints(gaps: list[CoverageGap]) -> list[dict[str, Any]]:
 
 
 # Words that frame a question rather than constrain it: question and request
-# words, ranking and calendar vocabulary, and generic aggregation words.
+# words, ranking, comparison and calendar vocabulary, and generic aggregation
+# words. Time phrases the planner reads, counts and ordinals are skipped
+# separately.
 _FRAMING_WORDS = frozenset(
     {
         *[
@@ -692,36 +1238,70 @@ _FRAMING_WORDS = frozenset(
             "amount",
             "be",
             "been",
+            "break",
+            "breakdown",
+            "calculate",
             "can",
+            "come",
+            "comes",
             "compare",
+            "compute",
             "could",
             "display",
+            "down",
             "each",
             "every",
             "find",
             "give",
             "group",
             "grouped",
+            "know",
+            "let",
+            "lets",
+            "level",
+            "levels",
+            "like",
             "list",
+            "look",
             "me",
             "need",
             "number",
+            "numbers",
             "please",
+            "report",
             "see",
+            "split",
             "sum",
             "total",
             "totals",
+            "trend",
+            "trending",
+            "trends",
             "overall",
+            "view",
+            "volume",
             "want",
             "whose",
             # Verbs that restate a measure ("tax collected", "customers who spent").
             "brought",
+            "collect",
             "collected",
             "earned",
             "generated",
             "had",
             "made",
+            "sell",
+            "sells",
+            "sold",
             "spent",
+            # Comparison and combination words; the select list carries them.
+            "across",
+            "against",
+            "alongside",
+            "combined",
+            "compared",
+            "comparison",
+            "together",
             # Negations; the negation check owns them.
             "except",
             "excluding",
@@ -781,6 +1361,7 @@ _FRAMING_WORDS = frozenset(
             "through",
             "until",
             "during",
+            "ever",
             "first",
             "second",
             "last",
@@ -788,45 +1369,107 @@ _FRAMING_WORDS = frozenset(
         *_MONTH_NUMBERS,
     }
 )
+_ORDINAL_RE = re.compile(r"\d+(?:st|nd|rd|th)")
+# The most words one PLAN_UNMATCHED_TERMS warning names, and the most distinct
+# question words read to find them.
+_MAX_UNMATCHED_TERMS = 8
+_MAX_SCANNED_WORDS = 256
 
 
 def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
     """Question words the draft accounts for nowhere, in question order.
 
-    A word is accounted for when it frames the question, or appears (allowing
-    for a plural or a near-miss spelling) in the text of an object the draft
-    uses or in one of its filter values.
+    A word is accounted for when it frames the question, sits in a time phrase
+    the planner read, counts or orders ("five", "3rd"), or appears (allowing a
+    plural or one typo) in the text of an object the draft uses or in one of
+    its filter values. Words come back as the question spells them, at most
+    eight.
     """
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
-    config = runtime._config
     referenced = set(_referenced_ids(query))
     vocabulary: set[str] = set()
-    for row in [*config.measures, *config.metric_recipes, *config.dimensions]:
+    for row in _catalog_rows(runtime._config):
         if str(getattr(row, "id", "")) in referenced:
             vocabulary.update(_tokens(_object_text(row)))
-    for row in list(query.get("where") or []):
-        if isinstance(row, dict):
-            value = row.get("value")
+    for node in _dict_nodes(query):
+        if "field" in node and "value" in node:
+            value = node.get("value")
             for item in value if isinstance(value, list) else [value]:
                 vocabulary.update(_tokens(str(item)))
-    known = sorted(vocabulary)
+    by_initial: dict[str, list[str]] = {}
+    for known in vocabulary:
+        by_initial.setdefault(known[:1], []).append(known)
+    skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
+    text = str(question or "")
+    time_spans = _time_window(text).spans
+    seen: set[str] = set()
     out: list[str] = []
-    for token in _tokens(question):
+    for match in re.finditer(r"[^\W_]+", text.lower()):
+        word = match.group(0)
+        if word in seen:
+            continue
+        seen.add(word)
+        if len(seen) > _MAX_SCANNED_WORDS or len(out) >= _MAX_UNMATCHED_TERMS:
+            break
+        token = _TERM_SYNONYMS.get(word, word)
+        start, end = match.span()
         if (
-            len(token) < 2
-            or token.isdigit()
-            or token in out
-            or token in _INTENT_STOPWORDS
-            or token in _FRAMING_WORDS
+            len(word) < 2
+            or word.isdigit()
+            or _ORDINAL_RE.fullmatch(word)
+            or word in skipped
+            or token in skipped
             or token in vocabulary
             or _singular(token) in vocabulary
-            or get_close_matches(token, known, n=1, cutoff=0.8)
+            or any(start < span_end and span_start < end for span_start, span_end in time_spans)
+            or _one_typo_away(token, by_initial)
         ):
             continue
-        out.append(token)
+        out.append(word)
     return out
+
+
+def _one_typo_away(word: str, by_initial: dict[str, list[str]]) -> bool:
+    """A misspelling of a known word: same first letter and one edit.
+
+    A four-letter word only counts when it drops a letter from a longer one
+    with the same first two ("stor" for "store"), so "next" isn't "net".
+    """
+
+    if len(word) < 4:
+        return False
+    for known in by_initial.get(word[0], ()):
+        if len(word) == 4 and (len(known) != 5 or known[:2] != word[:2]):
+            continue
+        if abs(len(known) - len(word)) <= 1 and _within_one_edit(word, known):
+            return True
+    return False
+
+
+def _within_one_edit(left: str, right: str) -> bool:
+    """One insertion, deletion, substitution or swap of adjacent letters."""
+
+    if left == right:
+        return True
+    if len(left) == len(right):
+        diffs = [index for index, (a, b) in enumerate(zip(left, right, strict=True)) if a != b]
+        if len(diffs) == 1:
+            return True
+        return (
+            len(diffs) == 2
+            and diffs[1] == diffs[0] + 1
+            and left[diffs[0]] == right[diffs[1]]
+            and left[diffs[1]] == right[diffs[0]]
+        )
+    shorter, longer = sorted((left, right), key=len)
+    if len(longer) - len(shorter) != 1:
+        return False
+    index = 0
+    while index < len(shorter) and shorter[index] == longer[index]:
+        index += 1
+    return shorter[index:] == longer[index + 1 :]
 
 
 __all__ = ["CoverageGap", "intent_faithfulness_why", "unmatched_intent_terms"]

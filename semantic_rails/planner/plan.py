@@ -227,6 +227,7 @@ def plan_payload(
             question=intent_str,
             intent_ir=intent_ir,
             query=best_draft.query,
+            partial_query=partial_query,
         )
         if best_ok
         else None
@@ -572,7 +573,16 @@ def _query_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
 
     out: dict[str, Any] = {}
-    for key in ("plan_version", "intent", "status", "why", "tie_break_hints", "warnings"):
+    # compose_hints is present only when no draft exists; its why points at it.
+    for key in (
+        "plan_version",
+        "intent",
+        "status",
+        "why",
+        "tie_break_hints",
+        "warnings",
+        "compose_hints",
+    ):
         if key in payload:
             out[key] = payload[key]
     out["best"] = _query_detail_best(payload.get("best"))

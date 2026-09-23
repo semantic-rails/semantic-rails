@@ -1202,6 +1202,13 @@ def _strip_execute_transport_args(arguments: Mapping[str, Any]) -> dict[str, Any
     return cleaned
 
 
+def _plan_detail(value: Any) -> str:
+    """MCP plan's detail level; anything unknown gets the MCP default, 'query'."""
+
+    detail = str(value or "").strip().lower()
+    return detail if detail in {"query", "best", "full", "debug"} else "query"
+
+
 def _positive_int(value: Any) -> int | None:
     try:
         number = int(value)
@@ -2172,7 +2179,7 @@ class SemanticLayerMCPAdapter:
                 self.runtime,
                 intent=str(args.get("intent", "")),
                 partial_query=_partial_query_payload(args),
-                detail=str(args.get("detail", "query") or "query"),
+                detail=_plan_detail(args.get("detail")),
                 limit=_coerce_int(args.get("limit"), 3, field="limit", minimum=1),
             ),
         )

@@ -137,13 +137,22 @@ to `execute` with `row_format="columns"`. `detail="best"` (the HTTP default) add
 paid validation cost, so call `validate` again only when you are editing the IR or
 need full diagnostics.
 
-A draft that validates can still leave out part of the question. When it drops a time
-window, a ranking (its limit, its sort, or the dimension being ranked) or a named filter
-value, `plan` returns `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"`, and
-`why.details.gaps` names each clause (`time_window_unrealized`, `ranking_unrealized`,
-`filter_values_unrealized`, and the negation, prior-period and multi-subject checks).
-Question words the draft uses nowhere come back as a `PLAN_UNMATCHED_TERMS` warning with
-the words in `details.terms`; check them before executing. If a
+A draft that validates can still leave out part of the question. `plan` returns
+`low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
+
+- carries no time window, or a different one, where the question names one
+  (`time_window_unrealized`);
+- loses a ranking's limit, sorts by something other than the ranked measure, or doesn't
+  group by what is ranked (`ranking_unrealized`);
+- neither filters on nor groups by a value the question names (`filter_values_unrealized`);
+- requires one field to equal two values at once, which returns no rows
+  (`contradictory_filters`);
+- misses a negation, a prior-period comparison or one of several named subjects.
+
+`why.details.gaps` names each clause. Question words the draft uses nowhere, other than
+framing words, time phrases the planner read, and counts, come back as a
+`PLAN_UNMATCHED_TERMS` warning with up to eight of them in `details.terms`; check them
+before executing. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
