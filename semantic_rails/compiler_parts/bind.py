@@ -37,6 +37,8 @@ from ..expressions import (
     collect_column_refs,
     expr_to_dict,
     parse_semantic_expression,
+    resolve_filter_dimension,
+    resolve_measure_temporal_role,
 )
 from ..ir import BoundMeasure
 from ..schema import MeasureConfig, PackageConfig
@@ -49,7 +51,6 @@ from ..sql_ast import (
     SqlLiteral,
 )
 from .indexes import (
-    _default_temporal_role,
     _dimension_index,
     _entity_index,
     _measure_index,
@@ -380,15 +381,12 @@ def _bind_measure(
             f"Aggregation '{aggregation}' is not allowed for '{measure_id}'",
             details={"measure": measure_id, "allowed": list(measure.allowed_aggregations)},
         )
-    temporal_role = expr.temporal_role or query.temporal_role_overrides.get(measure_id, "")
-    if (
-        not temporal_role
-        and query.time
-        and query.time.temporal_role in measure.compatible_temporal_roles
-    ):
-        temporal_role = query.time.temporal_role
-    if not temporal_role:
-        temporal_role = _default_temporal_role(measure)
+    temporal_role = resolve_measure_temporal_role(
+        measure,
+        expr.temporal_role,
+        query.temporal_role_overrides,
+        query.time.temporal_role if query.time else "",
+    )
     if temporal_role and temporal_role not in measure.compatible_temporal_roles:
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
@@ -560,23 +558,9 @@ def _bind_scoped_aggregate(
 
 
 def _resolve_filter_dimension(field: str, config: PackageConfig) -> str:
-    dimensions = _dimension_index(config)
-    if field in dimensions:
-        return field
-    matches = [
-        row.id
-        for row in config.dimensions
-        if field in ({row.id, row.name, row.label, *row.aliases})
-    ]
-    if not matches:
-        raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown filter field '{field}'")
-    if len(matches) > 1:
-        raise SemanticLayerError(
-            "AMBIGUOUS_ALIAS",
-            f"Filter field '{field}' is ambiguous",
-            details={"field": field, "candidates": matches},
-        )
-    return matches[0]
+    dimension_id = resolve_filter_dimension(field, config)
+    _dimension_index(config)[dimension_id]
+    return dimension_id
 
 
 def _bound_filter_clauses(bound: BoundMeasure, config: PackageConfig) -> list[dict[str, Any]]:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -39,6 +39,7 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     lift_conditional_aggregates,
 )
+from .compiler_parts.dependencies import binding_dependencies, candidate_planning
 from .compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from .compiler_parts.indexes import (
     _default_temporal_role,
@@ -106,6 +107,7 @@ from .expressions import (
     SemanticExpr,
     expr_kind,
     expr_to_dict,
+    validate_expression_shapes,
 )
 from .fanout import analyze_fanout, choose_path, package_hop_limit
 from .ir import (
@@ -3447,6 +3449,13 @@ def _select_aggregate_relation(
 def plan_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
 ) -> LogicalPlan:
+    with candidate_planning():
+        return _plan_query(config, registry, payload)
+
+
+def _plan_query(
+    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+) -> LogicalPlan:
     raw_query = normalize_query(payload)
 
     # Lift inline ``aggregate_if`` shorthand into synthetic measures. The
@@ -3649,16 +3658,119 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
 def _compile_query_sql_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
     plan = plan_query(config, None, payload)
     config = resolve_compile_config(plan, config)
+    _record_bound_plan(plan, config)
     return attach_relation_ctes(config, lower_to_sql(plan, config))
 
 
-def compile_query(
+def _record_bound_plan(plan: LogicalPlan, config: PackageConfig) -> None:
+    _entity_index(config).get(plan.root_entity)
+    dimensions = _dimension_index(config)
+    for dimension in plan.group_by:
+        dimensions.get(dimension)
+    for clause in plan.query.get("where", []):
+        dimensions.get(str(clause.get("field", "")))
+    _temporal_role_index(config).get(str(plan.time.get("temporal_role", "")))
+    for bound in plan.bound_measures:
+        _measure_index(config).get(bound.measure_id)
+        _temporal_role_index(config).get(bound.temporal_role)
+    for measure_plan in plan.measure_plans:
+        for entity in measure_plan.required_entities:
+            _entity_index(config).get(entity)
+        for selection in measure_plan.path_selections:
+            for relationship in selection.chosen_path:
+                _relationship_index(config).get(relationship)
+
+
+@dataclass(frozen=True)
+class BoundQuery:
+    plan: LogicalPlan
+    config: PackageConfig
+    sql_ast: SqlSelect
+    object_ids: frozenset[str]
+
+
+def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> frozenset[str]:
+    """Resolve metadata ownership and a valid default invocation for recipes."""
+    references: set[str] = set()
+    for object_id in object_ids:
+        recipe = _recipe_index(config).get(object_id)
+        if recipe is None:
+            with binding_dependencies() as dependencies:
+                for index in (
+                    _dimension_index,
+                    _temporal_role_index,
+                    _entity_index,
+                    _measure_index,
+                ):
+                    index(config).get(object_id)
+            references.update(dependencies.object_ids)
+            continue
+        query: dict[str, Any] = {"select": [{"expression": {"metric": object_id}, "as": "value"}]}
+        if not _requires_query_time(recipe.expression, config):
+            references.update(bind_query(config, None, query).object_ids)
+            continue
+        role_id = _object_default_query_temporal_role(config, object_id)
+        role = _temporal_role_index(config).get(role_id)
+        grains = list(role.supported_grains) if role is not None else []
+        # Window contracts need different grains. Metadata has no caller time
+        # axis, so use a supported invocation rather than treating missing
+        # context as a policy refusal. Execution binds the actual query again.
+        last_error = SemanticLayerError(
+            "INVALID_QUERY", "No default temporal invocation is available."
+        )
+        for grain in grains:
+            query["time"] = {"temporal_role": role_id, "grain": grain}
+            try:
+                references.update(bind_query(config, None, query).object_ids)
+                break
+            except SemanticLayerError as exc:
+                last_error = exc
+        else:
+            raise last_error
+    return frozenset(references)
+
+
+def bind_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
-) -> dict[str, Any]:
-    started = time.perf_counter()
+) -> BoundQuery:
+    """Prepare all bound branches without rendering SQL or accessing an adapter."""
+    try:
+        return _bind_query(config, registry, payload)
+    except RecursionError as exc:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", "Expression dependencies are cyclic or too deep."
+        ) from exc
+
+
+def _bind_query(
+    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+) -> BoundQuery:
+    # policy_context carries caller metadata and is never read as expressions;
+    # every other request key, including unrecognized ones, is shape-checked.
+    validate_expression_shapes(
+        {key: value for key, value in payload.items() if key != "policy_context"}
+    )
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)
-    sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
+    with binding_dependencies() as dependencies:
+        # These are selected plan objects, not candidate paths considered by
+        # planning. Nested conversions/predicates resolve through these same
+        # indexes when their SQL AST branches are constructed below.
+        _record_bound_plan(plan, config)
+        sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
+    return BoundQuery(plan, config, sql_ast, frozenset(dependencies.object_ids))
+
+
+def compile_query(
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    *,
+    binding: BoundQuery | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    bound = binding if binding is not None else bind_query(config, registry, payload)
+    plan, config, sql_ast = bound.plan, bound.config, bound.sql_ast
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,
