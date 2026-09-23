@@ -14,6 +14,8 @@ from typing import Any
 
 import yaml
 
+from semantic_rails.config import _merge_package_dir
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 PACK = REPO_ROOT / "comparisons" / "semantic_layers"
 RESULTS = PACK / "shared" / "results"
@@ -65,29 +67,35 @@ def _read(relative: str) -> str:
     return (REPO_ROOT / relative).read_text(encoding="utf-8")
 
 
+def _require(found: list[str], what: str, entry: dict[str, Any]) -> list[str]:
+    """Fail closed: a detector that finds nothing to check can't vouch for an answer."""
+    if not found:
+        raise SystemExit(f"{entry['question_id']}: found no {what} to check")
+    return found
+
+
 SR_PACKAGE = PACK / "semantic_rails" / "package"
 SHARED_VIEW = re.compile(r"comparison_\w+")
 
 
 def semantic_rails(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     # The rubric doesn't resolve which models a metric reads, so any derived relation in the
-    # package counts against every answer: a relation pipeline, or a model over anything but
-    # one shared view.
+    # package counts against every answer: a relation pipeline, an aggregate relation, or a
+    # model over anything but one shared view. The package is read the way the engine reads
+    # it, so a model declared anywhere the engine accepts one is checked.
+    package = _merge_package_dir(str(SR_PACKAGE))
     helpers = []
-    package = yaml.safe_load((SR_PACKAGE / "package.yml").read_text(encoding="utf-8"))
-    if package.get("relations") or any(
-        (SR_PACKAGE / name).exists() for name in ("relations.yml", "relations")
-    ):
+    if package.get("relations") or package.get("aggregate_relations"):
         helpers.append("relation pipelines")
-    for path in sorted((SR_PACKAGE / "models").rglob("*.yml")):
-        model = yaml.safe_load(path.read_text(encoding="utf-8"))["model"]
+    models = _require(sorted(dict(package.get("models") or {}).items()), "models", entry)
+    for model_id, model in models:
         relation = model.get("relation")
         if (
             {"relation_ref", "variants"} & set(model)
             or not isinstance(relation, str)
             or not SHARED_VIEW.fullmatch(relation)
         ):
-            helpers.append(f"derived model {model['id']}")
+            helpers.append(f"derived model {model_id}")
     return helpers, [_read(entry["sql_path"])] if entry.get("sql_path") else []
 
 
@@ -101,7 +109,8 @@ def metricflow(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     time_spines = {model["name"] for model in config.get("models", []) if "time_spine" in model}
     models = {path.stem: path for path in MF_MODELS.rglob("*.sql")}
     helpers, texts = [], [executed]
-    for relation in sorted(set(re.findall(r'"main"\."(\w+)"', executed))):
+    relations = sorted(set(re.findall(r'"main"\."(\w+)"', executed)))
+    for relation in _require(relations, "relations in the executed SQL", entry):
         if relation not in models or relation in time_spines:
             continue
         body = models[relation].read_text(encoding="utf-8")
@@ -117,7 +126,7 @@ def cube(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     members += [item["dimension"] for item in query.get("timeDimensions", [])]
     members += [item["member"] for item in query.get("filters", []) if "member" in item]
     helpers = []
-    for name in sorted({member.split(".")[0] for member in members}):
+    for name in _require(sorted({member.split(".")[0] for member in members}), "cubes", entry):
         model = PACK / "cube" / "model" / "cubes" / f"{name}.yml"
         spec = yaml.safe_load(model.read_text(encoding="utf-8"))["cubes"][0]
         if "sql" in spec and not is_passthrough(spec["sql"]):
@@ -135,14 +144,18 @@ def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     blocks = dict(
         re.findall(r"^source: (\w+) is (.*?)(?=^source: |^query: |\Z)", model, re.M | re.S)
     )
-    question_id = entry["question_id"]
-    pending = [re.search(rf"^query: {question_id} is (\w+)", model, flags=re.MULTILINE).group(1)]
+    query = re.search(rf"^query: {entry['question_id']} is (\w+)", model, flags=re.MULTILINE)
+    pending = _require([query.group(1)] if query else [], "named query", entry)
     used: set[str] = set()
     while pending:  # the query's source and every source it joins
         source = pending.pop()
         if source not in used:
             used.add(source)
-            pending += re.findall(r"join_(?:one|many|cross): (\w+)", blocks.get(source, ""))
+            # `join_one: alias is source ...` joins `source`; a bare `join_one: source` joins itself.
+            joins = re.findall(
+                r"join_(?:one|many|cross): (\w+)(?: is (\w+))?", blocks.get(source, "")
+            )
+            pending += [target or alias for alias, target in joins]
     helpers = [f"SQL source {source}" for source in sorted(used) if kinds.get(source) == "sql"]
     return helpers, [_read(entry["sql_path"])]
 
@@ -155,7 +168,7 @@ def ktx(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     ]
     fields += [re.split(r"\s", item)[0] for item in payload.get("filters", [])]
     helpers = []
-    for name in sorted({field.split(".")[0] for field in fields}):
+    for name in _require(sorted({field.split(".")[0] for field in fields}), "sources", entry):
         spec = yaml.safe_load(
             (PACK / "ktx" / "sources" / f"{name}.yaml").read_text(encoding="utf-8")
         )
@@ -165,12 +178,9 @@ def ktx(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def snowflake(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
-    examples = (PACK / "snowflake_semantic_views" / "query_examples.sql").read_text(
-        encoding="utf-8"
-    )
-    section = examples.split(f"-- {entry['question_id']}\n", 1)[1].split("\n-- q", 1)[0]
-    helpers = [] if "SEMANTIC_VIEW(" in section else ["SQL outside SEMANTIC_VIEW(...)"]
-    return helpers, [section]
+    executed = _read(entry["sql_path"])  # the statement the capture ran
+    helpers = [] if "SEMANTIC_VIEW(" in executed else ["SQL outside SEMANTIC_VIEW(...)"]
+    return helpers, [executed]
 
 
 DETECTORS = {

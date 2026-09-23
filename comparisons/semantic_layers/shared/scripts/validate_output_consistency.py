@@ -313,7 +313,9 @@ def main() -> None:
             entry = next(
                 item for item in summaries[layer]["questions"] if item["question_id"] == question_id
             )
-            status = entry["status"]
+            # Only whether it ran: support labels come from the rubric, and a pinned capture's
+            # summary may still carry old hand labels.
+            status = "unsupported" if entry["status"] == "unsupported" else "executed"
             layer_statuses[layer] = status
             if status == "unsupported":
                 continue

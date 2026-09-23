@@ -49,8 +49,9 @@ uv run python comparisons/semantic_layers/cube/scripts/replay_sql.py
 It runs each captured statement with its captured parameters against the shared DuckDB,
 with the session time zone pinned to UTC (Cube's SQL casts through `timestamptz`), and
 writes `shared/results/cube_sql_replay/`. On every question whose data didn't change, the
-replay returns exactly the rows Cube itself returned. The capture above stays pinned by the
-offline verifier.
+replay returns the rows Cube itself returned, with numbers equal to within 1e-9 (the largest
+difference is 7.7e-10, on q08). Cube's own response also echoes each time dimension without its
+granularity. The capture above stays pinned by the offline verifier.
 
 Notes:
 

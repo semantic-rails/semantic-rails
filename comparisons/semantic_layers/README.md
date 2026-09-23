@@ -9,12 +9,13 @@ compare latency, token use or cost. It runs without touching the active
 
 - **Output check: on all 16 questions, the five layers run on the current dataset return an
   independent answer key's normalized outputs, with numbers matching within 1e-6** (Semantic
-  Rails, MetricFlow, Cube, Malloy and KtX). No layer is the reference: the answer key is SQL written against the same
-  views without seeing any layer's models or outputs (see *Independent Answer Key* below). Every
-  layer reads the same `comparison_*` views. Cube's answers come from re-executing the SQL that Cube
-  1.6.32 generated, because Cube itself can't be reinstalled until the captured lockfile's
-  dependency advisories are resolved. On every question whose data didn't change, that replay
-  returns exactly the rows Cube returned.
+  Rails, MetricFlow, Cube, Malloy and KtX). No layer is the reference: the answer key is SQL
+  written against the same views without seeing any layer's models or outputs (see *Independent
+  Answer Key* below). Every layer reads the same `comparison_*` views. Cube wasn't re-run: its
+  answers come from re-executing the SQL that Cube 1.6.32 generated on 2026-04-07, because Cube
+  itself can't be reinstalled until the captured lockfile's dependency advisories are resolved.
+  On every question whose data didn't change, that replay returns the rows Cube returned, with
+  numbers equal to within 1e-9.
 - **Snowflake Semantic Views is a stale capture.** It ran on 2026-04-07 on an earlier dataset,
   whose lifecycle view held only the 11 hand-authored lifecycle rows, and it can't be re-run
   without a live account. The output check reports it separately: it matches the answer key on
@@ -57,11 +58,16 @@ compare latency, token use or cost. It runs without touching the active
 
 Dates are UTC. Cube's captured results record `lastRefreshTime` 2026-04-07T03:04:57Z, and
 Snowflake's summary records `2026-04-06T23:05:57-04:00`. Each runner records its tool versions,
-run timestamp and dataset fingerprint in its `summary.json` under `shared/results/`. The Semantic
-Rails runner also records the source trees of its engine, its package, its queries and runner,
-and the question suite. It also records whether the engine is exactly a tagged release; an
-engine that isn't is labeled "not a release" wherever the version is shown. The fingerprint hashes the seed files and the `comparison_*` view
-definitions, so the output check can tell a capture made on other data from a real mismatch.
+run timestamp and dataset fingerprint in its `summary.json` under `shared/results/`. The
+fingerprint hashes the seed files and the `comparison_*` view definitions, so the output check
+can tell a capture made on other data from a real mismatch.
+
+The Semantic Rails runner also records the source trees of its engine, its package, its queries
+and runner, and the question suite, and whether the engine is exactly a tagged release. The
+committed Semantic Rails evidence ran on the v0.2.1 engine: its engine tree equals
+`git rev-parse v0.2.1:semantic_rails`. The commit it records may not survive a squash merge, but
+the tree hashes do. Re-running from a later commit whose engine differs is labeled "0.2.1, not a
+release (engine tree …)" wherever the version is shown.
 
 ## Shared Questions: q01-q07
 

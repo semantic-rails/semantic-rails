@@ -242,8 +242,9 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
     }
     claims = _claims(items, stale=stale)
     assert claims[0] == (
-        "On all 16 questions, the 5 layers run on the current dataset return the independent "
-        "answer key's normalized outputs, with numbers matching within 1e-6."
+        "On all 16 questions, the 5 layers checked on the current dataset (Semantic Rails, "
+        "MetricFlow, Cube, Malloy and KtX) return the independent answer key's normalized "
+        "outputs, with numbers matching within 1e-6."
     )
     assert claims[1] == (
         "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not "
@@ -293,7 +294,9 @@ def _run_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snowflake: d
             "questions": [
                 {
                     "question_id": "q01_x",
-                    "status": "executed",
+                    "status": snowflake.get("status", "executed")
+                    if layer == "snowflake_semantic_views"
+                    else "executed",
                     "result_path": f"results/{layer}/q01_x.json",
                 }
             ],
@@ -345,6 +348,22 @@ def test_fresh_snowflake_run_rejoins_the_comparison(tmp_path, monkeypatch) -> No
     )
     assert mismatching["summary"]["mismatched"] == 1
     assert mismatching["questions"][0]["mismatches"][0]["layer"] == "snowflake_semantic_views"
+
+
+def test_the_report_records_only_whether_each_layer_ran(tmp_path, monkeypatch) -> None:
+    status = {"fingerprint": "fp-now", "orders": 5, "status": "workaround"}
+    report = _run_validator(tmp_path, monkeypatch, status)
+    assert report["questions"][0]["layer_statuses"]["snowflake_semantic_views"] == "executed"
+
+
+def test_an_answer_key_from_older_data_is_refused(tmp_path, monkeypatch) -> None:
+    assert _run_validator(tmp_path, monkeypatch, {"fingerprint": "fp-now", "orders": 5})
+    summary_path = tmp_path / "results" / "oracle" / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["dataset_fingerprint"] = "fp-old"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(SystemExit, match="predates the current dataset"):
+        validator.main()
 
 
 def test_stale_snowflake_capture_is_set_aside_and_reported(tmp_path, monkeypatch) -> None:
@@ -481,27 +500,83 @@ def test_only_a_bare_view_passthrough_is_not_hand_written(sql: str, expected: bo
 
 
 def test_semantic_rails_derived_relations_count_as_hand_written(tmp_path, monkeypatch) -> None:
+    view = {"id": "orders", "relation": "comparison_orders"}
     cases = {
-        "view": ("comparison_orders", ""),
-        "pipeline": ({"steps": []}, ""),
-        "raw_table": ("jaffle_order", ""),
-        "relations": ("comparison_orders", "relations:\n  derived: {}\n"),
+        "view": (view, "", {}),
+        "pipeline": ({"id": "orders", "relation": {"steps": []}}, "", {}),
+        "raw_table": ({"id": "orders", "relation": "jaffle_order"}, "", {}),
+        "relation_ref": (view | {"relation_ref": "rollup"}, "", {}),
+        "variants": (view | {"variants": {"daily": {}}}, "", {}),
+        "relations": (view, "relations:\n  derived: {}\n", {}),
+        "aggregate_relations": (view, "aggregate_relations:\n  - id: rollup\n", {}),
+        "relations_dir": (view, "", {"relations/derived.yml": "relation:\n  id: derived\n"}),
+        "inline_model": (None, "models:\n  orders:\n    relation: jaffle_order\n", {}),
     }
     found = {}
-    for name, (relation, extra) in cases.items():
+    for name, (model, extra, files) in cases.items():
         package = tmp_path / name
-        (package / "models").mkdir(parents=True)
+        package.mkdir()
         (package / "package.yml").write_text(f"package:\n  id: package\n{extra}", "utf-8")
-        model = {"model": {"id": "orders", "relation": relation}}
-        (package / "models" / "orders.yml").write_text(json.dumps(model), encoding="utf-8")
+        if model is not None:
+            (package / "models").mkdir()
+            (package / "models" / "orders.yml").write_text(json.dumps({"model": model}), "utf-8")
+        for relative, text in files.items():
+            (package / relative).parent.mkdir(parents=True, exist_ok=True)
+            (package / relative).write_text(text, encoding="utf-8")
         monkeypatch.setattr(rubric, "SR_PACKAGE", package)
-        found[name] = rubric.semantic_rails({})[0]
+        found[name] = rubric.semantic_rails({"question_id": "q_x"})[0]
+    derived = ["derived model orders"]
     assert found == {
         "view": [],
-        "pipeline": ["derived model orders"],
-        "raw_table": ["derived model orders"],
+        "pipeline": derived,
+        "raw_table": derived,
+        "relation_ref": derived,
+        "variants": derived,
         "relations": ["relation pipelines"],
+        "aggregate_relations": ["relation pipelines"],
+        "relations_dir": ["relation pipelines"],
+        "inline_model": derived,
     }
+
+
+def test_a_detector_that_finds_nothing_fails_closed(tmp_path, monkeypatch) -> None:
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "_models.yml").write_text("models: []\n", encoding="utf-8")
+    (tmp_path / "sql.txt").write_text("SQL (remove --explain to see data):\nselect 1", "utf-8")
+    monkeypatch.setattr(rubric, "MF_MODELS", models)
+    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    with pytest.raises(SystemExit, match="found no relations"):
+        rubric.metricflow({"question_id": "q_x", "sql_path": "sql.txt"})
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "package.yml").write_text("package:\n  id: package\n", encoding="utf-8")
+    monkeypatch.setattr(rubric, "SR_PACKAGE", package)
+    with pytest.raises(SystemExit, match="found no models"):
+        rubric.semantic_rails({"question_id": "q_x"})
+
+
+def test_cube_counts_a_sql_cube_used_only_by_a_filter(tmp_path, monkeypatch) -> None:
+    cubes = tmp_path / "cube" / "model" / "cubes"
+    cubes.mkdir(parents=True)
+    (cubes / "orders.yml").write_text(
+        "cubes:\n  - name: orders\n    sql_table: comparison_orders\n", encoding="utf-8"
+    )
+    (cubes / "segments.yml").write_text(
+        "cubes:\n  - name: segments\n"
+        "    sql: select customer_id from comparison_orders group by 1\n",
+        encoding="utf-8",
+    )
+    query = {
+        "measures": ["orders.count"],
+        "filters": [{"member": "segments.customer_id", "operator": "set"}],
+    }
+    (tmp_path / "query.json").write_text(json.dumps(query), encoding="utf-8")
+    (tmp_path / "sql.json").write_text(json.dumps({"sql": {"sql": ["select 1", []]}}), "utf-8")
+    monkeypatch.setattr(rubric, "PACK", tmp_path)
+    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    entry = {"question_id": "q_x", "query_path": "query.json", "sql_path": "sql.json"}
+    assert rubric.cube(entry)[0] == ["cube segments"]
 
 
 def test_metricflow_counts_helper_models_but_not_passthroughs_or_the_time_spine(
@@ -535,8 +610,10 @@ def test_malloy_counts_sql_sources_reached_through_joins(tmp_path, monkeypatch) 
     (models / "jaffle.malloy").write_text(
         "source: customers is jaffle.table('comparison_customers') extend {}\n"
         'source: segments is jaffle.sql("""select 1""") extend {}\n'
+        'source: history is jaffle.sql("""select 2""") extend {}\n'
         "source: orders is jaffle.table('comparison_orders') extend {\n"
-        "  join_one: segments on true\n  join_one: customers on true\n}\n"
+        "  join_one: segments on true\n  join_one: customers on true\n"
+        "  join_one: segment_history is history on true\n}\n"
         "query: q08_x is orders -> { aggregate: n is count() }\n",
         encoding="utf-8",
     )
@@ -544,7 +621,7 @@ def test_malloy_counts_sql_sources_reached_through_joins(tmp_path, monkeypatch) 
     monkeypatch.setattr(rubric, "PACK", tmp_path)
     monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
     helpers, _ = rubric.malloy({"question_id": "q08_x", "sql_path": "q08.sql"})
-    assert helpers == ["SQL source segments"]
+    assert helpers == ["SQL source history", "SQL source segments"]
 
 
 def test_a_question_without_an_executed_result_is_unsupported(tmp_path, monkeypatch) -> None:
@@ -584,6 +661,24 @@ def test_published_labels_come_from_the_rubric() -> None:
         assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
 
 
+def test_contracts_take_rubric_labels_and_keep_a_replayed_layers_capture_date() -> None:
+    _, matrix = generator.build_contracts()
+    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
+    for row in matrix["rows"]:
+        qid = row["question_id"]
+        assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
+    cube = next(layer for layer in matrix["layers"] if layer["id"] == "cube")
+    assert cube["captured"] == "2026-04-07"
+    assert cube["re_executed"] not in (None, "2026-04-07")
+    assert (
+        "Cube 1.6.32 was not re-run: the SQL it generated on 2026-04-07 was re-executed on the "
+        f"current dataset on {cube['re_executed']}."
+    ) in matrix["claims"]
+    assert "(Semantic Rails, MetricFlow, Cube, Malloy and KtX)" in matrix["claims"][0]
+    others = [layer for layer in matrix["layers"] if layer["id"] != "cube"]
+    assert all(layer["re_executed"] is None for layer in others)
+
+
 def test_every_layer_reading_a_rollup_column_is_labeled_precomputed() -> None:
     labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
     for layer in LAYERS:
@@ -594,12 +689,17 @@ def test_every_layer_reading_a_rollup_column_is_labeled_precomputed() -> None:
             assert labels[layer][qid]["label"] == "precomputed", (layer, qid)
 
 
-def test_semantic_rails_provenance_covers_queries_runner_and_questions() -> None:
+def _load_semantic_rails_runner() -> ModuleType:
     path = SCRIPTS.parents[1] / "semantic_rails" / "scripts" / "run_questions.py"
     spec = importlib.util.spec_from_file_location("semantic_rails_runner", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_semantic_rails_provenance_covers_queries_runner_and_questions() -> None:
+    module = _load_semantic_rails_runner()
     assert set(module._provenance()) == {
         "semantic_rails_commit",
         "semantic_rails_tree",
@@ -626,3 +726,28 @@ def test_an_unreleased_engine_is_not_labeled_as_the_release() -> None:
     assert generator.recorded_version("semantic_rails", no_git) == (
         "0.2.1, not a release (engine source not recorded)"
     )
+
+
+def test_engine_release_needs_the_release_tree_and_a_clean_engine(monkeypatch) -> None:
+    runner = _load_semantic_rails_runner()
+    monkeypatch.setattr(runner, "version", lambda name: "0.2.1")
+
+    def git_answers(answers: dict[tuple[str, ...], str]):
+        def run(cmd, **kwargs):
+            out = answers.get(tuple(cmd[3:]), "")
+            return subprocess.CompletedProcess(cmd, 0, stdout=out + "\n", stderr="")
+
+        return run
+
+    release = {
+        ("rev-parse", "HEAD:semantic_rails"): "tree-a",
+        ("rev-parse", "v0.2.1:semantic_rails"): "tree-a",
+    }
+    monkeypatch.setattr(runner.subprocess, "run", git_answers(release))
+    assert runner._provenance()["engine_release"] == "v0.2.1"
+    later = release | {("rev-parse", "v0.2.1:semantic_rails"): "tree-b"}
+    monkeypatch.setattr(runner.subprocess, "run", git_answers(later))
+    assert runner._provenance()["engine_release"] is None
+    edited = release | {("status", "--porcelain", "--", "semantic_rails"): " M semantic_rails/x.py"}
+    monkeypatch.setattr(runner.subprocess, "run", git_answers(edited))
+    assert runner._provenance()["engine_release"] is None

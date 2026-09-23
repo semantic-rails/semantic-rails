@@ -441,7 +441,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     "cube": {
         "label": "Cube",
         "version": "1.6.32",
-        # Cube's results record when it ran them: lastRefreshTime 2026-04-07T03:04:57Z.
+        # When Cube itself ran: its captured results record lastRefreshTime 2026-04-07T03:04:57Z.
         "captured": "2026-04-07",
         "setup_status": "captured SQL re-executed on the current dataset",
         "comparison_type": "runnable",
@@ -1148,11 +1148,12 @@ def claim_findings(
     title_by_id = {question["id"]: question["title"] for question in questions}
     label = {layer_id: LAYER_META[layer_id]["label"] for layer_id in LAYER_ORDER}
     label[ANSWER_KEY] = "the answer key"
-    layer_counts = {len(item["current_layers"]) for item in items}
-    if layer_counts == {len(LAYER_ORDER)}:
+    layer_sets = {tuple(item["current_layers"]) for item in items}
+    if layer_sets == {tuple(LAYER_ORDER)}:
         scope = f"all {len(LAYER_ORDER)} layers"
-    elif len(layer_counts) == 1:
-        scope = f"the {layer_counts.pop()} layers run on the current dataset"
+    elif len(layer_sets) == 1:
+        names = [label[layer_id] for layer_id in layer_sets.pop()]
+        scope = f"the {len(names)} layers checked on the current dataset ({join_names(names)})"
     else:
         scope = "the layers that executed them on the current dataset"
     mismatched = [item for item in items if item["comparison_status"] == "mismatched"]
@@ -1175,6 +1176,13 @@ def claim_findings(
         if summary["not_comparable"]:
             output_check += f" {summary['not_comparable']} could not be compared."
     claims = [output_check]
+    for layer in layers_payload:
+        if layer.get("re_executed"):
+            claims.append(
+                f"{layer['label']} {layer['version']} was not re-run: the SQL it generated on "
+                f"{layer['captured']} was re-executed on the current dataset on "
+                f"{layer['re_executed']}."
+            )
     for layer_id, checks in validation_report["stale_layers"].items():
         captured = recorded_capture(layer_id, {"generated_at": checks["captured"]})
         differs = ", ".join(short_id(qid) for qid in checks["mismatched"]) or "none"
@@ -1283,12 +1291,19 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
             entry_for_question(layer_id, question_by_id[qid], entries[qid])
             for qid in question_by_id
         ]
+        # A replay (its summary records a method) keeps the date the layer itself ran.
+        replayed = bool(summary.get("method"))
         layers_payload.append(
             {
                 "id": layer_id,
                 "label": LAYER_META[layer_id]["label"],
                 "version": recorded_version(layer_id, summary),
-                "captured": recorded_capture(layer_id, summary),
+                "captured": (
+                    LAYER_META[layer_id]["captured"]
+                    if replayed
+                    else recorded_capture(layer_id, summary)
+                ),
+                "re_executed": recorded_capture(layer_id, summary) if replayed else None,
                 "dataset": "stale" if layer_id in validation_report["stale_layers"] else "current",
                 # What each runner recorded about how it ran: tool versions, replay method.
                 "environment": summary.get("environment"),
@@ -1350,6 +1365,7 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                 "label": layer["label"],
                 "version": layer["version"],
                 "captured": layer["captured"],
+                "re_executed": layer["re_executed"],
                 "dataset": layer["dataset"],
                 "environment": layer["environment"],
                 "method": layer["method"],

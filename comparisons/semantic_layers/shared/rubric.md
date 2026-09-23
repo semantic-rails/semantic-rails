@@ -2,7 +2,8 @@
 
 `shared/scripts/apply_rubric.py` generates every support label in this pack from each layer's
 committed artifacts. Every layer, Semantic Rails included, gets the same rules. Nobody assigns
-labels by hand, and runners record only whether a question executed. Each label is published
+labels by hand, and the runners this pack re-runs record only whether a question executed.
+Each label is published
 with the rule that fired and the evidence behind it in
 [`results/rubric/labels.json`](results/rubric/labels.json).
 
@@ -32,17 +33,27 @@ aggregate that the question asks each layer to compute:
 The rubric searches the executed SQL for those column names, along with the SQL of any
 hand-written object that the answer depends on.
 
+q06 declares none. Every layer counts first orders with the seed's `is_new_customer_order`
+flag, which the answer key derives independently to check the flag itself. The flag marks an
+order's place in its customer's sequence rather than aggregating across rows. q06 is also a
+shared question that every layer answers the same way, so every layer would get the same label
+either way.
+
 **Hand-written SQL.** A trivial passthrough of one shared view (`select * from comparison_x`)
 isn't hand-written logic. Everything the rubric does count is listed here:
 
 | Layer | Counted as hand-written SQL |
 | --- | --- |
-| Semantic Rails | Any relation pipeline in the package, or any model whose `relation` isn't one shared view. The rubric doesn't resolve which models a metric reads, so one such object anywhere in the package counts against every answer. |
+| Semantic Rails | Any relation pipeline or aggregate relation in the package, or any model whose `relation` isn't one shared view. The rubric reads the package the way the engine does, so models declared in `package.yml`, `models/` or relation files all count. It doesn't resolve which models a metric reads, so one such object anywhere in the package counts against every answer. |
 | MetricFlow | Any dbt model that the executed SQL reads and that isn't a passthrough. The time spine is exempt because MetricFlow requires one. |
 | Cube | Any cube used by the query's members (measures, dimensions, time dimensions and filters) that is defined with `sql:` and isn't a passthrough. `sql_table:` cubes and the `sql` of a declared join are Cube's own syntax. |
-| Malloy | Any `jaffle.sql(...)` source that the query reads, directly or through a join. |
+| Malloy | Any `jaffle.sql(...)` source that the query reads, directly or through a join, including an aliased join (`join_one: alias is source`). |
 | KtX | Any source used by the query's fields that is defined with `sql:` and isn't a passthrough. |
-| Snowflake Semantic Views | A statement that doesn't go through `SEMANTIC_VIEW(...)`. |
+| Snowflake Semantic Views | A captured statement that doesn't go through `SEMANTIC_VIEW(...)`. |
+
+**Fail closed.** A detector that finds nothing to check stops the rubric instead of labeling the
+answer `native`. That means no relations in MetricFlow's executed SQL, no cubes, KtX sources or
+Semantic Rails models, or no named Malloy query.
 
 ## What The Labels Don't Say
 
