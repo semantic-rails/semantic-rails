@@ -287,6 +287,34 @@ class ArchitectProject:
         key = f"internal-{uuid.uuid4()}" if idempotency_key is None else str(idempotency_key)
         return expected, key
 
+    def _begin(
+        self,
+        expected_revision: str | None,
+        idempotency_key: str | None,
+        intent: dict[str, Any],
+    ) -> tuple[str, str, ArchitectMutation | None]:
+        """The mutation identity, and its earlier result when this call already ran.
+
+        Runs before anything inspects the project, so a retried mutation replays
+        its receipt and a stale writer gets ``CONFIG_CONFLICT`` instead of an
+        error from checks against a project that has since changed.
+        """
+        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        outcome = ProjectTransaction(
+            self.project_path, workspace_root=self.workspace_root
+        ).preflight(
+            expected_revision=expected,
+            idempotency_key=key,
+            intent={**deepcopy(intent), "expected_revision": expected},
+        )
+        if outcome is None:
+            return expected, key, None
+        return (
+            expected,
+            key,
+            ArchitectMutation(report=outcome.report, project_path=self.project_path, _active=False),
+        )
+
     def inventory(self) -> dict[str, list[dict[str, Any]]]:
         """Return effective raw objects and the YAML source for every supported kind."""
 
@@ -600,7 +628,23 @@ class ArchitectProject:
         read from the many side too). ``many_to_many`` needs a bridge model,
         related many-to-one to each side.
         """
-        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        intent = {
+            "operation": "upsert_relationship",
+            "from_entity": from_entity,
+            "to_entity": to_entity,
+            "columns": list(columns or []),
+            "to_columns": list(to_columns or []),
+            "cardinality": cardinality,
+            "name": name,
+            "allowed_directions": list(allowed_directions or []),
+            "safety": safety,
+            "path_preference": path_preference,
+            "label": label,
+            "description": description,
+        }
+        expected, key, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay
         requested = str(cardinality or "").strip().lower()
         kind = _RELATIONSHIP_CARDINALITIES.get(requested) if requested else None
         if requested and kind is None:
@@ -838,20 +882,7 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            intent={
-                "operation": "upsert_relationship",
-                "from_entity": from_entity,
-                "to_entity": to_entity,
-                "columns": list(columns or []),
-                "to_columns": list(to_columns or []),
-                "cardinality": cardinality,
-                "name": name,
-                "allowed_directions": list(allowed_directions or []),
-                "safety": safety,
-                "path_preference": path_preference,
-                "label": label,
-                "description": description,
-            },
+            intent=intent,
             extra={
                 "relationship": {
                     "name": relationship_name,
@@ -881,8 +912,11 @@ class ArchitectProject:
             entry_id = str(dict(entry).get("id") or f"relationship.{_loader_slug(entry_name)}")
             ids[entry_id] = (pair[0], pair[1])
         for model_row in raw["models"]:
+            references = dict(model_row.spec.get("entities", {}) or {})
+            if not references.get("bridge", True):
+                continue  # infers no joins
             primary = self._primary_entity_for_model(model_row, raw["entities"])
-            for target in dict(model_row.spec.get("entities", {}) or {}):
+            for target in references:
                 if target in {primary, "bridge"} or (primary, str(target)) in overridden:
                     continue
                 ids[_inferred_relationship_id(model_row.key, str(target))] = (
@@ -1215,15 +1249,22 @@ class ArchitectProject:
     ) -> ArchitectMutation:
         """Archive one project file through an atomic move-like transaction."""
 
-        expected, key = self._mutation_identity(expected_revision, idempotency_key)
         source = self._target_path(relative_path)
+        source_relative = self._relative(source)
+        intent = {
+            "operation": "archive_project_file",
+            "relative_path": source_relative,
+            "reason": reason,
+        }
+        expected, key, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay
         if not source.exists() or not source.is_file():
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 "File to archive does not exist",
                 details={"relative_path": relative_path},
             )
-        source_relative = self._relative(source)
         archive_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
         destination_relative = f".architect/archive/{archive_id}/{source_relative}"
         updates = [
@@ -1248,12 +1289,7 @@ class ArchitectProject:
             updates,
             expected_revision=expected,
             idempotency_key=key,
-            intent={
-                "operation": "archive_project_file",
-                "expected_revision": expected,
-                "relative_path": source_relative,
-                "reason": reason,
-            },
+            intent={**intent, "expected_revision": expected},
             dry_run=dry_run,
             validate_after=validate_after,
             allow_internal_paths=True,

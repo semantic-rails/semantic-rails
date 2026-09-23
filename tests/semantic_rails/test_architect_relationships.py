@@ -599,3 +599,65 @@ def test_a_stale_revision_or_a_reused_key_is_refused(workspace: Path) -> None:
 
     assert stale_write.value.details["conflict_kind"] == "stale_revision"
     assert reused_key.value.details["conflict_kind"] == "idempotency_key_reuse"
+
+
+def test_a_stale_writer_gets_a_conflict_before_any_other_check(workspace: Path) -> None:
+    project = _project(workspace)
+    stale = project_revision(workspace / "shop")
+    project.upsert_relationship(
+        from_entity="order", to_entity="customer", columns=["customer_id"], name="buyer"
+    )
+
+    with pytest.raises(SemanticLayerError) as conflict:
+        # Against today's package this would be refused as already related.
+        project.upsert_relationship(
+            from_entity="order",
+            to_entity="customer",
+            columns=["customer_id"],
+            name="purchaser",
+            expected_revision=stale,
+        )
+
+    assert conflict.value.code == "CONFIG_CONFLICT"
+    assert conflict.value.details["conflict_kind"] == "stale_revision"
+
+
+def test_a_retried_archive_replays(workspace: Path) -> None:
+    project = _project(workspace)
+    revision = project_revision(workspace / "shop")
+    request = {
+        "relative_path": "metrics/core.yml",
+        "expected_revision": revision,
+        "idempotency_key": "archive-metrics",
+    }
+    project.upsert_metric(
+        metric_key="orders",
+        spec={
+            "label": "Orders",
+            "kind": "aggregate",
+            "measure": "order_count",
+            "value_type": "count",
+        },
+    )
+    request["expected_revision"] = project_revision(workspace / "shop")
+
+    first = project.archive_file(**request)
+    again = project.archive_file(**request)
+
+    assert first.report["ok"] is True, first.report
+    assert again.report["status"] == "replayed" and again.report["idempotent_replay"] is True
+
+
+def test_a_model_that_infers_no_joins_holds_no_relationship_names(workspace: Path) -> None:
+    _edit_orders_model(
+        workspace,
+        lambda model: model.update(entities={"bridge": False, "order": {}, "customer": {}}),
+    )
+    assert "relationship.orders_customer" not in _loaded(workspace)
+
+    mutation = _project(workspace).upsert_relationship(
+        from_entity="order", to_entity="store", columns=["store_id"], name="orders_customer"
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert _loaded(workspace)["relationship.orders_customer"].target_entity == "entity.shop_store"

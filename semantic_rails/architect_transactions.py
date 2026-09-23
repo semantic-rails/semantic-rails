@@ -262,6 +262,24 @@ def restore_project_snapshots(snapshots: Iterable[ProjectFileSnapshot]) -> None:
             snapshot.path.unlink()
 
 
+def _transaction_identity(expected_revision: str, idempotency_key: str) -> tuple[str, str]:
+    expected = str(expected_revision or "").strip()
+    key = str(idempotency_key or "").strip()
+    if not expected:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            "expected_revision is required for every Architect mutation",
+            details={"argument": "expected_revision"},
+        )
+    if not key:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            "idempotency_key is required for every Architect mutation",
+            details={"argument": "idempotency_key"},
+        )
+    return expected, key
+
+
 def _canonical_json_digest(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         payload,
@@ -349,6 +367,66 @@ class ProjectTransaction:
     def current_revision(self) -> str:
         return project_revision(self.project_path)
 
+    def preflight(
+        self, *, expected_revision: str, idempotency_key: str, intent: Mapping[str, Any]
+    ) -> ProjectTransactionOutcome | None:
+        """Replay or refuse a mutation before its caller inspects the project.
+
+        A caller that checks the project before :meth:`apply` calls this first,
+        so a retried mutation replays its receipt and a stale writer gets
+        ``CONFIG_CONFLICT`` rather than an error from checks against a project
+        that has since changed. Returns the replay, or None to go ahead.
+        """
+        expected, key = _transaction_identity(expected_revision, idempotency_key)
+        with self._exclusive_lock():
+            replay = self._replay(key, _canonical_json_digest(dict(intent)))
+            if replay is None:
+                self._require_revision(expected)
+            return replay
+
+    def _replay(self, key: str, intent_hash: str) -> ProjectTransactionOutcome | None:
+        receipt = self._load_receipt(key)
+        if receipt is None:
+            return None
+        if str(receipt.get("intent_hash", "")) != intent_hash:
+            raise SemanticLayerError(
+                "CONFIG_CONFLICT",
+                "The idempotency key was already used for a different Architect mutation",
+                details={
+                    "conflict_kind": "idempotency_key_reuse",
+                    "idempotency_key": key,
+                    "project_path": str(self.project_path),
+                },
+            )
+        replay = deepcopy(dict(receipt.get("report", {}) or {}))
+        original_status = str(replay.get("status", ""))
+        replay.update(
+            {
+                "status": "replayed",
+                "original_status": original_status,
+                "idempotency_key": key,
+                "idempotent_replay": True,
+                "current_revision": self.current_revision(),
+            }
+        )
+        return ProjectTransactionOutcome(report=replay)
+
+    def _require_revision(self, expected: str) -> str:
+        current = self.current_revision()
+        if expected != current:
+            raise SemanticLayerError(
+                "CONFIG_CONFLICT",
+                "Architect project revision is stale",
+                details={
+                    "conflict_kind": "stale_revision",
+                    "project_path": str(self.project_path),
+                    "expected_revision": expected,
+                    "current_revision": current,
+                    "retry": "Read project_status, review intervening changes, and retry with a new idempotency_key.",
+                },
+            )
+        return current
+
     def apply(
         self,
         updates: Iterable[ProjectFileUpdate],
@@ -364,64 +442,17 @@ class ProjectTransaction:
     ) -> ProjectTransactionOutcome:
         """Apply a parse-gated optimistic transaction or return its preview."""
 
-        expected = str(expected_revision or "").strip()
-        key = str(idempotency_key or "").strip()
-        if not expected:
-            raise SemanticLayerError(
-                "INVALID_MCP_ARGUMENTS",
-                "expected_revision is required for every Architect mutation",
-                details={"argument": "expected_revision"},
-            )
-        if not key:
-            raise SemanticLayerError(
-                "INVALID_MCP_ARGUMENTS",
-                "idempotency_key is required for every Architect mutation",
-                details={"argument": "idempotency_key"},
-            )
+        expected, key = _transaction_identity(expected_revision, idempotency_key)
         normalized_updates = self._normalize_updates(
             updates,
             allow_internal_paths=allow_internal_paths,
         )
         intent_hash = _canonical_json_digest(dict(intent))
         with self._exclusive_lock():
-            receipt = self._load_receipt(key)
-            if receipt is not None:
-                if str(receipt.get("intent_hash", "")) != intent_hash:
-                    raise SemanticLayerError(
-                        "CONFIG_CONFLICT",
-                        "The idempotency key was already used for a different Architect mutation",
-                        details={
-                            "conflict_kind": "idempotency_key_reuse",
-                            "idempotency_key": key,
-                            "project_path": str(self.project_path),
-                        },
-                    )
-                replay = deepcopy(dict(receipt.get("report", {}) or {}))
-                original_status = str(replay.get("status", ""))
-                replay.update(
-                    {
-                        "status": "replayed",
-                        "original_status": original_status,
-                        "idempotency_key": key,
-                        "idempotent_replay": True,
-                        "current_revision": self.current_revision(),
-                    }
-                )
-                return ProjectTransactionOutcome(report=replay)
-
-            current = self.current_revision()
-            if expected != current:
-                raise SemanticLayerError(
-                    "CONFIG_CONFLICT",
-                    "Architect project revision is stale",
-                    details={
-                        "conflict_kind": "stale_revision",
-                        "project_path": str(self.project_path),
-                        "expected_revision": expected,
-                        "current_revision": current,
-                        "retry": "Read project_status, review intervening changes, and retry with a new idempotency_key.",
-                    },
-                )
+            replay = self._replay(key, intent_hash)
+            if replay is not None:
+                return replay
+            current = self._require_revision(expected)
 
             snapshots = tuple(self._snapshot(update.relative_path) for update in normalized_updates)
             effective = tuple(
