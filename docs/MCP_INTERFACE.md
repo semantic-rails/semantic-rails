@@ -453,14 +453,78 @@ convenience. MCP host configs should still pass an explicit `--path` or
 `--package` so the host is deterministic, and deployed services should use their
 own config/vault rather than reading a user's home directory.
 
-## Optional FastMCP stdio Runtime
+## Optional MCP SDK stdio Runtime
 
-Importing `semantic_rails.mcp` never imports an external MCP package. A trusted local host can wrap
-the adapter with `create_optional_fastmcp_server(adapter)` for stdio. The returned facade rejects
-FastMCP's SSE and Streamable HTTP runners because those generic runners cannot supply Semantic
-Rails' authenticated request context. Use the built-in ASGI `/mcp` endpoint or
-`semantic-rails mcp http` for network transport. The helper imports
-`mcp.server.fastmcp.FastMCP` locally and raises a clear error when it is unavailable.
+Importing `semantic_rails.mcp` never imports an external MCP package. A trusted local host that
+embeds the MCP Python SDK can wrap the adapter with `create_optional_fastmcp_server(adapter)` for
+stdio. The helper imports the SDK locally: `MCPServer` on SDK 2.x, `FastMCP` on 1.x. It raises a
+clear error when neither is installed. The returned facade rejects the SDK's SSE and Streamable
+HTTP runners because those generic runners cannot supply Semantic Rails' authenticated request
+context. Use the built-in ASGI `/mcp` endpoint or `semantic-rails mcp http` for network transport.
+
+The facade sends the server instructions, but the SDK advertises each tool as a single
+`arguments` object rather than its real input schema. Prefer `semantic-rails mcp stdio` when the
+host shows tool schemas to the model.
+
+## Transports and Protocol Versions
+
+Four entry points serve the same tools. The first three share one JSON-RPC dispatcher
+(`semantic_rails.mcp_server.handle_jsonrpc_message`), so they return identical results:
+
+| Entry point | Serves | Why it is kept |
+|---|---|---|
+| `semantic-rails mcp stdio` | stdio | Local agents such as Claude Code and Claude Desktop. The default. |
+| ASGI `/mcp` (`semantic_rails.mcp_streamable_http`) | Stateless Streamable HTTP | Network clients. Authenticated with the same API keys as `/api/v1/*`. |
+| `semantic-rails mcp http` | Legacy HTTP + SSE | Clients that predate Streamable HTTP. The MCP specification deprecated this transport in `2025-03-26`, and revision `2026-07-28` schedules it for removal after a twelve-month window. New integrations should use `/mcp`. |
+| `create_optional_fastmcp_server` | stdio through the MCP Python SDK | Hosts that embed the SDK. See the previous section. |
+
+Each tool result carries its payload twice: as `structuredContent`, and as compact JSON in
+`content[0].text` for hosts that forward only text. Resource reads return compact JSON text.
+
+The dispatcher negotiates `2025-11-25` (the default), `2025-03-26` or `2024-11-05` in
+`initialize`. It already matches several parts of the `2026-07-28` revision:
+
+- the Streamable HTTP endpoint keeps no sessions and sends no `Mcp-Session-Id`;
+- `tools/list` returns tools in a fixed order;
+- the workflow is in the server `instructions`;
+- tool schemas are plain JSON Schema.
+
+### Planned: the `2026-07-28` revision
+
+Supporting `2026-07-28` alongside `2025-11-25` means gating the following on the protocol version
+each request declares, so older clients see no change:
+
+1. **Stateless requests.** Read `io.modelcontextprotocol/protocolVersion` (and client
+   capabilities) from each request's `_meta` instead of requiring `initialize`, and answer an
+   unsupported version with `UnsupportedProtocolVersionError` (`-32022`). Identify the server in
+   each result's `_meta` (`io.modelcontextprotocol/serverInfo`).
+2. **`server/discover`**, which the revision requires: supported versions, capabilities and
+   server identity.
+3. **`resultType: "complete"`** on every result. The server never needs `"input_required"`
+   because no tool asks the client for more input.
+4. **Cache hints.** Add `ttlMs` and `cacheScope` to `tools/list`, `prompts/list`,
+   `resources/list`, `resources/read` and `resources/templates/list`. Resources depend on the
+   caller's grants, so they are `"private"` behind an authenticated transport.
+5. **Headers and errors.**
+   - Check the `Mcp-Method` and `Mcp-Name` request headers on Streamable HTTP POSTs.
+   - Decide whether an unknown resource keeps its structured error payload or becomes JSON-RPC
+     `-32602`.
+   - Stop answering `ping` and `logging/setLevel` for `2026-07-28` requests.
+
+### MCP Python SDK 2.x
+
+The engine pins `mcp<2`. SDK 2.x renamed `FastMCP` to `MCPServer`, and
+`mcp.server.fastmcp` now only raises an error. The query MCP's SDK facade and its tests support
+both. Against SDK 2.2.0, three things still stand in the way of lifting the pin:
+
+- **The Architect MCP.** `semantic_rails.architect_mcp` imports `mcp.server.fastmcp` at import
+  time. Its tests also read `call_tool` results as a `(content, structured)` pair and read
+  `Tool.inputSchema`; SDK 2.x returns a `CallToolResult` and names the attribute `input_schema`.
+- **`httpx`.** Two engine tests import `httpx`, which only SDK 1.x brought in. It needs its own
+  entry in the `dev` dependency group.
+- **The lock file.** `pyproject.toml` and a regenerated `uv.lock` must change together.
+  Dependabot's `<3` update fails CI for this reason: `uv sync --locked` rejects a constraint
+  change without a matching lock.
 
 ## Structured Error Envelopes
 

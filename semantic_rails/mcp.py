@@ -58,6 +58,7 @@ __all__ = [
     "MCP_INTERFACE_VERSION",
     "MCP_PROMPT_DEFINITIONS",
     "MCP_RESOURCE_DEFINITIONS",
+    "MCP_SERVER_INSTRUCTIONS",
     "MCP_TOOL_DEFINITIONS",
     "POLICY_CONTEXT_SCHEMA",
     "PromptDefinition",
@@ -75,6 +76,7 @@ __all__ = [
     "enrich_object_not_found",
     "exception_issue",
     "inspect_payload",
+    "json_text",
     "list_prompt_definitions",
     "list_resource_definitions",
     "list_tool_definitions",
@@ -1729,7 +1731,7 @@ class SemanticLayerMCPAdapter:
             )
         if request_context is not None:
             payload["request_context"] = request_context_payload(request_context)
-        text = json.dumps(payload, indent=2, sort_keys=True, default=str)
+        text = json_text(payload)
         return {
             "uri": uri,
             "mimeType": "application/json",
@@ -2322,30 +2324,51 @@ class SemanticLayerMCPAdapter:
         )
 
 
+def json_text(payload: Any) -> str:
+    """Render a payload for an MCP text channel: compact, sorted, deterministic.
+
+    Hosts that forward ``content[].text`` to the model pay for every
+    character, and indentation added about half again to each response.
+    """
+
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
+
+
+def _mcp_server_class() -> Any:
+    """The MCP SDK's high-level server: ``MCPServer`` on SDK 2.x, ``FastMCP`` on 1.x."""
+
+    try:
+        from mcp.server.mcpserver import MCPServer
+    except ImportError:
+        pass
+    else:
+        return MCPServer
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError as exc:  # pragma: no cover - depends on optional package
+        raise RuntimeError(
+            "Install the MCP Python SDK (mcp>=1.27) to create the optional local stdio server."
+        ) from exc
+    return FastMCP
+
+
 def create_optional_fastmcp_server(
     adapter: SemanticLayerMCPAdapter,
     *,
     server_name: str = "semantic-rails",
 ) -> Any:
-    """Create a stdio-only FastMCP facade if the package is installed.
+    """Create a stdio-only MCP SDK facade if the SDK is installed.
 
-    The import is intentionally local so importing semantic_rails.mcp never
-    requires an external MCP runtime. This helper deliberately cannot start
+    Works with SDK 1.x (``FastMCP``) and 2.x (``MCPServer``). The import is
+    intentionally local so importing semantic_rails.mcp never requires an
+    external MCP runtime. This helper deliberately cannot start
     or expose FastMCP's SSE/Streamable-HTTP apps: those generic network
     runners do not pass Semantic Rails' transport-authenticated
     :class:`RequestContext` into tool calls. Remote callers must use the
     authenticated ASGI ``/mcp`` boundary or the legacy guarded HTTP server.
     """
 
-    try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError as exc:  # pragma: no cover - depends on optional package
-        raise RuntimeError(
-            "Install an MCP runtime that provides mcp.server.fastmcp.FastMCP "
-            "to create the optional local stdio server."
-        ) from exc
-
-    server = FastMCP(server_name, instructions=MCP_SERVER_INSTRUCTIONS)
+    server = _mcp_server_class()(server_name, instructions=MCP_SERVER_INSTRUCTIONS)
     for definition in adapter.list_tools():
         name = str(definition["name"])
         description = str(definition["description"])
@@ -2354,12 +2377,7 @@ def create_optional_fastmcp_server(
             tool_name: str, tool_description: str
         ) -> Callable[[dict[str, Any] | None], str]:
             def _tool(arguments: dict[str, Any] | None = None) -> str:
-                return json.dumps(
-                    adapter.call_tool(tool_name, arguments or {}),
-                    indent=2,
-                    sort_keys=True,
-                    default=str,
-                )
+                return json_text(adapter.call_tool(tool_name, arguments or {}))
 
             _tool.__name__ = f"semantic_rails_{tool_name.replace('-', '_')}"
             _tool.__doc__ = tool_description

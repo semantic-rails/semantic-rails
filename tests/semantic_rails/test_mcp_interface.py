@@ -70,6 +70,8 @@ def test_optional_fastmcp_facade_is_strictly_stdio_only(runtime_factory, monkeyp
     monkeypatch.setitem(sys.modules, "mcp", mcp_module)
     monkeypatch.setitem(sys.modules, "mcp.server", server_module)
     monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
+    # On SDK 2.x the facade prefers mcp.server.mcpserver; keep this test on the fake.
+    monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", None)
 
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
