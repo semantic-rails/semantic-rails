@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from .compiler import _requires_query_time
+from .compiler import _requires_query_time, compile_query
 from .config import get_package_path, load_package_config, package_root_for_source
 from .dialects import (
     connection_option_errors,
@@ -29,7 +29,9 @@ from .dialects import (
 from .errors import SemanticLayerError
 from .meta_contract import validate_meta_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
+from .registry import Registry
 from .runtime import Runtime, runtime_request_scope
+from .segments import build_segment_query, normalize_segment
 from .semantic_collisions import semantic_collision_warnings
 from .yaml_loader import safe_load as yaml_safe_load
 
@@ -1745,6 +1747,7 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
 
     _check_default_query_axis_collisions(config, source_path, errors)
     _check_disallowed_names(config, source_path, errors)
+    _check_segment_references(config, source_path, errors)
     if getattr(config.package, "schema_strict", False):
         _check_strict_authoring(config, source_path, errors)
 
@@ -1877,6 +1880,78 @@ def _check_disallowed_names(config, source_path: Path, errors: list[str]) -> Non
         if expr is not None and type(expr).__name__ == "ColumnRefExpr":
             column = str(getattr(expr, "column", "") or "")
         _check(measure.entity, measure.name, column, "measure", measure.id)
+
+
+def _check_segment_references(config, source_path: Path, errors: list[str]) -> None:
+    """Reject segments that the catalog and segment surfaces cannot serve.
+
+    The loader keeps an unresolved segment ``entity`` as written, so a typo
+    such as ``entity.jaffle.customer`` (for ``entity.jaffle_customer``) still
+    loads. Catalog, inspect and segment-validate/explain/preview then fail on
+    every request. Each segment must name known entities, pass the
+    ``normalize_segment`` check that catalog runs, and compile the query that
+    ``segment-validate`` derives from it.
+    """
+    if not config.segments:
+        return
+    from difflib import get_close_matches
+
+    entity_ids = {entity.id for entity in config.entities}
+
+    def _unknown_entity(ref: str) -> str:
+        hints = get_close_matches(ref, sorted(entity_ids), n=1, cutoff=0.6)
+        return f"unknown entity {ref!r}" + (f"; did you mean {hints[0]!r}?" if hints else "")
+
+    registry = Registry(config)
+    for segment in config.segments:
+        prefix = f"{source_path}: segment {segment.id}"
+        # The loader maps the segment's own entity key or name to an id;
+        # membership predicates are compiled as written, so they need ids.
+        unknown: list[str] = []
+        if not segment.entity:
+            unknown.append("must declare an entity")
+        elif segment.entity not in entity_ids:
+            unknown.append(f"targets {_unknown_entity(segment.entity)}")
+        membership = [*segment.where, *segment.metric_filters]
+        for ref in dict.fromkeys(_metric_predicate_entities(membership)):
+            if ref not in entity_ids:
+                unknown.append(f"membership references {_unknown_entity(ref)}")
+        for message in unknown:
+            add_error(errors, f"{prefix} {message}")
+        if unknown:
+            continue
+        try:
+            normalized = normalize_segment(config, segment.id)
+        except SemanticLayerError as exc:
+            # These messages don't name the offending object; the details do.
+            details = ", ".join(
+                f"{key}={value}"
+                for key, value in sorted(exc.details.items())
+                if key != "segment_id"
+            )
+            suffix = f" [{details}]" if details else ""
+            add_error(errors, f"{prefix} is invalid ({exc.code}): {exc}{suffix}")
+            continue
+        query = build_segment_query(normalized, include_preview_dimensions=True)
+        try:
+            compile_query(config, registry, query)
+        except SemanticLayerError as exc:
+            add_error(errors, f"{prefix} query does not compile ({exc.code}): {exc}")
+
+
+def _metric_predicate_entities(node: Any) -> list[str]:
+    """Entity refs of every ``metric_predicate`` expression inside ``node``."""
+    refs: list[str] = []
+    if isinstance(node, dict):
+        entity = str(node.get("entity") or "").strip()
+        if node.get("kind") == "metric_predicate" and entity:
+            refs.append(entity)
+        for value in node.values():
+            refs.extend(_metric_predicate_entities(value))
+    elif isinstance(node, list):
+        for item in node:
+            refs.extend(_metric_predicate_entities(item))
+    return refs
 
 
 def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str, Any]]:
