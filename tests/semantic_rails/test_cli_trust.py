@@ -523,6 +523,10 @@ def test_columns_never_round_a_nonzero_value_to_zero_or_a_big_int_through_float(
         ["9,007,199,254,740,993.000", "0.500"],
         True,
     )
+    assert dev_cli._format_column([10**309, 0.5], column_type="number") == (
+        [f"{10**309:,}.000", "0.500"],
+        True,
+    )
     assert dev_cli._format_column([9007199254740993], column_type="currency") == (
         ["9,007,199,254,740,993.00"],
         True,

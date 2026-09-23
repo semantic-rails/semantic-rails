@@ -3593,11 +3593,13 @@ def _column_decimals(values: list[Any], *, column_type: str) -> int:
     finite = [value for value in values if _is_finite(value)]
     if all(_is_integral(value) for value in finite):
         return 0
-    smallest = min((abs(float(value)) for value in finite if value != 0), default=0.0)
-    if smallest == 0.0 or smallest >= 1:
+    # Only magnitudes below 1 need extra decimals; comparing (not converting)
+    # keeps an int too large for a float from overflowing.
+    fractions = [abs(value) for value in finite if value != 0 and abs(value) < 1]
+    if not fractions:
         return 2
     # Keep about three significant digits on the smallest value, e.g. 0.00340.
-    return min(6, 2 - math.floor(math.log10(smallest)))
+    return min(6, 2 - math.floor(math.log10(min(fractions))))
 
 
 def _format_number(value: Any, decimals: int) -> str:
