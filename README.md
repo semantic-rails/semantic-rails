@@ -154,9 +154,10 @@ discover -> inspect -> plan/build-options -> valid-values -> validate -> compile
   `valid-values` guide step-by-step builders.
 - `validate` rejects unknown fields, dimension mismatches, bad filters and policy
   failures with structured errors and, where possible, recovery hints.
-- `compile` renders SQL for the target warehouse and returns an `explain` payload:
-  the chosen join path to each entity, the candidate paths it considered and the
-  relationship contracts along the chosen path.
+- `compile` renders SQL for the target warehouse. At `compact` or `full` verbosity (the
+  CLI's default; the MCP tool defaults to `minimal`), it also returns an `explain`
+  payload: the chosen join path to each entity, the candidate paths it considered and
+  the relationship contracts along the chosen path.
 - `execute` runs the compiled query where the package's connection lives.
 
 The engine design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the
