@@ -334,6 +334,18 @@ def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: Pack
     )
 
 
+def _scope_key(expr: MeasureRefExpr | AggregateExpr) -> str:
+    """A leaf alias suffix for the expression's own temporal_role and filter, when set.
+
+    Without it, aggregates of one measure that differ only by filter or by clock
+    shared one column, and the first one selected answered for both.
+    """
+    scope = {"temporal_role": expr.temporal_role, "filter": getattr(expr, "filter", {}) or {}}
+    if not any(scope.values()):
+        return ""
+    return "__" + hashlib.sha1(_freeze_payload(scope).encode("utf-8")).hexdigest()[:12]
+
+
 def _expression_alias(expr: SemanticExpr, config: PackageConfig | None = None) -> str:
     if isinstance(expr, (MeasureRefExpr, AggregateExpr)):
         aggregation = expr.aggregation
@@ -347,7 +359,7 @@ def _expression_alias(expr: SemanticExpr, config: PackageConfig | None = None) -
                 f"{key}_{str(value).replace('.', '_')}" for key, value in sorted(parameters.items())
             ]
             params_suffix = "__" + "__".join(parts)
-        return f"leaf__{expr.measure.replace('.', '_')}__{aggregation or 'default'}{params_suffix}"
+        return f"leaf__{expr.measure.replace('.', '_')}__{aggregation or 'default'}{params_suffix}{_scope_key(expr)}"
     if isinstance(expr, ScopedAggregateExpr):
         if config is None:
             return f"leaf__scoped_{expr.measure.replace('.', '_')}"
@@ -397,7 +409,7 @@ def _bind_measure(
         MeasureRefExpr(
             measure=measure_id,
             aggregation=aggregation,
-            temporal_role=temporal_role,
+            temporal_role=expr.temporal_role,
             parameters=dict(expr.parameters or {}),
         ),
         config,
@@ -629,7 +641,7 @@ def _collect_measure_refs(
             BoundMeasure(
                 measure_id=bound.measure_id,
                 aggregation=bound.aggregation,
-                alias=bound.alias,
+                alias=_expression_alias(expr, config),
                 temporal_role=bound.temporal_role,
                 aggregation_params=dict(bound.aggregation_params),
                 filter_spec=dict(expr.filter),

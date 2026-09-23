@@ -3498,7 +3498,7 @@ def _plan_query(
 
     dedup_measures = {
         (
-            row.measure_id,
+            row.alias,
             row.aggregation,
             row.temporal_role,
             _freeze_payload(row.aggregation_params),
