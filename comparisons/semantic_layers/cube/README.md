@@ -55,4 +55,10 @@ offline verifier.
 Notes:
 
 - The original capture used the local Node/Cube Core path rather than Docker.
+- q01-q09 each also hold an `error.txt` from an earlier attempt in the capture session: q01-q03
+  and q06-q09 ran before the `comparison_*` views existed, and q04 and q05 before their measures
+  were fixed.
+  The runner never deletes an earlier attempt's error. The capture's `summary.json` records
+  every question as answered, and each has its `load.json` and `sql.json`. The files stay
+  because the evidence manifest pins every captured file.
 - `customer_history` and `storefront_sessions` are modeled with explicit SQL joins and calculated measures.

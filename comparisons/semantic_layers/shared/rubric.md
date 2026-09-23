@@ -57,4 +57,6 @@ isn't hand-written logic. Everything the rubric does count is listed here:
   (`tests/semantic_rails/test_comparison_pack_scripts.py`), so any change to a label shows up
   in review.
 - Snowflake's committed `summary.json` predates the rubric and still carries hand-assigned
-  labels. The rubric reads only whether each question executed.
+  labels. The rubric reads only whether each question executed. Cube's pinned capture
+  (`results/cube/summary.json`) carries them too. The rubric reads the replay's summary
+  instead.
