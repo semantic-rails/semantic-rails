@@ -122,11 +122,13 @@ discover -> inspect -> plan/build-options -> valid-values -> validate -> compile
 - `build-options` returns legal next query choices for guided builders.
 - `valid-values` searches categorical values for selected dimensions.
 - `validate` returns diagnostics, repair hints, output columns, and risk metadata.
-- `compile` returns SQL and plan metadata without executing. Its response includes an `explain`
-  payload with the semantic and physical plan plus a `chosen_paths` map keyed by target entity
-  ID — each entry carries `selected` (the chosen relationship path), `candidates` (every
-  considered path), and `contracts` (the relationship contracts along the selected path).
-  Review these to confirm join paths and safety before execution.
+- `compile` returns SQL and plan metadata without executing. At `compact` or `full` verbosity,
+  its response also includes an `explain` payload with the semantic and physical plan plus a
+  `chosen_paths` map keyed by target entity ID — each entry carries `selected` (the chosen
+  relationship path), `candidates` (every considered path), and `contracts` (the relationship
+  contracts along the selected path). The CLI defaults to `compact`; the MCP tool defaults to
+  `minimal`, which leaves `explain` out, so pass `verbosity: "compact"` to review join paths
+  and safety before execution.
 - `execute` is the MCP tool name (HTTP path `/api/v1/query`, CLI verb `semantic-rails query`) and
   executes the compiled request in the local or customer-operated runtime.
 

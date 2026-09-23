@@ -226,6 +226,52 @@ def test_desktop_setup_needs_a_config_that_runs_the_tool(
     assert env.commands[0] == quickstart.DESKTOP_BLOCK
 
 
+def test_the_client_blocks_are_checked_against_the_readme() -> None:
+    assert {quickstart.DESKTOP_BLOCK, quickstart.CURSOR_BLOCK} <= set(quickstart.DOCUMENTED)
+
+
+def fake_uv_tools(directory: Path, tools: Path) -> Path:
+    """A `uv` whose tool installs land in `tools`, which `uv tool dir --bin` reports."""
+    script = directory / "uv"
+    script.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/bash
+            if [ "$1 $2" = "tool install" ]; then
+              mkdir -p "{tools}"
+              printf '#!/bin/bash\\necho "semantic-rails 0.2.1"\\n' > "{tools}/semantic-rails"
+              chmod +x "{tools}/semantic-rails"
+              exit 0
+            fi
+            if [ "$1 $2 $3" = "tool dir --bin" ]; then
+              echo "{tools}"
+              exit 0
+            fi
+            exit 1
+            """
+        )
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return script
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the local environment runs /bin/bash")
+def test_tool_install_runs_the_command_where_uv_put_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # uv's tool directory is wherever `uv tool dir --bin` says; here it isn't ~/.local/bin.
+    tools = tmp_path / "uv-tools" / "bin"
+    uv = fake_uv_tools(tmp_path, tools)
+    monkeypatch.setattr(quickstart.shutil, "which", lambda name: str(uv))
+    env = quickstart.Local()
+    try:
+        assert quickstart.tool_install(env) == ""
+        assert (tools / "semantic-rails").exists()
+        assert not (Path(env.env["HOME"]) / ".local" / "bin").exists()
+    finally:
+        env.close()
+
+
 def fake_uv(directory: Path) -> Path:
     """A `uv` that makes a venv whose Python is 3.9.6, and whose pip refuses the package."""
     script = directory / "uv"
@@ -331,7 +377,7 @@ WORKING = textwrap.dedent(
         if "id" not in message:
             continue
         if message["method"] == "initialize":
-            result = {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "fake", "version": "1"}}
+            result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "fake", "version": "1"}}
         else:
             names = ["discover", "validate", "compile", "execute"]
             result = {"tools": [{"name": name} for name in names]}
@@ -367,8 +413,12 @@ def server_answering_initialize_with(reply: str) -> str:
         ('{"result": {}}', "no protocol version"),
         ('{"result": {"protocolVersion": "2025-06-18"}}', "lacks serverInfo"),
         ('{"result": "ok"}', "no result"),
+        (
+            '{"result": {"protocolVersion": "2025-06-18", "serverInfo": {"name": "x"}, "capabilities": {}}}',
+            "no tools capability",
+        ),
     ],
-    ids=["error", "empty result", "no serverInfo", "not an object"],
+    ids=["error", "empty result", "no serverInfo", "not an object", "no tools"],
 )
 def test_mcp_handshake_fails_when_initialize_does_not_succeed(
     tmp_path: Path, reply: str, reason: str
@@ -381,6 +431,29 @@ def test_mcp_handshake_fails_when_initialize_does_not_succeed(
 
 
 TOOLS_MISSING_EXECUTE = WORKING.replace('"compile", "execute"', '"compile"')
+
+
+class ScriptedServer(Server):
+    """Answers shell commands with canned results, and serves MCP from a Python snippet."""
+
+    def __init__(self, tmp_path: Path, code: str, *results: tuple[int, str, str]) -> None:
+        super().__init__(tmp_path, code)
+        self.results = list(results)
+        self.commands: list[str] = []
+
+    def run(self, command: str) -> subprocess.CompletedProcess[str]:
+        self.commands.append(command)
+        returncode, stdout, stderr = self.results.pop(0)
+        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+
+def test_cursor_paths_starts_the_server_from_the_printed_paths(tmp_path: Path) -> None:
+    printed = "Installed 1 executable: semantic-rails\n/u/tools/bin/semantic-rails\n/w/my_package\n"
+    env = ScriptedServer(tmp_path, WORKING, (0, printed, ""))
+    assert quickstart.cursor_paths(env) == ""
+    # It runs the README's Cursor block as shown, then starts what the block printed.
+    assert env.commands == [quickstart.CURSOR_BLOCK]
+    assert env.argv == ["/u/tools/bin/semantic-rails", "mcp", "stdio", "--path", "/w/my_package"]
 
 
 def test_mcp_handshake_needs_every_query_tool(tmp_path: Path) -> None:

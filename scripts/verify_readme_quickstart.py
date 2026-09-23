@@ -321,10 +321,11 @@ def initialize_problem(reply: dict[str, object]) -> str:
     version = result.get("protocolVersion")
     if not isinstance(version, str) or not PROTOCOL_VERSION.match(version):
         return f"initialize negotiated no protocol version: {version!r}"
-    if not isinstance(result.get("serverInfo"), dict) or not isinstance(
-        result.get("capabilities"), dict
-    ):
+    capabilities = result.get("capabilities")
+    if not isinstance(result.get("serverInfo"), dict) or not isinstance(capabilities, dict):
         return "initialize result lacks serverInfo or capabilities"
+    if not isinstance(capabilities.get("tools"), dict):
+        return "initialize result declares no tools capability"
     return ""
 
 
