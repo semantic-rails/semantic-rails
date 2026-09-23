@@ -107,7 +107,7 @@ LABELS = {
                 ],
                 "time": {"temporal_role": "temporal_role.ordered_at", "start": "2024-01-01"},
             },
-            "Revenue / AOV over a rolling one period, cumulative AOV and year-to-date Revenue, "
+            "Revenue / (AOV over a rolling one period), cumulative AOV and year-to-date Revenue, "
             "per Order time value, from 2024-01-01",
         ),
         (
@@ -151,8 +151,8 @@ LABELS = {
                     {"expression": {"kind": "metric_predicate", "entity": "entity.customer"}},
                 ],
             },
-            "conversion from Orders to AOV within 7 days, where AOV > 10 and "
-            "metric predicate [with entity]",
+            "conversion from Orders to AOV per Customer within 7 days, matching the first "
+            "conversion after each base event, where AOV > 10 and metric predicate [with entity]",
         ),
         (
             {
@@ -174,6 +174,207 @@ LABELS = {
 )
 def test_describe_query_restates_what_runs(query: dict[str, Any], expected: str) -> None:
     assert interpretation.describe_query(query, LABELS) == expected
+
+
+def _ratio(numerator: dict[str, Any], denominator: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "ratio", "numerator": numerator, "denominator": denominator}
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        (
+            _ratio(
+                {"measure": "measure.revenue"},
+                _ratio({"metric": "metric.aov"}, {"measure": "measure.orders"}),
+            ),
+            "Revenue / (AOV / Orders)",
+        ),
+        (
+            _ratio(
+                _ratio({"measure": "measure.revenue"}, {"metric": "metric.aov"}),
+                {"measure": "measure.orders"},
+            ),
+            "(Revenue / AOV) / Orders",
+        ),
+        (
+            {
+                "kind": "arithmetic",
+                "op": "divide",
+                "left": _ratio({"measure": "measure.revenue"}, {"measure": "measure.orders"}),
+                "right": {"kind": "literal", "value": 2},
+            },
+            "((Revenue / Orders) / 2)",
+        ),
+        (
+            {
+                "kind": "binary",
+                "op": "subtract",
+                "left": {"kind": "measure_ref", "measure": "measure.revenue"},
+                "right": {"kind": "metric", "metric": "metric.aov"},
+            },
+            "(Revenue - AOV)",
+        ),
+        (
+            {
+                "kind": "cumulative",
+                "input": _ratio({"measure": "measure.revenue"}, {"measure": "measure.orders"}),
+            },
+            "cumulative (Revenue / Orders)",
+        ),
+    ],
+)
+def test_compound_operands_keep_their_grouping(expression: dict[str, Any], expected: str) -> None:
+    query = {"select": [{"expression": expression}]}
+    assert interpretation.describe_query(query, LABELS) == expected
+
+
+def _conversion(**changes: Any) -> dict[str, Any]:
+    expression = {
+        "kind": "conversion",
+        "base": {"measure": "measure.orders"},
+        "converted": {"metric": "metric.aov"},
+        "entity": "entity.customer",
+        "window": {"unit": "day", "value": 7},
+        "matching_mode": "first_converted_after_base",
+    }
+    return {"select": [{"expression": {**expression, **changes}}]}
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (_conversion(), _conversion(entity="entity.household")),
+        (_conversion(), _conversion(matching_mode="closest_converted_after_base")),
+        (
+            _conversion(matching_mode=None, matching="first_converted_after_base"),
+            _conversion(matching_mode=None),
+        ),
+        ({"time": {"grain": "month"}}, {"time": {"grain": "month", "fill": True}}),
+        ({"time": {"grain": "month"}}, {"time": {"grain": "month", "calendar_id": "fiscal"}}),
+    ],
+)
+def test_a_change_in_what_runs_changes_the_restatement(
+    first: dict[str, Any], second: dict[str, Any]
+) -> None:
+    assert interpretation.describe_query(first, LABELS) != interpretation.describe_query(
+        second, LABELS
+    )
+
+
+def test_fill_and_calendar_are_spelled_out() -> None:
+    query = {
+        "select": [{"expression": {"measure": "measure.revenue"}}],
+        "time": {"grain": "month", "fill": True, "calendar_id": "fiscal"},
+    }
+    assert interpretation.describe_query(query, LABELS) == (
+        "Revenue, per month, on calendar fiscal, including periods with no data"
+    )
+
+
+_SCHEMA = json.loads((REPO_ROOT / "schemas" / "query_ir.v1.json").read_text())
+_BASES: dict[str, tuple[dict[str, Any], Any]] = {
+    # schema block -> (a query, a function placing a block property into that query)
+    "query": (
+        {"select": [{"expression": {"metric": "metric.aov"}, "as": "aov"}], "limit": 5},
+        lambda query, key, value: {**query, key: value},
+    ),
+    "SelectItem": (
+        {"select": [{"expression": {"metric": "metric.aov"}}]},
+        lambda query, key, value: {"select": [{**query["select"][0], key: value}]},
+    ),
+    "TimeBlock": (
+        {"time": {"temporal_role": "temporal_role.ordered_at"}},
+        lambda query, key, value: {"time": {**query["time"], key: value}},
+    ),
+    "WhereFilter": (
+        {"where": [{"field": "dimension.store", "value": "A"}]},
+        lambda query, key, value: {"where": [{**query["where"][0], key: value}]},
+    ),
+    "MetricFilter": (
+        {"metric_filters": [{"expression": {"metric": "metric.aov"}}]},
+        lambda query, key, value: {"metric_filters": [{**query["metric_filters"][0], key: value}]},
+    ),
+    "ConversionExpr": (
+        {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "conversion",
+                        "base": {"measure": "measure.orders"},
+                        "converted": {"metric": "metric.aov"},
+                    }
+                }
+            ]
+        },
+        lambda query, key, value: {
+            "select": [{"expression": {**query["select"][0]["expression"], key: value}}]
+        },
+    ),
+}
+
+
+def _sample(key: str, spec: dict[str, Any]) -> Any:
+    samples = {"calendar_id": "fiscal", "fill": True, "op": "!=", "direction": "DESC"}
+    if key in samples:
+        return samples[key]
+    if "enum" in spec:
+        return next(value for value in spec["enum"] if value)
+    kind = spec.get("type", "object")
+    kind = kind[0] if isinstance(kind, list) else kind
+    return {
+        "string": "sample",
+        "integer": 3,
+        "number": 3,
+        "boolean": True,
+        "array": [{"field": "aov", "direction": "DESC"}] if key == "order_by" else ["sample"],
+    }.get(kind, {"sample": 1})
+
+
+def _expression_kinds() -> dict[str, str]:
+    """Every expression block in the schema that has a ``kind``, with one of its kinds."""
+
+    kinds = {}
+    for name, block in _SCHEMA["$defs"].items():
+        spec = block.get("properties", {}).get("kind", {})
+        values = [spec["const"]] if "const" in spec else list(spec.get("enum", []))
+        if values:
+            kinds[name] = values[0]
+    return kinds
+
+
+for _block, _kind in _expression_kinds().items():
+    _BASES.setdefault(
+        _block,
+        (
+            {"select": [{"expression": {"kind": _kind}}]},
+            lambda query, key, value: {
+                "select": [{"expression": {**query["select"][0]["expression"], key: value}}]
+            },
+        ),
+    )
+
+# An alias only names the output column; it doesn't change what runs.
+_NAMES_ONLY = {("SelectItem", "as")}
+
+
+@pytest.mark.parametrize(
+    ("block", "key"),
+    [
+        (block, key)
+        for block in _BASES
+        for key in (_SCHEMA if block == "query" else _SCHEMA["$defs"][block])["properties"]
+        if key != "kind"
+        and (block, key) not in _NAMES_ONLY
+        and not (block == "query" and key in interpretation._RESPONSE_QUERY_KEYS)
+    ],
+)
+def test_every_query_ir_key_is_spelled_out_or_flagged(block: str, key: str) -> None:
+    query, place = _BASES[block]
+    spec = (_SCHEMA if block == "query" else _SCHEMA["$defs"][block])["properties"][key]
+    before = interpretation.describe_query(query, LABELS)
+    after = interpretation.describe_query(place(query, key, _sample(key, spec)), LABELS)
+    assert after != before, f"{block}.{key} changed what runs but not the restatement"
 
 
 def test_unknown_ids_are_shown_as_ids() -> None:

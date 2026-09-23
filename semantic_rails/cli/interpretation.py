@@ -16,11 +16,31 @@ _AGGREGATION_WORDS = {"avg": "average", "count_distinct": "count distinct"}
 _ARITHMETIC_SYMBOLS = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}
 
 
-_MEASURE_KINDS = {"", "measure", "aggregate", "semi_additive", "scoped_aggregate", "prior_period"}
+_MEASURE_KINDS = {
+    "",
+    "measure",
+    "measure_ref",
+    "aggregate",
+    "semi_additive",
+    "scoped_aggregate",
+    "prior_period",
+}
 
 
-# Query keys that change what is computed but that the restatement doesn't spell out.
-_UNDESCRIBED_QUERY_KEYS = ("temporal_role_overrides", "path_policy")
+_MATCHING_MODES = {
+    "first_converted_after_base": "the first conversion after each base event",
+    "closest_converted_after_base": "the closest conversion after each base event",
+}
+
+
+# Query keys the restatement spells out, and keys that only shape the response.
+# Any other key changes what runs, so it is listed as ``[with ...]``.
+_DESCRIBED_QUERY_KEYS = frozenset(
+    {"select", "group_by", "time", "where", "metric_filters", "limit", "order_by"}
+)
+_RESPONSE_QUERY_KEYS = frozenset(
+    {"version", "request_id", "verbosity", "sql_profile", "explain", "debug"}
+)
 
 
 _EMPTY: tuple[Any, ...] = (None, "", [], {})
@@ -48,7 +68,7 @@ def describe_query(query: dict[str, Any], labels: dict[str, str] | None = None) 
         alias = str(item.get("as", "") or "")
         expression = item.get("expression")
         described = _describe_expression(expression, label) if isinstance(expression, dict) else ""
-        subject = described or alias or "an expression"
+        subject = (described or alias or "an expression") + _with(item, {"as", "expression"})
         subjects.append(subject)
         if alias:
             aliases[alias] = subject
@@ -75,8 +95,16 @@ def describe_query(query: dict[str, Any], labels: dict[str, str] | None = None) 
             if isinstance(order, dict) and order.get("field")
         ]
         text += f", first {limit} rows" + (f" by {', '.join(ordering)}" if ordering else "")
-    extras = [key for key in _UNDESCRIBED_QUERY_KEYS if query.get(key) not in _EMPTY]
-    return text + (f" [with {', '.join(extras)}]" if extras else "")
+    return text + _with(query, _DESCRIBED_QUERY_KEYS | _RESPONSE_QUERY_KEYS)
+
+
+def _with(item: dict[str, Any], used: set[str] | frozenset[str], prefix: str = "") -> str:
+    """`` [with a, b]`` for the keys of ``item`` that were not rendered, or ``""``."""
+
+    extras = sorted(
+        prefix + key for key, value in item.items() if key not in used and value not in _EMPTY
+    )
+    return f" [with {', '.join(extras)}]" if extras else ""
 
 
 def _describe_expression(
@@ -92,7 +120,11 @@ def _describe_expression(
     def inner(key: str) -> str:
         used.add(key)
         value = expression.get(key)
-        return _describe_expression(value, label, depth + 1) if isinstance(value, dict) else "?"
+        if not isinstance(value, dict):
+            return "?"
+        text = _describe_expression(value, label, depth + 1)
+        # Parenthesize compound operands, so (a / b) / c never reads as a / (b / c).
+        return f"({text})" if _is_compound(value) else text
 
     if expression.get("metric") and kind in {"", "metric"}:
         used.add("metric")
@@ -107,7 +139,9 @@ def _describe_expression(
         if expression.get("temporal_role"):
             text += f" on {label(expression['temporal_role'])}"
         if kind == "prior_period":
-            used.update({"offset", "grain"})
+            used.add("offset")
+            if isinstance(expression.get("offset"), int):
+                used.add("grain")  # the shorthand counts steps at `grain`
             text += f" {_describe_offset(expression)} earlier"
         if isinstance(expression.get("where"), list) and expression["where"]:
             used.add("where")
@@ -116,7 +150,7 @@ def _describe_expression(
             )
     elif kind == "ratio":
         text = f"{inner('numerator')} / {inner('denominator')}"
-    elif kind == "arithmetic":
+    elif kind in {"arithmetic", "binary"}:
         used.add("op")
         op = str(expression.get("op", "") or "")
         text = f"({inner('left')} {_ARITHMETIC_SYMBOLS.get(op, op)} {inner('right')})"
@@ -132,19 +166,39 @@ def _describe_expression(
         used.add("period")
         text = f"{expression.get('period') or 'period'}-to-date {inner('input')}"
     elif kind == "conversion":
-        used.update({"window", "entity", "matching_mode"})
         text = f"conversion from {inner('base')} to {inner('converted')}"
+        if expression.get("entity"):
+            used.add("entity")
+            text += f" per {label(expression['entity'])}"
         if isinstance(expression.get("window"), dict):
+            used.add("window")
             text += f" within {_describe_span(expression['window'])}"
+        mode_key = "matching_mode" if expression.get("matching_mode") else "matching"
+        mode = str(expression.get(mode_key, "") or "")
+        if mode:
+            used.add(mode_key)
+            text += f", matching {_MATCHING_MODES.get(mode, mode.replace('_', ' '))}"
     elif kind == "literal":
         used.add("value")
         text = _describe_value(expression.get("value"))
     else:
         text = kind.replace("_", " ") or "an expression"
-    extras = sorted(
-        key for key, value in expression.items() if key not in used and value not in _EMPTY
+    return text + _with(expression, used)
+
+
+def _is_compound(expression: dict[str, Any]) -> bool:
+    """Whether the rendered expression needs parentheses as an operand."""
+
+    kind = str(expression.get("kind", "") or "")
+    if kind in {"arithmetic", "binary", "literal"}:
+        return False  # arithmetic brings its own parentheses
+    if expression.get("metric") and kind in {"", "metric"}:
+        return False
+    return not (
+        expression.get("measure")
+        and kind in _MEASURE_KINDS - {"prior_period"}
+        and not expression.get("where")
     )
-    return text + (f" [with {', '.join(extras)}]" if extras else "")
 
 
 def _describe_offset(expression: dict[str, Any]) -> str:
@@ -160,10 +214,11 @@ def _describe_span(span: Any) -> str:
         return "one period"
     unit = str(span.get("unit", "") or "period")
     value = span.get("value", 1)
-    return f"{value} {unit}" + ("" if value == 1 else "s")
+    return f"{value} {unit}" + ("" if value == 1 else "s") + _with(span, {"unit", "value"})
 
 
 def _describe_time(time: dict[str, Any], label: Callable[[Any], str]) -> str:
+    used = {"temporal_role", "grain", "start", "end", "calendar_id"}
     role = str(time.get("temporal_role", "") or "")
     grain = str(time.get("grain", "") or "")
     parts: list[str] = []
@@ -171,9 +226,19 @@ def _describe_time(time: dict[str, Any], label: Callable[[Any], str]) -> str:
         parts.append(f"per {grain}" + (f" of {label(role)}" if role else ""))
     elif role:
         parts.append(f"per {label(role)} value")
+    calendar = str(time.get("calendar_id", "") or "")
+    if calendar.strip().lower() not in {"", "default"}:
+        parts.append(f"on calendar {label(calendar)}")
+    if isinstance(time.get("fill"), bool):
+        used.add("fill")
+        if time["fill"]:
+            parts.append("including periods with no data")
     window = time.get("range")
+    extras = ""
     if isinstance(window, dict) and isinstance(window.get("last"), dict):
+        used.add("range")
         parts.append(f"in the last {_describe_span(window['last'])}")
+        extras = _with(window, {"last"}, prefix="time.range.")
     start, end = time.get("start"), time.get("end")
     if start and end:
         parts.append(f"from {start} to before {end}")
@@ -181,20 +246,22 @@ def _describe_time(time: dict[str, Any], label: Callable[[Any], str]) -> str:
         parts.append(f"from {start}")
     elif end:
         parts.append(f"before {end}")
-    return ", ".join(parts)
+    extras += _with(time, used, prefix="time.")
+    return (", ".join(parts) + extras).strip()
 
 
 def _describe_filter(item: Any, label: Callable[[Any], str]) -> str:
     if not isinstance(item, dict):
         return str(item)
-    field = item.get("field") or item.get("dimension")
-    if field:
+    key = "field" if item.get("field") else "dimension"
+    if item.get(key):
         op = str(item.get("op", "") or "=").upper()
         if op in {"IS NULL", "IS NOT NULL"}:
-            return f"{label(field)} {op.lower()}"
-        return f"{label(field)} {op} {_describe_value(item.get('value'))}"
+            return f"{label(item[key])} {op.lower()}" + _with(item, {key, "op"})
+        text = f"{label(item[key])} {op} {_describe_value(item.get('value'))}"
+        return text + _with(item, {key, "op", "value"})
     if item.get("segment"):
-        return f"in segment {label(item['segment'])}"
+        return f"in segment {label(item['segment'])}" + _with(item, {"segment"})
     return json.dumps(item, sort_keys=True, default=str)
 
 
@@ -205,8 +272,11 @@ def _describe_metric_filter(item: Any, label: Callable[[Any], str]) -> str:
     subject = _describe_expression(expression, label) if isinstance(expression, dict) else ""
     op = str(item.get("op", "") or "")
     if subject and op:
-        return f"{subject} {op} {_describe_value(item.get('value'))}"
-    return subject or json.dumps(item, sort_keys=True, default=str)
+        text = f"{subject} {op} {_describe_value(item.get('value'))}"
+        return text + _with(item, {"expression", "op", "value"})
+    if subject:
+        return subject + _with(item, {"expression"})
+    return json.dumps(item, sort_keys=True, default=str)
 
 
 def _describe_value(value: Any) -> str:
