@@ -36,6 +36,7 @@ jobs:
               - "CODE_OF_CONDUCT.md"
               - "CONTRIBUTING.md"
               - "LICENSE"
+              - "Makefile"
               - "SECURITY.md"
               - "SUPPORT.md"
               - "configs/**"
