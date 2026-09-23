@@ -1,3 +1,7 @@
+‼️ Warning: A new version of the MetricFlow CLI is available.
+💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
+	$ pip install --upgrade dbt-metricflow
+
 
 
 ⠋ Initiating query…

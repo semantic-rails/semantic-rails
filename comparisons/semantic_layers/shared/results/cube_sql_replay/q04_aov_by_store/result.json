@@ -1,0 +1,12 @@
+{
+  "data": [
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.aov_usd": 12.73910440725526
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "orders.aov_usd": 12.085946890286609
+    }
+  ]
+}

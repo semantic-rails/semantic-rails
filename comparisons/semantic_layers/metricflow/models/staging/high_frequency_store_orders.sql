@@ -6,7 +6,7 @@ with customer_store_months as (
         store_id,
         date_trunc('month', ordered_at) as ordered_month,
         count(*) as monthly_orders
-    from jaffle_order
+    from comparison_orders
     group by 1, 2, 3
 )
 
@@ -16,7 +16,7 @@ select
     o.store_id,
     o.ordered_at,
     o.order_total_cents / 100.0 as revenue_usd
-from jaffle_order as o
+from comparison_orders as o
 inner join customer_store_months as c
     on o.customer_id = c.customer_id
    and o.store_id = c.store_id

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from bootstrap_shared_duckdb import dataset_fingerprint
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SHARED_ROOT = REPO_ROOT / "comparisons" / "semantic_layers" / "shared"
@@ -25,6 +26,9 @@ RUNNABLE_LAYERS = [
     "ktx",
 ]
 REFERENCE_LAYER = "semantic_rails"
+# Cube can't be re-run until its dependency advisories are resolved; its captured SQL is
+# re-executed on the current dataset instead (cube/scripts/replay_sql.py).
+RESULT_DIRS = {layer: layer for layer in RUNNABLE_LAYERS} | {"cube": "cube_sql_replay"}
 DECIMAL_TOLERANCE = Decimal("0.000001")
 NUMERIC_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 # Published scoring keeps the 7 shared questions apart from the 9 that were chosen to
@@ -92,7 +96,7 @@ def _load_questions() -> dict[str, dict[str, Any]]:
 
 
 def _load_summary(layer: str) -> dict[str, Any]:
-    return _read_json(RESULTS_ROOT / layer / "summary.json")
+    return _read_json(RESULTS_ROOT / RESULT_DIRS[layer] / "summary.json")
 
 
 def _rows_for(layer: str, result_path: str) -> list[dict[str, Any]]:
@@ -318,6 +322,18 @@ def _json_safe(value: Any) -> Any:
 def main() -> None:
     questions = _load_questions()
     summaries = {layer: _load_summary(layer) for layer in RUNNABLE_LAYERS}
+    # A capture made on other data can't be compared like for like: report it separately.
+    current_dataset = dataset_fingerprint()
+    stale_layers = [
+        layer
+        for layer in RUNNABLE_LAYERS
+        if summaries[layer].get("dataset_fingerprint") != current_dataset
+    ]
+    if REFERENCE_LAYER in stale_layers:
+        raise SystemExit(f"{REFERENCE_LAYER} results predate the current dataset; re-run it first.")
+    stale_checks: dict[str, dict[str, list[str]]] = {
+        layer: {"matched": [], "mismatched": []} for layer in stale_layers
+    }
 
     results: list[dict[str, Any]] = []
     summary_counts = {"matched": 0, "mismatched": 0, "not_comparable": 0}
@@ -348,10 +364,13 @@ def main() -> None:
             "comparable_layers": comparable_layers,
         }
 
-        if len(comparable_layers) < 2 or REFERENCE_LAYER not in comparable_layers:
+        current_layers = [layer for layer in comparable_layers if layer not in stale_layers]
+        question_result["current_layers"] = current_layers
+        if len(current_layers) < 2 or REFERENCE_LAYER not in current_layers:
             question_result["comparison_status"] = "not_comparable"
             question_result["reason"] = (
-                f"Fewer than two layers, or not {REFERENCE_LAYER}, executed this question."
+                f"Fewer than two layers, or not {REFERENCE_LAYER}, executed this question on the "
+                "current dataset."
             )
             summary_counts["not_comparable"] += 1
         else:
@@ -361,7 +380,9 @@ def main() -> None:
                 if layer == REFERENCE_LAYER:
                     continue
                 equal, detail = _rows_equal(reference_rows, normalized_rows_by_layer[layer])
-                if not equal:
+                if layer in stale_layers:
+                    stale_checks[layer]["matched" if equal else "mismatched"].append(question_id)
+                elif not equal:
                     mismatches.append(
                         {
                             "layer": layer,
@@ -371,7 +392,9 @@ def main() -> None:
             if mismatches:
                 question_result["comparison_status"] = "mismatched"
                 question_result["mismatches"] = mismatches
-                question_result["agreement_groups"] = _agreement_groups(normalized_rows_by_layer)
+                question_result["agreement_groups"] = _agreement_groups(
+                    {layer: normalized_rows_by_layer[layer] for layer in current_layers}
+                )
                 summary_counts["mismatched"] += 1
             else:
                 question_result["comparison_status"] = "matched"
@@ -400,7 +423,12 @@ def main() -> None:
     report = {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "reference_layer": REFERENCE_LAYER,
+        "dataset_fingerprint": current_dataset,
         "summary": summary_counts,
+        "stale_layers": {
+            layer: {"captured": summaries[layer].get("generated_at"), **checks}
+            for layer, checks in stale_checks.items()
+        },
         "summary_by_slice": summary_by_slice,
         "questions": results,
     }
@@ -411,7 +439,8 @@ def main() -> None:
     markdown_lines = [
         "# Output Consistency",
         "",
-        f"Generated at `{report['generated_at']}` using `{REFERENCE_LAYER}` as the reference layer.",
+        f"Generated at `{report['generated_at']}` using `{REFERENCE_LAYER}` as the reference layer, "
+        f"on dataset `{current_dataset[:12]}`.",
         "",
         f"- Matched: `{summary_counts['matched']}`",
         f"- Mismatched: `{summary_counts['mismatched']}`",
@@ -423,6 +452,14 @@ def main() -> None:
         markdown_lines.append(
             f"- `{slice_name}`: {counts['matched']} of {counts['questions']} matched; "
             f"mismatched: {mismatched}"
+        )
+    markdown_lines.append("")
+    for layer, checks in report["stale_layers"].items():
+        mismatched = ", ".join(f"`{qid}`" for qid in checks["mismatched"]) or "none"
+        markdown_lines.append(
+            f"- Stale capture, excluded from the counts above: `{layer}` "
+            f"(captured {checks['captured'] or 'on an earlier dataset'}) matches "
+            f"{len(checks['matched'])} questions; mismatched: {mismatched}"
         )
     markdown_lines.append("")
 

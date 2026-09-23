@@ -23,8 +23,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.974,
-      "compile_ms": 0.588,
+      "cache_lookup_ms": 0.9,
+      "compile_ms": 0.574,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -470,7 +470,7 @@
           "has_start": false,
           "has_time_filter": true,
           "pushed_to_scan": true,
-          "relation": "jaffle_item",
+          "relation": "comparison_order_items",
           "scan_id": "leaf_1_scan",
           "time_filter": {
             "calendar_id": "default",
@@ -495,7 +495,7 @@
               "measure_id": "measure.jaffle.item_revenue_usd"
             }
           ],
-          "relation": "jaffle_item",
+          "relation": "comparison_order_items",
           "scan_id": "leaf_1_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_item",
@@ -616,8 +616,8 @@
             ],
             "omitted_semantic_root_entity": "",
             "physical_anchor_entity": "entity.jaffle_item",
-            "relation": "jaffle_item",
-            "selected_relation": "jaffle_item",
+            "relation": "comparison_order_items",
+            "selected_relation": "comparison_order_items",
             "selected_relation_type": "raw",
             "semantic_equivalence": "",
             "source_entity": "entity.jaffle_item",
@@ -626,7 +626,7 @@
           "id": "leaf_1_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan jaffle_item"
+          "label": "Scan comparison_order_items"
         },
         {
           "details": {
@@ -792,7 +792,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  jaffle_item.product_type AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_item.item_revenue_cents / 100.0) AS m1\nFROM jaffle_item\nINNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id\nGROUP BY\n  jaffle_item.product_type,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_item_product_type\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS item_revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  item_revenue_usd DESC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_order_items.product_type AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m1\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nGROUP BY\n  comparison_order_items.product_type,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_item_product_type\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS item_revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  item_revenue_usd DESC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -853,12 +853,12 @@
             "distinct": false,
             "from_table": {
               "alias": "",
-              "name": "jaffle_item"
+              "name": "comparison_order_items"
             },
             "group_by": [
               {
                 "parts": [
-                  "jaffle_item",
+                  "comparison_order_items",
                   "product_type"
                 ]
               },
@@ -870,7 +870,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -888,21 +888,21 @@
                 "on": {
                   "left": {
                     "parts": [
-                      "jaffle_item",
+                      "comparison_order_items",
                       "order_id"
                     ]
                   },
                   "op": "=",
                   "right": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "order_id"
                     ]
                   }
                 },
                 "table": {
                   "alias": "",
-                  "name": "jaffle_order"
+                  "name": "comparison_orders"
                 }
               }
             ],
@@ -914,7 +914,7 @@
                 "alias": "g1",
                 "expression": {
                   "parts": [
-                    "jaffle_item",
+                    "comparison_order_items",
                     "product_type"
                   ]
                 }
@@ -929,7 +929,7 @@
                     {
                       "expr": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       },
@@ -947,7 +947,7 @@
                     {
                       "left": {
                         "parts": [
-                          "jaffle_item",
+                          "comparison_order_items",
                           "item_revenue_cents"
                         ]
                       },
@@ -1434,7 +1434,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 5.574,
+  "timing_ms": 3.346,
   "trace": {
     "fallback": {
       "reason": "",

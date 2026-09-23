@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.854,
-      "compile_ms": 1.345,
+      "cache_lookup_ms": 0.822,
+      "compile_ms": 0.806,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -253,7 +253,7 @@
           "has_start": false,
           "has_time_filter": false,
           "pushed_to_scan": false,
-          "relation": "jaffle_storefront_session",
+          "relation": "comparison_storefront_sessions",
           "scan_id": "conversion_1_base_scan",
           "time_filter": {}
         },
@@ -262,7 +262,7 @@
           "has_start": false,
           "has_time_filter": false,
           "pushed_to_scan": false,
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "conversion_1_converted_scan",
           "time_filter": {}
         }
@@ -283,7 +283,7 @@
               }
             }
           ],
-          "relation": "jaffle_storefront_session",
+          "relation": "comparison_storefront_sessions",
           "scan_id": "conversion_1_base_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_storefront_session",
@@ -305,7 +305,7 @@
               }
             }
           ],
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "conversion_1_converted_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
@@ -348,15 +348,15 @@
                 }
               }
             ],
-            "relation": "jaffle_storefront_session",
-            "selected_relation": "jaffle_storefront_session",
+            "relation": "comparison_storefront_sessions",
+            "selected_relation": "comparison_storefront_sessions",
             "selected_relation_type": "raw",
             "source_entity": "entity.jaffle_storefront_session"
           },
           "id": "conversion_1_base_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan conversion base relation jaffle_storefront_session"
+          "label": "Scan conversion base relation comparison_storefront_sessions"
         },
         {
           "details": {
@@ -370,15 +370,15 @@
                 }
               }
             ],
-            "relation": "jaffle_order",
-            "selected_relation": "jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
             "source_entity": "entity.jaffle_order"
           },
           "id": "conversion_1_converted_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan conversion converted relation jaffle_order"
+          "label": "Scan conversion converted relation comparison_orders"
         },
         {
           "details": {
@@ -444,7 +444,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_storefront_session.started_at AS TIMESTAMP)) AS t,\n  jaffle_storefront_session.started_at AS __base_event_time,\n  jaffle_storefront_session.session_id AS __base_event_key,\n  jaffle_customer.customer_id AS __match_key_1\nFROM jaffle_storefront_session\nINNER JOIN jaffle_customer ON jaffle_storefront_session.customer_id = jaffle_customer.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  jaffle_order.ordered_at AS __converted_event_time,\n  jaffle_order.order_id AS __converted_event_key,\n  jaffle_customer.customer_id AS __match_key_1\nFROM jaffle_order\nINNER JOIN jaffle_customer ON jaffle_order.customer_id = jaffle_customer.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND DATE_DIFF('day', CAST(base_events.__base_event_time AS TIMESTAMP), CAST(converted_events.__converted_event_time AS TIMESTAMP)) <= 7 AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,\n  comparison_storefront_sessions.started_at AS __base_event_time,\n  comparison_storefront_sessions.session_id AS __base_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_storefront_sessions\nINNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  comparison_orders.ordered_at AS __converted_event_time,\n  comparison_orders.order_id AS __converted_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_orders\nINNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND DATE_DIFF('day', CAST(base_events.__base_event_time AS TIMESTAMP), CAST(converted_events.__converted_event_time AS TIMESTAMP)) <= 7 AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -528,7 +528,7 @@
                         "distinct": false,
                         "from_table": {
                           "alias": "",
-                          "name": "jaffle_storefront_session"
+                          "name": "comparison_storefront_sessions"
                         },
                         "group_by": [],
                         "having": [],
@@ -538,21 +538,21 @@
                             "on": {
                               "left": {
                                 "parts": [
-                                  "jaffle_storefront_session",
+                                  "comparison_storefront_sessions",
                                   "customer_id"
                                 ]
                               },
                               "op": "=",
                               "right": {
                                 "parts": [
-                                  "jaffle_customer",
+                                  "comparison_customers",
                                   "customer_id"
                                 ]
                               }
                             },
                             "table": {
                               "alias": "",
-                              "name": "jaffle_customer"
+                              "name": "comparison_customers"
                             }
                           }
                         ],
@@ -570,7 +570,7 @@
                                 {
                                   "expr": {
                                     "parts": [
-                                      "jaffle_storefront_session",
+                                      "comparison_storefront_sessions",
                                       "started_at"
                                     ]
                                   },
@@ -585,7 +585,7 @@
                             "alias": "__base_event_time",
                             "expression": {
                               "parts": [
-                                "jaffle_storefront_session",
+                                "comparison_storefront_sessions",
                                 "started_at"
                               ]
                             }
@@ -594,7 +594,7 @@
                             "alias": "__base_event_key",
                             "expression": {
                               "parts": [
-                                "jaffle_storefront_session",
+                                "comparison_storefront_sessions",
                                 "session_id"
                               ]
                             }
@@ -603,7 +603,7 @@
                             "alias": "__match_key_1",
                             "expression": {
                               "parts": [
-                                "jaffle_customer",
+                                "comparison_customers",
                                 "customer_id"
                               ]
                             }
@@ -619,7 +619,7 @@
                         "distinct": false,
                         "from_table": {
                           "alias": "",
-                          "name": "jaffle_order"
+                          "name": "comparison_orders"
                         },
                         "group_by": [],
                         "having": [],
@@ -629,21 +629,21 @@
                             "on": {
                               "left": {
                                 "parts": [
-                                  "jaffle_order",
+                                  "comparison_orders",
                                   "customer_id"
                                 ]
                               },
                               "op": "=",
                               "right": {
                                 "parts": [
-                                  "jaffle_customer",
+                                  "comparison_customers",
                                   "customer_id"
                                 ]
                               }
                             },
                             "table": {
                               "alias": "",
-                              "name": "jaffle_customer"
+                              "name": "comparison_customers"
                             }
                           }
                         ],
@@ -655,7 +655,7 @@
                             "alias": "__converted_event_time",
                             "expression": {
                               "parts": [
-                                "jaffle_order",
+                                "comparison_orders",
                                 "ordered_at"
                               ]
                             }
@@ -664,7 +664,7 @@
                             "alias": "__converted_event_key",
                             "expression": {
                               "parts": [
-                                "jaffle_order",
+                                "comparison_orders",
                                 "order_id"
                               ]
                             }
@@ -673,7 +673,7 @@
                             "alias": "__match_key_1",
                             "expression": {
                               "parts": [
-                                "jaffle_customer",
+                                "comparison_customers",
                                 "customer_id"
                               ]
                             }
@@ -1252,10 +1252,10 @@
   },
   "query_ir_hints": [],
   "recovery_hints": [],
-  "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_storefront_session.started_at AS TIMESTAMP)) AS t,\n  jaffle_storefront_session.started_at AS __base_event_time,\n  jaffle_storefront_session.session_id AS __base_event_key,\n  jaffle_customer.customer_id AS __match_key_1\nFROM jaffle_storefront_session\nINNER JOIN jaffle_customer ON jaffle_storefront_session.customer_id = jaffle_customer.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  jaffle_order.ordered_at AS __converted_event_time,\n  jaffle_order.order_id AS __converted_event_key,\n  jaffle_customer.customer_id AS __match_key_1\nFROM jaffle_order\nINNER JOIN jaffle_customer ON jaffle_order.customer_id = jaffle_customer.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND DATE_DIFF('day', CAST(base_events.__base_event_time AS TIMESTAMP), CAST(converted_events.__converted_event_time AS TIMESTAMP)) <= 7 AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
+  "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,\n  comparison_storefront_sessions.started_at AS __base_event_time,\n  comparison_storefront_sessions.session_id AS __base_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_storefront_sessions\nINNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  comparison_orders.ordered_at AS __converted_event_time,\n  comparison_orders.order_id AS __converted_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_orders\nINNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND DATE_DIFF('day', CAST(base_events.__base_event_time AS TIMESTAMP), CAST(converted_events.__converted_event_time AS TIMESTAMP)) <= 7 AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:b1bf4e16f2ed9474bfeec78030e8849024eb239aba911b80230bc3b59bfe6a52",
-  "source_fingerprint": "5b0665c39f43be823184d1e560de283866b44b6bf35f2a53f152a2bf4a7496fd",
+  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
+  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
   "sql_plan": {
     "ctes": [
       {
@@ -1273,7 +1273,7 @@
                       "distinct": false,
                       "from_table": {
                         "alias": "",
-                        "name": "jaffle_storefront_session"
+                        "name": "comparison_storefront_sessions"
                       },
                       "group_by": [],
                       "having": [],
@@ -1283,21 +1283,21 @@
                           "on": {
                             "left": {
                               "parts": [
-                                "jaffle_storefront_session",
+                                "comparison_storefront_sessions",
                                 "customer_id"
                               ]
                             },
                             "op": "=",
                             "right": {
                               "parts": [
-                                "jaffle_customer",
+                                "comparison_customers",
                                 "customer_id"
                               ]
                             }
                           },
                           "table": {
                             "alias": "",
-                            "name": "jaffle_customer"
+                            "name": "comparison_customers"
                           }
                         }
                       ],
@@ -1315,7 +1315,7 @@
                               {
                                 "expr": {
                                   "parts": [
-                                    "jaffle_storefront_session",
+                                    "comparison_storefront_sessions",
                                     "started_at"
                                   ]
                                 },
@@ -1330,7 +1330,7 @@
                           "alias": "__base_event_time",
                           "expression": {
                             "parts": [
-                              "jaffle_storefront_session",
+                              "comparison_storefront_sessions",
                               "started_at"
                             ]
                           }
@@ -1339,7 +1339,7 @@
                           "alias": "__base_event_key",
                           "expression": {
                             "parts": [
-                              "jaffle_storefront_session",
+                              "comparison_storefront_sessions",
                               "session_id"
                             ]
                           }
@@ -1348,7 +1348,7 @@
                           "alias": "__match_key_1",
                           "expression": {
                             "parts": [
-                              "jaffle_customer",
+                              "comparison_customers",
                               "customer_id"
                             ]
                           }
@@ -1364,7 +1364,7 @@
                       "distinct": false,
                       "from_table": {
                         "alias": "",
-                        "name": "jaffle_order"
+                        "name": "comparison_orders"
                       },
                       "group_by": [],
                       "having": [],
@@ -1374,21 +1374,21 @@
                           "on": {
                             "left": {
                               "parts": [
-                                "jaffle_order",
+                                "comparison_orders",
                                 "customer_id"
                               ]
                             },
                             "op": "=",
                             "right": {
                               "parts": [
-                                "jaffle_customer",
+                                "comparison_customers",
                                 "customer_id"
                               ]
                             }
                           },
                           "table": {
                             "alias": "",
-                            "name": "jaffle_customer"
+                            "name": "comparison_customers"
                           }
                         }
                       ],
@@ -1400,7 +1400,7 @@
                           "alias": "__converted_event_time",
                           "expression": {
                             "parts": [
-                              "jaffle_order",
+                              "comparison_orders",
                               "ordered_at"
                             ]
                           }
@@ -1409,7 +1409,7 @@
                           "alias": "__converted_event_key",
                           "expression": {
                             "parts": [
-                              "jaffle_order",
+                              "comparison_orders",
                               "order_id"
                             ]
                           }
@@ -1418,7 +1418,7 @@
                           "alias": "__match_key_1",
                           "expression": {
                             "parts": [
-                              "jaffle_customer",
+                              "comparison_customers",
                               "customer_id"
                             ]
                           }

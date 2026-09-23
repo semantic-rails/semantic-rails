@@ -1,6 +1,6 @@
 model:
   id: customer_history
-  relation: jaffle_customer_history
+  relation: comparison_customer_history
   description: SCD2 history of customer attributes.
   entities:
     customer_history: {}

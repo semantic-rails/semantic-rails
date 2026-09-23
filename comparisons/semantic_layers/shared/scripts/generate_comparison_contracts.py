@@ -442,9 +442,11 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "version": "1.6.32",
         # Cube's results record when it ran them: lastRefreshTime 2026-04-07T03:04:57Z.
         "captured": "2026-04-07",
-        "setup_status": "executed",
+        "setup_status": "captured SQL re-executed on the current dataset",
         "comparison_type": "runnable",
-        "summary_path": RESULTS_ROOT / "cube" / "summary.json",
+        # Cube can't be re-run until its dependency advisories are resolved, so its captured
+        # SQL is re-executed on the current dataset (cube/scripts/replay_sql.py).
+        "summary_path": RESULTS_ROOT / "cube_sql_replay" / "summary.json",
         "unsupported_path": RESULTS_ROOT / "cube" / "unsupported.json",
         "strengths": [
             "The baseline cubes are compact and the local DuckDB setup is straightforward.",
@@ -454,7 +456,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "In this pack, q05 and q09-q16 run through helper cubes or joined rollup filters; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
         ],
         "capture_notes": [
-            "This 1.6.32 capture cannot be re-run until the captured lockfile's dependency advisories are resolved.",
+            "Cube 1.6.32 can't be reinstalled until the captured lockfile's dependency advisories are resolved, so its captured SQL is re-executed on the current dataset.",
         ],
         "scale": {
             "baseline_files": [
@@ -1125,12 +1127,13 @@ def claim_findings(
     total = len(questions)
     title_by_id = {question["id"]: question["title"] for question in questions}
     label = {layer_id: LAYER_META[layer_id]["label"] for layer_id in LAYER_ORDER}
-    layer_counts = {len(item["comparable_layers"]) for item in items}
-    scope = (
-        f"all {len(LAYER_ORDER)} layers"
-        if layer_counts == {len(LAYER_ORDER)}
-        else "the layers that executed them"
-    )
+    layer_counts = {len(item["current_layers"]) for item in items}
+    if layer_counts == {len(LAYER_ORDER)}:
+        scope = f"all {len(LAYER_ORDER)} layers"
+    elif len(layer_counts) == 1:
+        scope = f"the {layer_counts.pop()} layers run on the current dataset"
+    else:
+        scope = "the layers that executed them on the current dataset"
     mismatched = [item for item in items if item["comparison_status"] == "mismatched"]
     if summary["mismatched"] == 0 and summary["not_comparable"] == 0:
         output_check = f"All {total} questions return matching normalized outputs across {scope}."
@@ -1148,6 +1151,14 @@ def claim_findings(
         if summary["not_comparable"]:
             output_check += f" {summary['not_comparable']} could not be compared."
     claims = [output_check]
+    for layer_id, checks in validation_report["stale_layers"].items():
+        captured = recorded_capture(layer_id, {"generated_at": checks["captured"]})
+        differs = ", ".join(short_id(qid) for qid in checks["mismatched"]) or "none"
+        claims.append(
+            f"{label[layer_id]} was captured on {captured} on an earlier dataset and has not been "
+            f"re-run, so it is left out of that count. Its capture matches on "
+            f"{len(checks['matched'])} questions and differs on: {differs}."
+        )
 
     # Say who disagrees with whom, so a mismatch isn't read as a competitor's error.
     splits: dict[str, list[str]] = {}
@@ -1245,6 +1256,10 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                 "label": LAYER_META[layer_id]["label"],
                 "version": recorded_version(layer_id, summary),
                 "captured": recorded_capture(layer_id, summary),
+                "dataset": "stale" if layer_id in validation_report["stale_layers"] else "current",
+                # What each runner recorded about how it ran: tool versions, replay method.
+                "environment": summary.get("environment"),
+                "method": summary.get("method"),
                 "setup_status": LAYER_META[layer_id]["setup_status"],
                 "comparison_type": LAYER_META[layer_id]["comparison_type"],
                 "strengths": LAYER_META[layer_id]["strengths"],
@@ -1301,6 +1316,9 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                 "label": layer["label"],
                 "version": layer["version"],
                 "captured": layer["captured"],
+                "dataset": layer["dataset"],
+                "environment": layer["environment"],
+                "method": layer["method"],
                 "setup_status": layer["setup_status"],
                 "status_totals_by_slice": layer["status_totals_by_slice"],
             }

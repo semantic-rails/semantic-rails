@@ -1,13 +1,15 @@
 # Output Consistency
 
-Generated at `2026-09-23T01:28:01+00:00` using `semantic_rails` as the reference layer.
+Generated at `2026-09-23T01:34:47+00:00` using `semantic_rails` as the reference layer, on dataset `4f24ad8276da`.
 
-- Matched: `14`
-- Mismatched: `2`
+- Matched: `16`
+- Mismatched: `0`
 - Not comparable: `0`
 
-- `shared`: 6 of 7 matched; mismatched: `q07_delivered_revenue_by_month`
-- `semantic_rails_targeted`: 8 of 9 matched; mismatched: `q16_revenue_by_customer_segment_as_of_delivered_time`
+- `shared`: 7 of 7 matched; mismatched: none
+- `semantic_rails_targeted`: 9 of 9 matched; mismatched: none
+
+- Stale capture, excluded from the counts above: `snowflake_semantic_views` (captured 2026-04-06T23:05:57-04:00) matches 14 questions; mismatched: `q07_delivered_revenue_by_month`, `q16_revenue_by_customer_segment_as_of_delivered_time`
 
 ## q01_orders_by_month Orders By Month
 
@@ -48,13 +50,8 @@ Generated at `2026-09-23T01:28:01+00:00` using `semantic_rails` as the reference
 ## q07_delivered_revenue_by_month Delivered Revenue By Month
 
 - Layer statuses: `semantic_rails=native, metricflow=native, cube=native, malloy=native, snowflake_semantic_views=native, ktx=native`
-- Comparison status: `mismatched`
-- Mismatch vs semantic_rails on `metricflow`: `{"left": 12, "right": 1, "type": "row_count"}`
-- Mismatch vs semantic_rails on `cube`: `{"left": 12, "right": 1, "type": "row_count"}`
-- Mismatch vs semantic_rails on `malloy`: `{"left": 12, "right": 1, "type": "row_count"}`
-- Mismatch vs semantic_rails on `snowflake_semantic_views`: `{"left": 12, "right": 1, "type": "row_count"}`
-- Mismatch vs semantic_rails on `ktx`: `{"left": 12, "right": 1, "type": "row_count"}`
-- Groups of layers with identical outputs: `semantic_rails | metricflow, cube, malloy, snowflake_semantic_views, ktx`
+- Comparison status: `matched`
+- Comparable layers: `semantic_rails, metricflow, cube, malloy, snowflake_semantic_views, ktx`
 
 ## q08_revenue_by_customer_segment_as_of_order_time Revenue By Historical Customer Segment
 
@@ -107,10 +104,5 @@ Generated at `2026-09-23T01:28:01+00:00` using `semantic_rails` as the reference
 ## q16_revenue_by_customer_segment_as_of_delivered_time Revenue By Historical Customer Segment As Of Delivered Time
 
 - Layer statuses: `semantic_rails=native, metricflow=native, cube=precomputed, malloy=workaround, snowflake_semantic_views=workaround, ktx=workaround`
-- Comparison status: `mismatched`
-- Mismatch vs semantic_rails on `metricflow`: `{"left": 32, "right": 2, "type": "row_count"}`
-- Mismatch vs semantic_rails on `cube`: `{"left": 32, "right": 2, "type": "row_count"}`
-- Mismatch vs semantic_rails on `malloy`: `{"left": 32, "right": 2, "type": "row_count"}`
-- Mismatch vs semantic_rails on `snowflake_semantic_views`: `{"left": 32, "right": 2, "type": "row_count"}`
-- Mismatch vs semantic_rails on `ktx`: `{"left": 32, "right": 2, "type": "row_count"}`
-- Groups of layers with identical outputs: `semantic_rails | metricflow, cube, malloy, snowflake_semantic_views, ktx`
+- Comparison status: `matched`
+- Comparable layers: `semantic_rails, metricflow, cube, malloy, snowflake_semantic_views, ktx`

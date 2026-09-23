@@ -1,4 +1,4 @@
 {{ config(materialized='view') }}
 
 select *
-from jaffle_storefront_session
+from comparison_storefront_sessions

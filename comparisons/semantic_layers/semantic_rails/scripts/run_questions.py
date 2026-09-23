@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
+import duckdb
 import yaml
 
 from semantic_rails import config as config_module
@@ -19,6 +20,9 @@ RESULTS_DIR = (
     REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "results" / "semantic_rails"
 )
 PACKAGE_ID = "comparison_semantic_rails"
+DB_PATH = (
+    REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "data" / "jaffle_comparison.duckdb"
+)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -66,6 +70,8 @@ def main() -> None:
     config_module.list_package_paths = lambda: {PACKAGE_ID: str(PACKAGE_DIR)}  # type: ignore[assignment]
 
     provenance = _provenance()
+    with duckdb.connect(str(DB_PATH), read_only=True) as con:
+        (fingerprint,) = con.execute("SELECT fingerprint FROM comparison_dataset").fetchone()
     questions = list(
         (yaml.safe_load(QUESTIONS_PATH.read_text(encoding="utf-8")) or {}).get("questions", [])
         or []
@@ -112,6 +118,7 @@ def main() -> None:
                 "semantic_rails_version": version("semantic-rails"),
                 **provenance,
                 "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "dataset_fingerprint": fingerprint,
                 "questions": summary,
             },
         )

@@ -36,6 +36,22 @@ dependency graph.
 
 Artifacts are written under `comparisons/semantic_layers/shared/results/cube/`.
 
+## Re-executing the captured SQL
+
+The SQL that Cube generated for each question is captured in
+`shared/results/cube/q*/sql.json` and doesn't depend on the data. So that Cube answers on
+the same dataset as every other layer, the output check uses a re-execution of that SQL:
+
+```bash
+uv run python comparisons/semantic_layers/cube/scripts/replay_sql.py
+```
+
+It runs each captured statement with its captured parameters against the shared DuckDB,
+with the session time zone pinned to UTC (Cube's SQL casts through `timestamptz`), and
+writes `shared/results/cube_sql_replay/`. On every question whose data didn't change, the
+replay returns exactly the rows Cube itself returned. The capture above stays pinned by the
+offline verifier.
+
 Notes:
 
 - The original capture used the local Node/Cube Core path rather than Docker.

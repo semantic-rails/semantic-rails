@@ -1,6 +1,6 @@
 model:
   id: storefront_sessions
-  relation: jaffle_storefront_session
+  relation: comparison_storefront_sessions
   description: One row per browsing session before or around an order.
   entities:
     storefront_session: {}

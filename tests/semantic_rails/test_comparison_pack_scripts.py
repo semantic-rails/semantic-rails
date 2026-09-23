@@ -42,6 +42,7 @@ def _question(qid: str, status: str = "matched") -> dict[str, Any]:
         "slice": "shared" if qid in SHARED else "semantic_rails_targeted",
         "comparison_status": status,
         "comparable_layers": list(LAYERS),
+        "current_layers": list(LAYERS),
         "layer_statuses": dict.fromkeys(LAYERS, "native"),
     }
 
@@ -59,10 +60,14 @@ def _report(items: list[dict[str, Any]]) -> dict[str, Any]:
         entry[item["comparison_status"]] += 1
         if item["comparison_status"] == "mismatched":
             entry["mismatched_questions"].append(item["question_id"])
-    return {"summary": counts, "summary_by_slice": by_slice, "questions": items}
+    return {"summary": counts, "summary_by_slice": by_slice, "questions": items, "stale_layers": {}}
 
 
-def _claims(items: list[dict[str, Any]], labels: dict[str, str] | None = None) -> list[str]:
+def _claims(
+    items: list[dict[str, Any]],
+    labels: dict[str, str] | None = None,
+    stale: dict[str, Any] | None = None,
+) -> list[str]:
     questions = [{"id": item["question_id"], "title": item["question_id"]} for item in items]
     slice_ids: dict[str, list[str]] = {}
     for item in items:
@@ -77,7 +82,9 @@ def _claims(items: list[dict[str, Any]], labels: dict[str, str] | None = None) -
         }
         for layer in LAYERS
     ]
-    return generator.claim_findings(_report(items), questions, slice_ids, layers)
+    report = _report(items)
+    report["stale_layers"] = stale or {}
+    return generator.claim_findings(report, questions, slice_ids, layers)
 
 
 def test_agreement_groups_agree_pairwise_despite_non_transitive_tolerance() -> None:
@@ -131,6 +138,7 @@ def test_unsupported_layer_is_named_and_empty_slices_are_skipped() -> None:
     unsupported = copy.deepcopy(items[2])
     unsupported["layer_statuses"]["malloy"] = "unsupported"
     unsupported["comparable_layers"].remove("malloy")
+    unsupported["current_layers"].remove("malloy")
     items[2] = unsupported
     claims = _claims(items)
     assert "across the layers that executed them" in claims[0]
@@ -177,3 +185,29 @@ def test_size_blocks_carry_no_question_or_label_counts() -> None:
     for layer in LAYERS:
         for block in generator.layer_scale(layer).values():
             assert set(block) == {"models", "files", "loc", "relationships"}
+
+
+def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
+    items = [_question(qid) for qid in SHARED + TARGETED]
+    for item in items:
+        item["current_layers"] = [layer for layer in LAYERS if layer != "snowflake_semantic_views"]
+    differs = ["q07_shared", "q16_targeted"]
+    stale = {
+        "snowflake_semantic_views": {
+            "captured": "2026-04-06T23:05:57-04:00",
+            "matched": [
+                item["question_id"] for item in items if item["question_id"] not in differs
+            ],
+            "mismatched": differs,
+        }
+    }
+    claims = _claims(items, stale=stale)
+    assert claims[0] == (
+        "All 16 questions return matching normalized outputs across the 5 layers run on the "
+        "current dataset."
+    )
+    assert claims[1] == (
+        "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not "
+        "been re-run, so it is left out of that count. Its capture matches on 14 questions and "
+        "differs on: q07, q16."
+    )

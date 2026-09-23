@@ -1,13 +1,13 @@
 WITH leaf_1 AS (
 SELECT
-  jaffle_customer_history.customer_segment AS g1,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  SUM(jaffle_order.order_total_cents / 100.0) AS m1
-FROM jaffle_order
-LEFT JOIN jaffle_customer_history ON jaffle_order.customer_id = jaffle_customer_history.customer_id AND jaffle_customer_history.valid_from <= jaffle_order.ordered_at AND (jaffle_customer_history.valid_to > jaffle_order.ordered_at OR (jaffle_customer_history.valid_to IS NULL))
+  comparison_customer_history.customer_segment AS g1,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  SUM(comparison_orders.order_total_cents / 100.0) AS m1
+FROM comparison_orders
+LEFT JOIN comparison_customer_history ON comparison_orders.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_orders.ordered_at AND (comparison_customer_history.valid_to > comparison_orders.ordered_at OR (comparison_customer_history.valid_to IS NULL))
 GROUP BY
-  jaffle_customer_history.customer_segment,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  comparison_customer_history.customer_segment,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 )
 SELECT
   base.g1 AS "dimension.jaffle_customer_history_segment",

@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 11.38,
-      "compile_ms": 11.149,
+      "cache_lookup_ms": 23.188,
+      "compile_ms": 22.955,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -287,7 +287,7 @@
           "has_start": false,
           "has_time_filter": true,
           "pushed_to_scan": true,
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
             "calendar_id": "default",
@@ -312,7 +312,7 @@
               "measure_id": "measure.jaffle.order_count"
             }
           ],
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
@@ -359,8 +359,8 @@
             ],
             "omitted_semantic_root_entity": "",
             "physical_anchor_entity": "entity.jaffle_order",
-            "relation": "jaffle_order",
-            "selected_relation": "jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
             "semantic_equivalence": "",
             "source_entity": "entity.jaffle_order",
@@ -369,7 +369,7 @@
           "id": "leaf_1_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan jaffle_order"
+          "label": "Scan comparison_orders"
         },
         {
           "details": {
@@ -455,7 +455,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nGROUP BY\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -516,7 +516,7 @@
             "distinct": false,
             "from_table": {
               "alias": "",
-              "name": "jaffle_order"
+              "name": "comparison_orders"
             },
             "group_by": [
               {
@@ -527,7 +527,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -554,7 +554,7 @@
                     {
                       "expr": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       },
@@ -571,7 +571,7 @@
                   "args": [
                     {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "order_id"
                       ]
                     }
@@ -911,7 +911,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 12.581,
+  "timing_ms": 24.384,
   "trace": {
     "fallback": {
       "reason": "",

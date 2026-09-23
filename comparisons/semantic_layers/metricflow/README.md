@@ -1,6 +1,7 @@
 # MetricFlow Comparison Project
 
-Pinned for this comparison:
+Pinned for this comparison in `requirements.in`, and locked with hashes in
+`requirements.lock`:
 
 - `dbt-metricflow==0.11.0`
 - `dbt-duckdb==1.10.1`
@@ -8,8 +9,8 @@ Pinned for this comparison:
 Local setup:
 
 ```bash
-uv venv .venv
-uv pip install --python .venv/bin/python --prerelease=allow dbt-metricflow==0.11.0 dbt-duckdb==1.10.1
+uv venv --python 3.12 .venv
+uv pip sync --python .venv/bin/python requirements.lock
 DBT_PROFILES_DIR=$(pwd) .venv/bin/dbt build
 DBT_PROFILES_DIR=$(pwd) .venv/bin/mf validate-configs
 DBT_PROFILES_DIR=$(pwd) .venv/bin/mf list metrics
@@ -23,11 +24,10 @@ uv run python comparisons/semantic_layers/metricflow/scripts/run_questions.py
 
 Artifacts are written under `comparisons/semantic_layers/shared/results/metricflow/`.
 
-The runner will bootstrap `.venv` and install the pinned packages automatically if the local environment has been cleaned.
+The runner creates `.venv` if it is missing, syncs it to `requirements.lock` on every run, and records the installed versions in `summary.json`.
 
 Notes:
 
-- The install currently requires `--prerelease=allow` because `dbt-metricflow==0.11.0` resolves through `dbt-semantic-interfaces==0.9.4.dev0`.
+- `dbt-metricflow==0.11.0` requires the pre-release `dbt-semantic-interfaces==0.9.4.dev0`. `requirements.in` names it, so the lock resolves with `--prerelease=if-necessary-or-explicit` and every other package stays on a release. (`--prerelease=allow` pulled a DuckDB nightly.)
 - `order_items.sql` is intentionally enriched with `ordered_at`, `store_id`, and `customer_id` from `jaffle_order` so time and grouping work cleanly in MetricFlow on the shared item grain.
 - q09-q15 are implemented through helper dbt views, so they are labeled `precomputed` rather than native MetricFlow semantics. MetricFlow's native conversion metrics and metric filters are not modeled yet.
-- The committed q07 and q16 answers are stale. They are consistent with a capture made before the seed derived lifecycle rows for every order: this model's committed SQL now returns 12 and 32 rows on the same data, not 1 and 2 (see the pack README).

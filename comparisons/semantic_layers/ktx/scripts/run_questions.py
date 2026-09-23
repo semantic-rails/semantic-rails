@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
+import tomllib
+from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -247,10 +251,30 @@ def main() -> None:
             }
         )
 
+    ktx_commit = subprocess.run(
+        ["git", "-C", str(KTX_SL_PATH), "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    ktx_project = tomllib.loads((KTX_SL_PATH / "pyproject.toml").read_text(encoding="utf-8"))
+    with duckdb.connect(str(DB_PATH), read_only=True) as con:
+        (fingerprint,) = con.execute("SELECT fingerprint FROM comparison_dataset").fetchone()
     _write(
         RESULTS_DIR / "summary.json",
         json.dumps(
-            {"layer": "ktx", "ktx_sl_path": str(KTX_SL_PATH), "questions": summary}, indent=2
+            {
+                "layer": "ktx",
+                "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "dataset_fingerprint": fingerprint,
+                "environment": {
+                    "ktx_commit": ktx_commit,
+                    "ktx-sl": ktx_project["project"]["version"],
+                    **{name: version(name) for name in ("sqlglot", "pydantic", "pyyaml", "duckdb")},
+                },
+                "questions": summary,
+            },
+            indent=2,
         ),
     )
     print(f"Wrote KtX artifacts to {RESULTS_DIR}")

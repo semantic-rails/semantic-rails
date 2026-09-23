@@ -1,92 +1,92 @@
 [
   {
-    "ordered_month": "2016-09-01",
+    "ordered_month": "2016-09-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 6080.059999999984
+    "qualifying_revenue_usd": 6080.059999999974
   },
   {
-    "ordered_month": "2016-10-01",
+    "ordered_month": "2016-10-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 10002.659999999973
+    "qualifying_revenue_usd": 10002.659999999954
   },
   {
-    "ordered_month": "2016-11-01",
+    "ordered_month": "2016-11-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 14757.669999999998
+    "qualifying_revenue_usd": 14757.670000000002
   },
   {
-    "ordered_month": "2016-12-01",
+    "ordered_month": "2016-12-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 19451.91999999998
+    "qualifying_revenue_usd": 19451.919999999995
   },
   {
-    "ordered_month": "2017-01-01",
+    "ordered_month": "2017-01-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 24923.480000000043
+    "qualifying_revenue_usd": 24923.47999999997
   },
   {
-    "ordered_month": "2017-02-01",
+    "ordered_month": "2017-02-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 20033.919999999955
+    "qualifying_revenue_usd": 20033.91999999998
   },
   {
-    "ordered_month": "2017-03-01",
+    "ordered_month": "2017-03-01 00:00:00",
     "store_name": "Brooklyn",
-    "qualifying_revenue_usd": 7047.029999999888
+    "qualifying_revenue_usd": 7047.029999999902
   },
   {
-    "ordered_month": "2017-03-01",
+    "ordered_month": "2017-03-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 27524.63999999997
+    "qualifying_revenue_usd": 27524.639999999985
   },
   {
-    "ordered_month": "2017-04-01",
+    "ordered_month": "2017-04-01 00:00:00",
     "store_name": "Brooklyn",
-    "qualifying_revenue_usd": 19418.830000000184
+    "qualifying_revenue_usd": 19418.830000000147
   },
   {
-    "ordered_month": "2017-04-01",
+    "ordered_month": "2017-04-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 22774.049999999967
+    "qualifying_revenue_usd": 22774.050000000014
   },
   {
-    "ordered_month": "2017-05-01",
+    "ordered_month": "2017-05-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 29219.310000000012
+    "qualifying_revenue_usd": 29219.31000000004
   },
   {
-    "ordered_month": "2017-05-01",
+    "ordered_month": "2017-05-01 00:00:00",
     "store_name": "Brooklyn",
-    "qualifying_revenue_usd": 24180.960000000297
+    "qualifying_revenue_usd": 24180.960000000316
   },
   {
-    "ordered_month": "2017-06-01",
-    "store_name": "Brooklyn",
-    "qualifying_revenue_usd": 19267.010000000206
-  },
-  {
-    "ordered_month": "2017-06-01",
+    "ordered_month": "2017-06-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 19678.330000000016
+    "qualifying_revenue_usd": 19678.329999999984
   },
   {
-    "ordered_month": "2017-07-01",
+    "ordered_month": "2017-06-01 00:00:00",
     "store_name": "Brooklyn",
-    "qualifying_revenue_usd": 22613.71000000029
+    "qualifying_revenue_usd": 19267.010000000242
   },
   {
-    "ordered_month": "2017-07-01",
-    "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 20318.68000000002
-  },
-  {
-    "ordered_month": "2017-08-01",
+    "ordered_month": "2017-07-01 00:00:00",
     "store_name": "Brooklyn",
-    "qualifying_revenue_usd": 35339.080000000475
+    "qualifying_revenue_usd": 22613.71000000021
   },
   {
-    "ordered_month": "2017-08-01",
+    "ordered_month": "2017-07-01 00:00:00",
     "store_name": "Philadelphia",
-    "qualifying_revenue_usd": 24424.96000000002
+    "qualifying_revenue_usd": 20318.68000000001
+  },
+  {
+    "ordered_month": "2017-08-01 00:00:00",
+    "store_name": "Philadelphia",
+    "qualifying_revenue_usd": 24424.960000000043
+  },
+  {
+    "ordered_month": "2017-08-01 00:00:00",
+    "store_name": "Brooklyn",
+    "qualifying_revenue_usd": 35339.08000000055
   }
 ]

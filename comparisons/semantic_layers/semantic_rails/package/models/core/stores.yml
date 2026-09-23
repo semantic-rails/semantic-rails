@@ -1,6 +1,6 @@
 model:
   id: stores
-  relation: jaffle_store
+  relation: comparison_stores
   entities:
     store: {}
   dimensions:

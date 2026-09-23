@@ -1,6 +1,50 @@
 [
   {
     "delivered_at_month": "2016-09-01 00:00:00",
-    "delivered_revenue": 136.73999999999998
+    "delivered_revenue": 18053.280000000017
+  },
+  {
+    "delivered_at_month": "2016-10-01 00:00:00",
+    "delivered_revenue": 21923.95000000004
+  },
+  {
+    "delivered_at_month": "2016-11-01 00:00:00",
+    "delivered_revenue": 27916.82000000004
+  },
+  {
+    "delivered_at_month": "2016-12-01 00:00:00",
+    "delivered_revenue": 35677.60000000004
+  },
+  {
+    "delivered_at_month": "2017-01-01 00:00:00",
+    "delivered_revenue": 45017.949999999895
+  },
+  {
+    "delivered_at_month": "2017-02-01 00:00:00",
+    "delivered_revenue": 43358.11999999984
+  },
+  {
+    "delivered_at_month": "2017-03-01 00:00:00",
+    "delivered_revenue": 73950.32000000034
+  },
+  {
+    "delivered_at_month": "2017-04-01 00:00:00",
+    "delivered_revenue": 83316.99000000133
+  },
+  {
+    "delivered_at_month": "2017-05-01 00:00:00",
+    "delivered_revenue": 96070.35000000265
+  },
+  {
+    "delivered_at_month": "2017-06-01 00:00:00",
+    "delivered_revenue": 98378.87000000282
+  },
+  {
+    "delivered_at_month": "2017-07-01 00:00:00",
+    "delivered_revenue": 94857.1900000021
+  },
+  {
+    "delivered_at_month": "2017-08-01 00:00:00",
+    "delivered_revenue": 107371.59000000366
   }
 ]

@@ -7,19 +7,17 @@ compare latency, token use or cost. It runs without touching the active
 
 ## Read This First
 
-- **Output check: 14 of 16 questions return matching normalized outputs across all six layers.**
-  q07 and q16 do not, because the layers did not answer them from the same data. On both, the
-  other five layers agree with each other and Semantic Rails differs:
-  - The pack's shared `comparison_order_lifecycle` view keeps only the 11 hand-authored lifecycle
-    rows (1 delivered month). Cube, Malloy, Snowflake Semantic Views and KtX read it.
-  - The Semantic Rails pack reads the full `jaffle_order_lifecycle` table instead (59,652 orders,
-    12 delivered months).
-  - MetricFlow's model also reads the full table, but its committed answers are consistent with a
-    capture made before the seed derived lifecycle rows for every order: replaying its committed
-    SQL on today's data returns 12 and 32 rows, not 1 and 2.
-
-  Pointing every layer at the same tables is the next change. The per-question report is
-  [`shared/results/validation/output_consistency.md`](shared/results/validation/output_consistency.md).
+- **Output check: all 16 questions return matching normalized outputs across the five layers
+  run on the current dataset** (Semantic Rails, MetricFlow, Cube, Malloy and KtX). Every layer
+  reads the same `comparison_*` views. Cube's answers come from re-executing the SQL that Cube
+  1.6.32 generated, because Cube itself can't be reinstalled until the captured lockfile's
+  dependency advisories are resolved. On every question whose data didn't change, that replay
+  returns exactly the rows Cube returned.
+- **Snowflake Semantic Views is a stale capture.** It ran on 2026-04-07 on an earlier dataset,
+  whose lifecycle view held only the 11 hand-authored lifecycle rows, and it can't be re-run
+  without a live account. The output check reports it separately: it matches on 14 questions
+  and differs on q07 and q16, the two questions that read lifecycle data. The per-question report
+  is [`shared/results/validation/output_consistency.md`](shared/results/validation/output_consistency.md).
 - **9 of the 16 questions target Semantic Rails features.** q08-q16 (`scope_level: stretch`) were
   chosen to exercise primitives Semantic Rails ships: metric predicates, temporal-validity joins,
   event-pair and same-store conversion, and contextual entity-graph inheritance. They are a
@@ -44,16 +42,18 @@ compare latency, token use or cost. It runs without touching the active
 | Layer | Version | Captured (UTC) | Re-runnable from this repo |
 | --- | --- | --- | --- |
 | Semantic Rails | 0.2.1 | 2026-09-23 | yes |
-| MetricFlow | `dbt-metricflow 0.11.0`, `dbt-duckdb 1.10.1` | by 2026-06-24 (exact date not recorded) | yes; installs pinned packages |
-| Cube | `1.6.32` | 2026-04-07 | no; captured evidence only, until the captured lockfile's dependency advisories are resolved |
-| Malloy | `@malloydata/cli 0.0.52` | by 2026-06-24 (exact date not recorded) | yes; installs the pinned CLI |
-| Snowflake Semantic Views | Snowflake CLI + semantic view trial account | 2026-04-07 | needs a live Snowflake account |
-| KtX | `ktx-sl 0.13.1` / KtX `a155c0b` | by 2026-06-24 (exact date not recorded) | yes; clones KtX at `a155c0b` |
+| MetricFlow | `dbt-metricflow 0.11.0`, `dbt-duckdb 1.10.1` (`metricflow/requirements.lock`) | 2026-09-23 | yes; installs the locked packages |
+| Cube | `1.6.32` | SQL captured 2026-04-07; re-executed 2026-09-23 | the captured SQL re-executes; Cube itself can't be reinstalled until the captured lockfile's dependency advisories are resolved |
+| Malloy | `@malloydata/cli 0.0.52` | 2026-09-23 | yes; installs the locked CLI |
+| Snowflake Semantic Views | Snowflake CLI + semantic view trial account | 2026-04-07, on an earlier dataset | needs a live Snowflake account |
+| KtX | `ktx-sl 0.13.1` / KtX `a155c0b` | 2026-09-23 | yes; clones KtX at `a155c0b` |
 
-Dates are UTC. Cube's results record `lastRefreshTime` 2026-04-07T03:04:57Z, and Snowflake's
-summary records `2026-04-06T23:05:57-04:00`. The other June captures predate the consistency
-report generated at 2026-06-24T03:47:13Z. The Semantic Rails runner records its engine version,
-commit and run timestamp in `shared/results/semantic_rails/summary.json`.
+Dates are UTC. Cube's captured results record `lastRefreshTime` 2026-04-07T03:04:57Z, and
+Snowflake's summary records `2026-04-06T23:05:57-04:00`. Each runner records its tool versions,
+run timestamp and dataset fingerprint in its `summary.json` under `shared/results/`; the
+Semantic Rails runner also records its engine and package source trees. The fingerprint hashes
+the seed files and the `comparison_*` view definitions, so the output check can tell a capture
+made on other data from a real mismatch.
 
 ## Shared Questions: q01-q07
 
@@ -69,7 +69,7 @@ sum and group-by-month surface every layer in the pack was built to answer.
 | Snowflake Semantic Views | 7 native |
 | KtX | 7 native |
 
-Output check: 6 of 7 match across all six layers. q07 does not; see *Read This First*.
+Output check: 7 of 7 match across the five layers run on the current dataset.
 
 ## Semantic-Rails-Targeted Questions: q08-q16
 
@@ -86,7 +86,7 @@ each layer today. It is not a ranking.
 | Snowflake Semantic Views | 9 workaround | SQL on the same tables outside `SEMANTIC_VIEW(...)`; range joins not modeled yet |
 | KtX | 9 workaround | SQL-backed sources and query-level filters |
 
-Output check: 8 of 9 match across all six layers. q16 does not; see *Read This First*.
+Output check: 9 of 9 match across the five layers run on the current dataset.
 
 ## What This Pack Does Not Measure
 
@@ -132,7 +132,7 @@ Output check: 8 of 9 match across all six layers. q16 does not; see *Read This F
   - `cube/node_modules`, `cube/.cubestore`
   - `malloy/node_modules`, `malloy/.home`, `malloy/.cache`
   - `snowflake_semantic_views/trial_data/*.csv`
-- Executed result artifacts under `shared/results/` are kept because they are part of the comparison evidence.
+- Executed result artifacts under `shared/results/` are kept because they are part of the comparison evidence. `shared/results/cube/` is Cube's pinned capture; `shared/results/cube_sql_replay/` re-executes its SQL on the current dataset.
 
 ## Reproduce
 
@@ -157,14 +157,16 @@ Output check: 8 of 9 match across all six layers. q16 does not; see *Read This F
    test -d /tmp/ktx-compare || git clone https://github.com/Kaelio/ktx /tmp/ktx-compare
    git -C /tmp/ktx-compare checkout a155c0b
    PYTHONPATH=/tmp/ktx-compare/python/ktx-sl \
-     uv run --with sqlglot --with pydantic --with pyyaml \
+     uv run --with sqlglot==30.19.0 --with pydantic==2.13.4 --with pyyaml==6.0.3 \
      python comparisons/semantic_layers/ktx/scripts/run_questions.py
    ```
 
-4. Verify the Cube capture without installing its vulnerable npm graph:
+4. Verify the Cube capture without installing its vulnerable npm graph, then re-execute its
+   captured SQL on the current dataset:
 
    ```bash
    python3 comparisons/semantic_layers/cube/scripts/verify_evidence.py
+   uv run python comparisons/semantic_layers/cube/scripts/replay_sql.py
    ```
 
 5. Rebuild the Snowflake trial pack with the default `semantic_views_trial` connection:

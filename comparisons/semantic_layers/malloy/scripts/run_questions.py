@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -56,7 +57,7 @@ def _write(path: Path, text: str) -> None:
 def _ensure_cli() -> None:
     if MALLOY_BIN.exists():
         return
-    install = _run(["npm", "install"])
+    install = _run(["npm", "ci"])
     _write(RESULTS_DIR / "npm_install.stdout.txt", install.stdout)
     _write(RESULTS_DIR / "npm_install.stderr.txt", install.stderr)
     if install.returncode != 0 or not MALLOY_BIN.exists():
@@ -83,6 +84,10 @@ def main() -> None:
         shutil.rmtree(RESULTS_DIR)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_cli()
+    cli_package = PROJECT_DIR / "node_modules" / "@malloydata" / "cli" / "package.json"
+    cli_version = json.loads(cli_package.read_text(encoding="utf-8"))["version"]
+    with duckdb.connect(str(DB_PATH), read_only=True) as con:
+        (fingerprint,) = con.execute("SELECT fingerprint FROM comparison_dataset").fetchone()
 
     validate = _run(
         [
@@ -151,7 +156,17 @@ def main() -> None:
         )
 
     (RESULTS_DIR / "summary.json").write_text(
-        json.dumps({"layer": "malloy", "questions": summary}, indent=2, sort_keys=True),
+        json.dumps(
+            {
+                "layer": "malloy",
+                "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "dataset_fingerprint": fingerprint,
+                "environment": {"@malloydata/cli": cli_version, "duckdb": duckdb.__version__},
+                "questions": summary,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
 

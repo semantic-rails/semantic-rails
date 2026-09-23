@@ -131,8 +131,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 37.067,
-      "compile_ms": 1.167,
+      "cache_lookup_ms": 3.861,
+      "compile_ms": 1.171,
       "dialect": "duckdb",
       "physical_plan_nodes": 10
     },
@@ -1672,7 +1672,7 @@
           "has_start": false,
           "has_time_filter": true,
           "pushed_to_scan": true,
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
             "calendar_id": "default",
@@ -1688,7 +1688,7 @@
           "has_start": false,
           "has_time_filter": true,
           "pushed_to_scan": true,
-          "relation": "jaffle_item",
+          "relation": "comparison_order_items",
           "scan_id": "leaf_2_scan",
           "time_filter": {
             "calendar_id": "default",
@@ -1713,7 +1713,7 @@
               "measure_id": "measure.jaffle.order_count"
             }
           ],
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
@@ -1732,7 +1732,7 @@
               "measure_id": "measure.jaffle.item_revenue_usd"
             }
           ],
-          "relation": "jaffle_item",
+          "relation": "comparison_order_items",
           "scan_id": "leaf_2_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_item",
@@ -2113,8 +2113,8 @@
             ],
             "omitted_semantic_root_entity": "",
             "physical_anchor_entity": "entity.jaffle_order",
-            "relation": "jaffle_order",
-            "selected_relation": "jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
             "semantic_equivalence": "",
             "source_entity": "entity.jaffle_order",
@@ -2123,7 +2123,7 @@
           "id": "leaf_1_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan jaffle_order"
+          "label": "Scan comparison_orders"
         },
         {
           "details": {
@@ -2316,8 +2316,8 @@
             ],
             "omitted_semantic_root_entity": "",
             "physical_anchor_entity": "entity.jaffle_item",
-            "relation": "jaffle_item",
-            "selected_relation": "jaffle_item",
+            "relation": "comparison_order_items",
+            "selected_relation": "comparison_order_items",
             "selected_relation_type": "raw",
             "semantic_equivalence": "",
             "source_entity": "entity.jaffle_item",
@@ -2326,7 +2326,7 @@
           "id": "leaf_2_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan jaffle_item"
+          "label": "Scan comparison_order_items"
         },
         {
           "details": {
@@ -2653,7 +2653,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nleaf_2 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_item.item_revenue_cents / 100.0) AS m2\nFROM jaffle_item\nINNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.g1, right_side.g1) AS g1,\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders,\n  base.m2 AS item_revenue_usd\nFROM combined_2 AS base\nORDER BY\n  orders DESC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m2\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.g1, right_side.g1) AS g1,\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders,\n  base.m2 AS item_revenue_usd\nFROM combined_2 AS base\nORDER BY\n  orders DESC",
     "rewrite_strategy": {
       "status": "rewritten",
       "steps": [
@@ -2814,12 +2814,12 @@
             "distinct": false,
             "from_table": {
               "alias": "",
-              "name": "jaffle_order"
+              "name": "comparison_orders"
             },
             "group_by": [
               {
                 "parts": [
-                  "jaffle_store",
+                  "comparison_stores",
                   "store_name"
                 ]
               },
@@ -2831,7 +2831,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -2849,21 +2849,21 @@
                 "on": {
                   "left": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "store_id"
                     ]
                   },
                   "op": "=",
                   "right": {
                     "parts": [
-                      "jaffle_store",
+                      "comparison_stores",
                       "store_id"
                     ]
                   }
                 },
                 "table": {
                   "alias": "",
-                  "name": "jaffle_store"
+                  "name": "comparison_stores"
                 }
               }
             ],
@@ -2875,7 +2875,7 @@
                 "alias": "g1",
                 "expression": {
                   "parts": [
-                    "jaffle_store",
+                    "comparison_stores",
                     "store_name"
                   ]
                 }
@@ -2890,7 +2890,7 @@
                     {
                       "expr": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       },
@@ -2907,7 +2907,7 @@
                   "args": [
                     {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "order_id"
                       ]
                     }
@@ -2927,12 +2927,12 @@
             "distinct": false,
             "from_table": {
               "alias": "",
-              "name": "jaffle_item"
+              "name": "comparison_order_items"
             },
             "group_by": [
               {
                 "parts": [
-                  "jaffle_store",
+                  "comparison_stores",
                   "store_name"
                 ]
               },
@@ -2944,7 +2944,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -2962,21 +2962,21 @@
                 "on": {
                   "left": {
                     "parts": [
-                      "jaffle_item",
+                      "comparison_order_items",
                       "order_id"
                     ]
                   },
                   "op": "=",
                   "right": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "order_id"
                     ]
                   }
                 },
                 "table": {
                   "alias": "",
-                  "name": "jaffle_order"
+                  "name": "comparison_orders"
                 }
               },
               {
@@ -2984,21 +2984,21 @@
                 "on": {
                   "left": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "store_id"
                     ]
                   },
                   "op": "=",
                   "right": {
                     "parts": [
-                      "jaffle_store",
+                      "comparison_stores",
                       "store_id"
                     ]
                   }
                 },
                 "table": {
                   "alias": "",
-                  "name": "jaffle_store"
+                  "name": "comparison_stores"
                 }
               }
             ],
@@ -3010,7 +3010,7 @@
                 "alias": "g1",
                 "expression": {
                   "parts": [
-                    "jaffle_store",
+                    "comparison_stores",
                     "store_name"
                   ]
                 }
@@ -3025,7 +3025,7 @@
                     {
                       "expr": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       },
@@ -3043,7 +3043,7 @@
                     {
                       "left": {
                         "parts": [
-                          "jaffle_item",
+                          "comparison_order_items",
                           "item_revenue_cents"
                         ]
                       },
@@ -4530,7 +4530,7 @@
     "version": 1
   },
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nleaf_2 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_item.item_revenue_cents / 100.0) AS m2\nFROM jaffle_item\nINNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.g1, right_side.g1) AS g1,\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders,\n  base.m2 AS item_revenue_usd\nFROM combined_2 AS base\nORDER BY\n  orders DESC",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m2\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.g1, right_side.g1) AS g1,\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders,\n  base.m2 AS item_revenue_usd\nFROM combined_2 AS base\nORDER BY\n  orders DESC",
   "request_context": {},
   "row_count": 18,
   "rows": [
@@ -4643,8 +4643,8 @@
       "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:b1bf4e16f2ed9474bfeec78030e8849024eb239aba911b80230bc3b59bfe6a52",
-  "source_fingerprint": "5b0665c39f43be823184d1e560de283866b44b6bf35f2a53f152a2bf4a7496fd",
+  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
+  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
   "sql_plan": {
     "ctes": [
       {
@@ -4654,12 +4654,12 @@
           "distinct": false,
           "from_table": {
             "alias": "",
-            "name": "jaffle_order"
+            "name": "comparison_orders"
           },
           "group_by": [
             {
               "parts": [
-                "jaffle_store",
+                "comparison_stores",
                 "store_name"
               ]
             },
@@ -4671,7 +4671,7 @@
                 {
                   "expr": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "ordered_at"
                     ]
                   },
@@ -4689,21 +4689,21 @@
               "on": {
                 "left": {
                   "parts": [
-                    "jaffle_order",
+                    "comparison_orders",
                     "store_id"
                   ]
                 },
                 "op": "=",
                 "right": {
                   "parts": [
-                    "jaffle_store",
+                    "comparison_stores",
                     "store_id"
                   ]
                 }
               },
               "table": {
                 "alias": "",
-                "name": "jaffle_store"
+                "name": "comparison_stores"
               }
             }
           ],
@@ -4715,7 +4715,7 @@
               "alias": "g1",
               "expression": {
                 "parts": [
-                  "jaffle_store",
+                  "comparison_stores",
                   "store_name"
                 ]
               }
@@ -4730,7 +4730,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -4747,7 +4747,7 @@
                 "args": [
                   {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "order_id"
                     ]
                   }
@@ -4767,12 +4767,12 @@
           "distinct": false,
           "from_table": {
             "alias": "",
-            "name": "jaffle_item"
+            "name": "comparison_order_items"
           },
           "group_by": [
             {
               "parts": [
-                "jaffle_store",
+                "comparison_stores",
                 "store_name"
               ]
             },
@@ -4784,7 +4784,7 @@
                 {
                   "expr": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "ordered_at"
                     ]
                   },
@@ -4802,21 +4802,21 @@
               "on": {
                 "left": {
                   "parts": [
-                    "jaffle_item",
+                    "comparison_order_items",
                     "order_id"
                   ]
                 },
                 "op": "=",
                 "right": {
                   "parts": [
-                    "jaffle_order",
+                    "comparison_orders",
                     "order_id"
                   ]
                 }
               },
               "table": {
                 "alias": "",
-                "name": "jaffle_order"
+                "name": "comparison_orders"
               }
             },
             {
@@ -4824,21 +4824,21 @@
               "on": {
                 "left": {
                   "parts": [
-                    "jaffle_order",
+                    "comparison_orders",
                     "store_id"
                   ]
                 },
                 "op": "=",
                 "right": {
                   "parts": [
-                    "jaffle_store",
+                    "comparison_stores",
                     "store_id"
                   ]
                 }
               },
               "table": {
                 "alias": "",
-                "name": "jaffle_store"
+                "name": "comparison_stores"
               }
             }
           ],
@@ -4850,7 +4850,7 @@
               "alias": "g1",
               "expression": {
                 "parts": [
-                  "jaffle_store",
+                  "comparison_stores",
                   "store_name"
                 ]
               }
@@ -4865,7 +4865,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -4883,7 +4883,7 @@
                   {
                     "left": {
                       "parts": [
-                        "jaffle_item",
+                        "comparison_order_items",
                         "item_revenue_cents"
                       ]
                     },

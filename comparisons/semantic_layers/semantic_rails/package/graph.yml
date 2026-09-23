@@ -60,8 +60,8 @@ graph:
         forward: [sum, count]
         reverse: []
       temporal_validity:
-        valid_from: jaffle_customer_history.valid_from
-        valid_to: jaffle_customer_history.valid_to
+        valid_from: comparison_customer_history.valid_from
+        valid_to: comparison_customer_history.valid_to
 
     order_lifecycle_to_customer_history:
       as: relationship.jaffle_order_lifecycle_customer_history
@@ -74,5 +74,5 @@ graph:
         forward: [sum, count]
         reverse: []
       temporal_validity:
-        valid_from: jaffle_customer_history.valid_from
-        valid_to: jaffle_customer_history.valid_to
+        valid_from: comparison_customer_history.valid_from
+        valid_to: comparison_customer_history.valid_to

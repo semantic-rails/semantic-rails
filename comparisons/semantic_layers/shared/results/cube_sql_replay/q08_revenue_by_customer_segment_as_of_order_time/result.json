@@ -1,0 +1,164 @@
+{
+  "data": [
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2016-09-01 00:00:00",
+      "orders.revenue_usd": 17477.7
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2016-09-01 00:00:00",
+      "orders.revenue_usd": 575.58
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2016-10-01 00:00:00",
+      "orders.revenue_usd": 646.59
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2016-10-01 00:00:00",
+      "orders.revenue_usd": 21277.359999999986
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2016-11-01 00:00:00",
+      "orders.revenue_usd": 27428.179999999997
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2016-11-01 00:00:00",
+      "orders.revenue_usd": 488.64000000000004
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2016-12-01 00:00:00",
+      "orders.revenue_usd": 724.9900000000001
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2016-12-01 00:00:00",
+      "orders.revenue_usd": 34952.610000000095
+    },
+    {
+      "customer_history.customer_segment": "repeat",
+      "orders.ordered_at.month": "2017-01-01 00:00:00",
+      "orders.revenue_usd": 218.35
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2017-01-01 00:00:00",
+      "orders.revenue_usd": 294.67
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2017-01-01 00:00:00",
+      "orders.revenue_usd": 44504.929999999855
+    },
+    {
+      "customer_history.customer_segment": "repeat",
+      "orders.ordered_at.month": "2017-02-01 00:00:00",
+      "orders.revenue_usd": 147.32999999999998
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2017-02-01 00:00:00",
+      "orders.revenue_usd": 376.29
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2017-02-01 00:00:00",
+      "orders.revenue_usd": 42834.5
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2017-03-01 00:00:00",
+      "orders.revenue_usd": 73321.77000000016
+    },
+    {
+      "customer_history.customer_segment": "repeat",
+      "orders.ordered_at.month": "2017-03-01 00:00:00",
+      "orders.revenue_usd": 214.11999999999998
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2017-03-01 00:00:00",
+      "orders.revenue_usd": 414.43000000000006
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2017-04-01 00:00:00",
+      "orders.revenue_usd": 82682.07000000148
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2017-04-01 00:00:00",
+      "orders.revenue_usd": 362.5000000000001
+    },
+    {
+      "customer_history.customer_segment": "repeat",
+      "orders.ordered_at.month": "2017-04-01 00:00:00",
+      "orders.revenue_usd": 272.42
+    },
+    {
+      "customer_history.customer_segment": "repeat",
+      "orders.ordered_at.month": "2017-05-01 00:00:00",
+      "orders.revenue_usd": 278.78000000000003
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2017-05-01 00:00:00",
+      "orders.revenue_usd": 95395.17000000298
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2017-05-01 00:00:00",
+      "orders.revenue_usd": 396.40000000000003
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2017-06-01 00:00:00",
+      "orders.revenue_usd": 97728.07000000273
+    },
+    {
+      "customer_history.customer_segment": "repeat",
+      "orders.ordered_at.month": "2017-06-01 00:00:00",
+      "orders.revenue_usd": 302.07
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2017-06-01 00:00:00",
+      "orders.revenue_usd": 348.7300000000001
+    },
+    {
+      "customer_history.customer_segment": "repeat",
+      "orders.ordered_at.month": "2017-07-01 00:00:00",
+      "orders.revenue_usd": 377.34999999999997
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2017-07-01 00:00:00",
+      "orders.revenue_usd": 94105.6900000026
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2017-07-01 00:00:00",
+      "orders.revenue_usd": 374.15000000000003
+    },
+    {
+      "customer_history.customer_segment": "new",
+      "orders.ordered_at.month": "2017-08-01 00:00:00",
+      "orders.revenue_usd": 348.7200000000001
+    },
+    {
+      "customer_history.customer_segment": null,
+      "orders.ordered_at.month": "2017-08-01 00:00:00",
+      "orders.revenue_usd": 106851.1500000041
+    },
+    {
+      "customer_history.customer_segment": "repeat",
+      "orders.ordered_at.month": "2017-08-01 00:00:00",
+      "orders.revenue_usd": 171.72
+    }
+  ]
+}

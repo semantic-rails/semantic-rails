@@ -1,3 +1,7 @@
+‼️ Warning: A new version of the MetricFlow CLI is available.
+💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
+	$ pip install --upgrade dbt-metricflow
+
 
 
 ⠋ Initiating query…
@@ -5,7 +9,7 @@
 ⠙ Initiating query…
 
 ⠹ Initiating query…
-✔ Success 🦄 - query completed after 0.10 seconds
+✔ Success 🦄 - query completed after 0.14 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
 SELECT

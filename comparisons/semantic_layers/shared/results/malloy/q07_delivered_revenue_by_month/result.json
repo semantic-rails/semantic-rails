@@ -1,6 +1,50 @@
 [
   {
-    "delivered_month": "2016-09-01",
-    "delivered_revenue_usd": 136.74
+    "delivered_month": "2016-09-01 00:00:00",
+    "delivered_revenue_usd": 18053.28
+  },
+  {
+    "delivered_month": "2016-10-01 00:00:00",
+    "delivered_revenue_usd": 21923.95
+  },
+  {
+    "delivered_month": "2016-11-01 00:00:00",
+    "delivered_revenue_usd": 27916.82
+  },
+  {
+    "delivered_month": "2016-12-01 00:00:00",
+    "delivered_revenue_usd": 35677.6
+  },
+  {
+    "delivered_month": "2017-01-01 00:00:00",
+    "delivered_revenue_usd": 45017.95
+  },
+  {
+    "delivered_month": "2017-02-01 00:00:00",
+    "delivered_revenue_usd": 43358.12
+  },
+  {
+    "delivered_month": "2017-03-01 00:00:00",
+    "delivered_revenue_usd": 73950.32
+  },
+  {
+    "delivered_month": "2017-04-01 00:00:00",
+    "delivered_revenue_usd": 83316.99
+  },
+  {
+    "delivered_month": "2017-05-01 00:00:00",
+    "delivered_revenue_usd": 96070.35
+  },
+  {
+    "delivered_month": "2017-06-01 00:00:00",
+    "delivered_revenue_usd": 98378.87
+  },
+  {
+    "delivered_month": "2017-07-01 00:00:00",
+    "delivered_revenue_usd": 94857.19
+  },
+  {
+    "delivered_month": "2017-08-01 00:00:00",
+    "delivered_revenue_usd": 107371.59
   }
 ]

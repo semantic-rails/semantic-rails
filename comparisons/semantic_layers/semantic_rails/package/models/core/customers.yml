@@ -1,6 +1,6 @@
 model:
   id: customers
-  relation: jaffle_customer
+  relation: comparison_customers
   description: One row per customer with lifecycle rollups.
   entities:
     customer: {}

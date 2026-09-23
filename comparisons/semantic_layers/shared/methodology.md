@@ -2,9 +2,9 @@
 
 ## Fairness Rules
 
-- Use the same source dataset for all runnable layers: the shared DuckDB database built from `data/jaffle_csv` and `data/seed_jaffle.sql`.
-- The shared comparison view for `order_lifecycle` is intentionally limited to the hand-authored `raw_order_lifecycle_events` slice so committed q07/q16 evidence remains stable even though the broader seed can derive lifecycle timestamps for every order.
-  - **Known deviation:** the Semantic Rails and MetricFlow packs read the full `jaffle_order_lifecycle` table instead of this view, so the layers did not answer q07 and q16 from the same data, and those two questions do not match. Pointing every layer at the same tables is the next change.
+- Use the same source dataset for all runnable layers: the shared DuckDB database built from `data/jaffle_csv` and `data/seed_jaffle.sql` by `shared/scripts/bootstrap_shared_duckdb.py`.
+- Every layer reads only the `comparison_*` views that script creates. They pass the seed tables through unchanged, except that `comparison_order_items` adds each item's order time, store and customer.
+- Each runner records the dataset fingerprint (a hash of the seed files and the view definitions) with its results. The output check reports a capture made on another dataset as stale, separately from the layers that ran on the current one, instead of counting it as a mismatch.
 - Keep the semantic scope intentionally small:
   - baseline models: `orders`, `order_items`, `customers`, `stores`
   - stretch models: `customer_history`, `order_lifecycle`, `storefront_sessions`
@@ -52,5 +52,5 @@ The scale-up counts intentionally focus on authored semantic model/config files 
 
 - Snowflake Semantic Views are executed through the Snowflake CLI connection `semantic_views_trial`.
 - For Snowflake, `q01`-`q07` must execute through `SEMANTIC_VIEW(...)`; the edge-capability questions are labeled `workaround` because they execute as verified SQL on the Snowflake comparison tables.
-- Cube is implemented locally without Docker because `docker` is not available in this environment.
+- Cube 1.6.32 was captured locally without Docker. It can't be reinstalled until its dependency advisories are resolved, so `cube/scripts/replay_sql.py` re-executes its captured SQL on the current dataset, with the session time zone pinned to UTC.
 - KtX is executed through its Python semantic layer (`ktx-sl`) from a local clone at `/tmp/ktx-compare` by default. The benchmark does not score KtX's broader context ingestion, wiki/search, daemon, or MCP flows.
