@@ -16,7 +16,8 @@ from typing import Any
 
 import pytest
 
-from semantic_rails import dev_cli
+import semantic_rails.cli.interpretation as interpretation
+import semantic_rails.cli.reports as reports
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
 
@@ -172,13 +173,13 @@ LABELS = {
     ],
 )
 def test_describe_query_restates_what_runs(query: dict[str, Any], expected: str) -> None:
-    assert dev_cli.describe_query(query, LABELS) == expected
+    assert interpretation.describe_query(query, LABELS) == expected
 
 
 def test_unknown_ids_are_shown_as_ids() -> None:
     query = {"select": [{"expression": {"measure": "measure.unknown"}}], "group_by": ["d.x"]}
 
-    assert dev_cli.describe_query(query) == "measure.unknown by d.x"
+    assert interpretation.describe_query(query) == "measure.unknown by d.x"
 
 
 class _StubRuntime:
@@ -203,11 +204,11 @@ def test_labels_fall_back_to_the_plan_when_the_catalog_fails(
     def broken_catalog(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise SemanticLayerError("INVALID_CONFIG", "catalog unavailable")
 
-    monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: _StubRuntime())
-    monkeypatch.setattr(dev_cli, "plan_payload", lambda *_a, **_k: plan)
-    monkeypatch.setattr(dev_cli, "resolve_catalog", broken_catalog)
+    monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: _StubRuntime())
+    monkeypatch.setattr(reports, "plan_payload", lambda *_a, **_k: plan)
+    monkeypatch.setattr(interpretation, "resolve_catalog", broken_catalog)
 
-    report = dev_cli.ask_report(PackageReference(source_path="/nowhere"), question="orders")
+    report = reports.ask_report(PackageReference(source_path="/nowhere"), question="orders")
 
     assert report["interpretation"] == "Orders"
 

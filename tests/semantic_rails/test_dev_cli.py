@@ -267,13 +267,15 @@ def test_local_profile_rejects_non_package_connection_modes(tmp_path: Path) -> N
 def test_setup_without_registered_package_points_to_init(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.cli.common as common
+    import semantic_rails.cli.reports as reports
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "empty_home"))
-    monkeypatch.setattr(dev_cli, "list_package_paths", lambda: {})
+    monkeypatch.setattr(reports, "list_package_paths", lambda: {})
+    monkeypatch.setattr(common, "list_package_paths", lambda: {})
 
-    report = dev_cli.setup_report(
+    report = reports.setup_report(
         argparse.Namespace(package="", path="", checks="parse", server=False)
     )
 
@@ -315,12 +317,12 @@ def test_mcp_doctor_loads_path_package_and_lists_tools(tmp_path: Path) -> None:
 def test_mcp_doctor_uses_windows_safe_foreground_commands(
     runtime_factory, monkeypatch, capsys
 ) -> None:
-    import semantic_rails.cli as cli
+    import semantic_rails.cli.commands.mcp as mcp_commands
 
     runtime = runtime_factory("jaffle_shop")
-    monkeypatch.setattr(cli, "_runtime_from_package_or_path", lambda _args: runtime)
+    monkeypatch.setattr(mcp_commands, "_runtime_from_package_or_path", lambda _args: runtime)
     monkeypatch.setattr(
-        cli,
+        mcp_commands,
         "managed_mcp_lifecycle_report",
         lambda: {
             "supported": False,
@@ -331,7 +333,7 @@ def test_mcp_doctor_uses_windows_safe_foreground_commands(
         },
     )
 
-    cli.cmd_mcp_doctor(argparse.Namespace(package="jaffle_shop", path=""))
+    mcp_commands.cmd_mcp_doctor(argparse.Namespace(package="jaffle_shop", path=""))
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["managed_lifecycle"]["supported"] is False
@@ -344,18 +346,18 @@ def test_mcp_doctor_uses_windows_safe_foreground_commands(
 def test_interactive_setup_does_not_offer_managed_start_when_unsupported(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.cli.setup_wizard as setup_wizard
     from semantic_rails.config_validation import PackageReference
 
     prompts: list[str] = []
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(
-        dev_cli,
+        setup_wizard,
         "_interactive_package_ref",
         lambda _args: PackageReference(source_path=str(tmp_path / "package")),
     )
     monkeypatch.setattr(
-        dev_cli,
+        setup_wizard,
         "managed_mcp_lifecycle_report",
         lambda: {
             "supported": False,
@@ -370,15 +372,15 @@ def test_interactive_setup_does_not_offer_managed_start_when_unsupported(
         prompts.append(label)
         return False
 
-    monkeypatch.setattr(dev_cli, "_confirm", decline)
-    monkeypatch.setattr(dev_cli, "_prompt_choice", lambda *a, **k: "none")
+    monkeypatch.setattr(setup_wizard, "_confirm", decline)
+    monkeypatch.setattr(setup_wizard, "_prompt_choice", lambda *a, **k: "none")
     monkeypatch.setattr(
-        dev_cli,
+        setup_wizard,
         "start_mcp_http_server",
         lambda *a, **k: pytest.fail("managed server must not start on an unsupported platform"),
     )
 
-    dev_cli.cmd_setup_interactive(SimpleNamespace(json=False))
+    setup_wizard.cmd_setup_interactive(SimpleNamespace(json=False))
     output = capsys.readouterr().out
 
     assert not any("Start a managed" in prompt for prompt in prompts)
@@ -391,7 +393,7 @@ def test_interactive_setup_does_not_offer_managed_start_when_unsupported(
 def test_interactive_setup_cleans_dead_mcp_registration_and_retries(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.cli.setup_wizard as setup_wizard
     from semantic_rails.config_validation import PackageReference
     from semantic_rails.errors import SemanticLayerError
 
@@ -409,15 +411,15 @@ def test_interactive_setup_cleans_dead_mcp_registration_and_retries(
             )
         return {"ok": True, "status": "started"}
 
-    monkeypatch.setattr(dev_cli, "start_mcp_http_server", start)
+    monkeypatch.setattr(setup_wizard, "start_mcp_http_server", start)
     monkeypatch.setattr(
-        dev_cli,
+        setup_wizard,
         "stop_mcp_http_server",
         lambda *, name: stops.append(name) or {"ok": True, "status": "not_running"},
     )
-    monkeypatch.setattr(dev_cli, "_confirm", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup_wizard, "_confirm", lambda *_args, **_kwargs: True)
 
-    dev_cli._start_managed_mcp_from_wizard(ref)
+    setup_wizard._start_managed_mcp_from_wizard(ref)
 
     output = capsys.readouterr().out
     assert "dead 'default' MCP registration" in output
@@ -430,12 +432,12 @@ def test_interactive_setup_cleans_dead_mcp_registration_and_retries(
 def test_interactive_setup_keeps_live_mcp_conflict_nonfatal(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.cli.setup_wizard as setup_wizard
     from semantic_rails.config_validation import PackageReference
     from semantic_rails.errors import SemanticLayerError
 
     monkeypatch.setattr(
-        dev_cli,
+        setup_wizard,
         "start_mcp_http_server",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             SemanticLayerError(
@@ -446,12 +448,14 @@ def test_interactive_setup_keeps_live_mcp_conflict_nonfatal(
         ),
     )
     monkeypatch.setattr(
-        dev_cli,
+        setup_wizard,
         "stop_mcp_http_server",
         lambda **_kwargs: pytest.fail("a live conflicting registration must not be removed"),
     )
 
-    dev_cli._start_managed_mcp_from_wizard(PackageReference(source_path=str(tmp_path / "package")))
+    setup_wizard._start_managed_mcp_from_wizard(
+        PackageReference(source_path=str(tmp_path / "package"))
+    )
 
     output = capsys.readouterr().out
     assert "MCP server not started" in output
@@ -697,16 +701,16 @@ def test_project_new_rejects_symlink_overwrite_with_force(tmp_path: Path) -> Non
 
 
 def test_json_mode_does_not_prompt_on_tty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.cli.commands.project as project_commands
 
     def fail_input(_: str = "") -> str:
         raise AssertionError("input() must not be called in --json mode")
 
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", fail_input)
 
     with pytest.raises(Exception) as exc:
-        dev_cli.cmd_ask(
+        project_commands.cmd_ask(
             argparse.Namespace(
                 question=[],
                 package="jaffle_shop",
@@ -719,7 +723,7 @@ def test_json_mode_does_not_prompt_on_tty(monkeypatch: pytest.MonkeyPatch, tmp_p
         )
     assert getattr(exc.value, "code", "") == "INVALID_QUERY"
 
-    dev_cli.cmd_init_project(
+    project_commands.cmd_init_project(
         argparse.Namespace(
             name="tty_json_pkg",
             package_id="",
@@ -750,9 +754,9 @@ class _TTYBuffer(io.StringIO):
 
 
 def _create_repl_split_package(tmp_path: Path, package_id: str) -> Path:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.cli.scaffold as scaffold
 
-    report = dev_cli.create_project_report(
+    report = scaffold.create_project_report(
         package_id=package_id,
         workspace_root=str(tmp_path),
         run_checks=False,
@@ -772,7 +776,7 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
 def test_repl_tty_has_context_prompt_and_restrained_whimsy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
 
     output = _TTYBuffer()
     prompts: list[str] = []
@@ -782,13 +786,13 @@ def test_repl_tty_has_context_prompt_and_restrained_whimsy(
         prompts.append(prompt)
         return next(answers)
 
-    monkeypatch.setattr(dev_cli.sys, "stdout", output)
+    monkeypatch.setattr(sys, "stdout", output)
     monkeypatch.setattr("builtins.input", answer)
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("CLICOLOR", raising=False)
 
-    dev_cli.run_interactive_shell(package="jaffle_shop")
+    repl_shell.run_interactive_shell(package="jaffle_shop")
 
     rendered = output.getvalue()
     assert "Semantic Rails" in rendered
@@ -806,7 +810,7 @@ def test_repl_tty_has_context_prompt_and_restrained_whimsy(
 def test_repl_dumb_tty_keeps_visual_layout_without_color(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
 
     output = _TTYBuffer()
     prompts: list[str] = []
@@ -815,11 +819,11 @@ def test_repl_dumb_tty_keeps_visual_layout_without_color(
         prompts.append(prompt)
         return "exit"
 
-    monkeypatch.setattr(dev_cli.sys, "stdout", output)
+    monkeypatch.setattr(sys, "stdout", output)
     monkeypatch.setattr("builtins.input", exit_repl)
     monkeypatch.setenv("TERM", "dumb")
 
-    dev_cli.run_interactive_shell(package="jaffle_shop")
+    repl_shell.run_interactive_shell(package="jaffle_shop")
 
     rendered = output.getvalue()
     assert "╭─ Semantic Rails" in rendered
@@ -831,15 +835,15 @@ def test_repl_dumb_tty_keeps_visual_layout_without_color(
 def test_repl_honors_no_color_without_losing_visual_layout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
 
     output = _TTYBuffer()
-    monkeypatch.setattr(dev_cli.sys, "stdout", output)
+    monkeypatch.setattr(sys, "stdout", output)
     monkeypatch.setattr("builtins.input", lambda _: "exit")
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("NO_COLOR", "1")
 
-    dev_cli.run_interactive_shell(package="jaffle_shop")
+    repl_shell.run_interactive_shell(package="jaffle_shop")
 
     rendered = output.getvalue()
     assert "╭─ Semantic Rails" in rendered
@@ -847,9 +851,9 @@ def test_repl_honors_no_color_without_losing_visual_layout(
 
 
 def test_repl_help_exposes_guided_authoring_undo_and_safe_validation(capsys) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
 
-    dev_cli._print_repl_help()
+    repl_shell._print_repl_help()
 
     output = capsys.readouterr().out
     assert "validate [mode]" in output
@@ -863,17 +867,17 @@ def test_repl_help_exposes_guided_authoring_undo_and_safe_validation(capsys) -> 
 def test_repl_author_refuses_non_tty_without_writing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
     from semantic_rails.config_validation import PackageReference
     from semantic_rails.errors import SemanticLayerError
 
     project_path = _create_repl_split_package(tmp_path, "non_tty_core")
     before = _tree_bytes(project_path)
     ref = PackageReference(source_path=str(project_path))
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: False))
 
     with pytest.raises(SemanticLayerError, match="interactive terminal"):
-        dev_cli._handle_repl_line("author metric", ref, undo_stack=[])
+        repl_shell._handle_repl_line("author metric", ref, undo_stack=[])
 
     assert _tree_bytes(project_path) == before
 
@@ -881,7 +885,7 @@ def test_repl_author_refuses_non_tty_without_writing(
 def test_repl_validate_parse_is_safe_while_runtime_and_full_default_to_cancel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
     from semantic_rails.config_validation import PackageReference
 
     project_path = _create_repl_split_package(tmp_path, "validate_core")
@@ -897,13 +901,13 @@ def test_repl_validate_parse_is_safe_while_runtime_and_full_default_to_cancel(
         confirmations.append((label, default))
         return default
 
-    monkeypatch.setattr(dev_cli, "project_validation_report", validation_report)
-    monkeypatch.setattr(dev_cli, "_print_project_validation", lambda _report: None)
-    monkeypatch.setattr(dev_cli, "_author_confirm", confirm)
+    monkeypatch.setattr(repl_shell, "project_validation_report", validation_report)
+    monkeypatch.setattr(repl_shell, "_print_project_validation", lambda _report: None)
+    monkeypatch.setattr(repl_shell, "_author_confirm", confirm)
 
-    dev_cli._handle_repl_line("validate", ref)
-    dev_cli._handle_repl_line("validate runtime", ref)
-    dev_cli._handle_repl_line("validate full", ref)
+    repl_shell._handle_repl_line("validate", ref)
+    repl_shell._handle_repl_line("validate runtime", ref)
+    repl_shell._handle_repl_line("validate full", ref)
 
     output = capsys.readouterr().out
     assert validation_modes == ["parse"]
@@ -918,7 +922,7 @@ def test_repl_validate_parse_is_safe_while_runtime_and_full_default_to_cancel(
 def test_repl_author_metric_previews_writes_parse_validates_and_undoes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
     from semantic_rails.config_validation import PackageReference
 
     project_path = _create_repl_split_package(tmp_path, "guided_core")
@@ -941,11 +945,11 @@ def test_repl_author_metric_previews_writes_parse_validates_and_undoes(
         prompts.append(prompt)
         return next(answers)
 
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", answer)
     undo_stack = []
 
-    dev_cli._handle_repl_line("author metric", ref, undo_stack=undo_stack)
+    repl_shell._handle_repl_line("author metric", ref, undo_stack=undo_stack)
 
     metric_path = project_path / "metrics" / "core" / "gross_revenue.yml"
     assert metric_path.is_file()
@@ -955,7 +959,7 @@ def test_repl_author_metric_previews_writes_parse_validates_and_undoes(
     assert undo_stack[0].report["parse"]["ok"] is True
     assert any(prompt.startswith("Create this metric?") for prompt in prompts)
 
-    dev_cli._handle_repl_line("undo", ref, undo_stack=undo_stack)
+    repl_shell._handle_repl_line("undo", ref, undo_stack=undo_stack)
 
     output = capsys.readouterr().out
     assert "Preview - create metric `gross_revenue`" in output
@@ -968,7 +972,7 @@ def test_repl_author_metric_previews_writes_parse_validates_and_undoes(
 def test_repl_author_segment_selects_dimension_and_basis_metric_and_parses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
     from semantic_rails.config_validation import PackageReference
 
     project_path = _create_repl_split_package(tmp_path, "segment_core")
@@ -992,11 +996,11 @@ def test_repl_author_segment_selects_dimension_and_basis_metric_and_parses(
         prompts.append(prompt)
         return next(answers)
 
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", answer)
     undo_stack = []
 
-    dev_cli._handle_repl_line("author segment", ref, undo_stack=undo_stack)
+    repl_shell._handle_repl_line("author segment", ref, undo_stack=undo_stack)
 
     segment_path = project_path / "segments" / "core.yml"
     assert segment_path.is_file()
@@ -1024,13 +1028,15 @@ def test_repl_author_segment_selects_dimension_and_basis_metric_and_parses(
 def test_repl_author_measure_adds_governance_meta_without_new_profile_warnings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.cli.output as cli_output
+    import semantic_rails.cli.reports as reports
+    import semantic_rails.repl.shell as repl_shell
     from semantic_rails.config_validation import PackageReference
 
     project_path = _create_repl_split_package(tmp_path, "measure_core")
     ref = PackageReference(source_path=str(project_path))
-    before_report = dev_cli.project_validation_report(ref, mode="parse")
-    before_warnings = set(dev_cli._authoring_warning_messages(before_report))
+    before_report = reports.project_validation_report(ref, mode="parse")
+    before_warnings = set(cli_output._authoring_warning_messages(before_report))
     answers = iter(
         [
             "",
@@ -1044,11 +1050,11 @@ def test_repl_author_measure_adds_governance_meta_without_new_profile_warnings(
             "yes",
         ]
     )
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     undo_stack = []
 
-    dev_cli._handle_repl_line("author measure", ref, undo_stack=undo_stack)
+    repl_shell._handle_repl_line("author measure", ref, undo_stack=undo_stack)
 
     assert len(undo_stack) == 1
     mutation = undo_stack[0]
@@ -1062,7 +1068,7 @@ def test_repl_author_measure_adds_governance_meta_without_new_profile_warnings(
         "review_priority": "medium",
         "change_risk": "medium",
     }
-    after_warnings = set(dev_cli._authoring_warning_messages(mutation.report["parse"]))
+    after_warnings = set(cli_output._authoring_warning_messages(mutation.report["parse"]))
     new_warnings = after_warnings - before_warnings
     governance_fields = ("owner_team", "review_priority", "change_risk")
     assert not [
@@ -1075,7 +1081,7 @@ def test_repl_author_measure_adds_governance_meta_without_new_profile_warnings(
 def test_repl_manage_preserves_unsurfaced_fields_and_model_label(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
     from semantic_rails.config_validation import PackageReference
 
     project_path = _create_repl_split_package(tmp_path, "manage_core")
@@ -1100,11 +1106,11 @@ def test_repl_manage_preserves_unsurfaced_fields_and_model_label(
             "yes",
         ]
     )
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
 
-    dev_cli._handle_repl_line("author model", ref, undo_stack=undo_stack)
-    dev_cli._handle_repl_line("author dimension", ref, undo_stack=undo_stack)
+    repl_shell._handle_repl_line("author model", ref, undo_stack=undo_stack)
+    repl_shell._handle_repl_line("author dimension", ref, undo_stack=undo_stack)
 
     orders = yaml.safe_load(
         (project_path / "models" / "core" / "orders.yml").read_text(encoding="utf-8")
@@ -1120,7 +1126,7 @@ def test_repl_manage_preserves_unsurfaced_fields_and_model_label(
 def test_repl_manage_metric_kind_removes_stale_fields_and_preserves_public_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
     from semantic_rails.config_validation import PackageReference
 
     project_path = _create_repl_split_package(tmp_path, "metric_manage_core")
@@ -1138,11 +1144,11 @@ def test_repl_manage_metric_kind_removes_stale_fields_and_preserves_public_id(
             "yes",
         ]
     )
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     undo_stack = []
 
-    dev_cli._handle_repl_line("author metric", ref, undo_stack=undo_stack)
+    repl_shell._handle_repl_line("author metric", ref, undo_stack=undo_stack)
 
     metric = yaml.safe_load(
         (project_path / "metrics" / "core" / "starter.yml").read_text(encoding="utf-8")
@@ -1159,18 +1165,18 @@ def test_repl_manage_metric_kind_removes_stale_fields_and_preserves_public_id(
 def test_repl_exact_metric_key_defaults_to_cancel_without_any_file_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
     from semantic_rails.config_validation import PackageReference
 
     project_path = _create_repl_split_package(tmp_path, "collision_core")
     ref = PackageReference(source_path=str(project_path))
     before = _tree_bytes(project_path)
     answers = iter(["total_amount", ""])
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     undo_stack = []
 
-    dev_cli._handle_repl_line("author metric", ref, undo_stack=undo_stack)
+    repl_shell._handle_repl_line("author metric", ref, undo_stack=undo_stack)
 
     output = capsys.readouterr().out
     assert "`total_amount` already exists" in output
@@ -1182,7 +1188,7 @@ def test_repl_exact_metric_key_defaults_to_cancel_without_any_file_change(
 def test_repl_ctrl_c_cancels_only_the_wizard_and_run_still_dispatches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.dev_cli as dev_cli
+    import semantic_rails.repl.shell as repl_shell
 
     project_path = _create_repl_split_package(tmp_path, "interrupt_core")
     before = _tree_bytes(project_path)
@@ -1198,12 +1204,12 @@ def test_repl_ctrl_c_cancels_only_the_wizard_and_run_still_dispatches(
         dispatched.append((question, execute))
         return {"ok": True}
 
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", answer)
-    monkeypatch.setattr(dev_cli, "ask_report", ask_report)
-    monkeypatch.setattr(dev_cli, "_print_ask_report", lambda _report: print("query dispatched"))
+    monkeypatch.setattr(repl_shell, "ask_report", ask_report)
+    monkeypatch.setattr(repl_shell, "_print_ask_report", lambda _report: print("query dispatched"))
 
-    dev_cli.run_interactive_shell(path=str(project_path))
+    repl_shell.run_interactive_shell(path=str(project_path))
 
     output = capsys.readouterr().out
     assert "Authoring cancelled; no files changed." in output
@@ -1220,3 +1226,16 @@ def test_setup_human_output_is_concise_and_actionable() -> None:
     assert "registered_packages" in proc.stdout
     assert "semantic-rails init my_package" in proc.stdout
     assert "semantic-rails init --output" not in proc.stdout
+
+
+def test_dev_cli_shim_re_exports_the_moved_objects() -> None:
+    """``semantic_rails.dev_cli`` keeps its public names for one release."""
+
+    import semantic_rails.dev_cli as dev_cli
+    from semantic_rails.cli import commands, common, interpretation, reports, scaffold, setup_wizard
+    from semantic_rails.repl import shell
+
+    owners = [commands.project, common, interpretation, reports, scaffold, setup_wizard, shell]
+    for name in dev_cli.__all__:
+        moved = next(getattr(owner, name) for owner in owners if hasattr(owner, name))
+        assert getattr(dev_cli, name) is moved, name
