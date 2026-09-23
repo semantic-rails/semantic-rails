@@ -1139,8 +1139,9 @@ def main() -> None:
             "Semantic Rails packages. See docs/QUERY_API.md and docs/CAPABILITIES.md "
             "for the agent loop and supported runtime surfaces. Commands use --package "
             "or --path, else the package directory you are in, else the local profile "
-            "(semantic-rails profile init); with none of these they stop and list how to "
-            "choose one. The bundled jaffle_shop sample package is used only when named."
+            "(semantic-rails profile init). With none of these, ask, ls, project, repl and "
+            "bare semantic-rails first offer the bundled jaffle_shop sample package at a "
+            "terminal (default No); every other case stops and lists how to choose one."
         ),
     )
     from semantic_rails import __version__
