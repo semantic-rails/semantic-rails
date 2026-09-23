@@ -402,7 +402,12 @@ def test_table_formats_numbers_for_people() -> None:
 @pytest.mark.parametrize(
     ("value", "decimals", "expected"),
     [
-        (-0.001, 2, "0.00"),
+        (-0.0, 2, "0.00"),
+        (-0.001, 2, "-0.001"),
+        (1e-7, 6, "1e-07"),
+        (-1e-7, 6, "-1e-07"),
+        (Decimal("-2E-8"), 6, "-2e-8"),
+        (9007199254740993, 2, "9,007,199,254,740,993.00"),
         (float("nan"), 2, "nan"),
         (float("-inf"), 2, "-inf"),
         (12345678901234567890, 0, "12,345,678,901,234,567,890"),
@@ -411,6 +416,37 @@ def test_table_formats_numbers_for_people() -> None:
 )
 def test_number_edge_cases(value: Any, decimals: int, expected: str) -> None:
     assert dev_cli._format_number(value, decimals) == expected
+
+
+def test_columns_never_round_a_nonzero_value_to_zero_or_a_big_int_through_float() -> None:
+    assert dev_cli._format_column([1e-7, -1e-7], column_type="number") == (
+        ["1e-07", "-1e-07"],
+        True,
+    )
+    assert dev_cli._format_column([9007199254740993, 0.5], column_type="number") == (
+        ["9,007,199,254,740,993.000", "0.500"],
+        True,
+    )
+    assert dev_cli._format_column([9007199254740993], column_type="currency") == (
+        ["9,007,199,254,740,993.00"],
+        True,
+    )
+
+
+def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str, str]) -> None:
+    bundled = dev_cli.list_package_paths()["jaffle_shop"]
+    for ref in (
+        PackageReference(source_path=bundled, package_id="jaffle_shop"),
+        PackageReference(source_path=bundled),
+        PackageReference(source_path=str(Path(bundled) / "package.yml")),
+    ):
+        assert dev_cli._is_bundled_ref(ref), ref
+        assert dev_cli._ref_display(ref).endswith("(bundled sample package, not your data)")
+    assert not dev_cli._is_bundled_ref(PackageReference(source_path=str(Path.cwd())))
+
+    proc = _run(nowhere, "ask", "--path", bundled, "monthly revenue by store", "--json")
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["package"]["bundled"] is True
 
 
 def test_table_headers_show_time_grain_and_disambiguate_duplicate_labels() -> None:

@@ -2815,7 +2815,13 @@ def _prompts_allowed(args: argparse.Namespace) -> bool:
 
 
 def _is_bundled_ref(ref: PackageReference) -> bool:
-    return bool(ref.package_id) and ref.package_id in list_package_paths()
+    """True when the reference points at a bundled package, however it was selected."""
+
+    root = Path(package_root_for_source(ref.source_path)).resolve()
+    return any(
+        Path(package_root_for_source(path)).resolve() == root
+        for path in list_package_paths().values()
+    )
 
 
 def _package_ref_from_cwd() -> PackageReference | None:
@@ -3156,7 +3162,7 @@ def _ref_label(ref: PackageReference) -> str:
 
 def _ref_display(ref: PackageReference) -> str:
     if _is_bundled_ref(ref):
-        return f"{ref.package_id} (bundled sample package, not your data)"
+        return f"{_ref_label(ref)} (bundled sample package, not your data)"
     return _ref_label(ref)
 
 
@@ -3533,10 +3539,14 @@ def _column_decimals(values: list[Any], *, column_type: str) -> int:
 def _format_number(value: Any, decimals: int) -> str:
     if not _is_finite(value):
         return str(value).lower()
-    # Exact for big ints: formatting an int with "f" goes through float.
-    text = f"{value:,}" if isinstance(value, int) and decimals == 0 else f"{value:,.{decimals}f}"
-    if text.startswith("-") and not any(digit in text for digit in "123456789"):
-        text = text[1:]
+    if isinstance(value, int):
+        # Exact at any size: formatting an int with "f" goes through float.
+        text = f"{value:,}" + ("." + "0" * decimals if decimals else "")
+    else:
+        text = f"{value:,.{decimals}f}"
+    if not any(digit in text for digit in "123456789"):
+        # Never show a nonzero value as zero; drop only the sign of a true zero.
+        return f"{value:.3g}" if value else text.lstrip("-")
     return text
 
 
