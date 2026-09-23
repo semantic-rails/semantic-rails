@@ -407,11 +407,20 @@ class ArchitectProject:
         group: str = "core",
         description: str = "",
         label: str = "",
+        calendar: bool | None = None,
+        calendar_id: str = "",
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
+        """Create or update a model and its primary graph entity.
+
+        ``calendar=True`` makes the entity the package calendar for
+        ``calendar_id`` (default ``"default"``): ``kind: time``, not a query
+        root. ``calendar=False`` makes it a regular entity again; ``None``
+        leaves it as it is.
+        """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         documents: dict[Path, dict[str, Any]] = {}
         staged = self._stage_model(
@@ -428,6 +437,8 @@ class ArchitectProject:
             group=group,
             description=description,
             label=label,
+            calendar=calendar,
+            calendar_id=calendar_id,
         )
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
@@ -455,6 +466,8 @@ class ArchitectProject:
                 "group": group,
                 "description": description,
                 "label": label,
+                "calendar": calendar,
+                "calendar_id": calendar_id,
             },
             extra={"entity": staged["entity"]},
         )
@@ -958,6 +971,8 @@ class ArchitectProject:
         group: str = "core",
         description: str = "",
         label: str = "",
+        calendar: bool | None = None,
+        calendar_id: str = "",
     ) -> dict[str, Any]:
         """Apply one model upsert to ``documents`` (files load on first use).
 
@@ -1022,6 +1037,19 @@ class ArchitectProject:
         )
         if label:
             model["label"] = label
+        existing_kind = str((existing_entity.spec if existing_entity else {}).get("kind") or "")
+        is_calendar = calendar if calendar is not None else existing_kind.lower() == "time"
+        if calendar_id and not is_calendar:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "calendar_id applies to a calendar model; pass calendar: true",
+                details={"model": model_slug},
+            )
+        if calendar or (is_calendar and calendar_id):
+            model["calendar_id"] = str(calendar_id or model.get("calendar_id") or "default")
+            self._check_calendar_free(raw, entity_slug, model["calendar_id"])
+        elif calendar is False:
+            model.pop("calendar_id", None)
         if dimensions is not None:
             model["dimensions"] = {
                 **dict(model.get("dimensions", {}) or {}),
@@ -1057,6 +1085,11 @@ class ArchitectProject:
         }
         if existing_entity is None and entity_slug not in entities:
             desired_entity.update({"label": _title(entity_slug), "allowed_as_root": True})
+        if calendar:
+            desired_entity.update({"kind": "time", "allowed_as_root": False})
+        elif calendar is False and existing_kind:
+            desired_entity.pop("kind", None)
+            desired_entity["allowed_as_root"] = True
         entities[entity_slug] = desired_entity
         graph["entities"] = entities
         graph_doc["graph"] = graph
@@ -1078,6 +1111,23 @@ class ArchitectProject:
                 "target_file": self._relative(graph_path),
             },
         }
+
+    def _check_calendar_free(
+        self, raw: dict[str, list[_RawObject]], entity_key: str, calendar_id: str
+    ) -> None:
+        """Refuse a second calendar entity for one calendar_id before writing."""
+        for other in raw["entities"]:
+            if other.key == entity_key or str(other.spec.get("kind") or "").lower() != "time":
+                continue
+            other_model = self._entity_model(raw, other)
+            taken = str((other_model.spec if other_model else {}).get("calendar_id") or "default")
+            if taken == calendar_id:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"calendar_id {calendar_id!r} already belongs to calendar entity "
+                    f"{other.key!r}; pass another calendar_id",
+                    details={"calendar_id": calendar_id, "entity": other.key},
+                )
 
     def upsert_metric(
         self,

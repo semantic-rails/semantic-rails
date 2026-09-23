@@ -121,6 +121,18 @@ The usual mutation contract applies (`expected_revision`, `idempotency_key`, `dr
 parse gate rolls back a change the package cannot load, such as one that breaks a pinned route.
 Python callers use `ArchitectProject.upsert_relationship`.
 
+## Package Calendar
+
+`upsert_model` with `calendar: true` makes the model's entity the package calendar. The graph
+entity gets `kind: time` and `allowed_as_root: false`, and the model gets a `calendar_id`
+(`default` unless you pass one; a package has one calendar per `calendar_id`). Only a calendar
+entity may declare `kind: date` dimensions. `time.fill` and calendar bucketing read the calendar
+relation's `date_day`, `week_start`, `month_start`, `quarter_start` and `year_start` columns, so
+declare `date_day` under `times:` with `class: calendar_time` and the coarser grains as `kind: date`
+dimensions, as `configs/semantic_rails/jaffle_shop/models/core/calendar.yml` does. `calendar: false`
+makes the entity regular again; leaving `calendar` out keeps the entity as it is. `upsert_models`
+items take the same fields.
+
 ## Tool Surface
 
 - `architect_guidance`

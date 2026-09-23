@@ -763,9 +763,26 @@
         "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
-      "description": "Preview or atomically upsert a model and aligned graph entity.",
+      "description": "Preview or atomically upsert a model and aligned graph entity. calendar: true makes the entity the package calendar for calendar_id (default \"default\"): kind time, not a query root, and allowed kind: date dimensions. time.fill and calendar bucketing read its date_day, week_start, month_start, quarter_start and year_start columns. calendar: false makes it a regular entity again.",
       "inputSchema": {
         "properties": {
+          "calendar": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Calendar"
+          },
+          "calendar_id": {
+            "default": "",
+            "title": "Calendar Id",
+            "type": "string"
+          },
           "description": {
             "default": "",
             "title": "Description",
