@@ -17,7 +17,6 @@ import contextlib
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict
-from datetime import date, timedelta
 from typing import Any
 
 from .ast import normalize_partial_query, normalize_query
@@ -3324,44 +3323,6 @@ def _query_patch_with_time(
     return query
 
 
-def _first_day_of_next_month(value: date) -> date:
-    return (value.replace(day=28) + timedelta(days=4)).replace(day=1)
-
-
-def _time_bounds_from_text(text: str) -> dict[str, Any]:
-    lowered = str(text or "").lower()
-    relative_match = re.search(r"\blast\s+(\d+)\s+(day|week|month|quarter|year)s?\b", lowered)
-    if relative_match:
-        return {
-            "range": {
-                "last": {
-                    "unit": relative_match.group(2),
-                    "value": int(relative_match.group(1)),
-                }
-            }
-        }
-    if re.search(r"\blast\s+(day|week|month|quarter|year)\b", lowered):
-        unit = re.search(r"\blast\s+(day|week|month|quarter|year)\b", lowered)
-        return {"range": {"last": {"unit": unit.group(1), "value": 1}}} if unit else {}
-    q_match = re.search(r"\bq([1-4])\s*['-]?\s*(20\d{2})\b", lowered)
-    if q_match:
-        quarter = int(q_match.group(1))
-        year = int(q_match.group(2))
-        start_month = ((quarter - 1) * 3) + 1
-        end_year = year + (1 if quarter == 4 else 0)
-        end_month = 1 if quarter == 4 else start_month + 3
-        return {
-            "start": f"{year:04d}-{start_month:02d}-01",
-            "end": f"{end_year:04d}-{end_month:02d}-01",
-        }
-    if re.search(r"\b(?:current|this)\s+month\b", lowered):
-        today = date.today()
-        start = today.replace(day=1)
-        end = _first_day_of_next_month(today)
-        return {"start": start.isoformat(), "end": end.isoformat()}
-    return {}
-
-
 def _infer_time_grain_from_text(text: str, default: str = "month") -> str:
     lowered = str(text or "").lower()
     if re.search(r"\bend[- ]of[- ]month\b", lowered):
@@ -3662,49 +3623,3 @@ def _choose_group_dimension(
 ) -> str:
     dims = _choose_group_dimensions(runtime, query, text, chosen_group_dim)
     return dims[0] if dims else ""
-
-
-def _apply_time_from_text(
-    runtime: Runtime, query: dict[str, Any], text: str, chosen_ids: list[str]
-) -> dict[str, Any]:
-    time_bounds = _time_bounds_from_text(text)
-    wants_time = any(
-        phrase in text
-        for phrase in (
-            "over time",
-            "historical",
-            "history",
-            "trend",
-            "trending",
-            "end-of-month",
-            "end of month",
-            "by day",
-            "by week",
-            "by month",
-            "by quarter",
-            "by year",
-            "daily ",
-            "weekly ",
-            "monthly ",
-            "quarterly ",
-            "yearly ",
-            " each day",
-            " each week",
-            " each month",
-            " each quarter",
-            " each year",
-        )
-    ) or bool(time_bounds)
-    if not wants_time:
-        return query
-    role = ""
-    for object_id in chosen_ids:
-        card = _object_card(runtime, object_id)
-        role = str(card.get("default_temporal_role", "") or "")
-        if role:
-            break
-    if not role:
-        return query
-    grain = _infer_time_grain_from_text(text, default="month")
-    query["time"] = {"temporal_role": role, "grain": grain, **time_bounds}
-    return query
