@@ -1635,6 +1635,145 @@ def test_strict_accepts_metric_with_value_type(tmp_path: Path):
     assert report["ok"] is True, [e.get("message") for e in report.get("errors", [])]
 
 
+@pytest.mark.parametrize("kind", ["ratio", "derived"])
+def test_strict_accepts_an_explicit_number_value_type(tmp_path: Path, kind: str):
+    """An authored `value_type: number` satisfies strict mode. A compiled-side
+    check used to reject it as "implicit" on ratio and derived metrics, since
+    the loaded config can't tell an authored `number` from the default."""
+    package_dir = tmp_path / f"strict_number_{kind}"
+    spec: dict = {
+        "label": "Explicit number",
+        "description": "value_type written explicitly",
+        "kind": kind,
+        "value_type": "number",
+    }
+    if kind == "ratio":
+        spec.update(numerator="order_count", denominator="order_count")
+    else:
+        spec["expression"] = {
+            "kind": "arithmetic",
+            "op": "multiply",
+            "left": {"kind": "metric", "metric": "order_count_metric"},
+            "right": {"kind": "literal", "value": 2},
+        }
+    _write_strict_minimal_package(package_dir, extra_metrics={"explicit_number": spec})
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    assert report["ok"] is True, [e.get("message") for e in report.get("errors", [])]
+
+
+def test_strict_rejects_a_ratio_without_value_type(tmp_path: Path):
+    package_dir = tmp_path / "strict_ratio_no_vt"
+    _write_strict_minimal_package(
+        package_dir,
+        extra_metrics={
+            "no_vt_ratio": {
+                "label": "No VT ratio",
+                "description": "ratio missing value_type",
+                "kind": "ratio",
+                "numerator": "order_count",
+                "denominator": "order_count",
+            }
+        },
+    )
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    messages = [str(err.get("message", "")) for err in report["errors"]]
+    assert report["ok"] is False
+    assert any("missing 'value_type:'" in msg and "'no_vt_ratio'" in msg for msg in messages)
+
+
+@pytest.mark.parametrize("value_type", [None, ""], ids=["null", "empty"])
+def test_strict_rejects_an_empty_value_type(tmp_path: Path, value_type):
+    # The loader turns a null or empty value_type into the "number" default.
+    package_dir = tmp_path / "strict_empty_vt"
+    _write_strict_minimal_package(
+        package_dir,
+        extra_metrics={
+            "empty_vt": {
+                "label": "Empty VT",
+                "description": "value_type written but empty",
+                "kind": "ratio",
+                "numerator": "order_count",
+                "denominator": "order_count",
+                "value_type": value_type,
+            }
+        },
+    )
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    messages = [str(err.get("message", "")) for err in report["errors"]]
+    assert report["ok"] is False
+    assert any("missing 'value_type:'" in msg and "'empty_vt'" in msg for msg in messages)
+
+
+def _jaffle_aov_without_value_type(package_config_factory, layout: str) -> Path:
+    """Put sales.aov_usd, minus its value_type, in a layout the loader reads."""
+    _, package_dir = package_config_factory("jaffle_shop")
+    package_dir = Path(package_dir)
+    source = package_dir / "metrics" / "core" / "core_metrics.yml"
+    doc = yaml.safe_load(source.read_text(encoding="utf-8"))
+    spec = doc["metrics"].pop("sales.aov_usd")
+    del spec["value_type"]
+    if layout == "metrics_dir":
+        doc["metrics"]["sales.aov_usd"] = spec
+    _write_yaml(source, doc)
+    if layout == "bare":
+        _write_yaml(package_dir / "metrics" / "relocated.yml", {**spec, "name": "sales.aov_usd"})
+    elif layout == "root_file":
+        _write_yaml(package_dir / "metrics.yml", {"metrics": {"sales.aov_usd": spec}})
+    elif layout == "package_yml":
+        package_yml = package_dir / "package.yml"
+        root = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
+        root["metrics"] = {"sales.aov_usd": spec}
+        _write_yaml(package_yml, root)
+    return package_dir
+
+
+@pytest.mark.parametrize("layout", ["metrics_dir", "bare", "root_file", "package_yml"])
+def test_strict_rejects_a_missing_value_type_in_every_layout(package_config_factory, layout):
+    package_dir = _jaffle_aov_without_value_type(package_config_factory, layout)
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert "metric 'sales.aov_usd': missing 'value_type:'" in errors[0]
+
+
+@pytest.mark.parametrize(
+    ("value_type", "expected_errors"),
+    [("omitted", 1), (None, 1), ("", 1), ("number", 0)],
+    ids=["omitted", "null", "empty", "number"],
+)
+def test_strict_single_file_package_requires_an_authored_value_type(
+    tmp_path: Path, value_type, expected_errors
+):
+    package_file = tmp_path / "monolithic.yml"
+    _write_monolithic_package(package_file, "monolithic_demo")
+    payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
+    payload["package"]["schema_strict"] = True
+    spec = {
+        "label": "Orders over orders",
+        "description": "a ratio metric",
+        "kind": "ratio",
+        "numerator": "order_count",
+        "denominator": "order_count",
+    }
+    if value_type != "omitted":
+        spec["value_type"] = value_type
+    payload["metrics"] = {"orders_ratio": spec}
+    _write_yaml(package_file, payload)
+
+    errors = validate_runtime_package(package_file)
+
+    assert len(errors) == expected_errors, errors
+    if expected_errors:
+        assert "metric 'orders_ratio': missing 'value_type:'" in errors[0]
+
+
 def test_strict_accepts_measure_rollup_semantics(tmp_path: Path):
     """Model variants rely on measure rollup semantics in strict packages."""
     package_dir = tmp_path / "strict_measure_rollup"
@@ -2378,3 +2517,64 @@ def test_key_checks_fail_closed_when_their_merge_fails(
     assert "can't read the metric and segment specs to check their keys" in errors[0]
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
     assert report["ok"] is False
+
+
+def _quote_schema_version(package_dir: Path) -> None:
+    package_yml = package_dir / "package.yml"
+    root = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
+    root["schema_version"] = "1"
+    _write_yaml(package_yml, root)
+
+
+@pytest.mark.parametrize(
+    ("value_type", "expected_ok"),
+    [("omitted", False), (None, False), ("", False), ("number", True)],
+    ids=["omitted", "null", "empty", "number"],
+)
+def test_strict_directory_checks_run_for_a_quoted_schema_version(
+    tmp_path: Path, value_type, expected_ok
+):
+    # The loader accepts schema_version: "1", so the directory checks must run for it.
+    package_dir = tmp_path / "strict_quoted_version"
+    spec = {
+        "label": "Quoted version ratio",
+        "description": "ratio in a package with a quoted schema_version",
+        "kind": "ratio",
+        "numerator": "order_count",
+        "denominator": "order_count",
+    }
+    if value_type != "omitted":
+        spec["value_type"] = value_type
+    _write_strict_minimal_package(package_dir, extra_metrics={"quoted_ratio": spec})
+    _quote_schema_version(package_dir)
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    messages = [str(err.get("message", "")) for err in report["errors"]]
+    assert report["ok"] is expected_ok, messages
+    if not expected_ok:
+        assert any("missing 'value_type:'" in msg and "'quoted_ratio'" in msg for msg in messages)
+
+
+def test_key_checks_run_for_a_quoted_schema_version(tmp_path: Path):
+    package_dir = tmp_path / "strict_quoted_keys"
+    _write_strict_minimal_package(
+        package_dir,
+        extra_metrics={
+            "typo": {
+                "label": "Typo",
+                "description": "metric with a misspelled key",
+                "kind": "aggregate",
+                "measure": "order_count",
+                "value_type": "count",
+                "valeu_type": "count",
+            }
+        },
+    )
+    _quote_schema_version(package_dir)
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    messages = [str(err.get("message", "")) for err in report["errors"]]
+    assert report["ok"] is False
+    assert any("has unknown key 'valeu_type'" in msg for msg in messages), messages
