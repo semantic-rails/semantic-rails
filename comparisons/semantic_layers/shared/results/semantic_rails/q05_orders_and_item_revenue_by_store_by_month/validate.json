@@ -132,8 +132,8 @@
     },
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 2.466,
-      "compile_ms": 1.148,
+      "cache_lookup_ms": 2.169,
+      "compile_ms": 1.231,
       "dialect": "duckdb",
       "physical_plan_nodes": 10
     },
@@ -4490,7 +4490,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 9.804,
+  "timing_ms": 5.683,
   "trace": {
     "fallback": {
       "reason": "",
@@ -4595,9 +4595,11 @@
         },
         "path": [
           "relationship.order_items_order"
-        ]
+        ],
+        "rewrite_classification": "safe_independent_leaf_alignment",
+        "rewrite_kind": "leaf_preaggregate_join"
       },
-      "message": "Mixed-grain measure compiled as an independent leaf aggregate and joined on final grain keys",
+      "message": "Safe cross-fact alignment: independent leaf aggregates were joined on final grain keys.",
       "object_ids": [
         "measure.jaffle.item_revenue_usd"
       ],

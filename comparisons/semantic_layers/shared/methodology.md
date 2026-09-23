@@ -4,6 +4,7 @@
 
 - Use the same source dataset for all runnable layers: the shared DuckDB database built from `data/jaffle_csv` and `data/seed_jaffle.sql`.
 - The shared comparison view for `order_lifecycle` is intentionally limited to the hand-authored `raw_order_lifecycle_events` slice so committed q07/q16 evidence remains stable even though the broader seed can derive lifecycle timestamps for every order.
+  - **Known deviation:** the Semantic Rails and MetricFlow packs read the full `jaffle_order_lifecycle` table instead of this view, so the layers did not answer q07 and q16 from the same data, and those two questions do not match. Pointing every layer at the same tables is the next change.
 - Keep the semantic scope intentionally small:
   - baseline models: `orders`, `order_items`, `customers`, `stores`
   - stretch models: `customer_history`, `order_lifecycle`, `storefront_sessions`
@@ -14,6 +15,8 @@
 - Keep the narrative honest in both directions. This executed pack emphasizes numeric questions; compiler-surface concerns such as duplicate-alias rejection, metric-time-only or distinct-values planning, and entity-type join contracts should still be called out separately when they are not exercised here.
 
 ## Support Labels
+
+The labels are provisional. The Semantic Rails authors currently assign them by hand for each competitor, and Semantic Rails is labeled `native` whenever its query validates, even though its q11 and q12 answers read precomputed customer columns. An executable rubric that applies one rule to every layer is in progress.
 
 - `native`: expressed cleanly with the layer's normal semantic-model constructs and executed.
 - `workaround`: executed, but required awkward extra modeling, manual SQL, or a non-idiomatic query path.

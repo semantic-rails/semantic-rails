@@ -100,8 +100,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.835,
-      "compile_ms": 0.651,
+      "cache_lookup_ms": 0.905,
+      "compile_ms": 0.553,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -2804,14 +2804,16 @@
   "row_count": 2,
   "rows": [
     {
-      "aov_usd": 12.739104407255143,
+      "aov_usd": 12.739104407255269,
       "dimension.jaffle_store_name": "Philadelphia"
     },
     {
-      "aov_usd": 12.08594689028659,
+      "aov_usd": 12.085946890286575,
       "dimension.jaffle_store_name": "Brooklyn"
     }
   ],
+  "semantic_fingerprint": "sha256:b1bf4e16f2ed9474bfeec78030e8849024eb239aba911b80230bc3b59bfe6a52",
+  "source_fingerprint": "5b0665c39f43be823184d1e560de283866b44b6bf35f2a53f152a2bf4a7496fd",
   "sql_plan": {
     "ctes": [
       {
@@ -3007,6 +3009,7 @@
       ]
     }
   },
+  "truncated": false,
   "warehouse": "duckdb",
   "warehouse_capabilities": {
     "date_diff": true,

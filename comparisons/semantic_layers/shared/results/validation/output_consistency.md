@@ -1,10 +1,13 @@
 # Output Consistency
 
-Generated at `2026-06-23T23:47:13-04:00` using `semantic_rails` as the reference layer.
+Generated at `2026-09-22T20:31:22-04:00` using `semantic_rails` as the reference layer.
 
 - Matched: `14`
 - Mismatched: `2`
 - Not comparable: `0`
+
+- `shared`: 6 of 7 matched; mismatched: `q07_delivered_revenue_by_month`
+- `semantic_rails_targeted`: 8 of 9 matched; mismatched: `q16_revenue_by_customer_segment_as_of_delivered_time`
 
 ## q01_orders_by_month Orders By Month
 

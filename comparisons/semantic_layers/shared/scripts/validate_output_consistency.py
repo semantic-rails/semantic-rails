@@ -26,6 +26,9 @@ RUNNABLE_LAYERS = [
 ]
 DECIMAL_TOLERANCE = Decimal("0.000001")
 NUMERIC_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
+# Published scoring keeps the 7 shared questions apart from the 9 that were chosen to
+# exercise Semantic Rails features (questions.yml `scope_level`).
+SLICE_BY_SCOPE = {"required": "shared", "stretch": "semantic_rails_targeted"}
 
 QUESTION_FIELDS = {
     "q01_orders_by_month": ["month", "orders"],
@@ -312,6 +315,7 @@ def main() -> None:
         question_result: dict[str, Any] = {
             "question_id": question_id,
             "title": metadata["title"],
+            "slice": SLICE_BY_SCOPE[metadata["scope_level"]],
             "layer_statuses": layer_statuses,
             "comparable_layers": comparable_layers,
         }
@@ -347,11 +351,26 @@ def main() -> None:
         }
         results.append(question_result)
 
+    summary_by_slice: dict[str, dict[str, Any]] = {}
+    for slice_name in SLICE_BY_SCOPE.values():
+        members = [item for item in results if item["slice"] == slice_name]
+        summary_by_slice[slice_name] = {
+            "questions": len(members),
+            **{
+                status: sum(1 for item in members if item["comparison_status"] == status)
+                for status in summary_counts
+            },
+            "mismatched_questions": [
+                item["question_id"] for item in members if item["comparison_status"] == "mismatched"
+            ],
+        }
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "reference_layer": "semantic_rails",
         "summary": summary_counts,
+        "summary_by_slice": summary_by_slice,
         "questions": results,
     }
     (OUTPUT_DIR / "output_consistency.json").write_text(
@@ -368,6 +387,13 @@ def main() -> None:
         f"- Not comparable: `{summary_counts['not_comparable']}`",
         "",
     ]
+    for slice_name, counts in summary_by_slice.items():
+        mismatched = ", ".join(f"`{qid}`" for qid in counts["mismatched_questions"]) or "none"
+        markdown_lines.append(
+            f"- `{slice_name}`: {counts['matched']} of {counts['questions']} matched; "
+            f"mismatched: {mismatched}"
+        )
+    markdown_lines.append("")
 
     for item in results:
         statuses = ", ".join(

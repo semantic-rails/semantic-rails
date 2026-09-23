@@ -1,4 +1,5 @@
 {
+  "generated_at": "2026-09-23T00:31:21+00:00",
   "layer": "semantic_rails",
   "package_id": "comparison_semantic_rails",
   "questions": [
@@ -130,5 +131,6 @@
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q16_revenue_by_customer_segment_as_of_delivered_time/sql.sql",
       "status": "native"
     }
-  ]
+  ],
+  "semantic_rails_version": "0.2.1"
 }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 
 import yaml
@@ -71,7 +73,14 @@ def main() -> None:
 
         _write_json(
             RESULTS_DIR / "summary.json",
-            {"layer": "semantic_rails", "package_id": PACKAGE_ID, "questions": summary},
+            {
+                "layer": "semantic_rails",
+                "package_id": PACKAGE_ID,
+                # The published comparison states which engine produced this evidence.
+                "semantic_rails_version": version("semantic-rails"),
+                "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "questions": summary,
+            },
         )
         print(f"Wrote Semantic Rails comparison artifacts to {RESULTS_DIR}")
     finally:

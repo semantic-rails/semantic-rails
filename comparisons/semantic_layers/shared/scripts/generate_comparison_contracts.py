@@ -142,16 +142,21 @@ def marker_loc(path: Path, marker: str) -> int:
     return count
 
 
+# Captures made before the runners recorded a date predate the 2026-06-23 consistency report.
+UNRECORDED_CAPTURE = "by 2026-06-23 (exact date not recorded)"
+
 LAYER_META: dict[str, dict[str, Any]] = {
     "semantic_rails": {
         "label": "Semantic Rails",
-        "version": "workspace runtime",
+        # Fallback only: the runner records the engine version with its evidence.
+        "version": "not recorded",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "semantic_rails" / "summary.json",
         "unsupported_path": None,
         "strengths": [
-            "All executed questions stay inside the local semantic runtime with no helper marts or handwritten SQL.",
+            "Every question runs through the Semantic Rails runtime without helper views or handwritten SQL; q11 and q12 read precomputed customer lifetime columns from the source table.",
             "Temporal-valid joins, conversion metrics, authored metric predicates, and query-time metric filters stay first-class.",
         ],
         "weaknesses": [
@@ -311,6 +316,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     "metricflow": {
         "label": "MetricFlow",
         "version": "dbt-metricflow 0.11.0 / dbt-duckdb 1.10.1",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "metricflow" / "summary.json",
@@ -320,8 +326,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Generated SQL is clear and easy to inspect against the shared dataset.",
         ],
         "weaknesses": [
-            "The dbt scaffold is materially heavier than the local pack or Malloy.",
-            "Predicate-heavy edge cases and conversion variants rely on helper dbt views rather than staying purely in semantic-model constructs.",
+            "In this pack, q09-q15 run through helper dbt views; MetricFlow's native conversion metrics and metric filters have not been modeled yet.",
         ],
         "scale": {
             "baseline_files": [
@@ -444,6 +449,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     "cube": {
         "label": "Cube",
         "version": "1.6.32",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "cube" / "summary.json",
@@ -453,8 +459,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Temporal history can be modeled with explicit join SQL when needed.",
         ],
         "weaknesses": [
-            "Mixed-grain and stretch questions move quickly into helper cubes rather than staying in the base cube graph.",
-            "The authored join surface stays readable, but non-native support climbs as soon as edge cases arrive.",
+            "In this pack, q05 and most of q08-q16 run through helper cubes or joined rollup filters; Cube's multi-stage measures and subquery dimensions have not been modeled yet.",
+            "This 1.6.32 capture cannot be re-run until its dependency advisories are resolved.",
         ],
         "scale": {
             "baseline_files": [
@@ -572,6 +578,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     "malloy": {
         "label": "Malloy",
         "version": "0.0.52",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "malloy" / "summary.json",
@@ -581,8 +588,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Join-tree aggregation is expressive without a large semantic scaffolding layer.",
         ],
         "weaknesses": [
-            "The stretch questions become SQL sources rather than reusable semantic primitives.",
-            "This looks more like a query/modeling language than a governed semantic layer runtime.",
+            "In this pack, q08-q16 run through SQL sources or query-level filters; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet.",
         ],
         "scale": {
             "baseline_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
@@ -672,7 +678,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
     },
     "snowflake_semantic_views": {
         "label": "Snowflake Semantic Views",
-        "version": "Snowflake CLI + semantic view trial account (2026-04-06)",
+        "version": "Snowflake CLI + semantic view trial account",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "snowflake_semantic_views" / "summary.json",
@@ -683,7 +690,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
         ],
         "weaknesses": [
             "Month-grain semantics require explicit `DATE_TRUNC(...)` query expressions; raw time dimensions stay at timestamp grain.",
-            "The edge-capability questions still move outside `SEMANTIC_VIEW(...)` into verified SQL on the base comparison tables.",
+            "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, in preview since 2026-02-25, have not been modeled yet.",
+            "The capture comes from a trial account and cannot be re-run without a live Snowflake account.",
         ],
         "scale": {
             "baseline_files": [
@@ -778,6 +786,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     "ktx": {
         "label": "KtX",
         "version": "ktx-sl 0.13.1 / KtX a155c0b",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "ktx" / "summary.json",
@@ -787,7 +796,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Aggregate locality keeps the mixed-grain q05 orders-plus-item-revenue query native without a helper mart.",
         ],
         "weaknesses": [
-            "The q08-q16 edge suite shifts to SQL-backed sources or query-level filters rather than first-class temporal-validity, conversion, and metric-predicate primitives.",
+            "In this pack, q08-q16 run through SQL-backed sources or query-level filters.",
             "This pack exercises ktx-sl directly, not the broader KtX context ingestion, wiki/search, daemon, and MCP stack.",
         ],
         "scale": {
@@ -1051,15 +1060,114 @@ def entry_for_question(
     }
 
 
+SUPPORT_STATUSES = ("native", "workaround", "precomputed", "doc_backed", "unsupported")
+
+# Findings that describe how this pack models each layer. They must not rank the layers on the
+# Semantic-Rails-targeted questions until an executable rubric and idiomatic models exist.
+LAYER_FINDINGS = [
+    "MetricFlow answers q08 and q16 with validity-windowed semantic models; this pack answers q09-q15 through helper dbt views and has not modeled MetricFlow's native conversion metrics or metric filters yet.",
+    "Cube answers q05 and most of q08-q16 through helper cubes or joined rollup filters in this pack; Cube's multi-stage measures and subquery dimensions have not been modeled yet.",
+    "Malloy answers q08-q16 through SQL sources or query-level filters in this pack; Malloy's arbitrary-condition joins have not been modeled yet.",
+    "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
+    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack.",
+    "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here.",
+]
+
+
+def status_totals(statuses: list[str]) -> dict[str, int]:
+    counts = Counter(statuses)
+    return {status: counts.get(status, 0) for status in SUPPORT_STATUSES}
+
+
+def short_id(question_id: str) -> str:
+    return question_id.split("_", 1)[0]
+
+
+def id_range(question_ids: list[str]) -> str:
+    first, last = short_id(question_ids[0]), short_id(question_ids[-1])
+    return first if first == last else f"{first}-{last}"
+
+
+def recorded_version(layer_id: str, summary: dict[str, Any]) -> str:
+    return str(summary.get("semantic_rails_version") or LAYER_META[layer_id]["version"])
+
+
+def recorded_capture(layer_id: str, summary: dict[str, Any]) -> str:
+    generated_at = summary.get("generated_at")
+    return str(generated_at)[:10] if generated_at else LAYER_META[layer_id]["captured"]
+
+
+def claim_findings(
+    validation_report: dict[str, Any],
+    questions: list[dict[str, Any]],
+    slice_ids: dict[str, list[str]],
+) -> list[str]:
+    """Headline claims generated from the consistency report, mismatches included."""
+    summary = validation_report["summary"]
+    total = len(questions)
+    title_by_id = {question["id"]: question["title"] for question in questions}
+    every_layer_ran = all(
+        len(item["comparable_layers"]) == len(LAYER_ORDER)
+        for item in validation_report["questions"]
+    )
+    scope = f"all {len(LAYER_ORDER)} layers" if every_layer_ran else "the layers that executed them"
+    mismatched = [
+        item["question_id"]
+        for item in validation_report["questions"]
+        if item["comparison_status"] == "mismatched"
+    ]
+    if summary["mismatched"] == 0 and summary["not_comparable"] == 0:
+        output_check = f"All {total} questions return matching normalized outputs across {scope}."
+    else:
+        output_check = (
+            f"{summary['matched']} of {total} questions return matching normalized outputs "
+            f"across {scope}."
+        )
+        if mismatched:
+            listed = "; ".join(f"{short_id(qid)} {title_by_id[qid]}" for qid in mismatched)
+            output_check += f" {len(mismatched)} do not match: {listed}."
+        if summary["not_comparable"]:
+            output_check += f" {summary['not_comparable']} could not be compared."
+    by_slice = validation_report["summary_by_slice"]
+    shared, targeted = by_slice["shared"], by_slice["semantic_rails_targeted"]
+    return [
+        output_check,
+        (
+            f"Shared questions ({id_range(slice_ids['shared'])}): {shared['matched']} of "
+            f"{shared['questions']} match. Semantic-Rails-targeted questions "
+            f"({id_range(slice_ids['semantic_rails_targeted'])}): {targeted['matched']} of "
+            f"{targeted['questions']} match."
+        ),
+        (
+            f"{targeted['questions']} of the {total} questions "
+            f"({id_range(slice_ids['semantic_rails_targeted'])}) were chosen to exercise features "
+            "Semantic Rails ships. The Semantic Rails authors wrote every layer's models and "
+            "assigned every support label, and several layers are not yet modeled with native "
+            "features they ship, so these questions are a capability showcase, not a ranking."
+        ),
+        (
+            "Semantic Rails is labeled native whenever its query validates. Its q11 and q12 "
+            "answers read the precomputed customer columns `lifetime_order_count` and "
+            "`lifetime_spend_cents`; MetricFlow's helper views for the same questions read the "
+            "same columns and are labeled precomputed."
+        ),
+    ]
+
+
 def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
     questions = load_questions()
     question_by_id = {question["id"]: question for question in questions}
     validation_report = load_json(VALIDATION_REPORT_PATH)
     validation_by_question = {item["question_id"]: item for item in validation_report["questions"]}
+    slice_ids: dict[str, list[str]] = {}
+    for item in validation_report["questions"]:
+        slice_ids.setdefault(item["slice"], []).append(item["question_id"])
     layers_payload = []
     layer_status_maps: dict[str, dict[str, str]] = {}
 
     for layer_id in LAYER_ORDER:
+        summary_path = LAYER_META[layer_id]["summary_path"]
+        summary = load_json(summary_path) if summary_path else {}
         entries = load_summary_entries(layer_id)
         status_map = {qid: entry["status"] for qid, entry in entries.items()}
         layer_status_maps[layer_id] = status_map
@@ -1068,41 +1176,34 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
             entry_for_question(layer_id, question_by_id[qid], entries[qid])
             for qid in question_by_id
         ]
-        counts = Counter(item["support_status"] for item in question_entries)
         layers_payload.append(
             {
                 "id": layer_id,
                 "label": LAYER_META[layer_id]["label"],
-                "version": LAYER_META[layer_id]["version"],
+                "version": recorded_version(layer_id, summary),
+                "captured": recorded_capture(layer_id, summary),
                 "setup_status": LAYER_META[layer_id]["setup_status"],
                 "comparison_type": LAYER_META[layer_id]["comparison_type"],
                 "strengths": LAYER_META[layer_id]["strengths"],
                 "weaknesses": LAYER_META[layer_id]["weaknesses"],
-                "status_totals": {
-                    "native": counts.get("native", 0),
-                    "workaround": counts.get("workaround", 0),
-                    "precomputed": counts.get("precomputed", 0),
-                    "doc_backed": counts.get("doc_backed", 0),
-                    "unsupported": counts.get("unsupported", 0),
+                "status_totals": status_totals(
+                    [item["support_status"] for item in question_entries]
+                ),
+                "status_totals_by_slice": {
+                    slice_name: status_totals([status_map[qid] for qid in ids])
+                    for slice_name, ids in slice_ids.items()
                 },
                 "scale": layer_scale(layer_id, status_map),
                 "questions": question_entries,
             }
         )
 
+    findings = claim_findings(validation_report, questions, slice_ids)
     comparison_data = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "headline_findings": [
-            f"All {validation_report['summary']['matched']} runnable questions now return matching normalized outputs across Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views, and KtX.",
-            "Semantic Rails is the only pack in this workspace that executes the expanded edge-capability suite natively end to end.",
-            "MetricFlow remains strong on temporal validity, but most predicate-heavy edge cases and conversion variants now rely on helper dbt views in this comparison pack.",
-            "Cube stays concise on the portable baseline, but the edge slice quickly turns into filter tricks and helper cubes.",
-            "Malloy keeps the authoring surface compact, but the edge slice resolves through query-level filters and SQL sources rather than governed semantic primitives.",
-            "Snowflake Semantic Views still executes q01-q07 natively through `SEMANTIC_VIEW(...)`, while the edge-capability questions run as verified SQL workarounds on the same base tables.",
-            "KtX executes the q01-q07 portable slice natively through its Python semantic layer, but the q08-q16 edge slice relies on SQL-backed sources and query-level filters.",
-            "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here.",
-        ],
+        "headline_findings": findings + LAYER_FINDINGS,
         "validation_summary": validation_report["summary"],
+        "validation_summary_by_slice": validation_report["summary_by_slice"],
         "questions": questions,
         "layers": layers_payload,
     }
@@ -1115,6 +1216,7 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
             "title": question["title"],
             "category": question["category"],
             "scope_level": question["scope_level"],
+            "slice": validation_by_question[qid]["slice"],
             "business_question": question["business_question"],
             "expected_semantics": question["expected_semantics"],
             "consistency_status": validation_by_question[qid]["comparison_status"],
@@ -1129,18 +1231,28 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
 
     capability_matrix = {
         "generated_at": comparison_data["generated_at"],
+        "claims": findings,
         "layers": [
             {
                 "id": layer["id"],
                 "label": layer["label"],
                 "version": layer["version"],
+                "captured": layer["captured"],
                 "setup_status": layer["setup_status"],
                 "status_totals": layer["status_totals"],
+                "status_totals_by_slice": layer["status_totals_by_slice"],
             }
             for layer in layers_payload
         ],
         "rows": matrix_rows,
         "summary": {
+            "output_consistency": validation_report["summary"],
+            "output_consistency_by_slice": validation_report["summary_by_slice"],
+            "scale_up_caveat": (
+                "Authored-size counts are not yet uniform across layers: the Semantic Rails "
+                "count omits graph.yml, core_metrics.yml and package.yml. Do not compare "
+                "sizes until one script counts every layer's authored files the same way."
+            ),
             "scale_up": [
                 {
                     "layer": layer["id"],
@@ -1152,7 +1264,7 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                     **{f"stretch_{key}": value for key, value in layer["scale"]["stretch"].items()},
                 }
                 for layer in layers_payload
-            ]
+            ],
         },
     }
 

@@ -1,19 +1,41 @@
 {
-  "generated_at": "2026-06-23T23:47:13-04:00",
+  "generated_at": "2026-09-22T20:31:22-04:00",
   "headline_findings": [
-    "All 14 runnable questions now return matching normalized outputs across Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views, and KtX.",
-    "Semantic Rails is the only pack in this workspace that executes the expanded edge-capability suite natively end to end.",
-    "MetricFlow remains strong on temporal validity, but most predicate-heavy edge cases and conversion variants now rely on helper dbt views in this comparison pack.",
-    "Cube stays concise on the portable baseline, but the edge slice quickly turns into filter tricks and helper cubes.",
-    "Malloy keeps the authoring surface compact, but the edge slice resolves through query-level filters and SQL sources rather than governed semantic primitives.",
-    "Snowflake Semantic Views still executes q01-q07 natively through `SEMANTIC_VIEW(...)`, while the edge-capability questions run as verified SQL workarounds on the same base tables.",
-    "KtX executes the q01-q07 portable slice natively through its Python semantic layer, but the q08-q16 edge slice relies on SQL-backed sources and query-level filters.",
+    "14 of 16 questions return matching normalized outputs across all 6 layers. 2 do not match: q07 Delivered Revenue By Month; q16 Revenue By Historical Customer Segment As Of Delivered Time.",
+    "Shared questions (q01-q07): 6 of 7 match. Semantic-Rails-targeted questions (q08-q16): 8 of 9 match.",
+    "9 of the 16 questions (q08-q16) were chosen to exercise features Semantic Rails ships. The Semantic Rails authors wrote every layer's models and assigned every support label, and several layers are not yet modeled with native features they ship, so these questions are a capability showcase, not a ranking.",
+    "Semantic Rails is labeled native whenever its query validates. Its q11 and q12 answers read the precomputed customer columns `lifetime_order_count` and `lifetime_spend_cents`; MetricFlow's helper views for the same questions read the same columns and are labeled precomputed.",
+    "MetricFlow answers q08 and q16 with validity-windowed semantic models; this pack answers q09-q15 through helper dbt views and has not modeled MetricFlow's native conversion metrics or metric filters yet.",
+    "Cube answers q05 and most of q08-q16 through helper cubes or joined rollup filters in this pack; Cube's multi-stage measures and subquery dimensions have not been modeled yet.",
+    "Malloy answers q08-q16 through SQL sources or query-level filters in this pack; Malloy's arbitrary-condition joins have not been modeled yet.",
+    "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
+    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack.",
     "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here."
   ],
   "validation_summary": {
     "matched": 14,
     "mismatched": 2,
     "not_comparable": 0
+  },
+  "validation_summary_by_slice": {
+    "semantic_rails_targeted": {
+      "matched": 8,
+      "mismatched": 1,
+      "mismatched_questions": [
+        "q16_revenue_by_customer_segment_as_of_delivered_time"
+      ],
+      "not_comparable": 0,
+      "questions": 9
+    },
+    "shared": {
+      "matched": 6,
+      "mismatched": 1,
+      "mismatched_questions": [
+        "q07_delivered_revenue_by_month"
+      ],
+      "not_comparable": 0,
+      "questions": 7
+    }
   },
   "questions": [
     {
@@ -149,11 +171,12 @@
     {
       "id": "semantic_rails",
       "label": "Semantic Rails",
-      "version": "workspace runtime",
+      "version": "0.2.1",
+      "captured": "2026-09-23",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
-        "All executed questions stay inside the local semantic runtime with no helper marts or handwritten SQL.",
+        "Every question runs through the Semantic Rails runtime without helper views or handwritten SQL; q11 and q12 read precomputed customer lifetime columns from the source table.",
         "Temporal-valid joins, conversion metrics, authored metric predicates, and query-time metric filters stay first-class."
       ],
       "weaknesses": [
@@ -166,6 +189,22 @@
         "precomputed": 0,
         "doc_backed": 0,
         "unsupported": 0
+      },
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 9,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
@@ -211,7 +250,7 @@
           "row_count": 18,
           "snippet_excerpt": "      meta:\n        owner_team: growth_analytics\n        review_priority: medium\n        change_risk: medium\n    revenue_usd:\n      label: Revenue (USD)\n      kind: aggregate\n      expr: order_total_cents / 100.0\n      accumulation:\n        kind: flow\n      value_type: currency\n      currency: USD\n      meta:\n        owner_team: finance_analytics\n        review_priority: high\n        change_risk: medium",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.revenue_usd\"\n      },\n      \"as\": \"revenue_usd\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_store_name\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"revenue_usd\",\n      \"direction\": \"DESC\"\n    }\n  ]\n}",
-          "result_excerpt": "[\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 59714.469999999325,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 54589.11999999983,\n    \"temporal_role.jaffle_order_time__month\": \"2017-05-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 50398.65999999982,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 49970.74999999979,\n    \"temporal_role.jaffle_order_time__month\": \"2017-07-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 49092.32999999982,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 47980.21000000004,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 47896.78999999983,\n    \"temporal_role.jaffle_order_time__month\": \"2017-04-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 47657.12000000005,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 59714.46999999908,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 54589.119999999966,\n    \"temporal_role.jaffle_order_time__month\": \"2017-05-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 50398.65999999987,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 49970.7499999997,\n    \"temporal_role.jaffle_order_time__month\": \"2017-07-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 49092.32999999991,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 47980.20999999959,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 47896.789999999775,\n    \"temporal_role.jaffle_order_time__month\": \"2017-04-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 47657.119999999966,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  revenue_usd DESC"
         },
         {
@@ -239,7 +278,7 @@
           "row_count": 2,
           "snippet_excerpt": "metrics:\n  # kind: ratio \u2014 direct numerator / denominator. Pins the formula and\n  # null-handling so AOV is always (revenue / orders) on the same slice.\n  aov_usd:\n    label: Average order value (USD)\n    description: Revenue divided by orders for the selected slice.\n    kind: ratio\n    numerator: revenue_usd\n    denominator: order_count\n    null_behavior: null_if_zero\n    value_type: currency\n    currency: USD\n    temporal_role: temporal_role.jaffle_order_time\n    meta:\n      owner_team: finance_analytics\n      review_priority: high\n      change_risk: medium",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.aov_usd\"\n      },\n      \"as\": \"aov_usd\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_store_name\"\n  ],\n  \"order_by\": [\n    {\n      \"field\": \"aov_usd\",\n      \"direction\": \"DESC\"\n    }\n  ]\n}",
-          "result_excerpt": "[\n  {\n    \"aov_usd\": 12.739104407255143,\n    \"dimension.jaffle_store_name\": \"Philadelphia\"\n  },\n  {\n    \"aov_usd\": 12.08594689028659,\n    \"dimension.jaffle_store_name\": \"Brooklyn\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"aov_usd\": 12.739104407255269,\n    \"dimension.jaffle_store_name\": \"Philadelphia\"\n  },\n  {\n    \"aov_usd\": 12.085946890286575,\n    \"dimension.jaffle_store_name\": \"Brooklyn\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1,\n  COUNT(DISTINCT jaffle_order.order_id) AS m2\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.m1 / NULLIF(base.m2, 0) AS aov_usd\nFROM leaf_1 AS base\nORDER BY\n  aov_usd DESC"
         },
         {
@@ -281,7 +320,7 @@
           "row_count": 12,
           "snippet_excerpt": "      kind: timestamp\n      class: event_time\n      as: temporal_role.jaffle_lifecycle_delivered_at\n  measures:\n    delivered_revenue_usd:\n      label: Delivered revenue\n      kind: aggregate\n      expr: order_total_cents / 100.0\n      accumulation:\n        kind: flow\n      value_type: currency\n      currency: USD\n      time: delivered_at\n      meta:\n        owner_team: operations_analytics\n        review_priority: high\n        change_risk: medium",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.delivered_revenue\"\n      },\n      \"as\": \"delivered_revenue\"\n    }\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_lifecycle_delivered_at\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n      \"direction\": \"ASC\"\n    }\n  ]\n}",
-          "result_excerpt": "[\n  {\n    \"delivered_revenue\": 18053.279999999988,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 21923.950000000008,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 27916.82000000004,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 35677.60000000009,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 45017.94999999988,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 43358.11999999984,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-02-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 73950.32000000081,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 83316.99000000152,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-04-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"delivered_revenue\": 18053.280000000006,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 21923.95000000004,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 27916.819999999992,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 35677.60000000001,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 45017.94999999983,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 43358.119999999755,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-02-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 73950.32000000049,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 83316.9900000016,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-04-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order_lifecycle.order_total_cents / 100.0) AS m1\nFROM jaffle_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(jaffle_order_lifecycle.delivered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM leaf_1 AS base\nORDER BY\n  t ASC"
         },
         {
@@ -295,7 +334,7 @@
           "row_count": 32,
           "snippet_excerpt": "model:\n  id: orders\n  relation: jaffle_order\n  description: One row per completed customer order.\n  entities:\n    order: {}\n    customer: {}\n    customer_history:\n      expr: customer_id\n    store: {}\n  times:\n    ordered_at:\n      label: Order time\n      column: ordered_at\n      kind: timestamp\n      class: event_time\n      default_query_axis: true\n      as: temporal_role.jaffle_order_time\n      default: true\n  dimensions:\n    ordered_date:\n      label: Ordered date\n      column: ordered_date\n      kind: date\n    is_new_customer_order:\n      label: Is new customer order\n      kind: boolean\n  measures:\n    order_count:\n      label: Orders\n      kind: entity_count\n      entity_key: order_id\n      accumulation:\n        kind: event\n      value_type: count\n      meta:",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.revenue_usd\"\n      },\n      \"as\": \"revenue_usd\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_customer_history_segment\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"revenue_usd\",\n      \"direction\": \"DESC\"\n    }\n  ]\n}",
-          "result_excerpt": "[\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 106851.15000000411,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 97728.07000000274,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 95395.1700000031,\n    \"temporal_role.jaffle_order_time__month\": \"2017-05-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 94105.69000000246,\n    \"temporal_role.jaffle_order_time__month\": \"2017-07-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 82682.07000000148,\n    \"temporal_role.jaffle_order_time__month\": \"2017-04-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 73321.77000000067,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 44504.92999999988,\n    \"temporal_role.jaffle_order_time__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 42834.49999999985,\n    \"temporal_role.jaffle_order_time__month\": \"2017-02-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 106851.15000000442,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 97728.07000000308,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 95395.17000000335,\n    \"temporal_role.jaffle_order_time__month\": \"2017-05-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 94105.69000000294,\n    \"temporal_role.jaffle_order_time__month\": \"2017-07-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 82682.07000000149,\n    \"temporal_role.jaffle_order_time__month\": \"2017-04-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 73321.7700000004,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 44504.92999999985,\n    \"temporal_role.jaffle_order_time__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 42834.49999999975,\n    \"temporal_role.jaffle_order_time__month\": \"2017-02-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  jaffle_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1\nFROM jaffle_order\nLEFT JOIN jaffle_customer_history ON jaffle_order.customer_id = jaffle_customer_history.customer_id AND jaffle_customer_history.valid_from <= jaffle_order.ordered_at AND (jaffle_customer_history.valid_to > jaffle_order.ordered_at OR (jaffle_customer_history.valid_to IS NULL))\nGROUP BY\n  jaffle_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  revenue_usd DESC"
         },
         {
@@ -379,7 +418,7 @@
           "row_count": 18,
           "snippet_excerpt": "metrics:\n  # Filtered aggregates \u2014 order_count and revenue restricted to a customer\n  # cohort. The metric_predicate scopes the cohort filter to the customer\n  # entity using the documented scope_mode semantics:\n  # - entity_only: cohort decided once per customer using lifetime stats\n  # - contextual:  cohort re-evaluated per query period\n\n  repeat_customer_orders:\n    label: Repeat customer orders\n    description: Orders placed by customers whose lifetime order count is greater than one.\n    kind: aggregate\n    value_type: count\n    temporal_role: temporal_role.jaffle_order_time\n    meta:\n      owner_team: growth_analytics\n      review_priority: medium\n      change_risk: high\n    expression:\n      kind: aggregate\n      measure: order_count\n      aggregation: count_distinct\n      filter:\n        all:\n          - expression:\n              kind: metric_predicate\n              entity: entity.jaffle_customer\n              scope_mode: entity_only\n              input:\n                measure: lifetime_order_count\n              op: \">\"\n              value: 1\n\n  orders_from_customers_with_10plus_orders_in_period:\n    label: Orders from customers with 10+ orders in period\n    description: Orders from customers who place more than 10 orders in the same calendar month as the order.\n    kind: aggregate",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.revenue_from_customers_with_10plus_orders_in_period\"\n      },\n      \"as\": \"qualifying_revenue_usd\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_store_name\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_order_time__month\",\n      \"direction\": \"ASC\"\n    },\n    {\n      \"field\": \"dimension.jaffle_store_name\",",
-          "result_excerpt": "[\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 6080.059999999984,\n    \"temporal_role.jaffle_order_time__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 10002.659999999962,\n    \"temporal_role.jaffle_order_time__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 14757.669999999991,\n    \"temporal_role.jaffle_order_time__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 19451.91999999997,\n    \"temporal_role.jaffle_order_time__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 24923.479999999963,\n    \"temporal_role.jaffle_order_time__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 20033.91999999993,\n    \"temporal_role.jaffle_order_time__month\": \"2017-02-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"qualifying_revenue_usd\": 7047.029999999887,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 27524.64,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 6080.059999999983,\n    \"temporal_role.jaffle_order_time__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 10002.659999999958,\n    \"temporal_role.jaffle_order_time__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 14757.669999999976,\n    \"temporal_role.jaffle_order_time__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 19451.919999999987,\n    \"temporal_role.jaffle_order_time__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 24923.479999999992,\n    \"temporal_role.jaffle_order_time__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 20033.91999999998,\n    \"temporal_role.jaffle_order_time__month\": \"2017-02-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"qualifying_revenue_usd\": 7047.029999999885,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 27524.639999999963,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  jaffle_order.customer_id AS g1,\n  jaffle_order.store_id AS g2,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nGROUP BY\n  jaffle_order.customer_id,\n  jaffle_order.store_id,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.g2 AS \"dimension.jaffle_store_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"dimension.jaffle_store_id\" AS \"dimension.jaffle_store_id\",\n  predicate_source.t AS t\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id"
         },
         {
@@ -407,7 +446,7 @@
           "row_count": 32,
           "snippet_excerpt": "model:\n  id: order_lifecycle\n  relation: jaffle_order_lifecycle\n  description: Lifecycle timestamps per order \u2014 ordered, prepared, delivered.\n  entities:\n    order_lifecycle: {}\n    order: {}\n    customer: {}\n    customer_history:\n      expr: customer_id\n    store: {}\n  times:\n    ordered_at:\n      label: Lifecycle ordered at\n      column: ordered_at\n      kind: timestamp\n      class: event_time\n      as: temporal_role.jaffle_lifecycle_ordered_at\n      default: true\n    prepared_at:\n      label: Lifecycle prepared at\n      column: prepared_at\n      kind: timestamp\n      class: event_time\n      as: temporal_role.jaffle_lifecycle_prepared_at\n    delivered_at:\n      label: Lifecycle delivered at\n      column: delivered_at\n      kind: timestamp\n      class: event_time\n      as: temporal_role.jaffle_lifecycle_delivered_at\n  measures:\n    delivered_revenue_usd:\n      label: Delivered revenue\n      kind: aggregate\n      expr: order_total_cents / 100.0",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.delivered_revenue\"\n      },\n      \"as\": \"delivered_revenue\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_customer_history_segment\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_lifecycle_delivered_at\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n      \"direction\": \"ASC\"\n    },\n    {\n      \"field\": \"dimension.jaffle_customer_history_segment\",",
-          "result_excerpt": "[\n  {\n    \"delivered_revenue\": 575.58,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 17477.69999999999,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 646.5900000000003,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 21277.360000000004,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 488.64000000000027,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 27428.180000000022,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 724.9900000000002,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 34952.610000000066,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"delivered_revenue\": 575.58,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 17477.699999999993,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 646.5900000000003,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 21277.360000000026,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 488.64000000000027,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 27428.179999999986,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 724.9900000000002,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 34952.61000000003,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  jaffle_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order_lifecycle.order_total_cents / 100.0) AS m1\nFROM jaffle_order_lifecycle\nLEFT JOIN jaffle_customer_history ON jaffle_order_lifecycle.customer_id = jaffle_customer_history.customer_id AND jaffle_customer_history.valid_from <= jaffle_order_lifecycle.delivered_at AND (jaffle_customer_history.valid_to > jaffle_order_lifecycle.delivered_at OR (jaffle_customer_history.valid_to IS NULL))\nGROUP BY\n  jaffle_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(jaffle_order_lifecycle.delivered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM leaf_1 AS base\nORDER BY\n  t ASC,\n  g1 ASC"
         }
       ]
@@ -416,6 +455,7 @@
       "id": "metricflow",
       "label": "MetricFlow",
       "version": "dbt-metricflow 0.11.0 / dbt-duckdb 1.10.1",
+      "captured": "by 2026-06-23 (exact date not recorded)",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -423,8 +463,7 @@
         "Generated SQL is clear and easy to inspect against the shared dataset."
       ],
       "weaknesses": [
-        "The dbt scaffold is materially heavier than the local pack or Malloy.",
-        "Predicate-heavy edge cases and conversion variants rely on helper dbt views rather than staying purely in semantic-model constructs."
+        "In this pack, q09-q15 run through helper dbt views; MetricFlow's native conversion metrics and metric filters have not been modeled yet."
       ],
       "status_totals": {
         "native": 9,
@@ -432,6 +471,22 @@
         "precomputed": 7,
         "doc_backed": 0,
         "unsupported": 0
+      },
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 2,
+          "workaround": 0,
+          "precomputed": 7,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
@@ -682,6 +737,7 @@
       "id": "cube",
       "label": "Cube",
       "version": "1.6.32",
+      "captured": "by 2026-06-23 (exact date not recorded)",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -689,8 +745,8 @@
         "Temporal history can be modeled with explicit join SQL when needed."
       ],
       "weaknesses": [
-        "Mixed-grain and stretch questions move quickly into helper cubes rather than staying in the base cube graph.",
-        "The authored join surface stays readable, but non-native support climbs as soon as edge cases arrive."
+        "In this pack, q05 and most of q08-q16 run through helper cubes or joined rollup filters; Cube's multi-stage measures and subquery dimensions have not been modeled yet.",
+        "This 1.6.32 capture cannot be re-run until its dependency advisories are resolved."
       ],
       "status_totals": {
         "native": 6,
@@ -698,6 +754,22 @@
         "precomputed": 6,
         "doc_backed": 0,
         "unsupported": 0
+      },
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 6,
+          "workaround": 1,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 3,
+          "precomputed": 6,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
@@ -948,6 +1020,7 @@
       "id": "malloy",
       "label": "Malloy",
       "version": "0.0.52",
+      "captured": "by 2026-06-23 (exact date not recorded)",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -955,8 +1028,7 @@
         "Join-tree aggregation is expressive without a large semantic scaffolding layer."
       ],
       "weaknesses": [
-        "The stretch questions become SQL sources rather than reusable semantic primitives.",
-        "This looks more like a query/modeling language than a governed semantic layer runtime."
+        "In this pack, q08-q16 run through SQL sources or query-level filters; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet."
       ],
       "status_totals": {
         "native": 7,
@@ -964,6 +1036,22 @@
         "precomputed": 0,
         "doc_backed": 0,
         "unsupported": 0
+      },
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
@@ -1213,7 +1301,8 @@
     {
       "id": "snowflake_semantic_views",
       "label": "Snowflake Semantic Views",
-      "version": "Snowflake CLI + semantic view trial account (2026-04-06)",
+      "version": "Snowflake CLI + semantic view trial account",
+      "captured": "2026-04-06",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -1222,7 +1311,8 @@
       ],
       "weaknesses": [
         "Month-grain semantics require explicit `DATE_TRUNC(...)` query expressions; raw time dimensions stay at timestamp grain.",
-        "The edge-capability questions still move outside `SEMANTIC_VIEW(...)` into verified SQL on the base comparison tables."
+        "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, in preview since 2026-02-25, have not been modeled yet.",
+        "The capture comes from a trial account and cannot be re-run without a live Snowflake account."
       ],
       "status_totals": {
         "native": 7,
@@ -1230,6 +1320,22 @@
         "precomputed": 0,
         "doc_backed": 0,
         "unsupported": 0
+      },
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
@@ -1480,6 +1586,7 @@
       "id": "ktx",
       "label": "KtX",
       "version": "ktx-sl 0.13.1 / KtX a155c0b",
+      "captured": "by 2026-06-23 (exact date not recorded)",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -1487,7 +1594,7 @@
         "Aggregate locality keeps the mixed-grain q05 orders-plus-item-revenue query native without a helper mart."
       ],
       "weaknesses": [
-        "The q08-q16 edge suite shifts to SQL-backed sources or query-level filters rather than first-class temporal-validity, conversion, and metric-predicate primitives.",
+        "In this pack, q08-q16 run through SQL-backed sources or query-level filters.",
         "This pack exercises ktx-sl directly, not the broader KtX context ingestion, wiki/search, daemon, and MCP stack."
       ],
       "status_totals": {
@@ -1496,6 +1603,22 @@
         "precomputed": 0,
         "doc_backed": 0,
         "unsupported": 0
+      },
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {

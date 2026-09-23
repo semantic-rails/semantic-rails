@@ -20,8 +20,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.428,
-      "compile_ms": 4.708,
+      "cache_lookup_ms": 0.423,
+      "compile_ms": 3.542,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -967,6 +967,8 @@
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     }
   ],
+  "semantic_fingerprint": "sha256:b1bf4e16f2ed9474bfeec78030e8849024eb239aba911b80230bc3b59bfe6a52",
+  "source_fingerprint": "5b0665c39f43be823184d1e560de283866b44b6bf35f2a53f152a2bf4a7496fd",
   "sql_plan": {
     "ctes": [
       {
@@ -1115,6 +1117,7 @@
       ]
     }
   },
+  "truncated": false,
   "warehouse": "duckdb",
   "warehouse_capabilities": {
     "date_diff": true,
