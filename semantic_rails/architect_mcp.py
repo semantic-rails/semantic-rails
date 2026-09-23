@@ -19,6 +19,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import architect_introspection as introspection
+from . import dbt_artifacts
 from .architect_service import ArchitectProject
 from .architect_transactions import (
     ABSENT_PROJECT_REVISION,
@@ -1163,6 +1164,59 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
         try:
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
                 return {"ok": True, **introspection.suggest_model(warehouse, relation)}
+        except Exception as exc:
+            return _report_error(exc)
+
+    def _workspace_file(value: str, *, argument: str) -> Path:
+        raw = Path(value).expanduser()
+        path = (raw if raw.is_absolute() else root / raw).resolve()
+        if not _within(path, root):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"Architect MCP only reads {argument} inside its configured workspace root",
+                details={"workspace_root": str(root), "requested_path": str(path)},
+            )
+        return path
+
+    def _dbt_project(target_dir: str, manifest_path: str, catalog_path: str) -> Any:
+        if not (target_dir or manifest_path):
+            raise SemanticLayerError(
+                "INVALID_MCP_ARGUMENTS",
+                "Pass target_dir (dbt's target/ directory) or manifest_path",
+            )
+        return dbt_artifacts.load_dbt_artifacts(
+            _workspace_file(target_dir, argument="target_dir") if target_dir else None,
+            manifest_path=_workspace_file(manifest_path, argument="manifest_path")
+            if manifest_path
+            else None,
+            catalog_path=_workspace_file(catalog_path, argument="catalog_path")
+            if catalog_path
+            else None,
+        )
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Suggest models from dbt"),
+        description=(
+            "Read a dbt project's manifest.json and catalog.json (never run dbt) and propose a "
+            "model per dbt model: key, foreign keys and value sets from dbt tests and contracts, "
+            "times, dimensions and measures from column types, each with a confidence and a "
+            "reason, plus draft upsert_model arguments. select narrows by model name."
+        ),
+    )
+    def suggest_models_from_dbt(
+        target_dir: str = "",
+        manifest_path: str = "",
+        catalog_path: str = "",
+        select: list[str] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            project = _dbt_project(target_dir, manifest_path, catalog_path)
+            return {
+                "ok": True,
+                "dbt_project": project.project_name,
+                "adapter_type": project.adapter_type,
+                "models": dbt_artifacts.suggest_models_from_dbt(project, list(select or [])),
+            }
         except Exception as exc:
             return _report_error(exc)
 
