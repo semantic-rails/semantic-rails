@@ -12,6 +12,9 @@ the query has already passed validation or was produced by `plan` with an `ok` s
 
 ## Local MCP
 
+Copy-paste setup for Claude Code, Codex, Claude Desktop, Cursor and the hosted demo endpoint
+is in the README under [Connect your agent](../README.md#connect-your-agent).
+
 For a UV-installed project, start MCP against the package you created with
 `semantic-rails setup --interactive` or `semantic-rails init`. Use an absolute
 `--path` because MCP clients may start outside your project directory:
