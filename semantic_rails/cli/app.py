@@ -65,6 +65,7 @@ from .common import (
     _print_stderr,
 )
 from .output import _print_error_envelope
+from .registry import CommandRegistry, load_extensions
 
 
 def _config_for_error_enrichment(args: argparse.Namespace) -> Any | None:
@@ -84,7 +85,9 @@ def _config_for_error_enrichment(args: argparse.Namespace) -> Any | None:
     return None
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the built-in command tree; :mod:`.registry` applies extensions on top."""
+
     package_choices = list_package_ids()
     parser = argparse.ArgumentParser(
         prog="semantic-rails",
@@ -887,7 +890,13 @@ def main() -> None:
         help="Port to bind (default: 8090).",
     )
     p_serve.set_defaults(func=cmd_serve)
+    return parser
 
+
+def main() -> None:
+    registry = CommandRegistry()
+    load_extensions(registry)
+    parser = registry.build_parser()
     args = parser.parse_args()
     if not getattr(args, "cmd", ""):
         if not sys.stdin.isatty():
