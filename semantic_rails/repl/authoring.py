@@ -16,6 +16,7 @@ from ..cli.output import _authoring_error_messages, _authoring_warning_messages
 from ..cli.reports import project_validation_report
 from ..config_validation import PackageReference
 from ..errors import SemanticLayerError
+from .backend import current_backend
 from .prompts import (
     _author_choice,
     _author_confirm,
@@ -765,9 +766,7 @@ def _apply_authoring_change(
     print(f"Preview - {operation} {kind} `{key}`")
     print(f"  label   {label}")
     print(f"  file    {target}")
-    rendered = yaml.safe_dump(preview, sort_keys=False, allow_unicode=False).rstrip()
-    for line in rendered.splitlines():
-        print(f"  {line}")
+    current_backend().show_yaml(preview)
     similar = project.find_similar(kind=kind, key=key, label=label)
     if similar:
         print("\n[warning] This sounds similar to existing definitions:")
@@ -893,7 +892,8 @@ def _select_inventory_item(
     if not rows:
         raise SemanticLayerError("INVALID_CONFIG", f"No choices are available for {label.lower()}")
     visible = list(rows)
-    if len(visible) > 12:
+    # Arrow-key pickers filter as you type; plain prompts ask for search words first.
+    if len(visible) > 12 and not current_backend().filters_long_lists:
         while True:
             search = _author_prompt(
                 f"Filter {label.lower()} ({len(visible)} choices; type words, or Enter for a short list)",

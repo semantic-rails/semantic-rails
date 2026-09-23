@@ -28,6 +28,7 @@ from ..config import package_root_for_source
 from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
 from .authoring import _authoring_warehouse, _run_authoring_flow
+from .backend import current_backend, pickers_available
 from .prompts import _author_confirm, _AuthoringCancelled
 
 
@@ -38,6 +39,7 @@ def run_interactive_shell(*, package: str = "", path: str = "") -> None:
         interactive=_is_terminal(sys.stdin) and _is_terminal(sys.stdout),
     )
     undo_stack: list[ArchitectMutation] = []
+    current_backend()  # an unusable SEMANTIC_RAILS_UI fails here, before the banner
     _print_repl_welcome(current_ref)
     while True:
         try:
@@ -83,7 +85,16 @@ def _print_repl_welcome(current_ref: PackageReference) -> None:
     print(accent(f"╰{'─' * inner_width}╯"))
     print(f"  package  {_ref_display(current_ref)}")
     print("  help     type help for the timetable · exit when done")
+    print(f"  prompts  {_prompt_style()}")
     print()
+
+
+def _prompt_style() -> str:
+    if current_backend().name == "pickers":
+        return "arrow-key pickers · SEMANTIC_RAILS_UI=plain for line prompts"
+    if pickers_available():
+        return "line prompts"
+    return "line prompts · pip install 'semantic-rails[repl]' for arrow-key pickers"
 
 
 def _repl_prompt(current_ref: PackageReference) -> str:
