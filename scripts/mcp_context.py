@@ -64,7 +64,7 @@ EVAL_SET_PATH = CONTEXT_DIR / "eval_jaffle.jsonl"
 PLAN_BASELINE_PATH = CONTEXT_DIR / "plan_accuracy_baseline.json"
 # Commitment to the held-out split: 12 more cases kept outside this repository
 # so the planner can't be tuned against them. ``--eval-file`` checks a copy.
-HELDOUT_SET_SHA256 = "c8dc6f64ffe9f3524420a106c0a65fd43c77e36e20486d2ebd120ace17b73f83"
+HELDOUT_SET_SHA256 = "ce5ef85b14f8b92a3f6944a55dd4657631ddde104006dcb50178fd0800027730"
 
 PACKAGE_ID = "jaffle_shop"
 DEFAULT_TOLERANCE = 0.02
@@ -333,13 +333,15 @@ DEFAULT_PROBES: list[Step] = [
     ("segment_preview", "segment-preview", {"segment_id": SEGMENT}),
 ]
 
-# Typical agent mistakes. Errors should be small and sent once.
-ERROR_PROBES: list[Step] = [
-    ("inspect_label_not_id", "inspect", {"object_id": "revenue"}),
+# Typical agent mistakes, each with whether the call should still succeed.
+# Errors should be small and sent once.
+ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool]] = [
+    ("inspect_label_not_id", "inspect", {"object_id": "revenue"}, False),
     (
         "validate_unknown_dimension",
         "validate",
         {"query": {**Q1, "group_by": ["dimension.jaffle_store"]}},
+        False,
     ),
     (
         "validate_fanout",
@@ -351,9 +353,35 @@ ERROR_PROBES: list[Step] = [
                 "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
             }
         },
+        False,
     ),
-    ("discover_unknown_argument", "discover", {"term": "revenue"}),
+    ("discover_unknown_argument", "discover", {"term": "revenue"}, True),
 ]
+
+
+class MeasurementError(RuntimeError):
+    """A scripted call didn't behave as scripted, so its size means nothing."""
+
+
+def _measured_call(
+    client: QueryMCPClient, name: str, tool: str, arguments: dict[str, Any], *, ok: bool = True
+) -> tuple[int, int]:
+    """Call a tool and return its (structured, text) tokens.
+
+    A call that fails when it should succeed (or the reverse) raises instead:
+    a broken tool must not look like a smaller response.
+    """
+
+    result = client.call_tool(tool, arguments)
+    payload = result.get("structuredContent")
+    succeeded = (
+        isinstance(payload, Mapping) and payload.get("ok") is True and not result.get("isError")
+    )
+    if succeeded != ok:
+        errors = payload.get("errors") if isinstance(payload, Mapping) else None
+        codes = [issue.get("code") for issue in errors or [] if isinstance(issue, Mapping)]
+        raise MeasurementError(f"{name}: {tool} ok={succeeded}, expected ok={ok}; errors={codes}")
+    return result_tokens(result)
 
 
 def measure_query_mcp(package_path: Path) -> dict[str, int]:
@@ -391,23 +419,25 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
         default_structured: list[int] = []
         default_text: list[int] = []
         for name, tool, arguments in DEFAULT_PROBES:
-            structured, text_tokens = result_tokens(client.call_tool(tool, arguments))
+            structured, text_tokens = _measured_call(client, name, tool, arguments)
             metrics[f"query.default.{name}_tokens"] = structured
             default_structured.append(structured)
             default_text.append(text_tokens)
         metrics["query.default.max_structured_tokens"] = max(default_structured)
         metrics["query.default.max_text_tokens"] = max(default_text)
-        for name, tool, arguments in ERROR_PROBES:
-            metrics[f"query.error.{name}_tokens"] = result_tokens(
-                client.call_tool(tool, arguments)
+        for name, tool, arguments, ok in ERROR_PROBES:
+            metrics[f"query.error.{name}_tokens"] = _measured_call(
+                client, name, tool, arguments, ok=ok
             )[0]
     for session, steps in SESSIONS.items():
         # A fresh runtime per session, so one session's caches can't shrink
         # or grow another's responses.
         structured_total = text_total = largest = 0
         with QueryMCPClient(package_path) as client:
-            for _step, tool, arguments in steps:
-                structured, text_tokens = result_tokens(client.call_tool(tool, arguments))
+            for step, tool, arguments in steps:
+                structured, text_tokens = _measured_call(
+                    client, f"{session}.{step}", tool, arguments
+                )
                 structured_total += structured
                 text_total += text_tokens
                 largest = max(largest, structured)
@@ -506,6 +536,7 @@ PASS = "pass"
 FLAGGED = "wrong_flagged"
 SILENT = "wrong_silent"
 OUTCOME_RANK = {SILENT: 0, FLAGGED: 1, PASS: 2}
+PLAN_STATUSES = frozenset({"ok", "low_confidence", "unrealizable", "out_of_scope"})
 REFUSAL_STATUSES = frozenset({"out_of_scope", "unrealizable"})
 EVAL_CASE_KEYS = frozenset(
     {
@@ -689,18 +720,28 @@ class PlanOutcome:
     mismatched: tuple[str, ...]
 
 
+class EvaluationError(RuntimeError):
+    """``plan`` failed outright, so its answer can't be graded."""
+
+
 def score_plan_response(
     case: Mapping[str, Any], response: Mapping[str, Any], aggregations: Mapping[str, str]
 ) -> PlanOutcome:
     """Grade one ``plan(detail="query")`` response against its gold case.
 
-    ``pass`` means the plan matched the gold slots (or refused an unanswerable
-    question with a non-``ok`` status). A wrong plan is ``wrong_flagged`` when
-    the response signals doubt (a non-``ok`` status or any warning) and
-    ``wrong_silent`` when it reports ``ok`` with no warnings.
+    ``pass`` means the plan matched the gold slots, or refused an unanswerable
+    question as ``out_of_scope`` or ``unrealizable``. A wrong plan is
+    ``wrong_flagged`` when the response signals doubt (a non-``ok`` status or
+    any warning) and ``wrong_silent`` when it reports ``ok`` with no warnings.
+    A failed call (an error envelope, or no recognizable status) raises
+    ``EvaluationError`` rather than scoring as a refusal or a flagged answer.
     """
 
     status = str(response.get("status") or "")
+    if response.get("ok") is not True or status not in PLAN_STATUSES:
+        errors = response.get("errors") or []
+        codes = [issue.get("code") for issue in errors if isinstance(issue, Mapping)]
+        raise EvaluationError(f"{case['id']}: plan failed (status={status!r}, errors={codes})")
     warnings = tuple(
         str(item.get("code", ""))
         for item in response.get("warnings") or []
@@ -710,7 +751,8 @@ def score_plan_response(
     wrong = FLAGGED if loud else SILENT
     mismatched: tuple[str, ...]
     if case["expect"] == "refuse":
-        outcome, mismatched = (PASS, ()) if status != "ok" else (wrong, ("answered",))
+        refused = status in REFUSAL_STATUSES
+        outcome, mismatched = (PASS, ()) if refused else (wrong, ("answered",))
     else:
         query = (response.get("best") or {}).get("query_ir")
         if status in REFUSAL_STATUSES or not isinstance(query, Mapping):
@@ -776,6 +818,7 @@ _MIDNIGHT_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[T ]00:00:00$")
 # the last bits between runs, and cent-valued data sits exactly on rounding
 # boundaries, so answers are compared with a tolerance, never by hash.
 ANSWER_REL_TOL = 1e-6
+TIME_COLUMN = "time"
 
 
 def _canonical_value(value: Any) -> Any:
@@ -799,24 +842,86 @@ def _sort_key(value: Any) -> tuple[int, Any]:
     return (3, str(value))
 
 
-def canonical_rows(rows: Sequence[Mapping[str, Any]], *, trend: bool) -> list[list[Any]]:
+def _value_column(expression: Any, aggregations: Mapping[str, str]) -> str:
+    """Name a select column by what it computes, not by its alias."""
+
+    canonical = _canonical_expression(expression, aggregations)
+    if canonical.get("kind") == "measure" and set(canonical) <= {"kind", "measure", "aggregation"}:
+        return f"{canonical['measure']}:{canonical.get('aggregation', '')}"
+    if canonical.get("kind") == "metric" and set(canonical) == {"kind", "metric"}:
+        return str(canonical["metric"])
+    return compact_json(canonical)
+
+
+def _is_value_column(name: str) -> bool:
+    return name != TIME_COLUMN and not name.startswith("dimension.")
+
+
+def answer_table(
+    rows: Sequence[Mapping[str, Any]],
+    query: Mapping[str, Any],
+    aggregations: Mapping[str, str],
+    *,
+    trend: bool,
+) -> dict[str, Any]:
     """Reduce a result set to what answer equivalence compares.
 
-    Column names are dropped (each row becomes its values in a fixed order),
-    and time-bucket columns are kept only when the question asks for a trend.
+    Each column is named by what it holds: a select column by its canonical
+    expression, a grouping column by its dimension id, and the time bucket by
+    ``"time"``, kept only when the question asks for a trend. Aliases and
+    column order therefore don't matter, but which value sits in which column
+    does.
     """
 
-    return [
-        sorted(
-            (
-                _canonical_value(value)
-                for key, value in row.items()
-                if trend or not str(key).startswith("temporal_role.")
-            ),
-            key=_sort_key,
-        )
-        for row in rows
-    ]
+    from semantic_rails.ast import normalize_query
+
+    normalized = normalize_query(copy.deepcopy(dict(query))).to_dict()
+    select = {
+        str(item["as"]): _value_column(item["expression"], aggregations)
+        for item in normalized["select"]
+    }
+    named: dict[str, str] = {}
+    for key in dict.fromkeys(str(key) for row in rows for key in row):
+        if key.startswith("temporal_role."):
+            if trend:
+                named[key] = TIME_COLUMN
+        else:
+            named[key] = select.get(key, key)
+    order = sorted(named, key=named.__getitem__)
+    return {
+        "columns": [named[key] for key in order],
+        "rows": [[_canonical_value(row.get(key)) for key in order] for row in rows],
+    }
+
+
+def _column_alignment(expected: Sequence[str], actual: Sequence[str]) -> list[int] | None:
+    """Position in ``actual`` of each expected column, or None if they can't align.
+
+    Columns align by name. Two formulations of the same answer can compute
+    one value differently (a dedicated count measure vs a filtered count);
+    when a single value column is all that differs, those two align.
+    """
+
+    if len(expected) != len(actual):
+        return None
+    unused = list(range(len(actual)))
+    alignment: list[int | None] = []
+    for name in expected:
+        match = next((index for index in unused if actual[index] == name), None)
+        if match is not None:
+            unused.remove(match)
+        alignment.append(match)
+    missing = [position for position, match in enumerate(alignment) if match is None]
+    if not missing:
+        return [match for match in alignment if match is not None]
+    if (
+        len(missing) == 1
+        and _is_value_column(expected[missing[0]])
+        and _is_value_column(actual[unused[0]])
+    ):
+        alignment[missing[0]] = unused[0]
+        return [match for match in alignment if match is not None]
+    return None
 
 
 def _same_value(expected: Any, actual: Any) -> bool:
@@ -829,20 +934,20 @@ def _same_row(expected: Sequence[Any], actual: Sequence[Any]) -> bool:
     return len(expected) == len(actual) and all(map(_same_value, expected, actual))
 
 
-def rows_match(
-    expected: Sequence[Sequence[Any]], actual: Sequence[Sequence[Any]], *, ordered: bool
-) -> bool:
-    """Answer equivalence: same rows, numbers within ``ANSWER_REL_TOL``.
+def answers_match(expected: Mapping[str, Any], actual: Mapping[str, Any], *, ordered: bool) -> bool:
+    """Answer equivalence: same columns and rows, numbers within ``ANSWER_REL_TOL``.
 
     Row order matters only for ranking questions.
     """
 
-    if len(expected) != len(actual):
+    alignment = _column_alignment(expected["columns"], actual["columns"])
+    if alignment is None or len(expected["rows"]) != len(actual["rows"]):
         return False
+    rows = [[row[index] for index in alignment] for row in actual["rows"]]
     if ordered:
-        return all(map(_same_row, expected, actual))
-    remaining = list(actual)
-    for row in expected:
+        return all(map(_same_row, expected["rows"], rows))
+    remaining = list(rows)
+    for row in expected["rows"]:
         index = next(
             (i for i, candidate in enumerate(remaining) if _same_row(row, candidate)), None
         )
@@ -852,9 +957,12 @@ def rows_match(
     return True
 
 
-def gold_rows(
-    client: QueryMCPClient, query: Mapping[str, Any], case: Mapping[str, Any]
-) -> list[list[Any]]:
+def gold_answer(
+    client: QueryMCPClient,
+    query: Mapping[str, Any],
+    case: Mapping[str, Any],
+    aggregations: Mapping[str, str],
+) -> dict[str, Any]:
     payload = client.tool_payload(
         "execute", {"query": {**dict(query), "limits": {"max_rows": GOLD_MAX_ROWS}}}
     )
@@ -863,12 +971,15 @@ def gold_rows(
         raise ValueError(f"{case['id']}: gold query failed: {codes}")
     if payload.get("truncated"):
         raise ValueError(f"{case['id']}: gold answer was truncated")
-    return canonical_rows(payload.get("rows") or [], trend=bool(case.get("trend")))
+    return answer_table(
+        payload.get("rows") or [], query, aggregations, trend=bool(case.get("trend"))
+    )
 
 
 def check_gold_answers(package_path: Path, cases: Sequence[Mapping[str, Any]]) -> list[str]:
     """Return problems: gold queries that fail, change answers, or disagree with alternatives."""
 
+    aggregations = measure_aggregations(package_path)
     problems: list[str] = []
     with QueryMCPClient(package_path) as client:
         for case in cases:
@@ -876,16 +987,17 @@ def check_gold_answers(package_path: Path, cases: Sequence[Mapping[str, Any]]) -
                 continue
             ordered = bool(case.get("ordered"))
             try:
-                actual = gold_rows(client, case["gold_query"], case)
-                frozen = (case.get("gold_result") or {}).get("rows")
-                if not actual:
+                actual = gold_answer(client, case["gold_query"], case, aggregations)
+                frozen = case.get("gold_result")
+                if not actual["rows"]:
                     problems.append(f"{case['id']}: gold answer is empty")
-                if frozen is None or not rows_match(frozen, actual, ordered=ordered):
-                    problems.append(f"{case['id']}: gold answer no longer matches the frozen rows")
+                if not isinstance(frozen, Mapping) or not answers_match(
+                    frozen, actual, ordered=ordered
+                ):
+                    problems.append(f"{case['id']}: gold answer no longer matches the frozen one")
                 for index, alternative in enumerate(case.get("alternatives") or []):
-                    if not rows_match(
-                        actual, gold_rows(client, alternative, case), ordered=ordered
-                    ):
+                    answer = gold_answer(client, alternative, case, aggregations)
+                    if not answers_match(actual, answer, ordered=ordered):
                         problems.append(f"{case['id']}: alternative {index} answers differently")
             except ValueError as exc:
                 problems.append(str(exc))
@@ -897,20 +1009,19 @@ def _stored_value(value: Any) -> Any:
 
 
 def fill_gold_results(path: Path, package_path: Path) -> None:
-    """Authoring helper: write each case's ``gold_result`` rows into ``path``."""
+    """Authoring helper: write each case's ``gold_result`` into ``path``."""
 
+    aggregations = measure_aggregations(package_path)
     cases = load_eval_cases(path)
     with QueryMCPClient(package_path) as client:
         for case in cases:
             if case["expect"] != "answer":
                 continue
-            rows = [
-                [_stored_value(v) for v in row]
-                for row in gold_rows(client, case["gold_query"], case)
-            ]
+            answer = gold_answer(client, case["gold_query"], case, aggregations)
+            rows = [[_stored_value(value) for value in row] for row in answer["rows"]]
             if not case.get("ordered"):
                 rows.sort(key=lambda row: [_sort_key(value) for value in row])
-            case["gold_result"] = {"rows": rows}
+            case["gold_result"] = {"columns": answer["columns"], "rows": rows}
     path.write_text("".join(json.dumps(case) + "\n" for case in cases), encoding="utf-8")
 
 

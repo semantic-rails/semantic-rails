@@ -20,7 +20,7 @@ from scripts import mcp_context
 # Digest of the frozen dev split, tests/semantic_rails/mcp_context/eval_jaffle.jsonl.
 # The set is frozen: change a case only through a reviewed revision of the eval
 # set, and update this digest in that same change.
-FROZEN_DEV_SET_SHA256 = "2efd15836f7f21354e66ca215bd35c0ba25382cd32c3fa4998192d8ae535eaa9"
+FROZEN_DEV_SET_SHA256 = "3a20d349655a3ff8cee8e533aec2d4cb4e263f93c5981b853f7b1207846f77ad"
 
 
 @pytest.fixture(scope="module")
@@ -105,6 +105,7 @@ def _query(**parts: Any) -> dict[str, Any]:
 
 def _plan(query: dict[str, Any] | None, *, status: str = "ok", warnings: int = 0) -> dict[str, Any]:
     return {
+        "ok": True,
         "status": status,
         "warnings": [{"code": "SOME_WARNING"}] * warnings,
         "best": {"query_ir": query} if query is not None else None,
@@ -243,32 +244,139 @@ def test_budget_check() -> None:
     assert failed == {"q.b", "q.gone", "q.new"}
 
 
-def test_answer_matching_tolerates_float_noise_only() -> None:
-    gold = [[24857.99, "2017-03-01", "Brooklyn"], [35420.2, "2017-04-01", "Brooklyn"]]
-    noisy = [
-        {
-            "store": "Brooklyn",
-            "temporal_role.t__month": "2017-04-01 00:00:00",
-            "revenue": 35420.200000000186,
-        },
-        {
-            "store": "Brooklyn",
-            "temporal_role.t__month": "2017-03-01",
-            "revenue": 24857.989999999976,
-        },
-    ]
-    assert mcp_context.rows_match(
-        gold, mcp_context.canonical_rows(noisy, trend=True), ordered=False
+FOOD = "measure.jaffle.food_revenue_usd"
+DRINK = "measure.jaffle.drink_revenue_usd"
+FOOD_AND_DRINK = {
+    "version": 2,
+    "select": [
+        {"as": "food", "expression": {"measure": FOOD}},
+        {"as": "drink", "expression": {"measure": DRINK}},
+    ],
+    "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
+}
+MEASURES = {FOOD: "sum", DRINK: "sum", REVENUE: "sum"}
+
+
+def _table(rows: list[dict[str, Any]], query: dict[str, Any], *, trend: bool = True) -> Any:
+    return mcp_context.answer_table(rows, query, MEASURES, trend=trend)
+
+
+def test_answers_keep_each_value_in_its_column() -> None:
+    gold = _table(
+        [{"temporal_role.t__quarter": "2016-07-01 00:00:00", "food": 7971.0, "drink": 9061.0}],
+        FOOD_AND_DRINK,
     )
-    assert not mcp_context.rows_match(
-        gold, mcp_context.canonical_rows(noisy, trend=True), ordered=True
+    assert gold["columns"] == [f"{DRINK}:sum", f"{FOOD}:sum", "time"]
+    swapped = _table(
+        [{"temporal_role.t__quarter": "2016-07-01", "food": 9061.0, "drink": 7971.0}],
+        FOOD_AND_DRINK,
     )
-    changed = [{**noisy[0], "revenue": 35420.3}, noisy[1]]
-    assert not mcp_context.rows_match(
-        gold, mcp_context.canonical_rows(changed, trend=True), ordered=False
+    assert not mcp_context.answers_match(gold, swapped, ordered=False)
+    # Aliases, column order and float noise don't matter.
+    renamed = {
+        **FOOD_AND_DRINK,
+        "select": [
+            {"as": "d", "expression": {"measure": DRINK, "aggregation": "sum"}},
+            {"as": "f", "expression": {"kind": "aggregate", "measure": FOOD}},
+        ],
+    }
+    noisy = _table(
+        [{"d": 9061.000000000186, "temporal_role.t__quarter": "2016-07-01", "f": 7970.99999999}],
+        renamed,
     )
+    assert mcp_context.answers_match(gold, noisy, ordered=False)
+    changed = _table(
+        [{"d": 9061.5, "temporal_role.t__quarter": "2016-07-01", "f": 7971.0}], renamed
+    )
+    assert not mcp_context.answers_match(gold, changed, ordered=False)
+
+
+def test_one_value_computed_another_way_still_aligns() -> None:
+    count = {
+        "version": 2,
+        "select": [{"as": "n", "expression": {"measure": "measure.jaffle.large_order_count"}}],
+    }
+    filtered = {
+        "version": 2,
+        "select": [{"as": "n", "expression": {"measure": "measure.jaffle.order_count"}}],
+    }
+    measures = {
+        "measure.jaffle.large_order_count": "count",
+        "measure.jaffle.order_count": "count_distinct",
+    }
+    gold = mcp_context.answer_table([{"n": 4303}], count, measures, trend=False)
+    alternative = mcp_context.answer_table([{"n": 4303}], filtered, measures, trend=False)
+    assert mcp_context.answers_match(gold, alternative, ordered=False)
+    # With two value columns, a renamed one must still line up with the rest.
+    assert mcp_context.answers_match(
+        _table([{"food": 1.0, "drink": 2.0}], FOOD_AND_DRINK),
+        _table(
+            [{"food": 1.0, "revenue": 2.0}],
+            {
+                **FOOD_AND_DRINK,
+                "select": [
+                    {"as": "food", "expression": {"measure": FOOD}},
+                    {"as": "revenue", "expression": {"measure": REVENUE}},
+                ],
+            },
+        ),
+        ordered=False,
+    )
+
+
+def test_answer_rows_compare_as_sets_unless_ranked() -> None:
+    query = {
+        "version": 2,
+        "select": [{"as": "r", "expression": {"measure": REVENUE}}],
+        "group_by": [STORE],
+    }
+    rows = [{STORE: "Brooklyn", "r": 1.0}, {STORE: "Philadelphia", "r": 2.0}]
+    gold = _table(rows, query, trend=False)
+    reversed_rows = _table(rows[::-1], query, trend=False)
+    assert mcp_context.answers_match(gold, reversed_rows, ordered=False)
+    assert not mcp_context.answers_match(gold, reversed_rows, ordered=True)
     # Without a trend, time buckets are not part of the answer.
-    assert mcp_context.canonical_rows(noisy[:1], trend=False) == [[35420.200000000186, "Brooklyn"]]
+    bucketed = _table(
+        [{**row, "temporal_role.t__year": "2017-01-01"} for row in rows], query, trend=False
+    )
+    assert mcp_context.answers_match(gold, bucketed, ordered=True)
+
+
+def test_failed_plan_calls_are_not_graded() -> None:
+    refuse = {"id": "T3", "category": "out_of_scope", "expect": "refuse"}
+    internal_error = {
+        "ok": False,
+        "status": "error",
+        "errors": [{"code": "INTERNAL_ERROR"}],
+        "warnings": [],
+    }
+    for response in ({}, internal_error):
+        with pytest.raises(mcp_context.EvaluationError):
+            mcp_context.score_plan_response(refuse, response, AGGREGATIONS)
+        with pytest.raises(mcp_context.EvaluationError):
+            mcp_context.score_plan_response(_case(_query()), response, AGGREGATIONS)
+    # An uncertain answer to an unanswerable question is not a refusal.
+    uncertain = {**_plan(_query(), status="low_confidence"), "ok": True}
+    assert mcp_context.score_plan_response(refuse, uncertain, AGGREGATIONS).outcome == (
+        mcp_context.FLAGGED
+    )
+
+
+@pytest.mark.parametrize("failing", ["segment-preview", "execute"])
+def test_a_failing_call_fails_the_measurement(
+    jaffle_package: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    real_call = mcp_context.QueryMCPClient.call_tool
+
+    def call_tool(self: Any, name: str, arguments: Any) -> dict[str, Any]:
+        if name != failing:
+            return real_call(self, name, arguments)
+        envelope = {"ok": False, "status": "error", "errors": [{"code": "INTERNAL_ERROR"}]}
+        return {"content": [], "structuredContent": envelope, "isError": True}
+
+    monkeypatch.setattr(mcp_context.QueryMCPClient, "call_tool", call_tool)
+    with pytest.raises(mcp_context.MeasurementError, match=failing):
+        mcp_context.measure_query_mcp(jaffle_package)
 
 
 def test_timing_is_normalized_in_both_channels() -> None:

@@ -532,16 +532,19 @@ uv run python scripts/mcp_context.py --write-baseline # after an intended change
 
 The budgets cover `tools/list`, the `initialize` instructions, the resource and prompt lists, every
 resource read, one call per tool at its defaults (including an `execute` of a time window without a
-grain), four error envelopes, and two scripted three-question sessions. Architect MCP tool-list
-sizes are recorded under `tracked` and are not gated.
+grain), four error envelopes, and two scripted three-question sessions. A scripted call that fails
+when it should succeed, or the reverse, stops the measurement rather than counting as a smaller
+response. Architect MCP tool-list sizes are recorded under `tracked` and are not gated.
 
 Each planner outcome is one of:
 
 - `pass`: the drafted query matches the gold query's measures and metrics, grouping, time role,
-  grain, window, filters and limit (and, for rankings, the sort), or an unanswerable question gets
-  a non-`ok` status.
+  grain, window, filters and limit (and, for rankings, the sort), or an unanswerable question is
+  refused as `out_of_scope` or `unrealizable`.
 - `wrong_flagged`: the draft is wrong, but the response says so with a non-`ok` status or a warning.
 - `wrong_silent`: the draft is wrong and the response reports `ok` with no warnings.
+
+A `plan` call that fails outright stops the run instead of being graded.
 
 When a change is intended, such as a smaller response or a planner fix, run `--write-baseline` and
 commit the updated budgets or outcomes with it. The report lists sizes under budget and cases that
@@ -552,11 +555,14 @@ improved, so savings get locked in.
 `eval_jaffle.jsonl` is the frozen development split: 38 questions covering trends, calendar
 windows, rankings, multi-value filters, near-duplicate metrics, ratios, time expressions, a segment
 metric, out-of-scope questions and misspellings. Each answerable case has a hand-written gold query,
-any equivalent alternatives, and its frozen answer rows. Answers compare as sets of rows: column
-names are ignored, numbers match within a relative tolerance of 1e-6, row order counts only for
-rankings, and time buckets count only for trends. A held-out split of 12 more questions is kept
-outside the repository so the planner can't be tuned against it; `HELDOUT_SET_SHA256` in the script
-commits to its content, and `--eval-file` checks a copy against it.
+any equivalent alternatives, and its frozen answer. Answers compare as sets of rows whose columns
+are named by what they hold (a measure or metric, a dimension, or the time bucket), so aliases and
+column order don't matter but a value in the wrong column does. Numbers match within a relative
+tolerance of 1e-6, row order counts only for rankings, and time buckets count only for trends.
+
+A held-out split of 12 more questions is kept outside the repository so the planner can't be tuned
+against it. `HELDOUT_SET_SHA256` in the script commits to its content, and `--eval-file` rejects a
+copy that doesn't match.
 
 ## Production Readiness
 
