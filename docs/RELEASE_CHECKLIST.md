@@ -20,7 +20,8 @@ remaining controls live in GitHub or PyPI and must be confirmed by a repository 
 
 - In the release PR, fold `changelog.d/` into `CHANGELOG.md` with
   `uv run python scripts/changelog_fragments.py release --version <project.version> --date <YYYY-MM-DD> --title "<theme>"`
-  and review the new section before tagging. The publish workflow rejects unfolded fragments.
+  and review the new section before tagging. The publish workflow rejects a tag whose version
+  has no `CHANGELOG.md` section or whose fragments are still unfolded.
 - Make the release PR green, including Python, lint/type, Python and npm security audits, docs,
   the planner benchmark, clean-wheel installation, and package tests.
 - Run `python scripts/generate_contract_artifacts.py --check` and
@@ -32,7 +33,8 @@ remaining controls live in GitHub or PyPI and must be confirmed by a repository 
 - Build the release-candidate wheel once. Run the public dbt and SQLMesh
   validation-binding suites against that exact wheel and contract bundle before publishing.
 - Run `make release-check` against the release candidate.
-- Tag exactly `v<project.version>`. The publish workflow rejects a tag/version mismatch.
+- Tag the release PR's merge commit exactly `v<project.version>`; fragments merged after it belong
+  to the next release. The publish workflow rejects a tag/version mismatch.
 - Approve the PyPI environment only after the release gate succeeds. The publish workflow builds
   wheel and sdist once, publishes those verified bytes, matches both PyPI digests, and repeats one
   governed `plan → validate → compile → query` smoke from the public index.

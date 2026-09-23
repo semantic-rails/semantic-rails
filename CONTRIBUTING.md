@@ -82,6 +82,7 @@ The active runtime reseeds the DuckDB file when the expected tables are missing.
 3. Keep examples and docs aligned with the active runtime, not migration-era code.
 4. Add or update focused tests for runtime, planner, or metadata behavior when changing those areas.
 5. Treat generated distribution artifacts, cache directories, and local virtual environments as non-source material unless a task explicitly targets them.
+6. Record user-facing changes as a `changelog.d/` fragment (see [changelog.d/README.md](changelog.d/README.md)) instead of editing `CHANGELOG.md`.
 
 ## Validation
 
@@ -95,6 +96,7 @@ uv run ruff format --check .
 uv run mypy semantic_rails
 uv run python scripts/generate_contract_artifacts.py --check
 uv run python scripts/verify_release_readiness.py
+uv run python scripts/changelog_fragments.py check
 ```
 
 ## Full Verification Matrix

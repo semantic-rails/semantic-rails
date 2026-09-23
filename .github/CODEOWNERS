@@ -21,6 +21,7 @@
 /.github/workflows/ci.yml @wtremml18
 /.github/workflows/publish.yml @wtremml18
 /.github/workflows/release-readiness.yml @wtremml18
+/scripts/changelog_fragments.py @wtremml18
 /scripts/verify_package_distribution.py @wtremml18
 /scripts/verify_published_release.py @wtremml18
 /scripts/verify_release_readiness.py @wtremml18

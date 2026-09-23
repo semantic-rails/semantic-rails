@@ -43,6 +43,7 @@ STALE_LICENSE_PATTERNS = {
 POSTURE_SCAN_EXTENSIONS = {".html", ".md", ".txt", ".yml", ".yaml"}
 POSTURE_SCAN_ROOTS = {
     ".github",
+    "changelog.d",
     "docs",
 }
 POSTURE_SCAN_FILES = {
@@ -62,6 +63,7 @@ PUBLIC_REFERENCE_ROOTS = (
     "CONTRIBUTING.md",
     "SECURITY.md",
     "SUPPORT.md",
+    "changelog.d",
     "docs",
 )
 PUBLIC_REFERENCE_EXCLUDED_PREFIXES: set[str] = set()
@@ -138,6 +140,14 @@ def posture_scan_files() -> list[str]:
     return files
 
 
+def validate_license_posture(errors: list[str]) -> None:
+    for rel in posture_scan_files():
+        text = read(rel)
+        for label, pattern in STALE_LICENSE_PATTERNS.items():
+            if pattern.search(text):
+                errors.append(f"{rel} still contains stale license posture wording: {label}")
+
+
 def markdown_links(text: str) -> list[str]:
     return re.findall(r"(?<!!)\[[^\]]+\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)", text)
 
@@ -147,6 +157,9 @@ def validate_local_links(errors: list[str]) -> None:
         path = REPO_ROOT / rel
         text = path.read_text(encoding="utf-8")
         links = markdown_links(text)
+        # Fragments are written as they will read once folded into the root CHANGELOG.md.
+        fragment = rel.startswith("changelog.d/") and path.name != "README.md"
+        base = REPO_ROOT if fragment else path.parent
 
         for raw_href in links:
             href = raw_href.strip()
@@ -166,7 +179,7 @@ def validate_local_links(errors: list[str]) -> None:
                 errors.append(f"{rel} uses a site-root-relative link: {href}")
                 continue
             else:
-                target = (path.parent / unquote(target_path)).resolve()
+                target = (base / unquote(target_path)).resolve()
             if not str(target).startswith(str(REPO_ROOT)):
                 errors.append(f"{rel} links outside the repo: {href}")
                 continue
@@ -524,10 +537,15 @@ def validate_release_tag(errors: list[str], tag: str) -> None:
 
 
 def validate_changelog_folded(errors: list[str], tag: str, root: Path = REPO_ROOT) -> None:
-    """A tagged release must have folded every changelog.d/ fragment into CHANGELOG.md."""
+    """A release tag needs its CHANGELOG.md section and no unfolded changelog.d/ fragments."""
+    if not tag:
+        return
     unfolded = sorted(p.name for p in (root / "changelog.d").glob("*") if p.name != "README.md")
-    if tag and unfolded:
+    if unfolded:
         errors.append(f"release tag {tag!r} has unfolded changelog.d/ fragments: {unfolded}")
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    if not re.search(rf"^## {re.escape(tag.removeprefix('v'))} — ", changelog, re.MULTILINE):
+        errors.append(f"release tag {tag!r} has no matching ## heading in CHANGELOG.md")
 
 
 def validate_prelaunch_gaps(errors: list[str]) -> None:
@@ -805,11 +823,7 @@ def main(argv: list[str] | None = None) -> int:
         ):
             errors.append(f"{rel} still documents pre-release HTTP route aliases")
 
-    for rel in posture_scan_files():
-        text = read(rel)
-        for label, pattern in STALE_LICENSE_PATTERNS.items():
-            if pattern.search(text):
-                errors.append(f"{rel} still contains stale license posture wording: {label}")
+    validate_license_posture(errors)
 
     canonical_runtime_docs = read("docs/README.md") + "\n" + read("docs/CAPABILITIES.md")
     if "uv run rails packages" in canonical_runtime_docs:
@@ -823,6 +837,7 @@ def main(argv: list[str] | None = None) -> int:
             errors.append(f"canonical docs must reference {required_reference}")
     ci = read(".github/workflows/ci.yml")
     for required_ci_command in (
+        "uv run python scripts/changelog_fragments.py check",
         "uv run pytest -q tests/semantic_rails tests/mf2sr -n auto",
         "uv run semantic-rails parse-config --package jaffle_shop",
         "uv run semantic-rails validate-config --package jaffle_shop --quiet",
