@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from .. import architect_introspection as introspection
 from ..architect_service import ArchitectMutation, ArchitectProject
 from ..cli.common import _quote, _ref_label, _slug, _title
 from ..cli.output import _authoring_error_messages, _authoring_warning_messages
@@ -20,6 +21,7 @@ from .backend import current_backend
 from .prompts import (
     _author_choice,
     _author_confirm,
+    _author_multi_choice,
     _author_prompt,
     _author_slug_prompt,
     _AuthoringCancelled,
@@ -130,6 +132,10 @@ def _author_model(
     ref: PackageReference,
     before_warnings: set[str],
 ) -> ArchitectMutation:
+    if (source := _table_source(project, ref)) is not None:
+        mutation = _author_model_from_table(project, inventory, ref, before_warnings, *source)
+        if mutation is not None:
+            return mutation
     key, label, existing = _author_identity(project, inventory, "model", "orders")
     spec = dict(existing.get("spec", {}) or {}) if existing else {}
     existing_entity = _model_entity_defaults(project, key)
@@ -141,24 +147,7 @@ def _author_model(
         "Business entity at one row of this model",
         str(existing_entity.get("key", key.rstrip("s") or key)),
     )
-    entity_conflict = next(
-        (
-            row
-            for row in _inventory_items(inventory, "entity")
-            if str(row.get("key", "")) == entity_key
-            and str((row.get("spec", {}) or {}).get("model", "")) != key
-        ),
-        None,
-    )
-    if entity_conflict:
-        owner = str((entity_conflict.get("spec", {}) or {}).get("model", ""))
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            (
-                f"Entity `{entity_key}` already belongs to model `{owner}`. "
-                "Choose a different entity key or manage its existing model."
-            ),
-        )
+    _check_entity_is_free(inventory, entity_key, model=key)
     primary_default = ", ".join(existing_entity.get("primary_key", []) or []) or f"{entity_key}_id"
     primary_key = [
         _slug(part, fallback=f"{entity_key}_id")
@@ -211,6 +200,206 @@ def _author_model(
         ),
         next_action="Add a dimension with `author dimension`.",
     )
+
+
+_TYPE_IT = "__type__"
+_DEFAULT_META = {"owner_team": "analytics", "review_priority": "medium", "change_risk": "medium"}
+_MONEY_WORDS = "amount revenue sales price cost total tax fee profit margin discount spend paid"
+
+
+def _table_source(
+    project: ArchitectProject, ref: PackageReference
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """The package's DuckDB file and its tables, when the warehouse is DuckDB and readable."""
+
+    if _authoring_warehouse(ref) != "duckdb":
+        return None
+    try:
+        path = introspection.package_duckdb_path(project.project_path)
+        with introspection.open_duckdb(path) as warehouse:
+            tables = introspection.list_tables(warehouse)
+    except SemanticLayerError as exc:
+        print(f"Can't list the warehouse tables: {exc}. Enter the table by hand.")
+        return None
+    if not tables:
+        print(f"{path} has no tables yet. Enter the table by hand.")
+        return None
+    return path, tables
+
+
+def _author_model_from_table(
+    project: ArchitectProject,
+    inventory: dict[str, Any],
+    ref: PackageReference,
+    before_warnings: set[str],
+    path: str,
+    tables: list[dict[str, Any]],
+) -> ArchitectMutation | None:
+    """Pick a table, confirm the suggested model, and write it in one change."""
+
+    models = _inventory_items(inventory, "model")
+    modeled = {(row.get("spec") or {}).get("relation"): row["key"] for row in models}
+    options = []
+    for table in tables:
+        relation, size = table["relation"], table["rows_estimate"]
+        detail = f"{table['kind']}, {table['columns']} columns"
+        detail += "" if size is None else f", about {size:,} rows"
+        detail += f"; modeled by {modeled[relation]}" if relation in modeled else ""
+        options.append((relation, f"{relation} ({detail})"))
+    options.append((_TYPE_IT, "Type a table name instead"))
+    default = next(value for value, _ in options if value not in modeled)
+    relation = _author_choice(f"Table to model (from {path})", options, default=default)
+    if relation == _TYPE_IT:
+        return None
+    with introspection.open_duckdb(path) as warehouse:
+        suggestion = introspection.suggest_model(warehouse, relation)
+        described = introspection.describe_table(warehouse, relation)
+    columns = [column["name"] for column in described["columns"]]
+
+    entity = _author_slug_prompt("Business entity at one row of this table", suggestion["entity"])
+    _check_entity_is_free(inventory, entity, model=None)
+    suggested_key = suggestion["primary_key"] or {"columns": []}
+    if suggested_key["columns"]:
+        print(
+            f"  Suggested key: {', '.join(suggested_key['columns'])} "
+            f"({suggested_key['confidence']}: {suggested_key['reason']})"
+        )
+    key_columns: list[str] = []
+    while not key_columns:
+        key_columns = _author_multi_choice(
+            "Primary key column(s)",
+            [(column, column) for column in columns],
+            defaults=suggested_key["columns"],
+        )
+        if not key_columns:
+            print("Choose at least one key column; a model needs one row per key.")
+    times = _pick_suggestions(
+        "Time columns (the first is the default clock)",
+        [item for item in suggestion["times"] if item["column"] not in key_columns],
+        name="column",
+        detail="kind",
+    )
+    dimensions = _pick_suggestions(
+        "Dimensions to group and filter by",
+        [item for item in suggestion["dimensions"] if item["column"] not in key_columns],
+        name="column",
+    )
+    measures = _pick_suggestions(
+        "Measures",
+        [
+            item
+            for item in suggestion["measures"]
+            if item["kind"] != "entity_count" or len(key_columns) == 1
+        ],
+        name="key",
+        detail="aggregation",
+    )
+    amounts = [item["key"] for item in measures if item["kind"] != "entity_count"]
+    money: set[str] = set()
+    if amounts:
+        money = set(
+            _author_multi_choice(
+                "Which of these are money amounts?",
+                [(key, key) for key in amounts],
+                defaults=[
+                    key for key in amounts if any(w in key.lower() for w in _MONEY_WORDS.split())
+                ],
+            )
+        )
+    currency = _author_prompt("Currency code for those amounts", "USD").upper() if money else ""
+    if suggestion["foreign_keys"]:
+        print("  Links found (not added here; relationship authoring adds them):")
+    for link in suggestion["foreign_keys"][:5]:
+        local, target = ", ".join(introspection.link_columns(link)), link["references"]
+        print(f"    {local} -> {target['relation']}({', '.join(target['columns'])})")
+
+    draft = introspection.upsert_model_draft(
+        entity=entity,
+        relation=relation,
+        key_columns=key_columns,
+        times=times,
+        dimensions=dimensions,
+        measures=measures,
+    )
+    for measure_key, measure in draft["measures"].items():
+        measure.setdefault("meta", dict(_DEFAULT_META))
+        if measure_key in money:
+            measure.update(value_type="currency", currency=currency)
+    model_id = draft["model_id"]
+    if any(row["key"] == model_id for row in models):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Model `{model_id}` already exists. Use `author model` and type its key to update it.",
+        )
+    label = _title(model_id)
+    preview = {
+        "model": {
+            "id": model_id,
+            "label": label,
+            "relation": relation,
+            "entities": {entity: {}},
+            **{
+                part: draft[part] for part in ("times", "dimensions", "measures") if draft.get(part)
+            },
+        },
+        "graph": {"entities": {entity: {"key": key_columns, "model": model_id}}},
+    }
+    return _apply_authoring_change(
+        project,
+        ref,
+        before_warnings,
+        kind="model",
+        key=model_id,
+        label=label,
+        existing=None,
+        target=f"models/core/{model_id}.yml",
+        preview=preview,
+        apply=lambda: project.upsert_model(**draft, label=label),
+        next_action="Publish a measure as a metric with `author metric`.",
+    )
+
+
+def _pick_suggestions(
+    label: str, items: list[dict[str, Any]], *, name: str, detail: str = ""
+) -> list[dict[str, Any]]:
+    """Checkboxes over suggestions; confident ones start checked, and every pick is kept."""
+
+    if not items:
+        return []
+    options = []
+    for item in items:
+        extra = f"{item[detail]}; " if detail else ""
+        options.append(
+            (item[name], f"{item[name]} ({extra}{item['confidence']}: {item['reason']})")
+        )
+    confident = [item[name] for item in items if item["confidence"] != "low"]
+    chosen = set(_author_multi_choice(label, options, defaults=confident))
+    # The draft builder drops low-confidence items; a person who ticked one meant it.
+    return [
+        {**item, "confidence": "chosen"} if item["confidence"] == "low" else item
+        for item in items
+        if item[name] in chosen
+    ]
+
+
+def _check_entity_is_free(inventory: dict[str, Any], entity: str, *, model: str | None) -> None:
+    owner = next(
+        (
+            str((row.get("spec") or {}).get("model", ""))
+            for row in _inventory_items(inventory, "entity")
+            if str(row.get("key", "")) == entity
+            and str((row.get("spec") or {}).get("model", "")) != model
+        ),
+        None,
+    )
+    if owner is not None:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            (
+                f"Entity `{entity}` already belongs to model `{owner}`. "
+                "Choose a different entity key or manage its existing model."
+            ),
+        )
 
 
 def _author_dimension(
