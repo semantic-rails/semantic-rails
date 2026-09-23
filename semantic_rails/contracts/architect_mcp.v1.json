@@ -2225,6 +2225,300 @@
       }
     },
     {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Import dbt models"
+      },
+      "description": "Preview or atomically create or update package models from dbt models (reads manifest.json and catalog.json; dbt never runs), with foreign keys from relationships tests as entity references. select names the dbt models; review them with suggest_models_from_dbt first. Models without a key in dbt are reported in skipped_models, references to models outside the package in skipped_references.",
+      "inputSchema": {
+        "properties": {
+          "catalog_path": {
+            "default": "",
+            "title": "Catalog Path",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "group": {
+            "default": "dbt",
+            "title": "Group",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "manifest_path": {
+            "default": "",
+            "title": "Manifest Path",
+            "type": "string"
+          },
+          "project_path": {
+            "title": "Project Path",
+            "type": "string"
+          },
+          "select": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Select",
+            "type": "array"
+          },
+          "target_dir": {
+            "default": "",
+            "title": "Target Dir",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_path",
+          "select",
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "import_dbt_projectArguments",
+        "type": "object"
+      },
+      "name": "import_dbt_project",
+      "outputSchema": {
+        "$defs": {
+          "ArchitectFileChange": {
+            "properties": {
+              "after_bytes": {
+                "default": 0,
+                "title": "After Bytes",
+                "type": "integer"
+              },
+              "after_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "After Sha256"
+              },
+              "before_bytes": {
+                "default": 0,
+                "title": "Before Bytes",
+                "type": "integer"
+              },
+              "before_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Before Sha256"
+              },
+              "content_encoding": {
+                "default": "none",
+                "enum": [
+                  "utf-8",
+                  "base64",
+                  "none"
+                ],
+                "title": "Content Encoding",
+                "type": "string"
+              },
+              "diff": {
+                "default": "",
+                "title": "Diff",
+                "type": "string"
+              },
+              "operation": {
+                "enum": [
+                  "create",
+                  "update",
+                  "delete"
+                ],
+                "title": "Operation",
+                "type": "string"
+              },
+              "path": {
+                "title": "Path",
+                "type": "string"
+              },
+              "proposed_content": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Proposed Content"
+              }
+            },
+            "required": [
+              "path",
+              "operation"
+            ],
+            "title": "ArchitectFileChange",
+            "type": "object"
+          },
+          "ArchitectMutationIssue": {
+            "additionalProperties": true,
+            "properties": {
+              "code": {
+                "title": "Code",
+                "type": "string"
+              },
+              "details": {
+                "additionalProperties": true,
+                "title": "Details",
+                "type": "object"
+              },
+              "message": {
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "title": "ArchitectMutationIssue",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "description": "Stable structured output shared by every Architect mutation tool.",
+        "properties": {
+          "base_revision": {
+            "title": "Base Revision",
+            "type": "string"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Files",
+            "type": "array"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/$defs/ArchitectFileChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "current_revision": {
+            "title": "Current Revision",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ArchitectMutationIssue"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/$defs/ArchitectMutationIssue"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "parse": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parse"
+          },
+          "project_path": {
+            "title": "Project Path",
+            "type": "string"
+          },
+          "proposed_revision": {
+            "title": "Proposed Revision",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "workspace_root": {
+            "default": "",
+            "title": "Workspace Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status",
+          "project_path",
+          "expected_revision",
+          "base_revision",
+          "current_revision",
+          "revision",
+          "proposed_revision",
+          "idempotency_key",
+          "idempotent_replay",
+          "dry_run",
+          "changed_files",
+          "changes"
+        ],
+        "title": "ArchitectMutationResult",
+        "type": "object"
+      }
+    },
+    {
       "description": "Run parse, runtime, examples, tests, impact, or release validation for a project path.",
       "inputSchema": {
         "properties": {
