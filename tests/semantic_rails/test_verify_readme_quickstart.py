@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import stat
 import subprocess
 import sys
@@ -191,7 +192,11 @@ def test_bare_venv_commands_name_no_shared_paths(tmp_path: Path) -> None:
     env = Scripted(tmp_path, (1, "", "requires Python>=3.11"), (0, "Python 3.9.6\n", ""))
     quickstart.python_trap(env, README)
     commands = " ".join(env.commands)
-    assert "/tmp/" not in commands and "mktemp" not in commands and "rm -rf" not in commands
+    # Every path the commands touch is in the environment's scratch area (tmp_path
+    # itself may live under /tmp, so compare prefixes rather than looking for "/tmp/").
+    paths = set(re.findall(r"/[^\s'\";&|]+", commands)) - {"/dev/null"}
+    assert paths and all(path.startswith(str(tmp_path)) for path in paths), paths
+    assert "mktemp" not in commands and "rm -rf" not in commands
     assert env.scratch("bare-venv") in commands
     assert env.scratch("no-managed-python") in commands
 
