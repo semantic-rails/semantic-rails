@@ -13,7 +13,10 @@ Environments:
                  only Python on PATH is Apple's /usr/bin/python3.
 
 The README warns about two traps. While a trap still reproduces, its warning must stay
-in the README; when it stops reproducing, the check says so without failing.
+in the README; when it stops reproducing, the check says so without failing. Any other
+outcome (a crash, a report that isn't JSON, an unexpected package) fails, so a broken
+run is never read as a fixed trap. Everything the check creates stays inside the
+environment it runs in and is removed with it.
 """
 
 from __future__ import annotations
@@ -21,19 +24,24 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UV_VERSION = "0.12.17"
 STEP_TIMEOUT_SECONDS = 600
+MCP_TIMEOUT_SECONDS = 120
 
 TRY = 'uvx semantic-rails ask --package jaffle_shop "revenue by store" --run'
 INIT = "uvx semantic-rails init my_package --yes"
@@ -71,6 +79,10 @@ class Environment:
         raise NotImplementedError
 
     def workdir(self) -> str:
+        raise NotImplementedError
+
+    def scratch(self, name: str) -> str:
+        """A path for the check's own files, which close() removes with the environment."""
         raise NotImplementedError
 
     def close(self) -> None:
@@ -127,6 +139,10 @@ class Container(Environment):
     def workdir(self) -> str:
         return "/work"
 
+    def scratch(self, name: str) -> str:
+        # Inside the container, which close() removes.
+        return f"/scratch/{name}"
+
     def close(self) -> None:
         subprocess.run(["docker", "rm", "-f", self.id], capture_output=True, check=False)
 
@@ -174,27 +190,64 @@ class Local(Environment):
     def workdir(self) -> str:
         return str(self.root / "work")
 
+    def scratch(self, name: str) -> str:
+        # Under this run's own temporary root, which close() removes.
+        return str(self.root / "scratch" / name)
+
     def close(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
 
 
-def report(env: Environment, command: str) -> dict[str, object]:
-    """Run a documented `ask` command with --json and return its report ({} if unusable)."""
+@dataclass
+class AskReport:
+    """What `ask ... --json` did: its exit status, its JSON object (if any) and its output."""
+
+    returncode: int
+    data: dict[str, object] | None
+    output: str
+
+    def problem(self) -> str:
+        """Why this isn't a usable answer, or "" if it is one."""
+        if self.returncode:
+            return f"exit {self.returncode}: {self.output.strip()[-300:]}"
+        if self.data is None:
+            return f"printed no JSON report: {self.output.strip()[-300:]}"
+        return ""
+
+
+def report(env: Environment, command: str) -> AskReport:
+    """Run a documented `ask` command with --json and keep everything needed to judge it."""
     result = env.run(f"{command} --json")
     try:
         parsed = json.loads(result.stdout)
     except ValueError:
-        return {}
-    return parsed if result.returncode == 0 and isinstance(parsed, dict) else {}
+        parsed = None
+    data = parsed if isinstance(parsed, dict) else None
+    return AskReport(result.returncode, data, result.stdout + result.stderr)
 
 
-def answered_from(parsed: dict[str, object]) -> tuple[str, int]:
+def answered_from(parsed: dict[str, object] | None) -> tuple[str, int]:
     """The package an `ask --json` report answered from, and how many rows it returned."""
+    parsed = parsed or {}
     package = parsed.get("package")
     result = parsed.get("result")
     package_id = str(package.get("id", "")) if isinstance(package, dict) else ""
     rows = result.get("rows") if isinstance(result, dict) else None
     return package_id, len(rows) if isinstance(rows, list) else 0
+
+
+def no_package_selected(ask: AskReport) -> bool:
+    """True for the engine's documented refusal when no package was chosen.
+
+    Releases that drop the silent fallback exit non-zero and print
+    {"ok": false, "error": {"code": "INVALID_CONFIG", "details": {"reason": "no_package_selected"}}}.
+    """
+    error = (ask.data or {}).get("error")
+    if ask.returncode == 0 or not isinstance(error, dict):
+        return False
+    details = error.get("details")
+    reason = details.get("reason") if isinstance(details, dict) else None
+    return error.get("code") == "INVALID_CONFIG" and reason == "no_package_selected"
 
 
 def expect(result: subprocess.CompletedProcess[str], *needles: str) -> str:
@@ -205,25 +258,41 @@ def expect(result: subprocess.CompletedProcess[str], *needles: str) -> str:
     return f"output lacks {missing}" if missing else ""
 
 
-def mcp_handshake(env: Environment) -> str:
-    """Initialize the stdio server the README registers with agents and list its tools."""
+def mcp_handshake(env: Environment, timeout: float = MCP_TIMEOUT_SECONDS) -> str:
+    """Initialize the stdio server the README registers with agents and list its tools.
+
+    The whole exchange has one deadline: a server that stays alive without answering
+    fails this step instead of hanging the run.
+    """
     package = f"{env.workdir()}/my_package"
     argv = ["uvx", "semantic-rails", "mcp", "stdio", "--path", package]
     if isinstance(env, Local):
         argv[0] = str(env.root / "bin" / "uvx")
     process = env.popen(argv)
     assert process.stdin is not None and process.stdout is not None
+    deadline = time.monotonic() + timeout
+    lines: queue.Queue[str] = queue.Queue()
+
+    def pump(stdout: object) -> None:
+        for line in stdout:  # type: ignore[attr-defined]
+            lines.put(line)
+        lines.put("")  # end of output
+
+    threading.Thread(target=pump, args=(process.stdout,), daemon=True).start()
 
     def call(message: dict[str, object]) -> dict[str, object]:
-        assert process.stdin is not None and process.stdout is not None
+        assert process.stdin is not None
         process.stdin.write(json.dumps(message) + "\n")
         process.stdin.flush()
         while True:
-            line = process.stdout.readline()
+            try:
+                line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise TimeoutError(f"no reply to {message['method']} within {timeout:g}s") from None
             if not line:
                 raise RuntimeError("server closed stdout")
-            reply: dict[str, object] = json.loads(line)
-            if reply.get("id") == message["id"]:
+            reply = json.loads(line)
+            if isinstance(reply, dict) and reply.get("id") == message["id"]:
                 return reply
 
     try:
@@ -247,11 +316,58 @@ def mcp_handshake(env: Environment) -> str:
         tools = [tool["name"] for tool in result["tools"]] if isinstance(result, dict) else []
         missing = {"discover", "validate", "compile", "execute"} - set(tools)
         return f"tools/list lacks {sorted(missing)}" if missing else ""
-    except (RuntimeError, ValueError, KeyError, TypeError) as error:
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+        # OSError covers TimeoutError and a broken pipe to a server that exited.
         return f"stdio handshake failed: {error}"
     finally:
         process.kill()
         process.wait(timeout=30)
+
+
+def fallback_trap(env: Environment, readme: str) -> str:
+    """0.2.x answers `ask` without --path from the bundled sample package, exiting 0.
+
+    Only two outcomes are understood: that fallback, or the engine's documented
+    no-package refusal. Anything else (a crash, a non-JSON report, another package)
+    fails, so a broken run is never mistaken for a fixed trap.
+    """
+    ask = report(env, ASK_WITHOUT_PATH)
+    if not ask.problem():
+        package, _ = answered_from(ask.data)
+        if package == "jaffle_shop":
+            if FALLBACK_WARNING in readme:
+                return ""
+            return "ask without --path falls back to jaffle_shop; README lacks its warning"
+        return f"ask without --path answered from {package or 'no package'}, exit 0"
+    if no_package_selected(ask):
+        fixed = "ask without --path now refuses with no_package_selected"
+        return f"{NOTE}{fixed}: drop the README warning" if FALLBACK_WARNING in readme else ""
+    return f"ask without --path failed unexpectedly: {ask.problem()}"
+
+
+def python_trap(env: Environment, readme: str) -> str:
+    """A bare `uv venv` may pick an old system Python, and then the install fails."""
+    # Minimal images ship no Python; a typical host has the distro's python3. An empty
+    # managed-Python directory hides the interpreters earlier steps downloaded, as on a
+    # machine that has never run uv. Both directories live in the environment's scratch
+    # area, so nothing outside this run is touched.
+    venv = shlex.quote(env.scratch("bare-venv"))
+    pythons = shlex.quote(env.scratch("no-managed-python"))
+    result = env.run(
+        "if ! command -v python3 >/dev/null && command -v apt-get >/dev/null; then "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 >/dev/null; fi; "
+        f"mkdir -p {pythons} && export UV_PYTHON_INSTALL_DIR={pythons} && "
+        f"uv venv {venv} >/dev/null 2>&1 && "
+        f"uv pip install -q --python {venv}/bin/python semantic-rails"
+    )
+    found = env.run(f"{venv}/bin/python --version").stdout.strip() or "no interpreter"
+    if result.returncode == 0:
+        return f"{NOTE}bare uv venv used {found}; the install worked"
+    if "Python>=3.11" not in result.stdout + result.stderr:
+        return f"bare uv venv failed unexpectedly: {(result.stdout + result.stderr)[-300:]}"
+    if PYTHON_WARNING not in readme:
+        return f"bare uv venv used {found} and failed; README lacks its warning"
+    return f"{NOTE}bare uv venv used {found} and failed, as the README warns"
 
 
 def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
@@ -277,9 +393,12 @@ def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
 
     def try_bundled() -> str:
         problem = expect(env.run(TRY))
-        package, count = answered_from(report(env, TRY))
-        if problem or package != "jaffle_shop" or not count:
-            return problem or f"answered from {package or 'nothing'} with {count} rows"
+        if problem:
+            return problem
+        ask = report(env, TRY)
+        package, count = answered_from(ask.data)
+        if ask.problem() or package != "jaffle_shop" or not count:
+            return ask.problem() or f"answered from {package or 'nothing'} with {count} rows"
         return ""
 
     def own_package() -> str:
@@ -290,36 +409,12 @@ def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
                 return f"{command}: {problem}"
             if "[fail]" in result.stdout:
                 return f"{command}: reported a failed check"
-        package, count = answered_from(report(env, ASK))
-        if package != "my_package" or not count:
-            return f"ask --path answered from {package or 'nothing'} with {count} rows"
+        ask = report(env, ASK)
+        package, count = answered_from(ask.data)
+        if ask.problem() or package != "my_package" or not count:
+            reason = ask.problem() or f"answered from {package or 'nothing'} with {count} rows"
+            return f"ask --path --json: {reason}"
         return ""
-
-    def fallback_trap() -> str:
-        package, _ = answered_from(report(env, ASK_WITHOUT_PATH))
-        if package != "jaffle_shop":
-            return f"{NOTE}ask without --path no longer falls back: drop the README warning"
-        return "" if FALLBACK_WARNING in readme else "fallback reproduces; README lacks its warning"
-
-    def python_trap() -> str:
-        # Minimal images ship no Python; a typical host has the distro's python3. An empty
-        # managed-Python directory hides the interpreters earlier steps downloaded, as on a
-        # machine that has never run uv.
-        result = env.run(
-            "if ! command -v python3 >/dev/null && command -v apt-get >/dev/null; then "
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 >/dev/null; fi; "
-            'export UV_PYTHON_INSTALL_DIR="$(mktemp -d)"; '
-            "rm -rf /tmp/bare-venv && uv venv /tmp/bare-venv >/dev/null 2>&1 && "
-            "uv pip install -q --python /tmp/bare-venv/bin/python semantic-rails"
-        )
-        found = env.run("/tmp/bare-venv/bin/python --version").stdout.strip()
-        if result.returncode == 0:
-            return f"{NOTE}bare uv venv used {found}; the install worked"
-        if "Python>=3.11" not in result.stdout + result.stderr:
-            return f"bare uv venv failed unexpectedly: {(result.stdout + result.stderr)[-300:]}"
-        if PYTHON_WARNING not in readme:
-            return f"bare uv venv used {found} and failed; README lacks its warning"
-        return f"{NOTE}bare uv venv used {found} and failed, as the README warns"
 
     def pinned_venv() -> str:
         block = " && ".join(VENV_BLOCK.splitlines())
@@ -336,8 +431,8 @@ def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
     step("mcp stdio: initialize, tools/list", lambda: mcp_handshake(env))
     step("install: uv venv --python 3.12", pinned_venv)
     step("install: uv tool install", tool_install)
-    step("trap: ask without --path", fallback_trap)
-    step("trap: bare uv venv", python_trap)
+    step("trap: ask without --path", partial(fallback_trap, env, readme))
+    step("trap: bare uv venv", partial(python_trap, env, readme))
     return results
 
 
