@@ -1367,10 +1367,10 @@ class ArchitectProject:
         documents = self._load_documents(path)
         doc = documents[path]
         current = dict(existing.spec if existing is not None else {})
-        merged = (
-            deepcopy(dict(spec or {})) if replace else {**current, **deepcopy(dict(spec or {}))}
+        merged = _replaced(current, spec) if replace else {**current, **deepcopy(dict(spec or {}))}
+        self._store_mapping_object(
+            doc, existing, wrapper="metrics", key=key, spec=merged, path=path
         )
-        self._store_mapping_object(doc, existing, wrapper="metrics", key=key, spec=merged)
         extra: dict[str, Any] = {}
         if replace and existing is not None:
             # A rewritten metric can break what builds on it (segments, derived metrics).
@@ -1439,12 +1439,17 @@ class ArchitectProject:
         documents = self._load_documents(path)
         doc = documents[path]
         current = dict(existing.spec if existing is not None else {})
-        merged = (
-            deepcopy(dict(spec or {})) if replace else {**current, **deepcopy(dict(spec or {}))}
-        )
+        merged = _replaced(current, spec) if replace else {**current, **deepcopy(dict(spec or {}))}
         _check_segment_shape(key, merged)
-        self._store_mapping_object(doc, existing, wrapper="segments", key=key, spec=merged)
+        self._store_mapping_object(
+            doc, existing, wrapper="segments", key=key, spec=merged, path=path
+        )
         self._check_segment(self._updates(documents), key, merged)
+        extra: dict[str, Any] = {}
+        if replace and existing is not None:
+            extra["impact"] = self._guarded_impact(
+                self._updates(documents), [], f"replacing segment {key!r}"
+            )
         return self._commit(
             documents,
             kind="segment",
@@ -1457,6 +1462,7 @@ class ArchitectProject:
             idempotency_key=idempotency,
             dry_run=dry_run,
             intent=intent,
+            extra=extra,
         )
 
     def _check_segment(
@@ -2173,7 +2179,9 @@ class ArchitectProject:
                 )
             merged["expected_rows"] = _snapshot_rows(rows)
         self._check_queries(kind, name, merged)
-        self._store_mapping_object(documents[path], existing, wrapper=plural, key=name, spec=merged)
+        self._store_mapping_object(
+            documents[path], existing, wrapper=plural, key=name, spec=merged, path=path
+        )
         return self._commit(
             documents,
             kind=kind,
@@ -2734,11 +2742,19 @@ class ArchitectProject:
         wrapper: str,
         key: str,
         spec: dict[str, Any],
+        path: Path | None = None,
     ) -> None:
-        if existing is not None and existing.wrapper == wrapper.rstrip("s"):
+        singular = wrapper.rstrip("s")
+        if existing is not None and existing.wrapper == singular:
             doc.clear()
             doc[existing.wrapper] = spec
             return
+        if doc and wrapper not in doc and path is not None:
+            # The file holds one object (``metric:`` or a bare mapping), which a
+            # plural block beside it would hide: keep it as the first entry.
+            lone = dict(doc.get(singular, doc) or {})
+            doc.clear()
+            doc[wrapper] = {str(lone.get("name") or lone.get("id") or path.stem): lone}
         rows = dict(doc.get(wrapper, {}) or {})
         rows[key] = spec
         doc[wrapper] = rows
@@ -2945,6 +2961,15 @@ def _check_fields(test_kind: str, spec: dict[str, Any]) -> list[str]:
     return problems
 
 
+def _replaced(current: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """``spec`` as the whole object, keeping the public identity it doesn't restate."""
+    replacement = deepcopy(dict(spec or {}))
+    for identity in ("id", "as", "name"):
+        if identity in current and identity not in replacement:
+            replacement[identity] = current[identity]
+    return replacement
+
+
 def _check_segment_shape(key: str, spec: dict[str, Any]) -> None:
     """Refuse segment fields the engine would ignore, and a segment with no membership."""
     from .config_validation import _SEGMENT_KEYS
@@ -2967,12 +2992,13 @@ def _check_segment_shape(key: str, spec: dict[str, Any]) -> None:
             f"segment {key!r} has unknown fields: {', '.join(unknown)}",
             details={"segment": key, "fields": unknown},
         )
-    if not isinstance(membership, dict) or not (
-        membership.get("where") or membership.get("metric_filters")
+    if not isinstance(membership, dict) or not any(
+        membership.get(criterion) for criterion in ("where", "metric_filters", "time")
     ):
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"segment {key!r} needs membership: where and/or metric_filters",
+            f"segment {key!r} needs membership: where, metric_filters or time; without one it "
+            "selects the whole population",
             details={"segment": key},
         )
 

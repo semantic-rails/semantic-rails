@@ -13,6 +13,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.architect_transactions import project_revision
+from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse, write_orders_package
@@ -123,7 +124,7 @@ def test_membership_fields_outside_membership_are_refused(workspace: Path) -> No
     [
         (_segment(colour="blue"), "unknown fields: colour"),
         (_segment(membership={**US_ONLY, "having": []}), "unknown fields: membership.having"),
-        (_segment(membership={"time": {}}), "needs membership: where and/or metric_filters"),
+        (_segment(membership={"time": {}}), "needs membership: where, metric_filters or time"),
         (_segment(basis_metric="metric.shop.refunds"), "does not validate"),
         (
             _segment(membership={"where": [{"field": "dimension.shop_x", "op": "=", "value": 1}]}),
@@ -197,3 +198,100 @@ def test_metrics_can_share_a_file(workspace: Path) -> None:
     }
     assert moved.report["target_file"] == "metrics/customers.yml"  # it stays where it is
     assert not (workspace / "shop" / "metrics" / "core" / "orders.yml").exists()
+
+
+def test_a_time_window_is_membership_enough(workspace: Path) -> None:
+    signed_up = {
+        "time": {
+            "temporal_role": "temporal_role.shop_customer_signed_up_on",
+            "start": "2024-01-01",
+            "end": "2024-03-01",
+        }
+    }
+
+    mutation = _project(workspace).upsert_segment(
+        segment_key="early_customers", spec=_segment(membership=signed_up)
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+
+
+def test_a_replace_keeps_the_public_id(workspace: Path) -> None:
+    project = _project(workspace)
+    project.upsert_segment(
+        segment_key="us_customers", spec=_segment(**{"as": "segment.shop.american_customers"})
+    )
+
+    project.upsert_segment(segment_key="us_customers", spec=_segment(label="US"), replace=True)
+
+    stored = _yaml(workspace / "shop" / "segments" / "core.yml")["segments"]["us_customers"]
+    assert stored["as"] == "segment.shop.american_customers"
+    assert _members(workspace, "segment.shop.american_customers") == 3
+
+
+def test_a_one_metric_file_keeps_its_metric_when_another_joins_it(workspace: Path) -> None:
+    package = workspace / "shop"
+    gross = {
+        "label": "Gross",
+        "kind": "aggregate",
+        "measure": "order_total",
+        "value_type": "currency",
+    }
+    (package / "metrics" / "sales.yml").write_text(
+        yaml.safe_dump({"metric": {"name": "gross", **gross}}), encoding="utf-8"
+    )
+
+    mutation = _project(workspace).upsert_metric(
+        metric_key="orders",
+        spec={
+            "label": "Orders",
+            "kind": "aggregate",
+            "measure": "order_count",
+            "value_type": "count",
+        },
+        file_name="sales.yml",
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert set(_yaml(package / "metrics" / "sales.yml")["metrics"]) == {"gross", "orders"}
+    loaded = {metric.id for metric in load_package_config(str(package)).metric_recipes}
+    assert {"metric.shop.gross", "metric.shop.orders"} <= loaded
+
+
+def test_segments_are_checked_under_the_package_namespace(tmp_path: Path) -> None:
+    package = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=True)
+    build_dbt_warehouse(package / "data" / "warehouse.duckdb")
+    document = _yaml(package / "package.yml")
+    document["package"]["namespace"] = "retail"
+    (package / "package.yml").write_text(yaml.safe_dump(document), encoding="utf-8")
+    (package / "metrics" / "customers.yml").write_text(
+        yaml.safe_dump(
+            {
+                "metrics": {
+                    "customer_count": {
+                        "label": "Customers",
+                        "kind": "aggregate",
+                        "measure": "customer_count",
+                        "value_type": "count",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    retail = {
+        "label": "US customers",
+        "entity": "entity.retail_customer",
+        "basis_metric": "metric.retail.customer_count",
+        "membership": {
+            "where": [
+                {"field": "dimension.retail_customer_customer_country", "op": "=", "value": "US"}
+            ]
+        },
+    }
+
+    mutation = ArchitectProject(package, workspace_root=tmp_path).upsert_segment(
+        segment_key="us_customers", spec=retail
+    )
+
+    assert mutation.report["ok"] is True, mutation.report

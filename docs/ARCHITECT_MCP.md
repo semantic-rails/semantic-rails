@@ -128,12 +128,14 @@ Python callers use `ArchitectProject.upsert_relationship`.
 optionally with `time`, `temporal_role_overrides` and `path_policy`. The engine reads membership
 fields only from `membership:`; placed at the top level they would be ignored, and the segment would
 select the whole population. The tool therefore refuses them, along with unknown fields, a segment
-without `where` or `metric_filters`, and a segment the engine cannot validate once the change is
-applied.
+without `where`, `metric_filters` or a `time` window, and a segment the engine cannot validate once
+the change is applied.
 
 `upsert_metric` puts a new metric in `metrics/<group>/<metric_key>.yml`, or in `metrics/<file_name>`
 when `file_name` is given, so several metrics can share one file. An existing metric stays in its
-file. Both tools take `replace`.
+file, and a file that held a single `metric:` becomes a `metrics:` mapping that keeps it. Both tools
+take `replace`, which keeps the object's public identity (`id`, `as`, `name`) unless the new spec
+restates it. A replace is checked like a removal, so it can't break what builds on the object.
 
 ## Examples, Package Tests and Query Previews
 

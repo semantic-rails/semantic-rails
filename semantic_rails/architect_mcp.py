@@ -1081,11 +1081,7 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
         replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a metric; replace: true rewrites it from spec.
-
-        A new metric goes in metrics/<file_name> when given (metrics can share it), else
-        metrics/<group>/<metric_key>.yml; an existing one stays in its file.
-        """
+        """Preview or atomically upsert a metric; replace rewrites it; file_name shares a file."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)

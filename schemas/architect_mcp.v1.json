@@ -1492,7 +1492,7 @@
         "readOnlyHint": false,
         "title": "Upsert metric"
       },
-      "description": "Preview or atomically upsert a metric; replace: true rewrites it from spec.\n\n        A new metric goes in metrics/<file_name> when given (metrics can share it), else\n        metrics/<group>/<metric_key>.yml; an existing one stays in its file.\n        ",
+      "description": "Preview or atomically upsert a metric; replace rewrites it; file_name shares a file.",
       "inputSchema": {
         "properties": {
           "dry_run": {
