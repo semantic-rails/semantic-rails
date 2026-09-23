@@ -39,9 +39,8 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 adapter = SemanticLayerMCPAdapter.from_package("jaffle_shop")
 try:
     tools = adapter.list_tools()       # Paid once at connect time.
-    # Loop position 0: compact orientation.
+    # Orientation: what the package supports, and every id per kind.
     capabilities = adapter.call_tool("capabilities", {})
-    # Loop position 1: counts + flat ID list per kind.
     catalog = adapter.call_tool("catalog", {"verbosity": "summary"})
     draft = adapter.call_tool("plan", {"intent": "orders by store", "detail": "query"})
     if draft["status"] == "ok":
@@ -76,8 +75,8 @@ the executable definitions so tool/schema drift cannot be merged silently.
 
 The tool names mirror the public API operations:
 
-- `capabilities` (loop position 0 — compact orientation)
-- `catalog` (loop position 1 — counts + IDs at `verbosity=summary`)
+- `capabilities` (compact orientation)
+- `catalog` (counts + IDs at `verbosity=summary`)
 - `discover`
 - `inspect`
 - `build-options`
@@ -89,6 +88,17 @@ The tool names mirror the public API operations:
 - `segment-validate`
 - `segment-explain`
 - `segment-preview`
+
+`initialize` returns the workflow as server `instructions` (under 2KB): find objects with
+`discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
+first, so `validate` and `compile` are optional dry runs. The instructions also carry the
+conventions every tool shares: full ids, the minimal-by-default verbosity, recovery hints, and
+`policy_context`. Each tool description then says what the tool does, when to use it, and its
+one gotcha.
+
+Every tool accepts `request_id` and `policy_context`, but no tool schema advertises them.
+`policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
+transports supply the trusted context and ignore the argument.
 
 For first-time question-answering tests, make the session aware of the core loop before
 asking for rows: `capabilities`, `catalog`, `discover`, `plan`, `validate`, `compile`,
@@ -102,11 +112,33 @@ execute(row_format="columns") to answer the question; call validate when editing
 or when diagnostics are needed.
 ```
 
-`tools/list` is paid once at connect time, before loop position 0. To keep that
+`tools/list` is paid once at connect time, before the first call. To keep that
 cold-start payload bounded, the IR cheat-sheet and the full Query-IR time-block
 schema ship once on the `validate` tool description; `compile`, `execute`, and
 the other IR-accepting tools point at it instead of repeating it. Catalog payload
 size varies materially with package size and selected verbosity.
+
+### Writing Tool Descriptions
+
+The query MCP follows these rules, and other Semantic Rails MCP servers can reuse them:
+
+- **Workflow once.** State the order of calls and the conventions every tool shares in the
+  server `instructions`, not in each description. Keep instructions under 2KB; hosts load them
+  up front.
+- **One description, three parts.** Say what the tool returns, when to use it (relative to
+  other tools: "after `discover`", "before writing a `where` filter"), and its one gotcha,
+  introduced with "Gotcha:". Aim for 200–700 characters.
+- **No contradictions.** A description never tells the agent to call a tool that another
+  description calls optional. If a step is optional, say so everywhere.
+- **Real examples.** Example ids must exist in the bundled `jaffle_shop` package
+  (`dimension.jaffle_store_name`, not `dimension.jaffle.store_name`).
+- **Accurate cost claims.** Say which tools query the warehouse, and match the annotations
+  (`readOnlyHint`, `openWorldHint`).
+- **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
+  meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Don't
+  advertise envelope arguments every tool accepts, such as `request_id`.
+- **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
+  and the instructions (see "Measuring Context Cost").
 
 ### Catalog Verbosity Tiers
 

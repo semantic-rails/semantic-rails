@@ -32,7 +32,7 @@ from .http_core import (
     clean_request_id,
     cors_origin_header,
 )
-from .mcp import SemanticLayerMCPAdapter
+from .mcp import MCP_SERVER_INSTRUCTIONS, SemanticLayerMCPAdapter
 from .request_context import (
     RequestContext,
     api_key_auth_result,
@@ -158,6 +158,7 @@ def handle_jsonrpc_message(
                 "protocolVersion": negotiated_version,
                 "serverInfo": {"name": "semantic-rails", "version": "v1"},
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                "instructions": MCP_SERVER_INSTRUCTIONS,
             }
         elif method == "ping":
             result = {}

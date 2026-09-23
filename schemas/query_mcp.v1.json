@@ -29,7 +29,7 @@
           "required": false
         }
       ],
-      "description": "Guide an agent through discover, inspect, build-options, valid-values, validate, compile, and execute.",
+      "description": "Guide an agent from a question to rows: discover, inspect, plan (or build-options and valid-values), then execute.",
       "name": "semantic-rails-query-builder"
     },
     {
@@ -193,27 +193,10 @@
         "readOnlyHint": true,
         "title": "Capabilities"
       },
-      "description": "Semantic Rails MCP question-answering entrypoint. For answering governed-data questions, use: discover, plan, validate, compile, execute. Use catalog for orientation. Return the package's supported and unsupported capability surface — rolling windows, prior-period offsets, metric predicates, scoped aggregates, conversion metrics, etc. Recommended loop position: 0 (cold-start orientation). This compact orientation response tells you which IR expression kinds the runtime can compile and execute for this package. Gotcha: capabilities are package-scoped — re-call after switching packages.",
+      "description": "Semantic Rails MCP question-answering entrypoint: answer with discover, plan and execute (validate and compile are optional dry runs); use catalog to list ids. Returns what this package supports and doesn't: rolling windows, prior-period offsets, metric predicates, scoped aggregates, conversion metrics, with runnable expression_shapes examples. Gotcha: capabilities are package-scoped; call again after switching packages.",
       "inputSchema": {
         "additionalProperties": false,
-        "properties": {
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "request_id": {
-            "type": "string"
-          }
-        },
+        "properties": {},
         "type": "object"
       },
       "name": "capabilities",
@@ -259,7 +242,7 @@
         "readOnlyHint": true,
         "title": "Catalog"
       },
-      "description": "List every governed semantic object in the active package — measures, metrics, dimensions, segments, entities. Recommended loop position: 1 (after capabilities, before discover). Prefer 'discover' for term-targeted lookups. Gotcha: default verbosity is 'summary' — flat ID lists, right for orientation. Bump to 'compact' for row metadata (capped 200/kind) or 'full' for uncapped + alias_index (large).",
+      "description": "List the governed objects in the package: measures, metrics, dimensions, segments and entities. Use it first to see what exists; prefer 'discover' to look up terms. Gotcha: the default verbosity 'summary' returns flat id lists; 'compact' adds row metadata (capped at 200 per kind) and 'full' is uncapped with alias_index (large).",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -269,22 +252,6 @@
           },
           "kind": {
             "description": "Optional object kind filter.",
-            "type": "string"
-          },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "request_id": {
             "type": "string"
           },
           "search": {
@@ -351,11 +318,12 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind. Recommended loop position: 1 (after the user's question). Pick best id, then 'inspect'. verbosity='compact' returns full cards with match_reasons and starter patches. Gotcha: nonsense or out-of-scope terms return an 'out_of_scope' or 'low_relevance' block with empty buckets — branch on those before assuming a candidate.",
+      "description": "Rank measures, metrics, dimensions and entities against business terms ('revenue by store'), up to 'limit' per kind. Use it first for a new question, then 'inspect' or 'plan'. verbosity='compact' returns full cards with match_reasons and starter patches. Gotcha: nonsense or out-of-scope terms return an 'out_of_scope' or 'low_relevance' block with empty buckets; branch on those before picking a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
           "kinds": {
+            "description": "Object kinds to rank, such as measure or metric. Default: all.",
             "oneOf": [
               {
                 "items": {
@@ -373,28 +341,13 @@
             "minimum": 1,
             "type": "integer"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
           },
-          "request_id": {
-            "type": "string"
-          },
           "stage": {
+            "description": "Builder stage that tunes ranking: initial, post_measure, post_dimension or comparison. Inferred when omitted.",
             "type": "string"
           },
           "terms": {
@@ -455,33 +408,17 @@
         "readOnlyHint": true,
         "title": "Inspect"
       },
-      "description": "Return one object's card: label, description, aggregations or values, temporal roles, related objects, policy. Recommended loop position: 2 (after 'discover', before composing Query IR). verbosity='compact' returns the whole card. Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
+      "description": "Return one object's card: label, description, aggregations or values, temporal roles, related objects, policy. Use it after 'discover' when you need details before writing Query IR. verbosity='compact' returns the whole card. Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
           "object_id": {
             "type": "string"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "verbosity": {
             "default": "minimal",
@@ -541,18 +478,21 @@
         "readOnlyHint": true,
         "title": "Build Options"
       },
-      "description": "Return ranked next choices for a guided query builder — given partial Query IR, what dimension/filter/time-range to add next. Recommended loop position: 2.5 (between 'inspect' and 'plan' when composing step-by-step instead of from a single intent). Gotcha: pass the partial 'query' you've assembled — empty input returns initial-stage options.",
+      "description": "Return ranked next choices for a guided query builder: given partial Query IR, which dimension, filter or time range to add next. Use it to compose a query step by step instead of from one intent ('plan'). Gotcha: pass the partial 'query' you've assembled; empty input returns initial-stage options.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
           "focus_object_id": {
+            "description": "An object id to rank the options around.",
             "type": "string"
           },
           "focus_terms": {
+            "description": "Terms to rank the options by.",
             "type": "string"
           },
           "include_blocked": {
             "default": true,
+            "description": "Also list options this query can't use, with the reason.",
             "type": "boolean"
           },
           "limit": {
@@ -560,31 +500,17 @@
             "minimum": 1,
             "type": "integer"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
           },
-          "request_id": {
-            "type": "string"
-          },
           "stage": {
+            "description": "Builder stage that tunes ranking: initial, post_measure, post_dimension or comparison. Inferred when omitted.",
             "type": "string"
           },
           "step": {
+            "description": "Step to rank options for: measure, group_by, filter_dimension, time or review. Inferred from 'query' when omitted.",
             "type": "string"
           },
           "verbosity": {
@@ -637,7 +563,7 @@
         "readOnlyHint": true,
         "title": "Valid Values"
       },
-      "description": "Return governed valid values for one dimension — from its declared value_domain by default, or via a constrained warehouse probe when 'allow_live_query: true'. Recommended loop position: 3 (composing a 'where' filter on a categorical dimension). Gotcha: 'dimension_id' must be a full id like 'dimension.jaffle.store_name'. Set allow_live_query: true only when no declared domain exists — it costs a warehouse round-trip.",
+      "description": "Return a dimension's governed values: from its declared value domain, or from a constrained warehouse probe with allow_live_query: true. Use it before writing a 'where' filter on a categorical dimension. Gotcha: 'dimension_id' must be a full id like 'dimension.jaffle_store_name'; allow_live_query costs a warehouse round-trip, so use it only when no domain is declared.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -650,6 +576,7 @@
           },
           "include_counts": {
             "default": false,
+            "description": "With allow_live_query, add each value's row count.",
             "type": "boolean"
           },
           "limit": {
@@ -662,26 +589,10 @@
             "minimum": 0,
             "type": "integer"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "search": {
             "type": "string"
@@ -735,7 +646,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Single public intent-planning surface: natural-language intent → one best Query IR. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. 'status=ok' has already paid validation cost, so agents may pass 'best.query_ir' to 'execute'. detail='best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: read 'status' and 'warnings' before running 'best.query_ir'.",
+      "description": "Draft one Query IR from a natural-language intent. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. A draft with status 'ok' is already validated: pass it straight to 'execute'. detail='best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: read 'status' and 'warnings' before running 'best.query_ir'.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -754,29 +665,14 @@
           },
           "limit": {
             "default": 3,
+            "description": "Drafts to consider; detail='full' returns the runners-up.",
             "minimum": 1,
             "type": "integer"
-          },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
           },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           }
         },
         "required": [
@@ -827,23 +723,10 @@
         "readOnlyHint": true,
         "title": "Validate"
       },
-      "description": "Check Query IR before compiling — returns errors, warnings, and repair hints. Loop position: 5 (before 'compile' or 'execute'). Gotcha: 'query' must be a JSON object, not a stringified blob; wrap as {query: {...}}. Defaults to verbosity='minimal' — pass verbosity=compact|full for normalized query/policy effects/plans. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}. Call 'capabilities' first for runnable example IR per kind (capabilities.expression_shapes[].example).",
+      "description": "Check Query IR without running it: errors, warnings and repair hints. Optional: 'execute' runs the same checks first. Gotcha: 'query' must be a JSON object, not a string; wrap it as {query: {...}}. verbosity='compact' or 'full' adds the normalized query, policy effects and plans. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}. Runnable examples per kind: capabilities.expression_shapes[].example.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as INVALID_QUERY (offenders under details.unsupported_keys).",
@@ -937,9 +820,6 @@
             },
             "type": "object"
           },
-          "request_id": {
-            "type": "string"
-          },
           "sql_profile": {
             "default": "audit",
             "description": "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; 'off' suppresses rendered_sql + sql_plan entirely.",
@@ -1007,30 +887,14 @@
         "readOnlyHint": true,
         "title": "Compile"
       },
-      "description": "Compile validated Query IR into rendered SQL — no warehouse execution. Loop position: 6 (after 'validate', before 'execute'). Gotcha: do not call before validate — compile raises on errors; validate returns structured repair hints. Defaults to verbosity='minimal' (keeps rendered_sql) — pass verbosity=compact|full for sql_plan/explain/logical plans. IR shape: see the 'validate' tool or 'build-options'.",
+      "description": "Compile Query IR into SQL without running it. Use it before 'execute' when you want to show or review the SQL; 'execute' compiles on its own. Gotcha: invalid Query IR fails here too, and 'validate' is the cheaper check. verbosity='compact' or 'full' adds sql_plan, explain and logical plans. IR shape: see the 'validate' tool.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "sql_profile": {
             "default": "audit",
@@ -1099,7 +963,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Execute Query IR against the warehouse and return rows (compiles + runs in one call). Loop position: 7 (final — only after validate + compile succeed). Gotcha: only tool that costs warehouse credits + round-trip latency; side-effecting. Use 'compile' for SQL only. Defaults to verbosity='minimal' (rows + row_count) — pass verbosity=compact|full for SQL/plans/explain. Use row_format='columns' for compact answers. IR shape: see the 'validate' tool or 'build-options'.",
+      "description": "Validate, compile and run Query IR, and return rows: at most max_rows (default 200), with truncated and total_row_count when there are more. Use it after 'plan', or once your Query IR is ready; 'validate' and 'compile' are optional dry runs. Gotcha: it queries the warehouse (cost and latency). row_format='columns' is more compact; verbosity='compact' or 'full' adds SQL and plans. IR shape: see the 'validate' tool.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -1109,26 +973,10 @@
             "minimum": 1,
             "type": "integer"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "row_format": {
             "default": "records",
@@ -1206,26 +1054,10 @@
         "readOnlyHint": true,
         "title": "Segment Validate"
       },
-      "description": "Validate a package-authored segment and the Query IR derived from it. Recommended loop position: 5 (segment workflow analogue of 'validate' for ad-hoc IR). Gotcha: 'segment_id' must be a full id like 'segment.jaffle.high_value_customers' — list known segments via 'catalog' if you only have a label.",
+      "description": "Validate a package-authored segment and the Query IR derived from it. Use it first in the segment workflow, then 'segment-explain' and 'segment-preview'. Gotcha: 'segment_id' must be a full id like 'segment.jaffle.high_value_customers'; 'catalog' lists segments.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "request_id": {
-            "type": "string"
-          },
           "segment_id": {
             "type": "string"
           },
@@ -1286,26 +1118,10 @@
         "readOnlyHint": true,
         "title": "Segment Explain"
       },
-      "description": "Explain the derived query for a package-authored segment — filters, joins, and time bounds it compiles to. Recommended loop position: 6 (after 'segment-validate', before previewing rows). Gotcha: governed segments only — for ad-hoc cohorts, compose Query IR with a 'where' clause and call 'compile' to read the explain payload on its response.",
+      "description": "Explain a package-authored segment: its definition, derived Query IR and SQL. Use it after 'segment-validate', before previewing rows. Gotcha: governed segments only; for an ad-hoc cohort, write Query IR with a 'where' clause and call 'compile'.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "request_id": {
-            "type": "string"
-          },
           "segment_id": {
             "type": "string"
           },
@@ -1366,7 +1182,7 @@
         "readOnlyHint": true,
         "title": "Segment Preview"
       },
-      "description": "Preview members of a package-authored segment — sample rows plus total member count. Hits the warehouse. Recommended loop position: 7 (segment analogue of 'execute' — final step). Gotcha: only segment tool that costs warehouse credits. Run segment-validate + segment-explain first; preview is for showing rows to the user.",
+      "description": "Preview a package-authored segment's members: sample rows and the total member count. Use it after 'segment-explain', to show rows to the user. Gotcha: it queries the warehouse (cost and latency); 'limit' caps the sample rows.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1374,22 +1190,6 @@
             "default": 50,
             "minimum": 1,
             "type": "integer"
-          },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "segment_id": {
             "type": "string"
