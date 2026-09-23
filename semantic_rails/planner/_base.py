@@ -367,6 +367,29 @@ def _explicit_grain(text: str) -> str:
     return ""
 
 
+def _single_bucket_grain(bounds: dict[str, Any]) -> str:
+    """The finest calendar grain that holds the whole window in one bucket, or ``""``."""
+
+    try:
+        start = date.fromisoformat(str(bounds["start"])[:10])
+        last = date.fromisoformat(str(bounds["end"])[:10]) - timedelta(days=1)
+    except (KeyError, ValueError):
+        return ""
+    if last < start:
+        return ""
+    if start.year != last.year:
+        # Whole calendar years ("in 2016 and 2017") read as one total per year.
+        whole_years = (start.month, start.day, last.month, last.day) == (1, 1, 12, 31)
+        return "year" if whole_years else ""
+    if start == last:
+        return "day"
+    if start.month == last.month:
+        return "month"
+    if (start.month - 1) // 3 == (last.month - 1) // 3:
+        return "quarter"
+    return "year"
+
+
 def _time_spec(role: str, text: str) -> dict[str, Any]:
     lowered = str(text or "").lower()
     grain = _explicit_grain(text)
@@ -375,8 +398,13 @@ def _time_spec(role: str, text: str) -> dict[str, Any]:
         # No explicit grain cue — when the intent resolved to a window
         # ("last 7 days", "yesterday"), bucket at the window's own unit
         # instead of the generic month default.
-        grain = _implied_window_grain(lowered) or "month"
-    return {"temporal_role": role, "grain": grain, **bounds}
+        grain = _implied_window_grain(lowered)
+    if not grain and not _TREND_CUE_RE.search(lowered):
+        # A total over a calendar window ("revenue in 2017", "orders in the
+        # first half of 2017") needs a grain that yields one bucket; without
+        # one the rows would group by the raw timestamp.
+        grain = _single_bucket_grain(bounds)
+    return {"temporal_role": role, "grain": grain or "month", **bounds}
 
 
 def _first_day_of_next_month(value: date) -> date:
@@ -453,6 +481,32 @@ _MONTH_RANGE_SHARED_YEAR_RE = re.compile(
     rf"({_MONTH_ALT})\.?\s+(20\d{{2}})\b"
 )
 _SINGLE_MONTH_YEAR_RE = re.compile(rf"{_COMPARISON_GUARD}\b({_MONTH_ALT})\.?\s+(20\d{{2}})\b")
+
+# Calendar days ("April 3, 2017", "from April 1 to April 7, 2017", "April
+# 1-7, 2017"). A spoken end day is inclusive; the Query IR end is exclusive.
+_DAY_SUFFIX = r"(?:st|nd|rd|th)?"
+_DAY_RANGE_RE = re.compile(
+    rf"{_COMPARISON_GUARD}\b({_MONTH_ALT})\.?\s+(\d{{1,2}}){_DAY_SUFFIX}(?:,?\s+(20\d{{2}}))?\s*"
+    rf"{_RANGE_CONNECTOR}\s*(?:({_MONTH_ALT})\.?\s+)?(\d{{1,2}}){_DAY_SUFFIX},?\s+(20\d{{2}})\b"
+)
+_SINGLE_DAY_RE = re.compile(
+    rf"{_COMPARISON_GUARD}\b({_MONTH_ALT})\.?\s+(\d{{1,2}}){_DAY_SUFFIX},?\s+(20\d{{2}})\b"
+)
+# Half years ("first half of 2017", "H2 2017").
+_HALF_YEAR_RE = re.compile(
+    rf"{_COMPARISON_GUARD}\b(?:(first|second|1st|2nd)\s+half\s+(?:of\s+)?|h([12])\s*)(20\d{{2}})\b"
+)
+# Calendar years ("in 2017", "2017 revenue"). Numbers that quantify rather
+# than date ("top 2000 customers", "over 2000 orders") are excluded.
+_YEAR_RE = re.compile(
+    rf"{_COMPARISON_GUARD}(?<!top )(?<!bottom )(?<!over )(?<!under )(?<!above )(?<!below )"
+    r"(?<!least )(?<!most )(?<!than )\b(20\d{2})\b(?!\s*(?:%|percent\b))"
+)
+# Year-over-year comparisons ("2017 vs 2016") are not a window; the planner
+# reports them as unresolved instead of bounding the query to one year.
+_YEAR_COMPARISON_RE = re.compile(r"\b20\d{2}\s+(?:vs\.?|versus|compared\s+(?:to|with))\s+20\d{2}\b")
+# Cues that ask for a series over time even without a named grain.
+_TREND_CUE_RE = re.compile(r"\b(?:over time|trends?|trending|history|historical|time series)\b")
 
 # Temporal cues the planner recognizes as a time scope but cannot turn
 # into bounds ("last few weeks", "past holiday season", "since 2023").
@@ -550,22 +604,83 @@ def _month_range_bounds(lowered: str) -> dict[str, str]:
     return {}
 
 
+def _day_bounds(lowered: str) -> dict[str, str]:
+    match = _DAY_RANGE_RE.search(lowered)
+    if match:
+        first_month, first_day, first_year, last_month, last_day, year = match.groups()
+    else:
+        match = _SINGLE_DAY_RE.search(lowered)
+        if not match:
+            return {}
+        first_month, first_day, year = match.groups()
+        first_year, last_month, last_day = None, None, first_day
+    try:
+        start = date(int(first_year or year), _MONTH_NUMBERS[first_month], int(first_day))
+        end = date(int(year), _MONTH_NUMBERS[last_month or first_month], int(last_day))
+    except ValueError:
+        return {}
+    if end < start:
+        return {}
+    return {"start": start.isoformat(), "end": (end + timedelta(days=1)).isoformat()}
+
+
+def _quarter_bounds(lowered: str) -> dict[str, str]:
+    q_match = _QUARTER_YEAR_RE.search(lowered)
+    if not q_match:
+        return {}
+    quarter = int(q_match.group(1))
+    year = int(q_match.group(2))
+    start_month = ((quarter - 1) * 3) + 1
+    end_year = year + (1 if quarter == 4 else 0)
+    end_month = 1 if quarter == 4 else start_month + 3
+    return {
+        "start": f"{year:04d}-{start_month:02d}-01",
+        "end": f"{end_year:04d}-{end_month:02d}-01",
+    }
+
+
+def _half_year_bounds(lowered: str) -> dict[str, str]:
+    match = _HALF_YEAR_RE.search(lowered)
+    if not match:
+        return {}
+    year = int(match.group(3))
+    if (match.group(1) or "").startswith(("first", "1st")) or match.group(2) == "1":
+        return {"start": f"{year:04d}-01-01", "end": f"{year:04d}-07-01"}
+    return {"start": f"{year:04d}-07-01", "end": f"{year + 1:04d}-01-01"}
+
+
+def _year_bounds(lowered: str) -> dict[str, str]:
+    if _YEAR_COMPARISON_RE.search(lowered):
+        return {}
+    years = sorted({int(match.group(1)) for match in _YEAR_RE.finditer(lowered)})
+    if not years:
+        return {}
+    return {"start": f"{years[0]:04d}-01-01", "end": f"{years[-1] + 1:04d}-01-01"}
+
+
+# Calendar resolvers, most specific first, so "April 7, 2017" never widens to
+# its month or year.
+_CALENDAR_RESOLVERS = (
+    _day_bounds,
+    _month_range_bounds,
+    _quarter_bounds,
+    _half_year_bounds,
+    _year_bounds,
+)
+
+
 def _time_bounds_from_text(text: str) -> dict[str, Any]:
     lowered = str(text or "").lower()
-    month_bounds = _month_range_bounds(lowered)
-    if month_bounds:
-        return month_bounds
-    q_match = _QUARTER_YEAR_RE.search(lowered)
-    if q_match:
-        quarter = int(q_match.group(1))
-        year = int(q_match.group(2))
-        start_month = ((quarter - 1) * 3) + 1
-        end_year = year + (1 if quarter == 4 else 0)
-        end_month = 1 if quarter == 4 else start_month + 3
-        return {
-            "start": f"{year:04d}-{start_month:02d}-01",
-            "end": f"{end_year:04d}-{end_month:02d}-01",
-        }
+    if (_DAY_RANGE_RE.search(lowered) or _SINGLE_DAY_RE.search(lowered)) and not _day_bounds(
+        lowered
+    ):
+        # An impossible date ("Feb 30, 2017") resolves to nothing, never to a
+        # wider window.
+        return {}
+    for resolve in _CALENDAR_RESOLVERS:
+        bounds = resolve(lowered)
+        if bounds:
+            return bounds
     relative_match = _RELATIVE_WINDOW_RE.search(lowered)
     if relative_match:
         return {
@@ -617,8 +732,8 @@ def _unresolved_time_phrases(text: str) -> list[str]:
     """
 
     lowered = str(text or "").lower()
-    resolved_spans: list[tuple[int, int]] = []
-    for pattern in (
+    resolved_patterns = [
+        _HALF_YEAR_RE,
         _QUARTER_YEAR_RE,
         _MONTH_YEAR_RANGE_RE,
         _MONTH_RANGE_SHARED_YEAR_RE,
@@ -627,11 +742,25 @@ def _unresolved_time_phrases(text: str) -> list[str]:
         _YESTERDAY_RE,
         _TODAY_RE,
         _THIS_PERIOD_RE,
-    ):
-        for match in pattern.finditer(lowered):
-            resolved_spans.append(match.span())
+    ]
+    # Days and years count as resolved only when they resolved: an
+    # impossible date or a year-over-year comparison stays a reported cue.
+    day_named = bool(_DAY_RANGE_RE.search(lowered) or _SINGLE_DAY_RE.search(lowered))
+    if _day_bounds(lowered):
+        resolved_patterns += [_DAY_RANGE_RE, _SINGLE_DAY_RE]
+    elif not day_named and _year_bounds(lowered):
+        resolved_patterns.append(_YEAR_RE)
+    resolved_spans = [
+        match.span() for pattern in resolved_patterns for match in pattern.finditer(lowered)
+    ]
     out: list[str] = []
-    for pattern in (_TEMPORAL_CUE_RE, _SINCE_CUE_RE):
+    for pattern in (
+        _TEMPORAL_CUE_RE,
+        _SINCE_CUE_RE,
+        _YEAR_COMPARISON_RE,
+        _DAY_RANGE_RE,
+        _SINGLE_DAY_RE,
+    ):
         for match in pattern.finditer(lowered):
             start, end = match.span()
             if any(start < r_end and r_start < end for r_start, r_end in resolved_spans):
@@ -652,6 +781,9 @@ _SUPPORTED_WINDOW_FORMS = (
     "Q1-Q4 with a year (e.g. 'Q2 2025')",
     "explicit month ranges (e.g. 'January 2017 through June 2017', 'Jan-Jun 2017')",
     "a single month with a year (e.g. 'March 2024')",
+    "a calendar year or years (e.g. 'in 2017', '2016 and 2017')",
+    "a half year (e.g. 'first half of 2017', 'H2 2017')",
+    "days with a year (e.g. 'April 3, 2017', 'April 1 to April 7, 2017')",
     "explicit time.start / time.end ISO dates via partial_query",
 )
 

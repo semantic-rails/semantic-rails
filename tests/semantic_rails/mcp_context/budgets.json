@@ -12,7 +12,7 @@
   "query.default.inspect_tokens": 924,
   "query.default.max_structured_tokens": 11566,
   "query.default.max_text_tokens": 20563,
-  "query.default.plan_tokens": 891,
+  "query.default.plan_tokens": 931,
   "query.default.segment_explain_tokens": 9301,
   "query.default.segment_preview_tokens": 11566,
   "query.default.segment_validate_tokens": 7087,
