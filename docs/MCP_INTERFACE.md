@@ -536,18 +536,23 @@ resource read, one call per tool at its defaults (including an `execute` of a ti
 grain), four common mistakes, and two scripted three-question sessions. Three of the mistakes fail
 with a specific error code; the fourth, a misspelled `discover` argument, succeeds with a warning.
 A scripted call that fails when it should succeed (or the reverse), or that reports a different
-code, stops the measurement rather than counting as a smaller response. Architect MCP tool-list
+code, stops the measurement rather than counting as a smaller response. A scripted session's
+queries may only use ids that an earlier call in the same session returned, so its size measures a
+path an agent could follow. Architect MCP tool-list
 sizes are recorded under `tracked` and are not gated.
 
-Each planner outcome is one of:
+A draft is correct when it matches the gold query, or a listed alternative, in every slot that can
+change its rows: measures and metrics, grouping, time role, grain, window, `fill`, calendar,
+filters, metric filters, temporal role overrides, path policy and limit, plus the sort for
+rankings. Its rows must also match the frozen answer. An unanswerable question is answered
+correctly when `plan` refuses it as `out_of_scope` or `unrealizable`. Each outcome is one of:
 
-- `pass`: the drafted query matches the gold query, or a listed alternative, in every slot that can
-  change its rows: measures and metrics, grouping, time role, grain, window, `fill`, calendar,
-  filters, metric filters, temporal role overrides, path policy and limit, plus the sort for
-  rankings. Its rows must also match the frozen answer. An unanswerable question passes when `plan`
-  refuses it as `out_of_scope` or `unrealizable`.
-- `wrong_flagged`: the draft is wrong, but the response says so with a non-`ok` status or a warning.
-- `wrong_silent`: the draft is wrong and the response reports `ok` with no warnings.
+- `pass`: correct, and the response reports `ok` with no warnings.
+- `pass_flagged`: correct, but the response still reports a non-`ok` status or a warning: a false
+  alarm, which costs the agent a needless repair.
+- `wrong_flagged`: wrong, and the status isn't `ok`.
+- `wrong_warned`: wrong, with status `ok` but a warning that signals doubt.
+- `wrong_silent`: wrong, and the response reports `ok` with no warnings.
 
 A `plan` call that fails outright stops the run instead of being graded. The baseline records
 each case's outcome and the slots it gets wrong (`answer` when every slot matches but the rows

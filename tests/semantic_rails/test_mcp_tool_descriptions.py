@@ -15,6 +15,8 @@ test pins three constraints:
 
 from __future__ import annotations
 
+import copy
+
 from semantic_rails.mcp import list_tool_definitions
 
 LOOP_KEYWORDS = ("loop position", "loop", "after", "before", "step", "first")
@@ -265,7 +267,8 @@ def test_expression_shapes_examples_parse(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         for shape in _EXPRESSION_SHAPES:
-            example = dict(shape["example"])
+            # Deep copy: the placeholder swap must not edit the shared shapes.
+            example = copy.deepcopy(shape["example"])
             # Replace placeholder ids with real ones the parser can resolve
             # at validate-time. The parser only checks the IR shape; entity
             # resolution happens later.
@@ -359,7 +362,8 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
     try:
         failures = []
         for shape in _EXPRESSION_SHAPES:
-            example = dict(shape["example"])
+            # Deep copy: the placeholder swap must not edit the shared shapes.
+            example = copy.deepcopy(shape["example"])
             replace(example)
             query_ir: dict = {
                 "select": [{"expression": example, "as": "_test"}],

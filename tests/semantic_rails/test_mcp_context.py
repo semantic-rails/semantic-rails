@@ -144,9 +144,24 @@ def test_dropped_window_is_a_silent_wrong_answer_unless_flagged() -> None:
     dropped = _query(time={"temporal_role": ORDER_TIME, "grain": "month"})
     silent = _score(case, _plan(dropped))
     assert (silent.outcome, silent.mismatched) == (mcp_context.SILENT, ("window",))
-    assert _score(case, _plan(dropped, warnings=1)).outcome == mcp_context.FLAGGED
-    low_confidence = _score(case, _plan(dropped, status="low_confidence"))
+    # A warning alone signals doubt; a non-ok status is the stronger signal.
+    assert _score(case, _plan(dropped, warnings=1)).outcome == mcp_context.WARNED
+    low_confidence = _score(case, _plan(dropped, status="low_confidence", warnings=1))
     assert low_confidence.outcome == mcp_context.FLAGGED
+
+
+def test_a_flagged_correct_draft_is_a_false_alarm() -> None:
+    case = _case(_query(time=WINDOW_2017))
+    right = _query(time=WINDOW_2017)
+    assert _score(case, _plan(right)).outcome == mcp_context.PASS
+    assert _score(case, _plan(right, warnings=1)).outcome == mcp_context.PASS_FLAGGED
+    downgraded = _score(case, _plan(right, status="low_confidence"))
+    assert downgraded.outcome == mcp_context.PASS_FLAGGED
+    # A refusal of an unanswerable question passes whatever else it reports.
+    refuse = {"id": "T4", "category": "out_of_scope", "expect": "refuse"}
+    assert _score(refuse, _plan(None, status="out_of_scope", warnings=1)).outcome == (
+        mcp_context.PASS
+    )
 
 
 def test_a_plan_passes_only_if_its_query_returns_the_frozen_answer() -> None:
@@ -271,6 +286,8 @@ def test_plan_regressions_are_per_case_and_per_slot() -> None:
             "E": entry("wrong_silent", "window"),
             "F": entry("wrong_silent", "grain", "window"),
             "G": entry("wrong_flagged", "refused"),
+            "H": entry("pass"),
+            "I": entry("wrong_warned", "select"),
         }
     }
     regressions, improvements = mcp_context.plan_regressions(
@@ -283,11 +300,15 @@ def test_plan_regressions_are_per_case_and_per_slot() -> None:
             outcome("F", "wrong_silent", "window"),
             # A draft where there was a refusal gets no slot newly wrong.
             outcome("G", "wrong_flagged", "grain"),
+            # A correct answer that starts getting flagged is a new false alarm.
+            outcome("H", "pass_flagged"),
+            # A warning-only catch that becomes a status downgrade is progress.
+            outcome("I", "wrong_flagged", "select"),
         ],
         baseline,
     )
-    assert [item.split(":")[0] for item in regressions] == ["B", "E", "D"]
-    assert [item.split(":")[0] for item in improvements] == ["C", "F", "G"]
+    assert [item.split(":")[0] for item in regressions] == ["B", "E", "H", "D"]
+    assert [item.split(":")[0] for item in improvements] == ["C", "F", "G", "I"]
 
 
 def test_plan_baseline_is_json_with_one_case_per_line() -> None:
@@ -558,3 +579,13 @@ def test_eval_file_must_be_a_frozen_split(
     assert mcp_context.main(["--eval-file", str(impostor)]) == 1
     assert '"frozen_split": null' in capsys.readouterr().out
     assert mcp_context.main(["--eval-file", str(impostor), "--allow-unfrozen"]) == 0
+
+
+def test_a_session_may_only_use_ids_it_was_shown(
+    jaffle_package: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Executing a query before anything surfaced its ids isn't a path an agent could take.
+    blind = [("execute", "execute", {"query": mcp_context.Q1})]
+    monkeypatch.setattr(mcp_context, "SESSIONS", {"blind": blind})
+    with pytest.raises(mcp_context.MeasurementError, match="no earlier call in the session"):
+        mcp_context.measure_query_mcp(jaffle_package)

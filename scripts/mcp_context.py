@@ -381,6 +381,26 @@ class MeasurementError(RuntimeError):
     """A scripted call didn't behave as scripted, so its size means nothing."""
 
 
+_ID_PREFIXES = ("measure.", "metric.", "dimension.", "temporal_role.", "segment.", "entity.")
+_QUERY_TOOLS = frozenset({"validate", "compile", "execute"})
+
+
+def semantic_ids(node: Any) -> set[str]:
+    """Every semantic object id mentioned anywhere in ``node``."""
+
+    found: set[str] = set()
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, Mapping):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+        elif isinstance(item, str) and item.startswith(_ID_PREFIXES):
+            found.add(item)
+    return found
+
+
 def _measured_call(
     client: QueryMCPClient,
     name: str,
@@ -389,12 +409,15 @@ def _measured_call(
     *,
     ok: bool = True,
     code: str = "",
+    surfaced: set[str] | None = None,
 ) -> tuple[int, int]:
     """Call a tool and return its (structured, text) tokens.
 
     A call that fails when it should succeed (or the reverse), or that
     doesn't report the expected code, raises instead: a broken tool must not
-    look like a smaller response.
+    look like a smaller response. With ``surfaced``, a query may only use ids
+    that earlier calls returned, so a scripted session measures a path an
+    agent could actually follow.
     """
 
     result = client.call_tool(tool, arguments)
@@ -409,6 +432,15 @@ def _measured_call(
             + (f" with {code}" if code else "")
             + f"; reported {codes}"
         )
+    if surfaced is not None:
+        if tool in _QUERY_TOOLS:
+            unseen = sorted(semantic_ids(arguments.get("query")) - surfaced)
+            if unseen:
+                raise MeasurementError(
+                    f"{name}: {tool} uses ids no earlier call in the session surfaced: {unseen}"
+                )
+        else:
+            surfaced.update(semantic_ids(payload))
     return result_tokens(result)
 
 
@@ -461,10 +493,11 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
         # A fresh runtime per session, so one session's caches can't shrink
         # or grow another's responses.
         structured_total = text_total = largest = 0
+        surfaced: set[str] = set()
         with QueryMCPClient(package_path) as client:
             for step, tool, arguments in steps:
                 structured, text_tokens = _measured_call(
-                    client, f"{session}.{step}", tool, arguments
+                    client, f"{session}.{step}", tool, arguments, surfaced=surfaced
                 )
                 structured_total += structured
                 text_total += text_tokens
@@ -579,10 +612,23 @@ def rebaseline(
 # Frozen eval set and planner accuracy
 # ---------------------------------------------------------------------------
 
+# Planner outcomes, best first. A correct draft that the response flags anyway
+# (a non-ok status or a warning) is a false alarm; a wrong one is caught by its
+# status, only by a warning, or not at all.
 PASS = "pass"
+PASS_FLAGGED = "pass_flagged"
 FLAGGED = "wrong_flagged"
+WARNED = "wrong_warned"
 SILENT = "wrong_silent"
-OUTCOME_RANK = {SILENT: 0, FLAGGED: 1, PASS: 2}
+OUTCOMES = (PASS, PASS_FLAGGED, FLAGGED, WARNED, SILENT)
+OUTCOME_RANK = {outcome: len(OUTCOMES) - index for index, outcome in enumerate(OUTCOMES)}
+OUTCOME_LABELS = {
+    PASS: "pass",
+    PASS_FLAGGED: "pass but flagged",
+    FLAGGED: "wrong but flagged",
+    WARNED: "wrong but warned",
+    SILENT: "wrong and silent",
+}
 PLAN_STATUSES = frozenset({"ok", "low_confidence", "unrealizable", "out_of_scope"})
 REFUSAL_STATUSES = frozenset({"out_of_scope", "unrealizable"})
 EVAL_CASE_KEYS = frozenset(
@@ -813,15 +859,17 @@ def score_plan_response(
 ) -> PlanOutcome:
     """Grade one ``plan(detail="query")`` response against its gold case.
 
-    ``pass`` means the plan matched the gold slots and its query, run through
-    ``answer_of``, returns the frozen answer; or that it refused an
+    A plan is correct when it matched the gold slots and its query, run
+    through ``answer_of``, returns the frozen answer, or when it refused an
     unanswerable question as ``out_of_scope`` or ``unrealizable``. A plan
-    whose slots match but whose rows don't is wrong in slot ``answer``. A
-    wrong plan is ``wrong_flagged`` when the response signals doubt (a
-    non-``ok`` status or any warning) and ``wrong_silent`` when it reports
-    ``ok`` with no warnings. A failed call (an error envelope, or no
-    recognizable status) raises ``EvaluationError`` rather than scoring as a
-    refusal or a flagged answer.
+    whose slots match but whose rows don't is wrong in slot ``answer``.
+
+    A correct plan is ``pass``, or ``pass_flagged`` when the response still
+    reports a non-``ok`` status or a warning (a false alarm). A wrong plan is
+    ``wrong_flagged`` when its status isn't ``ok``, ``wrong_warned`` when the
+    status is ``ok`` but a warning signals doubt, and ``wrong_silent``
+    otherwise. A failed call (an error envelope, or no recognizable status)
+    raises ``EvaluationError`` rather than being graded.
     """
 
     status = str(response.get("status") or "")
@@ -834,10 +882,11 @@ def score_plan_response(
         for item in response.get("warnings") or []
         if isinstance(item, Mapping)
     )
-    loud = status != "ok" or bool(warnings)
-    wrong = FLAGGED if loud else SILENT
+    wrong = FLAGGED if status != "ok" else WARNED if warnings else SILENT
+    right = PASS_FLAGGED if status != "ok" or warnings else PASS
     mismatched: tuple[str, ...]
     if case["expect"] == "refuse":
+        # A refusal is the right answer here, whatever else it reports.
         refused = status in REFUSAL_STATUSES
         outcome, mismatched = (PASS, ()) if refused else (wrong, ("answered",))
     else:
@@ -848,7 +897,7 @@ def score_plan_response(
             diff = tuple(mismatched_slots(case, query, aggregations))
             if not diff and not _returns_frozen_answer(case, answer_of(query)):
                 diff = ("answer",)
-            outcome, mismatched = (PASS, ()) if not diff else (wrong, diff)
+            outcome, mismatched = (right, ()) if not diff else (wrong, diff)
     return PlanOutcome(
         str(case["id"]), str(case.get("category", "")), outcome, status, warnings, mismatched
     )
@@ -883,7 +932,7 @@ def run_plan_accuracy(package_path: Path, cases: Sequence[Mapping[str, Any]]) ->
 
 def plan_summary(outcomes: Sequence[PlanOutcome]) -> dict[str, int]:
     counts = Counter(outcome.outcome for outcome in outcomes)
-    return {"cases": len(outcomes), **{key: counts.get(key, 0) for key in (PASS, FLAGGED, SILENT)}}
+    return {"cases": len(outcomes), **{key: counts.get(key, 0) for key in OUTCOMES}}
 
 
 def plan_regressions(
@@ -1210,7 +1259,7 @@ def render_report(
     for outcome in outcomes:
         by_category.setdefault(outcome.category, Counter())[outcome.outcome] += 1
     category_rows = [
-        [category, sum(counts.values()), counts[PASS], counts[FLAGGED], counts[SILENT]]
+        [category, sum(counts.values()), *(counts[outcome] for outcome in OUTCOMES)]
         for category, counts in sorted(by_category.items())
     ]
     case_rows = [
@@ -1227,8 +1276,8 @@ def render_report(
     if not markdown:
         lines = [f"{row[0]:<58} {row[1]!s:>9} {row[2]!s:>9}  {row[3]}" for row in budget_rows]
         lines.append(
-            f"plan: {summary[PASS]}/{summary['cases']} pass, {summary[FLAGGED]} wrong but flagged, "
-            f"{summary[SILENT]} wrong and silent"
+            f"plan: {summary['cases']} cases: "
+            + ", ".join(f"{summary[outcome]} {OUTCOME_LABELS[outcome]}" for outcome in OUTCOMES)
         )
         lines.extend(" ".join(str(cell) for cell in row) for row in case_rows)
         return "\n".join(lines)
@@ -1238,7 +1287,8 @@ def render_report(
             _markdown_table(["metric", "measured", "budget", "status"], budget_rows),
             "### Planner accuracy (plan detail=query)",
             _markdown_table(
-                ["category", "cases", "pass", "wrong, flagged", "wrong, silent"], category_rows
+                ["category", "cases", *(OUTCOME_LABELS[outcome] for outcome in OUTCOMES)],
+                category_rows,
             ),
             _markdown_table(
                 ["case", "category", "outcome", "status", "mismatched", "warnings"], case_rows

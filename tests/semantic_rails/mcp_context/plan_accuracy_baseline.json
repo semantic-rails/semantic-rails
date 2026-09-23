@@ -1,6 +1,6 @@
 {
  "eval_set_sha256": "9b5b8693dac9ab61f85c3496edd1785f024e3cfed35a0b7183e27cc19a640d0a",
- "summary": {"cases": 38, "pass": 9, "wrong_flagged": 4, "wrong_silent": 25},
+ "summary": {"cases": 38, "pass": 9, "pass_flagged": 0, "wrong_flagged": 4, "wrong_warned": 0, "wrong_silent": 25},
  "cases": {
   "J01": {"outcome": "wrong_silent", "mismatched": ["window"]},
   "J02": {"outcome": "wrong_silent", "mismatched": ["window"]},
