@@ -3570,7 +3570,12 @@ def _format_column(
             return [_format_scalar(value) for value in values], True
         decimals = _column_decimals(present, column_type=column_type)
         return [
-            "NULL" if value is None else _format_number(value, decimals) for value in values
+            "NULL"
+            if value is None
+            else _format_number(value, decimals)
+            if decimals is not None
+            else _format_significant(value)
+            for value in values
         ], True
     return [_shorten(_format_scalar(value)) for value in values], False
 
@@ -3595,7 +3600,9 @@ def _is_integral(value: Any) -> bool:
     return True
 
 
-def _column_decimals(values: list[Any], *, column_type: str) -> int:
+def _column_decimals(values: list[Any], *, column_type: str) -> int | None:
+    """Decimals for a numeric column; ``None`` when its values are too small for fixed decimals."""
+
     if column_type == "currency":
         return 2
     finite = [value for value in values if _is_finite(value)]
@@ -3607,7 +3614,26 @@ def _column_decimals(values: list[Any], *, column_type: str) -> int:
     if not fractions:
         return 2
     # Keep about three significant digits on the smallest value, e.g. 0.00340.
-    return min(6, 2 - math.floor(math.log10(min(fractions))))
+    # Past six decimals, fixed notation would drop them (5.1e-7 as 0.000001),
+    # so such a column prints significant digits instead.
+    needed = 2 - _magnitude(min(fractions))
+    return needed if needed <= 6 else None
+
+
+def _magnitude(value: Any) -> int:
+    """``floor(log10(value))`` for a positive number, never sending a ``Decimal`` through float."""
+
+    if isinstance(value, Decimal):
+        return value.adjusted()  # 1E-400 would be 0.0 as a float
+    return math.floor(math.log10(value))
+
+
+def _format_significant(value: Any) -> str:
+    """A value in a column of very small numbers: about three significant digits below 1."""
+
+    if not _is_finite(value) or _is_integral(value) or abs(value) >= 1:
+        return _format_number(value, 0 if _is_integral(value) else 2)
+    return f"{value:.3g}"
 
 
 def _format_number(value: Any, decimals: int) -> str:

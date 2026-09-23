@@ -566,6 +566,36 @@ def test_columns_never_round_a_nonzero_value_to_zero_or_a_big_int_through_float(
     )
 
 
+@pytest.mark.parametrize(
+    ("column", "expected"),
+    [
+        # Up to six decimals keep three significant digits on the smallest value...
+        ([0.00012, 0.5], ["0.000120", "0.500000"]),
+        ([Decimal("0.00012"), Decimal("0.5")], ["0.000120", "0.500000"]),
+        # ...past that, fixed decimals would drop them, so the column prints significant digits.
+        ([0.000012, 0.5], ["1.2e-05", "0.5"]),
+        ([Decimal("0.000012"), Decimal("0.5")], ["0.000012", "0.5"]),
+        ([5.1e-7, 9.6e-7, 1.5e-6, 5e-7], ["5.1e-07", "9.6e-07", "1.5e-06", "5e-07"]),
+        # Integers stay exact and larger values keep two decimals in such a column.
+        (
+            [1.5e-6, 0.25, 12, 1234.5678, 10**20, None],
+            ["1.5e-06", "0.25", "12", "1,234.57", "100,000,000,000,000,000,000", "NULL"],
+        ),
+    ],
+)
+def test_small_values_keep_their_significant_digits(column: list[Any], expected: list[str]) -> None:
+    assert dev_cli._format_column(column, column_type="number") == (expected, True)
+
+
+def test_a_decimal_too_small_for_a_float_prints_instead_of_crashing() -> None:
+    rows = [{"ratio": Decimal("1E-400")}, {"ratio": Decimal("-1E-400")}, {"ratio": Decimal("0.25")}]
+    columns = [{"field": "ratio", "display_label": "Ratio", "type": "number"}]
+
+    _header, _rule, *cells = dev_cli._table_lines(rows, columns)
+
+    assert [cell.strip() for cell in cells] == ["1e-400", "-1e-400", "0.25"]
+
+
 @pytest.mark.parametrize("selection", [("--package", "jaffle_shop"), ("--path", "<bundled>")])
 def test_validation_labels_the_sample_package(
     nowhere: dict[str, str], selection: tuple[str, str]
