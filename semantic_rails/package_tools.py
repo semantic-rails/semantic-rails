@@ -9,18 +9,20 @@ build cruft (``.git``, ``__pycache__``, DuckDB files) by default.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import os
 import re
 import subprocess
 import tarfile
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .cache import package_fingerprint
-from .config import load_package_config, package_root_for_source, repo_root, resolve_repo_path
+from .config import load_package_config, package_root_for_source, resolve_repo_path
 from .config_validation import (
     PackageReference,
     parse_config_report,
@@ -928,18 +930,20 @@ def diff_package_report(
     snapshot = snapshot or load_package_snapshot(ref.source_path)
     current_config = snapshot.config
     current_snapshot = _package_snapshot(snapshot)
-    other_path, compare_label = _comparison_source(
-        ref.source_path, compare_path=compare_path, base_ref=base_ref
-    )
-    previous = load_package_snapshot(other_path)
-    previous_snapshot = _package_snapshot(previous)
+    with _comparison_source(ref.source_path, compare_path=compare_path, base_ref=base_ref) as (
+        other_path,
+        compare_label,
+        origin,
+    ):
+        previous = load_package_snapshot(other_path)
+        previous_snapshot = _package_snapshot(previous)
     diff = _diff_snapshots(previous_snapshot, current_snapshot)
     return {
         "ok": True,
         "package": {"id": current_config.package.package_id, "source_path": ref.source_path},
         "comparison": {
             "label": compare_label,
-            "source_path": other_path,
+            "source_path": origin,
             "semantic_fingerprint": previous.semantic_fingerprint,
         },
         "semantic_fingerprint": snapshot.semantic_fingerprint,
@@ -1374,43 +1378,93 @@ def _impact_markdown(
     return "\n".join(lines)
 
 
-def _comparison_source(source_path: str, *, compare_path: str, base_ref: str) -> tuple[str, str]:
+_GIT_LOCATION_ENV = frozenset(
+    {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"}
+)
+
+
+@contextlib.contextmanager
+def _comparison_source(
+    source_path: str, *, compare_path: str, base_ref: str
+) -> Iterator[tuple[str, str, str]]:
+    """The package to compare against, as (path to load, label, where it came from).
+
+    A ``base_ref`` package is extracted to a temporary directory that is
+    removed when the comparison is done.
+    """
     if compare_path:
-        return str(Path(compare_path).resolve()), str(Path(compare_path).resolve())
+        resolved = str(Path(compare_path).resolve())
+        yield resolved, resolved, resolved
+        return
     if base_ref:
-        extracted_path = _extract_package_from_git(source_path, base_ref)
-        return extracted_path, base_ref
+        with tempfile.TemporaryDirectory(prefix="semantic-rails-package-") as temporary:
+            extracted, origin = _extract_package_from_git(source_path, base_ref, Path(temporary))
+            yield extracted, base_ref, origin
+        return
     raise SemanticLayerError(
         "INVALID_CONFIG", "Provide either compare_path or base_ref for diff and impact reports"
     )
 
 
-def _extract_package_from_git(source_path: str, base_ref: str) -> str:
+def _git(repo: Path, *args: str) -> bytes:
+    # GIT_DIR and friends would point git at another repository than -C.
+    env = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV}
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, env=env, timeout=60
+    ).stdout
+
+
+def _extract_package_from_git(
+    source_path: str, base_ref: str, destination: Path
+) -> tuple[str, str]:
+    """Write the package as it was at ``base_ref`` under ``destination``.
+
+    The ref resolves in the git repository that holds the package, which need
+    not be the engine's. Only regular files are written: symlinks and
+    submodules in the tree are skipped. Returns the extracted package
+    directory and a ``<ref>@<commit>:<path>`` description of its origin.
+    """
     package_root = Path(package_root_for_source(source_path)).resolve()
-    repo = Path(repo_root()).resolve()
+    ref = str(base_ref or "").strip()
+    if not ref or ref.startswith("-"):
+        raise SemanticLayerError("INVALID_CONFIG", f"base_ref {base_ref!r} is not a git revision")
     try:
-        rel_package_path = package_root.relative_to(repo).as_posix()
-    except ValueError as exc:
+        repo = Path(_git(package_root, "rev-parse", "--show-toplevel").decode().strip()).resolve()
+    except (OSError, subprocess.SubprocessError) as exc:
         raise SemanticLayerError(
-            "INVALID_CONFIG", f"Package path '{package_root}' is not inside the git repo"
+            "INVALID_CONFIG",
+            f"Package path '{package_root}' is not inside a git repository; use compare_path",
         ) from exc
-    files = subprocess.check_output(
-        ["git", "ls-tree", "-r", "--name-only", base_ref, "--", rel_package_path],
-        cwd=repo,
-        text=True,
-    ).splitlines()
-    if not files:
-        raise SemanticLayerError(
-            "OBJECT_NOT_FOUND",
-            f"No package files found for '{rel_package_path}' at git ref '{base_ref}'",
+    try:
+        commit = (
+            _git(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}")
+            .decode()
+            .strip()
         )
-    temp_root = Path(tempfile.mkdtemp(prefix="semantic-rails-package-"))
-    for relative_file in files:
-        target_path = temp_root / relative_file
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        content = subprocess.check_output(["git", "show", f"{base_ref}:{relative_file}"], cwd=repo)
-        target_path.write_bytes(content)
-    return str(temp_root / rel_package_path)
+    except subprocess.SubprocessError as exc:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND", f"git ref {ref!r} does not name a commit in '{repo}'"
+        ) from exc
+    rel = package_root.relative_to(repo).as_posix()
+    pathspec = [] if rel == "." else ["--", rel]
+    listing = _git(repo, "ls-tree", "-r", "-z", "--full-tree", commit, *pathspec).decode()
+    target_root = destination / package_root.name
+    written = 0
+    for entry in filter(None, listing.split("\0")):
+        meta, _, path = entry.partition("\t")
+        mode, kind, obj = meta.split()
+        inside = PurePosixPath(path) if rel == "." else PurePosixPath(path).relative_to(rel)
+        if kind != "blob" or mode not in {"100644", "100755"} or ".." in inside.parts:
+            continue
+        target = target_root.joinpath(*inside.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(_git(repo, "cat-file", "blob", obj))
+        written += 1
+    if not written:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND", f"No package files found for '{rel}' at git ref '{ref}'"
+        )
+    return str(target_root), f"{ref}@{commit[:12]}:{rel}"
 
 
 def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

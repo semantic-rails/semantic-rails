@@ -98,7 +98,10 @@ repository root; pass `--workspace-root` when an MCP client should operate in a 
 workspace.
 
 Comparison paths for `diff_project`, `impact_project`, and release checks must also resolve to
-package directories inside the configured workspace root. Use `mcp_client_config` to get a launch
+package directories inside the configured workspace root. A `base_ref` (for example `main` or
+`HEAD~1`) names a commit in the git repository that holds the package, which need not be the
+engine's. The package is read from that commit into a temporary directory, which is removed
+afterwards; symlinks and submodules in the tree are skipped. Use `mcp_client_config` to get a launch
 configuration that includes both `cwd` and `--workspace-root`.
 
 Runtime validation is operational. DuckDB validation can create a missing package database from
