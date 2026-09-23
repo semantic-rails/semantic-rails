@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 import stat
 import subprocess
@@ -130,6 +131,99 @@ def test_report_keeps_what_went_wrong(
     ask = quickstart.report(env, quickstart.TRY)
     assert env.commands == [f"{quickstart.TRY} --json"]
     assert ask.problem().startswith(problem) and bool(ask.problem()) == bool(problem)
+
+
+def rows_answer(package: str, rows: int) -> str:
+    return json.dumps({"package": {"id": package}, "result": {"rows": [{"n": 1}] * rows}})
+
+
+@pytest.mark.parametrize(
+    ("ask", "outcome"),
+    [
+        (rows_answer("jaffle_shop", 2), "pass"),
+        (rows_answer("my_package", 2), "fail"),
+        (rows_answer("jaffle_shop", 0), "fail"),
+        ("not json", "fail"),
+    ],
+    ids=["bundled rows", "wrong package", "no rows", "not json"],
+)
+def test_try_bundled_needs_rows_from_jaffle_shop(tmp_path: Path, ask: str, outcome: str) -> None:
+    env = Scripted(tmp_path, (0, "2 rows", ""), (0, ask, ""))
+    status, detail = quickstart.classify(quickstart.try_bundled(env))
+    assert status == outcome, detail
+
+
+@pytest.mark.parametrize(
+    ("validate", "ask", "outcome"),
+    [
+        ("validated my_package", rows_answer("my_package", 3), "pass"),
+        ("validated jaffle_shop", rows_answer("my_package", 3), "fail"),
+        ("[fail] my_package", rows_answer("my_package", 3), "fail"),
+        ("validated my_package", rows_answer("jaffle_shop", 3), "fail"),
+        ("validated my_package", rows_answer("my_package", 0), "fail"),
+    ],
+    ids=["own package", "validated another", "failed check", "answered from sample", "no rows"],
+)
+def test_own_package_must_validate_and_answer_from_it(
+    tmp_path: Path, validate: str, ask: str, outcome: str
+) -> None:
+    env = Scripted(tmp_path, (0, "", ""), (0, validate, ""), (0, "", ""), (0, ask, ""))
+    status, detail = quickstart.classify(quickstart.own_package(env))
+    assert status == outcome, detail
+
+
+@pytest.mark.parametrize(
+    ("result", "readme", "outcome"),
+    [
+        ((0, "", ""), README, "note"),
+        ((1, "", "error: requires Python>=3.11"), README, "note"),
+        ((1, "", "error: requires Python>=3.11"), "no warnings", "fail"),
+        ((1, "", "error: network unreachable"), README, "fail"),
+    ],
+    ids=["install worked", "warned failure", "unwarned failure", "other failure"],
+)
+def test_bare_venv_trap_only_notes_the_warned_outcomes(
+    tmp_path: Path, result: tuple[int, str, str], readme: str, outcome: str
+) -> None:
+    env = Scripted(tmp_path, result, (0, "Python 3.9.6\n", ""))
+    status, detail = quickstart.classify(quickstart.python_trap(env, readme))
+    assert status == outcome, detail
+
+
+def test_the_host_never_gets_a_distro_python(tmp_path: Path) -> None:
+    env = Scripted(tmp_path, (1, "", "requires Python>=3.11"), (0, "Python 3.9.6\n", ""))
+    quickstart.python_trap(env, README)
+    assert "apt-get" not in " ".join(env.commands)
+
+
+def test_classify_maps_notes_passes_and_failures() -> None:
+    assert quickstart.classify("") == ("pass", "")
+    assert quickstart.classify(f"{NOTE}worked") == ("note", "worked")
+    assert quickstart.classify("exit 1: boom") == ("fail", "exit 1: boom")
+
+
+@pytest.mark.parametrize(
+    ("config", "outcome"),
+    [
+        (
+            '{"mcpServers": {"semantic-rails": {"command": "/h/.local/share/uv/tools/semantic-rails/bin/python"}}}',
+            "pass",
+        ),
+        (
+            '{"mcpServers": {"semantic-rails": {"command": "/h/.cache/uv/archive-v0/x/bin/python"}}}',
+            "fail",
+        ),
+        ("", "fail"),
+    ],
+    ids=["tool install", "uv cache", "no config"],
+)
+def test_desktop_setup_needs_a_config_that_runs_the_tool(
+    tmp_path: Path, config: str, outcome: str
+) -> None:
+    env = Scripted(tmp_path, (0, "wrote config", ""), (0, config, ""))
+    status, detail = quickstart.classify(quickstart.desktop_setup(env))
+    assert status == outcome, detail
+    assert env.commands[0] == quickstart.DESKTOP_BLOCK
 
 
 def fake_uv(directory: Path) -> Path:
@@ -284,6 +378,24 @@ def test_mcp_handshake_fails_when_initialize_does_not_succeed(
         Server(tmp_path, server_answering_initialize_with(reply)), timeout=10
     )
     assert detail.startswith("stdio handshake failed:") and reason in detail, detail
+
+
+TOOLS_MISSING_EXECUTE = WORKING.replace('"compile", "execute"', '"compile"')
+
+
+def test_mcp_handshake_needs_every_query_tool(tmp_path: Path) -> None:
+    detail = quickstart.mcp_handshake(Server(tmp_path, TOOLS_MISSING_EXECUTE), timeout=10)
+    assert detail == "tools/list lacks ['execute']"
+
+
+def test_the_deadline_stops_reading_even_while_lines_keep_coming() -> None:
+    # A server that keeps printing other messages must not outlast the deadline.
+    lines: queue.Queue[str] = queue.Queue()
+    for _ in range(1000):
+        lines.put(json.dumps({"jsonrpc": "2.0", "method": "notifications/message"}) + "\n")
+    with pytest.raises(TimeoutError, match="no reply to initialize within 0.5s"):
+        quickstart.read_reply(lines, 1, "initialize", deadline=time.monotonic() - 1, timeout=0.5)
+    assert lines.qsize() == 1000  # it gave up at once, instead of draining the flood
 
 
 def test_mcp_handshake_gives_up_on_a_server_that_never_answers(tmp_path: Path) -> None:

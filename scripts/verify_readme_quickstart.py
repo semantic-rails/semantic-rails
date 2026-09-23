@@ -5,8 +5,9 @@ The commands below install the latest release from PyPI, not this checkout, so t
 check shows whether the README works for a new user today. Each command must appear
 verbatim, as whole lines of a README code block: editing one without the other fails
 the check. The Claude Code and Codex registration lines are held to the same rule, and
-the check starts the stdio server they register. Claude Desktop's `mcp setup`, the
-Cursor config and the MetricFlow import are not run here.
+the check starts the stdio server they register. The Claude Desktop and Cursor blocks
+run as shown too, finding the installed command with `uv tool dir --bin`. The MetricFlow
+import is not run here.
 
 Environments:
   --image IMAGE  a fresh container (`docker run`), removed afterwards; repeatable.
@@ -57,7 +58,24 @@ MCP_STDIO = 'uvx semantic-rails mcp stdio --path "$PWD/my_package"'
 # The README registers MCP_STDIO with these clients; the check runs the server they start.
 CLAUDE_ADD = f"claude mcp add semantic-rails -- {MCP_STDIO}"
 CODEX_ADD = f"codex mcp add semantic-rails -- {MCP_STDIO}"
-DOCUMENTED = (TRY, INIT, VALIDATE, ASK, TOOL_INSTALL, VENV_BLOCK, CLAUDE_ADD, CODEX_ADD)
+TOOL = '"$(uv tool dir --bin)/semantic-rails"'
+DESKTOP_BLOCK = (
+    f"{TOOL_INSTALL}\n"
+    f'{TOOL} mcp setup --path "$PWD/my_package" --client claude --mcp query --install --yes'
+)
+CURSOR_BLOCK = f'{TOOL_INSTALL}\necho {TOOL}\necho "$PWD/my_package"'
+DOCUMENTED = (
+    TRY,
+    INIT,
+    VALIDATE,
+    ASK,
+    TOOL_INSTALL,
+    VENV_BLOCK,
+    CLAUDE_ADD,
+    CODEX_ADD,
+    DESKTOP_BLOCK,
+    CURSOR_BLOCK,
+)
 
 ASK_WITHOUT_PATH = 'uvx semantic-rails ask "total amount by event type" --run'
 FALLBACK_WARNING = "commands fall back to the bundled `jaffle_shop` package"
@@ -271,6 +289,25 @@ def expect(result: subprocess.CompletedProcess[str], *needles: str) -> str:
     return f"output lacks {missing}" if missing else ""
 
 
+def read_reply(
+    lines: queue.Queue[str], message_id: object, method: str, deadline: float, timeout: float
+) -> dict[str, object]:
+    """The reply to one request. Once the deadline passes it stops, even mid-flood."""
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"no reply to {method} within {timeout:g}s")
+        try:
+            line = lines.get(timeout=remaining)
+        except queue.Empty:
+            raise TimeoutError(f"no reply to {method} within {timeout:g}s") from None
+        if not line:
+            raise RuntimeError("server closed stdout")
+        reply = json.loads(line)
+        if isinstance(reply, dict) and reply.get("id") == message_id:
+            return reply
+
+
 PROTOCOL_VERSION = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -291,16 +328,19 @@ def initialize_problem(reply: dict[str, object]) -> str:
     return ""
 
 
-def mcp_handshake(env: Environment, timeout: float = MCP_TIMEOUT_SECONDS) -> str:
+def mcp_handshake(
+    env: Environment, timeout: float = MCP_TIMEOUT_SECONDS, argv: list[str] | None = None
+) -> str:
     """Initialize the stdio server the README registers with agents and list its tools.
 
     The whole exchange has one deadline: a server that stays alive without answering
     fails this step instead of hanging the run.
     """
-    # The command the README registers with Claude Code and Codex, run from its workdir.
-    argv = shlex.split(MCP_STDIO.replace("$PWD", env.workdir()))
-    if isinstance(env, Local):
-        argv[0] = str(env.root / "bin" / "uvx")
+    if argv is None:
+        # The command the README registers with Claude Code and Codex, run from its workdir.
+        argv = shlex.split(MCP_STDIO.replace("$PWD", env.workdir()))
+        if isinstance(env, Local):
+            argv[0] = str(env.root / "bin" / "uvx")
     process = env.popen(argv)
     assert process.stdin is not None and process.stdout is not None
     deadline = time.monotonic() + timeout
@@ -317,16 +357,7 @@ def mcp_handshake(env: Environment, timeout: float = MCP_TIMEOUT_SECONDS) -> str
         assert process.stdin is not None
         process.stdin.write(json.dumps(message) + "\n")
         process.stdin.flush()
-        while True:
-            try:
-                line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
-            except queue.Empty:
-                raise TimeoutError(f"no reply to {message['method']} within {timeout:g}s") from None
-            if not line:
-                raise RuntimeError("server closed stdout")
-            reply = json.loads(line)
-            if isinstance(reply, dict) and reply.get("id") == message["id"]:
-                return reply
+        return read_reply(lines, message["id"], str(message["method"]), deadline, timeout)
 
     try:
         initialized = call(
@@ -383,16 +414,20 @@ def fallback_trap(env: Environment, readme: str) -> str:
 
 def python_trap(env: Environment, readme: str) -> str:
     """A bare `uv venv` may pick an old system Python, and then the install fails."""
-    # Minimal images ship no Python; a typical host has the distro's python3. An empty
-    # managed-Python directory hides the interpreters earlier steps downloaded, as on a
-    # machine that has never run uv. Both directories live in the environment's scratch
-    # area, so nothing outside this run is touched.
+    # Minimal images ship no Python, so a container gets the distro's python3, as a
+    # typical host has; the host itself is never changed. An empty managed-Python
+    # directory hides the interpreters earlier steps downloaded, as on a machine that has
+    # never run uv. Both directories live in the environment's scratch area.
     venv = shlex.quote(env.scratch("bare-venv"))
     pythons = shlex.quote(env.scratch("no-managed-python"))
-    result = env.run(
+    distro_python = (
         "if ! command -v python3 >/dev/null && command -v apt-get >/dev/null; then "
         "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 >/dev/null; fi; "
-        f"mkdir -p {pythons} && export UV_PYTHON_INSTALL_DIR={pythons} && "
+        if isinstance(env, Container)
+        else ""
+    )
+    result = env.run(
+        distro_python + f"mkdir -p {pythons} && export UV_PYTHON_INSTALL_DIR={pythons} && "
         f"uv venv {venv} >/dev/null 2>&1 && "
         f"uv pip install -q --python {venv}/bin/python semantic-rails"
     )
@@ -437,6 +472,85 @@ def undocumented(markdown: str) -> list[str]:
     return missing
 
 
+def classify(detail: str) -> tuple[str, str]:
+    """A step's status and printed detail: a NOTE prefix is a note, any other text fails."""
+    if detail.startswith(NOTE):
+        return "note", detail.removeprefix(NOTE)
+    return ("fail", detail) if detail else ("pass", "")
+
+
+def try_bundled(env: Environment) -> str:
+    """The one-command try answers from the bundled jaffle_shop package, with rows."""
+    problem = expect(env.run(TRY))
+    if problem:
+        return problem
+    ask = report(env, TRY)
+    package, count = answered_from(ask.data)
+    if ask.problem() or package != "jaffle_shop" or not count:
+        return ask.problem() or f"answered from {package or 'nothing'} with {count} rows"
+    return ""
+
+
+def own_package(env: Environment) -> str:
+    """init, validate and ask --path work, and ask answers from the new package."""
+    for command, needles in ((INIT, ()), (VALIDATE, ("my_package",)), (ASK, ())):
+        result = env.run(command)
+        problem = expect(result, *needles)
+        if problem:
+            return f"{command}: {problem}"
+        if "[fail]" in result.stdout:
+            return f"{command}: reported a failed check"
+    ask = report(env, ASK)
+    package, count = answered_from(ask.data)
+    if ask.problem() or package != "my_package" or not count:
+        reason = ask.problem() or f"answered from {package or 'nothing'} with {count} rows"
+        return f"ask --path --json: {reason}"
+    return ""
+
+
+def pinned_venv(env: Environment) -> str:
+    block = " && ".join(VENV_BLOCK.splitlines())
+    return expect(
+        env.run(f"rm -rf .venv && {block} && semantic-rails --version"), "semantic-rails "
+    )
+
+
+def tool_install(env: Environment) -> str:
+    # The path the README uses, whatever uv's tool directory is and whether it's on PATH.
+    return expect(env.run(f"{TOOL_INSTALL} && {TOOL} --version"), "semantic-rails ")
+
+
+def desktop_setup(env: Environment) -> str:
+    """The README's Claude Desktop block, as shown; its config must run the tool's Python."""
+    problem = expect(env.run(DESKTOP_BLOCK))
+    if problem:
+        return problem
+    found = env.run(
+        'find "$HOME" -name claude_desktop_config.json -print 2>/dev/null | head -1 | '
+        'while read -r f; do cat "$f"; done'
+    )
+    try:
+        servers = json.loads(found.stdout or "{}").get("mcpServers", {})
+    except (ValueError, AttributeError):
+        return f"unreadable Claude Desktop config: {found.stdout[:200]}"
+    commands = [
+        str(server.get("command", "")) for server in servers.values() if isinstance(server, dict)
+    ]
+    if not any("/tools/" in command and "/cache/" not in command for command in commands):
+        return f"no server in the Claude Desktop config runs the tool install: {commands}"
+    return ""
+
+
+def cursor_paths(env: Environment) -> str:
+    """The README's Cursor block prints two paths; the config they fill starts the server."""
+    result = env.run(CURSOR_BLOCK)
+    printed = result.stdout.strip().splitlines()[-2:]
+    if result.returncode or len(printed) != 2:
+        return f"exit {result.returncode}: {(result.stdout + result.stderr)[-300:]}"
+    tool, package = printed
+    return mcp_handshake(env, argv=[tool, "mcp", "stdio", "--path", package])
+
+
 def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
 
@@ -446,8 +560,7 @@ def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
             detail = check()
         except subprocess.TimeoutExpired:
             detail = f"timed out after {STEP_TIMEOUT_SECONDS}s"
-        status = "note" if detail.startswith(NOTE) else ("fail" if detail else "pass")
-        detail = detail.removeprefix(NOTE)
+        status, detail = classify(detail)
         results.append(
             {
                 "environment": env.name,
@@ -458,46 +571,13 @@ def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
             }
         )
 
-    def try_bundled() -> str:
-        problem = expect(env.run(TRY))
-        if problem:
-            return problem
-        ask = report(env, TRY)
-        package, count = answered_from(ask.data)
-        if ask.problem() or package != "jaffle_shop" or not count:
-            return ask.problem() or f"answered from {package or 'nothing'} with {count} rows"
-        return ""
-
-    def own_package() -> str:
-        for command, needles in ((INIT, ()), (VALIDATE, ("my_package",)), (ASK, ())):
-            result = env.run(command)
-            problem = expect(result, *needles)
-            if problem:
-                return f"{command}: {problem}"
-            if "[fail]" in result.stdout:
-                return f"{command}: reported a failed check"
-        ask = report(env, ASK)
-        package, count = answered_from(ask.data)
-        if ask.problem() or package != "my_package" or not count:
-            reason = ask.problem() or f"answered from {package or 'nothing'} with {count} rows"
-            return f"ask --path --json: {reason}"
-        return ""
-
-    def pinned_venv() -> str:
-        block = " && ".join(VENV_BLOCK.splitlines())
-        result = env.run(f"rm -rf .venv && {block} && semantic-rails --version")
-        return expect(result, "semantic-rails ")
-
-    def tool_install() -> str:
-        return expect(
-            env.run(f"{TOOL_INSTALL} && ~/.local/bin/semantic-rails --version"), "semantic-rails "
-        )
-
-    step("try: bundled package", try_bundled)
-    step("own package: init, validate, ask --path", own_package)
+    step("try: bundled package", partial(try_bundled, env))
+    step("own package: init, validate, ask --path", partial(own_package, env))
     step("mcp stdio: initialize, tools/list", lambda: mcp_handshake(env))
-    step("install: uv venv --python 3.12", pinned_venv)
-    step("install: uv tool install", tool_install)
+    step("install: uv venv --python 3.12", partial(pinned_venv, env))
+    step("install: uv tool install", partial(tool_install, env))
+    step("client: Claude Desktop setup block", partial(desktop_setup, env))
+    step("client: Cursor block + stdio", partial(cursor_paths, env))
     step("trap: ask without --path", partial(fallback_trap, env, readme))
     step("trap: bare uv venv", partial(python_trap, env, readme))
     return results

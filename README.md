@@ -183,8 +183,10 @@ two, the other five layers agree with each other and Semantic Rails differs, bec
 the layers didn't answer them from the same data.
 
 Coming from MetricFlow? Translate a MetricFlow YAML directory or a dbt
-`semantic_manifest.json` into a new package. Anything that doesn't translate is listed
-as a warning.
+`semantic_manifest.json` into a new package. The importer is partial: models it can't
+translate are listed as warnings, but metrics that depended on them can still be
+written out and then fail to compile. Compile the metrics you rely on before trusting
+the import.
 
 ```bash
 uvx semantic-rails import --from metricflow --source target/semantic_manifest.json \
@@ -244,6 +246,8 @@ Known limitations in the current release:
   reports `ok`. Check the Query IR before you rely on the numbers.
 - Currency measures print binary floating-point noise: long decimal tails such as
   `…85000000062`.
+- The MetricFlow importer is partial. It can keep a metric whose model it dropped,
+  and that metric then fails to compile.
 
 ### Roadmap
 
