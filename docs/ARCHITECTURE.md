@@ -429,5 +429,5 @@ Representative semantic errors:
 ## Active Remaining Limits
 
 - DuckDB is the zero-setup local backend; Snowflake execution depends on a configured `snowflake_cli` or `snowflake_native` connection.
-- The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner.
+- The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner. Each operand counts its entity's rows by the entity key, so an operand measure must count exactly that key: a measure that counts an expression (such as `CASE WHEN ... THEN key END`) or another column is rejected with `CONVERSION_NOT_SUPPORTED`. Restrict an operand with its `filter` instead.
 - `metric_predicate` is implemented for the supported contextual and entity-only cases used by the active package, but it is not yet a fully general arbitrary nested predicate planner.

@@ -11,6 +11,8 @@ rejected with a structured error.
 
 from __future__ import annotations
 
+import pytest
+
 
 def _conversion_query(
     *,
@@ -19,9 +21,11 @@ def _conversion_query(
     base_window: dict | None = None,
     group_by: list[str] | None = None,
     dimension_bindings: dict | None = None,
+    base_measure: str = "measure.jaffle.order_count",
+    converted_measure: str = "measure.jaffle.order_count",
 ) -> dict:
-    base: dict = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
-    converted: dict = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
+    base: dict = {"kind": "aggregate", "measure": base_measure}
+    converted: dict = {"kind": "aggregate", "measure": converted_measure}
     if base_filter is not None:
         base["filter"] = base_filter
     if converted_filter is not None:
@@ -188,3 +192,71 @@ def test_unfiltered_conversion_sql_is_unchanged_by_the_filter_path(runtime_facto
     rendered = report["explain"]["rendered_sql"]
     assert "jaffle_item" not in rendered
     assert "jaffle_product" not in rendered
+
+
+# An entity_count measure can count an expression rather than its entity's key:
+# new_customer_order_count counts CASE WHEN is_new_customer_order THEN order_id END.
+# Conversion lowering keys each event by the entity key, so such an operand used to
+# lose its expression silently: every order became a "new customer order".
+
+
+@pytest.mark.parametrize("side", ["base", "converted"])
+def test_operand_measure_counting_an_expression_is_rejected_not_ignored(runtime_factory, side):
+    runtime = runtime_factory("jaffle_shop")
+    report = runtime.validate(
+        _conversion_query(**{f"{side}_measure": "measure.jaffle.new_customer_order_count"})
+    )
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert "measure.jaffle.new_customer_order_count" in error["message"]
+    assert "filter" in error["message"]
+
+
+def test_operand_measure_counting_another_column_is_rejected(runtime_factory):
+    # ordering_customer_count counts distinct customer_id on the orders model.
+    runtime = runtime_factory("jaffle_shop")
+    report = runtime.validate(
+        _conversion_query(base_measure="measure.jaffle.ordering_customer_count")
+    )
+    assert report["ok"] is False
+    assert report["errors"][0]["code"] == "CONVERSION_NOT_SUPPORTED"
+
+
+_NEW_CUSTOMER_ORDER = {
+    "all": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "=", "value": True}]
+}
+_REPEAT_ORDER = {
+    "all": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "=", "value": False}]
+}
+
+
+def test_first_order_then_repeat_order_via_operand_filters_matches_oracle(runtime_factory):
+    # The supported way to write the rejected measures: count the entity key and
+    # put the condition in the operand filter.
+    runtime = runtime_factory("jaffle_shop")
+    rows = runtime.query(
+        _conversion_query(base_filter=_NEW_CUSTOMER_ORDER, converted_filter=_REPEAT_ORDER)
+    )["rows"]
+    assert len(rows) == 1
+    oracle = runtime._get_adapter().query(
+        """
+        WITH base AS (
+          SELECT order_id, customer_id, ordered_at FROM jaffle_order WHERE is_new_customer_order
+        ), conv AS (
+          SELECT order_id, customer_id, ordered_at FROM jaffle_order WHERE NOT is_new_customer_order
+        )
+        SELECT
+          COUNT(DISTINCT CASE WHEN EXISTS (
+            SELECT 1 FROM conv c
+            WHERE c.customer_id = b.customer_id
+              AND c.ordered_at >= b.ordered_at
+              AND DATE_DIFF(
+                'day', CAST(b.ordered_at AS TIMESTAMP), CAST(c.ordered_at AS TIMESTAMP)
+              ) <= 28
+          ) THEN b.order_id END) * 1.0 / COUNT(DISTINCT b.order_id) AS rate
+        FROM base b
+        """
+    )
+    assert 0 < oracle[0]["rate"] < 1
+    assert rows[0]["a_then_b_conversion_rate"] == oracle[0]["rate"]

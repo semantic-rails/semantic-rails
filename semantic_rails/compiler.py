@@ -2373,18 +2373,60 @@ def _resolve_conversion_source(
                     matching_mode="first_converted_after_base",
                 )
             )
-        return {
-            "measure": measure,
-            "bound_measure": bound,
-            "root_entity": measure.entity,
-            "time_role": bound.temporal_role or _default_temporal_role(measure),
-            "filters": [],
-        }
+        return _measure_conversion_source(measure, bound, config, side=side)
     raise SemanticLayerError(
         "CONVERSION_NOT_SUPPORTED",
         "Conversion execution currently requires base and converted inputs to resolve to event-count measures",
         details={"expression": expr_to_dict(expr)},
     )
+
+
+def _measure_conversion_source(
+    measure: MeasureConfig, bound: BoundMeasure, config: PackageConfig, *, side: str
+) -> dict[str, Any]:
+    """The conversion source for an operand measure, which must count its entity's key.
+
+    Conversion lowering keys each event by its entity's key and never reads the
+    measure's expression. A measure that counts an expression (``CASE WHEN ...
+    THEN key END``) or another column would silently lose it, so it is rejected.
+    """
+    entity = _entity_index(config).get(measure.entity)
+    key = list(entity.key) if entity is not None else []
+    counted = measure.expr
+    if not (
+        isinstance(counted, ColumnRefExpr)
+        and [counted.column] == key
+        and counted.entity in {"", measure.entity}
+        and counted.table in {"", entity.table if entity is not None else ""}
+    ):
+        what = (
+            f"column '{counted.column}'" if isinstance(counted, ColumnRefExpr) else "an expression"
+        )
+        raise SemanticLayerError(
+            "CONVERSION_NOT_SUPPORTED",
+            (
+                f"Measure '{measure.id}' counts {what}, not the key of '{measure.entity}', "
+                f"so it can't be the conversion {side} operand: a conversion operand counts "
+                "its entity's rows by that key, which would ignore the measure's definition. "
+                "Use a measure that counts the entity key and restrict the operand with "
+                "'filter', for example filter: {all: [{field: <dimension id>, op: '=', "
+                "value: ...}]}."
+            ),
+            details={
+                "side": side,
+                "measure": measure.id,
+                "entity": measure.entity,
+                "entity_key": key,
+                "measure_expr": expr_to_dict(counted),
+            },
+        )
+    return {
+        "measure": measure,
+        "bound_measure": bound,
+        "root_entity": measure.entity,
+        "time_role": bound.temporal_role or _default_temporal_role(measure),
+        "filters": [],
+    }
 
 
 def _conversion_dimension_paths(
