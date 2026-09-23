@@ -1378,6 +1378,8 @@ def _impact_markdown(
     return "\n".join(lines)
 
 
+# Longer than any sane ref; bounds what reaches the git command line.
+_MAX_GIT_REF = 256
 _GIT_LOCATION_ENV = frozenset(
     {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"}
 )
@@ -1407,10 +1409,15 @@ def _comparison_source(
 
 
 def _git(repo: Path, *args: str) -> bytes:
-    # GIT_DIR and friends would point git at another repository than -C.
+    # GIT_DIR and friends would point git at another repository than -C, and
+    # a package directory named like pathspec magic must be taken literally.
     env = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV}
     return subprocess.run(
-        ["git", "-C", str(repo), *args], check=True, capture_output=True, env=env, timeout=60
+        ["git", "--literal-pathspecs", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        env=env,
+        timeout=60,
     ).stdout
 
 
@@ -1420,17 +1427,29 @@ def _extract_package_from_git(
     """Write the package as it was at ``base_ref`` under ``destination``.
 
     The ref resolves in the git repository that holds the package, which need
-    not be the engine's. Only regular files are written: symlinks and
-    submodules in the tree are skipped. Returns the extracted package
-    directory and a ``<ref>@<commit>:<path>`` description of its origin.
+    not be the engine's. Only regular files with plain relative names are
+    written, and only inside ``destination``: symlinks, submodules and
+    crafted names (absolute, ``..``, empty parts) are skipped. Returns the
+    extracted package directory and a ``<ref>@<commit>:<path>`` description
+    of its origin.
     """
     package_root = Path(package_root_for_source(source_path)).resolve()
     ref = str(base_ref or "").strip()
-    if not ref or ref.startswith("-"):
-        raise SemanticLayerError("INVALID_CONFIG", f"base_ref {base_ref!r} is not a git revision")
+    if (
+        not ref
+        or ref.startswith("-")
+        or len(ref) > _MAX_GIT_REF
+        or any(ord(character) < 32 or character == "\x7f" for character in ref)
+    ):
+        raise SemanticLayerError(
+            "INVALID_CONFIG", f"base_ref {str(base_ref)[:80]!r} is not a git revision"
+        )
     try:
-        repo = Path(_git(package_root, "rev-parse", "--show-toplevel").decode().strip()).resolve()
-    except (OSError, subprocess.SubprocessError) as exc:
+        repo = Path(os.fsdecode(_git(package_root, "rev-parse", "--show-toplevel").strip()))
+        # Where git sees the package, which a case-insensitive file system can
+        # spell differently from package_root.
+        prefix = os.fsdecode(_git(package_root, "rev-parse", "--show-prefix").strip()).rstrip("/")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"Package path '{package_root}' is not inside a git repository; use compare_path",
@@ -1438,33 +1457,49 @@ def _extract_package_from_git(
     try:
         commit = (
             _git(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}")
-            .decode()
+            .decode("ascii")
             .strip()
         )
-    except subprocess.SubprocessError as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise SemanticLayerError(
             "OBJECT_NOT_FOUND", f"git ref {ref!r} does not name a commit in '{repo}'"
         ) from exc
-    rel = package_root.relative_to(repo).as_posix()
-    pathspec = [] if rel == "." else ["--", rel]
-    listing = _git(repo, "ls-tree", "-r", "-z", "--full-tree", commit, *pathspec).decode()
+    listing = _git(
+        repo, "ls-tree", "-r", "-z", "--full-tree", commit, *(["--", prefix] if prefix else [])
+    )
     target_root = destination / package_root.name
     written = 0
-    for entry in filter(None, listing.split("\0")):
-        meta, _, path = entry.partition("\t")
-        mode, kind, obj = meta.split()
-        inside = PurePosixPath(path) if rel == "." else PurePosixPath(path).relative_to(rel)
-        if kind != "blob" or mode not in {"100644", "100755"} or ".." in inside.parts:
+    for entry in filter(None, listing.split(b"\0")):
+        meta, _, name = entry.partition(b"\t")
+        mode, kind, obj = meta.decode("ascii").split()
+        parts = _package_file_parts(os.fsdecode(name), prefix)
+        if kind != "blob" or mode not in {"100644", "100755"} or parts is None:
             continue
-        target = target_root.joinpath(*inside.parts)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(_git(repo, "cat-file", "blob", obj))
+        target = target_root.joinpath(*parts)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(_git(repo, "cat-file", "blob", obj))
+        except (OSError, UnicodeEncodeError):
+            continue  # a name this file system cannot hold
         written += 1
     if not written:
         raise SemanticLayerError(
-            "OBJECT_NOT_FOUND", f"No package files found for '{rel}' at git ref '{ref}'"
+            "OBJECT_NOT_FOUND", f"No package files found for '{prefix or '.'}' at git ref '{ref}'"
         )
-    return str(target_root), f"{ref}@{commit[:12]}:{rel}"
+    return str(target_root), f"{ref}@{commit[:12]}:{prefix or '.'}"
+
+
+def _package_file_parts(name: str, prefix: str) -> tuple[str, ...] | None:
+    """A tree entry's path inside the package, or None when it is not a plain one."""
+    parts = name.split("/")
+    leading = prefix.split("/") if prefix else []
+    if any(part in {"", ".", ".."} for part in parts) or parts[: len(leading)] != leading:
+        return None
+    inside = tuple(parts[len(leading) :])
+    # A drive or a backslash would let a Windows path leave the destination.
+    if not inside or any("\\" in part or ":" in part for part in inside):
+        return None
+    return inside
 
 
 def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

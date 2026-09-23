@@ -32,9 +32,9 @@ MARGIN = {
 }
 
 
-def _git(repo: Path, *args: str) -> str:
+def _git(repo: Path, *args: str, stdin: bytes | None = None) -> str:
     env = {
-        **os.environ,
+        **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
@@ -43,8 +43,8 @@ def _git(repo: Path, *args: str) -> str:
         "GIT_COMMITTER_EMAIL": "test@example.com",
     }
     return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True, env=env
-    ).stdout
+        ["git", *args], cwd=repo, check=True, capture_output=True, input=stdin, env=env
+    ).stdout.decode()
 
 
 @pytest.fixture()
@@ -125,6 +125,9 @@ def test_a_package_at_the_repository_root(tmp_path: Path) -> None:
         ("", "INVALID_CONFIG", "compare_path or base_ref"),
         ("no-such-branch", "OBJECT_NOT_FOUND", "does not name a commit"),
         ("HEAD:semantic", "OBJECT_NOT_FOUND", "does not name a commit"),
+        ("HEAD\x00", "INVALID_CONFIG", "is not a git revision"),
+        ("main\nHEAD", "INVALID_CONFIG", "is not a git revision"),
+        ("a" * 5000, "INVALID_CONFIG", "is not a git revision"),
     ],
 )
 def test_refs_that_name_no_commit_are_refused(
@@ -168,5 +171,69 @@ def test_only_regular_files_are_extracted(repo: Path, tmp_path: Path) -> None:
     extracted, _ = _extract_package_from_git(str(package), "HEAD", destination)
 
     assert (Path(extracted) / "models" / "orders.yml").is_file()
+    assert not (Path(extracted) / "models" / "outside.yml").is_symlink()
     assert not (Path(extracted) / "models" / "outside.yml").exists()
     assert not (Path(extracted) / "data" / "warehouse.duckdb").exists()  # ignored in git
+
+
+def _crafted_commit(repo: Path, files: dict[bytes, bytes]) -> str:
+    """A commit whose root tree names files exactly as given, as a crafted repository could."""
+    tree = b""
+    for name, content in sorted(files.items()):
+        blob = _git(repo, "hash-object", "-w", "--stdin", stdin=content).strip()
+        tree += b"100644 " + name + b"\0" + bytes.fromhex(blob)
+    tree_id = _git(repo, "hash-object", "-t", "tree", "-w", "--literally", "--stdin", stdin=tree)
+    return _git(repo, "commit-tree", tree_id.strip(), "-m", "crafted").strip()
+
+
+def test_crafted_tree_names_stay_inside_the_extraction(tmp_path: Path) -> None:
+    repo = tmp_path / "crafted"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    outside = tmp_path / "outside.txt"
+    commit = _crafted_commit(
+        repo,
+        {
+            b"package.yml": b"schema_version: 1\n",
+            str(outside).encode(): b"escaped",  # an absolute name
+            b"../escape.txt": b"escaped",
+            b"models//double.yml": b"escaped",
+            b"C:evil.yml": b"escaped",
+            b"caf\xe9.yml": b"a Latin-1 name",
+        },
+    )
+    destination = tmp_path / "extracted"
+    destination.mkdir()
+
+    extracted, origin = _extract_package_from_git(str(repo), commit, destination)
+
+    assert (Path(extracted) / "package.yml").read_text() == "schema_version: 1\n"
+    assert not outside.exists()
+    assert not (tmp_path / "escape.txt").exists() and not (destination / "escape.txt").exists()
+    assert {path.name for path in Path(extracted).rglob("*")} <= {"package.yml", "caf\udce9.yml"}
+    assert origin.endswith(":.")
+
+
+def test_a_package_directory_named_like_pathspec_magic(tmp_path: Path) -> None:
+    root = tmp_path / "analytics"
+    package = write_orders_package(root / ":(exclude)semantic")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "Package")
+    _add_metric(package)
+
+    report = diff_package_report(PackageReference(source_path=str(package)), base_ref="HEAD")
+
+    assert [row["object_id"] for row in report["changes"]] == ["metric.shop.average_order"]
+
+
+def test_a_package_path_spelled_in_another_case(repo: Path) -> None:
+    package = repo / "semantic" / "shop"
+    other_case = Path(str(package).replace("/semantic/shop", "/SEMANTIC/shop"))
+    if not other_case.exists():
+        pytest.skip("case-sensitive file system")
+    _add_metric(package)
+
+    report = diff_package_report(PackageReference(source_path=str(other_case)), base_ref="HEAD")
+
+    assert [row["object_id"] for row in report["changes"]] == ["metric.shop.average_order"]
