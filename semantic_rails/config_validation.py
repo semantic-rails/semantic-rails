@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
+from .expressions import MetricPredicateExpr, parse_semantic_expression
 from .meta_contract import validate_meta_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
 from .registry import Registry
@@ -1897,12 +1899,17 @@ def _segment_reference_errors(config, source_path: Path) -> list[str]:
     from difflib import get_close_matches
 
     entity_ids = {entity.id for entity in config.entities}
-    # Ways an author may spell an entity, each mapped to the id to suggest.
-    spellings = {
-        spelling.lower(): entity.id
-        for entity in config.entities
-        for spelling in (entity.id, entity.id.removeprefix("entity."), entity.name, entity.label)
-    }
+    # Ways an author may spell an entity, each mapped to the id to suggest,
+    # weakest first so a stronger spelling wins a collision. A label that
+    # several entities share is left out.
+    label_counts = Counter(entity.label.lower() for entity in config.entities)
+    candidates = [
+        *((e.label, e.id) for e in config.entities if label_counts[e.label.lower()] == 1),
+        *((e.name, e.id) for e in config.entities),
+        *((e.id.removeprefix("entity."), e.id) for e in config.entities),
+        *((e.id, e.id) for e in config.entities),
+    ]
+    spellings = {spelling.lower(): entity_id for spelling, entity_id in candidates if spelling}
 
     def _unknown_entity(ref: str) -> str:
         hints = get_close_matches(ref.lower(), sorted(spellings), n=1, cutoff=0.6)
@@ -1920,8 +1927,7 @@ def _segment_reference_errors(config, source_path: Path) -> list[str]:
             unknown.append("must declare an entity")
         elif segment.entity not in entity_ids:
             unknown.append(f"targets {_unknown_entity(segment.entity)}")
-        membership = [*segment.where, *segment.metric_filters]
-        for ref in dict.fromkeys(_metric_predicate_entities(membership)):
+        for ref in dict.fromkeys(_metric_predicate_entities(segment.metric_filters)):
             if ref not in entity_ids:
                 unknown.append(f"membership references {_unknown_entity(ref)}")
         for message in unknown:
@@ -1934,7 +1940,8 @@ def _segment_reference_errors(config, source_path: Path) -> list[str]:
             normalized = normalize_segment(config, segment.id)
             query = build_segment_query(normalized, include_preview_dimensions=True)
         except Exception as exc:
-            add_error(errors, f"{prefix} is invalid {_describe_segment_failure(exc)}")
+            failure = _describe_segment_failure(exc, with_details=True)
+            add_error(errors, f"{prefix} is invalid {failure}")
             continue
         try:
             compile_query(config, registry, query)
@@ -1943,11 +1950,12 @@ def _segment_reference_errors(config, source_path: Path) -> list[str]:
     return errors
 
 
-def _describe_segment_failure(exc: Exception) -> str:
-    """``(CODE): message``, plus the scalar details the message doesn't name.
+def _describe_segment_failure(exc: Exception, *, with_details: bool = False) -> str:
+    """``(CODE): message``, optionally with the scalar details the message doesn't name.
 
-    ``normalize_segment``'s messages omit the offending object; its details
-    carry it (for example the preview dimension and the entity it belongs to).
+    ``normalize_segment``'s messages omit the offending object and its details
+    carry it (for example the preview dimension and the entity it belongs to);
+    compiler messages name it, and their details are guidance for API callers.
     """
     if not isinstance(exc, SemanticLayerError):
         return f"({type(exc).__name__}): {exc}"
@@ -1955,26 +1963,43 @@ def _describe_segment_failure(exc: Exception) -> str:
     details = ", ".join(
         f"{key}={value}"
         for key, value in sorted(exc.details.items())
-        if key != "segment_id"
+        if with_details
+        and key != "segment_id"
         and isinstance(value, str | int | float | bool)
         and str(value) not in message
     )
     return f"({exc.code}): {message}" + (f" [{details}]" if details else "")
 
 
-def _metric_predicate_entities(node: Any) -> list[str]:
-    """Entity refs of every ``metric_predicate`` expression inside ``node``."""
+def _metric_predicate_entities(metric_filters: list[Any]) -> list[str]:
+    """Entity refs of the ``metric_predicate`` nodes in segment membership filters.
+
+    Each filter is parsed as the compiler parses it, so literal payloads stay
+    data; a filter that doesn't parse is left for the compile check to report.
+    """
     refs: list[str] = []
-    if isinstance(node, dict):
-        entity = str(node.get("entity") or "").strip()
-        if node.get("kind") == "metric_predicate" and entity:
-            refs.append(entity)
-        for value in node.values():
-            refs.extend(_metric_predicate_entities(value))
-    elif isinstance(node, list):
-        for item in node:
-            refs.extend(_metric_predicate_entities(item))
+    for item in metric_filters:
+        try:
+            expression = parse_semantic_expression(item.get("expression") or {}, context="query")
+        except Exception:
+            continue
+        refs.extend(
+            node.entity
+            for node in _expression_nodes(expression)
+            if isinstance(node, MetricPredicateExpr) and node.entity
+        )
     return refs
+
+
+def _expression_nodes(node: Any) -> Iterator[Any]:
+    """Every node of a parsed expression tree, depth first."""
+    if is_dataclass(node) and not isinstance(node, type):
+        yield node
+        for node_field in fields(node):
+            yield from _expression_nodes(getattr(node, node_field.name))
+    elif isinstance(node, list | tuple):
+        for item in node:
+            yield from _expression_nodes(item)
 
 
 def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str, Any]]:

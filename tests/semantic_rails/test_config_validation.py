@@ -1955,6 +1955,60 @@ def test_validation_suggests_the_id_for_a_membership_entity_key_or_name(
     ]
 
 
+def test_membership_entity_suggestion_skips_labels_shared_by_entities(package_config_factory):
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"][0]["expression"]["entity"] = "customer"
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+    graph_file = package_dir / "graph.yml"
+    graph = yaml.safe_load(graph_file.read_text(encoding="utf-8"))
+    graph["graph"]["entities"]["store"]["label"] = "Customer"
+    _write_yaml(graph_file, graph)
+
+    assert validate_runtime_package(package_dir) == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
+        "'customer'; did you mean 'entity.jaffle_customer'?"
+    ]
+
+
+def test_validation_checks_predicates_nested_in_boolean_filters(package_config_factory):
+    def mutate(segment: dict) -> None:
+        predicate = segment["membership"]["metric_filters"][0]["expression"]
+        nested = {**predicate, "entity": "entity.jaffle.customer"}
+        segment["membership"]["metric_filters"][0]["expression"] = {
+            "kind": "boolean",
+            "op": "and",
+            "args": [predicate, nested],
+        }
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    assert validate_runtime_package(package_dir) == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
+        "'entity.jaffle.customer'; did you mean 'entity.jaffle_customer'?"
+    ]
+
+
+def test_validation_treats_predicate_shaped_literals_as_data(package_config_factory):
+    # Agrees with segment-validate: a literal is data, not a predicate to resolve.
+    literal = {"kind": "literal", "value": {"kind": "metric_predicate", "entity": "not_an_entity"}}
+
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"] = [
+            {"expression": literal, "op": "=", "value": "foo"}
+        ]
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    assert validate_runtime_package(package_dir) == []
+    config = config_module.load_package_config(str(package_dir))
+    runtime = Runtime.from_config(config, source_path=str(package_dir), package_id="jaffle_shop")
+    try:
+        assert runtime.segment_validate(_HIGH_VALUE_SEGMENT)["ok"] is True
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("change", "failure"),
     [
