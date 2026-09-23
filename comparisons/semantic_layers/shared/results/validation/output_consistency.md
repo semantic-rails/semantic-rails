@@ -1,10 +1,13 @@
 # Output Consistency
 
-Generated at `2026-06-23T23:47:13-04:00` using `semantic_rails` as the reference layer.
+Generated at `2026-09-23T01:28:01+00:00` using `semantic_rails` as the reference layer.
 
 - Matched: `14`
 - Mismatched: `2`
 - Not comparable: `0`
+
+- `shared`: 6 of 7 matched; mismatched: `q07_delivered_revenue_by_month`
+- `semantic_rails_targeted`: 8 of 9 matched; mismatched: `q16_revenue_by_customer_segment_as_of_delivered_time`
 
 ## q01_orders_by_month Orders By Month
 
@@ -51,6 +54,7 @@ Generated at `2026-06-23T23:47:13-04:00` using `semantic_rails` as the reference
 - Mismatch vs semantic_rails on `malloy`: `{"left": 12, "right": 1, "type": "row_count"}`
 - Mismatch vs semantic_rails on `snowflake_semantic_views`: `{"left": 12, "right": 1, "type": "row_count"}`
 - Mismatch vs semantic_rails on `ktx`: `{"left": 12, "right": 1, "type": "row_count"}`
+- Groups of layers with identical outputs: `semantic_rails | metricflow, cube, malloy, snowflake_semantic_views, ktx`
 
 ## q08_revenue_by_customer_segment_as_of_order_time Revenue By Historical Customer Segment
 
@@ -109,3 +113,4 @@ Generated at `2026-06-23T23:47:13-04:00` using `semantic_rails` as the reference
 - Mismatch vs semantic_rails on `malloy`: `{"left": 32, "right": 2, "type": "row_count"}`
 - Mismatch vs semantic_rails on `snowflake_semantic_views`: `{"left": 32, "right": 2, "type": "row_count"}`
 - Mismatch vs semantic_rails on `ktx`: `{"left": 32, "right": 2, "type": "row_count"}`
+- Groups of layers with identical outputs: `semantic_rails | metricflow, cube, malloy, snowflake_semantic_views, ktx`

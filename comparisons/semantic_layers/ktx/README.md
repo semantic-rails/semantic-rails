@@ -13,10 +13,15 @@ DuckDB data as the other local comparison layers.
 
 - `q01`-`q07` use ordinary KtX sources, measures, joins, filters, and aggregate
   locality, so they are scored as `native`.
-- `q08`-`q16` execute through KtX `sql:` sources or query-level filters. They
-  return matching rows, but the temporal-validity, conversion-window, and
-  aggregate-predicate semantics are authored as SQL/query workarounds rather
-  than as reusable governed primitives in the KtX semantic model.
+- `q08`-`q16` execute through KtX `sql:` sources or query-level filters. In
+  this pack the temporal-validity, conversion-window, and aggregate-predicate
+  semantics are authored as SQL/query workarounds rather than as reusable
+  governed primitives in the KtX semantic model.
+- Output check: KtX's rows match Semantic Rails on every question except q07
+  and q16. Those two read the 11-row `comparison_order_lifecycle` view. There
+  KtX agrees with Cube, Malloy and Snowflake Semantic Views, which read the same
+  view, and with MetricFlow's stale committed answers. The Semantic Rails pack
+  reads the full lifecycle table (see the pack README).
 
 Run from the repository root:
 

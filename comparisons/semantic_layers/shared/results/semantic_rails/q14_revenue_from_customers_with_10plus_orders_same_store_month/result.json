@@ -100,8 +100,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.139,
-      "compile_ms": 1.136,
+      "cache_lookup_ms": 1.184,
+      "compile_ms": 1.99,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -2786,7 +2786,7 @@
   "rows": [
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 6080.059999999984,
+      "qualifying_revenue_usd": 6080.059999999981,
       "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
     },
     {
@@ -2796,7 +2796,7 @@
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 14757.669999999991,
+      "qualifying_revenue_usd": 14757.669999999976,
       "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
     },
     {
@@ -2806,62 +2806,62 @@
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 24923.479999999963,
+      "qualifying_revenue_usd": 24923.48,
       "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 20033.91999999993,
+      "qualifying_revenue_usd": 20033.920000000006,
       "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 7047.029999999887,
+      "qualifying_revenue_usd": 7047.0299999999,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 27524.64,
+      "qualifying_revenue_usd": 27524.64000000003,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 19418.830000000107,
+      "qualifying_revenue_usd": 19418.830000000173,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 22774.049999999996,
+      "qualifying_revenue_usd": 22774.05,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 24180.960000000323,
+      "qualifying_revenue_usd": 24180.96000000031,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 29219.31,
+      "qualifying_revenue_usd": 29219.31000000002,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 19267.01000000014,
+      "qualifying_revenue_usd": 19267.010000000224,
       "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 19678.330000000027,
+      "qualifying_revenue_usd": 19678.32999999999,
       "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 22613.71000000026,
+      "qualifying_revenue_usd": 22613.71000000035,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 20318.68000000004,
+      "qualifying_revenue_usd": 20318.680000000033,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
@@ -2871,10 +2871,12 @@
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 24424.960000000032,
+      "qualifying_revenue_usd": 24424.960000000065,
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     }
   ],
+  "semantic_fingerprint": "sha256:b1bf4e16f2ed9474bfeec78030e8849024eb239aba911b80230bc3b59bfe6a52",
+  "source_fingerprint": "5b0665c39f43be823184d1e560de283866b44b6bf35f2a53f152a2bf4a7496fd",
   "sql_plan": {
     "ctes": [
       {
@@ -3386,6 +3388,7 @@
       ]
     }
   },
+  "truncated": false,
   "warehouse": "duckdb",
   "warehouse_capabilities": {
     "date_diff": true,

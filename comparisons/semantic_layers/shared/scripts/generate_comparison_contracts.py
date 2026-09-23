@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from collections import Counter
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,16 +25,6 @@ LAYER_ORDER = [
     "malloy",
     "snowflake_semantic_views",
     "ktx",
-]
-
-BASELINE_QUESTION_IDS = [
-    "q01_orders_by_month",
-    "q02_revenue_by_store_by_month",
-    "q03_item_revenue_by_product_type_by_month",
-    "q04_aov_by_store",
-    "q05_orders_and_item_revenue_by_store_by_month",
-    "q06_new_customer_orders_by_month",
-    "q07_delivered_revenue_by_month",
 ]
 
 
@@ -142,21 +132,27 @@ def marker_loc(path: Path, marker: str) -> int:
     return count
 
 
+# Captures made before the runners recorded a timestamp predate the consistency report generated
+# at 2026-06-24T03:47:13Z. Dates here are UTC.
+UNRECORDED_CAPTURE = "by 2026-06-24 (exact date not recorded)"
+
 LAYER_META: dict[str, dict[str, Any]] = {
     "semantic_rails": {
         "label": "Semantic Rails",
-        "version": "workspace runtime",
+        # Fallback only: the runner records the engine version with its evidence.
+        "version": "not recorded",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "semantic_rails" / "summary.json",
         "unsupported_path": None,
         "strengths": [
-            "All executed questions stay inside the local semantic runtime with no helper marts or handwritten SQL.",
+            "Every question runs through the Semantic Rails runtime without helper views or handwritten SQL; q11 and q12 read precomputed customer lifetime columns from the source table.",
             "Temporal-valid joins, conversion metrics, authored metric predicates, and query-time metric filters stay first-class.",
         ],
         "weaknesses": [
             "This is a project-specific runtime rather than a broadly adopted external ecosystem.",
-            "The comparison package is concise, but the DSL is unique to this repo.",
+            "The DSL is specific to Semantic Rails.",
         ],
         "scale": {
             "baseline_files": [
@@ -299,11 +295,11 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "notes": {
             "q08_revenue_by_customer_segment_as_of_order_time": "Temporal-valid customer history is modeled directly on the order-to-history edge.",
             "q09_session_to_order_conversion_7d": "The 7-day conversion window is expressed as a first-class conversion metric.",
-            "q10_orders_from_customers_with_10plus_orders_in_month": "Metric predicates stay inside the semantic layer instead of leaking into custom SQL.",
-            "q11_repeat_customer_orders_by_store_by_month": "Repeat customer orders stay authored as a metric predicate over lifetime order count rather than a filtered helper mart.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "The customer lifetime-spend filter is applied at query time through `metric_filters.expression`, not by preauthoring another published metric.",
-            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "The monthly predicate stays intact even though the outer query drops to day grain.",
-            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "The contextual predicate inherits outer store grouping through the entity graph instead of requiring a store-scoped helper mart.",
+            "q10_orders_from_customers_with_10plus_orders_in_month": "Expressed as an authored metric predicate over customer-month order counts.",
+            "q11_repeat_customer_orders_by_store_by_month": "Expressed as an authored metric predicate over the precomputed `lifetime_order_count` customer column.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "Applied at query time through `metric_filters.expression` over the precomputed `lifetime_spend_cents` customer column.",
+            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "The customer-month predicate is evaluated at month grain while the query returns day grain.",
+            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "The predicate inherits the outer store grouping through the entity graph.",
             "q15_same_store_session_to_order_conversion_7d": "Same-store matching is expressed as a first-class conversion property constraint.",
             "q16_revenue_by_customer_segment_as_of_delivered_time": "Delivered time drives both the measure clock and the temporal-valid join into customer history.",
         },
@@ -311,6 +307,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     "metricflow": {
         "label": "MetricFlow",
         "version": "dbt-metricflow 0.11.0 / dbt-duckdb 1.10.1",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "metricflow" / "summary.json",
@@ -320,8 +317,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Generated SQL is clear and easy to inspect against the shared dataset.",
         ],
         "weaknesses": [
-            "The dbt scaffold is materially heavier than the local pack or Malloy.",
-            "Predicate-heavy edge cases and conversion variants rely on helper dbt views rather than staying purely in semantic-model constructs.",
+            "In this pack, q09-q15 run through helper dbt views; MetricFlow's native conversion metrics and metric filters have not been modeled yet.",
         ],
         "scale": {
             "baseline_files": [
@@ -431,19 +427,21 @@ LAYER_META: dict[str, dict[str, Any]] = {
         },
         "notes": {
             "q08_revenue_by_customer_segment_as_of_order_time": "MetricFlow's validity parameters keep the as-of join inside the semantic model.",
-            "q09_session_to_order_conversion_7d": "Executed through a helper dbt view that materializes session-level 7-day conversion flags before MetricFlow queries it.",
+            "q09_session_to_order_conversion_7d": "Executed through a helper dbt view that materializes session-level 7-day conversion flags; MetricFlow's native conversion metrics are not modeled yet.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "Executed through a helper dbt view that precomputes qualifying customer-month orders.",
-            "q11_repeat_customer_orders_by_store_by_month": "Executed through a helper dbt view over customer lifetime order counts rather than a first-class aggregate-on-aggregate metric predicate.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed through a helper dbt view because this pack does not express the query-time lifetime-spend filter natively in MetricFlow.",
+            "q11_repeat_customer_orders_by_store_by_month": "Executed through a helper dbt view that filters on the precomputed `lifetime_order_count` customer column; MetricFlow's metric filters are not modeled yet.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed through a helper dbt view that filters on the precomputed `lifetime_spend_cents` customer column; MetricFlow's metric filters are not modeled yet.",
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Reuses the precomputed qualifying customer-month order view, then queries it at day grain.",
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a helper dbt view that materializes qualifying customer store-month orders with revenue attached.",
-            "q15_same_store_session_to_order_conversion_7d": "Executed through a helper dbt view that materializes same-store 7-day conversion flags before MetricFlow queries it.",
+            "q15_same_store_session_to_order_conversion_7d": "Executed through a helper dbt view that materializes same-store 7-day conversion flags; MetricFlow's native conversion metrics (with constant properties) are not modeled yet.",
             "q16_revenue_by_customer_segment_as_of_delivered_time": "Delivered revenue stays native because the delivered-time metric and validity-windowed customer history both live inside the semantic model graph.",
         },
     },
     "cube": {
         "label": "Cube",
         "version": "1.6.32",
+        # Cube's results record when it ran them: lastRefreshTime 2026-04-07T03:04:57Z.
+        "captured": "2026-04-07",
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "cube" / "summary.json",
@@ -453,8 +451,10 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Temporal history can be modeled with explicit join SQL when needed.",
         ],
         "weaknesses": [
-            "Mixed-grain and stretch questions move quickly into helper cubes rather than staying in the base cube graph.",
-            "The authored join surface stays readable, but non-native support climbs as soon as edge cases arrive.",
+            "In this pack, q05 and q09-q16 run through helper cubes or joined rollup filters; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
+        ],
+        "capture_notes": [
+            "This 1.6.32 capture cannot be re-run until the captured lockfile's dependency advisories are resolved.",
         ],
         "scale": {
             "baseline_files": [
@@ -557,12 +557,12 @@ LAYER_META: dict[str, dict[str, Any]] = {
             ),
         },
         "notes": {
-            "q05_orders_and_item_revenue_by_store_by_month": "Executed through a helper order-grain cube that rolls item revenue up before Cube aggregates it with order count.",
-            "q08_revenue_by_customer_segment_as_of_order_time": "Temporal history works, but only through explicit join SQL on the orders cube.",
+            "q05_orders_and_item_revenue_by_store_by_month": "Executed through a helper order-grain cube that rolls item revenue up before Cube aggregates it with order count; Cube's multi-fact queries are not modeled yet.",
+            "q08_revenue_by_customer_segment_as_of_order_time": "Modeled as a declared join from orders to customer history whose `sql` carries the validity condition.",
             "q09_session_to_order_conversion_7d": "Executed through a dedicated helper cube that materializes the 7-day session-to-order match.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "Executed through a dedicated helper cube that materializes qualifying customer-month orders.",
-            "q11_repeat_customer_orders_by_store_by_month": "Executed by filtering the orders cube on a joined lifetime-order-count field from customers, which is simpler than the intended metric-predicate semantics but not the same governed abstraction.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed by filtering the orders cube on a joined lifetime-spend field from customers rather than a first-class query-time metric predicate.",
+            "q11_repeat_customer_orders_by_store_by_month": "Executed by filtering the orders cube on the joined, precomputed customer lifetime order count.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed by filtering the orders cube on the joined, precomputed customer lifetime spend.",
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through the precomputed qualifying-orders helper cube at day grain.",
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a helper cube that materializes qualifying customer store-month revenue.",
             "q15_same_store_session_to_order_conversion_7d": "Executed through a helper cube that materializes same-store 7-day session matches.",
@@ -572,6 +572,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     "malloy": {
         "label": "Malloy",
         "version": "0.0.52",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "malloy" / "summary.json",
@@ -581,8 +582,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Join-tree aggregation is expressive without a large semantic scaffolding layer.",
         ],
         "weaknesses": [
-            "The stretch questions become SQL sources rather than reusable semantic primitives.",
-            "This looks more like a query/modeling language than a governed semantic layer runtime.",
+            "In this pack, q08-q16 run through SQL sources or query-level filters; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet.",
         ],
         "scale": {
             "baseline_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
@@ -662,8 +662,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "q08_revenue_by_customer_segment_as_of_order_time": "Executed via a SQL source embedded inside the Malloy model.",
             "q09_session_to_order_conversion_7d": "Executed via a SQL source that materializes the 7-day matching window.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "Executed via a SQL source that precomputes qualifying customer-months.",
-            "q11_repeat_customer_orders_by_store_by_month": "Executed as a query-level filter over joined customer lifetime fields rather than as a reusable semantic metric predicate.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as a query-level filter over joined customer lifetime spend rather than a first-class query-time metric predicate API.",
+            "q11_repeat_customer_orders_by_store_by_month": "Executed as a query-level filter on the joined, precomputed customer lifetime order count.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as a query-level filter on the joined, precomputed customer lifetime spend.",
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through the SQL-backed qualifying-order source at day grain.",
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a SQL source that materializes qualifying customer store-month revenue.",
             "q15_same_store_session_to_order_conversion_7d": "Executed through a SQL source that materializes same-store session matches.",
@@ -672,7 +672,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
     },
     "snowflake_semantic_views": {
         "label": "Snowflake Semantic Views",
-        "version": "Snowflake CLI + semantic view trial account (2026-04-06)",
+        "version": "Snowflake CLI + semantic view trial account",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "snowflake_semantic_views" / "summary.json",
@@ -683,7 +684,10 @@ LAYER_META: dict[str, dict[str, Any]] = {
         ],
         "weaknesses": [
             "Month-grain semantics require explicit `DATE_TRUNC(...)` query expressions; raw time dimensions stay at timestamp grain.",
-            "The edge-capability questions still move outside `SEMANTIC_VIEW(...)` into verified SQL on the base comparison tables.",
+            "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, announced in preview on 2026-02-25, have not been modeled yet.",
+        ],
+        "capture_notes": [
+            "The capture comes from a trial account and cannot be re-run without a live Snowflake account.",
         ],
         "scale": {
             "baseline_files": [
@@ -764,20 +768,21 @@ LAYER_META: dict[str, dict[str, Any]] = {
         },
         "notes": {
             "q05_orders_and_item_revenue_by_store_by_month": "This mixed-grain question stays native as long as the query explicitly defines month grain in the `SEMANTIC_VIEW(...)` call.",
-            "q08_revenue_by_customer_segment_as_of_order_time": "Executed as verified SQL because the as-of validity predicate sits outside the clean semantic-view surface in this pack.",
-            "q09_session_to_order_conversion_7d": "Executed as verified SQL on the base tables after a Snowflake internal error on the equivalent lateral-query form.",
-            "q10_orders_from_customers_with_10plus_orders_in_month": "Executed as verified SQL because the aggregate-on-aggregate predicate is clearer outside the semantic view surface.",
-            "q11_repeat_customer_orders_by_store_by_month": "Executed as verified SQL over precomputed customer lifetime columns rather than a semantic metric predicate.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as verified SQL because this pack does not express the lifetime-spend filter natively through `SEMANTIC_VIEW(...)`.",
-            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed as verified SQL because the contextual customer-month predicate is clearer outside the semantic-view surface.",
-            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed as verified SQL because the store-scoped aggregate-on-aggregate predicate is clearer outside the semantic-view surface.",
-            "q15_same_store_session_to_order_conversion_7d": "Executed as verified SQL because same-store event-pair matching is not modeled natively in this semantic-view pack.",
-            "q16_revenue_by_customer_segment_as_of_delivered_time": "Executed as verified SQL because the delivered-time temporal-valid join sits outside the clean semantic-view surface in this pack.",
+            "q08_revenue_by_customer_segment_as_of_order_time": "Executed as SQL on the comparison tables; range joins, which could express the as-of join inside the semantic view, are not modeled yet.",
+            "q09_session_to_order_conversion_7d": "Executed as SQL on the comparison tables.",
+            "q10_orders_from_customers_with_10plus_orders_in_month": "Executed as SQL on the comparison tables.",
+            "q11_repeat_customer_orders_by_store_by_month": "Executed as SQL over the precomputed customer lifetime order count.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as SQL over the precomputed customer lifetime spend.",
+            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed as SQL on the comparison tables.",
+            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed as SQL on the comparison tables.",
+            "q15_same_store_session_to_order_conversion_7d": "Executed as SQL on the comparison tables; same-store event-pair matching is not modeled in the semantic view.",
+            "q16_revenue_by_customer_segment_as_of_delivered_time": "Executed as SQL on the comparison tables; range joins are not modeled yet.",
         },
     },
     "ktx": {
         "label": "KtX",
         "version": "ktx-sl 0.13.1 / KtX a155c0b",
+        "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
         "summary_path": RESULTS_ROOT / "ktx" / "summary.json",
@@ -787,7 +792,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Aggregate locality keeps the mixed-grain q05 orders-plus-item-revenue query native without a helper mart.",
         ],
         "weaknesses": [
-            "The q08-q16 edge suite shifts to SQL-backed sources or query-level filters rather than first-class temporal-validity, conversion, and metric-predicate primitives.",
+            "In this pack, q08-q16 run through SQL-backed sources or query-level filters.",
             "This pack exercises ktx-sl directly, not the broader KtX context ingestion, wiki/search, daemon, and MCP stack.",
         ],
         "scale": {
@@ -895,8 +900,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "q08_revenue_by_customer_segment_as_of_order_time": "Executed through a KtX SQL source that authors the as-of customer-history join by hand.",
             "q09_session_to_order_conversion_7d": "Executed through a KtX SQL source that materializes the 7-day session-to-order match.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "Executed through a KtX SQL source that precomputes qualifying customer-month orders.",
-            "q11_repeat_customer_orders_by_store_by_month": "Executed as a query-level filter over joined customer lifetime fields rather than as a reusable semantic metric predicate.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as a query-level filter over joined customer lifetime spend rather than a first-class query-time metric predicate API.",
+            "q11_repeat_customer_orders_by_store_by_month": "Executed as a query-level filter on the joined, precomputed customer lifetime order count.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as a query-level filter on the joined, precomputed customer lifetime spend.",
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through the SQL-backed qualifying-order source at day grain.",
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a KtX SQL source that materializes qualifying customer store-month revenue.",
             "q15_same_store_session_to_order_conversion_7d": "Executed through a KtX SQL source that materializes same-store session matches.",
@@ -913,7 +918,7 @@ def default_note(status: str) -> str:
         "precomputed": "Executed only after introducing extra helper logic beyond the common comparison shape.",
         "doc_backed": "Represented from the public spec/docs, but not executed locally in this repo.",
         "unsupported": "Not represented faithfully enough to claim support in this pack.",
-    }[status]
+    }.get(status, f"Labeled {status}.")
 
 
 def load_summary_entries(layer_id: str) -> dict[str, dict[str, Any]]:
@@ -942,28 +947,16 @@ def load_summary_entries(layer_id: str) -> dict[str, dict[str, Any]]:
     return entries
 
 
-def layer_scale(layer_id: str, statuses: dict[str, str]) -> dict[str, Any]:
+def layer_scale(layer_id: str) -> dict[str, Any]:
+    """Authored-size counts for the 4-model and 7-model sets (not question slices)."""
     meta = LAYER_META[layer_id]["scale"]
     baseline_files = meta["baseline_files"]
     stretch_files = meta["stretch_files"]
 
     if "baseline_marker" in meta:
         baseline_loc = marker_loc(baseline_files[0], meta["baseline_marker"])
-        stretch_loc = loc_for_paths(stretch_files)
     else:
         baseline_loc = loc_for_paths(baseline_files)
-        stretch_loc = loc_for_paths(stretch_files)
-
-    baseline_non_native = sum(
-        1 for qid in BASELINE_QUESTION_IDS if statuses.get(qid) in {"workaround", "precomputed"}
-    )
-    stretch_non_native = sum(
-        1 for status in statuses.values() if status in {"workaround", "precomputed"}
-    )
-    baseline_supported = sum(
-        1 for qid in BASELINE_QUESTION_IDS if statuses.get(qid) != "unsupported"
-    )
-    stretch_supported = sum(1 for status in statuses.values() if status != "unsupported")
 
     return {
         "baseline": {
@@ -971,16 +964,12 @@ def layer_scale(layer_id: str, statuses: dict[str, str]) -> dict[str, Any]:
             "files": len(baseline_files),
             "loc": baseline_loc,
             "relationships": meta["baseline_relationships"],
-            "supported_questions": baseline_supported,
-            "non_native_questions": baseline_non_native,
         },
         "stretch": {
             "models": 7,
             "files": len(stretch_files),
-            "loc": stretch_loc,
+            "loc": loc_for_paths(stretch_files),
             "relationships": meta["stretch_relationships"],
-            "supported_questions": stretch_supported,
-            "non_native_questions": stretch_non_native,
         },
     }
 
@@ -1027,7 +1016,9 @@ def entry_for_question(
                 sql_text = payload["sql"]["sql"][0][0]
             except Exception:  # noqa: BLE001
                 pass
-        sql_excerpt = "\n".join(sql_text.splitlines()[:36])
+        # Excerpts show the SQL itself; captured comments are commentary, not evidence.
+        sql_lines = [line for line in sql_text.splitlines() if not line.lstrip().startswith("--")]
+        sql_excerpt = "\n".join(sql_lines[:36])
     elif layer_id == "snowflake_semantic_views":
         sql_excerpt = excerpt_text(
             COMPARISON_ROOT / "snowflake_semantic_views" / "query_examples.sql",
@@ -1051,58 +1042,231 @@ def entry_for_question(
     }
 
 
+SUPPORT_STATUSES = ("native", "workaround", "precomputed", "doc_backed", "unsupported")
+SLICE_LABELS = {
+    "shared": "Shared questions",
+    "semantic_rails_targeted": "Semantic-Rails-targeted questions",
+}
+# Every layer answers these two from the same precomputed customer columns.
+PRECOMPUTED_COLUMN_QUESTIONS = [
+    "q11_repeat_customer_orders_by_store_by_month",
+    "q12_orders_by_month_with_lifetime_spend_500_filter",
+]
+SCALE_UP_CAVEAT = (
+    "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits "
+    "graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts "
+    "every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model "
+    "and 7-model sets, not question slices."
+)
+
+# Findings that describe how this pack models each layer. They must not rank the layers on the
+# Semantic-Rails-targeted questions until an executable rubric and idiomatic models exist.
+LAYER_FINDINGS = [
+    "MetricFlow answers q08 and q16 with validity-windowed semantic models; this pack answers q09-q15 through helper dbt views and has not modeled MetricFlow's native conversion metrics or metric filters yet.",
+    "Cube answers q08 through a declared join that carries the validity condition, and q05 and q09-q16 through helper cubes or joined rollup filters in this pack; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
+    "The labels are inconsistent with each other: Cube's q08 uses an ordinary declared join, yet it is labeled workaround, while MetricFlow's validity-windowed join is labeled native.",
+    "Malloy answers q08-q16 through SQL sources or query-level filters in this pack; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet.",
+    "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
+    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack.",
+    "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here.",
+]
+
+
+def status_totals(statuses: list[str]) -> dict[str, int]:
+    counts = Counter(statuses)
+    # Unexpected labels are kept rather than dropped silently.
+    return {status: counts.get(status, 0) for status in SUPPORT_STATUSES} | {
+        status: count for status, count in counts.items() if status not in SUPPORT_STATUSES
+    }
+
+
+def short_id(question_id: str) -> str:
+    return question_id.split("_", 1)[0]
+
+
+def id_range(question_ids: list[str]) -> str:
+    """Compact question ids into runs, for example `q01-q07` or `q01-q06, q08`."""
+    runs: list[list[int]] = []
+    for number in sorted(int(short_id(qid)[1:]) for qid in question_ids):
+        if runs and number == runs[-1][-1] + 1:
+            runs[-1].append(number)
+        else:
+            runs.append([number])
+    return ", ".join(
+        f"q{run[0]:02d}" if len(run) == 1 else f"q{run[0]:02d}-q{run[-1]:02d}" for run in runs
+    )
+
+
+def join_names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def recorded_version(layer_id: str, summary: dict[str, Any]) -> str:
+    return str(summary.get("semantic_rails_version") or LAYER_META[layer_id]["version"])
+
+
+def recorded_capture(layer_id: str, summary: dict[str, Any]) -> str:
+    """The capture date in UTC, taken from the evidence when it records a timestamp."""
+    generated_at = summary.get("generated_at")
+    if not generated_at:
+        return LAYER_META[layer_id]["captured"]
+    return datetime.fromisoformat(generated_at).astimezone(UTC).date().isoformat()
+
+
+def claim_findings(
+    validation_report: dict[str, Any],
+    questions: list[dict[str, Any]],
+    slice_ids: dict[str, list[str]],
+    layers_payload: list[dict[str, Any]],
+) -> list[str]:
+    """Headline claims generated from the consistency report, mismatches included."""
+    summary = validation_report["summary"]
+    items = validation_report["questions"]
+    total = len(questions)
+    title_by_id = {question["id"]: question["title"] for question in questions}
+    label = {layer_id: LAYER_META[layer_id]["label"] for layer_id in LAYER_ORDER}
+    layer_counts = {len(item["comparable_layers"]) for item in items}
+    scope = (
+        f"all {len(LAYER_ORDER)} layers"
+        if layer_counts == {len(LAYER_ORDER)}
+        else "the layers that executed them"
+    )
+    mismatched = [item for item in items if item["comparison_status"] == "mismatched"]
+    if summary["mismatched"] == 0 and summary["not_comparable"] == 0:
+        output_check = f"All {total} questions return matching normalized outputs across {scope}."
+    else:
+        output_check = (
+            f"{summary['matched']} of {total} questions return matching normalized outputs "
+            f"across {scope}."
+        )
+        if mismatched:
+            listed = "; ".join(
+                f"{short_id(item['question_id'])} {title_by_id[item['question_id']]}"
+                for item in mismatched
+            )
+            output_check += f" {len(mismatched)} do not match: {listed}."
+        if summary["not_comparable"]:
+            output_check += f" {summary['not_comparable']} could not be compared."
+    claims = [output_check]
+
+    # Say who disagrees with whom, so a mismatch isn't read as a competitor's error.
+    splits: dict[str, list[str]] = {}
+    for item in mismatched:
+        parts = []
+        for group in sorted(item["agreement_groups"], key=len, reverse=True):
+            names = [label[layer_id] for layer_id in group]
+            parts.append(
+                f"{names[0]} differs"
+                if len(names) == 1
+                else f"{join_names(names)} agree with each other"
+            )
+        splits.setdefault("; ".join(parts), []).append(short_id(item["question_id"]))
+    claims += [f"On {join_names(qids)}: {text}." for text, qids in splits.items()]
+
+    unsupported: dict[str, list[str]] = {}
+    for item in items:
+        for layer_id, status in item["layer_statuses"].items():
+            if status == "unsupported":
+                unsupported.setdefault(layer_id, []).append(item["question_id"])
+    claims += [
+        f"{label[layer_id]} did not execute {id_range(qids)}."
+        for layer_id, qids in unsupported.items()
+    ]
+
+    by_slice = validation_report["summary_by_slice"]
+    claims.append(
+        " ".join(
+            f"{SLICE_LABELS[name]} ({id_range(ids)}): {by_slice[name]['matched']} of "
+            f"{by_slice[name]['questions']} match."
+            for name, ids in slice_ids.items()
+        )
+    )
+    targeted = slice_ids.get("semantic_rails_targeted", [])
+    if targeted:
+        claims.append(
+            f"{len(targeted)} of the {total} questions ({id_range(targeted)}) were chosen to "
+            "exercise features Semantic Rails ships. The Semantic Rails authors wrote every "
+            "layer's models and assigned every support label, and several layers are not yet "
+            "modeled with native features they ship, so these questions are a capability "
+            "showcase, not a ranking."
+        )
+
+    label_sets = []
+    for question_id in PRECOMPUTED_COLUMN_QUESTIONS:
+        by_status: dict[str, list[str]] = {}
+        for layer in layers_payload:
+            status = next(
+                item["support_status"]
+                for item in layer["questions"]
+                if item["question_id"] == question_id
+            )
+            by_status.setdefault(status, []).append(layer["label"])
+        label_sets.append((short_id(question_id), by_status))
+    described = ". ".join(
+        f"{qid} is labeled "
+        + "; ".join(f"{status} for {join_names(names)}" for status, names in by_status.items())
+        for qid, by_status in label_sets
+    )
+    if all(len(by_status) == 1 for _, by_status in label_sets):
+        verdict = "and every layer gets the same label there"
+    else:
+        verdict = "yet the labels differ"
+    claims.append(
+        "Every layer that executes q11 and q12 answers them from the same precomputed customer "
+        f"columns, `lifetime_order_count` and `lifetime_spend_cents`, {verdict}: {described}. "
+        "Semantic Rails is labeled native whenever its query validates."
+    )
+    return claims
+
+
 def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
     questions = load_questions()
     question_by_id = {question["id"]: question for question in questions}
     validation_report = load_json(VALIDATION_REPORT_PATH)
     validation_by_question = {item["question_id"]: item for item in validation_report["questions"]}
+    slice_ids: dict[str, list[str]] = {}
+    for item in validation_report["questions"]:
+        slice_ids.setdefault(item["slice"], []).append(item["question_id"])
     layers_payload = []
-    layer_status_maps: dict[str, dict[str, str]] = {}
 
     for layer_id in LAYER_ORDER:
+        summary_path = LAYER_META[layer_id]["summary_path"]
+        summary = load_json(summary_path) if summary_path else {}
         entries = load_summary_entries(layer_id)
         status_map = {qid: entry["status"] for qid, entry in entries.items()}
-        layer_status_maps[layer_id] = status_map
 
         question_entries = [
             entry_for_question(layer_id, question_by_id[qid], entries[qid])
             for qid in question_by_id
         ]
-        counts = Counter(item["support_status"] for item in question_entries)
         layers_payload.append(
             {
                 "id": layer_id,
                 "label": LAYER_META[layer_id]["label"],
-                "version": LAYER_META[layer_id]["version"],
+                "version": recorded_version(layer_id, summary),
+                "captured": recorded_capture(layer_id, summary),
                 "setup_status": LAYER_META[layer_id]["setup_status"],
                 "comparison_type": LAYER_META[layer_id]["comparison_type"],
                 "strengths": LAYER_META[layer_id]["strengths"],
                 "weaknesses": LAYER_META[layer_id]["weaknesses"],
-                "status_totals": {
-                    "native": counts.get("native", 0),
-                    "workaround": counts.get("workaround", 0),
-                    "precomputed": counts.get("precomputed", 0),
-                    "doc_backed": counts.get("doc_backed", 0),
-                    "unsupported": counts.get("unsupported", 0),
+                "capture_notes": LAYER_META[layer_id].get("capture_notes", []),
+                # Scored per slice only: the targeted questions are not a ranking.
+                "status_totals_by_slice": {
+                    slice_name: status_totals([status_map[qid] for qid in ids])
+                    for slice_name, ids in slice_ids.items()
                 },
-                "scale": layer_scale(layer_id, status_map),
+                "scale": layer_scale(layer_id),
                 "questions": question_entries,
             }
         )
 
+    findings = claim_findings(validation_report, questions, slice_ids, layers_payload)
     comparison_data = {
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "headline_findings": [
-            f"All {validation_report['summary']['matched']} runnable questions now return matching normalized outputs across Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views, and KtX.",
-            "Semantic Rails is the only pack in this workspace that executes the expanded edge-capability suite natively end to end.",
-            "MetricFlow remains strong on temporal validity, but most predicate-heavy edge cases and conversion variants now rely on helper dbt views in this comparison pack.",
-            "Cube stays concise on the portable baseline, but the edge slice quickly turns into filter tricks and helper cubes.",
-            "Malloy keeps the authoring surface compact, but the edge slice resolves through query-level filters and SQL sources rather than governed semantic primitives.",
-            "Snowflake Semantic Views still executes q01-q07 natively through `SEMANTIC_VIEW(...)`, while the edge-capability questions run as verified SQL workarounds on the same base tables.",
-            "KtX executes the q01-q07 portable slice natively through its Python semantic layer, but the q08-q16 edge slice relies on SQL-backed sources and query-level filters.",
-            "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here.",
-        ],
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "headline_findings": findings + LAYER_FINDINGS,
         "validation_summary": validation_report["summary"],
+        "validation_summary_by_slice": validation_report["summary_by_slice"],
+        "scale_up_caveat": SCALE_UP_CAVEAT,
         "questions": questions,
         "layers": layers_payload,
     }
@@ -1115,6 +1279,7 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
             "title": question["title"],
             "category": question["category"],
             "scope_level": question["scope_level"],
+            "slice": validation_by_question[qid]["slice"],
             "business_question": question["business_question"],
             "expected_semantics": question["expected_semantics"],
             "consistency_status": validation_by_question[qid]["comparison_status"],
@@ -1129,18 +1294,23 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
 
     capability_matrix = {
         "generated_at": comparison_data["generated_at"],
+        "claims": findings,
         "layers": [
             {
                 "id": layer["id"],
                 "label": layer["label"],
                 "version": layer["version"],
+                "captured": layer["captured"],
                 "setup_status": layer["setup_status"],
-                "status_totals": layer["status_totals"],
+                "status_totals_by_slice": layer["status_totals_by_slice"],
             }
             for layer in layers_payload
         ],
         "rows": matrix_rows,
         "summary": {
+            "output_consistency": validation_report["summary"],
+            "output_consistency_by_slice": validation_report["summary_by_slice"],
+            "scale_up_caveat": SCALE_UP_CAVEAT,
             "scale_up": [
                 {
                     "layer": layer["id"],
@@ -1152,7 +1322,7 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                     **{f"stretch_{key}": value for key, value in layer["scale"]["stretch"].items()},
                 }
                 for layer in layers_payload
-            ]
+            ],
         },
     }
 

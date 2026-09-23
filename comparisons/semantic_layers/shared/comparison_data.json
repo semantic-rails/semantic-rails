@@ -1,13 +1,17 @@
 {
-  "generated_at": "2026-06-23T23:47:13-04:00",
+  "generated_at": "2026-09-23T01:28:02+00:00",
   "headline_findings": [
-    "All 14 runnable questions now return matching normalized outputs across Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views, and KtX.",
-    "Semantic Rails is the only pack in this workspace that executes the expanded edge-capability suite natively end to end.",
-    "MetricFlow remains strong on temporal validity, but most predicate-heavy edge cases and conversion variants now rely on helper dbt views in this comparison pack.",
-    "Cube stays concise on the portable baseline, but the edge slice quickly turns into filter tricks and helper cubes.",
-    "Malloy keeps the authoring surface compact, but the edge slice resolves through query-level filters and SQL sources rather than governed semantic primitives.",
-    "Snowflake Semantic Views still executes q01-q07 natively through `SEMANTIC_VIEW(...)`, while the edge-capability questions run as verified SQL workarounds on the same base tables.",
-    "KtX executes the q01-q07 portable slice natively through its Python semantic layer, but the q08-q16 edge slice relies on SQL-backed sources and query-level filters.",
+    "14 of 16 questions return matching normalized outputs across all 6 layers. 2 do not match: q07 Delivered Revenue By Month; q16 Revenue By Historical Customer Segment As Of Delivered Time.",
+    "On q07 and q16: MetricFlow, Cube, Malloy, Snowflake Semantic Views and KtX agree with each other; Semantic Rails differs.",
+    "Shared questions (q01-q07): 6 of 7 match. Semantic-Rails-targeted questions (q08-q16): 8 of 9 match.",
+    "9 of the 16 questions (q08-q16) were chosen to exercise features Semantic Rails ships. The Semantic Rails authors wrote every layer's models and assigned every support label, and several layers are not yet modeled with native features they ship, so these questions are a capability showcase, not a ranking.",
+    "Every layer that executes q11 and q12 answers them from the same precomputed customer columns, `lifetime_order_count` and `lifetime_spend_cents`, yet the labels differ: q11 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. q12 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. Semantic Rails is labeled native whenever its query validates.",
+    "MetricFlow answers q08 and q16 with validity-windowed semantic models; this pack answers q09-q15 through helper dbt views and has not modeled MetricFlow's native conversion metrics or metric filters yet.",
+    "Cube answers q08 through a declared join that carries the validity condition, and q05 and q09-q16 through helper cubes or joined rollup filters in this pack; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
+    "The labels are inconsistent with each other: Cube's q08 uses an ordinary declared join, yet it is labeled workaround, while MetricFlow's validity-windowed join is labeled native.",
+    "Malloy answers q08-q16 through SQL sources or query-level filters in this pack; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet.",
+    "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
+    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack.",
     "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here."
   ],
   "validation_summary": {
@@ -15,6 +19,27 @@
     "mismatched": 2,
     "not_comparable": 0
   },
+  "validation_summary_by_slice": {
+    "semantic_rails_targeted": {
+      "matched": 8,
+      "mismatched": 1,
+      "mismatched_questions": [
+        "q16_revenue_by_customer_segment_as_of_delivered_time"
+      ],
+      "not_comparable": 0,
+      "questions": 9
+    },
+    "shared": {
+      "matched": 6,
+      "mismatched": 1,
+      "mismatched_questions": [
+        "q07_delivered_revenue_by_month"
+      ],
+      "not_comparable": 0,
+      "questions": 7
+    }
+  },
+  "scale_up_caveat": "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model and 7-model sets, not question slices.",
   "questions": [
     {
       "id": "q01_orders_by_month",
@@ -149,40 +174,47 @@
     {
       "id": "semantic_rails",
       "label": "Semantic Rails",
-      "version": "workspace runtime",
+      "version": "0.2.1",
+      "captured": "2026-09-23",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
-        "All executed questions stay inside the local semantic runtime with no helper marts or handwritten SQL.",
+        "Every question runs through the Semantic Rails runtime without helper views or handwritten SQL; q11 and q12 read precomputed customer lifetime columns from the source table.",
         "Temporal-valid joins, conversion metrics, authored metric predicates, and query-time metric filters stay first-class."
       ],
       "weaknesses": [
         "This is a project-specific runtime rather than a broadly adopted external ecosystem.",
-        "The comparison package is concise, but the DSL is unique to this repo."
+        "The DSL is specific to Semantic Rails."
       ],
-      "status_totals": {
-        "native": 16,
-        "workaround": 0,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
+      "capture_notes": [],
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 9,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
           "models": 4,
           "files": 5,
           "loc": 180,
-          "relationships": 3,
-          "supported_questions": 7,
-          "non_native_questions": 0
+          "relationships": 3
         },
         "stretch": {
           "models": 7,
           "files": 9,
           "loc": 416,
-          "relationships": 12,
-          "supported_questions": 16,
-          "non_native_questions": 0
+          "relationships": 12
         }
       },
       "questions": [
@@ -211,7 +243,7 @@
           "row_count": 18,
           "snippet_excerpt": "      meta:\n        owner_team: growth_analytics\n        review_priority: medium\n        change_risk: medium\n    revenue_usd:\n      label: Revenue (USD)\n      kind: aggregate\n      expr: order_total_cents / 100.0\n      accumulation:\n        kind: flow\n      value_type: currency\n      currency: USD\n      meta:\n        owner_team: finance_analytics\n        review_priority: high\n        change_risk: medium",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.revenue_usd\"\n      },\n      \"as\": \"revenue_usd\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_store_name\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"revenue_usd\",\n      \"direction\": \"DESC\"\n    }\n  ]\n}",
-          "result_excerpt": "[\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 59714.469999999325,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 54589.11999999983,\n    \"temporal_role.jaffle_order_time__month\": \"2017-05-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 50398.65999999982,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 49970.74999999979,\n    \"temporal_role.jaffle_order_time__month\": \"2017-07-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 49092.32999999982,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 47980.21000000004,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 47896.78999999983,\n    \"temporal_role.jaffle_order_time__month\": \"2017-04-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 47657.12000000005,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 59714.469999999004,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 54589.11999999994,\n    \"temporal_role.jaffle_order_time__month\": \"2017-05-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 50398.659999999865,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 49970.74999999963,\n    \"temporal_role.jaffle_order_time__month\": \"2017-07-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 49092.329999999696,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"revenue_usd\": 47980.209999999825,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 47896.789999999804,\n    \"temporal_role.jaffle_order_time__month\": \"2017-04-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"revenue_usd\": 47657.1199999999,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  revenue_usd DESC"
         },
         {
@@ -239,7 +271,7 @@
           "row_count": 2,
           "snippet_excerpt": "metrics:\n  # kind: ratio \u2014 direct numerator / denominator. Pins the formula and\n  # null-handling so AOV is always (revenue / orders) on the same slice.\n  aov_usd:\n    label: Average order value (USD)\n    description: Revenue divided by orders for the selected slice.\n    kind: ratio\n    numerator: revenue_usd\n    denominator: order_count\n    null_behavior: null_if_zero\n    value_type: currency\n    currency: USD\n    temporal_role: temporal_role.jaffle_order_time\n    meta:\n      owner_team: finance_analytics\n      review_priority: high\n      change_risk: medium",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.aov_usd\"\n      },\n      \"as\": \"aov_usd\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_store_name\"\n  ],\n  \"order_by\": [\n    {\n      \"field\": \"aov_usd\",\n      \"direction\": \"DESC\"\n    }\n  ]\n}",
-          "result_excerpt": "[\n  {\n    \"aov_usd\": 12.739104407255143,\n    \"dimension.jaffle_store_name\": \"Philadelphia\"\n  },\n  {\n    \"aov_usd\": 12.08594689028659,\n    \"dimension.jaffle_store_name\": \"Brooklyn\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"aov_usd\": 12.739104407255384,\n    \"dimension.jaffle_store_name\": \"Philadelphia\"\n  },\n  {\n    \"aov_usd\": 12.085946890286428,\n    \"dimension.jaffle_store_name\": \"Brooklyn\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1,\n  COUNT(DISTINCT jaffle_order.order_id) AS m2\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.m1 / NULLIF(base.m2, 0) AS aov_usd\nFROM leaf_1 AS base\nORDER BY\n  aov_usd DESC"
         },
         {
@@ -281,7 +313,7 @@
           "row_count": 12,
           "snippet_excerpt": "      kind: timestamp\n      class: event_time\n      as: temporal_role.jaffle_lifecycle_delivered_at\n  measures:\n    delivered_revenue_usd:\n      label: Delivered revenue\n      kind: aggregate\n      expr: order_total_cents / 100.0\n      accumulation:\n        kind: flow\n      value_type: currency\n      currency: USD\n      time: delivered_at\n      meta:\n        owner_team: operations_analytics\n        review_priority: high\n        change_risk: medium",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.delivered_revenue\"\n      },\n      \"as\": \"delivered_revenue\"\n    }\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_lifecycle_delivered_at\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n      \"direction\": \"ASC\"\n    }\n  ]\n}",
-          "result_excerpt": "[\n  {\n    \"delivered_revenue\": 18053.279999999988,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 21923.950000000008,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 27916.82000000004,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 35677.60000000009,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 45017.94999999988,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 43358.11999999984,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-02-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 73950.32000000081,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 83316.99000000152,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-04-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"delivered_revenue\": 18053.28000000002,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 21923.95000000001,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 27916.820000000003,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 35677.59999999997,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 45017.94999999983,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 43358.11999999985,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-02-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 73950.32000000018,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 83316.99000000142,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2017-04-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order_lifecycle.order_total_cents / 100.0) AS m1\nFROM jaffle_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(jaffle_order_lifecycle.delivered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM leaf_1 AS base\nORDER BY\n  t ASC"
         },
         {
@@ -295,7 +327,7 @@
           "row_count": 32,
           "snippet_excerpt": "model:\n  id: orders\n  relation: jaffle_order\n  description: One row per completed customer order.\n  entities:\n    order: {}\n    customer: {}\n    customer_history:\n      expr: customer_id\n    store: {}\n  times:\n    ordered_at:\n      label: Order time\n      column: ordered_at\n      kind: timestamp\n      class: event_time\n      default_query_axis: true\n      as: temporal_role.jaffle_order_time\n      default: true\n  dimensions:\n    ordered_date:\n      label: Ordered date\n      column: ordered_date\n      kind: date\n    is_new_customer_order:\n      label: Is new customer order\n      kind: boolean\n  measures:\n    order_count:\n      label: Orders\n      kind: entity_count\n      entity_key: order_id\n      accumulation:\n        kind: event\n      value_type: count\n      meta:",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.revenue_usd\"\n      },\n      \"as\": \"revenue_usd\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_customer_history_segment\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"revenue_usd\",\n      \"direction\": \"DESC\"\n    }\n  ]\n}",
-          "result_excerpt": "[\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 106851.15000000411,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 97728.07000000274,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 95395.1700000031,\n    \"temporal_role.jaffle_order_time__month\": \"2017-05-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 94105.69000000246,\n    \"temporal_role.jaffle_order_time__month\": \"2017-07-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 82682.07000000148,\n    \"temporal_role.jaffle_order_time__month\": \"2017-04-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 73321.77000000067,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 44504.92999999988,\n    \"temporal_role.jaffle_order_time__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 42834.49999999985,\n    \"temporal_role.jaffle_order_time__month\": \"2017-02-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 106851.15000000417,\n    \"temporal_role.jaffle_order_time__month\": \"2017-08-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 97728.07000000286,\n    \"temporal_role.jaffle_order_time__month\": \"2017-06-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 95395.17000000295,\n    \"temporal_role.jaffle_order_time__month\": \"2017-05-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 94105.69000000256,\n    \"temporal_role.jaffle_order_time__month\": \"2017-07-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 82682.07000000139,\n    \"temporal_role.jaffle_order_time__month\": \"2017-04-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 73321.77000000012,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 44504.92999999983,\n    \"temporal_role.jaffle_order_time__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"revenue_usd\": 42834.49999999987,\n    \"temporal_role.jaffle_order_time__month\": \"2017-02-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  jaffle_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1\nFROM jaffle_order\nLEFT JOIN jaffle_customer_history ON jaffle_order.customer_id = jaffle_customer_history.customer_id AND jaffle_customer_history.valid_from <= jaffle_order.ordered_at AND (jaffle_customer_history.valid_to > jaffle_order.ordered_at OR (jaffle_customer_history.valid_to IS NULL))\nGROUP BY\n  jaffle_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  revenue_usd DESC"
         },
         {
@@ -319,7 +351,7 @@
           "query_path": "comparisons/semantic_layers/semantic_rails/queries/q10_orders_from_customers_with_10plus_orders_in_month.json",
           "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q10_orders_from_customers_with_10plus_orders_in_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q10_orders_from_customers_with_10plus_orders_in_month/sql.sql",
-          "notes": "Metric predicates stay inside the semantic layer instead of leaking into custom SQL.",
+          "notes": "Expressed as an authored metric predicate over customer-month order counts.",
           "row_count": 12,
           "snippet_excerpt": "metrics:\n  # Filtered aggregates \u2014 order_count and revenue restricted to a customer\n  # cohort. The metric_predicate scopes the cohort filter to the customer\n  # entity using the documented scope_mode semantics:\n  # - entity_only: cohort decided once per customer using lifetime stats\n  # - contextual:  cohort re-evaluated per query period\n\n  repeat_customer_orders:\n    label: Repeat customer orders\n    description: Orders placed by customers whose lifetime order count is greater than one.\n    kind: aggregate\n    value_type: count\n    temporal_role: temporal_role.jaffle_order_time\n    meta:\n      owner_team: growth_analytics\n      review_priority: medium\n      change_risk: high\n    expression:\n      kind: aggregate\n      measure: order_count\n      aggregation: count_distinct\n      filter:\n        all:\n          - expression:\n              kind: metric_predicate\n              entity: entity.jaffle_customer\n              scope_mode: entity_only\n              input:\n                measure: lifetime_order_count\n              op: \">\"\n              value: 1\n\n  orders_from_customers_with_10plus_orders_in_period:\n    label: Orders from customers with 10+ orders in period\n    description: Orders from customers who place more than 10 orders in the same calendar month as the order.\n    kind: aggregate",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.orders_from_customers_with_10plus_orders_in_period\"\n      },\n      \"as\": \"orders_from_customers_with_10plus_orders_in_period\"\n    }\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_order_time__month\",\n      \"direction\": \"ASC\"\n    }\n  ]\n}",
@@ -333,7 +365,7 @@
           "query_path": "comparisons/semantic_layers/semantic_rails/queries/q11_repeat_customer_orders_by_store_by_month.json",
           "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q11_repeat_customer_orders_by_store_by_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q11_repeat_customer_orders_by_store_by_month/sql.sql",
-          "notes": "Repeat customer orders stay authored as a metric predicate over lifetime order count rather than a filtered helper mart.",
+          "notes": "Expressed as an authored metric predicate over the precomputed `lifetime_order_count` customer column.",
           "row_count": 18,
           "snippet_excerpt": "metrics:\n  # Filtered aggregates \u2014 order_count and revenue restricted to a customer\n  # cohort. The metric_predicate scopes the cohort filter to the customer\n  # entity using the documented scope_mode semantics:\n  # - entity_only: cohort decided once per customer using lifetime stats\n  # - contextual:  cohort re-evaluated per query period\n\n  repeat_customer_orders:\n    label: Repeat customer orders\n    description: Orders placed by customers whose lifetime order count is greater than one.\n    kind: aggregate\n    value_type: count\n    temporal_role: temporal_role.jaffle_order_time\n    meta:\n      owner_team: growth_analytics\n      review_priority: medium\n      change_risk: high\n    expression:\n      kind: aggregate\n      measure: order_count\n      aggregation: count_distinct\n      filter:\n        all:\n          - expression:\n              kind: metric_predicate\n              entity: entity.jaffle_customer\n              scope_mode: entity_only\n              input:\n                measure: lifetime_order_count\n              op: \">\"\n              value: 1\n\n  orders_from_customers_with_10plus_orders_in_period:\n    label: Orders from customers with 10+ orders in period\n    description: Orders from customers who place more than 10 orders in the same calendar month as the order.\n    kind: aggregate",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.repeat_customer_orders\"\n      },\n      \"as\": \"repeat_customer_orders\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_store_name\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_order_time__month\",\n      \"direction\": \"ASC\"\n    },\n    {\n      \"field\": \"dimension.jaffle_store_name\",",
@@ -347,7 +379,7 @@
           "query_path": "comparisons/semantic_layers/semantic_rails/queries/q12_orders_by_month_with_lifetime_spend_500_filter.json",
           "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q12_orders_by_month_with_lifetime_spend_500_filter/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q12_orders_by_month_with_lifetime_spend_500_filter/sql.sql",
-          "notes": "The customer lifetime-spend filter is applied at query time through `metric_filters.expression`, not by preauthoring another published metric.",
+          "notes": "Applied at query time through `metric_filters.expression` over the precomputed `lifetime_spend_cents` customer column.",
           "row_count": 12,
           "snippet_excerpt": "  ],\n  \"metric_filters\": [\n    {\n      \"expression\": {\n        \"kind\": \"metric_predicate\",\n        \"entity\": \"entity.jaffle_customer\",\n        \"scope_mode\": \"entity_only\",\n        \"input\": {\n          \"metric\": \"metric.jaffle.lifetime_spend\"\n        },\n        \"op\": \">=\",\n        \"value\": 500\n      },\n      \"op\": \"=\",\n      \"value\": true\n    }\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.orders\"\n      },\n      \"as\": \"filtered_orders\"\n    }\n  ],\n  \"metric_filters\": [\n    {\n      \"expression\": {\n        \"kind\": \"metric_predicate\",\n        \"entity\": \"entity.jaffle_customer\",\n        \"scope_mode\": \"entity_only\",\n        \"input\": {\n          \"metric\": \"metric.jaffle.lifetime_spend\"\n        },\n        \"op\": \">=\",\n        \"value\": 500\n      },\n      \"op\": \"=\",\n      \"value\": true",
@@ -361,7 +393,7 @@
           "query_path": "comparisons/semantic_layers/semantic_rails/queries/q13_daily_orders_from_customers_with_10plus_orders_in_month.json",
           "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q13_daily_orders_from_customers_with_10plus_orders_in_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.sql",
-          "notes": "The monthly predicate stays intact even though the outer query drops to day grain.",
+          "notes": "The customer-month predicate is evaluated at month grain while the query returns day grain.",
           "row_count": 365,
           "snippet_excerpt": "  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.orders_from_customers_with_10plus_orders_in_period\"\n      },\n      \"as\": \"qualifying_orders\"\n    }\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"day\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_order_time__day\",\n      \"direction\": \"ASC\"\n    }\n  ]\n}",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.orders_from_customers_with_10plus_orders_in_period\"\n      },\n      \"as\": \"qualifying_orders\"\n    }\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"day\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_order_time__day\",\n      \"direction\": \"ASC\"\n    }\n  ]\n}",
@@ -375,11 +407,11 @@
           "query_path": "comparisons/semantic_layers/semantic_rails/queries/q14_revenue_from_customers_with_10plus_orders_same_store_month.json",
           "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q14_revenue_from_customers_with_10plus_orders_same_store_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q14_revenue_from_customers_with_10plus_orders_same_store_month/sql.sql",
-          "notes": "The contextual predicate inherits outer store grouping through the entity graph instead of requiring a store-scoped helper mart.",
+          "notes": "The predicate inherits the outer store grouping through the entity graph.",
           "row_count": 18,
           "snippet_excerpt": "metrics:\n  # Filtered aggregates \u2014 order_count and revenue restricted to a customer\n  # cohort. The metric_predicate scopes the cohort filter to the customer\n  # entity using the documented scope_mode semantics:\n  # - entity_only: cohort decided once per customer using lifetime stats\n  # - contextual:  cohort re-evaluated per query period\n\n  repeat_customer_orders:\n    label: Repeat customer orders\n    description: Orders placed by customers whose lifetime order count is greater than one.\n    kind: aggregate\n    value_type: count\n    temporal_role: temporal_role.jaffle_order_time\n    meta:\n      owner_team: growth_analytics\n      review_priority: medium\n      change_risk: high\n    expression:\n      kind: aggregate\n      measure: order_count\n      aggregation: count_distinct\n      filter:\n        all:\n          - expression:\n              kind: metric_predicate\n              entity: entity.jaffle_customer\n              scope_mode: entity_only\n              input:\n                measure: lifetime_order_count\n              op: \">\"\n              value: 1\n\n  orders_from_customers_with_10plus_orders_in_period:\n    label: Orders from customers with 10+ orders in period\n    description: Orders from customers who place more than 10 orders in the same calendar month as the order.\n    kind: aggregate",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.revenue_from_customers_with_10plus_orders_in_period\"\n      },\n      \"as\": \"qualifying_revenue_usd\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_store_name\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_order_time\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_order_time__month\",\n      \"direction\": \"ASC\"\n    },\n    {\n      \"field\": \"dimension.jaffle_store_name\",",
-          "result_excerpt": "[\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 6080.059999999984,\n    \"temporal_role.jaffle_order_time__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 10002.659999999962,\n    \"temporal_role.jaffle_order_time__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 14757.669999999991,\n    \"temporal_role.jaffle_order_time__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 19451.91999999997,\n    \"temporal_role.jaffle_order_time__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 24923.479999999963,\n    \"temporal_role.jaffle_order_time__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 20033.91999999993,\n    \"temporal_role.jaffle_order_time__month\": \"2017-02-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"qualifying_revenue_usd\": 7047.029999999887,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 27524.64,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 6080.059999999981,\n    \"temporal_role.jaffle_order_time__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 10002.659999999962,\n    \"temporal_role.jaffle_order_time__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 14757.669999999976,\n    \"temporal_role.jaffle_order_time__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 19451.91999999997,\n    \"temporal_role.jaffle_order_time__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 24923.48,\n    \"temporal_role.jaffle_order_time__month\": \"2017-01-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 20033.920000000006,\n    \"temporal_role.jaffle_order_time__month\": \"2017-02-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Brooklyn\",\n    \"qualifying_revenue_usd\": 7047.0299999999,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  },\n  {\n    \"dimension.jaffle_store_name\": \"Philadelphia\",\n    \"qualifying_revenue_usd\": 27524.64000000003,\n    \"temporal_role.jaffle_order_time__month\": \"2017-03-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  jaffle_order.customer_id AS g1,\n  jaffle_order.store_id AS g2,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nGROUP BY\n  jaffle_order.customer_id,\n  jaffle_order.store_id,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.g2 AS \"dimension.jaffle_store_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"dimension.jaffle_store_id\" AS \"dimension.jaffle_store_id\",\n  predicate_source.t AS t\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1\nFROM jaffle_order\nINNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id"
         },
         {
@@ -407,7 +439,7 @@
           "row_count": 32,
           "snippet_excerpt": "model:\n  id: order_lifecycle\n  relation: jaffle_order_lifecycle\n  description: Lifecycle timestamps per order \u2014 ordered, prepared, delivered.\n  entities:\n    order_lifecycle: {}\n    order: {}\n    customer: {}\n    customer_history:\n      expr: customer_id\n    store: {}\n  times:\n    ordered_at:\n      label: Lifecycle ordered at\n      column: ordered_at\n      kind: timestamp\n      class: event_time\n      as: temporal_role.jaffle_lifecycle_ordered_at\n      default: true\n    prepared_at:\n      label: Lifecycle prepared at\n      column: prepared_at\n      kind: timestamp\n      class: event_time\n      as: temporal_role.jaffle_lifecycle_prepared_at\n    delivered_at:\n      label: Lifecycle delivered at\n      column: delivered_at\n      kind: timestamp\n      class: event_time\n      as: temporal_role.jaffle_lifecycle_delivered_at\n  measures:\n    delivered_revenue_usd:\n      label: Delivered revenue\n      kind: aggregate\n      expr: order_total_cents / 100.0",
           "query_excerpt": "{\n  \"version\": 1,\n  \"select\": [\n    {\n      \"expression\": {\n        \"metric\": \"metric.jaffle.delivered_revenue\"\n      },\n      \"as\": \"delivered_revenue\"\n    }\n  ],\n  \"group_by\": [\n    \"dimension.jaffle_customer_history_segment\"\n  ],\n  \"time\": {\n    \"temporal_role\": \"temporal_role.jaffle_lifecycle_delivered_at\",\n    \"grain\": \"month\"\n  },\n  \"order_by\": [\n    {\n      \"field\": \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n      \"direction\": \"ASC\"\n    },\n    {\n      \"field\": \"dimension.jaffle_customer_history_segment\",",
-          "result_excerpt": "[\n  {\n    \"delivered_revenue\": 575.58,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 17477.69999999999,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 646.5900000000003,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 21277.360000000004,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 488.64000000000027,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 27428.180000000022,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 724.9900000000002,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 34952.610000000066,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  }\n]",
+          "result_excerpt": "[\n  {\n    \"delivered_revenue\": 575.58,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 17477.700000000008,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-09-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 646.59,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 21277.360000000015,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-10-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 488.64000000000004,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 27428.179999999993,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-11-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 724.9900000000001,\n    \"dimension.jaffle_customer_history_segment\": \"new\",\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  },\n  {\n    \"delivered_revenue\": 34952.60999999999,\n    \"dimension.jaffle_customer_history_segment\": null,\n    \"temporal_role.jaffle_lifecycle_delivered_at__month\": \"2016-12-01 00:00:00\"\n  }\n]",
           "sql_excerpt": "WITH leaf_1 AS (\nSELECT\n  jaffle_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order_lifecycle.order_total_cents / 100.0) AS m1\nFROM jaffle_order_lifecycle\nLEFT JOIN jaffle_customer_history ON jaffle_order_lifecycle.customer_id = jaffle_customer_history.customer_id AND jaffle_customer_history.valid_from <= jaffle_order_lifecycle.delivered_at AND (jaffle_customer_history.valid_to > jaffle_order_lifecycle.delivered_at OR (jaffle_customer_history.valid_to IS NULL))\nGROUP BY\n  jaffle_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(jaffle_order_lifecycle.delivered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM leaf_1 AS base\nORDER BY\n  t ASC,\n  g1 ASC"
         }
       ]
@@ -416,6 +448,7 @@
       "id": "metricflow",
       "label": "MetricFlow",
       "version": "dbt-metricflow 0.11.0 / dbt-duckdb 1.10.1",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -423,32 +456,37 @@
         "Generated SQL is clear and easy to inspect against the shared dataset."
       ],
       "weaknesses": [
-        "The dbt scaffold is materially heavier than the local pack or Malloy.",
-        "Predicate-heavy edge cases and conversion variants rely on helper dbt views rather than staying purely in semantic-model constructs."
+        "In this pack, q09-q15 run through helper dbt views; MetricFlow's native conversion metrics and metric filters have not been modeled yet."
       ],
-      "status_totals": {
-        "native": 9,
-        "workaround": 0,
-        "precomputed": 7,
-        "doc_backed": 0,
-        "unsupported": 0
+      "capture_notes": [],
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 2,
+          "workaround": 0,
+          "precomputed": 7,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
           "models": 4,
           "files": 6,
           "loc": 199,
-          "relationships": 5,
-          "supported_questions": 7,
-          "non_native_questions": 0
+          "relationships": 5
         },
         "stretch": {
           "models": 7,
           "files": 14,
           "loc": 512,
-          "relationships": 16,
-          "supported_questions": 16,
-          "non_native_questions": 7
+          "relationships": 16
         }
       },
       "questions": [
@@ -571,7 +609,7 @@
           "query_path": "comparisons/semantic_layers/metricflow/queries/q09_session_to_order_conversion_7d.txt",
           "result_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/result.csv",
           "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/sql.txt",
-          "notes": "Executed through a helper dbt view that materializes session-level 7-day conversion flags before MetricFlow queries it.",
+          "notes": "Executed through a helper dbt view that materializes session-level 7-day conversion flags; MetricFlow's native conversion metrics are not modeled yet.",
           "row_count": 1,
           "snippet_excerpt": "    type_params:\n      numerator: revenue_usd\n      denominator: orders\n\n  - name: session_to_order_conversion_rate_7d\n    label: Session To Order Conversion Rate (7d)\n    type: ratio\n    type_params:\n      numerator: converted_sessions_7d\n      denominator: session_starts\n\n  - name: same_store_session_to_order_conversion_rate_7d\n    label: Same Store Session To Order Conversion Rate (7d)\n    type: ratio\n    type_params:\n      numerator: same_store_converted_sessions_7d\n      denominator: session_starts",
           "query_excerpt": "query --metrics session_to_order_conversion_rate_7d --group-by metric_time__month --order metric_time__month",
@@ -599,7 +637,7 @@
           "query_path": "comparisons/semantic_layers/metricflow/queries/q11_repeat_customer_orders_by_store_by_month.txt",
           "result_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/result.csv",
           "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/sql.txt",
-          "notes": "Executed through a helper dbt view over customer lifetime order counts rather than a first-class aggregate-on-aggregate metric predicate.",
+          "notes": "Executed through a helper dbt view that filters on the precomputed `lifetime_order_count` customer column; MetricFlow's metric filters are not modeled yet.",
           "row_count": 18,
           "snippet_excerpt": "    o.ordered_at\nfrom jaffle_order as o\ninner join jaffle_customer as c\n    on o.customer_id = c.customer_id\nwhere c.lifetime_order_count > 1",
           "query_excerpt": "query --metrics repeat_customer_orders --group-by metric_time__month,store__store_name --order metric_time__month",
@@ -613,7 +651,7 @@
           "query_path": "comparisons/semantic_layers/metricflow/queries/q12_orders_by_month_with_lifetime_spend_500_filter.txt",
           "result_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/result.csv",
           "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/sql.txt",
-          "notes": "Executed through a helper dbt view because this pack does not express the query-time lifetime-spend filter natively in MetricFlow.",
+          "notes": "Executed through a helper dbt view that filters on the precomputed `lifetime_spend_cents` customer column; MetricFlow's metric filters are not modeled yet.",
           "row_count": 12,
           "snippet_excerpt": "    o.ordered_at\nfrom jaffle_order as o\ninner join jaffle_customer as c\n    on o.customer_id = c.customer_id\nwhere c.lifetime_spend_cents >= 50000",
           "query_excerpt": "query --metrics filtered_orders_lifetime_spend_500 --group-by metric_time__month --order metric_time__month",
@@ -655,7 +693,7 @@
           "query_path": "comparisons/semantic_layers/metricflow/queries/q15_same_store_session_to_order_conversion_7d.txt",
           "result_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/result.csv",
           "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/sql.txt",
-          "notes": "Executed through a helper dbt view that materializes same-store 7-day conversion flags before MetricFlow queries it.",
+          "notes": "Executed through a helper dbt view that materializes same-store 7-day conversion flags; MetricFlow's native conversion metrics (with constant properties) are not modeled yet.",
           "row_count": 1,
           "snippet_excerpt": "        min(o.ordered_at) as first_ordered_at\n    from jaffle_storefront_session as s\n    left join jaffle_order as o\n        on s.customer_id = o.customer_id\n       and s.store_id = o.store_id\n       and o.ordered_at >= s.started_at\n       and o.ordered_at < s.started_at + interval '7 day'\n    group by 1, 2, 3, 4\n)\n\nselect\n    session_id,\n    customer_id,\n    store_id,\n    started_at,\n    case when first_ordered_at is not null then 1 else 0 end as same_store_converted_sessions_7d\nfrom matched",
           "query_excerpt": "query --metrics same_store_session_to_order_conversion_rate_7d --group-by metric_time__month --order metric_time__month",
@@ -682,6 +720,7 @@
       "id": "cube",
       "label": "Cube",
       "version": "1.6.32",
+      "captured": "2026-04-07",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -689,32 +728,39 @@
         "Temporal history can be modeled with explicit join SQL when needed."
       ],
       "weaknesses": [
-        "Mixed-grain and stretch questions move quickly into helper cubes rather than staying in the base cube graph.",
-        "The authored join surface stays readable, but non-native support climbs as soon as edge cases arrive."
+        "In this pack, q05 and q09-q16 run through helper cubes or joined rollup filters; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet."
       ],
-      "status_totals": {
-        "native": 6,
-        "workaround": 4,
-        "precomputed": 6,
-        "doc_backed": 0,
-        "unsupported": 0
+      "capture_notes": [
+        "This 1.6.32 capture cannot be re-run until the captured lockfile's dependency advisories are resolved."
+      ],
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 6,
+          "workaround": 1,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 3,
+          "precomputed": 6,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
           "models": 4,
           "files": 5,
           "loc": 155,
-          "relationships": 4,
-          "supported_questions": 7,
-          "non_native_questions": 1
+          "relationships": 4
         },
         "stretch": {
           "models": 7,
           "files": 13,
           "loc": 480,
-          "relationships": 9,
-          "supported_questions": 16,
-          "non_native_questions": 10
+          "relationships": 9
         }
       },
       "questions": [
@@ -781,7 +827,7 @@
           "query_path": "comparisons/semantic_layers/cube/queries/q05_orders_and_item_revenue_by_store_by_month.json",
           "result_path": "comparisons/semantic_layers/shared/results/cube/q05_orders_and_item_revenue_by_store_by_month/load.json",
           "sql_path": "comparisons/semantic_layers/shared/results/cube/q05_orders_and_item_revenue_by_store_by_month/sql.json",
-          "notes": "Executed through a helper order-grain cube that rolls item revenue up before Cube aggregates it with order count.",
+          "notes": "Executed through a helper order-grain cube that rolls item revenue up before Cube aggregates it with order count; Cube's multi-fact queries are not modeled yet.",
           "row_count": 18,
           "snippet_excerpt": "cubes:\n  - name: order_metrics\n    sql: |\n      with item_totals as (\n        select\n          order_id,\n          sum(item_revenue_cents) as item_revenue_cents\n        from comparison_order_items\n        group by 1\n      )\n      select\n        o.order_id,\n        o.customer_id,\n        o.store_id,\n        o.ordered_at,\n        coalesce(i.item_revenue_cents, 0) / 100.0 as item_revenue_usd\n      from comparison_orders as o\n      left join item_totals as i\n        on o.order_id = i.order_id",
           "query_excerpt": "{\n  \"measures\": [\"order_metrics.orders\", \"order_metrics.item_revenue_usd\"],\n  \"dimensions\": [\"stores.store_name\"],\n  \"timeDimensions\": [\n    { \"dimension\": \"order_metrics.ordered_at\", \"granularity\": \"month\" }\n  ],\n  \"order\": { \"order_metrics.ordered_at\": \"asc\" }\n}",
@@ -823,7 +869,7 @@
           "query_path": "comparisons/semantic_layers/cube/queries/q08_revenue_by_customer_segment_as_of_order_time.json",
           "result_path": "comparisons/semantic_layers/shared/results/cube/q08_revenue_by_customer_segment_as_of_order_time/load.json",
           "sql_path": "comparisons/semantic_layers/shared/results/cube/q08_revenue_by_customer_segment_as_of_order_time/sql.json",
-          "notes": "Temporal history works, but only through explicit join SQL on the orders cube.",
+          "notes": "Modeled as a declared join from orders to customer history whose `sql` carries the validity condition.",
           "row_count": 32,
           "snippet_excerpt": "      - name: customers\n        relationship: many_to_one\n        sql: \"{CUBE}.customer_id = {customers.customer_id}\"\n\n      - name: customer_history\n        relationship: many_to_one\n        sql: \"{CUBE}.customer_id = {customer_history.customer_id} AND {CUBE}.ordered_at >= {customer_history.valid_from} AND ({CUBE}.ordered_at < {customer_history.valid_to} OR {customer_history.valid_to} IS NULL)\"\n\n    dimensions:\n      - name: order_id\n        sql: order_id\n        type: string\n        primary_key: true\n\n      - name: customer_id\n        sql: customer_id\n        type: string\n\n      - name: store_id\n        sql: store_id\n        type: string\n",
           "query_excerpt": "{\n  \"measures\": [\"orders.revenue_usd\"],\n  \"dimensions\": [\"customer_history.customer_segment\"],\n  \"timeDimensions\": [\n    { \"dimension\": \"orders.ordered_at\", \"granularity\": \"month\" }\n  ],\n  \"order\": { \"orders.ordered_at\": \"asc\" }\n}",
@@ -865,7 +911,7 @@
           "query_path": "comparisons/semantic_layers/cube/queries/q11_repeat_customer_orders_by_store_by_month.json",
           "result_path": "comparisons/semantic_layers/shared/results/cube/q11_repeat_customer_orders_by_store_by_month/load.json",
           "sql_path": "comparisons/semantic_layers/shared/results/cube/q11_repeat_customer_orders_by_store_by_month/sql.json",
-          "notes": "Executed by filtering the orders cube on a joined lifetime-order-count field from customers, which is simpler than the intended metric-predicate semantics but not the same governed abstraction.",
+          "notes": "Executed by filtering the orders cube on the joined, precomputed customer lifetime order count.",
           "row_count": 18,
           "snippet_excerpt": "{\n  \"measures\": [\"orders.orders\"],\n  \"dimensions\": [\"stores.store_name\"],\n  \"filters\": [\n    { \"member\": \"customers.lifetime_order_count\", \"operator\": \"gt\", \"values\": [\"1\"] }\n  ],\n  \"timeDimensions\": [\n    { \"dimension\": \"orders.ordered_at\", \"granularity\": \"month\" }\n  ],\n  \"order\": {\n    \"orders.ordered_at\": \"asc\",\n    \"stores.store_name\": \"asc\"\n  }\n}",
           "query_excerpt": "{\n  \"measures\": [\"orders.orders\"],\n  \"dimensions\": [\"stores.store_name\"],\n  \"filters\": [\n    { \"member\": \"customers.lifetime_order_count\", \"operator\": \"gt\", \"values\": [\"1\"] }\n  ],\n  \"timeDimensions\": [\n    { \"dimension\": \"orders.ordered_at\", \"granularity\": \"month\" }\n  ],\n  \"order\": {\n    \"orders.ordered_at\": \"asc\",\n    \"stores.store_name\": \"asc\"\n  }\n}",
@@ -879,7 +925,7 @@
           "query_path": "comparisons/semantic_layers/cube/queries/q12_orders_by_month_with_lifetime_spend_500_filter.json",
           "result_path": "comparisons/semantic_layers/shared/results/cube/q12_orders_by_month_with_lifetime_spend_500_filter/load.json",
           "sql_path": "comparisons/semantic_layers/shared/results/cube/q12_orders_by_month_with_lifetime_spend_500_filter/sql.json",
-          "notes": "Executed by filtering the orders cube on a joined lifetime-spend field from customers rather than a first-class query-time metric predicate.",
+          "notes": "Executed by filtering the orders cube on the joined, precomputed customer lifetime spend.",
           "row_count": 12,
           "snippet_excerpt": "{\n  \"measures\": [\"orders.orders\"],\n  \"filters\": [\n    { \"member\": \"customers.lifetime_spend_usd\", \"operator\": \"gte\", \"values\": [\"500\"] }\n  ],\n  \"timeDimensions\": [\n    { \"dimension\": \"orders.ordered_at\", \"granularity\": \"month\" }\n  ],\n  \"order\": { \"orders.ordered_at\": \"asc\" }\n}",
           "query_excerpt": "{\n  \"measures\": [\"orders.orders\"],\n  \"filters\": [\n    { \"member\": \"customers.lifetime_spend_usd\", \"operator\": \"gte\", \"values\": [\"500\"] }\n  ],\n  \"timeDimensions\": [\n    { \"dimension\": \"orders.ordered_at\", \"granularity\": \"month\" }\n  ],\n  \"order\": { \"orders.ordered_at\": \"asc\" }\n}",
@@ -948,6 +994,7 @@
       "id": "malloy",
       "label": "Malloy",
       "version": "0.0.52",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -955,32 +1002,37 @@
         "Join-tree aggregation is expressive without a large semantic scaffolding layer."
       ],
       "weaknesses": [
-        "The stretch questions become SQL sources rather than reusable semantic primitives.",
-        "This looks more like a query/modeling language than a governed semantic layer runtime."
+        "In this pack, q08-q16 run through SQL sources or query-level filters; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet."
       ],
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
+      "capture_notes": [],
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
           "models": 4,
           "files": 1,
           "loc": 23,
-          "relationships": 3,
-          "supported_questions": 7,
-          "non_native_questions": 0
+          "relationships": 3
         },
         "stretch": {
           "models": 7,
           "files": 1,
           "loc": 277,
-          "relationships": 4,
-          "supported_questions": 16,
-          "non_native_questions": 9
+          "relationships": 4
         }
       },
       "questions": [
@@ -1131,7 +1183,7 @@
           "query_path": "comparisons/semantic_layers/malloy/queries/q11_repeat_customer_orders_by_store_by_month.txt",
           "result_path": "comparisons/semantic_layers/shared/results/malloy/q11_repeat_customer_orders_by_store_by_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/malloy/q11_repeat_customer_orders_by_store_by_month/sql.sql",
-          "notes": "Executed as a query-level filter over joined customer lifetime fields rather than as a reusable semantic metric predicate.",
+          "notes": "Executed as a query-level filter on the joined, precomputed customer lifetime order count.",
           "row_count": 18,
           "snippet_excerpt": "  order_by: ordered_month asc\n  limit: 5000\n}\n\nquery: q11_repeat_customer_orders_by_store_by_month is orders -> {\n  group_by:\n    ordered_month\n    stores.store_name\n  where: customers.lifetime_order_count > 1\n  aggregate: orders\n  order_by: ordered_month asc\n  limit: 5000\n}\n\nquery: q12_orders_by_month_with_lifetime_spend_500_filter is orders -> {\n  group_by: ordered_month\n  where: customers.lifetime_spend_cents / 100.0 >= 500\n  aggregate: orders\n  order_by: ordered_month asc\n  limit: 5000\n}\n",
           "query_excerpt": "compile -n q11_repeat_customer_orders_by_store_by_month\nexecute compiled SQL in DuckDB",
@@ -1145,7 +1197,7 @@
           "query_path": "comparisons/semantic_layers/malloy/queries/q12_orders_by_month_with_lifetime_spend_500_filter.txt",
           "result_path": "comparisons/semantic_layers/shared/results/malloy/q12_orders_by_month_with_lifetime_spend_500_filter/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/malloy/q12_orders_by_month_with_lifetime_spend_500_filter/sql.sql",
-          "notes": "Executed as a query-level filter over joined customer lifetime spend rather than a first-class query-time metric predicate API.",
+          "notes": "Executed as a query-level filter on the joined, precomputed customer lifetime spend.",
           "row_count": 12,
           "snippet_excerpt": "  order_by: ordered_month asc\n  limit: 5000\n}\n\nquery: q12_orders_by_month_with_lifetime_spend_500_filter is orders -> {\n  group_by: ordered_month\n  where: customers.lifetime_spend_cents / 100.0 >= 500\n  aggregate: orders\n  order_by: ordered_month asc\n  limit: 5000\n}\n\nquery: q13_daily_orders_from_customers_with_10plus_orders_in_month is orders_from_high_frequency_customers -> {\n  group_by: ordered_day\n  aggregate: qualifying_orders\n  order_by: ordered_day asc\n  limit: 5000\n}\n\nquery: q14_revenue_from_customers_with_10plus_orders_same_store_month is revenue_from_high_frequency_store_customers -> {\n  group_by:\n    ordered_month",
           "query_excerpt": "compile -n q12_orders_by_month_with_lifetime_spend_500_filter\nexecute compiled SQL in DuckDB",
@@ -1213,7 +1265,8 @@
     {
       "id": "snowflake_semantic_views",
       "label": "Snowflake Semantic Views",
-      "version": "Snowflake CLI + semantic view trial account (2026-04-06)",
+      "version": "Snowflake CLI + semantic view trial account",
+      "captured": "2026-04-07",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -1222,31 +1275,39 @@
       ],
       "weaknesses": [
         "Month-grain semantics require explicit `DATE_TRUNC(...)` query expressions; raw time dimensions stay at timestamp grain.",
-        "The edge-capability questions still move outside `SEMANTIC_VIEW(...)` into verified SQL on the base comparison tables."
+        "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, announced in preview on 2026-02-25, have not been modeled yet."
       ],
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
+      "capture_notes": [
+        "The capture comes from a trial account and cannot be re-run without a live Snowflake account."
+      ],
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
           "models": 4,
           "files": 1,
           "loc": 140,
-          "relationships": 3,
-          "supported_questions": 7,
-          "non_native_questions": 0
+          "relationships": 3
         },
         "stretch": {
           "models": 7,
           "files": 1,
           "loc": 358,
-          "relationships": 7,
-          "supported_questions": 16,
-          "non_native_questions": 9
+          "relationships": 7
         }
       },
       "questions": [
@@ -1262,7 +1323,7 @@
           "snippet_excerpt": "description: Concise Snowflake Semantic Views representation of the Jaffle comparison slice.\n\ntables:\n  # Baseline tables\n  - name: orders\n    description: One row per completed customer order.\n    base_table:\n      database: ANALYTICS\n      schema: SEMANTIC_COMPARISON\n      table: COMPARISON_ORDERS\n    dimensions:\n      - name: order_id\n        description: Unique order identifier.\n        expr: order_id\n        data_type: VARCHAR\n        unique: true\n      - name: customer_id\n        description: Customer identifier.\n        expr: customer_id\n        data_type: VARCHAR\n      - name: store_id\n        description: Store identifier.",
           "query_excerpt": "  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)",
           "result_excerpt": "[\n  {\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"ORDERS\": 1367\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"ORDERS\": 1685\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"ORDERS\": 2280\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"ORDERS\": 2862\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-01-01T00:00:00\",\n    \"ORDERS\": 3410\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-02-01T00:00:00\",\n    \"ORDERS\": 3357\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"ORDERS\": 6078\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-04-01T00:00:00\",\n    \"ORDERS\": 6596\n  }\n]",
-          "sql_excerpt": "-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;"
+          "sql_excerpt": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;"
         },
         {
           "question_id": "q02_revenue_by_store_by_month",
@@ -1276,7 +1337,7 @@
           "snippet_excerpt": "    metrics:\n      - name: orders\n        description: Count of orders.\n        expr: COUNT(order_id)\n      - name: revenue_usd\n        description: Sum of order revenue.\n        expr: SUM(order_total_cents / 100.0)\n      - name: new_customer_orders\n        description: Count of first orders.\n        expr: COUNT_IF(is_new_customer_order)\n\n  - name: order_items\n    description: One row per order line item.\n    base_table:\n      database: ANALYTICS\n      schema: SEMANTIC_COMPARISON\n      table: COMPARISON_ORDER_ITEMS\n    dimensions:\n      - name: item_id\n        description: Unique item identifier.\n        expr: item_id\n        data_type: VARCHAR",
           "query_excerpt": "  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS order_items.product_type, DATE_TRUNC('month', order_items.ordered_at) AS ordered_month\n  METRICS order_items.item_revenue_usd\n)",
           "result_excerpt": "[\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"REVENUE_USD\": \"18053.280000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"REVENUE_USD\": \"21923.950000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"REVENUE_USD\": \"27916.820000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"REVENUE_USD\": \"35677.600000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2017-01-01T00:00:00\",\n    \"REVENUE_USD\": \"45017.950000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2017-02-01T00:00:00\",\n    \"REVENUE_USD\": \"43358.120000\"\n  },\n  {\n    \"STORE_NAME\": \"Brooklyn\",\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"REVENUE_USD\": \"24857.990000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"REVENUE_USD\": \"49092.330000\"\n  }\n]",
-          "sql_excerpt": "-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;"
+          "sql_excerpt": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;"
         },
         {
           "question_id": "q03_item_revenue_by_product_type_by_month",
@@ -1290,7 +1351,7 @@
           "snippet_excerpt": "        description: Row-level item revenue in USD.\n        expr: item_revenue_cents / 100.0\n        data_type: NUMBER\n    metrics:\n      - name: item_revenue_usd\n        description: Sum of item revenue.\n        expr: SUM(item_revenue_cents / 100.0)\n\n  - name: customers\n    description: One row per customer.\n    base_table:\n      database: ANALYTICS\n      schema: SEMANTIC_COMPARISON\n      table: COMPARISON_CUSTOMERS\n    dimensions:\n      - name: customer_id\n        description: Unique customer identifier.\n        expr: customer_id\n        data_type: VARCHAR\n        unique: true\n      - name: customer_name\n        description: Customer name.",
           "query_excerpt": "  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS order_items.product_type, DATE_TRUNC('month', order_items.ordered_at) AS ordered_month\n  METRICS order_items.item_revenue_usd\n)\nORDER BY ordered_month, product_type;\n\n-- q04_aov_by_store\n-- Baseline: average order value by store.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name\n  METRICS aov_usd\n)",
           "result_excerpt": "[\n  {\n    \"PRODUCT_TYPE\": \"beverage\",\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"ITEM_REVENUE_USD\": \"9061.000000\"\n  },\n  {\n    \"PRODUCT_TYPE\": \"jaffle\",\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"ITEM_REVENUE_USD\": \"7971.000000\"\n  },\n  {\n    \"PRODUCT_TYPE\": \"beverage\",\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"ITEM_REVENUE_USD\": \"10720.000000\"\n  },\n  {\n    \"PRODUCT_TYPE\": \"jaffle\",\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"ITEM_REVENUE_USD\": \"9964.000000\"\n  },\n  {\n    \"PRODUCT_TYPE\": \"beverage\",\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"ITEM_REVENUE_USD\": \"14103.000000\"\n  },\n  {\n    \"PRODUCT_TYPE\": \"jaffle\",\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"ITEM_REVENUE_USD\": \"12235.000000\"\n  },\n  {\n    \"PRODUCT_TYPE\": \"beverage\",\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"ITEM_REVENUE_USD\": \"17850.000000\"\n  },\n  {\n    \"PRODUCT_TYPE\": \"jaffle\",\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"ITEM_REVENUE_USD\": \"15810.000000\"\n  }\n]",
-          "sql_excerpt": "-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS order_items.product_type, DATE_TRUNC('month', order_items.ordered_at) AS ordered_month\n  METRICS order_items.item_revenue_usd\n)\nORDER BY ordered_month, product_type;"
+          "sql_excerpt": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS order_items.product_type, DATE_TRUNC('month', order_items.ordered_at) AS ordered_month\n  METRICS order_items.item_revenue_usd\n)\nORDER BY ordered_month, product_type;"
         },
         {
           "question_id": "q04_aov_by_store",
@@ -1304,7 +1365,7 @@
           "snippet_excerpt": "      - left_column: converted_order_id\n        right_column: order_id\n\nmetrics:\n  - name: aov_usd\n    description: Average order value.\n    expr: orders.revenue_usd / NULLIF(orders.orders, 0)\n\nverified_queries:\n  - name: q01_orders_by_month\n    question: How many orders did we have by month?\n    sql: |\n      SELECT *\n      FROM SEMANTIC_VIEW(\n        ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n        DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n        METRICS orders.orders\n      );\n\n  - name: q05_orders_and_item_revenue_by_store_by_month\n    question: Show orders and item revenue in one query by store and month.\n    sql: |",
           "query_excerpt": "  METRICS order_items.item_revenue_usd\n)\nORDER BY ordered_month, product_type;\n\n-- q04_aov_by_store\n-- Baseline: average order value by store.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name\n  METRICS aov_usd\n)\nORDER BY aov_usd DESC;\n\n-- q05_orders_and_item_revenue_by_store_by_month\n-- Portable: orders and item revenue in one query.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders, order_items.item_revenue_usd\n)",
           "result_excerpt": "[\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"AOV_USD\": \"12.739104407259\"\n  },\n  {\n    \"STORE_NAME\": \"Brooklyn\",\n    \"AOV_USD\": \"12.085946890287\"\n  }\n]",
-          "sql_excerpt": "-- Baseline: average order value by store.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name\n  METRICS aov_usd\n)\nORDER BY aov_usd DESC;"
+          "sql_excerpt": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name\n  METRICS aov_usd\n)\nORDER BY aov_usd DESC;"
         },
         {
           "question_id": "q05_orders_and_item_revenue_by_store_by_month",
@@ -1318,7 +1379,7 @@
           "snippet_excerpt": "    relationship_columns:\n      - left_column: store_id\n        right_column: store_id\n\n  - name: order_items_to_orders\n    left_table: order_items\n    right_table: orders\n    relationship_columns:\n      - left_column: order_id\n        right_column: order_id\n\n  - name: order_lifecycle_to_orders\n    left_table: order_lifecycle\n    right_table: orders\n    relationship_columns:\n      - left_column: order_id\n        right_column: order_id\n\n  - name: storefront_sessions_to_customers\n    left_table: storefront_sessions\n    right_table: customers\n    relationship_columns:",
           "query_excerpt": "  METRICS aov_usd\n)\nORDER BY aov_usd DESC;\n\n-- q05_orders_and_item_revenue_by_store_by_month\n-- Portable: orders and item revenue in one query.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders, order_items.item_revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q06_new_customer_orders_by_month\n-- Portable: new customer orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.new_customer_orders\n)",
           "result_excerpt": "[\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"ORDERS\": 1367,\n    \"ITEM_REVENUE_USD\": \"17032.000000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"ORDERS\": 1685,\n    \"ITEM_REVENUE_USD\": \"20684.000000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"ORDERS\": 2280,\n    \"ITEM_REVENUE_USD\": \"26338.000000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"ORDERS\": 2862,\n    \"ITEM_REVENUE_USD\": \"33660.000000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2017-01-01T00:00:00\",\n    \"ORDERS\": 3410,\n    \"ITEM_REVENUE_USD\": \"42472.000000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2017-02-01T00:00:00\",\n    \"ORDERS\": 3357,\n    \"ITEM_REVENUE_USD\": \"40906.000000\"\n  },\n  {\n    \"STORE_NAME\": \"Brooklyn\",\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"ORDERS\": 2092,\n    \"ITEM_REVENUE_USD\": \"23902.000000\"\n  },\n  {\n    \"STORE_NAME\": \"Philadelphia\",\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"ORDERS\": 3986,\n    \"ITEM_REVENUE_USD\": \"46316.000000\"\n  }\n]",
-          "sql_excerpt": "-- Portable: orders and item revenue in one query.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders, order_items.item_revenue_usd\n)\nORDER BY ordered_month, store_name;"
+          "sql_excerpt": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders, order_items.item_revenue_usd\n)\nORDER BY ordered_month, store_name;"
         },
         {
           "question_id": "q06_new_customer_orders_by_month",
@@ -1332,7 +1393,7 @@
           "snippet_excerpt": "        expr: COUNT(order_id)\n      - name: revenue_usd\n        description: Sum of order revenue.\n        expr: SUM(order_total_cents / 100.0)\n      - name: new_customer_orders\n        description: Count of first orders.\n        expr: COUNT_IF(is_new_customer_order)\n\n  - name: order_items\n    description: One row per order line item.\n    base_table:\n      database: ANALYTICS\n      schema: SEMANTIC_COMPARISON\n      table: COMPARISON_ORDER_ITEMS\n    dimensions:\n      - name: item_id\n        description: Unique item identifier.\n        expr: item_id\n        data_type: VARCHAR\n        unique: true\n      - name: order_id\n        description: Parent order identifier.",
           "query_excerpt": "  METRICS orders.orders, order_items.item_revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q06_new_customer_orders_by_month\n-- Portable: new customer orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.new_customer_orders\n)\nORDER BY ordered_month;\n\n-- q07_delivered_revenue_by_month\n-- Portable: delivered revenue by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', order_lifecycle.delivered_at) AS delivered_month\n  METRICS order_lifecycle.delivered_revenue\n)",
           "result_excerpt": "[\n  {\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"NEW_CUSTOMER_ORDERS\": 163\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"NEW_CUSTOMER_ORDERS\": 9\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"NEW_CUSTOMER_ORDERS\": 56\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"NEW_CUSTOMER_ORDERS\": 49\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-01-01T00:00:00\",\n    \"NEW_CUSTOMER_ORDERS\": 35\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-02-01T00:00:00\",\n    \"NEW_CUSTOMER_ORDERS\": 28\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"NEW_CUSTOMER_ORDERS\": 278\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-04-01T00:00:00\",\n    \"NEW_CUSTOMER_ORDERS\": 22\n  }\n]",
-          "sql_excerpt": "-- Portable: new customer orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.new_customer_orders\n)\nORDER BY ordered_month;"
+          "sql_excerpt": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.new_customer_orders\n)\nORDER BY ordered_month;"
         },
         {
           "question_id": "q07_delivered_revenue_by_month",
@@ -1344,9 +1405,9 @@
           "notes": "Executed with layer-native modeling on the shared Jaffle dataset.",
           "row_count": 1,
           "snippet_excerpt": "        description: Delivered timestamp.\n        expr: delivered_at\n        data_type: TIMESTAMP\n    metrics:\n      - name: delivered_revenue\n        description: Revenue anchored to delivered time.\n        expr: SUM(order_total_cents / 100.0)\n\n  - name: storefront_sessions\n    description: One row per storefront session.\n    base_table:\n      database: ANALYTICS\n      schema: SEMANTIC_COMPARISON\n      table: COMPARISON_STOREFRONT_SESSIONS\n    dimensions:\n      - name: session_id\n        description: Session identifier.\n        expr: session_id\n        data_type: VARCHAR\n        unique: true\n      - name: customer_id\n        description: Customer identifier.",
-          "query_excerpt": "  METRICS orders.new_customer_orders\n)\nORDER BY ordered_month;\n\n-- q07_delivered_revenue_by_month\n-- Portable: delivered revenue by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', order_lifecycle.delivered_at) AS delivered_month\n  METRICS order_lifecycle.delivered_revenue\n)\nORDER BY delivered_month;\n\n-- q08_revenue_by_customer_segment_as_of_order_time\n-- Stretch: historical segment as-of order time.\n-- This stays as verified SQL because the as-of validity predicate is the\n-- important differentiator in this comparison pack.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd",
+          "query_excerpt": "  METRICS orders.new_customer_orders\n)\nORDER BY ordered_month;\n\n-- q07_delivered_revenue_by_month\n-- Portable: delivered revenue by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', order_lifecycle.delivered_at) AS delivered_month\n  METRICS order_lifecycle.delivered_revenue\n)\nORDER BY delivered_month;\n\n-- q08_revenue_by_customer_segment_as_of_order_time\n-- Stretch: historical segment as-of order time.\n-- Runs as SQL on the comparison tables; range joins, which could express the\n-- as-of join inside the semantic view, are not modeled in this pack.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd",
           "result_excerpt": "[\n  {\n    \"DELIVERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"DELIVERED_REVENUE\": \"136.740000\"\n  }\n]",
-          "sql_excerpt": "-- Portable: delivered revenue by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', order_lifecycle.delivered_at) AS delivered_month\n  METRICS order_lifecycle.delivered_revenue\n)\nORDER BY delivered_month;"
+          "sql_excerpt": "SELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', order_lifecycle.delivered_at) AS delivered_month\n  METRICS order_lifecycle.delivered_revenue\n)\nORDER BY delivered_month;"
         },
         {
           "question_id": "q08_revenue_by_customer_segment_as_of_order_time",
@@ -1355,12 +1416,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q08_revenue_by_customer_segment_as_of_order_time/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q08_revenue_by_customer_segment_as_of_order_time/sql.sql",
-          "notes": "Executed as verified SQL because the as-of validity predicate sits outside the clean semantic-view surface in this pack.",
+          "notes": "Executed as SQL on the comparison tables; range joins, which could express the as-of join inside the semantic view, are not modeled yet.",
           "row_count": 32,
-          "snippet_excerpt": "  METRICS order_lifecycle.delivered_revenue\n)\nORDER BY delivered_month;\n\n-- q08_revenue_by_customer_segment_as_of_order_time\n-- Stretch: historical segment as-of order time.\n-- This stays as verified SQL because the as-of validity predicate is the\n-- important differentiator in this comparison pack.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON o.customer_id = h.customer_id\n AND o.ordered_at >= h.valid_from\n AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q09_session_to_order_conversion_7d\n-- Stretch: session conversion within 7 days.",
-          "query_excerpt": "  METRICS order_lifecycle.delivered_revenue\n)\nORDER BY delivered_month;\n\n-- q08_revenue_by_customer_segment_as_of_order_time\n-- Stretch: historical segment as-of order time.\n-- This stays as verified SQL because the as-of validity predicate is the\n-- important differentiator in this comparison pack.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON o.customer_id = h.customer_id\n AND o.ordered_at >= h.valid_from\n AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q09_session_to_order_conversion_7d\n-- Stretch: session conversion within 7 days.",
+          "snippet_excerpt": "  METRICS order_lifecycle.delivered_revenue\n)\nORDER BY delivered_month;\n\n-- q08_revenue_by_customer_segment_as_of_order_time\n-- Stretch: historical segment as-of order time.\n-- Runs as SQL on the comparison tables; range joins, which could express the\n-- as-of join inside the semantic view, are not modeled in this pack.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON o.customer_id = h.customer_id\n AND o.ordered_at >= h.valid_from\n AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q09_session_to_order_conversion_7d\n-- Stretch: session conversion within 7 days.",
+          "query_excerpt": "  METRICS order_lifecycle.delivered_revenue\n)\nORDER BY delivered_month;\n\n-- q08_revenue_by_customer_segment_as_of_order_time\n-- Stretch: historical segment as-of order time.\n-- Runs as SQL on the comparison tables; range joins, which could express the\n-- as-of join inside the semantic view, are not modeled in this pack.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON o.customer_id = h.customer_id\n AND o.ordered_at >= h.valid_from\n AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q09_session_to_order_conversion_7d\n-- Stretch: session conversion within 7 days.",
           "result_excerpt": "[\n  {\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": \"new\",\n    \"REVENUE_USD\": \"575.580000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": null,\n    \"REVENUE_USD\": \"17477.700000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": \"new\",\n    \"REVENUE_USD\": \"646.590000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": null,\n    \"REVENUE_USD\": \"21277.360000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": \"new\",\n    \"REVENUE_USD\": \"488.640000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": null,\n    \"REVENUE_USD\": \"27428.180000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": \"new\",\n    \"REVENUE_USD\": \"724.990000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": null,\n    \"REVENUE_USD\": \"34952.610000\"\n  }\n]",
-          "sql_excerpt": "-- Stretch: historical segment as-of order time.\n-- This stays as verified SQL because the as-of validity predicate is the\n-- important differentiator in this comparison pack.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON o.customer_id = h.customer_id\n AND o.ordered_at >= h.valid_from\n AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;"
+          "sql_excerpt": "SELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  h.customer_segment,\n  SUM(o.order_total_cents / 100.0) AS revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON o.customer_id = h.customer_id\n AND o.ordered_at >= h.valid_from\n AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;"
         },
         {
           "question_id": "q09_session_to_order_conversion_7d",
@@ -1369,12 +1430,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q09_session_to_order_conversion_7d/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q09_session_to_order_conversion_7d/sql.sql",
-          "notes": "Executed as verified SQL on the base tables after a Snowflake internal error on the equivalent lateral-query form.",
+          "notes": "Executed as SQL on the comparison tables.",
           "row_count": 1,
           "snippet_excerpt": " AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q09_session_to_order_conversion_7d\n-- Stretch: session conversion within 7 days.\nWITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS conversion_rate_7d\nFROM matched_sessions",
           "query_excerpt": " AND (h.valid_to IS NULL OR o.ordered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q09_session_to_order_conversion_7d\n-- Stretch: session conversion within 7 days.\nWITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS conversion_rate_7d\nFROM matched_sessions",
           "result_excerpt": "[\n  {\n    \"SESSION_MONTH\": \"2016-09-01T00:00:00\",\n    \"CONVERSION_RATE_7D\": \"1.000000\"\n  }\n]",
-          "sql_excerpt": "-- Stretch: session conversion within 7 days.\nWITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS conversion_rate_7d\nFROM matched_sessions\nGROUP BY 1\nORDER BY 1;"
+          "sql_excerpt": "WITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS conversion_rate_7d\nFROM matched_sessions\nGROUP BY 1\nORDER BY 1;"
         },
         {
           "question_id": "q10_orders_from_customers_with_10plus_orders_in_month",
@@ -1383,12 +1444,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q10_orders_from_customers_with_10plus_orders_in_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q10_orders_from_customers_with_10plus_orders_in_month/sql.sql",
-          "notes": "Executed as verified SQL because the aggregate-on-aggregate predicate is clearer outside the semantic view surface.",
+          "notes": "Executed as SQL on the comparison tables.",
           "row_count": 12,
           "snippet_excerpt": "FROM matched_sessions\nGROUP BY 1\nORDER BY 1;\n\n-- q10_orders_from_customers_with_10plus_orders_in_month\n-- Stretch: orders from customers with more than 10 orders in the same month.\nWITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10",
           "query_excerpt": "FROM matched_sessions\nGROUP BY 1\nORDER BY 1;\n\n-- q10_orders_from_customers_with_10plus_orders_in_month\n-- Stretch: orders from customers with more than 10 orders in the same month.\nWITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10",
           "result_excerpt": "[\n  {\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 755\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 1073\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 1517\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 2017\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-01-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 2449\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-02-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 2203\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 3863\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-04-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 4498\n  }\n]",
-          "sql_excerpt": "-- Stretch: orders from customers with more than 10 orders in the same month.\nWITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10\nGROUP BY 1\nORDER BY 1;"
+          "sql_excerpt": "WITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10\nGROUP BY 1\nORDER BY 1;"
         },
         {
           "question_id": "q11_repeat_customer_orders_by_store_by_month",
@@ -1397,12 +1458,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q11_repeat_customer_orders_by_store_by_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q11_repeat_customer_orders_by_store_by_month/sql.sql",
-          "notes": "Executed as verified SQL over precomputed customer lifetime columns rather than a semantic metric predicate.",
+          "notes": "Executed as SQL over the precomputed customer lifetime order count.",
           "row_count": 18,
           "snippet_excerpt": "WHERE c.monthly_orders > 10\nGROUP BY 1\nORDER BY 1;\n\n-- q11_repeat_customer_orders_by_store_by_month\n-- Edge: repeat customer orders by store by month.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  s.store_name,\n  COUNT(*) AS repeat_customer_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMERS AS c\n  ON o.customer_id = c.customer_id\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STORES AS s\n  ON o.store_id = s.store_id\nWHERE c.lifetime_order_count > 1\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q12_orders_by_month_with_lifetime_spend_500_filter\n-- Edge: query-time-style lifetime spend filter, approximated as verified SQL.\nSELECT",
           "query_excerpt": "WHERE c.monthly_orders > 10\nGROUP BY 1\nORDER BY 1;\n\n-- q11_repeat_customer_orders_by_store_by_month\n-- Edge: repeat customer orders by store by month.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  s.store_name,\n  COUNT(*) AS repeat_customer_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMERS AS c\n  ON o.customer_id = c.customer_id\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STORES AS s\n  ON o.store_id = s.store_id\nWHERE c.lifetime_order_count > 1\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q12_orders_by_month_with_lifetime_spend_500_filter\n-- Edge: query-time-style lifetime spend filter, approximated as verified SQL.\nSELECT",
           "result_excerpt": "[\n  {\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"REPEAT_CUSTOMER_ORDERS\": 1367\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"REPEAT_CUSTOMER_ORDERS\": 1685\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"REPEAT_CUSTOMER_ORDERS\": 2280\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"REPEAT_CUSTOMER_ORDERS\": 2862\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-01-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"REPEAT_CUSTOMER_ORDERS\": 3410\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-02-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"REPEAT_CUSTOMER_ORDERS\": 3357\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"STORE_NAME\": \"Brooklyn\",\n    \"REPEAT_CUSTOMER_ORDERS\": 2092\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"REPEAT_CUSTOMER_ORDERS\": 3986\n  }\n]",
-          "sql_excerpt": "-- Edge: repeat customer orders by store by month.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  s.store_name,\n  COUNT(*) AS repeat_customer_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMERS AS c\n  ON o.customer_id = c.customer_id\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STORES AS s\n  ON o.store_id = s.store_id\nWHERE c.lifetime_order_count > 1\nGROUP BY 1, 2\nORDER BY 1, 2;"
+          "sql_excerpt": "SELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  s.store_name,\n  COUNT(*) AS repeat_customer_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMERS AS c\n  ON o.customer_id = c.customer_id\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STORES AS s\n  ON o.store_id = s.store_id\nWHERE c.lifetime_order_count > 1\nGROUP BY 1, 2\nORDER BY 1, 2;"
         },
         {
           "question_id": "q12_orders_by_month_with_lifetime_spend_500_filter",
@@ -1411,12 +1472,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q12_orders_by_month_with_lifetime_spend_500_filter/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q12_orders_by_month_with_lifetime_spend_500_filter/sql.sql",
-          "notes": "Executed as verified SQL because this pack does not express the lifetime-spend filter natively through `SEMANTIC_VIEW(...)`.",
+          "notes": "Executed as SQL over the precomputed customer lifetime spend.",
           "row_count": 12,
           "snippet_excerpt": "WHERE c.lifetime_order_count > 1\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q12_orders_by_month_with_lifetime_spend_500_filter\n-- Edge: query-time-style lifetime spend filter, approximated as verified SQL.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS filtered_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMERS AS c\n  ON o.customer_id = c.customer_id\nWHERE c.lifetime_spend_cents >= 50000\nGROUP BY 1\nORDER BY 1;\n\n-- q13_daily_orders_from_customers_with_10plus_orders_in_month\n-- Edge: daily orders from customers with more than 10 orders in the containing month.\nWITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,",
           "query_excerpt": "WHERE c.lifetime_order_count > 1\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q12_orders_by_month_with_lifetime_spend_500_filter\n-- Edge: query-time-style lifetime spend filter, approximated as verified SQL.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS filtered_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMERS AS c\n  ON o.customer_id = c.customer_id\nWHERE c.lifetime_spend_cents >= 50000\nGROUP BY 1\nORDER BY 1;\n\n-- q13_daily_orders_from_customers_with_10plus_orders_in_month\n-- Edge: daily orders from customers with more than 10 orders in the containing month.\nWITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,",
           "result_excerpt": "[\n  {\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"FILTERED_ORDERS\": 1355\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"FILTERED_ORDERS\": 1673\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"FILTERED_ORDERS\": 2268\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"FILTERED_ORDERS\": 2846\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-01-01T00:00:00\",\n    \"FILTERED_ORDERS\": 3382\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-02-01T00:00:00\",\n    \"FILTERED_ORDERS\": 3312\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"FILTERED_ORDERS\": 5731\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-04-01T00:00:00\",\n    \"FILTERED_ORDERS\": 6095\n  }\n]",
-          "sql_excerpt": "-- Edge: query-time-style lifetime spend filter, approximated as verified SQL.\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS filtered_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMERS AS c\n  ON o.customer_id = c.customer_id\nWHERE c.lifetime_spend_cents >= 50000\nGROUP BY 1\nORDER BY 1;"
+          "sql_excerpt": "SELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  COUNT(*) AS filtered_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMERS AS c\n  ON o.customer_id = c.customer_id\nWHERE c.lifetime_spend_cents >= 50000\nGROUP BY 1\nORDER BY 1;"
         },
         {
           "question_id": "q13_daily_orders_from_customers_with_10plus_orders_in_month",
@@ -1425,12 +1486,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q13_daily_orders_from_customers_with_10plus_orders_in_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.sql",
-          "notes": "Executed as verified SQL because the contextual customer-month predicate is clearer outside the semantic-view surface.",
+          "notes": "Executed as SQL on the comparison tables.",
           "row_count": 365,
           "snippet_excerpt": "WHERE c.lifetime_spend_cents >= 50000\nGROUP BY 1\nORDER BY 1;\n\n-- q13_daily_orders_from_customers_with_10plus_orders_in_month\n-- Edge: daily orders from customers with more than 10 orders in the containing month.\nWITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('day', o.ordered_at) AS ordered_day,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10",
           "query_excerpt": "WHERE c.lifetime_spend_cents >= 50000\nGROUP BY 1\nORDER BY 1;\n\n-- q13_daily_orders_from_customers_with_10plus_orders_in_month\n-- Edge: daily orders from customers with more than 10 orders in the containing month.\nWITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('day', o.ordered_at) AS ordered_day,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10",
           "result_excerpt": "[\n  {\n    \"ORDERED_DAY\": \"2016-09-01T00:00:00\",\n    \"QUALIFYING_ORDERS\": 33\n  },\n  {\n    \"ORDERED_DAY\": \"2016-09-02T00:00:00\",\n    \"QUALIFYING_ORDERS\": 33\n  },\n  {\n    \"ORDERED_DAY\": \"2016-09-03T00:00:00\",\n    \"QUALIFYING_ORDERS\": 2\n  },\n  {\n    \"ORDERED_DAY\": \"2016-09-04T00:00:00\",\n    \"QUALIFYING_ORDERS\": 1\n  },\n  {\n    \"ORDERED_DAY\": \"2016-09-05T00:00:00\",\n    \"QUALIFYING_ORDERS\": 27\n  },\n  {\n    \"ORDERED_DAY\": \"2016-09-06T00:00:00\",\n    \"QUALIFYING_ORDERS\": 33\n  },\n  {\n    \"ORDERED_DAY\": \"2016-09-07T00:00:00\",\n    \"QUALIFYING_ORDERS\": 33\n  },\n  {\n    \"ORDERED_DAY\": \"2016-09-08T00:00:00\",\n    \"QUALIFYING_ORDERS\": 36\n  }\n]",
-          "sql_excerpt": "-- Edge: daily orders from customers with more than 10 orders in the containing month.\nWITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('day', o.ordered_at) AS ordered_day,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10\nGROUP BY 1\nORDER BY 1;"
+          "sql_excerpt": "WITH customer_months AS (\n  SELECT\n    customer_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2\n)\nSELECT\n  DATE_TRUNC('day', o.ordered_at) AS ordered_day,\n  COUNT(*) AS qualifying_orders\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_months AS c\n  ON o.customer_id = c.customer_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nWHERE c.monthly_orders > 10\nGROUP BY 1\nORDER BY 1;"
         },
         {
           "question_id": "q14_revenue_from_customers_with_10plus_orders_same_store_month",
@@ -1439,12 +1500,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q14_revenue_from_customers_with_10plus_orders_same_store_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q14_revenue_from_customers_with_10plus_orders_same_store_month/sql.sql",
-          "notes": "Executed as verified SQL because the store-scoped aggregate-on-aggregate predicate is clearer outside the semantic-view surface.",
+          "notes": "Executed as SQL on the comparison tables.",
           "row_count": 18,
           "snippet_excerpt": "WHERE c.monthly_orders > 10\nGROUP BY 1\nORDER BY 1;\n\n-- q14_revenue_from_customers_with_10plus_orders_same_store_month\n-- Edge: same-store contextual customer-month revenue.\nWITH customer_store_months AS (\n  SELECT\n    customer_id,\n    store_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2, 3\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  s.store_name,\n  SUM(o.order_total_cents / 100.0) AS qualifying_revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_store_months AS c\n  ON o.customer_id = c.customer_id",
           "query_excerpt": "WHERE c.monthly_orders > 10\nGROUP BY 1\nORDER BY 1;\n\n-- q14_revenue_from_customers_with_10plus_orders_same_store_month\n-- Edge: same-store contextual customer-month revenue.\nWITH customer_store_months AS (\n  SELECT\n    customer_id,\n    store_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2, 3\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  s.store_name,\n  SUM(o.order_total_cents / 100.0) AS qualifying_revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_store_months AS c\n  ON o.customer_id = c.customer_id",
           "result_excerpt": "[\n  {\n    \"ORDERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"QUALIFYING_REVENUE_USD\": \"6080.060000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-10-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"QUALIFYING_REVENUE_USD\": \"10002.660000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-11-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"QUALIFYING_REVENUE_USD\": \"14757.670000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2016-12-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"QUALIFYING_REVENUE_USD\": \"19451.920000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-01-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"QUALIFYING_REVENUE_USD\": \"24923.480000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-02-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"QUALIFYING_REVENUE_USD\": \"20033.920000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"STORE_NAME\": \"Brooklyn\",\n    \"QUALIFYING_REVENUE_USD\": \"7047.030000\"\n  },\n  {\n    \"ORDERED_MONTH\": \"2017-03-01T00:00:00\",\n    \"STORE_NAME\": \"Philadelphia\",\n    \"QUALIFYING_REVENUE_USD\": \"27524.640000\"\n  }\n]",
-          "sql_excerpt": "-- Edge: same-store contextual customer-month revenue.\nWITH customer_store_months AS (\n  SELECT\n    customer_id,\n    store_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2, 3\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  s.store_name,\n  SUM(o.order_total_cents / 100.0) AS qualifying_revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_store_months AS c\n  ON o.customer_id = c.customer_id\n AND o.store_id = c.store_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STORES AS s\n  ON o.store_id = s.store_id\nWHERE c.monthly_orders > 10\nGROUP BY 1, 2\nORDER BY 1, 2;"
+          "sql_excerpt": "WITH customer_store_months AS (\n  SELECT\n    customer_id,\n    store_id,\n    DATE_TRUNC('month', ordered_at) AS ordered_month,\n    COUNT(*) AS monthly_orders\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS\n  GROUP BY 1, 2, 3\n)\nSELECT\n  DATE_TRUNC('month', o.ordered_at) AS ordered_month,\n  s.store_name,\n  SUM(o.order_total_cents / 100.0) AS qualifying_revenue_usd\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\nINNER JOIN customer_store_months AS c\n  ON o.customer_id = c.customer_id\n AND o.store_id = c.store_id\n AND DATE_TRUNC('month', o.ordered_at) = c.ordered_month\nINNER JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STORES AS s\n  ON o.store_id = s.store_id\nWHERE c.monthly_orders > 10\nGROUP BY 1, 2\nORDER BY 1, 2;"
         },
         {
           "question_id": "q15_same_store_session_to_order_conversion_7d",
@@ -1453,12 +1514,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q15_same_store_session_to_order_conversion_7d/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q15_same_store_session_to_order_conversion_7d/sql.sql",
-          "notes": "Executed as verified SQL because same-store event-pair matching is not modeled natively in this semantic-view pack.",
+          "notes": "Executed as SQL on the comparison tables; same-store event-pair matching is not modeled in the semantic view.",
           "row_count": 1,
           "snippet_excerpt": "WHERE c.monthly_orders > 10\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q15_same_store_session_to_order_conversion_7d\n-- Edge: same-store session conversion within 7 days.\nWITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.store_id = s.store_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS same_store_conversion_rate_7d",
           "query_excerpt": "WHERE c.monthly_orders > 10\nGROUP BY 1, 2\nORDER BY 1, 2;\n\n-- q15_same_store_session_to_order_conversion_7d\n-- Edge: same-store session conversion within 7 days.\nWITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.store_id = s.store_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS same_store_conversion_rate_7d",
           "result_excerpt": "[\n  {\n    \"SESSION_MONTH\": \"2016-09-01T00:00:00\",\n    \"SAME_STORE_CONVERSION_RATE_7D\": \"1.000000\"\n  }\n]",
-          "sql_excerpt": "-- Edge: same-store session conversion within 7 days.\nWITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.store_id = s.store_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS same_store_conversion_rate_7d\nFROM matched_sessions\nGROUP BY 1\nORDER BY 1;"
+          "sql_excerpt": "WITH matched_sessions AS (\n  SELECT\n    s.session_id,\n    DATE_TRUNC('month', s.started_at) AS session_month,\n    MIN(o.ordered_at) AS first_ordered_at\n  FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_STOREFRONT_SESSIONS AS s\n  LEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDERS AS o\n    ON o.customer_id = s.customer_id\n   AND o.store_id = s.store_id\n   AND o.ordered_at >= s.started_at\n   AND o.ordered_at < DATEADD(day, 7, s.started_at)\n  GROUP BY 1, 2\n)\nSELECT\n  session_month,\n  COUNT_IF(first_ordered_at IS NOT NULL) * 1.0 / NULLIF(COUNT(*), 0) AS same_store_conversion_rate_7d\nFROM matched_sessions\nGROUP BY 1\nORDER BY 1;"
         },
         {
           "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
@@ -1467,12 +1528,12 @@
           "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
           "result_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q16_revenue_by_customer_segment_as_of_delivered_time/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/snowflake_semantic_views/q16_revenue_by_customer_segment_as_of_delivered_time/sql.sql",
-          "notes": "Executed as verified SQL because the delivered-time temporal-valid join sits outside the clean semantic-view surface in this pack.",
+          "notes": "Executed as SQL on the comparison tables; range joins are not modeled yet.",
           "row_count": 2,
           "snippet_excerpt": "FROM matched_sessions\nGROUP BY 1\nORDER BY 1;\n\n-- q16_revenue_by_customer_segment_as_of_delivered_time\n-- Edge: delivered-time historical segment slicing.\nSELECT\n  DATE_TRUNC('month', l.delivered_at) AS delivered_month,\n  h.customer_segment,\n  SUM(l.order_total_cents / 100.0) AS delivered_revenue\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDER_LIFECYCLE AS l\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON l.customer_id = h.customer_id\n AND l.delivered_at >= h.valid_from\n AND (h.valid_to IS NULL OR l.delivered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;",
           "query_excerpt": "FROM matched_sessions\nGROUP BY 1\nORDER BY 1;\n\n-- q16_revenue_by_customer_segment_as_of_delivered_time\n-- Edge: delivered-time historical segment slicing.\nSELECT\n  DATE_TRUNC('month', l.delivered_at) AS delivered_month,\n  h.customer_segment,\n  SUM(l.order_total_cents / 100.0) AS delivered_revenue\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDER_LIFECYCLE AS l\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON l.customer_id = h.customer_id\n AND l.delivered_at >= h.valid_from\n AND (h.valid_to IS NULL OR l.delivered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;",
           "result_excerpt": "[\n  {\n    \"DELIVERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": \"new\",\n    \"DELIVERED_REVENUE\": \"66.780000\"\n  },\n  {\n    \"DELIVERED_MONTH\": \"2016-09-01T00:00:00\",\n    \"CUSTOMER_SEGMENT\": null,\n    \"DELIVERED_REVENUE\": \"69.960000\"\n  }\n]",
-          "sql_excerpt": "-- Edge: delivered-time historical segment slicing.\nSELECT\n  DATE_TRUNC('month', l.delivered_at) AS delivered_month,\n  h.customer_segment,\n  SUM(l.order_total_cents / 100.0) AS delivered_revenue\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDER_LIFECYCLE AS l\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON l.customer_id = h.customer_id\n AND l.delivered_at >= h.valid_from\n AND (h.valid_to IS NULL OR l.delivered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;"
+          "sql_excerpt": "SELECT\n  DATE_TRUNC('month', l.delivered_at) AS delivered_month,\n  h.customer_segment,\n  SUM(l.order_total_cents / 100.0) AS delivered_revenue\nFROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_ORDER_LIFECYCLE AS l\nLEFT JOIN ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_CUSTOMER_HISTORY AS h\n  ON l.customer_id = h.customer_id\n AND l.delivered_at >= h.valid_from\n AND (h.valid_to IS NULL OR l.delivered_at < h.valid_to)\nGROUP BY 1, 2\nORDER BY 1, 2;"
         }
       ]
     },
@@ -1480,6 +1541,7 @@
       "id": "ktx",
       "label": "KtX",
       "version": "ktx-sl 0.13.1 / KtX a155c0b",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
       "comparison_type": "runnable",
       "strengths": [
@@ -1487,32 +1549,38 @@
         "Aggregate locality keeps the mixed-grain q05 orders-plus-item-revenue query native without a helper mart."
       ],
       "weaknesses": [
-        "The q08-q16 edge suite shifts to SQL-backed sources or query-level filters rather than first-class temporal-validity, conversion, and metric-predicate primitives.",
+        "In this pack, q08-q16 run through SQL-backed sources or query-level filters.",
         "This pack exercises ktx-sl directly, not the broader KtX context ingestion, wiki/search, daemon, and MCP stack."
       ],
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
+      "capture_notes": [],
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       },
       "scale": {
         "baseline": {
           "models": 4,
           "files": 5,
           "loc": 127,
-          "relationships": 5,
-          "supported_questions": 7,
-          "non_native_questions": 0
+          "relationships": 5
         },
         "stretch": {
           "models": 7,
           "files": 12,
           "loc": 336,
-          "relationships": 5,
-          "supported_questions": 16,
-          "non_native_questions": 9
+          "relationships": 5
         }
       },
       "questions": [
@@ -1663,7 +1731,7 @@
           "query_path": "comparisons/semantic_layers/ktx/queries/q11_repeat_customer_orders_by_store_by_month.json",
           "result_path": "comparisons/semantic_layers/shared/results/ktx/q11_repeat_customer_orders_by_store_by_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/ktx/q11_repeat_customer_orders_by_store_by_month/sql.sql",
-          "notes": "Executed as a query-level filter over joined customer lifetime fields rather than as a reusable semantic metric predicate.",
+          "notes": "Executed as a query-level filter on the joined, precomputed customer lifetime order count.",
           "row_count": 18,
           "snippet_excerpt": "    },\n    \"stores.store_name\"\n  ],\n  \"filters\": [\n    \"customers.lifetime_order_count > 1\"\n  ],\n  \"include_empty\": false,\n  \"limit\": 5000,\n  \"measures\": [\n    \"orders.orders\"\n  ]\n}",
           "query_excerpt": "{\n  \"dimensions\": [\n    {\n      \"field\": \"orders.ordered_at\",\n      \"granularity\": \"month\"\n    },\n    \"stores.store_name\"\n  ],\n  \"filters\": [\n    \"customers.lifetime_order_count > 1\"\n  ],\n  \"include_empty\": false,\n  \"limit\": 5000,\n  \"measures\": [\n    \"orders.orders\"\n  ]\n}",
@@ -1677,7 +1745,7 @@
           "query_path": "comparisons/semantic_layers/ktx/queries/q12_orders_by_month_with_lifetime_spend_500_filter.json",
           "result_path": "comparisons/semantic_layers/shared/results/ktx/q12_orders_by_month_with_lifetime_spend_500_filter/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/ktx/q12_orders_by_month_with_lifetime_spend_500_filter/sql.sql",
-          "notes": "Executed as a query-level filter over joined customer lifetime spend rather than a first-class query-time metric predicate API.",
+          "notes": "Executed as a query-level filter on the joined, precomputed customer lifetime spend.",
           "row_count": 12,
           "snippet_excerpt": "      \"granularity\": \"month\"\n    }\n  ],\n  \"filters\": [\n    \"customers.lifetime_spend_cents >= 50000\"\n  ],\n  \"include_empty\": false,\n  \"limit\": 5000,\n  \"measures\": [\n    \"orders.orders\"\n  ]\n}",
           "query_excerpt": "{\n  \"dimensions\": [\n    {\n      \"field\": \"orders.ordered_at\",\n      \"granularity\": \"month\"\n    }\n  ],\n  \"filters\": [\n    \"customers.lifetime_spend_cents >= 50000\"\n  ],\n  \"include_empty\": false,\n  \"limit\": 5000,\n  \"measures\": [\n    \"orders.orders\"\n  ]\n}",

@@ -39,4 +39,4 @@ Artifacts are written under `comparisons/semantic_layers/shared/results/cube/`.
 Notes:
 
 - The original capture used the local Node/Cube Core path rather than Docker.
-- `customer_history` and `storefront_sessions` are modeled with explicit SQL joins / calculated measures, which is intentional evidence for the “workaround-heavy but possible” side of the comparison.
+- `customer_history` and `storefront_sessions` are modeled with explicit SQL joins and calculated measures.

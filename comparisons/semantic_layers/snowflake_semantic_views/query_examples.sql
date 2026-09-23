@@ -77,8 +77,8 @@ ORDER BY delivered_month;
 
 -- q08_revenue_by_customer_segment_as_of_order_time
 -- Stretch: historical segment as-of order time.
--- This stays as verified SQL because the as-of validity predicate is the
--- important differentiator in this comparison pack.
+-- Runs as SQL on the comparison tables; range joins, which could express the
+-- as-of join inside the semantic view, are not modeled in this pack.
 SELECT
   DATE_TRUNC('month', o.ordered_at) AS ordered_month,
   h.customer_segment,

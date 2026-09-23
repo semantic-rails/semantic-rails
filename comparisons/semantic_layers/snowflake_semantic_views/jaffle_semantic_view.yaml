@@ -321,8 +321,8 @@ verified_queries:
   - name: q08_revenue_by_customer_segment_as_of_order_time
     question: What was revenue by customer segment at the time the order happened?
     sql: |
-      -- Executed as verified SQL because the as-of validity predicate remains
-      -- outside the clean SEMANTIC_VIEW(...) surface in this comparison pack.
+      -- Runs as SQL on the comparison tables; range joins, which could express the
+      -- as-of join inside the semantic view, are not modeled in this pack.
       SELECT
         DATE_TRUNC('month', o.ordered_at) AS ordered_month,
         h.customer_segment,

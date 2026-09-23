@@ -19,14 +19,16 @@ This folder is an executed Snowflake Semantic Views pack backed by the default S
 - The pack models the same 4-table core plus the 3 stretch tables used elsewhere in the comparison.
 - `q01`-`q07` execute natively through `SEMANTIC_VIEW(...)`.
 - Historical segmenting, predicate-heavy edge cases, and session-to-order conversion variants are represented as executed verified SQL workarounds rather than claimed as semantic-view-native behavior.
+- Range joins, announced in preview on 2026-02-25, could express the temporal-validity joins in q08 and q16 inside the semantic view. This capture does not model them yet.
 - Relationship type inference is left to Snowflake, consistent with the Semantic Views YAML spec.
 
 ## Executed Outcome
 
+- Captured: `2026-04-06T23:05:57-04:00` (2026-04-07 UTC), on a trial account. It has not been re-run since. The captured `create_semantic_view.json` and `describe_semantic_view.json` reflect `jaffle_semantic_view.yaml` as it stood then.
 - Semantic view: `ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON`
 - Connection: `semantic_views_trial`
-- Support: `7 native`, `9 workaround`
-- Output consistency: all 16 questions match the normalized `Semantic Rails` reference outputs.
+- Support labels (provisional, assigned by the Semantic Rails authors): `7 native`, `9 workaround`
+- Output check: 14 of 16 questions match the normalized `Semantic Rails` outputs. q07 and q16 do not: this capture loaded the 11-row `comparison_order_lifecycle` export, while Semantic Rails read the full lifecycle table.
 
 ## Trial Account Workflow
 

@@ -1,6 +1,9 @@
 {
+  "engine_or_package_modified": false,
+  "generated_at": "2026-09-23T01:28:01+00:00",
   "layer": "semantic_rails",
   "package_id": "comparison_semantic_rails",
+  "package_tree": "c9e7e3151c4ac853a981e698575e9d4fa5ccbbcd",
   "questions": [
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q01_orders_by_month.json",
@@ -130,5 +133,8 @@
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q16_revenue_by_customer_segment_as_of_delivered_time/sql.sql",
       "status": "native"
     }
-  ]
+  ],
+  "semantic_rails_commit": "ac679ff08097c264d75f81e8b344714eeb1c3b03",
+  "semantic_rails_tree": "e78ee078a4e5d3d6bcd05262461f8a7e465a57fb",
+  "semantic_rails_version": "0.2.1"
 }

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 
 import yaml
@@ -28,10 +31,41 @@ def _write_text(path: Path, payload: str) -> None:
     path.write_text(payload, encoding="utf-8")
 
 
+def _provenance() -> dict[str, object]:
+    """What produced this evidence, recorded by content where possible.
+
+    The tree hashes are content-addressed, so they survive squash merges and can be checked
+    against a release tag, e.g. `git rev-parse v0.2.1:semantic_rails`. Without git, the fields
+    are null rather than guessed.
+    """
+    package = PACKAGE_DIR.relative_to(REPO_ROOT).as_posix()
+
+    def git(*args: str) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), *args], text=True, capture_output=True, check=True
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        return completed.stdout.strip()
+
+    status = git(
+        "status", "--porcelain", "--", "semantic_rails", "pyproject.toml", "uv.lock", package
+    )
+    return {
+        "semantic_rails_commit": git("rev-parse", "HEAD"),
+        "semantic_rails_tree": git("rev-parse", "HEAD:semantic_rails"),
+        "package_tree": git("rev-parse", f"HEAD:{package}"),
+        # True if the engine or the comparison package differs from the recorded commit.
+        "engine_or_package_modified": None if status is None else bool(status),
+    }
+
+
 def main() -> None:
     config_module.list_package_paths.cache_clear()
     config_module.list_package_paths = lambda: {PACKAGE_ID: str(PACKAGE_DIR)}  # type: ignore[assignment]
 
+    provenance = _provenance()
     questions = list(
         (yaml.safe_load(QUESTIONS_PATH.read_text(encoding="utf-8")) or {}).get("questions", [])
         or []
@@ -71,7 +105,15 @@ def main() -> None:
 
         _write_json(
             RESULTS_DIR / "summary.json",
-            {"layer": "semantic_rails", "package_id": PACKAGE_ID, "questions": summary},
+            {
+                "layer": "semantic_rails",
+                "package_id": PACKAGE_ID,
+                # The published comparison states which engine produced this evidence.
+                "semantic_rails_version": version("semantic-rails"),
+                **provenance,
+                "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "questions": summary,
+            },
         )
         print(f"Wrote Semantic Rails comparison artifacts to {RESULTS_DIR}")
     finally:

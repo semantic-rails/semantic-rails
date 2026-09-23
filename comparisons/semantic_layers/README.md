@@ -1,79 +1,104 @@
 # Semantic Layer Comparison Pack
 
-This workspace compares a small, shared Jaffle slice across six captured semantic layer runs without touching the active `configs/semantic_rails/jaffle_shop` package.
+This pack asks one question of six semantic layers: can each layer express and run the same 16
+questions over one shared Jaffle dataset? It is a capability comparison. It doesn't measure or
+compare latency, token use or cost. It runs without touching the active
+`configs/semantic_rails/jaffle_shop` package.
 
-> ## ⚠️ Methodology Disclosure — read this before the scoreboard
->
-> **This pack is designed to make the cost of workarounds visible, not to claim general parity.**
->
-> Of the 16 questions, 9 are explicit `scope_level: stretch` and 6 of those 9 are tagged `category: edge_capability` — they exercise primitives Semantic Rails ships natively (`metric_predicate`, temporal-validity joins, event-pair conversion, same-store conversion, contextual entity-graph inheritance). MetricFlow, Cube, Malloy, Snowflake Semantic Views, and KtX were never marketed as covering these primitives natively, so their "precomputed" / "workaround" counts reflect the gap introduced by the question slice, not a general capability deficit.
->
-> Read this scoreboard as: **"Here is the concrete cost in helper views, customer rollups, query-time filters, and SQL workarounds that each layer pays to answer the same governed predicate, temporal, and same-store-conversion questions."**
->
-> The 7 required questions (q01–q07) — baseline + advanced_portable — are where every layer should perform. Five of the six layers score 7 native there; Cube takes one workaround (q05). The 9 stretch questions are where Semantic Rails has first-class support and the others rely on workarounds. See `shared/methodology.md` for the full scoring rules and `shared/questions.yml` for the per-question scope and category metadata.
->
-> **One more thing the numeric score does not capture: the shape of the runtime.** An MCP server with `discover → inspect → plan/build-options → valid-values → validate → compile → execute` as separate tools, structured error envelopes carrying `recovery_hints` and `closest_matches`, and a relevance floor inside `discover` and `plan` is not the same primitive as a SQL renderer with a metric registry, even when both layers can answer q01–q07. The q-suite measures capability; the architecture above the suite measures fit for agent workflows. See [`../../docs/CAPABILITIES.md`](../../docs/CAPABILITIES.md) for the public runtime surface that does not depend on the question slice.
+## Read This First
 
-## What This Pack Shows
+- **Output check: 14 of 16 questions return matching normalized outputs across all six layers.**
+  q07 and q16 do not, because the layers did not answer them from the same data. On both, the
+  other five layers agree with each other and Semantic Rails differs:
+  - The pack's shared `comparison_order_lifecycle` view keeps only the 11 hand-authored lifecycle
+    rows (1 delivered month). Cube, Malloy, Snowflake Semantic Views and KtX read it.
+  - The Semantic Rails pack reads the full `jaffle_order_lifecycle` table instead (59,652 orders,
+    12 delivered months).
+  - MetricFlow's model also reads the full table, but its committed answers are consistent with a
+    capture made before the seed derived lifecycle rows for every order: replaying its committed
+    SQL on today's data returns 12 and 32 rows, not 1 and 2.
 
-- The captured 16-question runs produce matching normalized outputs across `Semantic Rails`, `MetricFlow`, `Cube`, `Malloy`, `Snowflake Semantic Views`, and `KtX`.
-- `Semantic Rails` is the only layer in this workspace that executes the expanded edge-capability suite natively end to end.
-- `MetricFlow` remains strong on temporal validity, but the predicate-heavy edge slice and same-store conversion variant depend on helper dbt views in this pack.
-- `Cube` is concise on the baseline, but the edge slice quickly turns into customer-rollup filters and helper cubes.
-- `Malloy` still handles q05 cleanly and stays compact, but the edge slice resolves through query-level filters and SQL sources rather than governed semantic primitives.
-- `Snowflake Semantic Views` now runs as a real executed layer: `q01`-`q07` use `SEMANTIC_VIEW(...)`, while the edge-capability questions run as verified SQL workarounds on the same Snowflake comparison tables.
-- `KtX` overlaps strongly on the portable metric/query layer (`q01`-`q07`) and uses SQL-backed KtX sources or query-level filters for the stretch suite.
-- The numeric suite is still not the whole story: compiler-surface controls like metric-time-only planning and duplicate-alias rejection are documented separately because this executed pack does not score them directly.
+  Pointing every layer at the same tables is the next change. The per-question report is
+  [`shared/results/validation/output_consistency.md`](shared/results/validation/output_consistency.md).
+- **9 of the 16 questions target Semantic Rails features.** q08-q16 (`scope_level: stretch`) were
+  chosen to exercise primitives Semantic Rails ships: metric predicates, temporal-validity joins,
+  event-pair and same-store conversion, and contextual entity-graph inheritance. They are a
+  capability showcase, not a ranking. The 7 shared questions (q01-q07, `scope_level: required`)
+  are scored separately below.
+- **The support labels are provisional.** The Semantic Rails authors wrote every layer's models
+  and assigned every label. Semantic Rails is labeled `native` whenever its query validates.
+  Every layer answers q11 and q12 from the same precomputed customer columns
+  (`lifetime_order_count`, `lifetime_spend_cents`), yet Semantic Rails is labeled `native` there,
+  MetricFlow `precomputed` and the other four `workaround`. Several layers are not yet modeled with
+  native features they ship: MetricFlow conversion metrics and metric filters, Cube multi-fact
+  queries, multi-stage measures and subquery dimensions, Malloy arbitrary-condition joins and
+  query-derived join sources, and Snowflake range joins; KtX's `ktx-sl` hasn't been reviewed for
+  native alternatives. The labels are also inconsistent with each other: Cube's q08 uses an
+  ordinary declared join that carries the validity condition, yet it is labeled `workaround`,
+  while MetricFlow's validity-windowed join is labeled `native`. An independent answer key, an executable
+  labeling rubric and idiomatic models for each layer are in progress. Until they land, nothing in
+  this pack shows that Semantic Rails is better at q08-q16.
 
-## Layer Status
+## Versions And Captures
 
-The scoreboard is split so the **baseline tie** and the **differentiator slice** are scored separately, per the methodology disclosure above. The combined outcome column is preserved for reference, but read the two split tables first.
-
-### Baseline slice — q01–q07 (every layer should pass these)
-
-These 7 questions are `scope_level: required` (4 `baseline`, 3 `advanced_portable`). They cover the core "count, sum, group-by-month" surface every governed semantic layer ships.
-
-| Layer | Version / Basis | Baseline result |
-| --- | --- | --- |
-| Semantic Rails | workspace runtime | 7 native |
-| MetricFlow | `dbt-metricflow 0.11.0`, `dbt-duckdb 1.10.1` | 7 native |
-| Cube | `1.6.32` | 6 native, 1 workaround (q05) |
-| Malloy | `0.0.52` | 7 native |
-| Snowflake Semantic Views | Snowflake CLI + semantic view trial account | 7 native |
-| KtX | `ktx-sl 0.13.1` / KtX `a155c0b` | 7 native |
-
-The baseline tie matters: it confirms every layer in the pack ships a working governed surface for the questions every layer was built to answer. The gap shows up in the next table, on questions the other layers were not built for.
-
-### Differentiator slice — q08–q16 (Semantic Rails first-class primitives)
-
-These 9 questions are `scope_level: stretch`. q08–q10 are `differentiator`; q11–q16 are `edge_capability`. They exercise primitives Semantic Rails ships natively (`metric_predicate`, temporal validity, same-store conversion, contextual entity-graph inheritance). The other layers were not built to express these as governed primitives; their counts measure the cost of the workaround.
-
-| Layer | Stretch result | Workaround shape |
-| --- | --- | --- |
-| Semantic Rails | 9 native | — |
-| MetricFlow | 2 native (q08, q16), 7 precomputed | helper dbt views per stretch question |
-| Cube | 0 native, 3 workaround, 6 precomputed | customer-rollup filters and helper cubes |
-| Malloy | 0 native, 9 workaround | query-level filters and SQL sources |
-| Snowflake Semantic Views | 0 native, 9 workaround | verified SQL workarounds against the same comparison tables |
-| KtX | 0 native, 9 workaround | SQL-backed sources and query-level filters |
-
-### Combined (for reference)
-
-| Layer | Version / Basis | Local Status | Outcome |
+| Layer | Version | Captured (UTC) | Re-runnable from this repo |
 | --- | --- | --- | --- |
-| Semantic Rails | workspace runtime | executed | 16 native |
-| MetricFlow | `dbt-metricflow 0.11.0`, `dbt-duckdb 1.10.1` | executed | 9 native, 7 precomputed |
-| Cube | `1.6.32` | captured execution; offline-verifiable | 6 native, 4 workaround, 6 precomputed |
-| Malloy | `0.0.52` | executed | 7 native, 9 workaround |
-| Snowflake Semantic Views | Snowflake CLI + semantic view trial account | executed | 7 native, 9 workaround |
-| KtX | `ktx-sl 0.13.1` / KtX `a155c0b` | executed | 7 native, 9 workaround |
+| Semantic Rails | 0.2.1 | 2026-09-23 | yes |
+| MetricFlow | `dbt-metricflow 0.11.0`, `dbt-duckdb 1.10.1` | by 2026-06-24 (exact date not recorded) | yes; installs pinned packages |
+| Cube | `1.6.32` | 2026-04-07 | no; captured evidence only, until the captured lockfile's dependency advisories are resolved |
+| Malloy | `@malloydata/cli 0.0.52` | by 2026-06-24 (exact date not recorded) | yes; installs the pinned CLI |
+| Snowflake Semantic Views | Snowflake CLI + semantic view trial account | 2026-04-07 | needs a live Snowflake account |
+| KtX | `ktx-sl 0.13.1` / KtX `a155c0b` | by 2026-06-24 (exact date not recorded) | yes; clones KtX at `a155c0b` |
 
-## Controls Outside The Numeric Suite
+Dates are UTC. Cube's results record `lastRefreshTime` 2026-04-07T03:04:57Z, and Snowflake's
+summary records `2026-04-06T23:05:57-04:00`. The other June captures predate the consistency
+report generated at 2026-06-24T03:47:13Z. The Semantic Rails runner records its engine version,
+commit and run timestamp in `shared/results/semantic_rails/summary.json`.
 
-- This executed pack now stresses predicate-heavy and multi-clock analytics much more directly, which is why the gap between `Semantic Rails` and the other layers is clearer than in the earlier 10-question version.
-- The comparison is intentionally not a full compiler-surface bakeoff. Other layers retain real advantages on adjacent controls (for example, MetricFlow on metric-time-only planning, distinct-values planning, and duplicate-alias rejection); those are out of scope for this pack and not counted against any layer.
-- KtX's broader context product is also out of numeric scope here. This pack executes the Python `ktx-sl` semantic layer, not KtX ingestion, wiki/search, daemon, or MCP context flows.
-- The corresponding Semantic Rails advantages in this pack are first-class authored and query-time `metric_predicate` behavior, contextual entity-graph inheritance, same-store conversion semantics, and temporal-valid slicing across multiple business clocks.
+## Shared Questions: q01-q07
+
+These 7 questions (`scope_level: required`; 4 `baseline`, 3 `advanced_portable`) cover the count,
+sum and group-by-month surface every layer in the pack was built to answer.
+
+| Layer | Support labels (provisional) |
+| --- | --- |
+| Semantic Rails | 7 native |
+| MetricFlow | 7 native |
+| Cube | 6 native, 1 workaround (q05, through a helper cube; Cube's multi-fact queries not modeled yet) |
+| Malloy | 7 native |
+| Snowflake Semantic Views | 7 native |
+| KtX | 7 native |
+
+Output check: 6 of 7 match across all six layers. q07 does not; see *Read This First*.
+
+## Semantic-Rails-Targeted Questions: q08-q16
+
+These 9 questions (`scope_level: stretch`; q08-q10 `differentiator`, q11-q16 `edge_capability`)
+were chosen to exercise primitives Semantic Rails ships. The table records how this pack models
+each layer today. It is not a ranking.
+
+| Layer | Support labels (provisional) | How this pack models the layer |
+| --- | --- | --- |
+| Semantic Rails | 9 native | Semantic-model primitives; q11 and q12 read the same precomputed customer columns as every other layer |
+| MetricFlow | 2 native (q08, q16), 7 precomputed | Helper dbt views; native conversion metrics and metric filters not modeled yet |
+| Cube | 3 workaround, 6 precomputed | q08 through a declared join carrying the validity condition; q09-q16 through helper cubes or joined rollup filters; multi-fact queries, multi-stage measures and subquery dimensions not modeled yet |
+| Malloy | 9 workaround | SQL sources and query-level filters; arbitrary-condition joins and query-derived join sources not modeled yet |
+| Snowflake Semantic Views | 9 workaround | SQL on the same tables outside `SEMANTIC_VIEW(...)`; range joins not modeled yet |
+| KtX | 9 workaround | SQL-backed sources and query-level filters |
+
+Output check: 8 of 9 match across all six layers. q16 does not; see *Read This First*.
+
+## What This Pack Does Not Measure
+
+- Performance. Latency, compile time, token use and cost aren't compared. The Semantic Rails
+  evidence files carry compile timings, but nothing compares them across layers.
+- Compiler-surface controls. Other layers have real advantages here that this pack does not
+  score, for example MetricFlow's metric-time-only planning, distinct-values planning, and
+  duplicate-alias rejection.
+- Warehouse coverage, maturity, BI integrations and agent-workflow fit. For the Semantic Rails
+  runtime surface itself, see [`../../docs/CAPABILITIES.md`](../../docs/CAPABILITIES.md).
+- KtX's broader context product. This pack executes the Python `ktx-sl` semantic layer, not KtX
+  ingestion, wiki/search, daemon, or MCP context flows.
 
 ## Snowflake MCP Execution
 
@@ -130,6 +155,7 @@ These 9 questions are `scope_level: stretch`. q08–q10 are `differentiator`; q1
    uv run python comparisons/semantic_layers/metricflow/scripts/run_questions.py
    uv run python comparisons/semantic_layers/malloy/scripts/run_questions.py
    test -d /tmp/ktx-compare || git clone https://github.com/Kaelio/ktx /tmp/ktx-compare
+   git -C /tmp/ktx-compare checkout a155c0b
    PYTHONPATH=/tmp/ktx-compare/python/ktx-sl \
      uv run --with sqlglot --with pydantic --with pyyaml \
      python comparisons/semantic_layers/ktx/scripts/run_questions.py
@@ -150,21 +176,22 @@ These 9 questions are `scope_level: stretch`. q08–q10 are `differentiator`; q1
    uv run python comparisons/semantic_layers/snowflake_semantic_views/scripts/run_questions.py
    ```
 
-6. Regenerate the shared contracts:
-
-   ```bash
-   uv run python comparisons/semantic_layers/shared/scripts/generate_comparison_contracts.py
-   ```
-
-7. Validate deterministic outputs across the runnable layers:
+6. Validate deterministic outputs across the runnable layers:
 
    ```bash
    uv run python comparisons/semantic_layers/shared/scripts/validate_output_consistency.py
+   ```
+
+7. Regenerate the shared contracts. They read the validation report, so run this last:
+
+   ```bash
+   uv run python comparisons/semantic_layers/shared/scripts/generate_comparison_contracts.py
    ```
 
 ## Where To Start
 
 - Read `shared/methodology.md` for the support labels and fairness rules.
 - Read `shared/results/validation/output_consistency.md` for the cross-layer output check.
-- Open `shared/capability_matrix.json` for the row-by-row support summary.
-- Open `shared/comparison_data.json` for the per-layer excerpts used by the runtime.
+- Open `shared/capability_matrix.json` for the row-by-row support summary and the generated
+  claims.
+- Open `shared/comparison_data.json` for the per-layer excerpts and headline findings.

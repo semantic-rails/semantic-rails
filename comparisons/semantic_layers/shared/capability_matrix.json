@@ -1,82 +1,149 @@
 {
-  "generated_at": "2026-06-23T23:47:13-04:00",
+  "generated_at": "2026-09-23T01:28:02+00:00",
+  "claims": [
+    "14 of 16 questions return matching normalized outputs across all 6 layers. 2 do not match: q07 Delivered Revenue By Month; q16 Revenue By Historical Customer Segment As Of Delivered Time.",
+    "On q07 and q16: MetricFlow, Cube, Malloy, Snowflake Semantic Views and KtX agree with each other; Semantic Rails differs.",
+    "Shared questions (q01-q07): 6 of 7 match. Semantic-Rails-targeted questions (q08-q16): 8 of 9 match.",
+    "9 of the 16 questions (q08-q16) were chosen to exercise features Semantic Rails ships. The Semantic Rails authors wrote every layer's models and assigned every support label, and several layers are not yet modeled with native features they ship, so these questions are a capability showcase, not a ranking.",
+    "Every layer that executes q11 and q12 answers them from the same precomputed customer columns, `lifetime_order_count` and `lifetime_spend_cents`, yet the labels differ: q11 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. q12 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. Semantic Rails is labeled native whenever its query validates."
+  ],
   "layers": [
     {
       "id": "semantic_rails",
       "label": "Semantic Rails",
-      "version": "workspace runtime",
+      "version": "0.2.1",
+      "captured": "2026-09-23",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 16,
-        "workaround": 0,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 9,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       }
     },
     {
       "id": "metricflow",
       "label": "MetricFlow",
       "version": "dbt-metricflow 0.11.0 / dbt-duckdb 1.10.1",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 9,
-        "workaround": 0,
-        "precomputed": 7,
-        "doc_backed": 0,
-        "unsupported": 0
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 2,
+          "workaround": 0,
+          "precomputed": 7,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       }
     },
     {
       "id": "cube",
       "label": "Cube",
       "version": "1.6.32",
+      "captured": "2026-04-07",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 6,
-        "workaround": 4,
-        "precomputed": 6,
-        "doc_backed": 0,
-        "unsupported": 0
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 6,
+          "workaround": 1,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 3,
+          "precomputed": 6,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       }
     },
     {
       "id": "malloy",
       "label": "Malloy",
       "version": "0.0.52",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       }
     },
     {
       "id": "snowflake_semantic_views",
       "label": "Snowflake Semantic Views",
-      "version": "Snowflake CLI + semantic view trial account (2026-04-06)",
+      "version": "Snowflake CLI + semantic view trial account",
+      "captured": "2026-04-07",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       }
     },
     {
       "id": "ktx",
       "label": "KtX",
       "version": "ktx-sl 0.13.1 / KtX a155c0b",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
+      "status_totals_by_slice": {
+        "shared": {
+          "native": 7,
+          "workaround": 0,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        },
+        "semantic_rails_targeted": {
+          "native": 0,
+          "workaround": 9,
+          "precomputed": 0,
+          "doc_backed": 0,
+          "unsupported": 0
+        }
       }
     }
   ],
@@ -86,6 +153,7 @@
       "title": "Orders By Month",
       "category": "baseline",
       "scope_level": "required",
+      "slice": "shared",
       "business_question": "How many orders did we have by month?",
       "expected_semantics": "Count distinct orders on the ordered timestamp at month grain.",
       "consistency_status": "matched",
@@ -103,6 +171,7 @@
       "title": "Revenue By Store By Month",
       "category": "baseline",
       "scope_level": "required",
+      "slice": "shared",
       "business_question": "What was revenue by store by month?",
       "expected_semantics": "Sum order revenue on ordered time, grouped by store and month.",
       "consistency_status": "matched",
@@ -120,6 +189,7 @@
       "title": "Item Revenue By Product Type By Month",
       "category": "baseline",
       "scope_level": "required",
+      "slice": "shared",
       "business_question": "What was item revenue by product type by month?",
       "expected_semantics": "Sum item-grain revenue grouped by product type and ordered month.",
       "consistency_status": "matched",
@@ -137,6 +207,7 @@
       "title": "Average Order Value By Store",
       "category": "baseline",
       "scope_level": "required",
+      "slice": "shared",
       "business_question": "What is average order value by store?",
       "expected_semantics": "Revenue divided by orders grouped by store.",
       "consistency_status": "matched",
@@ -154,6 +225,7 @@
       "title": "Orders And Item Revenue In One Query",
       "category": "advanced_portable",
       "scope_level": "required",
+      "slice": "shared",
       "business_question": "Show orders and item revenue in one query by store and month.",
       "expected_semantics": "Combine order-grain and item-grain metrics without silently fanning out order counts.",
       "consistency_status": "matched",
@@ -171,6 +243,7 @@
       "title": "New Customer Orders By Month",
       "category": "advanced_portable",
       "scope_level": "required",
+      "slice": "shared",
       "business_question": "How many new customer orders did we have by month?",
       "expected_semantics": "Count only first orders, using the ordered timestamp at month grain.",
       "consistency_status": "matched",
@@ -188,6 +261,7 @@
       "title": "Delivered Revenue By Month",
       "category": "advanced_portable",
       "scope_level": "required",
+      "slice": "shared",
       "business_question": "What was delivered revenue by month using delivered time instead of ordered time?",
       "expected_semantics": "Sum order revenue anchored to delivered timestamp, not ordered timestamp.",
       "consistency_status": "mismatched",
@@ -205,6 +279,7 @@
       "title": "Revenue By Historical Customer Segment",
       "category": "differentiator",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "What was revenue by customer segment at the time the order happened?",
       "expected_semantics": "Use a temporal-validity relationship from orders to customer history and preserve null when no valid history row exists.",
       "consistency_status": "matched",
@@ -222,6 +297,7 @@
       "title": "Session To Order Conversion Within 7 Days",
       "category": "differentiator",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "What share of sessions converted to an order within 7 days?",
       "expected_semantics": "Match sessions to later orders for the same customer within a 7 day window.",
       "consistency_status": "matched",
@@ -239,6 +315,7 @@
       "title": "Orders From Customers With 10 Plus Orders In Month",
       "category": "differentiator",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "What was order volume from customers with more than 10 orders in the same month?",
       "expected_semantics": "Use an aggregate-on-aggregate predicate scoped to customer and month, then count qualifying orders.",
       "consistency_status": "matched",
@@ -256,6 +333,7 @@
       "title": "Repeat Customer Orders By Store By Month",
       "category": "edge_capability",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "How many repeat customer orders did we have by store by month?",
       "expected_semantics": "Count orders from customers whose lifetime order count is greater than one, while preserving outer store and month grouping.",
       "consistency_status": "matched",
@@ -273,6 +351,7 @@
       "title": "Orders By Month With Lifetime Spend Filter",
       "category": "edge_capability",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "How many orders did we have by month after applying a query-time filter for customers with lifetime spend of at least 500 USD?",
       "expected_semantics": "Apply a query-time customer-scoped predicate over lifetime spend without requiring a separately authored published metric for the filtered result.",
       "consistency_status": "matched",
@@ -290,6 +369,7 @@
       "title": "Daily Orders From Customers With 10 Plus Orders In Month",
       "category": "edge_capability",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "What was the daily order volume from customers who placed more than 10 orders in the containing month?",
       "expected_semantics": "Evaluate the predicate at customer plus month scope, then return the qualifying orders at day grain.",
       "consistency_status": "matched",
@@ -307,6 +387,7 @@
       "title": "Revenue From Customers With 10 Plus Orders In Same Store Month",
       "category": "edge_capability",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "What was revenue by store by month from customers who placed more than 10 orders in that same store-month?",
       "expected_semantics": "Evaluate the qualifying predicate at customer plus month plus store scope, then sum qualifying revenue without losing the outer grouping context.",
       "consistency_status": "matched",
@@ -324,6 +405,7 @@
       "title": "Same Store Session To Order Conversion Within 7 Days",
       "category": "edge_capability",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "What share of sessions converted to an order at the same store within 7 days?",
       "expected_semantics": "Match sessions to later orders for the same customer within a 7 day window and require the store property to match across the event pair.",
       "consistency_status": "matched",
@@ -341,6 +423,7 @@
       "title": "Revenue By Historical Customer Segment As Of Delivered Time",
       "category": "edge_capability",
       "scope_level": "stretch",
+      "slice": "semantic_rails_targeted",
       "business_question": "What was delivered revenue by customer segment as of delivered time?",
       "expected_semantics": "Use delivered time as the business clock for the measure and for the temporal-valid join into customer history.",
       "consistency_status": "mismatched",
@@ -355,6 +438,32 @@
     }
   ],
   "summary": {
+    "output_consistency": {
+      "matched": 14,
+      "mismatched": 2,
+      "not_comparable": 0
+    },
+    "output_consistency_by_slice": {
+      "semantic_rails_targeted": {
+        "matched": 8,
+        "mismatched": 1,
+        "mismatched_questions": [
+          "q16_revenue_by_customer_segment_as_of_delivered_time"
+        ],
+        "not_comparable": 0,
+        "questions": 9
+      },
+      "shared": {
+        "matched": 6,
+        "mismatched": 1,
+        "mismatched_questions": [
+          "q07_delivered_revenue_by_month"
+        ],
+        "not_comparable": 0,
+        "questions": 7
+      }
+    },
+    "scale_up_caveat": "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model and 7-model sets, not question slices.",
     "scale_up": [
       {
         "layer": "semantic_rails",
@@ -363,14 +472,10 @@
         "baseline_files": 5,
         "baseline_loc": 180,
         "baseline_relationships": 3,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 9,
         "stretch_loc": 416,
-        "stretch_relationships": 12,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 0
+        "stretch_relationships": 12
       },
       {
         "layer": "metricflow",
@@ -379,14 +484,10 @@
         "baseline_files": 6,
         "baseline_loc": 199,
         "baseline_relationships": 5,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 14,
         "stretch_loc": 512,
-        "stretch_relationships": 16,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 7
+        "stretch_relationships": 16
       },
       {
         "layer": "cube",
@@ -395,14 +496,10 @@
         "baseline_files": 5,
         "baseline_loc": 155,
         "baseline_relationships": 4,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 1,
         "stretch_models": 7,
         "stretch_files": 13,
         "stretch_loc": 480,
-        "stretch_relationships": 9,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 10
+        "stretch_relationships": 9
       },
       {
         "layer": "malloy",
@@ -411,14 +508,10 @@
         "baseline_files": 1,
         "baseline_loc": 23,
         "baseline_relationships": 3,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 1,
         "stretch_loc": 277,
-        "stretch_relationships": 4,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 9
+        "stretch_relationships": 4
       },
       {
         "layer": "snowflake_semantic_views",
@@ -427,14 +520,10 @@
         "baseline_files": 1,
         "baseline_loc": 140,
         "baseline_relationships": 3,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 1,
         "stretch_loc": 358,
-        "stretch_relationships": 7,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 9
+        "stretch_relationships": 7
       },
       {
         "layer": "ktx",
@@ -443,14 +532,10 @@
         "baseline_files": 5,
         "baseline_loc": 127,
         "baseline_relationships": 5,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 12,
         "stretch_loc": 336,
-        "stretch_relationships": 5,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 9
+        "stretch_relationships": 5
       }
     ]
   }
