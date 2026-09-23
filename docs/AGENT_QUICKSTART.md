@@ -137,6 +137,10 @@ user is interactively editing Query IR one step at a time.
 to `compile` or `/api/v1/query`; call `validate` again only for hand-authored or edited Query IR,
 or when full diagnostics are needed after `low_confidence`.
 
+`ok` means the draft validated, not that it covers the whole question: the planner can drop or
+misread a constraint (see the README's known limitations). Compare `best.query_ir` with the
+question before executing it.
+
 Statuses are:
 
 - `ok`: the best draft validated.

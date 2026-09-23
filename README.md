@@ -9,8 +9,8 @@ a CLI or an HTTP API, instead of writing joins and metric formulas by hand.
 
 - Runs locally on DuckDB with no account or server. Optional connectors cover
   Snowflake, BigQuery, Databricks, Postgres, Athena, ClickHouse, MotherDuck and DuckLake.
-- No telemetry. The engine connects only to the warehouses you configure
-  (see [Telemetry and network access](#telemetry-and-network-access)).
+- No telemetry and no update checks. The engine makes network connections only
+  for what you configure; see [Telemetry and network access](#telemetry-and-network-access).
 - Beta. See [Project status](#project-status) for what is supported and what isn't yet.
 
 ## Try it in one command
@@ -40,7 +40,8 @@ uvx semantic-rails ask --path ./my_package "total amount by event type" --run
 CSV data). Edit it to describe your own tables, then rerun `project validate`.
 
 Pass `--path` (or `--package`) on every command for now. Without it, and without a
-saved profile, `ask` falls back to the bundled `jaffle_shop` package.
+saved profile, commands fall back to the bundled `jaffle_shop` package: `ask` answers
+from it and `project validate` validates it, both exiting 0.
 
 To keep a `semantic-rails` command on your PATH instead of running it through `uvx`:
 
@@ -48,8 +49,12 @@ To keep a `semantic-rails` command on your PATH instead of running it through `u
 uv tool install semantic-rails
 ```
 
-Or install it into a project environment. Pin the Python version: on stock macOS a
-bare `uv venv` picks the system Python 3.9, and the install fails.
+If uv warns that its tool directory isn't on your PATH, run `uv tool update-shell` and
+open a new terminal.
+
+Or install it into a project environment. Pin the Python version: on a machine without
+a uv-managed Python, a bare `uv venv` can pick up the system Python (3.9 on stock macOS,
+3.10 on Ubuntu 22.04), and then the install fails.
 
 ```bash
 uv venv --python 3.12
@@ -58,7 +63,9 @@ uv pip install semantic-rails
 ```
 
 With pip, run `python -m pip install semantic-rails` inside a Python 3.11+
-environment.
+environment. On Windows, activate the environment with `.venv\Scripts\activate`; see the
+[agent quickstart](docs/AGENT_QUICKSTART.md#local-mcp) for how MCP differs there. CI
+doesn't cover Windows yet.
 
 The interactive wizard, `semantic-rails setup --interactive`, walks through the same
 steps and can register the MCP server with Claude Desktop or Codex. Inside
@@ -85,12 +92,13 @@ codex mcp add semantic-rails -- uvx semantic-rails mcp stdio --path "$PWD/my_pac
 let Semantic Rails write the client config:
 
 ```bash
-semantic-rails mcp setup --path "$PWD/my_package" --client claude --install --yes
+semantic-rails mcp setup --path "$PWD/my_package" --client claude --mcp query --install --yes
 ```
 
 Run `mcp setup` without `--install --yes` to preview the change. `--client codex` and
-`--client both` also work. Don't run `mcp setup --install` through `uvx`: the config
-would point into uv's cache, which `uv cache clean` deletes.
+`--client both` also work, and `--mcp both` adds the Architect MCP, which can edit
+package files. Don't run `mcp setup --install` through `uvx`: the config would point
+into uv's cache, which `uv cache clean` deletes.
 
 **Cursor.** Add the server to `.cursor/mcp.json`, using the path that
 `command -v semantic-rails` prints after `uv tool install semantic-rails`:
@@ -144,11 +152,12 @@ supported modeling surface is in [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
 ## How it compares
 
-dbt's Semantic Layer (MetricFlow), Cube, LookML and Malloy are more mature, and between
-them they cover warehouses Semantic Rails doesn't support yet (Redshift, SQL Server,
-Microsoft Fabric, MySQL, Trino). dbt, Cube and Looker also connect to far more BI
-tools and offer caching or pre-aggregation. Semantic Rails is narrower: an engine built around
-the agent loop above, which you can run locally or embed.
+dbt's Semantic Layer (MetricFlow), Cube, LookML and Malloy are more mature, and they
+reach warehouses Semantic Rails doesn't support yet: Cube alone [connects
+to](https://docs.cube.dev/admin/connect-to-data/data-sources) Redshift, SQL Server,
+Microsoft Fabric, MySQL and Trino. dbt, Cube and Looker also connect to far more BI
+tools and offer caching or pre-aggregation. Semantic Rails is narrower: an engine
+built around the agent loop above, which you can run locally or embed.
 
 The [comparison pack](comparisons/semantic_layers/) runs the same 16 questions
 through six layers. It measures whether each layer can express a question as a
@@ -186,8 +195,8 @@ Semantic Rails collects no telemetry and has no update check. The engine opens
 network connections only to:
 
 - the warehouses configured in your package's `connection` block;
-- DuckDB's extension repository, when a DuckLake package loads the `ducklake`
-  extension;
+- DuckDB's extension repository (extensions.duckdb.org), when a MotherDuck or
+  DuckLake package needs a DuckDB extension;
 - its own local MCP server, when `semantic-rails mcp start` or `mcp status` checks
   that server's `/health` endpoint.
 
@@ -197,21 +206,21 @@ The hosted demo at semantic-rails.com is a separate deployment with its own
 ## Project status
 
 Semantic Rails is beta software. The supported core is the open-source runtime, the
-CLI, the MCP stdio and HTTP servers, the `/api/v1/*` HTTP API and the DuckDB path.
-Snowflake execution and the other connectors are supported with guardrails. Live
+CLI, the MCP stdio and HTTP servers, the `/api/v1/*` HTTP API, the DuckDB path and
+Snowflake execution. The other connectors are supported with guardrails, and live
 warehouse credentials are exercised on demand, not in every CI run. The
 [agent quickstart](docs/AGENT_QUICKSTART.md#supported-vs-experimental) lists what is
 experimental or out of scope.
 
 Known limitations in the current release:
 
-- `ask` without `--path` falls back to the bundled `jaffle_shop` package when no
-  profile is set.
+- Without `--path` and without a profile, commands fall back to the bundled
+  `jaffle_shop` package.
 - `plan` and `ask` can return a draft that validates but leaves out or misreads part
   of the question. For example, "revenue by store for 2017" drops the year and still
   reports `ok`. Check the Query IR before you rely on the numbers.
-- Currency measures print binary floating-point noise (for example
-  `259424.85000000062`).
+- Currency measures print binary floating-point noise: long decimal tails such as
+  `…85000000062`.
 
 ### Roadmap
 
