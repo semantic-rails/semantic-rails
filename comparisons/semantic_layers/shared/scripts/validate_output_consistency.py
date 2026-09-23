@@ -10,11 +10,13 @@ from typing import Any
 
 import yaml
 from bootstrap_shared_duckdb import dataset_fingerprint
+from run_oracle import answer_key_fingerprint
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SHARED_ROOT = REPO_ROOT / "comparisons" / "semantic_layers" / "shared"
 RESULTS_ROOT = SHARED_ROOT / "results"
 QUESTIONS_PATH = SHARED_ROOT / "questions.yml"
+ORACLE_DIR = SHARED_ROOT / "oracle"
 OUTPUT_DIR = RESULTS_ROOT / "validation"
 
 RUNNABLE_LAYERS = [
@@ -277,6 +279,13 @@ def main() -> None:
     current_dataset = dataset_fingerprint()
     if summaries[ANSWER_KEY].get("dataset_fingerprint") != current_dataset:
         raise SystemExit("The answer key predates the current dataset; run run_oracle.py first.")
+    if summaries[ANSWER_KEY].get("answer_key_fingerprint") != answer_key_fingerprint(
+        ORACLE_DIR, QUESTIONS_PATH
+    ):
+        raise SystemExit(
+            "The answer key's queries or the questions changed since it last ran; "
+            "run run_oracle.py first."
+        )
     stale_layers = [
         layer
         for layer in RUNNABLE_LAYERS

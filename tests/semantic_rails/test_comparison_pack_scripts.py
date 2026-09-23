@@ -62,7 +62,13 @@ def _report(items: list[dict[str, Any]]) -> dict[str, Any]:
         entry[item["comparison_status"]] += 1
         if item["comparison_status"] == "mismatched":
             entry["mismatched_questions"].append(item["question_id"])
-    return {"summary": counts, "summary_by_slice": by_slice, "questions": items, "stale_layers": {}}
+    return {
+        "reference_layer": "answer_key",
+        "summary": counts,
+        "summary_by_slice": by_slice,
+        "questions": items,
+        "stale_layers": {},
+    }
 
 
 def _claims(
@@ -131,6 +137,14 @@ def test_headline_reports_mismatches_and_who_disagrees() -> None:
     slices = next(claim for claim in claims if claim.startswith("Shared questions"))
     assert "Shared questions (q01-q07): 6 of 7 match." in slices
     assert "Semantic-Rails-targeted questions (q08-q16): 8 of 9 match." in slices
+
+
+def test_claims_refuse_a_report_not_checked_against_the_answer_key() -> None:
+    items = [_question(qid) for qid in SHARED + TARGETED]
+    report = _report(items)
+    report["reference_layer"] = "semantic_rails"
+    with pytest.raises(SystemExit, match="against the answer key"):
+        generator.claim_findings(report, [], {}, [])
 
 
 def test_headline_when_everything_matches() -> None:
@@ -274,8 +288,14 @@ def _run_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snowflake: d
     (key_dir / "q01_x.json").write_text(
         json.dumps([{"month": "2016-09-01", "orders": 5}]), encoding="utf-8"
     )
+    oracle_dir = tmp_path / "oracle"
+    oracle_dir.mkdir()
+    (oracle_dir / "q01_x.sql").write_text("SELECT DATE '2016-09-01' AS month, 5 AS orders", "utf-8")
     key_summary = {
         "dataset_fingerprint": "fp-now",
+        "answer_key_fingerprint": validator.answer_key_fingerprint(
+            oracle_dir, tmp_path / "questions.yml"
+        ),
         "questions": [{"question_id": "q01_x", "result_path": "results/oracle/q01_x.json"}],
     }
     (key_dir / "summary.json").write_text(json.dumps(key_summary), encoding="utf-8")
@@ -285,6 +305,7 @@ def _run_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snowflake: d
         "REPO_ROOT": tmp_path,
         "RESULTS_ROOT": tmp_path / "results",
         "QUESTIONS_PATH": tmp_path / "questions.yml",
+        "ORACLE_DIR": tmp_path / "oracle",
         "OUTPUT_DIR": tmp_path / "validation",
         "COLUMN_MAPS_PATH": tmp_path / "column_maps.yml",
         "RUNNABLE_LAYERS": layers,
@@ -358,3 +379,37 @@ def test_column_maps_cover_every_field_of_every_layer() -> None:
 def test_every_question_has_an_answer_key_query() -> None:
     oracle = SCRIPTS.parent / "oracle"
     assert sorted(path.stem for path in oracle.glob("*.sql")) == sorted(validator.QUESTION_FIELDS)
+
+
+def test_a_changed_answer_key_query_invalidates_its_cached_answers(tmp_path, monkeypatch) -> None:
+    assert _run_validator(tmp_path, monkeypatch, {"fingerprint": "fp-now", "orders": 5})
+    (tmp_path / "oracle" / "q01_x.sql").write_text("SELECT 0 AS orders", encoding="utf-8")
+    with pytest.raises(SystemExit, match="queries or the questions changed"):
+        validator.main()
+
+
+def test_answer_key_queries_reproduce_the_committed_answers(tmp_path, monkeypatch) -> None:
+    import duckdb
+
+    bootstrap = _load("bootstrap_shared_duckdb")
+    oracle = _load("run_oracle")
+    monkeypatch.setattr(bootstrap, "DB_PATH", tmp_path / "shared.duckdb")
+    bootstrap.main()
+    committed = json.loads((oracle.RESULTS_DIR / "summary.json").read_text(encoding="utf-8"))
+    assert committed["answer_key_fingerprint"] == oracle.answer_key_fingerprint(
+        oracle.ORACLE_DIR, oracle.QUESTIONS_PATH
+    )
+    con = duckdb.connect(str(tmp_path / "shared.duckdb"), read_only=True)
+    try:
+        con.execute("SET TimeZone = 'UTC'")
+        con.execute("SET threads = 1")
+        for entry in committed["questions"]:
+            qid = entry["question_id"]
+            fresh = json.loads(json.dumps(oracle.answer(con, qid), default=str))
+            saved = json.loads((oracle.REPO_ROOT / entry["result_path"]).read_text("utf-8"))
+            equal, detail = validator._rows_equal(
+                validator._normalize_rows(qid, saved), validator._normalize_rows(qid, fresh)
+            )
+            assert equal, (qid, detail)
+    finally:
+        con.close()

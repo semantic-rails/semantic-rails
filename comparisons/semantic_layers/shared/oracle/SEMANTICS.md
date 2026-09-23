@@ -3,10 +3,11 @@
 This is an independent answer key for `comparisons/semantic_layers/shared/questions.yml`.
 Each rule below was derived from the question text and from the raw data behind the
 `comparison_*` views in `jaffle_comparison.duckdb`, which `bootstrap_shared_duckdb.py`
-builds. The answers were computed and reviewed on dataset fingerprint `4f24ad8276da…`;
-`run_oracle.py` records the fingerprint it ran on, and the output check refuses a stale
-answer key. Each `<id>.sql` has a full comment block listing its ambiguities and
-alternatives.
+builds. The answers were computed and reviewed on dataset fingerprint `4f24ad8276da…`.
+`run_oracle.py` records that fingerprint and a second one over these queries and
+`questions.yml`, and the output check refuses an answer key whose data, queries or questions
+have changed since it ran. Each `<id>.sql` has a full comment block listing its ambiguities
+and alternatives.
 
 ## Shared conventions
 

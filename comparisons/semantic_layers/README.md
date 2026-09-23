@@ -108,7 +108,9 @@ write it reviewed every query against the question text and re-derived the answe
 every interpretation choice.
 
 `shared/scripts/run_oracle.py` runs the answer key on the current dataset. The output check
-compares every layer, Semantic Rails included, with it. Each layer's result columns are mapped to
+compares every layer, Semantic Rails included, with it, and refuses an answer key whose data,
+queries or questions have changed since it ran. A test re-runs every answer-key query and
+compares it with the committed answers. Each layer's result columns are mapped to
 the answer's fields explicitly in `shared/column_maps.yml`; a missing column fails the check
 instead of being guessed from its name.
 

@@ -1132,6 +1132,12 @@ def claim_findings(
     layers_payload: list[dict[str, Any]],
 ) -> list[str]:
     """Headline claims generated from the consistency report, mismatches included."""
+    # Every claim below says "the answer key"; a report checked against anything else can't back it.
+    if validation_report.get("reference_layer") != ANSWER_KEY:
+        raise SystemExit(
+            "The validation report doesn't check the layers against the answer key; "
+            "run validate_output_consistency.py first."
+        )
     summary = validation_report["summary"]
     items = validation_report["questions"]
     total = len(questions)
