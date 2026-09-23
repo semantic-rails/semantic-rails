@@ -11,6 +11,15 @@ rejected with a structured error.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+import yaml
+
+from semantic_rails.config_validation import resolve_package_reference, validate_config_report
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
+
 
 def _conversion_query(
     *,
@@ -19,9 +28,12 @@ def _conversion_query(
     base_window: dict | None = None,
     group_by: list[str] | None = None,
     dimension_bindings: dict | None = None,
+    base_measure: str = "measure.jaffle.order_count",
+    converted_measure: str = "measure.jaffle.order_count",
+    entity: str = "entity.jaffle_customer",
 ) -> dict:
-    base: dict = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
-    converted: dict = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
+    base: dict = {"kind": "aggregate", "measure": base_measure}
+    converted: dict = {"kind": "aggregate", "measure": converted_measure}
     if base_filter is not None:
         base["filter"] = base_filter
     if converted_filter is not None:
@@ -30,7 +42,7 @@ def _conversion_query(
         base["window"] = base_window
     expression: dict = {
         "kind": "conversion",
-        "entity": "entity.jaffle_customer",
+        "entity": entity,
         "window": {"unit": "day", "value": 28},
         "matching_mode": "first_converted_after_base",
         "base": base,
@@ -188,3 +200,177 @@ def test_unfiltered_conversion_sql_is_unchanged_by_the_filter_path(runtime_facto
     rendered = report["explain"]["rendered_sql"]
     assert "jaffle_item" not in rendered
     assert "jaffle_product" not in rendered
+
+
+# An entity_count measure can count an expression rather than its entity's key:
+# new_customer_order_count counts CASE WHEN is_new_customer_order THEN order_id END.
+# Conversion lowering keys each event by the entity key, so such an operand used to
+# lose its expression silently: every order became a "new customer order".
+
+
+@pytest.mark.parametrize("side", ["base", "converted"])
+def test_operand_measure_counting_an_expression_is_rejected_not_ignored(runtime_factory, side):
+    runtime = runtime_factory("jaffle_shop")
+    report = runtime.validate(
+        _conversion_query(**{f"{side}_measure": "measure.jaffle.new_customer_order_count"})
+    )
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert "measure.jaffle.new_customer_order_count" in error["message"]
+    assert "filter" in error["message"]
+
+
+def test_operand_measure_counting_another_column_is_rejected(runtime_factory):
+    # ordering_customer_count counts distinct customer_id on the orders model.
+    runtime = runtime_factory("jaffle_shop")
+    report = runtime.validate(
+        _conversion_query(base_measure="measure.jaffle.ordering_customer_count")
+    )
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert "counts column 'customer_id'" in error["message"]
+    # No operand filter turns an order count into a customer count.
+    assert "whose rows are the events" in error["message"]
+    assert "'filter'" not in error["message"]
+
+
+_NEW_CUSTOMER_ORDER = {
+    "all": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "=", "value": True}]
+}
+_REPEAT_ORDER = {
+    "all": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "=", "value": False}]
+}
+
+
+def test_first_order_then_repeat_order_via_operand_filters_matches_oracle(runtime_factory):
+    # The supported way to write the rejected measures: count the entity key and
+    # put the condition in the operand filter.
+    runtime = runtime_factory("jaffle_shop")
+    rows = runtime.query(
+        _conversion_query(base_filter=_NEW_CUSTOMER_ORDER, converted_filter=_REPEAT_ORDER)
+    )["rows"]
+    assert len(rows) == 1
+    oracle = runtime._get_adapter().query(
+        """
+        WITH base AS (
+          SELECT order_id, customer_id, ordered_at FROM jaffle_order WHERE is_new_customer_order
+        ), conv AS (
+          SELECT order_id, customer_id, ordered_at FROM jaffle_order WHERE NOT is_new_customer_order
+        )
+        SELECT
+          COUNT(DISTINCT CASE WHEN EXISTS (
+            SELECT 1 FROM conv c
+            WHERE c.customer_id = b.customer_id
+              AND c.ordered_at >= b.ordered_at
+              AND DATE_DIFF(
+                'day', CAST(b.ordered_at AS TIMESTAMP), CAST(c.ordered_at AS TIMESTAMP)
+              ) <= 28
+          ) THEN b.order_id END) * 1.0 / COUNT(DISTINCT b.order_id) AS rate
+        FROM base b
+        """
+    )
+    assert 0 < oracle[0]["rate"] < 1
+    assert rows[0]["a_then_b_conversion_rate"] == oracle[0]["rate"]
+
+
+def _runtime_with_measure(tmp_path: Path, model_file: str, name: str, spec: dict) -> Runtime:
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    model_path = package_dir / "models" / "core" / model_file
+    raw = yaml.safe_load(model_path.read_text(encoding="utf-8"))
+    raw["model"]["measures"][name] = spec
+    model_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return Runtime.from_path(str(package_dir))
+
+
+_EVENT_COUNT = {"kind": "entity_count", "accumulation": {"kind": "event"}, "value_type": "count"}
+
+
+@pytest.mark.parametrize(
+    "counted",
+    [
+        {"expr": {"kind": "column", "column": "order_id", "entity": "entity.jaffle_order"}},
+        {"expr": "jaffle_order.order_id"},
+    ],
+    ids=["entity-qualified", "table-qualified"],
+)
+def test_operand_measure_counting_its_key_is_accepted_however_it_is_written(tmp_path, counted):
+    runtime = _runtime_with_measure(
+        tmp_path, "orders.yml", "keyed_order_count", {**_EVENT_COUNT, **counted}
+    )
+    filters = {"base_filter": _NEW_CUSTOMER_ORDER, "converted_filter": _REPEAT_ORDER}
+    keyed = runtime.query(
+        _conversion_query(base_measure="measure.jaffle.keyed_order_count", **filters)
+    )["rows"]
+    plain = runtime.query(_conversion_query(**filters))["rows"]
+    assert 0 < plain[0]["a_then_b_conversion_rate"] < 1
+    assert keyed == plain
+
+
+def test_operand_measure_spelling_its_key_in_another_case_is_rejected(tmp_path):
+    # ClickHouse treats ORDER_ID and order_id as different columns, so the key must
+    # match exactly; the message shows both spellings.
+    runtime = _runtime_with_measure(
+        tmp_path, "orders.yml", "upper_order_count", {**_EVENT_COUNT, "entity_key": "ORDER_ID"}
+    )
+    report = runtime.validate(_conversion_query(base_measure="measure.jaffle.upper_order_count"))
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert "counts column 'ORDER_ID', not the key 'order_id'" in error["message"]
+
+
+def test_operand_measure_counting_the_key_column_of_another_entity_is_rejected(tmp_path):
+    counted = {"kind": "column", "column": "order_id", "entity": "entity.jaffle_order_lifecycle"}
+    runtime = _runtime_with_measure(
+        tmp_path, "orders.yml", "lifecycle_order_count", {**_EVENT_COUNT, "expr": counted}
+    )
+    report = runtime.validate(
+        _conversion_query(base_measure="measure.jaffle.lifecycle_order_count")
+    )
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert (
+        "counts column 'order_id' of 'entity.jaffle_order_lifecycle', not the key 'order_id'"
+        in error["message"]
+    )
+
+
+def test_fact_model_operand_measure_is_rejected(tmp_path):
+    # A fact-model entity_count measure counts its time column, which is also the time
+    # entity's key, but it counts rows of the fact relation, not of the calendar table
+    # that conversion lowering reads.
+    # Matched on the time entity, which the measure can reach, it used to validate and read
+    # the calendar table instead of the rollup.
+    runtime = _runtime_with_measure(tmp_path, "daily_metrics.yml", "rollup_day_count", _EVENT_COUNT)
+    report = runtime.validate(
+        _conversion_query(
+            base_measure="measure.jaffle.rollup_day_count",
+            converted_measure="measure.jaffle.rollup_day_count",
+            entity="entity.jaffle_time",
+        )
+    )
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert "counts rows of 'jaffle_daily_metric_rollup'" in error["message"]
+
+
+def test_curated_conversion_metric_on_an_expression_measure_fails_package_validation(tmp_path):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    metrics_path = package_dir / "metrics" / "extensions" / "advanced_metrics.yml"
+    raw = yaml.safe_load(metrics_path.read_text(encoding="utf-8"))
+    metric = raw["metrics"]["sales.session_to_order_conversion_rate_7d"]
+    metric["expression"]["converted"]["measure"] = "new_customer_order_count"
+    metrics_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
+
+    assert report["ok"] is False
+    failed = [probe for probe in report["probes"] if not probe["ok"]]
+    assert [probe["object_id"] for probe in failed] == [
+        "metric.sales.session_to_order_conversion_rate_7d"
+    ]
+    assert failed[0]["error"]["code"] == "CONVERSION_NOT_SUPPORTED"
