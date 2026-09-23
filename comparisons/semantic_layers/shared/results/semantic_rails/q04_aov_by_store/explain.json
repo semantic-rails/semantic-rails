@@ -101,8 +101,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.986,
-      "compile_ms": 3.743,
+      "cache_lookup_ms": 0.982,
+      "compile_ms": 0.53,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
