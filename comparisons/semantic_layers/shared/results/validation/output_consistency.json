@@ -1,6 +1,6 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
-  "generated_at": "2026-09-23T01:34:47+00:00",
+  "generated_at": "2026-09-23T02:17:54+00:00",
   "questions": [
     {
       "comparable_layers": [
@@ -331,6 +331,9 @@
       },
       "question_id": "q01_orders_by_month",
       "slice": "shared",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Orders By Month"
     },
     {
@@ -914,6 +917,9 @@
       },
       "question_id": "q02_revenue_by_store_by_month",
       "slice": "shared",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Revenue By Store By Month"
     },
     {
@@ -1677,6 +1683,9 @@
       },
       "question_id": "q03_item_revenue_by_product_type_by_month",
       "slice": "shared",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Item Revenue By Product Type By Month"
     },
     {
@@ -1768,6 +1777,9 @@
       },
       "question_id": "q04_aov_by_store",
       "slice": "shared",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Average Order Value By Store"
     },
     {
@@ -2459,6 +2471,9 @@
       },
       "question_id": "q05_orders_and_item_revenue_by_store_by_month",
       "slice": "shared",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Orders And Item Revenue In One Query"
     },
     {
@@ -2790,6 +2805,9 @@
       },
       "question_id": "q06_new_customer_orders_by_month",
       "slice": "shared",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "New Customer Orders By Month"
     },
     {
@@ -3077,6 +3095,9 @@
       },
       "question_id": "q07_delivered_revenue_by_month",
       "slice": "shared",
+      "stale_captures": {
+        "snowflake_semantic_views": "mismatched"
+      },
       "title": "Delivered Revenue By Month"
     },
     {
@@ -4080,6 +4101,9 @@
       },
       "question_id": "q08_revenue_by_customer_segment_as_of_order_time",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Revenue By Historical Customer Segment"
     },
     {
@@ -4147,6 +4171,9 @@
       },
       "question_id": "q09_session_to_order_conversion_7d",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Session To Order Conversion Within 7 Days"
     },
     {
@@ -4478,6 +4505,9 @@
       },
       "question_id": "q10_orders_from_customers_with_10plus_orders_in_month",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Orders From Customers With 10 Plus Orders In Month"
     },
     {
@@ -5061,6 +5091,9 @@
       },
       "question_id": "q11_repeat_customer_orders_by_store_by_month",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Repeat Customer Orders By Store By Month"
     },
     {
@@ -5392,6 +5425,9 @@
       },
       "question_id": "q12_orders_by_month_with_lifetime_spend_500_filter",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Orders By Month With Lifetime Spend Filter"
     },
     {
@@ -14195,6 +14231,9 @@
       },
       "question_id": "q13_daily_orders_from_customers_with_10plus_orders_in_month",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Daily Orders From Customers With 10 Plus Orders In Month"
     },
     {
@@ -14778,6 +14817,9 @@
       },
       "question_id": "q14_revenue_from_customers_with_10plus_orders_same_store_month",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Revenue From Customers With 10 Plus Orders In Same Store Month"
     },
     {
@@ -14845,6 +14887,9 @@
       },
       "question_id": "q15_same_store_session_to_order_conversion_7d",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "matched"
+      },
       "title": "Same Store Session To Order Conversion Within 7 Days"
     },
     {
@@ -15698,6 +15743,9 @@
       },
       "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
       "slice": "semantic_rails_targeted",
+      "stale_captures": {
+        "snowflake_semantic_views": "mismatched"
+      },
       "title": "Revenue By Historical Customer Segment As Of Delivered Time"
     }
   ],

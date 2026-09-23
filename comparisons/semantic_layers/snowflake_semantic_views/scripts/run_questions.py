@@ -5,7 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +142,15 @@ def ensure_success(result: subprocess.CompletedProcess[str], *, context: str) ->
     return parse_json_stdout(result.stdout)
 
 
+DATASET_SQL = "SELECT FINGERPRINT FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_DATASET;"
+
+
+def loaded_fingerprint(rows: list[dict[str, Any]]) -> str | None:
+    """The one dataset fingerprint loaded with the tables, or None (the run is then stale)."""
+    values = {str(row.get("FINGERPRINT") or "") for row in rows}
+    return values.pop() if len(values) == 1 and "" not in values else None
+
+
 def main() -> None:
     if SHARED_RESULTS_ROOT.exists():
         shutil.rmtree(SHARED_RESULTS_ROOT)
@@ -158,6 +167,13 @@ def main() -> None:
     write_json(
         SHARED_RESULTS_ROOT / "verify_trial_load.json",
         ensure_success(verify, context="verify_trial_load.sql"),
+    )
+
+    dataset = run_snow_sql(query=DATASET_SQL)
+    fingerprint = (
+        loaded_fingerprint(extract_rows(parse_json_stdout(dataset.stdout)))
+        if dataset.returncode == 0
+        else None
     )
 
     create = run_snow_sql(file_path=CREATE_SQL_PATH)
@@ -222,7 +238,8 @@ def main() -> None:
     write_json(
         SHARED_RESULTS_ROOT / "summary.json",
         {
-            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "dataset_fingerprint": fingerprint,
             "layer": "snowflake_semantic_views",
             "connection": CONNECTION_NAME,
             "semantic_view": SEMANTIC_VIEW_FQN,

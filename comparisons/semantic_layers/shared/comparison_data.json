@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-23T01:34:48+00:00",
+  "generated_at": "2026-09-23T02:17:54+00:00",
   "headline_findings": [
     "All 16 questions return matching normalized outputs across the 5 layers run on the current dataset.",
     "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not been re-run, so it is left out of that count. Its capture matches on 14 questions and differs on: q07, q16.",

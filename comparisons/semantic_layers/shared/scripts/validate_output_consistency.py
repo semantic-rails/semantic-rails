@@ -382,6 +382,9 @@ def main() -> None:
                 equal, detail = _rows_equal(reference_rows, normalized_rows_by_layer[layer])
                 if layer in stale_layers:
                     stale_checks[layer]["matched" if equal else "mismatched"].append(question_id)
+                    question_result.setdefault("stale_captures", {})[layer] = (
+                        "matched" if equal else "mismatched"
+                    )
                 elif not equal:
                     mismatches.append(
                         {
@@ -481,7 +484,9 @@ def main() -> None:
         elif item["comparison_status"] == "not_comparable":
             markdown_lines.append(f"- Reason: {item['reason']}")
         else:
-            markdown_lines.append(f"- Comparable layers: `{', '.join(item['comparable_layers'])}`")
+            markdown_lines.append(f"- Layers compared: `{', '.join(item['current_layers'])}`")
+        for layer, status in item.get("stale_captures", {}).items():
+            markdown_lines.append(f"- Stale capture, not counted: `{layer}` {status}")
         markdown_lines.append("")
 
     (OUTPUT_DIR / "output_consistency.md").write_text("\n".join(markdown_lines), encoding="utf-8")

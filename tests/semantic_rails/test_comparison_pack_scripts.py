@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import importlib.util
 import itertools
+import json
+import subprocess
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -211,3 +213,109 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
         "been re-run, so it is left out of that count. Its capture matches on 14 questions and "
         "differs on: q07, q16."
     )
+
+
+def _load_snowflake_runner() -> ModuleType:
+    path = SCRIPTS.parents[1] / "snowflake_semantic_views" / "scripts" / "run_questions.py"
+    spec = importlib.util.spec_from_file_location("snowflake_runner", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_snowflake_run_records_only_one_agreed_fingerprint() -> None:
+    loaded = _load_snowflake_runner().loaded_fingerprint
+    assert loaded([{"FINGERPRINT": "abc"}]) == "abc"
+    assert loaded([{"FINGERPRINT": "abc"}, {"FINGERPRINT": "abc"}]) == "abc"
+    assert loaded([{"FINGERPRINT": "abc"}, {"FINGERPRINT": "def"}]) is None
+    assert loaded([]) is None
+    assert loaded([{"FINGERPRINT": None}]) is None
+
+
+def _run_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snowflake: dict) -> dict:
+    """Run the output check on a three-layer, one-question pack whose Snowflake run is given."""
+    layers = ["semantic_rails", "ktx", "snowflake_semantic_views"]
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "questions.yml").write_text(
+        "questions:\n  - id: q01_x\n    title: X\n    scope_level: required\n", encoding="utf-8"
+    )
+    rows = {layer: [{"order_month": "2016-09-01", "orders": 5}] for layer in layers[:2]}
+    rows["snowflake_semantic_views"] = [
+        {"order_month": "2016-09-01", "orders": snowflake["orders"]}
+    ]
+    for layer in layers:
+        layer_dir = tmp_path / "results" / layer
+        layer_dir.mkdir(parents=True)
+        payload = {"rows": rows[layer]} if layer == "semantic_rails" else rows[layer]
+        (layer_dir / "q01_x.json").write_text(json.dumps(payload), encoding="utf-8")
+        fingerprint = snowflake["fingerprint"] if layer == "snowflake_semantic_views" else "fp-now"
+        summary = {
+            "dataset_fingerprint": fingerprint,
+            "generated_at": "2026-09-23T00:00:00+00:00",
+            "questions": [
+                {
+                    "question_id": "q01_x",
+                    "status": "native",
+                    "result_path": f"results/{layer}/q01_x.json",
+                }
+            ],
+        }
+        (layer_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    for name, value in {
+        "REPO_ROOT": tmp_path,
+        "RESULTS_ROOT": tmp_path / "results",
+        "QUESTIONS_PATH": tmp_path / "questions.yml",
+        "OUTPUT_DIR": tmp_path / "validation",
+        "RUNNABLE_LAYERS": layers,
+        "RESULT_DIRS": {layer: layer for layer in layers},
+        "QUESTION_FIELDS": {"q01_x": ["month", "orders"]},
+        "dataset_fingerprint": lambda: "fp-now",
+    }.items():
+        monkeypatch.setattr(validator, name, value)
+    validator.main()
+    report = json.loads((tmp_path / "validation" / "output_consistency.json").read_text())
+    report["markdown"] = (tmp_path / "validation" / "output_consistency.md").read_text()
+    return report
+
+
+def test_fresh_snowflake_run_rejoins_the_comparison(tmp_path, monkeypatch) -> None:
+    matching = _run_validator(tmp_path / "a", monkeypatch, {"fingerprint": "fp-now", "orders": 5})
+    assert matching["stale_layers"] == {}
+    assert matching["summary"]["matched"] == 1
+    mismatching = _run_validator(
+        tmp_path / "b", monkeypatch, {"fingerprint": "fp-now", "orders": 6}
+    )
+    assert mismatching["summary"]["mismatched"] == 1
+    assert mismatching["questions"][0]["mismatches"][0]["layer"] == "snowflake_semantic_views"
+
+
+def test_stale_snowflake_capture_is_set_aside_and_reported(tmp_path, monkeypatch) -> None:
+    report = _run_validator(tmp_path, monkeypatch, {"fingerprint": None, "orders": 6})
+    assert report["summary"]["matched"] == 1
+    assert report["stale_layers"]["snowflake_semantic_views"]["mismatched"] == ["q01_x"]
+    assert "- Layers compared: `semantic_rails, ktx`" in report["markdown"]
+    assert (
+        "- Stale capture, not counted: `snowflake_semantic_views` mismatched" in report["markdown"]
+    )
+
+
+def test_snowflake_runner_records_the_loaded_fingerprint(tmp_path, monkeypatch) -> None:
+    runner = _load_snowflake_runner()
+    examples = tmp_path / "query_examples.sql"
+    examples.write_text("-- q01_orders_by_month\nSELECT 1;\n", encoding="utf-8")
+
+    def snow_sql(*, query=None, file_path=None):
+        rows = [{"FINGERPRINT": "fp-now"}] if query == runner.DATASET_SQL else []
+        return subprocess.CompletedProcess([], 0, stdout=json.dumps(rows), stderr="")
+
+    monkeypatch.setattr(runner, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "SHARED_RESULTS_ROOT", tmp_path / "results")
+    monkeypatch.setattr(runner, "QUERY_EXAMPLES_PATH", examples)
+    monkeypatch.setattr(runner, "run_snow_sql", snow_sql)
+    monkeypatch.setattr(
+        runner, "run_command", lambda args, **_: subprocess.CompletedProcess(args, 0, "", "")
+    )
+    runner.main()
+    summary = json.loads((tmp_path / "results" / "summary.json").read_text())
+    assert summary["dataset_fingerprint"] == "fp-now"

@@ -30,6 +30,14 @@ This folder is an executed Snowflake Semantic Views pack backed by the default S
 - Support labels (provisional, assigned by the Semantic Rails authors): `7 native`, `9 workaround`
 - Output check: 14 of 16 questions match the normalized `Semantic Rails` outputs. q07 and q16 do not: this capture loaded the `comparison_order_lifecycle` view when it held only the 11 hand-authored lifecycle rows. The view now passes every order through. Re-running `scripts/export_trial_csvs.sh` and the steps below would load the current data.
 
+## Dataset Provenance
+
+`scripts/export_trial_csvs.sh` also exports `comparison_dataset`, the shared dataset's
+fingerprint, and `load_trial_csvs.sql` loads it into `COMPARISON_DATASET`. The runner reads it
+back and records it as `dataset_fingerprint` in its summary. A run is compared with the other
+layers only when that fingerprint matches the current dataset. Otherwise, as for the
+2026-04-06 capture that predates this table, it is reported as stale.
+
 ## Trial Account Workflow
 
 1. Run `trial_setup.sql`.
