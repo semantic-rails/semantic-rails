@@ -207,3 +207,22 @@ def test_cross_process_writers_from_one_base_are_serialized(tmp_path: Path) -> N
     conflict = next(report for report in reports if not report["ok"])
     assert conflict["error"]["code"] == "CONFIG_CONFLICT"
     assert conflict["error"]["details"]["conflict_kind"] == "stale_revision"
+
+
+def test_a_retried_new_file_write_replays(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path, "retry_write")
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    request = {
+        "relative_path": "docs/notes.md",
+        "content": "# Notes\n",
+        "overwrite": False,
+        "expected_revision": project.revision(),
+        "idempotency_key": "write-notes",
+    }
+
+    first = project.write_file(**request)
+    again = project.write_file(**request)
+
+    assert first.report["ok"] is True, first.report
+    # overwrite=false would refuse the file the first call created; the retry replays instead.
+    assert again.report["status"] == "replayed"

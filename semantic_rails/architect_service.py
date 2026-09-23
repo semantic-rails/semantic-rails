@@ -2272,15 +2272,23 @@ class ArchitectProject:
     ) -> ArchitectMutation:
         """Write one raw UTF-8 project file through the transaction boundary."""
 
-        expected, key = self._mutation_identity(expected_revision, idempotency_key)
         path = self._target_path(relative_path)
+        relative = self._relative(path)
+        intent = {
+            "operation": "write_project_file",
+            "relative_path": relative,
+            "content": str(content),
+            "overwrite": overwrite,
+        }
+        expected, key, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay  # the first call may have created the file overwrite=false refuses
         if path.exists() and not overwrite:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 "Target file exists and overwrite=false",
                 details={"relative_path": relative_path},
             )
-        relative = self._relative(path)
         outcome = ProjectTransaction(
             self.project_path,
             workspace_root=self.workspace_root,
@@ -2294,13 +2302,7 @@ class ArchitectProject:
             ],
             expected_revision=expected,
             idempotency_key=key,
-            intent={
-                "operation": "write_project_file",
-                "expected_revision": expected,
-                "relative_path": relative,
-                "content": str(content),
-                "overwrite": overwrite,
-            },
+            intent={**intent, "expected_revision": expected},
             dry_run=dry_run,
             validate_after=validate_after,
             success_status="written",
