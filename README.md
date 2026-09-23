@@ -160,10 +160,10 @@ tools and offer caching or pre-aggregation. Semantic Rails is narrower: an engin
 built around the agent loop above, which you can run locally or embed.
 
 The [comparison pack](comparisons/semantic_layers/) runs the same 16 questions
-through six layers. It measures whether each layer can express a question as a
-governed primitive, not performance. Read its methodology disclosure first: 9 of the
-16 questions target features Semantic Rails ships natively, and Semantic Rails is
-also the reference its answers are checked against. Its
+through six layers. It compares capability, not performance, and its support labels
+are provisional. Read its methodology disclosure first: 9 of the 16 questions were
+chosen to exercise primitives Semantic Rails ships, and Semantic Rails is also the
+reference its answers are checked against. Its
 [output consistency check](comparisons/semantic_layers/shared/results/validation/output_consistency.md)
 currently reports 14 of the 16 answers matching across all six layers.
 
