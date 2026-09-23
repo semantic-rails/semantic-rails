@@ -1,10 +1,11 @@
 {
-  "generated_at": "2026-09-22T20:31:22-04:00",
+  "generated_at": "2026-09-22T21:01:40-04:00",
   "claims": [
     "14 of 16 questions return matching normalized outputs across all 6 layers. 2 do not match: q07 Delivered Revenue By Month; q16 Revenue By Historical Customer Segment As Of Delivered Time.",
+    "On q07 and q16: MetricFlow, Cube, Malloy, Snowflake Semantic Views and KtX agree with each other; Semantic Rails differs.",
     "Shared questions (q01-q07): 6 of 7 match. Semantic-Rails-targeted questions (q08-q16): 8 of 9 match.",
     "9 of the 16 questions (q08-q16) were chosen to exercise features Semantic Rails ships. The Semantic Rails authors wrote every layer's models and assigned every support label, and several layers are not yet modeled with native features they ship, so these questions are a capability showcase, not a ranking.",
-    "Semantic Rails is labeled native whenever its query validates. Its q11 and q12 answers read the precomputed customer columns `lifetime_order_count` and `lifetime_spend_cents`; MetricFlow's helper views for the same questions read the same columns and are labeled precomputed."
+    "Every layer answers q11 and q12 from the same precomputed customer columns, `lifetime_order_count` and `lifetime_spend_cents`, yet the labels differ: q11 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. q12 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. Semantic Rails is labeled native whenever its query validates."
   ],
   "layers": [
     {
@@ -13,13 +14,6 @@
       "version": "0.2.1",
       "captured": "2026-09-23",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 16,
-        "workaround": 0,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
-      },
       "status_totals_by_slice": {
         "shared": {
           "native": 7,
@@ -41,15 +35,8 @@
       "id": "metricflow",
       "label": "MetricFlow",
       "version": "dbt-metricflow 0.11.0 / dbt-duckdb 1.10.1",
-      "captured": "by 2026-06-23 (exact date not recorded)",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 9,
-        "workaround": 0,
-        "precomputed": 7,
-        "doc_backed": 0,
-        "unsupported": 0
-      },
       "status_totals_by_slice": {
         "shared": {
           "native": 7,
@@ -71,15 +58,8 @@
       "id": "cube",
       "label": "Cube",
       "version": "1.6.32",
-      "captured": "by 2026-06-23 (exact date not recorded)",
+      "captured": "2026-04-07",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 6,
-        "workaround": 4,
-        "precomputed": 6,
-        "doc_backed": 0,
-        "unsupported": 0
-      },
       "status_totals_by_slice": {
         "shared": {
           "native": 6,
@@ -101,15 +81,8 @@
       "id": "malloy",
       "label": "Malloy",
       "version": "0.0.52",
-      "captured": "by 2026-06-23 (exact date not recorded)",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
-      },
       "status_totals_by_slice": {
         "shared": {
           "native": 7,
@@ -131,15 +104,8 @@
       "id": "snowflake_semantic_views",
       "label": "Snowflake Semantic Views",
       "version": "Snowflake CLI + semantic view trial account",
-      "captured": "2026-04-06",
+      "captured": "2026-04-07",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
-      },
       "status_totals_by_slice": {
         "shared": {
           "native": 7,
@@ -161,15 +127,8 @@
       "id": "ktx",
       "label": "KtX",
       "version": "ktx-sl 0.13.1 / KtX a155c0b",
-      "captured": "by 2026-06-23 (exact date not recorded)",
+      "captured": "by 2026-06-24 (exact date not recorded)",
       "setup_status": "executed",
-      "status_totals": {
-        "native": 7,
-        "workaround": 9,
-        "precomputed": 0,
-        "doc_backed": 0,
-        "unsupported": 0
-      },
       "status_totals_by_slice": {
         "shared": {
           "native": 7,

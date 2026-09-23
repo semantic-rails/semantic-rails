@@ -1,5 +1,6 @@
 {
-  "generated_at": "2026-09-23T00:31:21+00:00",
+  "engine_files_modified": false,
+  "generated_at": "2026-09-23T01:01:19+00:00",
   "layer": "semantic_rails",
   "package_id": "comparison_semantic_rails",
   "questions": [
@@ -132,5 +133,7 @@
       "status": "native"
     }
   ],
+  "semantic_rails_commit": "95810a1348e7c57fd3f681fb600679b3bd23b539",
+  "semantic_rails_tree": "e78ee078a4e5d3d6bcd05262461f8a7e465a57fb",
   "semantic_rails_version": "0.2.1"
 }

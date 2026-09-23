@@ -16,7 +16,7 @@
 
 ## Support Labels
 
-The labels are provisional. The Semantic Rails authors currently assign them by hand for each competitor, and Semantic Rails is labeled `native` whenever its query validates, even though its q11 and q12 answers read precomputed customer columns. An executable rubric that applies one rule to every layer is in progress.
+The labels are provisional. The Semantic Rails authors currently assign them by hand for each competitor, and Semantic Rails is labeled `native` whenever its query validates. Every layer, Semantic Rails included, answers q11 and q12 from the same precomputed customer columns, yet those two questions carry three different labels. An executable rubric that applies one rule to every layer is in progress.
 
 - `native`: expressed cleanly with the layer's normal semantic-model constructs and executed.
 - `workaround`: executed, but required awkward extra modeling, manual SQL, or a non-idiomatic query path.

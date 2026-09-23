@@ -24,6 +24,7 @@ RUNNABLE_LAYERS = [
     "snowflake_semantic_views",
     "ktx",
 ]
+REFERENCE_LAYER = "semantic_rails"
 DECIMAL_TOLERANCE = Decimal("0.000001")
 NUMERIC_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 # Published scoring keeps the 7 shared questions apart from the 9 that were chosen to
@@ -77,7 +78,15 @@ def _read_json(path: Path) -> Any:
 
 def _load_questions() -> dict[str, dict[str, Any]]:
     payload = yaml.safe_load(QUESTIONS_PATH.read_text(encoding="utf-8"))
-    return {question["id"]: question for question in payload["questions"]}
+    questions = {question["id"]: question for question in payload["questions"]}
+    unknown = sorted(
+        qid for qid, question in questions.items() if question["scope_level"] not in SLICE_BY_SCOPE
+    )
+    if unknown:
+        raise SystemExit(
+            f"questions.yml has a scope_level outside {sorted(SLICE_BY_SCOPE)}: {unknown}"
+        )
+    return questions
 
 
 def _load_summary(layer: str) -> dict[str, Any]:
@@ -277,6 +286,19 @@ def _rows_equal(
     return True, None
 
 
+def _agreement_groups(rows_by_layer: dict[str, list[dict[str, Any]]]) -> list[list[str]]:
+    """Group layers whose normalized rows are equal, so a report says who disagrees with whom."""
+    groups: list[list[str]] = []
+    for layer, rows in rows_by_layer.items():
+        for group in groups:
+            if _rows_equal(rows_by_layer[group[0]], rows)[0]:
+                group.append(layer)
+                break
+        else:
+            groups.append([layer])
+    return groups
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
@@ -320,15 +342,17 @@ def main() -> None:
             "comparable_layers": comparable_layers,
         }
 
-        if len(comparable_layers) < 2:
+        if len(comparable_layers) < 2 or REFERENCE_LAYER not in comparable_layers:
             question_result["comparison_status"] = "not_comparable"
-            question_result["reason"] = "Fewer than two runnable layers executed this question."
+            question_result["reason"] = (
+                f"Fewer than two layers, or not {REFERENCE_LAYER}, executed this question."
+            )
             summary_counts["not_comparable"] += 1
         else:
-            reference_rows = normalized_rows_by_layer["semantic_rails"]
+            reference_rows = normalized_rows_by_layer[REFERENCE_LAYER]
             mismatches: list[dict[str, Any]] = []
             for layer in comparable_layers:
-                if layer == "semantic_rails":
+                if layer == REFERENCE_LAYER:
                     continue
                 equal, detail = _rows_equal(reference_rows, normalized_rows_by_layer[layer])
                 if not equal:
@@ -341,6 +365,7 @@ def main() -> None:
             if mismatches:
                 question_result["comparison_status"] = "mismatched"
                 question_result["mismatches"] = mismatches
+                question_result["agreement_groups"] = _agreement_groups(normalized_rows_by_layer)
                 summary_counts["mismatched"] += 1
             else:
                 question_result["comparison_status"] = "matched"
@@ -368,7 +393,7 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report = {
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "reference_layer": "semantic_rails",
+        "reference_layer": REFERENCE_LAYER,
         "summary": summary_counts,
         "summary_by_slice": summary_by_slice,
         "questions": results,
@@ -380,7 +405,7 @@ def main() -> None:
     markdown_lines = [
         "# Output Consistency",
         "",
-        f"Generated at `{report['generated_at']}` using `semantic_rails` as the reference layer.",
+        f"Generated at `{report['generated_at']}` using `{REFERENCE_LAYER}` as the reference layer.",
         "",
         f"- Matched: `{summary_counts['matched']}`",
         f"- Mismatched: `{summary_counts['mismatched']}`",
@@ -406,8 +431,10 @@ def main() -> None:
         if item["comparison_status"] == "mismatched":
             for mismatch in item["mismatches"]:
                 markdown_lines.append(
-                    f"- Mismatch vs semantic_rails on `{mismatch['layer']}`: `{json.dumps(mismatch['detail'], sort_keys=True)}`"
+                    f"- Mismatch vs {REFERENCE_LAYER} on `{mismatch['layer']}`: `{json.dumps(mismatch['detail'], sort_keys=True)}`"
                 )
+            groups = " | ".join(", ".join(group) for group in item["agreement_groups"])
+            markdown_lines.append(f"- Layers that agree with each other: `{groups}`")
         elif item["comparison_status"] == "not_comparable":
             markdown_lines.append(f"- Reason: {item['reason']}")
         else:

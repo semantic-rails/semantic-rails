@@ -100,8 +100,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.905,
-      "compile_ms": 0.553,
+      "cache_lookup_ms": 1.057,
+      "compile_ms": 2.739,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -2804,11 +2804,11 @@
   "row_count": 2,
   "rows": [
     {
-      "aov_usd": 12.739104407255269,
+      "aov_usd": 12.739104407255143,
       "dimension.jaffle_store_name": "Philadelphia"
     },
     {
-      "aov_usd": 12.085946890286575,
+      "aov_usd": 12.08594689028667,
       "dimension.jaffle_store_name": "Brooklyn"
     }
   ],

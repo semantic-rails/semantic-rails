@@ -23,8 +23,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.573,
-      "compile_ms": 0.5,
+      "cache_lookup_ms": 0.644,
+      "compile_ms": 0.607,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },

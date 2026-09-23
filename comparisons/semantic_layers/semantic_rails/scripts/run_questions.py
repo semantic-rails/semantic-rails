@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -30,10 +31,31 @@ def _write_text(path: Path, payload: str) -> None:
     path.write_text(payload, encoding="utf-8")
 
 
+def _engine_commit() -> tuple[str, str, bool]:
+    """The checkout's commit, the engine source tree hash, and whether engine files differ.
+
+    The tree hash is content-addressed, so it can be checked against a release tag, e.g.
+    `git rev-parse v0.2.1:semantic_rails`.
+    """
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(REPO_ROOT), *args], text=True, capture_output=True, check=True
+        ).stdout.strip()
+
+    engine_paths = ["semantic_rails", "pyproject.toml", "uv.lock"]
+    return (
+        git("rev-parse", "HEAD"),
+        git("rev-parse", "HEAD:semantic_rails"),
+        bool(git("status", "--porcelain", "--", *engine_paths)),
+    )
+
+
 def main() -> None:
     config_module.list_package_paths.cache_clear()
     config_module.list_package_paths = lambda: {PACKAGE_ID: str(PACKAGE_DIR)}  # type: ignore[assignment]
 
+    commit, engine_tree, engine_modified = _engine_commit()
     questions = list(
         (yaml.safe_load(QUESTIONS_PATH.read_text(encoding="utf-8")) or {}).get("questions", [])
         or []
@@ -78,6 +100,9 @@ def main() -> None:
                 "package_id": PACKAGE_ID,
                 # The published comparison states which engine produced this evidence.
                 "semantic_rails_version": version("semantic-rails"),
+                "semantic_rails_commit": commit,
+                "semantic_rails_tree": engine_tree,
+                "engine_files_modified": engine_modified,
                 "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "questions": summary,
             },

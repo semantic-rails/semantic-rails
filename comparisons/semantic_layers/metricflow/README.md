@@ -30,4 +30,4 @@ Notes:
 - The install currently requires `--prerelease=allow` because `dbt-metricflow==0.11.0` resolves through `dbt-semantic-interfaces==0.9.4.dev0`.
 - `order_items.sql` is intentionally enriched with `ordered_at`, `store_id`, and `customer_id` from `jaffle_order` so time and grouping work cleanly in MetricFlow on the shared item grain.
 - q09-q15 are implemented through helper dbt views, so they are labeled `precomputed` rather than native MetricFlow semantics. MetricFlow's native conversion metrics and metric filters are not modeled yet.
-- The committed q07 and q16 answers are stale: they were captured before the seed derived lifecycle rows for every order, so they no longer match what this model's SQL returns today (see the pack README).
+- The committed q07 and q16 answers are stale. They are consistent with a capture made before the seed derived lifecycle rows for every order: this model's committed SQL now returns 12 and 32 rows on the same data, not 1 and 2 (see the pack README).
