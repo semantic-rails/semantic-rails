@@ -952,8 +952,8 @@ def _validate_where_value_type(dim, item) -> None:
     Per-dim `data_type` may be empty when the catalog hasn't classified
     the column; in that case skip the check (nothing to enforce).
     """
-    op = str(item.op or "").upper()
-    values = list(item.value or []) if op in {"IN", "NOT IN"} else [item.value]
+    # Check a list's elements for any op; the lowering rejects a list outside IN / NOT IN.
+    values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:
         return
