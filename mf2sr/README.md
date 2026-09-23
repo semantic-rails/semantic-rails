@@ -52,8 +52,8 @@ Pass `--strict` to exit non-zero when any warning fires.
 | `measures[*].agg: sum_boolean` | `default_agg: sum` over a `kind: case` AST that returns 1/0 |
 | `measures[*].expr: "1"` | `kind: entity_count` over the model's primary entity |
 | `metric.type: simple` | `kind: aggregate` over the named measure |
-| `metric.type: simple` + `filter:` | `kind: aggregate` with `expression: {kind: aggregate, measure, aggregation, filter}` AST |
-| `metric.type: ratio` | `kind: ratio` (or `kind: derived` when either side has a filter) |
+| `metric.type: simple` + `filter:` | `kind: aggregate` with `expression: {kind: aggregate, measure, aggregation, filter: {all: [{field, op, value}]}}`. The metric's filter and its measure input's filter are ANDed, and each `entity__dimension` reference becomes that dimension's id |
+| `metric.type: ratio` | `kind: ratio`, or `kind: derived` when a side is filtered. The metric's filter applies to both sides; a ratio whose filters can't be kept is skipped |
 | `metric.type: cumulative` | `kind: cumulative` with `window:` / `grain_to_date:` propagated |
 | `metric.type: derived` | `kind: derived` with Python-AST-parsed arithmetic expression |
 | `metric.type: conversion` | Stub `kind: conversion`; author must adapt |
@@ -65,7 +65,8 @@ Pass `--strict` to exit non-zero when any warning fires.
 | Entities that appear only as `type: foreign` | Semantic Rails requires every entity to have an owning model. The entity is dropped from the graph; references are stripped from `model.entities` blocks. |
 | `semantic_models` whose primary entity is already owned by an earlier model | The model has nothing to claim. Move its measures into the canonical owning model or rename its primary. |
 | Measures whose SQL `expr:` contains `CASE`, `LIKE`, `COALESCE`, `NULLIF`, etc. | Semantic Rails' expression parser is a Python AST, not a SQL parser. Rewrite the expression as a `kind: case` AST or push the SQL down into the warehouse model. |
-| Filter strings that don't match a recognized Jinja shape | Five common shapes are supported (boolean dimension, dimension `IN (...)`, `NOT Dimension(...)`, `Entity('x') IS NOT NULL`, `Metric('m') > N`). Anything else fires a warning and emits the metric unfiltered. |
+| Filters mf2sr can't translate | A metric keeps its filter when every condition is on one dimension: a boolean dimension, `NOT Dimension(...)`, `IN (...)`, `NOT IN (...)`, `BETWEEN`, or a comparison with a literal (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`). Any other condition fires a warning, and a simple metric is emitted without its filter, so it counts every row. This covers `NOT BETWEEN`, `Metric(...)` predicates, `Entity(...) IS NOT NULL`, `entity_path=`, references to dimensions the project doesn't define, and time dimensions, which MetricFlow compares truncated to their grain. |
+| Metrics that use a skipped metric | Skipped too, with a warning; they would fail at query time. |
 | `derived` expressions that aren't parseable as Python arithmetic | The metric is emitted as a fallback aggregate over the first input metric with the original formula in the description. |
 
 ## Where the output goes

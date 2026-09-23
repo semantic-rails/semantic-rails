@@ -6,6 +6,8 @@ with SQL fragments, for example::
 
     "{{ Dimension('booking__is_instant') }}"
     "{{ Dimension('user__home_state_latest') }} IN ('CA', 'HI', 'WA')"
+    "{{ Dimension('user__home_state_latest') }} NOT IN ('CA')"
+    "{{ Dimension('listing__country') }} = 'US'"
     "NOT {{ Dimension('booking__is_instant') }}"
     "{{ Entity('listing') }} IS NOT NULL"
     "{{ Metric('bookings', group_by=['listing']) }} > 2"
@@ -18,15 +20,20 @@ Anything we cannot match is returned as ``None`` and the caller is
 expected to log a warning and skip the filter (the metric is still
 emitted, just without the unsupported filter).
 
-The shapes returned mirror the runtime AST documented in
-``docs/PACKAGE_AUTHORING.md``::
+``parse_filter`` returns one expression AST per recognized shape::
 
     {kind: comparison, op: "=", left: {kind: column, column: ...}, right: {kind: literal, value: true}}
     {kind: in,         expr: {kind: column, column: ...}, values: [{kind: literal, value: ...}, ...]}
+    {kind: not_in,     expr: {kind: column, column: ...}, values: [{kind: literal, value: ...}, ...]}
+    {kind: comparison, op: "=", left: {kind: column, column: ...}, right: {kind: literal, value: ...}}
     {kind: comparison, op: "!=", left: {kind: column, column: ...}, right: {kind: literal, value: null}}
     {kind: metric_predicate, input: {...}, op: ">", value: 2}
     {kind: between,    expr: {kind: column, column: ...}, low: {...}, high: {...}}
     {kind: not_between, expr: {kind: column, column: ...}, low: {...}, high: {...}}
+
+A measure's filter is applied only in the ``{all: [{field, op, value}]}``
+form, with each field named by dimension id, so the translator writes
+what ``filter_clauses`` returns rather than these ASTs.
 """
 
 from __future__ import annotations
@@ -36,6 +43,9 @@ from typing import Any
 
 _JINJA_RE = re.compile(r"\{\{\s*(\w+)\(([^)]*)\)\s*\}\}")
 _DIM_NAME_RE = re.compile(r"['\"]([\w.]+?__)?(\w+)['\"]")
+# One SQL literal: a quoted string (a doubled quote escapes itself) or a number.
+_LITERAL = r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|-?\d+(?:\.\d+)?"
+_LITERAL_LIST_RE = re.compile(rf"\s*(?:{_LITERAL})\s*(?:,\s*(?:{_LITERAL})\s*)*")
 
 
 def _parse_dim_arg(arg: str) -> str:
@@ -52,17 +62,14 @@ def _parse_dim_arg(arg: str) -> str:
     return m.group(2)
 
 
-def _parse_value_list(literal: str) -> list[Any]:
+def _parse_value_list(literal: str) -> list[Any] | None:
     """Parse a comma-separated SQL value list like ``'CA', 'HI', 'WA'``
-    into a Python list of strings/numbers. Strips quotes; coerces
-    bare integers/floats."""
-    raw_parts = [p.strip() for p in literal.split(",")]
-    values: list[Any] = []
-    for part in raw_parts:
-        if not part:
-            continue
-        values.append(_coerce_scalar(part))
-    return values
+    into a Python list of strings/numbers, or ``None`` when it is
+    anything but literals separated by commas (a quoted comma stays in
+    its value)."""
+    if not _LITERAL_LIST_RE.fullmatch(literal):
+        return None
+    return [_coerce_scalar(token) for token in re.findall(_LITERAL, literal)]
 
 
 def _coerce_scalar(token: str) -> Any:
@@ -75,7 +82,9 @@ def _coerce_scalar(token: str) -> Any:
     if (part.startswith("'") and part.endswith("'")) or (
         part.startswith('"') and part.endswith('"')
     ):
-        return part[1:-1]
+        return part[1:-1].replace(part[0] * 2, part[0])
+    if part.upper() in {"TRUE", "FALSE"}:
+        return part.upper() == "TRUE"
     try:
         if "." in part:
             return float(part)
@@ -123,10 +132,42 @@ def parse_filter(filter_str: str) -> dict[str, Any] | None:
     if m:
         col = _parse_dim_arg(m.group(1))
         values = _parse_value_list(m.group(2))
+        if values is None:
+            return None
         return {
             "kind": "in",
             "expr": {"kind": "column", "column": col},
             "values": [{"kind": "literal", "value": v} for v in values],
+        }
+
+    # 3b) Dimension NOT IN (...): "{{ Dimension('x__y') }} NOT IN ('A', 'B')"
+    m = re.fullmatch(
+        r"\{\{\s*Dimension\(([^)]*)\)\s*\}\}\s+NOT\s+IN\s*\(\s*(.*?)\s*\)",
+        raw,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        values = _parse_value_list(m.group(2))
+        if values is None:
+            return None
+        return {
+            "kind": "not_in",
+            "expr": {"kind": "column", "column": _parse_dim_arg(m.group(1))},
+            "values": [{"kind": "literal", "value": v} for v in values],
+        }
+
+    # 3c) Dimension compared with a literal: "{{ Dimension('x__y') }} = 'A'"
+    m = re.fullmatch(
+        rf"\{{\{{\s*Dimension\(([^)]*)\)\s*\}}\}}\s*(<>|!=|<=|>=|=|<|>)\s*({_LITERAL}|TRUE|FALSE)",
+        raw,
+        re.IGNORECASE,
+    )
+    if m:
+        return {
+            "kind": "comparison",
+            "op": "!=" if m.group(2) == "<>" else m.group(2),
+            "left": {"kind": "column", "column": _parse_dim_arg(m.group(1))},
+            "right": {"kind": "literal", "value": _coerce_scalar(m.group(3))},
         }
 
     # 4) Entity IS NOT NULL: "{{ Entity('x') }} IS NOT NULL"
@@ -190,3 +231,67 @@ def parse_filter(filter_str: str) -> dict[str, Any] | None:
         }
 
     return None
+
+
+def filter_clauses(
+    filter_str: str, dimensions: dict[str, str | None]
+) -> tuple[list[dict[str, Any]], str]:
+    """A MetricFlow filter as the engine's measure filter clauses, or why not.
+
+    The engine applies a metric's filter as ``{all: [{field, op, value}]}``,
+    naming each field by dimension id. ``dimensions`` maps MetricFlow's
+    ``entity__dimension`` references to those ids; a time dimension maps to
+    ``None``, because MetricFlow compares it at its own grain rather than as
+    the raw column. Returns ``(clauses, "")``, or ``([], reason)`` when the
+    filter can't be written that way.
+    """
+    node = parse_filter(filter_str)
+    if node is None:
+        return [], f"could not parse filter `{filter_str!r}`"
+    kind = node["kind"]
+    if kind == "metric_predicate":
+        return [], f"filter `{filter_str}` is a metric predicate, which mf2sr doesn't translate"
+    if kind == "not_between":
+        return (
+            [],
+            f"filter `{filter_str}` needs OR (NOT BETWEEN), which a metric filter can't express",
+        )
+    calls = _JINJA_RE.findall(filter_str)
+    if len(calls) != 1:
+        return (
+            [],
+            f"filter `{filter_str}` names {len(calls)} objects; mf2sr translates one dimension",
+        )
+    function, arguments = calls[0]
+    if function != "Dimension":
+        return (
+            [],
+            f"filter `{filter_str}` tests {'an entity' if function == 'Entity' else function}, not a dimension",
+        )
+    reference = arguments.strip()
+    quoted = re.fullmatch(r"(['\"])([\w.]+)\1", reference)
+    if quoted is None:
+        return (
+            [],
+            f"filter `{filter_str}`: mf2sr doesn't translate Dimension options such as entity_path",
+        )
+    reference = quoted.group(2)
+    if reference not in dimensions:
+        return [], f"filter `{filter_str}`: `{reference}` is not a dimension in this project"
+    field = dimensions[reference]
+    if field is None:
+        return [], (
+            f"filter `{filter_str}` compares time dimension `{reference}`, which MetricFlow "
+            "truncates to its grain and mf2sr doesn't translate"
+        )
+    if kind == "comparison":
+        return [{"field": field, "op": node["op"], "value": node["right"]["value"]}], ""
+    if kind in {"in", "not_in"}:
+        values = [value["value"] for value in node["values"]]
+        return [{"field": field, "op": "in" if kind == "in" else "not in", "value": values}], ""
+    if kind == "between":
+        return [
+            {"field": field, "op": ">=", "value": node["low"]["value"]},
+            {"field": field, "op": "<=", "value": node["high"]["value"]},
+        ], ""
+    return [], f"filter `{filter_str}` has a shape mf2sr doesn't translate"

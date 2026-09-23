@@ -28,7 +28,7 @@ from typing import Any
 import yaml
 
 from . import parsers
-from .filter_parser import parse_filter
+from .filter_parser import filter_clauses
 
 # ---------------------------------------------------------------------------
 # Aggregation name mapping
@@ -115,6 +115,7 @@ def translate(
     report = TranslationReport(package_dir=out_root)
 
     graph = _build_graph(raw["semantic_models"], report)
+    dimension_ids = _dimension_ids(raw["semantic_models"], graph, namespace)
     _write_package_yml(
         out_root,
         package_id=package_id,
@@ -163,6 +164,7 @@ def translate(
             measure_owner=measure_owner,
             measure_value_type=measure_to_value_type,
             measure_agg=measure_to_agg,
+            dimension_ids=dimension_ids,
             report=report,
         )
         if translated is None:
@@ -170,6 +172,7 @@ def translate(
         metric_name, metric_doc, owner_hint = translated
         metrics_by_owner.setdefault(owner_hint, []).append((metric_name, metric_doc))
         report.metrics_emitted.append(metric_name)
+    _drop_dependents(metrics_by_owner, metric_names, set(measure_owner), report)
 
     if metrics_by_owner:
         metrics_dir = out_root / "metrics"
@@ -771,30 +774,21 @@ def _normalize_metric_ref(raw: Any) -> dict[str, Any]:
     return {}
 
 
-def _coerce_filter_string(raw: Any) -> str:
-    """MetricFlow's authoring YAML stores filters as plain strings, but
-    the parsed `semantic_manifest.json` wraps them as
-    ``{where_filters: [{where_sql_template: "<jinja>"}]}``. Both forms
-    arrive at the same end state — a Jinja-templated string — so we
-    coerce to a single string here. Multiple where_filters are joined
-    with ``AND`` because that's MetricFlow's semantics.
+def _filter_strings(raw: Any) -> list[str]:
+    """A MetricFlow filter as its separate conditions, which MetricFlow ANDs.
+
+    Authoring YAML holds a string or a list of strings; the parsed
+    ``semantic_manifest.json`` wraps them as
+    ``{where_filters: [{where_sql_template: "<jinja>"}]}``.
     """
-    if raw in (None, ""):
-        return ""
-    if isinstance(raw, str):
-        return raw
     if isinstance(raw, dict):
-        clauses = raw.get("where_filters") or []
-        if not clauses:
-            return ""
-        parts = [c.get("where_sql_template", "") for c in clauses if isinstance(c, dict)]
-        parts = [p.strip() for p in parts if p and p.strip()]
-        if not parts:
-            return ""
-        if len(parts) == 1:
-            return parts[0]
-        return " AND ".join(f"({p})" for p in parts)
-    return ""
+        raw = [
+            clause.get("where_sql_template")
+            for clause in raw.get("where_filters") or []
+            if isinstance(clause, dict)
+        ]
+    items = raw if isinstance(raw, list) else [raw]
+    return [item.strip() for item in items if isinstance(item, str) and item.strip()]
 
 
 def _build_metric(
@@ -803,6 +797,7 @@ def _build_metric(
     measure_owner: dict[str, str],
     measure_value_type: dict[str, str],
     measure_agg: dict[str, str],
+    dimension_ids: dict[str, str | None],
     report: TranslationReport,
 ) -> tuple[str, dict[str, Any], str] | None:
     """Translate a MetricFlow metric. Returns
@@ -814,7 +809,7 @@ def _build_metric(
         return None
     mtype = (metric.get("type") or "simple").lower()
     type_params = metric.get("type_params") or {}
-    filter_str = _coerce_filter_string(metric.get("filter"))
+    metric_filters = _filter_strings(metric.get("filter"))
     # Semantic Rails marks every published metric as "curated" and
     # requires a non-empty description. MetricFlow allows blank
     # descriptions; fall back to the label so the validator passes.
@@ -824,7 +819,8 @@ def _build_metric(
         description = label
 
     if mtype == "simple":
-        measure = _normalize_metric_ref(type_params.get("measure")).get("name")
+        measure_ref = _normalize_metric_ref(type_params.get("measure"))
+        measure = measure_ref.get("name")
         if not measure:
             report.warnings.append(
                 f"metric `{name}`: simple metric missing `type_params.measure.name`"
@@ -832,30 +828,22 @@ def _build_metric(
             return None
         owner = measure_owner.get(measure, "core")
         vt = measure_value_type.get(measure, "number")
-        if filter_str:
-            filt = parse_filter(filter_str)
-            if filt is None:
-                report.warnings.append(
-                    f"metric `{name}`: could not parse filter `{filter_str!r}` — "
-                    "emitting unfiltered metric."
-                )
-                doc = _aggregate_metric_doc(label, description, measure, vt)
-            else:
-                # Filtered aggregate must use the expression AST.
-                doc = {
-                    "label": label,
-                    "description": description,
-                    "kind": "aggregate",
-                    "value_type": vt,
-                    "expression": {
-                        "kind": "aggregate",
-                        "measure": measure,
-                        "aggregation": measure_agg.get(measure, "sum"),
-                        "filter": filt,
-                    },
-                }
-        else:
+        spec, problem = _metric_filter(
+            [*metric_filters, *_filter_strings(measure_ref.get("filter"))], dimension_ids
+        )
+        if problem:
+            report.warnings.append(f"metric `{name}`: {problem}; emitted without its filter")
+        if spec is None:
             doc = _aggregate_metric_doc(label, description, measure, vt)
+        else:
+            # A filtered aggregate is written as the expression AST.
+            doc = {
+                "label": label,
+                "description": description,
+                "kind": "aggregate",
+                "value_type": vt,
+                "expression": _aggregate_ast(measure, spec, measure_agg),
+            }
         return name, doc, owner
 
     if mtype == "ratio":
@@ -866,18 +854,24 @@ def _build_metric(
         if not num_name or not den_name:
             report.warnings.append(f"metric `{name}`: ratio missing numerator/denominator")
             return None
-        # Filters on either side force the derived-AST path.
-        num_filter = _coerce_filter_string(num.get("filter"))
-        den_filter = _coerce_filter_string(den.get("filter"))
-        if num_filter or den_filter or filter_str:
-            report.warnings.append(
-                f"metric `{name}`: ratio uses per-side filters; emitting "
-                "as `kind: derived` with the filter folded into a "
-                "filtered aggregate. If the filter could not be parsed, "
-                "the metric is emitted unfiltered with a warning."
+        # MetricFlow applies the metric's filter to both sides, each ANDed
+        # with its own input filter. A filtered side needs the expression AST.
+        specs: list[dict[str, Any] | None] = []
+        problem = ""
+        for side in (num, den):
+            spec, side_problem = _metric_filter(
+                [*metric_filters, *_filter_strings(side.get("filter"))], dimension_ids
             )
-            num_expr = _filtered_aggregate_ast(num, measure_agg, report, name)
-            den_expr = _filtered_aggregate_ast(den, measure_agg, report, name)
+            specs.append(spec)
+            problem = problem or side_problem
+        if problem:
+            # Without its filters a ratio can divide a measure by itself.
+            report.warnings.append(
+                f"metric `{name}`: {problem}; skipped, since a ratio without its filters is a different ratio"
+            )
+            return None
+        num_spec, den_spec = specs
+        if num_spec or den_spec:
             doc = {
                 "label": label,
                 "description": description,
@@ -886,8 +880,8 @@ def _build_metric(
                 "expression": {
                     "kind": "arithmetic",
                     "op": "divide",
-                    "left": num_expr,
-                    "right": den_expr,
+                    "left": _aggregate_ast(num_name, num_spec, measure_agg),
+                    "right": _aggregate_ast(den_name, den_spec, measure_agg),
                     "null_behavior": "null_if_zero",
                 },
             }
@@ -1021,34 +1015,116 @@ def _aggregate_metric_doc(
     }
 
 
-def _filtered_aggregate_ast(
-    side: dict[str, Any],
-    measure_agg: dict[str, str],
-    report: TranslationReport,
-    metric_name: str,
+def _aggregate_ast(
+    measure: str, spec: dict[str, Any] | None, measure_agg: dict[str, str]
 ) -> dict[str, Any]:
-    """Build an AST node representing one side of a ratio with an
-    optional filter. Falls back to an unfiltered measure ref when the
-    filter cannot be parsed."""
-    measure = side.get("name")
-    if not measure:
-        return {"kind": "literal", "value": 0}
-    base: dict[str, Any] = {
+    node: dict[str, Any] = {
         "kind": "aggregate",
         "measure": measure,
         "aggregation": measure_agg.get(measure, "sum"),
     }
-    filter_str = _coerce_filter_string(side.get("filter"))
-    if filter_str:
-        filt = parse_filter(filter_str)
-        if filt is not None:
-            base["filter"] = filt
-        else:
-            report.warnings.append(
-                f"metric `{metric_name}`: ratio side filter "
-                f"`{filter_str!r}` not parseable — side emitted unfiltered."
-            )
-    return base
+    if spec:
+        node["filter"] = spec
+    return node
+
+
+def _metric_filter(
+    filters: list[str], dimension_ids: dict[str, str | None]
+) -> tuple[dict[str, Any] | None, str]:
+    """MetricFlow filter conditions, ANDed, as the filter the engine applies, or why not.
+
+    That filter is ``{all: [{field, op, value}]}``. When one condition can't
+    be written that way the metric keeps no filter at all (README, "What gets
+    dropped"), so the caller warns with the reason returned.
+    """
+    clauses: list[dict[str, Any]] = []
+    for text in filters:
+        found, problem = filter_clauses(text, dimension_ids)
+        if problem:
+            return None, problem
+        clauses.extend(found)
+    return ({"all": clauses} if clauses else None), ""
+
+
+def _drop_dependents(
+    metrics_by_owner: dict[str, list[tuple[str, dict[str, Any]]]],
+    metric_names: set[str],
+    measure_names: set[str],
+    report: TranslationReport,
+) -> None:
+    """Drop metrics that use a metric mf2sr skipped, which would fail at query time."""
+    skipped = metric_names - set(report.metrics_emitted)
+    while True:
+        dropped = []
+        for entries in metrics_by_owner.values():
+            for name, doc in list(entries):
+                missing = sorted(_metric_refs(doc, measure_names) & skipped)
+                if missing:
+                    report.warnings.append(
+                        f"metric `{name}`: it uses {', '.join(f'`{m}`' for m in missing)}, "
+                        "which mf2sr skipped; skipped too"
+                    )
+                    entries.remove((name, doc))
+                    report.metrics_emitted.remove(name)
+                    dropped.append(name)
+        if not dropped:
+            return
+        skipped.update(dropped)
+
+
+def _metric_refs(doc: dict[str, Any], measure_names: set[str]) -> set[str]:
+    """The metric names a translated metric uses.
+
+    A ratio side names a metric or a measure; the loader falls back to the
+    measure, so a side that names one doesn't count.
+    """
+    refs = {
+        str(doc[side])
+        for side in ("numerator", "denominator")
+        if doc.get(side) and str(doc[side]) not in measure_names
+    }
+    pending: list[Any] = [doc.get("expression")]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            if node.get("kind") == "metric" and node.get("metric"):
+                refs.add(str(node["metric"]))
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    return refs
+
+
+def _dimension_ids(
+    semantic_models: list[dict[str, Any]], graph: dict[str, Any], namespace: str
+) -> dict[str, str | None]:
+    """MetricFlow ``entity__dimension`` references, by the dimension id the loader gives each.
+
+    A dimension belongs to its model's graph entity, and the loader names it
+    ``dimension.<namespace>_<entity>_<dimension>``. A time dimension maps to
+    ``None``: in a filter, MetricFlow compares it truncated to its grain, and
+    its Semantic Rails dimension holds the raw column.
+    """
+    entity_of = {spec["model"]: entity for entity, spec in graph["entities"].items()}
+    ids: dict[str, str | None] = {}
+    for sm in semantic_models:
+        entity = entity_of.get(str(sm.get("name")))
+        if entity is None:
+            continue
+        for dim in sm.get("dimensions") or []:
+            if dim.get("name"):
+                ids[f"{entity}__{dim['name']}"] = (
+                    None
+                    if str(dim.get("type") or "").lower() == "time"
+                    else f"dimension.{namespace}_{_id_part(entity)}_{_id_part(dim['name'])}"
+                )
+    return ids
+
+
+def _id_part(value: str) -> str:
+    """One part of a loader-made id: lowercase words joined by single underscores."""
+    words = "".join(ch.lower() if ch.isalnum() else "_" for ch in value).split("_")
+    return "_".join(word for word in words if word)
 
 
 # ---------------------------------------------------------------------------
