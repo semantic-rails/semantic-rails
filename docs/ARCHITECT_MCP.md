@@ -124,14 +124,20 @@ Python callers use `ArchitectProject.upsert_relationship`.
 ## Package Calendar
 
 `upsert_model` with `calendar: true` makes the model's entity the package calendar. The graph
-entity gets `kind: time` and `allowed_as_root: false`, and the model gets a `calendar_id`
-(`default` unless you pass one; a package has one calendar per `calendar_id`). Only a calendar
-entity may declare `kind: date` dimensions. `time.fill` and calendar bucketing read the calendar
-relation's `date_day`, `week_start`, `month_start`, `quarter_start` and `year_start` columns, so
-declare `date_day` under `times:` with `class: calendar_time` and the coarser grains as `kind: date`
-dimensions, as `configs/semantic_rails/jaffle_shop/models/core/calendar.yml` does. `calendar: false`
-makes the entity regular again; leaving `calendar` out keeps the entity as it is. `upsert_models`
-items take the same fields.
+entity gets `kind: time` and `allowed_as_root: false`, and the model gets a `calendar_id` (`default`
+unless you pass one). Calendar ids are lowercase letters, digits and underscores. A package has one
+calendar per `calendar_id`, and needs a `default` calendar once it has any, because a query without
+a `calendar_id` fills from it. Only a calendar entity may declare `kind: date` dimensions.
+
+`time.fill` and calendar bucketing read the calendar relation's `date_day`, `week_start`,
+`month_start`, `quarter_start` and `year_start` columns. Declare `date_day` under `times:` with
+`class: calendar_time`, and the coarser grains as `kind: date` dimensions, as
+`configs/semantic_rails/jaffle_shop/models/core/calendar.yml` does.
+
+`calendar: false` makes a calendar a regular entity again, once its `kind: date` dimensions have been
+removed; leaving `calendar` out keeps the entity as it is. On a regular model, `calendar_id` binds
+the model's times to an existing calendar, as `time.calendar_id` queries expect.
+`ArchitectProject.upsert_models` items take the same fields.
 
 ## Tool Surface
 

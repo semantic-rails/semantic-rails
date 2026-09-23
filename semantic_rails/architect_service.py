@@ -47,6 +47,10 @@ _RELATIONSHIP_CARDINALITIES = {
 _RELATIONSHIP_SAFETY = ("safe", "requires_rewrite", "unsafe")
 _FLIPPED_DIRECTION = {"forward": "reverse", "reverse": "forward"}
 
+_CALENDAR_ID = re.compile(r"[a-z0-9_]+")
+# Dimension kinds only a calendar entity may carry.
+_DATE_KINDS = frozenset({"date", "timestamp", "datetime", "time"})
+
 _INVENTORY_KINDS = {
     "model": "models",
     "entity": "entities",
@@ -418,13 +422,15 @@ class ArchitectProject:
 
         ``calendar=True`` makes the entity the package calendar for
         ``calendar_id`` (default ``"default"``): ``kind: time``, not a query
-        root. ``calendar=False`` makes it a regular entity again; ``None``
-        leaves it as it is.
+        root. ``calendar=False`` makes a calendar a regular entity again, once
+        its ``kind: date`` dimensions are gone; ``None`` leaves it as it is.
+        On a regular model, ``calendar_id`` binds its times to that calendar.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         documents: dict[Path, dict[str, Any]] = {}
+        raw = self._raw_inventory()
         staged = self._stage_model(
-            self._raw_inventory(),
+            raw,
             documents,
             model_id=model_id,
             entity_key=entity_key,
@@ -440,6 +446,8 @@ class ArchitectProject:
             calendar=calendar,
             calendar_id=calendar_id,
         )
+        if staged["calendar_changed"]:
+            self._check_calendars(raw, documents)
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
         return self._commit(
@@ -568,6 +576,8 @@ class ArchitectProject:
                 )
                 model["entities"] = {**dict(model.get("entities", {}) or {}), target: entry}
                 added.append({"model": fact["model"], "entity": target, "columns": columns})
+        if any(fact["calendar_changed"] for fact in staged):
+            self._check_calendars(raw, documents)
         graph_paths = {fact["graph_path"] for fact in staged}
         model_paths = {fact["model_path"] for fact in staged}
         if not any(fact["graph_changed"] for fact in staged):
@@ -1037,19 +1047,39 @@ class ArchitectProject:
         )
         if label:
             model["label"] = label
-        existing_kind = str((existing_entity.spec if existing_entity else {}).get("kind") or "")
-        is_calendar = calendar if calendar is not None else existing_kind.lower() == "time"
-        if calendar_id and not is_calendar:
+        was_calendar = (
+            str((existing_entity.spec if existing_entity else {}).get("kind") or "").strip().lower()
+            == "time"
+        )
+        requested_calendar = str(calendar_id or "").strip()
+        if requested_calendar and not _CALENDAR_ID.fullmatch(requested_calendar):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                "calendar_id applies to a calendar model; pass calendar: true",
-                details={"model": model_slug},
+                "calendar_id must be lowercase letters, digits and underscores "
+                f"(got {calendar_id!r})",
             )
-        if calendar or (is_calendar and calendar_id):
-            model["calendar_id"] = str(calendar_id or model.get("calendar_id") or "default")
-            self._check_calendar_free(raw, entity_slug, model["calendar_id"])
-        elif calendar is False:
+        if calendar:
+            model["calendar_id"] = requested_calendar or str(model.get("calendar_id") or "default")
+        elif calendar is False and was_calendar:
+            dated = sorted(
+                str(key)
+                for key, spec in {
+                    **dict(model.get("dimensions", {}) or {}),
+                    **dict(dimensions or {}),
+                }.items()
+                if str(dict(spec or {}).get("kind", "") or "").strip().lower() in _DATE_KINDS
+            )
+            if dated:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"only a calendar may have kind: date dimensions; remove "
+                    f"{', '.join(dated)} before making {entity_slug} a regular entity",
+                    details={"dimensions": dated},
+                )
             model.pop("calendar_id", None)
+        if requested_calendar and calendar is not True:
+            # A regular model's calendar_id binds its times to that calendar.
+            model["calendar_id"] = requested_calendar
         if dimensions is not None:
             model["dimensions"] = {
                 **dict(model.get("dimensions", {}) or {}),
@@ -1087,7 +1117,7 @@ class ArchitectProject:
             desired_entity.update({"label": _title(entity_slug), "allowed_as_root": True})
         if calendar:
             desired_entity.update({"kind": "time", "allowed_as_root": False})
-        elif calendar is False and existing_kind:
+        elif calendar is False and was_calendar:
             desired_entity.pop("kind", None)
             desired_entity["allowed_as_root"] = True
         entities[entity_slug] = desired_entity
@@ -1096,6 +1126,7 @@ class ArchitectProject:
         return {
             "model": model_slug,
             "entity_key": entity_slug,
+            "calendar_changed": calendar is not None or bool(requested_calendar),
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
@@ -1112,21 +1143,58 @@ class ArchitectProject:
             },
         }
 
-    def _check_calendar_free(
-        self, raw: dict[str, list[_RawObject]], entity_key: str, calendar_id: str
+    def _check_calendars(
+        self, raw: dict[str, list[_RawObject]], documents: dict[Path, dict[str, Any]]
     ) -> None:
-        """Refuse a second calendar entity for one calendar_id before writing."""
-        for other in raw["entities"]:
-            if other.key == entity_key or str(other.spec.get("kind") or "").lower() != "time":
+        """Refuse staged calendars the engine would read ambiguously.
+
+        One calendar entity per calendar_id; a default calendar once there is
+        any (a query without a calendar_id fills from it, and would otherwise
+        fall back to another calendar's grains); and a regular model may only
+        be bound to a calendar that exists.
+        """
+        models = {row.key: dict(row.spec) for row in raw["models"]}
+        entities = {row.key: dict(row.spec) for row in raw["entities"]}
+        for path, doc in documents.items():
+            graph = doc.get("graph")
+            if isinstance(graph, dict) and "entities" in graph:
+                entities = {
+                    str(key): dict(spec or {})
+                    for key, spec in dict(graph.get("entities") or {}).items()
+                }
+            if isinstance(doc.get("model"), dict):
+                models[str(doc["model"].get("id") or path.stem)] = dict(doc["model"])
+            for key, spec in dict(doc.get("models", {}) or {}).items():
+                models[str(dict(spec or {}).get("id") or key)] = dict(spec or {})
+        calendars: dict[str, str] = {}
+        for key, spec in entities.items():
+            if str(spec.get("kind") or "").strip().lower() != "time":
                 continue
-            other_model = self._entity_model(raw, other)
-            taken = str((other_model.spec if other_model else {}).get("calendar_id") or "default")
-            if taken == calendar_id:
+            model = models.get(str(spec.get("model") or key), {})
+            calendar_id = str(model.get("calendar_id") or "default").strip().lower()
+            if calendar_id in calendars:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
-                    f"calendar_id {calendar_id!r} already belongs to calendar entity "
-                    f"{other.key!r}; pass another calendar_id",
-                    details={"calendar_id": calendar_id, "entity": other.key},
+                    f"calendar_id {calendar_id!r} would belong to both {calendars[calendar_id]!r} "
+                    f"and {key!r}; a package has one calendar per calendar_id",
+                    details={"calendar_id": calendar_id},
+                )
+            calendars[calendar_id] = key
+        if calendars and "default" not in calendars:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "a package with calendars needs a default one (calendar_id: default); a query "
+                "without a calendar_id fills from it",
+                details={"calendars": sorted(calendars)},
+            )
+        calendar_models = {str(entities[key].get("model") or key) for key in calendars.values()}
+        for key, spec in models.items():
+            bound = str(spec.get("calendar_id") or "").strip().lower()
+            if key not in calendar_models and bound not in {"", "default", *calendars}:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"model {key!r} is bound to calendar {bound!r}, which no calendar declares",
+                    details={"model": key, "calendar_id": bound},
                 )
 
     def upsert_metric(

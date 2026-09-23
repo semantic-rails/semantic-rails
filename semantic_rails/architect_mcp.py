@@ -936,7 +936,9 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
             'the entity the package calendar for calendar_id (default "default"): kind time, '
             "not a query root, and allowed kind: date dimensions. time.fill and calendar "
             "bucketing read its date_day, week_start, month_start, quarter_start and year_start "
-            "columns. calendar: false makes it a regular entity again."
+            "columns. A package with calendars needs a default one. calendar: false makes a "
+            "calendar a regular entity again once its date dimensions are removed. On a regular "
+            "model, calendar_id binds its times to an existing calendar."
         ),
     )
     def upsert_model(
