@@ -360,6 +360,53 @@ def test_ask_limits_sql_to_one_extra_row_and_fences_at_the_limit(
     assert runtime.queries == [{**query, "limit": sent, "limits": {"max_rows": 5}}]
 
 
+class _LimitingRuntime(_StubRuntime):
+    """Twelve matching rows; honours the SQL limit and the row fence like the engine."""
+
+    def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.queries.append(payload)
+        rows = [{"orders": index} for index in range(12)][: payload.get("limit") or 12]
+        fence = dict(payload.get("limits", {}) or {}).get("max_rows")
+        truncated = fence is not None and len(rows) > fence
+        rows = rows[:fence] if truncated else rows
+        return {"ok": True, "rows": rows, "row_count": len(rows), "truncated": truncated}
+
+
+@pytest.mark.parametrize(
+    ("limit", "rows_line", "hint"),
+    [
+        (
+            2,
+            "Rows: 2 (stopped at the 2-row limit; more rows match)",
+            "(the planned query's own limit of 5 rows still applies)",
+        ),
+        (0, "Rows: 5 (the planned query itself returns at most 5 rows)", None),
+    ],
+)
+def test_ask_separates_a_planned_limit_from_the_cli_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    limit: int,
+    rows_line: str,
+    hint: str | None,
+) -> None:
+    query = {"select": [{"expression": {"measure": "measure.orders"}}], "limit": 5}
+    monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: _LimitingRuntime())
+    monkeypatch.setattr(
+        dev_cli, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
+    )
+
+    report = dev_cli.ask_report(
+        PackageReference(source_path="/nowhere"), question="q", execute=True, limit=limit
+    )
+    dev_cli._print_ask_report(report)
+
+    output = capsys.readouterr().out
+    assert report["result"]["planned_limit"] == 5
+    assert rows_line in output
+    assert (hint in output) if hint else ("To lift" not in output)
+
+
 def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -382,7 +429,10 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     assert report["result"]["truncated"] is True
     output = capsys.readouterr().out
     assert "Rows: 1 (stopped at the 5-row limit; more rows match)" in output
-    assert "For every row, run: semantic-rails ask --path /nowhere orders --run --limit 0" in output
+    assert (
+        "To lift the 5-row cap, run: semantic-rails ask --path /nowhere orders --run --limit 0\n"
+        in output
+    )
     assert "Warnings:\n  EMPTY_RESULT_WINDOW: No data in window.\n" in output
     assert "  Treated a blank grain as month.\n" in output
 
@@ -479,6 +529,23 @@ def test_columns_never_round_a_nonzero_value_to_zero_or_a_big_int_through_float(
     )
 
 
+@pytest.mark.parametrize("selection", [("--package", "jaffle_shop"), ("--path", "<bundled>")])
+def test_validation_labels_the_sample_package(
+    nowhere: dict[str, str], selection: tuple[str, str]
+) -> None:
+    flag, value = selection
+    value = dev_cli.list_package_paths()["jaffle_shop"] if value == "<bundled>" else value
+
+    human = _run(nowhere, "project", "validate", flag, value, "--mode", "parse")
+    payload = json.loads(
+        _run(nowhere, "project", "validate", flag, value, "--mode", "parse", "--json").stdout
+    )
+
+    assert human.returncode == 0, human.stderr
+    assert "(bundled sample package, not your data)" in human.stdout.splitlines()[0]
+    assert payload["package"]["bundled"] is True
+
+
 def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str, str]) -> None:
     bundled = dev_cli.list_package_paths()["jaffle_shop"]
     for ref in (
@@ -516,6 +583,28 @@ def test_cells_and_headers_never_send_control_codes_to_the_terminal() -> None:
 
     assert header == "No\\x07te"
     assert row == "a\\x1b[31mred b c"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Café\u00a0Nord",  # no-break space
+        "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",  # Persian with a zero-width non-joiner
+        "東京\u3000本店",  # ideographic space
+        "\U0001f469\u200d\U0001f4bb",  # emoji joined with ZWJ
+        "co\u00adoperate",  # soft hyphen
+    ],
+)
+def test_real_world_text_prints_as_stored(value: str) -> None:
+    _header, _rule, row = dev_cli._table_lines([{"key": value}], [])
+
+    assert row == value
+
+
+def test_c1_controls_and_bidi_overrides_are_escaped() -> None:
+    _header, _rule, row = dev_cli._table_lines([{"key": "a\x9bb\x7fc\u202ed"}], [])
+
+    assert row == "a\\x9bb\\x7fc\\u202ed"
 
 
 def test_long_duplicate_labels_stay_distinct_after_shortening() -> None:

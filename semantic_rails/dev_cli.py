@@ -17,6 +17,7 @@ import os
 import shlex
 import shutil
 import sys
+import unicodedata
 from collections.abc import Iterable
 from decimal import Decimal
 from importlib import metadata
@@ -884,15 +885,17 @@ def ask_report(
             return out
         if execute:
             executable_query = dict(query)
+            # A limit the planner put in the query itself, separate from --limit.
+            planned_limit = query.get("limit")
+            if not isinstance(planned_limit, int) or isinstance(planned_limit, bool):
+                planned_limit = None
             if limit and "max_rows" not in dict(executable_query.get("limits", {}) or {}):
                 # Ask the warehouse for one row more than we show (keeping a smaller
                 # planned limit) and fence at `limit`: `truncated` is then exact and
                 # the warehouse still does top-N work.
-                planned_limit = executable_query.get("limit")
-                if isinstance(planned_limit, int) and not isinstance(planned_limit, bool):
-                    executable_query["limit"] = min(planned_limit, limit + 1)
-                else:
-                    executable_query["limit"] = limit + 1
+                executable_query["limit"] = (
+                    limit + 1 if planned_limit is None else min(planned_limit, limit + 1)
+                )
                 executable_query["limits"] = {
                     **dict(executable_query.get("limits", {}) or {}),
                     "max_rows": limit,
@@ -904,6 +907,7 @@ def ask_report(
                 "rows": rows,
                 "row_count": result.get("row_count", len(rows)),
                 "row_limit": limit,
+                "planned_limit": planned_limit,
                 "truncated": bool(result.get("truncated", False)),
                 "output_columns": list(result.get("output_columns", []) or []),
                 "warnings": list(result.get("warnings", []) or []),
@@ -2332,10 +2336,7 @@ def project_status_report(ref: PackageReference, *, checks: str = "parse") -> di
     parse = validation.get("checks", {}).get("parse", {}) or validation.get("parse", {})
     return {
         "ok": bool(validation.get("ok")),
-        "package": {
-            **dict(validation.get("package", {}) or _ref_payload(ref)),
-            "bundled": _is_bundled_ref(ref),
-        },
+        "package": _report_package(validation, ref),
         "source_path": ref.source_path,
         "project_root": str(root),
         "layout": "directory" if Path(ref.source_path).is_dir() else "single_file",
@@ -2365,7 +2366,7 @@ def project_validation_report(
         report, _ = parse_config_report(ref, progress=lambda _: None)
         return {
             "ok": bool(report.get("ok")),
-            "package": dict(report.get("package", {}) or _ref_payload(ref)),
+            "package": _report_package(report, ref),
             "summary": {"parse": _parse_summary(report)},
             "checks": {"parse": _parse_summary(report)},
             "parse": report,
@@ -2376,7 +2377,7 @@ def project_validation_report(
         report = validate_config_report(ref, progress=lambda _: None)
         return {
             "ok": bool(report.get("ok")),
-            "package": dict(report.get("package", {}) or _ref_payload(ref)),
+            "package": _report_package(report, ref),
             "summary": {"runtime": _validate_summary(report)},
             "checks": {"runtime": _validate_summary(report)},
             "runtime": report,
@@ -2386,7 +2387,7 @@ def project_validation_report(
         report = run_examples_report(ref)
         return {
             "ok": bool(report.get("ok")),
-            "package": dict(report.get("package", {}) or _ref_payload(ref)),
+            "package": _report_package(report, ref),
             "summary": {"examples": dict(report.get("summary", {}) or {})},
             "checks": {"examples": _ok_summary(report, "examples")},
             "examples": report,
@@ -2396,7 +2397,7 @@ def project_validation_report(
         report = run_package_tests_report(ref)
         return {
             "ok": bool(report.get("ok")),
-            "package": dict(report.get("package", {}) or _ref_payload(ref)),
+            "package": _report_package(report, ref),
             "summary": {"tests": dict(report.get("summary", {}) or {})},
             "checks": {"tests": _ok_summary(report, "tests")},
             "tests": report,
@@ -2406,7 +2407,7 @@ def project_validation_report(
     report = check_package_report(ref, compare_path=compare_path, base_ref=base_ref)
     return {
         "ok": bool(report.get("ok")),
-        "package": dict(report.get("package", {}) or _ref_payload(ref)),
+        "package": _report_package(report, ref),
         "summary": dict(report.get("summary", {}) or {}),
         "checks": _compact_full_checks(report),
         "check": report,
@@ -3129,6 +3130,10 @@ def _full_errors(report: dict[str, Any]) -> list[dict[str, Any]]:
     return errors
 
 
+def _report_package(report: dict[str, Any], ref: PackageReference) -> dict[str, Any]:
+    return {**dict(report.get("package", {}) or _ref_payload(ref)), "bundled": _is_bundled_ref(ref)}
+
+
 def _ref_payload(ref: PackageReference) -> dict[str, Any]:
     return {
         "id": ref.package_id or _package_id_from_yaml(ref.source_path),
@@ -3170,17 +3175,18 @@ def _ref_label(ref: PackageReference) -> str:
     return ref.package_id or ref.source_path
 
 
+_BUNDLED_NOTE = " (bundled sample package, not your data)"
+
+
 def _ref_display(ref: PackageReference) -> str:
-    if _is_bundled_ref(ref):
-        return f"{_ref_label(ref)} (bundled sample package, not your data)"
-    return _ref_label(ref)
+    return _ref_label(ref) + (_BUNDLED_NOTE if _is_bundled_ref(ref) else "")
 
 
 def _package_display(package: dict[str, Any]) -> str:
     package_id = str(package.get("id", "") or "")
     source_path = str(package.get("source_path", "") or "")
     if package.get("bundled"):
-        return f"{package_id} (bundled sample package, not your data)"
+        return package_id + _BUNDLED_NOTE
     if package_id and source_path:
         return f"{package_id} ({source_path})"
     return package_id or source_path or "(unknown)"
@@ -3250,7 +3256,7 @@ def _print_objects(report: dict[str, Any]) -> None:
     package = report.get("package", {})
     label = package.get("id") or "(package)"
     if package.get("bundled"):
-        label += " (bundled sample package, not your data)"
+        label += _BUNDLED_NOTE
     print(f"{label}: {report['count']} {report['resource_type']} object(s)")
     if report.get("search"):
         print(f"Search: {report['search']}")
@@ -3281,18 +3287,25 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         rows = list(result.get("rows", []) or [])
         count = result.get("row_count", len(rows))
         truncated = bool(result.get("truncated"))
-        limit_note = (
-            f" (stopped at the {result.get('row_limit')}-row limit; more rows match)"
-            if truncated
-            else ""
-        )
+        planned = result.get("planned_limit")
+        if truncated:
+            limit_note = f" (stopped at the {result.get('row_limit')}-row limit; more rows match)"
+        elif planned and count >= planned:
+            limit_note = f" (the planned query itself returns at most {planned} rows)"
+        else:
+            limit_note = ""
         print(f"Rows: {count}{limit_note}")
         shown = rows[:_MAX_HUMAN_ROWS]
         _print_rows(shown, list(result.get("output_columns", []) or []))
         if len(rows) > len(shown):
             print(f"... {len(rows) - len(shown)} more rows not shown; use --json to see them all.")
         if truncated:
-            print(f"For every row, run: {_every_row_command(report)}")
+            hint = (
+                f"To lift the {result.get('row_limit')}-row cap, run: {_every_row_command(report)}"
+            )
+            if planned:
+                hint += f" (the planned query's own limit of {planned} rows still applies)"
+            print(hint)
         warnings.extend(list(result.get("warnings", []) or []))
         warnings.extend(list(result.get("assumptions", []) or []))
     compiled = report.get("compile")
@@ -3372,7 +3385,7 @@ def _print_project_status(report: dict[str, Any]) -> None:
     package = report.get("package", {})
     label = package.get("id") or "(unknown)"
     if package.get("bundled"):
-        label += " (bundled sample package, not your data)"
+        label += _BUNDLED_NOTE
     print(f"Semantic Rails project: {label}")
     print(f"Path: {report['source_path']}")
     print(f"Layout: {report['layout']}")
@@ -3390,7 +3403,8 @@ def _print_project_status(report: dict[str, Any]) -> None:
 
 def _print_project_validation(report: dict[str, Any]) -> None:
     package = report.get("package", {})
-    print(f"Validation: {package.get('id') or package.get('source_path') or '(unknown)'}")
+    label = package.get("id") or package.get("source_path") or "(unknown)"
+    print(f"Validation: {label}{_BUNDLED_NOTE if package.get('bundled') else ''}")
     checks = report.get("checks", {})
     for name, check in checks.items():
         if isinstance(check, dict):
@@ -3606,13 +3620,24 @@ def _format_scalar(value: Any) -> str:
     return _printable(str(value))
 
 
+# Characters that reorder how a terminal draws text around them.
+_BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
 def _printable(text: str) -> str:
-    """Keep a cell on one line, and never send raw control codes to the terminal."""
+    """Keep a cell on one line, and never send raw control codes to the terminal.
+
+    Only control characters and bidirectional overrides are escaped: other
+    characters (no-break spaces, zero-width joiners, CJK spaces) print as
+    stored, so a value shown here still matches when copied into a filter.
+    """
 
     return "".join(
-        char
-        if char.isprintable()
-        else (" " if char in "\n\r\t" else char.encode("unicode_escape").decode("ascii"))
+        " "
+        if char in "\n\r\t\u2028\u2029"
+        else char.encode("unicode_escape").decode("ascii")
+        if unicodedata.category(char) == "Cc" or char in _BIDI_CONTROLS
+        else char
         for char in text
     )
 

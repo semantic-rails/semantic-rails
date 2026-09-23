@@ -4,4 +4,5 @@
   `details.reason: "no_package_selected"`. Scripts that relied on the old fallback should
   pass `--package jaffle_shop`. At an interactive terminal, `ask`, `ls`,
   `project status|validate`, `repl` and bare `semantic-rails` first offer the sample package
-  (default No), and output from a bundled package is labeled as sample data.
+  (default No). `ask`, `ls`, `project status|validate`, `mcp setup` and the REPL label a
+  bundled package as sample data (`package.bundled` in JSON).
