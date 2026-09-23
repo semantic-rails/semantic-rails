@@ -6,11 +6,15 @@ from semantic_rails import config as config_module
 from semantic_rails import runtime as runtime_module
 from semantic_rails.db import Database
 from semantic_rails.runtime import Runtime
+from semantic_rails.seed_provenance import seeded_database_unchanged
 
 
-def test_runtime_reseeds_stale_duckdb_when_expected_tables_are_missing(
+def test_runtime_reseeds_a_foreign_stale_duckdb_only_with_explicit_opt_in(
     package_config_factory, monkeypatch
 ):
+    # Without the opt-in the runtime refuses to replace a file its seed did
+    # not build (see test_warehouse_rebuild_safety.py).
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_DB_RESEED", "1")
     _, config_path = package_config_factory("jaffle_shop")
     package_dir = Path(config_path)
     package_id = "jaffle_shop"
@@ -53,6 +57,7 @@ def test_runtime_reseeds_stale_duckdb_when_expected_tables_are_missing(
         assert "delivered_revenue" in result["rows"][0]
     finally:
         runtime.close()
+    assert seeded_database_unchanged(str(db_path), package_id)
 
 
 def test_repo_managed_package_seed_can_fall_back_to_package_local_asset(

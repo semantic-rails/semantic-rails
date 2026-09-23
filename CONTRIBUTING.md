@@ -73,7 +73,7 @@ Start here when changing real runnable demo data.
 - Post-load shaping SQL: `data/seed_jaffle.sql`
 - Package seed configuration: `configs/semantic_rails/jaffle_shop/package.yml`
 
-The active runtime reseeds the DuckDB file when the expected tables are missing.
+The active runtime rebuilds the DuckDB file from its seed when expected tables are missing and that seed built the file; delete a file built by an older release to rebuild it.
 
 ## Expectations
 
