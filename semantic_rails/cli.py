@@ -24,7 +24,6 @@ from .catalog_service import resolve_catalog
 from .config import (
     get_package_config,
     list_package_ids,
-    list_package_paths,
     load_package_config,
     package_root_for_source,
     resolve_repo_path,
@@ -36,10 +35,16 @@ from .config_validation import (
     validate_config_report,
 )
 from .contracts import export_metric_portability, export_semantic_contract
-from .dev_cli import add_developer_cli, cmd_init_project, run_interactive_shell
+from .dev_cli import (
+    _is_bundled_ref,
+    _package_display,
+    add_developer_cli,
+    cmd_init_project,
+    default_package_ref,
+    run_interactive_shell,
+)
 from .diagnostics import exception_issue
 from .errors import SemanticLayerError
-from .local_config import resolve_local_package_path
 from .mcp import SemanticLayerMCPAdapter
 from .mcp_manager import (
     CLIENTS,
@@ -313,31 +318,18 @@ def _default_mcp_ref() -> PackageReference:
 
 
 def _default_cli_ref() -> PackageReference:
-    cwd_ref = _package_ref_from_cwd()
-    if cwd_ref is not None:
-        return cwd_ref
-    local_path = resolve_local_package_path()
-    if local_path:
-        return resolve_package_reference(path=local_path)
-    package_ids = list_package_ids()
-    if package_ids:
-        return resolve_package_reference(package_id=package_ids[0])
-    raise SemanticLayerError(
-        "INVALID_CONFIG",
-        (
-            "No package selected. Run this command from a Semantic Rails package directory, "
-            "pass --path ./my_package, or set a local default with "
-            "semantic-rails profile init --package-path ./my_package."
-        ),
-    )
+    # Runtime commands print JSON (and `mcp stdio` owns stdin), so they never
+    # prompt: without a chosen package they stop with guidance.
+    return default_package_ref(interactive=False)
 
 
 def _package_ref_from_args(args: argparse.Namespace) -> PackageReference:
     """Resolve the package once for every package-aware CLI command.
 
     Explicit ``--path``/``--package`` always wins. Otherwise use the
-    nearest package directory, then the opted-in local profile, then the
-    first bundled package for backwards-compatible zero-config commands.
+    nearest package directory, then the opted-in local profile. Nothing
+    falls back to a bundled package: without a choice the command fails
+    with guidance instead of answering from sample data.
     """
 
     package = str(getattr(args, "package", "") or "").strip()
@@ -345,22 +337,6 @@ def _package_ref_from_args(args: argparse.Namespace) -> PackageReference:
     if package or path:
         return resolve_package_reference(package_id=package, path=path)
     return _default_cli_ref()
-
-
-def _package_ref_from_cwd() -> PackageReference | None:
-    cwd = Path.cwd().resolve()
-    registered = {
-        str(Path(source_path).resolve()): package_id
-        for package_id, source_path in list_package_paths().items()
-    }
-    for directory in [cwd, *cwd.parents]:
-        package_yml = directory / "package.yml"
-        if not package_yml.is_file():
-            continue
-        source = directory if (directory / "graph.yml").is_file() else package_yml
-        source_path = str(source.resolve())
-        return PackageReference(source_path=source_path, package_id=registered.get(source_path, ""))
-    return None
 
 
 def _runtime_from_ref(ref: PackageReference) -> Runtime:
@@ -693,6 +669,7 @@ def cmd_mcp_setup(args: argparse.Namespace) -> None:
             "id": runtime.package_id,
             "source_path": runtime.source_path,
             "warehouse": runtime.warehouse,
+            "bundled": _is_bundled_ref(ref),
         },
         "mcp": mcp,
         "client_config": {
@@ -718,7 +695,7 @@ def _print_mcp_setup_report(payload: dict[str, Any]) -> None:
     mcp = dict(payload.get("mcp", {}) or {})
     config = dict(payload.get("client_config", {}) or {})
     print("Semantic Rails MCP setup")
-    print(f"Package: {package.get('id') or package.get('source_path')}")
+    print(f"Package: {_package_display(package)}")
     print(
         f"MCP check: {'ok' if payload.get('ok') else 'failed'} ({mcp.get('tool_count', 0)} tools)"
     )
@@ -1160,7 +1137,11 @@ def main() -> None:
         description=(
             "Semantic Rails CLI — inspect, validate, compile, and execute "
             "Semantic Rails packages. See docs/QUERY_API.md and docs/CAPABILITIES.md "
-            "for the agent loop and supported runtime surfaces."
+            "for the agent loop and supported runtime surfaces. Commands use --package "
+            "or --path, else the package directory you are in, else the local profile "
+            "(semantic-rails profile init). With none of these, ask, ls, project, repl and "
+            "bare semantic-rails first offer the bundled jaffle_shop sample package at a "
+            "terminal (default No); every other case stops and lists how to choose one."
         ),
     )
     from semantic_rails import __version__
@@ -1955,11 +1936,13 @@ def main() -> None:
 
     args = parser.parse_args()
     if not getattr(args, "cmd", ""):
-        if sys.stdin.isatty():
-            run_interactive_shell()
-        else:
+        if not sys.stdin.isatty():
             parser.print_help()
-        return
+            return
+        # Bare `semantic-rails` opens the REPL; route it through the same
+        # error handling so "no package selected" reads as guidance.
+        args.func = lambda _args: run_interactive_shell()
+        args.human_cli = True
     try:
         args.func(args)
     except SemanticLayerError as exc:

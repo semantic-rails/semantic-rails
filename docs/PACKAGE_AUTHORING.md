@@ -101,6 +101,12 @@ This writes `~/.semantic_rails/profiles.yml` (or
 developer machine, not checked into the package, not a secret store, and not
 hosted control-plane configuration.
 
+Without `--package` or `--path`, a command uses the package directory it runs in
+(or a parent), then this profile. With neither, `ask`, `ls`, `project`, `repl` and
+bare `semantic-rails` offer the bundled `jaffle_shop` sample package at an
+interactive terminal (default No); everything else stops and lists how to choose
+a package. Scripts that want the sample pass `--package jaffle_shop`.
+
 `validate-config` and `project validate` write a `.compiled/manifest.json` next
 to the package. The manifest holds `package_id`, a content `fingerprint` of the
 source, and pre-rendered catalog variants the runtime can serve without
