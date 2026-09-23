@@ -546,6 +546,21 @@ def test_validation_labels_the_sample_package(
     assert payload["package"]["bundled"] is True
 
 
+def test_a_registered_package_that_is_not_a_shipped_sample_is_not_labelled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mine = dev_cli.create_project_report(
+        package_id="my_company", workspace_root=str(tmp_path), run_checks=False
+    )["project_path"]
+    registered = {**dev_cli.list_package_paths(), "my_company": mine}
+    monkeypatch.setattr(dev_cli, "list_package_paths", lambda: registered)
+    ref = PackageReference(source_path=mine, package_id="my_company")
+
+    assert not dev_cli._is_bundled_ref(ref)
+    assert dev_cli._ref_display(ref) == "my_company"
+    assert dev_cli._is_bundled_ref(PackageReference(source_path=registered["jaffle_shop"]))
+
+
 def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str, str]) -> None:
     bundled = dev_cli.list_package_paths()["jaffle_shop"]
     for ref in (

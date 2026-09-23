@@ -65,6 +65,9 @@ PROJECT_CHECK_MODES = ("parse", "runtime", "examples", "tests", "full")
 CATALOG_KINDS = ("all", "entity", "dimension", "measure", "metric", "segment", "time")
 # The only bundled package offered when a person runs a command without choosing one.
 DEMO_PACKAGE_ID = "jaffle_shop"
+# Packages the engine ships with sample data. Other registered packages (for
+# example a contributor's own under configs/semantic_rails/) are not samples.
+SAMPLE_PACKAGE_IDS = frozenset({DEMO_PACKAGE_ID, "tpch_sf1_showcase"})
 _MAX_HUMAN_ROWS = 500
 _MAX_CELL_WIDTH = 40
 _EXCLUDED_DISCOVERY_DIRS = {
@@ -2826,12 +2829,13 @@ def _prompts_allowed(args: argparse.Namespace) -> bool:
 
 
 def _is_bundled_ref(ref: PackageReference) -> bool:
-    """True when the reference points at a bundled package, however it was selected."""
+    """True when the reference is a shipped sample package, however it was selected."""
 
     root = Path(package_root_for_source(ref.source_path)).resolve()
     return any(
         Path(package_root_for_source(path)).resolve() == root
-        for path in list_package_paths().values()
+        for package_id, path in list_package_paths().items()
+        if package_id in SAMPLE_PACKAGE_IDS
     )
 
 
