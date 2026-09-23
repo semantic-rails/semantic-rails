@@ -91,20 +91,29 @@ claude mcp add semantic-rails -- uvx semantic-rails mcp stdio --path "$PWD/my_pa
 codex mcp add semantic-rails -- uvx semantic-rails mcp stdio --path "$PWD/my_package"
 ```
 
-**Claude Desktop.** Install the command first (`uv tool install semantic-rails`), then
-let Semantic Rails write the client config:
+**Claude Desktop.** Install the command, then let Semantic Rails write the client
+config:
 
 ```bash
-semantic-rails mcp setup --path "$PWD/my_package" --client claude --mcp query --install --yes
+uv tool install semantic-rails
+"$(uv tool dir --bin)/semantic-rails" mcp setup --path "$PWD/my_package" --client claude --mcp query --install --yes
 ```
 
-Run `mcp setup` without `--install --yes` to preview the change. `--client codex` and
-`--client both` also work, and `--mcp both` adds the Architect MCP, which can edit
-package files. Don't run `mcp setup --install` through `uvx`: the config would point
-into uv's cache, which `uv cache clean` deletes.
+`uv tool dir --bin` finds the command even when uv's tool directory isn't on your
+`PATH` yet. Run `mcp setup` without `--install --yes` to preview the change.
+`--client codex` and `--client both` also work, and `--mcp both` adds the Architect
+MCP, which can edit package files. Don't run `mcp setup --install` through `uvx`: the
+config would point into uv's cache, which `uv cache clean` deletes.
 
-**Cursor.** Add the server to `.cursor/mcp.json`, using the path that
-`command -v semantic-rails` prints after `uv tool install semantic-rails`:
+**Cursor.** Install the command and print the two absolute paths the config needs:
+
+```bash
+uv tool install semantic-rails
+echo "$(uv tool dir --bin)/semantic-rails"
+echo "$PWD/my_package"
+```
+
+Then add the server to `.cursor/mcp.json`:
 
 ```json
 {
