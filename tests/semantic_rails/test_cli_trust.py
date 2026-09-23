@@ -352,6 +352,7 @@ def test_ask_limits_sql_to_one_extra_row_and_fences_at_the_limit(
     monkeypatch.setattr(
         dev_cli, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
     )
+    monkeypatch.setattr(dev_cli, "resolve_catalog", lambda *_a, **_k: {})
 
     dev_cli.ask_report(
         PackageReference(source_path="/nowhere"), question="q", execute=True, limit=5
@@ -395,6 +396,7 @@ def test_ask_separates_a_planned_limit_from_the_cli_cap(
     monkeypatch.setattr(
         dev_cli, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
     )
+    monkeypatch.setattr(dev_cli, "resolve_catalog", lambda *_a, **_k: {})
 
     report = dev_cli.ask_report(
         PackageReference(source_path="/nowhere"), question="q", execute=True, limit=limit
@@ -420,6 +422,7 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     }
     monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: runtime)
     monkeypatch.setattr(dev_cli, "plan_payload", lambda *_a, **_k: plan)
+    monkeypatch.setattr(dev_cli, "resolve_catalog", lambda *_a, **_k: {})
 
     report = dev_cli.ask_report(
         PackageReference(source_path="/nowhere"), question="orders", execute=True, limit=5
