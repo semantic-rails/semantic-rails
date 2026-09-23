@@ -17,8 +17,8 @@ DuckDB data as the other local comparison layers.
   this pack the temporal-validity, conversion-window, and aggregate-predicate
   semantics are authored as SQL/query workarounds rather than as reusable
   governed primitives in the KtX semantic model.
-- Output check: KtX's rows match every other layer run on the current dataset,
-  on all 16 questions.
+- Output check: KtX's rows match the independent answer key
+  (`../shared/oracle/`) on all 16 questions.
 
 Run from the repository root, with KtX checked out at the recorded commit:
 

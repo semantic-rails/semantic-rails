@@ -28,7 +28,7 @@ This folder is an executed Snowflake Semantic Views pack backed by the default S
 - Semantic view: `ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON`
 - Connection: `semantic_views_trial`
 - Support labels (provisional, assigned by the Semantic Rails authors): `7 native`, `9 workaround`
-- Output check: 14 of 16 questions match the normalized `Semantic Rails` outputs. q07 and q16 do not: this capture loaded the `comparison_order_lifecycle` view when it held only the 11 hand-authored lifecycle rows. The view now passes every order through. Re-running `scripts/export_trial_csvs.sh` and the steps below would load the current data.
+- Output check: this capture matches the independent answer key (`../shared/oracle/`) on 14 of 16 questions. q07 and q16 do not: this capture loaded the `comparison_order_lifecycle` view when it held only the 11 hand-authored lifecycle rows. The view now passes every order through. Re-running `scripts/export_trial_csvs.sh` and the steps below would load the current data.
 
 ## Dataset Provenance
 
