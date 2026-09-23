@@ -21,14 +21,18 @@ from __future__ import annotations
 import ast as pyast
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from . import parsers
 from .filter_parser import parse_filter
+
+if TYPE_CHECKING:  # the translator imports semantic_rails only for strict mode
+    from semantic_rails.dbt_artifacts import DbtProject
 
 # ---------------------------------------------------------------------------
 # Aggregation name mapping
@@ -88,6 +92,8 @@ def translate(
     warehouse: str = "duckdb",
     default_db: str | None = None,
     description: str | None = None,
+    schema_strict: bool = False,
+    dbt_target: Path | str | None = None,
 ) -> TranslationReport:
     """Translate a MetricFlow input into a Semantic Rails package
     directory and return a :class:`TranslationReport`.
@@ -105,6 +111,15 @@ def translate(
                       shape; DuckDB packages additionally need `default_db`.
         default_db:   File path for DuckDB. Ignored for Snowflake.
         description:  Optional package description.
+        schema_strict: Emit a ``schema_strict: true`` package: relations keep
+                      their schema (``node_relation.schema_name``, or the dbt
+                      manifest), ratio and derived metrics get a value_type
+                      other than ``number``, and the output is parse-checked,
+                      with any error reported as a warning.
+        dbt_target:   A dbt ``target/`` directory (``manifest.json``, optionally
+                      ``catalog.json``). ``ref()``/``source()`` relations resolve
+                      through it to ``schema.alias``, and a DuckDB package reads
+                      the dbt-built database (``seed: {kind: external}``).
     """
     namespace = namespace or package_id
     src = Path(source)
@@ -113,6 +128,7 @@ def translate(
 
     raw = parsers.load(src)
     report = TranslationReport(package_dir=out_root)
+    dbt_project = _load_dbt_project(Path(dbt_target)) if dbt_target else None
 
     graph = _build_graph(raw["semantic_models"], report)
     _write_package_yml(
@@ -122,6 +138,8 @@ def translate(
         warehouse=warehouse,
         default_db=default_db,
         description=description,
+        schema_strict=schema_strict,
+        external_db=dbt_project is not None,
     )
     _write_graph_yml(out_root, graph)
 
@@ -147,7 +165,11 @@ def translate(
             # Already warned during graph extraction; just skip emit.
             continue
         model_doc, measures_in_model = _build_model(
-            sm, graph, report, suppress_publish=metric_names
+            sm,
+            graph,
+            report,
+            suppress_publish=metric_names,
+            relation=_relation_for(sm, dbt_project, keep_schema=schema_strict, report=report),
         )
         (models_dir / f"{name}.yml").write_text(_dump_yaml({"model": model_doc}))
         report.models_emitted.append(name)
@@ -168,6 +190,8 @@ def translate(
         if translated is None:
             continue
         metric_name, metric_doc, owner_hint = translated
+        if schema_strict:
+            _strict_value_type(metric, metric_doc, measure_to_value_type, report)
         metrics_by_owner.setdefault(owner_hint, []).append((metric_name, metric_doc))
         report.metrics_emitted.append(metric_name)
 
@@ -178,16 +202,119 @@ def translate(
             grouped = {name: doc for name, doc in entries}
             (metrics_dir / f"{owner}.yml").write_text(_dump_yaml({"metrics": grouped}))
 
+    if schema_strict:
+        from semantic_rails.config_validation import PackageReference, parse_config_report
+
+        parse, _ = parse_config_report(PackageReference(source_path=str(out_root)))
+        report.warnings.extend(
+            f"strict parse: {error.get('message', '')}" for error in parse.get("errors", [])
+        )
+    hashed = {
+        **raw,
+        # The model ref only resolves relations; the hash covers what MetricFlow declared.
+        "semantic_models": [
+            {key: value for key, value in sm.items() if key != "_model_ref"}
+            for sm in raw["semantic_models"]
+        ],
+    }
     report.provenance = {
         "format_version": 1,
         "framework": "metricflow",
         "parsed_input_hash": "sha256:"
         + hashlib.sha256(
-            json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str).encode()
+            json.dumps(hashed, sort_keys=True, separators=(",", ":"), default=str).encode()
         ).hexdigest(),
         "warnings": list(report.warnings),
     }
     return report
+
+
+# A derived expression that is one input divided by another.
+_SIMPLE_QUOTIENT = re.compile(r"\s*(\w+)\s*/\s*(\w+)\s*")
+
+
+def _load_dbt_project(target: Path) -> DbtProject:
+    from semantic_rails.dbt_artifacts import load_dbt_artifacts
+
+    return load_dbt_artifacts(target)
+
+
+def _relation_for(
+    sm: dict[str, Any],
+    dbt_project: DbtProject | None,
+    *,
+    keep_schema: bool,
+    report: TranslationReport,
+) -> str:
+    """The relation a semantic model reads, schema-qualified when that is known."""
+    node = dict(sm.get("node_relation") or {})
+    alias = str(node.get("alias") or sm.get("name"))
+    name = sm.get("name")
+    if dbt_project is not None:
+        reference = str(sm.get("_model_ref") or f"ref('{alias}')")
+        target = dbt_project.resolve(reference)
+        if target is not None:
+            return target.relation
+        report.warnings.append(
+            f"semantic model `{name}`: {reference} is not in the dbt manifest; its relation "
+            f"stays `{alias}`"
+        )
+        return alias
+    if keep_schema:
+        if node.get("schema_name"):
+            return f"{node['schema_name']}.{alias}"
+        report.warnings.append(
+            f"semantic model `{name}`: `{alias}` has no schema; pass the dbt target/ "
+            "directory to resolve it"
+        )
+    return alias
+
+
+def _strict_value_type(
+    metric: dict[str, Any],
+    doc: dict[str, Any],
+    measure_value_type: dict[str, str],
+    report: TranslationReport,
+) -> None:
+    """Give ratio and derived metrics the explicit value_type strict packages need."""
+    if doc.get("kind") not in {"ratio", "derived"}:
+        return
+    params = dict(metric.get("type_params") or {})
+    if (metric.get("type") or "").lower() == "ratio":
+        doc["value_type"] = _quotient_value_type(
+            measure_value_type.get(str(_normalize_metric_ref(params.get("numerator")).get("name"))),
+            measure_value_type.get(
+                str(_normalize_metric_ref(params.get("denominator")).get("name"))
+            ),
+        )
+        return
+    names = {
+        str(ref.get("alias") or ref.get("name")): str(ref.get("name"))
+        for ref in (_normalize_metric_ref(item) for item in params.get("metrics") or [])
+    }
+    expression = str(params.get("expr") or "")
+    quotient = _SIMPLE_QUOTIENT.fullmatch(expression)
+    types = {measure_value_type.get(name) for name in names.values()}
+    if quotient and quotient.group(1) in names and quotient.group(2) in names:
+        doc["value_type"] = _quotient_value_type(
+            measure_value_type.get(names[quotient.group(1)]),
+            measure_value_type.get(names[quotient.group(2)]),
+        )
+        return
+    if len(types) == 1 and None not in types and not set(expression) & {"*", "/"}:
+        doc["value_type"] = next(iter(types))
+        if doc["value_type"] != "number":
+            return
+    report.warnings.append(
+        f"metric `{metric.get('name')}`: check its value_type (mf2sr guessed "
+        f"{doc.get('value_type', 'number')}); strict packages don't accept number for a "
+        "derived metric"
+    )
+
+
+def _quotient_value_type(numerator: str | None, denominator: str | None) -> str:
+    """Money per order stays money; any other quotient is a ratio."""
+    return "currency" if numerator == "currency" and denominator in {"count", "number"} else "ratio"
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +452,7 @@ def _build_model(
     report: TranslationReport,
     *,
     suppress_publish: set[str] | None = None,
+    relation: str | None = None,
 ) -> tuple[dict[str, Any], list[tuple[str, str, str]]]:
     """Build the Semantic Rails `model:` body for one MetricFlow
     semantic_model. Returns `(model_doc, measures)` where `measures` is
@@ -333,7 +461,7 @@ def _build_model(
     primary entity and no measures (skipped).
     """
     name = sm["name"]
-    relation = (sm.get("node_relation") or {}).get("alias") or name
+    relation = relation or (sm.get("node_relation") or {}).get("alias") or name
     description = sm.get("description") or sm.get("label") or name
 
     doc: dict[str, Any] = {
@@ -1170,6 +1298,8 @@ def _write_package_yml(
     warehouse: str,
     default_db: str | None,
     description: str | None,
+    schema_strict: bool = False,
+    external_db: bool = False,
 ) -> None:
     # The translator emits `schema_strict: false` because MetricFlow
     # measure metadata is too thin to satisfy strict checks out of the
@@ -1181,7 +1311,7 @@ def _write_package_yml(
         "id": package_id,
         "namespace": namespace,
         "warehouse": warehouse,
-        "schema_strict": False,
+        "schema_strict": schema_strict,
         "environments": ["development", "staging", "production"],
     }
     if description:
@@ -1191,10 +1321,12 @@ def _write_package_yml(
         # DuckDB packages require a seed block. We emit a placeholder
         # `sql_script` seed pointing to a file the author will create.
         # Without this the loader rejects the package outright.
-        pkg["seed"] = {
-            "kind": "sql_script",
-            "source": f"data/seed_{package_id}.sql",
-        }
+        pkg["seed"] = (
+            # dbt builds this database; the package reads it and never rebuilds it.
+            {"kind": "external"}
+            if external_db
+            else {"kind": "sql_script", "source": f"data/seed_{package_id}.sql"}
+        )
     elif warehouse == "snowflake":
         # Snowflake packages need a connection block. We emit the
         # env-var-indirection shape so the YAML is safe to commit; the

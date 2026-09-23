@@ -88,6 +88,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit non-zero if any warnings are emitted.",
     )
+    parser.add_argument(
+        "--schema-strict",
+        action="store_true",
+        help=(
+            "Write a schema_strict package: relations keep their schema, ratio and derived "
+            "metrics get an explicit value_type, and the output is parse-checked."
+        ),
+    )
+    parser.add_argument(
+        "--dbt-target",
+        default=None,
+        help=(
+            "A dbt target/ directory (manifest.json, optionally catalog.json): ref() and "
+            "source() relations resolve through it to schema.alias, and a DuckDB package "
+            "reads the dbt-built database (seed kind external)."
+        ),
+    )
     return parser
 
 
@@ -101,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         warehouse=args.warehouse,
         default_db=args.default_db,
         description=args.description,
+        schema_strict=args.schema_strict,
+        dbt_target=args.dbt_target,
     )
     print(f"Wrote package -> {report.package_dir}")
     print(f"  Models:  {len(report.models_emitted)}")

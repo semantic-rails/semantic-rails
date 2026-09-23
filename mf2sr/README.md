@@ -90,6 +90,36 @@ DuckDB packages emit a placeholder `seed.source` pointing at
 packages emit a `connection.kind: snowflake_native` block reading
 credentials from environment variables.
 
+## Strict packages from a dbt project
+
+`--schema-strict` writes a `schema_strict: true` package instead:
+
+- Relations keep their schema. They come from `node_relation.schema_name`
+  in a `semantic_manifest.json`, or through the dbt manifest (see below).
+  A relation whose schema is unknown is reported as a warning.
+- Ratio metrics, and derived metrics that divide one input by another, get
+  an explicit `value_type`: `currency` for money per unit (revenue per
+  order), `ratio` otherwise. A derived metric whose type isn't clear keeps
+  mf2sr's guess, and a warning asks you to check it.
+- The output is parse-checked. Any strict error is reported as a
+  `strict parse:` warning, so `--strict` fails the run.
+
+`--dbt-target <dbt target/ directory>` reads dbt's `manifest.json` (and
+`catalog.json` when present). Each `ref('model')` or `source('name',
+'table')` then resolves to the relation dbt built, for example
+`main_marts.fct_orders`. A DuckDB package gets `seed: {kind: external}`,
+so it reads the dbt-built database and never rebuilds it; point
+`--default-db` at that file. Run `dbt build` first.
+
+```bash
+uv run python -m mf2sr --source my_dbt_project/models --output configs/semantic_rails \
+  --package-id shop --schema-strict --dbt-target my_dbt_project/target \
+  --default-db data/warehouse.duckdb
+```
+
+Python callers pass `schema_strict=True` and `dbt_target=...` to
+`translate()`.
+
 ## Programmatic use
 
 ```python

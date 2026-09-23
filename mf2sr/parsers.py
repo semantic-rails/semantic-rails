@@ -77,6 +77,8 @@ def _normalize_dbt_semantic_model(sm: dict[str, Any]) -> dict[str, Any]:
     unchanged."""
     out = dict(sm)
     model_ref = out.pop("model", None)
+    if isinstance(model_ref, str):
+        out["_model_ref"] = model_ref  # resolved against a dbt manifest when one is given
     if model_ref and "node_relation" not in out:
         alias = _strip_ref(model_ref) if isinstance(model_ref, str) else None
         if alias:

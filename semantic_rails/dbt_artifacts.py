@@ -68,6 +68,10 @@ class DbtProject:
     dbt_version: str
     relations: dict[str, DbtRelation]
 
+    def resolve(self, reference: str) -> DbtRelation | None:
+        """The relation a ``ref('model')`` or ``source('name', 'table')`` string names."""
+        return _target_of(reference, self.relations)
+
     def find(self, name: str) -> DbtRelation:
         """A relation by unique_id, model/seed/snapshot name, or relation string."""
         if name in self.relations:
