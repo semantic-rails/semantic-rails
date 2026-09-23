@@ -232,6 +232,35 @@ def test_builtin_extensions_raise_and_cannot_be_turned_off(
         load_extensions(CommandRegistry())
 
 
+def test_builtin_extensions_load_before_plugins_that_sort_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def extends_sync(registry: CommandRegistry) -> None:
+        registry.extend_command(
+            ("ossie", "sync"),
+            configure=lambda parser: parser.add_argument("--dry-run", action="store_true"),
+        )
+
+    _install(
+        monkeypatch,
+        _EntryPoint("a-takes-ossie", _adds(("ossie",), "plugin")),
+        _EntryPoint("a-extends-sync", extends_sync),
+        _EntryPoint("z-core", _adds(("ossie", "sync"), "core"), dist="semantic-rails"),
+    )
+    warnings = io.StringIO()
+    registry = CommandRegistry()
+
+    loaded = load_extensions(registry, stderr=warnings)
+    parser = registry.build_parser()  # the built-in extension's name wasn't taken
+
+    assert loaded == ["z-core", "a-extends-sync"]
+    assert parser.parse_args(["ossie", "sync", "--dry-run"]).dry_run is True
+    assert warnings.getvalue().splitlines() == [
+        "semantic-rails: skipped CLI plugin 'a-takes-ossie' from acme-semantic-rails-plugin: "
+        "CommandRegistrationError: 'ossie' already exists",
+    ]
+
+
 def test_main_runs_a_plugin_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

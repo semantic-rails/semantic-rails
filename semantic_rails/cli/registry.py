@@ -11,10 +11,11 @@ entry point in the ``semantic_rails.cli`` group::
 built-in command tree when the parser is built, and a conflict (shadowing a
 built-in, extending a missing command) raises
 :class:`CommandRegistrationError`. Entry points shipped in the
-``semantic-rails`` distribution are built in: they always load and any
-failure raises. Entry points from other distributions are plugins: one that
-fails to load is skipped with a warning on stderr, and
-``SEMANTIC_RAILS_CLI_PLUGINS=0`` turns all plugins off.
+``semantic-rails`` distribution are built in: they load first, always load,
+and any failure raises. Entry points from other distributions are plugins:
+one that fails to load, or clashes with what loaded before it, is skipped
+with a warning on stderr, and ``SEMANTIC_RAILS_CLI_PLUGINS=0`` turns all
+plugins off.
 
 ``register`` must not print, prompt or do I/O: every CLI run imports it,
 including ``mcp stdio``, whose stdout is the protocol channel. ``configure``
@@ -182,8 +183,13 @@ _NAME = re.compile(r"[a-z][a-z0-9-]*")
 def load_extensions(registry: CommandRegistry, *, stderr: TextIO | None = None) -> list[str]:
     """Run every ``semantic_rails.cli`` entry point against ``registry``.
 
-    Returns the names of the extensions that loaded. Built-in entry points
-    raise on failure; a failing plugin is skipped with a warning.
+    Built-in entry points run first, then plugins, each group in name order.
+    So a plugin can extend a command that a built-in extension adds, and it
+    can never take a name a built-in extension needs. Built-in entry points
+    raise on failure. A plugin is test-applied against everything accepted
+    before it, and one that fails is skipped with a warning.
+
+    Returns the names of the extensions that loaded, in load order.
     """
 
     stream = stderr or sys.stderr
@@ -193,31 +199,33 @@ def load_extensions(registry: CommandRegistry, *, stderr: TextIO | None = None) 
         "no",
         "off",
     }
-    loaded: list[str] = []
-    for entry_point in sorted(
+    entry_points = sorted(
         metadata.entry_points(group=ENTRY_POINT_GROUP), key=lambda ep: (ep.name, ep.value)
-    ):
-        builtin = _is_builtin(entry_point)
-        if not builtin and not plugins_enabled:
-            continue
+    )
+    loaded: list[str] = []
+    for entry_point in (ep for ep in entry_points if _is_builtin(ep)):
         scratch = CommandRegistry()
-        if builtin:
+        entry_point.load()(scratch)
+        registry._operations.extend(scratch._operations)
+        loaded.append(entry_point.name)
+    if not plugins_enabled:
+        return loaded
+    for entry_point in (ep for ep in entry_points if not _is_builtin(ep)):
+        scratch = CommandRegistry()
+        try:
             entry_point.load()(scratch)
-        else:
-            try:
-                entry_point.load()(scratch)
-                # Prove the plugin applies cleanly before accepting any of it.
-                probe = CommandRegistry()
-                probe._operations = [*registry._operations, *scratch._operations]
-                probe.build_parser()
-            except Exception as exc:  # noqa: BLE001 - a broken plugin must not break the CLI
-                source = _distribution_name(entry_point) or "unknown distribution"
-                print(
-                    f"semantic-rails: skipped CLI plugin {entry_point.name!r} from {source}: "
-                    f"{type(exc).__name__}: {exc}",
-                    file=stream,
-                )
-                continue
+            # Prove the plugin applies cleanly before accepting any of it.
+            probe = CommandRegistry()
+            probe._operations = [*registry._operations, *scratch._operations]
+            probe.build_parser()
+        except Exception as exc:  # noqa: BLE001 - a broken plugin must not break the CLI
+            source = _distribution_name(entry_point) or "unknown distribution"
+            print(
+                f"semantic-rails: skipped CLI plugin {entry_point.name!r} from {source}: "
+                f"{type(exc).__name__}: {exc}",
+                file=stream,
+            )
+            continue
         registry._operations.extend(scratch._operations)
         loaded.append(entry_point.name)
     return loaded
