@@ -350,6 +350,40 @@ defaults:
 `schema_strict: true` turns on strict v1 validation (see the
 [Validation profile](#validation-profile) section). Recommended for new packages.
 
+### DuckDB seeds and externally built databases
+
+`seed.kind` says who builds the file at `default_db`:
+
+- `sql_script` (a SQL file) or `csv_dir_duckdb` (a directory of CSVs plus
+  optional `post_sql`): the runtime builds the database from the seed when the
+  file is missing. The build records its provenance inside the file. If a
+  later package version reads relations the file lacks, the runtime rebuilds
+  it, but only when this package's seed built it and nothing has changed it
+  since. It errs on the side of keeping the file: a database holding macros or
+  user-defined types (which it cannot fingerprint completely), a database on a
+  filesystem without hard links, and on Windows any existing database are
+  reported rather than rebuilt.
+- `external`: another tool (for example `dbt build` with dbt-duckdb) builds and
+  owns the file. It takes no `source` or `post_sql`, and the runtime only reads
+  the file: a missing file is an `INVALID_CONFIG` error, never a rebuild.
+
+```yaml
+package:
+  warehouse: duckdb
+  default_db: data/warehouse.duckdb   # the file dbt-duckdb writes
+  seed: { kind: external }
+```
+
+Relations may be schema-qualified (`relation: main_marts.fct_orders`), and the
+existence check resolves them exactly as compiled SQL does; views and the stored
+sources of relation pipelines count as existing relations. When a seeded package finds a database it
+did not build that lacks relations it reads, the runtime raises `INVALID_CONFIG`
+(with `details.missing_relations`) and leaves the file alone. If another tool
+builds it, declare `seed.kind: external`; otherwise delete the file to rebuild it
+from the seed, or set `SEMANTIC_RAILS_ALLOW_DB_RESEED=1` to replace it. A
+database built by an earlier release records no provenance, so it needs that
+one-time delete the first time it lacks a relation.
+
 ### `package.environments` and governance `meta:`
 
 ```yaml

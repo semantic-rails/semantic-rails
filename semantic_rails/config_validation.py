@@ -19,7 +19,12 @@ from typing import Any
 import yaml
 
 from .compiler import _requires_query_time
-from .config import get_package_path, load_package_config, package_root_for_source
+from .config import (
+    SEED_KIND_EXTERNAL,
+    get_package_path,
+    load_package_config,
+    package_root_for_source,
+)
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
@@ -1158,12 +1163,20 @@ def _validate_split_package(
     if connector and connector.requires_seed:
         seed = expect_mapping(package.get("seed"), f"{path / 'package.yml'}.package.seed", errors)
         if seed is not None:
-            if not str(seed.get("kind", "")).strip():
+            seed_kind = str(seed.get("kind", "")).strip()
+            if not seed_kind:
                 add_error(
                     errors,
                     f"{path / 'package.yml'}: duckdb packages must declare package.seed.kind",
                 )
-            if not str(seed.get("source", "")).strip():
+            if seed_kind == SEED_KIND_EXTERNAL:
+                if str(seed.get("source", "")).strip() or str(seed.get("post_sql", "")).strip():
+                    add_error(
+                        errors,
+                        f"{path / 'package.yml'}: package.seed.kind 'external' takes no "
+                        "source or post_sql",
+                    )
+            elif not str(seed.get("source", "")).strip():
                 add_error(
                     errors,
                     f"{path / 'package.yml'}: duckdb packages must declare package.seed.source",

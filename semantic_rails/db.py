@@ -5,8 +5,11 @@ Exposes :class:`WarehouseAdapter` (the pluggable warehouse contract),
 Snowflake native instance based on package config), :class:`Database`
 (the local DuckDB convenience wrapper), and :func:`seed_db` /
 :func:`load_csv_dir_to_duckdb` for the local quickstart's seed pipeline.
-Adapters are the only place that touches a real warehouse driver — the
-rest of the runtime talks to the abstract interface.
+:func:`build_seed_database` builds a seed beside its target and records its
+provenance (see :mod:`semantic_rails.seed_provenance`), so the runtime can
+tell its own seeded database apart from one another tool built. Adapters are
+the only place that touches a real warehouse driver — the rest of the
+runtime talks to the abstract interface.
 
 The Snowflake CLI / native adapters and their connection-option
 helpers live in :mod:`semantic_rails.db_parts.snowflake` to keep this
@@ -22,6 +25,7 @@ import os
 import sqlite3
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch semantic_rails.db.subprocess
 import threading
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -50,6 +54,7 @@ from .dialects import (
 )
 from .errors import SemanticLayerError, query_execution_error
 from .schema import PackageMeta
+from .seed_provenance import publish_seed_database, record_seed_provenance
 from .sql_preparation import PreparedQuery
 
 __all__ = [
@@ -61,6 +66,7 @@ __all__ = [
     "SnowflakeNativeAdapter",
     "WarehouseAdapter",
     "build_snowflake_cli_command",
+    "build_seed_database",
     "create_duckdb_adapter",
     "create_warehouse_adapter",
     "load_csv_dir_to_duckdb",
@@ -239,28 +245,11 @@ def _remove_quietly(path: str) -> None:
 
 
 def _atomic_seed_target(db_path: str) -> str:
-    # Seed into a sibling temp file and atomically replace the final path.
-    # Concurrent seeders (e.g. pytest-xdist workers or parallel CLI runs
-    # racing to create the same default_db) each build a complete file and
-    # never contend for DuckDB's single-writer lock on the shared path.
-    return f"{db_path}.seed.{os.getpid()}.tmp"
-
-
-def seed_db(db_path: str, seed_sql_path: str) -> None:
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    tmp_path = _atomic_seed_target(db_path)
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-    db = Database.connect(tmp_path)
-    try:
-        with open(seed_sql_path, encoding="utf-8") as f:
-            db.execute_script(f.read())
-    except BaseException:
-        db.close()
-        _remove_quietly(tmp_path)
-        raise
-    db.close()
-    os.replace(tmp_path, db_path)
+    # Seed into a sibling temp file, then publish it. Concurrent seeders
+    # (e.g. pytest-xdist workers, parallel CLI runs or threads racing to create
+    # the same default_db) each build a complete file of their own and never
+    # contend for DuckDB's single-writer lock on the shared path.
+    return f"{db_path}.seed.{os.getpid()}.{uuid.uuid4().hex}.tmp"
 
 
 def _duckdb_string_list(values: Iterable[str]) -> str:
@@ -268,49 +257,112 @@ def _duckdb_string_list(values: Iterable[str]) -> str:
     return "[" + ", ".join(f"'{value}'" for value in escaped) + "]"
 
 
-def load_csv_dir_to_duckdb(
-    db_path: str, csv_dir: str, post_sql_path: str = "", null_strings: Iterable[str] | None = None
+def _build_sql_seed(db: Database, seed_sql_path: str) -> None:
+    with open(seed_sql_path, encoding="utf-8") as f:
+        db.execute_script(f.read())
+
+
+def _build_csv_seed(
+    db: Database, csv_dir: str, post_sql_path: str, null_strings: Iterable[str] | None
 ) -> None:
+    null_values = list(null_strings or [""])
+    null_clause = f", NULLSTR={_duckdb_string_list(null_values)}" if null_values else ""
+    for filename in sorted(name for name in os.listdir(csv_dir) if name.endswith(".csv")):
+        table_name = os.path.splitext(filename)[0]
+        src = os.path.join(csv_dir, filename).replace("'", "''")
+        try:
+            db.execute(
+                f"""
+                CREATE OR REPLACE TABLE {table_name} AS
+                SELECT *
+                FROM read_csv_auto('{src}', HEADER=TRUE{null_clause});
+                """.strip()
+            )
+        except Exception as exc:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"CSV seed load failed for file '{filename}' into table '{table_name}': {exc}",
+                details={"csv_dir": csv_dir, "file": filename, "table": table_name},
+            ) from exc
+    if post_sql_path:
+        try:
+            with open(post_sql_path, encoding="utf-8") as f:
+                db.execute_script(f.read())
+        except Exception as exc:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"CSV seed post_sql failed for '{post_sql_path}': {exc}",
+                details={"csv_dir": csv_dir, "post_sql": post_sql_path},
+            ) from exc
+
+
+def build_seed_database(
+    db_path: str,
+    *,
+    kind: str,
+    source: str,
+    post_sql: str = "",
+    null_strings: Iterable[str] | None = None,
+    package_id: str = "",
+) -> str:
+    """Build a seed into a fresh file beside ``db_path`` and return that file's path.
+
+    ``kind`` is ``sql_script`` (``source`` is a SQL file) or ``csv_dir_duckdb``
+    (``source`` is a directory of CSVs, plus optional ``post_sql``). With
+    ``package_id`` the file records that this package's seed built it. The
+    caller publishes it with :func:`semantic_rails.seed_provenance.publish_seed_database`.
+    """
+    if kind not in {"sql_script", "csv_dir_duckdb"}:
+        raise SemanticLayerError("INVALID_CONFIG", f"Unsupported seed kind '{kind}'")
     if duckdb is None:
         raise RuntimeError("duckdb is not installed. Add it to your environment dependencies.")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     tmp_path = _atomic_seed_target(db_path)
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-    null_values = list(null_strings or [""])
-    null_clause = f", NULLSTR={_duckdb_string_list(null_values)}" if null_values else ""
-    db = Database.connect(tmp_path)
+    _remove_quietly(tmp_path)
     try:
-        for filename in sorted(name for name in os.listdir(csv_dir) if name.endswith(".csv")):
-            table_name = os.path.splitext(filename)[0]
-            src = os.path.join(csv_dir, filename).replace("'", "''")
-            try:
-                db.execute(
-                    f"""
-                    CREATE OR REPLACE TABLE {table_name} AS
-                    SELECT *
-                    FROM read_csv_auto('{src}', HEADER=TRUE{null_clause});
-                    """.strip()
-                )
-            except Exception as exc:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"CSV seed load failed for file '{filename}' into table '{table_name}': {exc}",
-                    details={"csv_dir": csv_dir, "file": filename, "table": table_name},
-                ) from exc
-        if post_sql_path:
-            try:
-                with open(post_sql_path, encoding="utf-8") as f:
-                    db.execute_script(f.read())
-            except Exception as exc:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"CSV seed post_sql failed for '{post_sql_path}': {exc}",
-                    details={"csv_dir": csv_dir, "post_sql": post_sql_path},
-                ) from exc
+        db = Database.connect(tmp_path)
+        try:
+            if kind == "sql_script":
+                _build_sql_seed(db, source)
+            else:
+                _build_csv_seed(db, source, post_sql, null_strings)
+        finally:
+            db.close()
+        if package_id:
+            record_seed_provenance(tmp_path, package_id)
     except BaseException:
-        db.close()
         _remove_quietly(tmp_path)
         raise
-    db.close()
-    os.replace(tmp_path, db_path)
+    return tmp_path
+
+
+def _build_and_replace(db_path: str, **build: Any) -> None:
+    tmp_path = build_seed_database(db_path, **build)
+    try:
+        publish_seed_database(tmp_path, db_path, replace_existing=True)
+    finally:
+        _remove_quietly(tmp_path)
+
+
+def seed_db(db_path: str, seed_sql_path: str, *, package_id: str = "") -> None:
+    """Build ``db_path`` from a SQL script and replace it atomically."""
+    _build_and_replace(db_path, kind="sql_script", source=seed_sql_path, package_id=package_id)
+
+
+def load_csv_dir_to_duckdb(
+    db_path: str,
+    csv_dir: str,
+    post_sql_path: str = "",
+    null_strings: Iterable[str] | None = None,
+    *,
+    package_id: str = "",
+) -> None:
+    """Build ``db_path`` from a directory of CSVs (plus optional SQL) and replace it atomically."""
+    _build_and_replace(
+        db_path,
+        kind="csv_dir_duckdb",
+        source=csv_dir,
+        post_sql=post_sql_path,
+        null_strings=null_strings,
+        package_id=package_id,
+    )

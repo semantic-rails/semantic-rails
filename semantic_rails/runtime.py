@@ -36,6 +36,7 @@ from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
 from .compiler import compile_query
 from .config import (
+    SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
     get_package_config,
     get_package_path,
@@ -48,6 +49,7 @@ from .config import (
 from .db import (
     Database,
     WarehouseAdapter,
+    build_seed_database,
     create_warehouse_adapter,
     load_csv_dir_to_duckdb,
     seed_db,
@@ -71,6 +73,7 @@ from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects
 from .registry import Registry
+from .relation_pipelines import relation_source_tables
 from .request_context import context_from_policy_context, request_context_payload
 from .runtime_parts.responses import (
     apply_response_verbosity,
@@ -79,6 +82,16 @@ from .runtime_parts.responses import (
     resolve_verbosity,
 )
 from .scope import classify_question
+from .seed_provenance import (
+    DB_RESEED_ENV,
+    db_reseed_allowed,
+    file_identity,
+    hold_database,
+    missing_duckdb_relations,
+    publish_seed_database,
+    rebuild_lock,
+    seeded_database_unchanged,
+)
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
 from .sql_preparation import PreparedQuery
 
@@ -1292,6 +1305,11 @@ def _methodology_hints(config, payload: dict[str, Any], compiled) -> list[dict[s
     return hints
 
 
+# Windows cannot replace a file a connection holds open, so there the lock that
+# keeps writers out of a judged database cannot last through the publish.
+_PUBLISH_KEEPS_WRITERS_OUT = os.name != "nt"
+
+
 def _is_repo_managed_source(path: str) -> bool:
     try:
         return os.path.commonpath([os.path.abspath(path), repo_root()]) == repo_root()
@@ -1472,33 +1490,93 @@ class Runtime:
         return repo_candidate
 
     def _expected_tables(self) -> set[str]:
-        return {str(row.table) for row in self._config.entities if str(row.table).strip()}
-
-    def _db_matches_package(self) -> bool:
-        if self.warehouse != "duckdb":
-            return True
-        if not os.path.exists(self.db_path):
-            return False
-        try:
-            db = Database.connect(self.db_path, read_only=True)
-            try:
-                rows = db.query(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-                )
-            finally:
-                db.close()
-        except Exception:
-            return False
-        existing = {str(row.get("table_name", "")) for row in rows}
-        expected = self._expected_tables()
-        return expected.issubset(existing)
+        # An entity over a relation pipeline reads a CTE the compiler builds;
+        # the stored tables it needs are the pipeline's own sources. Declared
+        # aggregate relations are stored tables the compiler may route to.
+        pipeline_outputs = {row.output_name for row in self._config.relations}
+        stored = {
+            str(row.table)
+            for row in self._config.entities
+            if str(row.table).strip() and not row.relation_id
+        }
+        stored |= {
+            str(row.relation)
+            for row in self._config.aggregate_relations
+            if str(row.relation).strip() and row.relation not in pipeline_outputs
+        }
+        pipelines = {row.relation_id for row in self._config.entities if row.relation_id}
+        return stored | relation_source_tables(self._config, pipelines)
 
     def _ensure_db(self) -> None:
+        """Make the DuckDB file readable, building it from the seed only when that is safe.
+
+        An ``external`` seed means another tool owns the file: it is never
+        created or replaced. Otherwise a missing file is built, and an existing
+        file that lacks relations the package reads is rebuilt only if this
+        package's seed built it and nothing has changed it since, or the
+        operator opted in. The file is held (a shared lock) from that judgement
+        until the rebuild is published, and a file that appears while a seed
+        builds is never overwritten.
+        """
         if self.warehouse != "duckdb":
             return
         seed = self._config.package.seed
-        if self._db_matches_package():
+        if seed.kind == SEED_KIND_EXTERNAL:
+            if not os.path.exists(self.db_path):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"package.default_db '{self.db_path}' does not exist. The package declares "
+                    "package.seed.kind: external, so Semantic Rails never creates this database; "
+                    "build it first (for example with `dbt build`).",
+                    details={"default_db": self.db_path, "reason": "external_default_db_missing"},
+                )
             return
+        package_id = self._config.package.package_id
+        for _attempt in range(2):
+            if not os.path.exists(self.db_path):
+                try:
+                    self._publish_seed(replace_existing=False)
+                except SemanticLayerError as exc:
+                    if exc.details.get("reason") != "default_db_created_concurrently":
+                        raise
+                    continue  # judge the file another process just published
+                return
+            # One rebuilder at a time; each holds the file it judges (a shared lock)
+            # until its rebuild is published, so no writer can start in between.
+            with rebuild_lock(self.db_path), contextlib.ExitStack() as held:
+                try:
+                    held.enter_context(hold_database(self.db_path))
+                    judged = file_identity(self.db_path)
+                except Exception as exc:
+                    raise self._unreadable_db_error() from exc
+                missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+                if not missing:
+                    return
+                opted_in = db_reseed_allowed()
+                if not opted_in and not seeded_database_unchanged(self.db_path, package_id):
+                    raise self._foreign_db_error(missing)
+                if not _PUBLISH_KEEPS_WRITERS_OUT and not opted_in:
+                    raise self._foreign_db_error(missing, windows=True)
+                self._publish_seed(
+                    replace_existing=True,
+                    judged=judged,
+                    release=None if _PUBLISH_KEEPS_WRITERS_OUT else held.close,
+                )
+            return
+        raise SemanticLayerError(
+            "CONFIG_CONFLICT",
+            f"package.default_db '{self.db_path}' kept changing while its seed was built; retry",
+            details={"default_db": self.db_path, "reason": "default_db_created_concurrently"},
+        )
+
+    def _publish_seed(
+        self,
+        *,
+        replace_existing: bool,
+        judged: tuple[int, int] | None = None,
+        release: Callable[[], None] | None = None,
+    ) -> None:
+        seed = self._config.package.seed
         src = self._resolve_asset_path(seed.source, kind="seed_source")
         if not os.path.exists(src):
             # _resolve_asset_path falls back to the repo root when neither
@@ -1512,18 +1590,62 @@ class Runtime:
                 f"'{package_candidate}' (relative to the package) and "
                 f"'{src}'; create the file or fix package.seed.source",
             )
-        if seed.kind == "sql_script":
-            seed_db(self.db_path, src)
-            return
-        if seed.kind == "csv_dir_duckdb":
-            load_csv_dir_to_duckdb(
-                self.db_path,
-                src,
-                self._resolve_asset_path(seed.post_sql, kind="post_sql") if seed.post_sql else "",
-                null_strings=seed.null_strings,
+        tmp_path = build_seed_database(
+            self.db_path,
+            kind=seed.kind,
+            source=src,
+            post_sql=(
+                self._resolve_asset_path(seed.post_sql, kind="post_sql") if seed.post_sql else ""
+            ),
+            null_strings=seed.null_strings,
+            package_id=self._config.package.package_id,
+        )
+        try:
+            if release is not None:
+                release()
+            publish_seed_database(
+                tmp_path, self.db_path, replace_existing=replace_existing, judged=judged
             )
-            return
-        raise SemanticLayerError("INVALID_CONFIG", f"Unsupported seed kind '{seed.kind}'")
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+
+    def _unreadable_db_error(self) -> SemanticLayerError:
+        return SemanticLayerError(
+            "INVALID_CONFIG",
+            f"package.default_db '{self.db_path}' exists but could not be opened as a DuckDB "
+            "database; another process (for example a running `dbt build`) may be writing it. "
+            "Semantic Rails never replaces a file it cannot read. If another tool builds this "
+            "database, declare package.seed.kind: external; otherwise stop the process holding "
+            "it, or delete the file to rebuild it from the seed.",
+            details={"default_db": self.db_path, "reason": "default_db_unreadable"},
+        )
+
+    def _foreign_db_error(self, missing: list[str], *, windows: bool = False) -> SemanticLayerError:
+        shown = ", ".join(missing[:5])
+        if len(missing) > 5:
+            shown += f", and {len(missing) - 5} more"
+        why = (
+            "Semantic Rails does not rebuild an existing database automatically on Windows"
+            if windows
+            else "this package's seed did not build it (or it changed since), so Semantic Rails "
+            "will not rebuild it"
+        )
+        return SemanticLayerError(
+            "INVALID_CONFIG",
+            f"package.default_db '{self.db_path}' lacks relations the package reads ({shown}), "
+            f"and {why}. If another tool (such as dbt) builds this database, declare "
+            "package.seed.kind: external and build the missing relations there. Otherwise "
+            "delete the file to rebuild it from the seed (a database built before seed "
+            f"provenance was recorded needs this once), or set {DB_RESEED_ENV}=1 to replace it.",
+            details={
+                "default_db": self.db_path,
+                "missing_relations": missing,
+                "reason": "rebuild_unsupported_on_windows"
+                if windows
+                else "default_db_not_built_by_seed",
+            },
+        )
 
     def close(self) -> None:
         with self._state_gate.write(), self._query_lock:
