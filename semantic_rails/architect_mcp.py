@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from . import architect_introspection as introspection
 from .architect_service import (
     ArchitectProject,
     FirstModel,
@@ -140,6 +141,16 @@ class ArchitectMutationResult(BaseModel):
     parse: dict[str, Any] | None = None
     error: ArchitectMutationIssue | None = None
     errors: list[ArchitectMutationIssue] = Field(default_factory=list)
+
+
+def _read_only_annotations(title: str) -> ToolAnnotations:
+    return ToolAnnotations(
+        title=title,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
 
 
 def _mutation_annotations(title: str) -> ToolAnnotations:
@@ -1107,6 +1118,96 @@ def create_architect_mcp_server(
                 idempotency_key=idempotency_key,
                 dry_run=dry_run,
             )
+
+    def _warehouse_path(project_path: str, duckdb_path: str) -> str:
+        if bool(str(project_path or "").strip()) == bool(str(duckdb_path or "").strip()):
+            raise SemanticLayerError(
+                "INVALID_MCP_ARGUMENTS",
+                "Pass exactly one of project_path (a DuckDB package) or duckdb_path",
+            )
+        if project_path:
+            project = _resolve_project_path(project_path, workspace_root=root)
+            path = Path(introspection.package_duckdb_path(project)).resolve()
+        else:
+            raw = Path(duckdb_path).expanduser()
+            path = (raw if raw.is_absolute() else root / raw).resolve()
+        if not _within(path, root):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "Architect MCP only reads databases inside its configured workspace root",
+                details={"workspace_root": str(root), "requested_path": str(path)},
+            )
+        return str(path)
+
+    @mcp.tool(annotations=_read_only_annotations("List warehouse tables"))
+    def list_tables(
+        project_path: str = "", duckdb_path: str = "", schema: str = ""
+    ) -> dict[str, Any]:
+        """List tables and views (read-only) in a DuckDB package's database or a DuckDB file."""
+        try:
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {"ok": True, "tables": introspection.list_tables(warehouse, schema=schema)}
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(annotations=_read_only_annotations("Describe warehouse table"))
+    def describe_table(
+        relation: str, project_path: str = "", duckdb_path: str = ""
+    ) -> dict[str, Any]:
+        """Columns (type, nullability, default) and declared primary, unique and foreign keys."""
+        try:
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {"ok": True, **introspection.describe_table(warehouse, relation)}
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Profile table columns"),
+        description=(
+            "Row, distinct and null counts, min/max and up to 20 sample values per column "
+            "(read-only). Scans at most max_rows rows, sampling beyond that; sample_limit=0 "
+            "returns no values."
+        ),
+    )
+    def profile_columns(
+        relation: str,
+        columns: list[str] | None = None,
+        sample_limit: int = 5,
+        max_rows: int = introspection.DEFAULT_PROFILE_ROWS,
+        project_path: str = "",
+        duckdb_path: str = "",
+    ) -> dict[str, Any]:
+        try:
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {
+                    "ok": True,
+                    **introspection.profile_columns(
+                        warehouse,
+                        relation,
+                        columns,
+                        sample_limit=sample_limit,
+                        max_rows=max_rows,
+                    ),
+                }
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Suggest a model"),
+        description=(
+            "Propose a key, time roles, dimensions, measures (with aggregations) and foreign "
+            "keys for a relation, each with a confidence and a reason, plus draft upsert_model "
+            "arguments to review. Read-only."
+        ),
+    )
+    def suggest_model(
+        relation: str, project_path: str = "", duckdb_path: str = ""
+    ) -> dict[str, Any]:
+        try:
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {"ok": True, **introspection.suggest_model(warehouse, relation)}
+        except Exception as exc:
+            return _report_error(exc)
 
     @mcp.tool()
     def validate_project(

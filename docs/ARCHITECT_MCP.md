@@ -110,6 +110,27 @@ The terminal REPL exposes the same abstraction upserts through `author model`,
 similar-definition warnings, a pre-write YAML preview, and session-local
 `undo`; use the MCP tools when an MCP client is orchestrating the same work.
 
+## Warehouse Introspection
+
+Four read-only tools look at a DuckDB database before or while you model it. Pass `duckdb_path`
+(a file inside the workspace, for example the one `dbt build` wrote) or `project_path` (a DuckDB
+package: its `default_db`). They open the file read-only and never create, seed or change it.
+
+- `list_tables`: tables and views, optionally for one `schema`, with column counts.
+- `describe_table`: columns with types, nullability and defaults, and declared primary, unique and
+  foreign keys.
+- `profile_columns`: row, distinct and null counts, min/max and up to 20 sample values per column
+  (`sample_limit`, default 5; `0` returns none). At most `max_rows` rows are scanned (default one
+  million; a uniform sample beyond that, reported as `sampled`).
+- `suggest_model`: a key, time roles, dimensions, measures with an aggregation and foreign-key
+  links, each with a `confidence` (`high`, `medium`, `low`) and a `reason`. Declared keys come first,
+  then uniqueness in the data, then names; foreign keys are checked for rows with no match. It also
+  returns draft `upsert_model` arguments (low-confidence choices left out) to review before
+  calling `upsert_model`.
+
+Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
+The same functions are available to Python callers in `semantic_rails.architect_introspection`.
+
 ## Tool Surface
 
 - `architect_guidance`
@@ -128,6 +149,10 @@ similar-definition warnings, a pre-write YAML preview, and session-local
 - `impact_project`
 - `promotion_check`
 - `mcp_client_config`
+- `list_tables`
+- `describe_table`
+- `profile_columns`
+- `suggest_model`
 
 ## Safety Model
 
