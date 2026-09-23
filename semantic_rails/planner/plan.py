@@ -25,7 +25,7 @@ from typing import Any
 
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
-from .faithfulness import intent_faithfulness_why
+from .faithfulness import intent_faithfulness_why, unmatched_intent_terms
 from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
@@ -279,6 +279,20 @@ def plan_payload(
         payload["tie_break_hints"] = _slim_recovery_hints(
             list(best_validation.get("recovery_hints") or [])
         )
+    unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
+    if unmatched:
+        payload["warnings"] = [
+            {
+                "code": "PLAN_UNMATCHED_TERMS",
+                "severity": "warning",
+                "message": (
+                    "The draft doesn't use these words from the question: "
+                    f"{', '.join(unmatched)}. Check that best.query_ir answers what was "
+                    "asked before executing it."
+                ),
+                "details": {"terms": unmatched},
+            }
+        ]
     if detail_level in {"full", "debug"}:
         payload["alternatives"] = [
             _slim_best(
@@ -558,7 +572,7 @@ def _query_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
 
     out: dict[str, Any] = {}
-    for key in ("plan_version", "intent", "status", "why", "tie_break_hints"):
+    for key in ("plan_version", "intent", "status", "why", "tie_break_hints", "warnings"):
         if key in payload:
             out[key] = payload[key]
     out["best"] = _query_detail_best(payload.get("best"))

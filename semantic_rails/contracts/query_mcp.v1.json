@@ -725,12 +725,12 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Single public intent-planning surface: natural-language intent → one best Query IR plus optional alternatives. Use detail='query' for the tight QA loop before execute(row_format='columns'). Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope') and 'best.query_ir'. 'status=ok' has already paid validation cost, so agents may proceed to 'compile' or 'execute' with 'best.query_ir'. Use detail='full' for alternatives/blocked drafts, or detail='debug' for compose_hints. Gotcha: branch on 'status' before reading 'best'.",
+      "description": "Single public intent-planning surface: natural-language intent → one best Query IR. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. 'status=ok' has already paid validation cost, so agents may pass 'best.query_ir' to 'execute'. detail='best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: read 'status' and 'warnings' before running 'best.query_ir'.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
           "detail": {
-            "default": "best",
+            "default": "query",
             "enum": [
               "query",
               "best",

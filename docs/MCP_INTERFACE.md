@@ -129,12 +129,21 @@ genuinely need descriptions or the alias index.
 object directly. Metadata tools accept the same request fields documented in
 [QUERY_API.md](QUERY_API.md), including optional `policy_context`.
 
-`plan` is the only public natural-language intent tool. By default it returns
-`status`, `intent_ir`, `best.query_ir`, `best.trace`, and a `next` block. For the
-lowest-token QA loop, request `detail="query"` and forward `best.query_ir` to
-`execute` with `row_format="columns"`. When `status="ok"`, the draft has already
+`plan` is the only public natural-language intent tool. Over MCP it defaults to
+`detail="query"`: `status`, `best.query_ir`, and a `why` or `warnings` entry for any part of
+the question the draft doesn't honor. For the lowest-token QA loop, forward `best.query_ir`
+to `execute` with `row_format="columns"`. `detail="best"` (the HTTP default) adds
+`intent_ir`, `best.trace` and a `next` block. When `status="ok"`, the draft has already
 paid validation cost, so call `validate` again only when you are editing the IR or
-need full diagnostics. If a
+need full diagnostics.
+
+A draft that validates can still leave out part of the question. When it drops a time
+window, a ranking (its limit, its sort, or the dimension being ranked) or a named filter
+value, `plan` returns `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"`, and
+`why.details.gaps` names each clause (`time_window_unrealized`, `ranking_unrealized`,
+`filter_values_unrealized`, and the negation, prior-period and multi-subject checks).
+Question words the draft uses nowhere come back as a `PLAN_UNMATCHED_TERMS` warning with
+the words in `details.terms`; check them before executing. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
@@ -228,6 +237,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_UNKNOWN_ARG` | `execute` | Unknown argument received; the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `validate`, `compile`, `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `validate`, `compile`, `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |

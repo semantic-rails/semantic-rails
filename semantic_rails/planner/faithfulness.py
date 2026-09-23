@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from difflib import get_close_matches
 from typing import Any
 
-from ._base import _tokens
+from ._base import _MONTH_NUMBERS, _TIME_UNITS, _object_text, _time_bounds_from_text, _tokens
 from .intent_ir import IntentIR
 
 
@@ -65,6 +66,71 @@ _NEGATION_RE = re.compile(
     r"(?!only\b)(?P<value>[^,.;]+)",
     re.IGNORECASE,
 )
+# Ranking requests: "top 5 products", "the 3 lowest-selling products", "the 5
+# customers who spent the most", "which store had the most orders".
+# "at least 10 orders" is a threshold, not a ranking.
+_SUPERLATIVE_RE = re.compile(
+    r"\b(?:top|bottom|highest|lowest|fewest|largest|smallest|biggest|best|worst|greatest)\b"
+    r"|(?<!at )\b(?:most|least)\b",
+    re.IGNORECASE,
+)
+_ASCENDING_RE = re.compile(
+    r"\b(?:bottom|lowest|fewest|smallest|worst)\b|(?<!at )\bleast\b", re.IGNORECASE
+)
+_RANKED_NOUN_RE = re.compile(
+    r"\b(?:(?:top|bottom)\s+(?P<top>\d+)|the\s+(?P<count>\d+)|which(?:\s+(?P<which>\d+))?)\s+"
+    r"(?:(?:highest|lowest|most|least|best|worst|largest|smallest|biggest|greatest|fewest)"
+    r"(?:-[a-z]+)?\s+)?(?P<noun>[a-z][a-z-]*)(?:\s+(?P<noun2>[a-z][a-z-]*))?",
+    re.IGNORECASE,
+)
+# Words that end a ranked noun phrase ("which store had ...", "top 5 products by ...").
+_PHRASE_BREAKS = frozenset(
+    [
+        "by",
+        "in",
+        "for",
+        "with",
+        "from",
+        "of",
+        "on",
+        "at",
+        "per",
+        "that",
+        "who",
+        "which",
+        "whose",
+        "where",
+        "when",
+        "during",
+        "over",
+        "has",
+        "had",
+        "have",
+        "is",
+        "was",
+        "were",
+        "are",
+        "does",
+        "did",
+        "do",
+        "sells",
+        "sold",
+        "made",
+        "makes",
+        "drove",
+        "drives",
+        "generated",
+        "generates",
+        "brought",
+        "got",
+        "gets",
+        "saw",
+        "sees",
+        "spent",
+        "spends",
+    ]
+)
+_YEAR_NUMBER_RE = re.compile(r"^20\d{2}$")
 _SUBJECT_CONJUNCTION_RE = re.compile(r"\s+(?:and|plus)\s+|\s*,\s*", re.IGNORECASE)
 _SUBJECT_BOUNDARY_RE = re.compile(
     r"\s+(?:by|where|during|over\s+time|for\s+(?:customers?|stores?|accounts?|users?)|"
@@ -234,6 +300,10 @@ def intent_faithfulness_why(
                 )
             )
 
+    gaps.extend(_time_window_gaps(text, query))
+    gaps.extend(_ranking_gaps(runtime, text, query))
+    gaps.extend(_filter_value_gaps(runtime, text, query))
+
     if not gaps:
         return None
     return {
@@ -248,6 +318,208 @@ def intent_faithfulness_why(
         },
         "recovery_hints": _unique_hints(gaps),
     }
+
+
+def _time_block(query: dict[str, Any]) -> dict[str, Any]:
+    time = query.get("time")
+    return time if isinstance(time, dict) else {}
+
+
+def _time_window_gaps(text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """The question names a calendar or relative window the draft doesn't carry."""
+
+    expected = _time_bounds_from_text(text)
+    time = _time_block(query)
+    if not expected or any(time.get(key) for key in ("start", "end", "range")):
+        return []
+    return [
+        CoverageGap(
+            kind="time_window_unrealized",
+            clause=", ".join(f"{key}={value}" for key, value in expected.items()),
+            message="The question names a time window, but the draft is not bounded by it.",
+            expected={"time": expected},
+            actual={"time": time or None},
+            recovery_hint={
+                "kind": "provide_time_window",
+                "message": (
+                    "Add the window to Query IR time (start inclusive, end exclusive) with a grain "
+                    "that yields the buckets the question asks for, then validate."
+                ),
+            },
+        )
+    ]
+
+
+def _ranking_request(text: str) -> dict[str, Any] | None:
+    """Parse "top N <noun>"-style requests into (limit, direction, noun)."""
+
+    if not _SUPERLATIVE_RE.search(text):
+        return None
+    match = next(
+        (
+            candidate
+            for candidate in _RANKED_NOUN_RE.finditer(text)
+            if not _YEAR_NUMBER_RE.match(
+                candidate.group("top") or candidate.group("count") or candidate.group("which") or ""
+            )
+        ),
+        None,
+    )
+    if match is None:
+        return None
+    words = [match.group("noun").lower()]
+    second = (match.group("noun2") or "").lower()
+    if second and second not in _PHRASE_BREAKS:
+        words.append(second)
+    head = words[-1]
+    raw_limit = match.group("top") or match.group("count") or match.group("which")
+    if raw_limit:
+        limit: int | None = int(raw_limit)
+    else:
+        # "which store had the most" asks for one; "which segments" for all of them.
+        limit = 1 if _singular(head) == head else None
+    phrase = match.group(0).split()
+    return {
+        "clause": " ".join(phrase[:-1] if second in _PHRASE_BREAKS else phrase),
+        "limit": limit,
+        "direction": "ASC" if _ASCENDING_RE.search(text) else "DESC",
+        "noun": head,
+    }
+
+
+def _singular(word: str) -> str:
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """A ranking request loses its limit, its sort or the thing being ranked."""
+
+    request = _ranking_request(text)
+    if request is None:
+        return []
+    order_by = [row for row in list(query.get("order_by") or []) if isinstance(row, dict)]
+    problems: list[str] = []
+    # Order only decides the answer when a limit cuts it off.
+    if request["limit"] is not None:
+        if query.get("limit") != request["limit"]:
+            problems.append("limit")
+        direction = str(order_by[0].get("direction", "ASC")).upper() if order_by else ""
+        if direction != request["direction"]:
+            problems.append("order")
+    noun = _singular(request["noun"])
+    time = _time_block(query)
+    if noun in _TIME_UNITS:
+        if str(time.get("grain", "") or "") != noun:
+            problems.append("ranked_time_grain")
+    else:
+        config = runtime._config
+        ranked = {
+            str(row.id)
+            for row in config.dimensions
+            if noun in {_singular(token) for token in _tokens(_object_text(row))}
+        }
+        grouped = {str(item) for item in list(query.get("group_by") or [])}
+        if ranked and not ranked & grouped:
+            problems.append("ranked_dimension")
+    if not problems:
+        return []
+    return [
+        CoverageGap(
+            kind="ranking_unrealized",
+            clause=request["clause"],
+            message=(
+                "The question asks for a ranking, but the draft does not return the requested "
+                "rows in order: " + ", ".join(problems) + "."
+            ),
+            expected={
+                "limit": request["limit"],
+                "direction": request["direction"],
+                "ranked": request["noun"],
+            },
+            actual={
+                "limit": query.get("limit"),
+                "order_by": order_by,
+                "group_by": list(query.get("group_by") or []),
+                "grain": time.get("grain"),
+            },
+            recovery_hint={
+                "kind": "provide_ranking",
+                "message": (
+                    "Group by the ranked dimension (or set time.grain for ranked periods), order "
+                    "by the measure in the requested direction, and set limit, then validate."
+                ),
+            },
+        )
+    ]
+
+
+def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """Every governed value the question names must reach a filter.
+
+    A value also counts as honored when the draft's chosen objects carry it
+    (for example "new customer orders" answered by a new-customer measure).
+    """
+
+    lowered = str(text or "").lower()
+    filtered: set[str] = set()
+    for row in list(query.get("where") or []):
+        if isinstance(row, dict):
+            value = row.get("value")
+            for item in value if isinstance(value, list) else [value]:
+                filtered.add(str(item).lower())
+    config = runtime._config
+    referenced = set(_referenced_ids(query))
+    object_tokens: set[str] = set()
+    for row in [*config.measures, *config.metric_recipes, *config.dimensions]:
+        if str(getattr(row, "id", "")) in referenced:
+            object_tokens.update(_tokens(_object_text(row)))
+    missing: list[dict[str, Any]] = []
+    for domain in config.value_domains:
+        for value in list(domain.values or []):
+            phrases = [str(value.value), str(value.label), *[str(a) for a in value.aliases or []]]
+            phrases = [phrase.strip().lower() for phrase in phrases if str(phrase).strip()]
+            if not any(
+                re.search(rf"(?<![a-z0-9]){re.escape(phrase)}s?(?![a-z0-9])", lowered)
+                for phrase in phrases
+            ):
+                continue
+            if filtered & set(phrases) or any(set(_tokens(p)) <= object_tokens for p in phrases):
+                continue
+            if all(row["value"] != value.value for row in missing):
+                missing.append({"value": value.value, "dimensions": list(domain.dimensions)})
+    if not missing:
+        return []
+    return [
+        CoverageGap(
+            kind="filter_values_unrealized",
+            clause=", ".join(str(row["value"]) for row in missing),
+            message="The question names values that no filter in the draft uses.",
+            expected={"values": missing},
+            actual={"where": list(query.get("where") or [])},
+            recovery_hint={
+                "kind": "provide_filter_values",
+                "message": (
+                    "Filter on every named value (op 'in' with a list for several values of one "
+                    "dimension), then validate."
+                ),
+            },
+        )
+    ]
+
+
+def _referenced_ids(query: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for node in _dict_nodes(query):
+        for key in ("measure", "metric", "field", "temporal_role"):
+            value = node.get(key)
+            if isinstance(value, str) and value and value not in ids:
+                ids.append(value)
+    ids.extend(str(item) for item in list(query.get("group_by") or []) if str(item) not in ids)
+    return ids
 
 
 def _dict_nodes(value: Any):
@@ -411,4 +683,150 @@ def _unique_hints(gaps: list[CoverageGap]) -> list[dict[str, Any]]:
     return out
 
 
-__all__ = ["CoverageGap", "intent_faithfulness_why"]
+# Words that frame a question rather than constrain it: question and request
+# words, ranking and calendar vocabulary, and generic aggregation words.
+_FRAMING_WORDS = frozenset(
+    {
+        *[
+            "all",
+            "amount",
+            "be",
+            "been",
+            "can",
+            "compare",
+            "could",
+            "display",
+            "each",
+            "every",
+            "find",
+            "give",
+            "group",
+            "grouped",
+            "list",
+            "me",
+            "need",
+            "number",
+            "please",
+            "see",
+            "sum",
+            "total",
+            "totals",
+            "overall",
+            "want",
+            "whose",
+            # Verbs that restate a measure ("tax collected", "customers who spent").
+            "brought",
+            "collected",
+            "earned",
+            "generated",
+            "had",
+            "made",
+            "spent",
+            # Negations; the negation check owns them.
+            "except",
+            "excluding",
+            "not",
+            "without",
+        ],
+        *[
+            "top",
+            "bottom",
+            "highest",
+            "lowest",
+            "most",
+            "least",
+            "fewest",
+            "largest",
+            "smallest",
+            "biggest",
+            "best",
+            "worst",
+            "greatest",
+            "rank",
+            "ranked",
+            "ranking",
+            "selling",
+            "performing",
+        ],
+        *[
+            "day",
+            "days",
+            "week",
+            "weeks",
+            "month",
+            "months",
+            "quarter",
+            "quarters",
+            "year",
+            "years",
+            "daily",
+            "weekly",
+            "monthly",
+            "quarterly",
+            "yearly",
+            "annual",
+            "annually",
+            "half",
+            "h1",
+            "h2",
+            "q1",
+            "q2",
+            "q3",
+            "q4",
+            "date",
+            "dates",
+            "time",
+            "period",
+            "periods",
+            "through",
+            "until",
+            "during",
+            "first",
+            "second",
+            "last",
+        ],
+        *_MONTH_NUMBERS,
+    }
+)
+
+
+def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """Question words the draft accounts for nowhere, in question order.
+
+    A word is accounted for when it frames the question, or appears (allowing
+    for a plural or a near-miss spelling) in the text of an object the draft
+    uses or in one of its filter values.
+    """
+
+    from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
+
+    config = runtime._config
+    referenced = set(_referenced_ids(query))
+    vocabulary: set[str] = set()
+    for row in [*config.measures, *config.metric_recipes, *config.dimensions]:
+        if str(getattr(row, "id", "")) in referenced:
+            vocabulary.update(_tokens(_object_text(row)))
+    for row in list(query.get("where") or []):
+        if isinstance(row, dict):
+            value = row.get("value")
+            for item in value if isinstance(value, list) else [value]:
+                vocabulary.update(_tokens(str(item)))
+    known = sorted(vocabulary)
+    out: list[str] = []
+    for token in _tokens(question):
+        if (
+            len(token) < 2
+            or token.isdigit()
+            or token in out
+            or token in _INTENT_STOPWORDS
+            or token in _FRAMING_WORDS
+            or token in vocabulary
+            or _singular(token) in vocabulary
+            or get_close_matches(token, known, n=1, cutoff=0.8)
+        ):
+            continue
+        out.append(token)
+    return out
+
+
+__all__ = ["CoverageGap", "intent_faithfulness_why", "unmatched_intent_terms"]
