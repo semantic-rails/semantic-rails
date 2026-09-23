@@ -285,7 +285,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
         "principles": [
             "Start with project_status before editing an existing package.",
             "Use setup_project_dialog for new-package discovery, then create_project when the required fields are known.",
-            "Prefer upsert_model for entity, dimension, time, measure, and join changes so graph.yml stays aligned.",
+            "Prefer upsert_model for entity, dimension, time, and measure changes and upsert_relationship for relationships, so graph.yml stays aligned.",
             "Run validate_project with mode=parse after every structural edit; use mode=runtime before promoting.",
             "Treat runtime validation as operational: DuckDB validation can build the package database from its seed (never over a database the seed did not build; declare seed kind external for one dbt builds), and Snowflake validation can issue live queries.",
             "Use impact_project with compare_path or base_ref before release review; use promotion_check with compare_path or base_ref when an environment gate matters.",
@@ -308,7 +308,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             },
             {
                 "step": "edit",
-                "tool": "upsert_model / upsert_metric / upsert_segment / write_project_file",
+                "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / write_project_file",
                 "result": (
                     "Preview or atomically commit scoped changes with expected_revision "
                     "and a caller-generated idempotency_key."
@@ -695,7 +695,7 @@ def _create_project_impl(
             "package_id": package_slug,
             "next_actions": [
                 "Run validate_project with mode=runtime before trusting queries.",
-                "Use upsert_model to add dimensions, measures, joins, or additional entities.",
+                "Use upsert_model to add dimensions, measures, or additional entities, and upsert_relationship to relate them.",
                 "When comparing changes, run impact_project with compare_path or base_ref before opening a release review.",
             ],
         },
@@ -960,6 +960,67 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                     measures=measures,
                     joins=joins,
                     group=group,
+                    description=description,
+                    validate_after=True,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert relationship"),
+        description=(
+            "Preview or atomically relate two entities through key columns. columns are "
+            "from_entity's columns holding to_entity's key (to_columns, if given, must be that "
+            "key); they are written to from_entity's model as a many-to-one reference. "
+            "cardinality one_to_one, name, allowed_directions (forward, reverse), safety (safe, "
+            "requires_rewrite, unsafe), path_preference (lower is preferred), label or "
+            "description also write graph.relationships.<name>, updating any entry for the same "
+            "pair. one_to_many is recorded from the many side (to_columns are then the foreign "
+            "key); many_to_many needs a bridge model."
+        ),
+    )
+    def upsert_relationship(
+        project_path: str,
+        from_entity: str,
+        to_entity: str,
+        columns: list[str],
+        expected_revision: str,
+        idempotency_key: str,
+        to_columns: list[str] | None = None,
+        cardinality: str = "",
+        name: str = "",
+        allowed_directions: list[str] | None = None,
+        safety: str = "",
+        path_preference: int | None = None,
+        label: str = "",
+        description: str = "",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            return _mutation_result(
+                ArchitectProject(project_path, workspace_root=root)
+                .upsert_relationship(
+                    from_entity=from_entity,
+                    to_entity=to_entity,
+                    columns=columns,
+                    to_columns=to_columns,
+                    cardinality=cardinality,
+                    name=name,
+                    allowed_directions=allowed_directions,
+                    safety=safety,
+                    path_preference=path_preference,
+                    label=label,
                     description=description,
                     validate_after=True,
                     expected_revision=expected_revision,

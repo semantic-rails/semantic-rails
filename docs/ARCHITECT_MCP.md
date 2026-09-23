@@ -27,8 +27,8 @@ From a source checkout, prefix the same commands with `uv run`.
 4. Preview `create_project` with `expected_revision: absent`, `dry_run: true`,
    and a caller-generated `idempotency_key`; then repeat with `dry_run: false`
    after reviewing its exact file changes.
-5. Use `upsert_model`, `upsert_metric`, `upsert_segment`, or scoped file tools
-   with the latest project revision. Generate a new idempotency key for each
+5. Use `upsert_model`, `upsert_relationship`, `upsert_metric`, `upsert_segment`, or scoped file
+   tools with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.
 6. Run `validate_project` with `mode=parse` after structural edits and `mode=runtime` before
    trusting queries.
@@ -96,6 +96,28 @@ Python callers use `semantic_rails.dbt_artifacts` (`load_dbt_artifacts`,
 `suggest_models_from_dbt`, `dbt_import_models`) and `ArchitectProject.upsert_models`, which stages
 several models and their references in one transaction.
 
+## Relationships
+
+`upsert_relationship` relates two entities through key columns. `columns` are `from_entity`'s
+columns holding `to_entity`'s key; strict packages relate to keys, so `to_columns`, when given, must
+be that key. The columns are written to `from_entity`'s model as an entity reference (`expr:` when
+named differently from the key), which the engine reads as a safe many-to-one relationship with the
+id `relationship.<model>_<entity>` (for example `relationship.orders_customer`).
+
+Rules beyond that default go in `graph.relationships.<name>`. The tool writes that entry when you
+pass `cardinality: one_to_one`, a `name`, `allowed_directions` (`forward`, `reverse`), `safety`
+(`safe`, `requires_rewrite`, `unsafe`), `path_preference` (lower is preferred; the default is 100),
+`label` or `description`. The default name keeps the inferred id, so routes pinned in
+`graph.path_preferences` still resolve. An existing entry for the same pair is updated in place and
+keeps the settings you do not pass. `one_to_many` is recorded from the many side (`to_columns` are
+then the foreign key on `to_entity`'s model); `many_to_many` is refused, because it needs a bridge:
+model the link table and relate it many-to-one to each side. A model marked `bridge: false` infers
+no joins, so its relationships are always written as explicit entries.
+
+The usual mutation contract applies (`expected_revision`, `idempotency_key`, `dry_run`), and the
+parse gate rolls back a change the package cannot load, such as one that breaks a pinned route.
+Python callers use `ArchitectProject.upsert_relationship`.
+
 ## Tool Surface
 
 - `architect_guidance`
@@ -106,6 +128,7 @@ several models and their references in one transaction.
 - `read_project_file`
 - `write_project_file`
 - `upsert_model`
+- `upsert_relationship`
 - `upsert_metric`
 - `upsert_segment`
 - `archive_project_file`
@@ -137,8 +160,8 @@ A database another tool builds (for example dbt) declares `seed: {kind: external
 created or replaced. Snowflake validation can issue live queries through the configured Snow CLI
 connection. Use `mode=parse` for a no-query authoring check.
 
-All six mutation tools (`create_project`, raw write, the three upserts, and
-archive) use one engine-owned transaction layer:
+Every mutation tool (`create_project`, raw write, the upserts, `import_dbt_project`, and archive)
+uses one engine-owned transaction layer:
 
 - `project_status` computes a deterministic `sha256:` revision over authored
   project files. Internal transaction receipts, archives, locks, generated

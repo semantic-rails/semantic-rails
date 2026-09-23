@@ -31,6 +31,19 @@ from .architect_transactions import (
 from .config_validation import PackageReference, parse_config_report
 from .errors import SemanticLayerError
 
+_RELATIONSHIP_CARDINALITIES = {
+    "many_to_one": "many_to_one",
+    "n:1": "many_to_one",
+    "one_to_one": "one_to_one",
+    "1:1": "one_to_one",
+    "one_to_many": "one_to_many",
+    "1:n": "one_to_many",
+    "many_to_many": "many_to_many",
+    "m:n": "many_to_many",
+}
+
+_RELATIONSHIP_SAFETY = ("safe", "requires_rewrite", "unsafe")
+
 _INVENTORY_KINDS = {
     "model": "models",
     "entity": "entities",
@@ -544,6 +557,264 @@ class ArchitectProject:
         if "models" in doc:
             return dict(doc["models"])[model_slug]
         return doc["model"]
+
+    def upsert_relationship(
+        self,
+        *,
+        from_entity: str,
+        to_entity: str,
+        columns: list[str],
+        to_columns: list[str] | None = None,
+        cardinality: str = "",
+        name: str = "",
+        allowed_directions: list[str] | None = None,
+        safety: str = "",
+        path_preference: int | None = None,
+        label: str = "",
+        description: str = "",
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Relate two entities through key columns, in the form strict packages use.
+
+        ``columns`` are ``from_entity``'s columns holding ``to_entity``'s key;
+        ``to_columns``, when given, must be that key. The columns go in the
+        ``entities:`` block of ``from_entity``'s model (with ``expr:`` when
+        named differently from the key), which is a safe many-to-one
+        relationship on its own. A ``one_to_one`` cardinality, a ``name``,
+        ``allowed_directions``, ``safety``, ``path_preference``, ``label`` or
+        ``description`` also writes ``graph.relationships.<name>``; an existing
+        entry for the same pair is updated in place, keeping what is not
+        passed. ``one_to_many`` is recorded from the many side (``to_columns``
+        are then the foreign key on ``to_entity``'s model). ``many_to_many``
+        needs a bridge model, related many-to-one to each side.
+        """
+        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        requested = str(cardinality or "").strip().lower()
+        kind = _RELATIONSHIP_CARDINALITIES.get(requested) if requested else None
+        if requested and kind is None:
+            choices = ", ".join(dict.fromkeys(_RELATIONSHIP_CARDINALITIES.values()))
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"cardinality must be one of {choices} (got {cardinality!r})",
+            )
+        if kind == "many_to_many":
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "a many_to_many relationship needs a bridge model: model the link table, "
+                "then relate it many_to_one to each side",
+            )
+        source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
+        fk_columns, target_columns = _as_list(columns), _as_list(to_columns)
+        if kind == "one_to_many":
+            source, target = target, source
+            fk_columns, target_columns = target_columns, fk_columns
+            kind = "many_to_one"
+        if not fk_columns:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "a one_to_many relationship is recorded on the many side: pass to_columns, "
+                "the foreign key on to_entity's model"
+                if requested in {"one_to_many", "1:n"}
+                else "columns must name the foreign-key columns on from_entity's model",
+            )
+        directions = [str(item).strip().lower() for item in allowed_directions or []]
+        if allowed_directions is not None and (
+            not directions or not set(directions) <= {"forward", "reverse"}
+        ):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "allowed_directions must be forward, reverse or both "
+                f"(got {list(allowed_directions)!r})",
+            )
+        if path_preference is not None and (
+            isinstance(path_preference, bool) or int(path_preference) < 1
+        ):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "path_preference must be a positive integer; lower is preferred (default 100)",
+            )
+        if safety and safety not in _RELATIONSHIP_SAFETY:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"safety must be one of {', '.join(_RELATIONSHIP_SAFETY)} (got {safety!r})",
+            )
+        raw = self._raw_inventory()
+        source_row = self._find_raw(raw["entities"], source)
+        target_row = self._find_raw(raw["entities"], target)
+        for entity, row in ((source, source_row), (target, target_row)):
+            if row is None:
+                raise SemanticLayerError(
+                    "OBJECT_NOT_FOUND",
+                    f"entity {entity!r} is not in this package",
+                    details={"entity": entity},
+                )
+        assert source_row is not None and target_row is not None
+        if source == target:
+            raise SemanticLayerError("INVALID_CONFIG", "an entity cannot reference itself")
+        target_key = _as_list(target_row.spec.get("key"))
+        if target_columns and target_columns != target_key:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{target} is related through its key {target_key}, not {target_columns}",
+                details={"entity": target, "key": target_key},
+            )
+        if len(fk_columns) != len(target_key):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"columns {fk_columns} do not match the width of {target}'s key {target_key}",
+                details={"columns": fk_columns, "key": target_key},
+            )
+        model_row = self._entity_model(raw, source_row)
+        if model_row is None:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"entity {source!r} has no model to hold the relationship",
+                details={"entity": source},
+            )
+
+        documents = self._load_documents(model_row.source_path, source_row.source_path)
+        graph = dict(documents[source_row.source_path].get("graph", {}) or {})
+        relationships = dict(graph.get("relationships", {}) or {})
+        default_name = f"{model_row.key}_{target}"  # the id the engine infers
+        existing_name = next(
+            (
+                str(entry_name)
+                for entry_name, entry in relationships.items()
+                if isinstance(entry, dict)
+                and sorted(_as_list(entry.get("entities"))) == sorted([source, target])
+            ),
+            "",
+        )
+        relationship_name = existing_name or _slug(name or default_name, fallback=default_name)
+        if existing_name:
+            if _as_list(dict(relationships[existing_name]).get("entities")) != [source, target]:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"graph.relationships.{existing_name} relates {target} to {source} from "
+                    f"the {target} side; remove it before relating {source} to {target}",
+                    details={"relationship": existing_name},
+                )
+            if name and _slug(name, fallback="") != _slug(existing_name, fallback=""):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{source} and {target} are already related as "
+                    f"graph.relationships.{existing_name}; pass name={existing_name!r} or "
+                    "leave name empty",
+                    details={"relationship": existing_name},
+                )
+        elif relationship_name in relationships:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"graph.relationships.{relationship_name} already relates other entities; "
+                "choose another name",
+                details={"relationship": relationship_name},
+            )
+        options: dict[str, Any] = {
+            field_name: value
+            for field_name, value in (
+                ("allowed_directions", directions or None),
+                ("safety", safety or None),
+                ("path_preference", path_preference),
+                ("label", label or None),
+                ("description", description or None),
+            )
+            if value is not None
+        }
+        current = dict(relationships.get(relationship_name, {}) or {})
+        effective = kind or _RELATIONSHIP_CARDINALITIES.get(
+            str(current.get("cardinality", "") or "").strip().lower(), "many_to_one"
+        )
+        model_doc = documents[model_row.source_path]
+        model, wrapper = self._model_for_update(model_doc, model_row, model_slug=model_row.key)
+        model_entities = dict(model.get("entities", {}) or {})
+        # A `bridge: false` model infers no joins from its entities block, so
+        # the relationship exists only as an explicit entry.
+        with_override = bool(
+            existing_name
+            or options
+            or effective != "many_to_one"
+            or relationship_name != default_name
+            or model_entities.get("bridge", True) is False
+        )
+        previous = model_entities.get(target)
+        entry = {
+            field_name: value
+            for field_name, value in dict(previous if isinstance(previous, dict) else {}).items()
+            if field_name != "expr"
+        }
+        if fk_columns != target_key:
+            entry["expr"] = fk_columns[0] if len(fk_columns) == 1 else fk_columns
+        model["entities"] = {**model_entities, target: entry}
+        self._store_model(model_doc, wrapper, model_row.key, model)
+        relationship_id = f"relationship.{relationship_name}"
+        if with_override:
+            spec = {**current, "entities": [source, target], **options}
+            if kind or "cardinality" not in current:
+                spec["cardinality"] = effective
+            relationship_id = str(spec.get("id") or relationship_id)
+            graph["relationships"] = {**relationships, relationship_name: spec}
+            documents[source_row.source_path]["graph"] = graph
+        elif source_row.source_path != model_row.source_path:
+            documents.pop(source_row.source_path)
+        return self._commit(
+            documents,
+            kind="relationship",
+            key=relationship_name,
+            existed=previous is not None or bool(existing_name),
+            source_file=self._relative(model_row.source_path),
+            target_file=self._relative(model_row.source_path),
+            validate_after=validate_after,
+            expected_revision=expected,
+            idempotency_key=key,
+            dry_run=dry_run,
+            intent={
+                "operation": "upsert_relationship",
+                "from_entity": from_entity,
+                "to_entity": to_entity,
+                "columns": list(columns or []),
+                "to_columns": list(to_columns or []),
+                "cardinality": cardinality,
+                "name": name,
+                "allowed_directions": list(allowed_directions or []),
+                "safety": safety,
+                "path_preference": path_preference,
+                "label": label,
+                "description": description,
+            },
+            extra={
+                "relationship": {
+                    "name": relationship_name,
+                    "id": relationship_id,
+                    "from_entity": source,
+                    "to_entity": target,
+                    "columns": fk_columns,
+                    "to_columns": target_key,
+                    "cardinality": effective,
+                    "model": model_row.key,
+                    "override": with_override,
+                }
+            },
+        )
+
+    def _entity_model(
+        self, raw: dict[str, list[_RawObject]], entity: _RawObject
+    ) -> _RawObject | None:
+        """The model an entity lives on, resolved the way the loader does."""
+        bound = str(entity.spec.get("model") or "")
+        if bound:
+            return self._find_raw(raw["models"], bound)
+        owner = next(
+            (
+                row
+                for row in raw["models"]
+                if self._primary_entity_for_model(row, raw["entities"]) == entity.key
+            ),
+            None,
+        )
+        return owner or self._find_raw(raw["models"], entity.key)
 
     def _stage_model(
         self,
