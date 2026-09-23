@@ -138,6 +138,9 @@ need full diagnostics. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
+`plan` resolves calendar windows (years, half years, quarters, months and days) and
+relative ones ("last 7 days"). A question that names a window it can't resolve, such as
+"2017 vs 2016", returns `low_confidence` with `why.code="TIME_WINDOW_UNRESOLVED"`.
 Use `detail="full"` only when you need alternatives or blocked drafts.
 
 Use `compile` and read its `explain` payload to review relationship paths before executing a
