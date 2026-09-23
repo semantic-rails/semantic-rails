@@ -1093,6 +1093,12 @@
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
+          "max_rows": {
+            "default": 200,
+            "description": "Most rows to return. A larger result sets truncated=true and total_row_count; aggregate further or raise max_rows.",
+            "minimum": 1,
+            "type": "integer"
+          },
           "policy_context": {
             "additionalProperties": true,
             "description": "Optional visibility/access policy context.",

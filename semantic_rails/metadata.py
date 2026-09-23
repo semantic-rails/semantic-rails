@@ -96,24 +96,32 @@ from .schema import PackageConfig
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
 
+# Query IR fields. Query patches and query_state carry only these: never the
+# request's policy context, response options or the tool's own arguments.
+_QUERY_IR_KEYS = (
+    "version",
+    "select",
+    "group_by",
+    "where",
+    "metric_filters",
+    "time",
+    "temporal_role_overrides",
+    "path_policy",
+    "order_by",
+    "limit",
+    "debug",
+    "explain",
+    "export",
+)
+
+
+def _query_ir(query: dict[str, Any] | None) -> dict[str, Any]:
+    source = query or {}
+    return {key: source[key] for key in _QUERY_IR_KEYS if key in source}
+
 
 def _query_state(query: dict[str, Any]) -> dict[str, Any]:
-    keys = [
-        "version",
-        "select",
-        "group_by",
-        "where",
-        "metric_filters",
-        "time",
-        "temporal_role_overrides",
-        "path_policy",
-        "order_by",
-        "limit",
-        "debug",
-        "explain",
-        "export",
-    ]
-    state = {key: query[key] for key in keys if key in query}
+    state = _query_ir(query)
     with contextlib.suppress(SemanticLayerError):
         state["normalized_query"] = normalize_query(dict(query)).to_dict()
     return state
@@ -3248,14 +3256,14 @@ def _select_expr_for_choice(runtime: Runtime, chosen: dict[str, Any]) -> dict[st
 def _query_patch_with_selection(
     runtime: Runtime, partial_query: dict[str, Any], chosen: dict[str, Any]
 ) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["select"] = [_select_expr_for_choice(runtime, chosen)]
     return query
 
 
 def _query_patch_with_group_by(partial_query: dict[str, Any], dimension_id: str) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["group_by"] = list(dict.fromkeys([*list(query.get("group_by", []) or []), dimension_id]))
     return query
@@ -3264,7 +3272,7 @@ def _query_patch_with_group_by(partial_query: dict[str, Any], dimension_id: str)
 def _query_patch_with_where(
     partial_query: dict[str, Any], dimension_id: str, value: Any, op: str = "="
 ) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["where"] = [
         *list(query.get("where", []) or []),
@@ -3274,7 +3282,7 @@ def _query_patch_with_where(
 
 
 def _query_patch_with_order_by_time(partial_query: dict[str, Any]) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["order_by"] = [
         *list(query.get("order_by", []) or []),
@@ -3286,7 +3294,7 @@ def _query_patch_with_order_by_time(partial_query: dict[str, Any]) -> dict[str, 
 def _query_patch_with_metric_filter(
     partial_query: dict[str, Any], metric_id: str, op: str = ">", value: Any = 0
 ) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     # Use the MetricRefExpr shape (`{kind: "metric", metric: "..."}`) +
     # top-level op/value on the filter. This validates against
@@ -3310,7 +3318,7 @@ def _query_patch_with_metric_filter(
 def _query_patch_with_time(
     partial_query: dict[str, Any], temporal_role: str, grain: str = ""
 ) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["time"] = {"temporal_role": temporal_role, "grain": grain or "month"}
     return query

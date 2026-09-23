@@ -171,6 +171,16 @@ keeps `rows` as objects (`[{...}]`). The opt-in columnar form returns
 `columns: [...]`, `rows: [[...]]`, `row_format: "columns"`, and the same
 `row_count`, warnings, and errors while avoiding repeated field names.
 
+`execute` returns at most `max_rows` rows (default 200). A larger result comes back with
+`truncated: true`, `total_row_count` (`null` when there are more than 10,000 rows) and an
+`EXECUTE_ROWS_TRUNCATED` warning that says how to narrow the query. Pass a larger `max_rows` to see
+more. A `limits.max_rows` inside the query is a ceiling that `max_rows` can't raise. This is an
+MCP-only default; the HTTP `/api/v1/query` endpoint doesn't cap rows.
+
+Query patches returned by `discover`, `inspect` and `build-options` contain only Query IR fields.
+They never carry the caller's `policy_context` or the tool's own arguments, so pass the policy
+context again on the call that uses a patch.
+
 ### Semantic Trace
 
 `plan.best.trace` and `compile`/`execute` with `verbosity="compact"` or
@@ -199,6 +209,8 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_UNKNOWN_ARG` | `execute` | Unknown argument received; the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
+| `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
+| `UNGRAINED_TIME_PROJECTION` | `validate`, `compile`, `execute` | A time window has no grain, so rows group by the raw timestamp — set `time.grain` |
 | `SEMANTIC_CAVEAT_APPLIED` | `validate`, `compile`, `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `validate`, `compile`, `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
 
@@ -533,11 +545,12 @@ uv run python scripts/mcp_context.py --eval-file PATH # score a copy of a frozen
 
 The budgets cover `tools/list`, the `initialize` instructions, the resource and prompt lists, every
 resource read, one call per tool at its defaults (including an `execute` of a time window without a
-grain), four common mistakes, and two scripted three-question sessions. Three of the mistakes fail
-with a specific error code; the fourth, a misspelled `discover` argument, succeeds with a warning.
-A scripted call that fails when it should succeed (or the reverse), or that reports a different
-code, stops the measurement rather than counting as a smaller response. Architect MCP tool-list
-sizes are recorded under `tracked` and are not gated.
+grain), three metadata calls behind an authenticated transport, four common mistakes, and two
+scripted three-question sessions. Three of the mistakes fail with a specific error code; the fourth,
+a misspelled `discover` argument, succeeds with a warning. A scripted call that fails when it should
+succeed (or the reverse), or that reports a different code, stops the measurement rather than
+counting as a smaller response. Architect MCP tool-list sizes are recorded under `tracked` and are
+not gated.
 
 Each planner outcome is one of:
 
