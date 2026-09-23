@@ -126,6 +126,7 @@ def _query_annotations(title: str) -> ToolAnnotations:
 ARCHITECT_INSTRUCTIONS = (
     "Semantic Rails Architect: author a Semantic Rails package (YAML) inside the workspace "
     "root.\n"
+    "New package: setup_project_dialog, then create_project (expected_revision: absent).\n"
     "Order: project_status (note its revision), then explore a DuckDB warehouse (list_tables, "
     "describe_table, profile_columns, suggest_model) or a dbt project (suggest_models_from_dbt), "
     "then write (create_project, import_dbt_project, upsert_model, upsert_relationship, "
@@ -171,8 +172,9 @@ TOOL_DESCRIPTIONS: dict[str, tuple[str, ToolAnnotations | None]] = {
     ),
     "create_project": (
         "Creates a runnable schema_version 1 package: package.yml, graph.yml, a first model, "
-        "a metric, an example and a test. Use once per package, with expected_revision: "
-        "absent. Gotcha: an existing package is replaced only with overwrite: true.",
+        "a metric, an example and a test. Use once per new package, with expected_revision: "
+        "absent. Gotcha: on an existing package, pass its revision and overwrite: true, which "
+        "rewrites only the starter files.",
         None,
     ),
     "project_status": (
@@ -180,7 +182,7 @@ TOOL_DESCRIPTIONS: dict[str, tuple[str, ToolAnnotations | None]] = {
         "object counts and next steps; include_runtime_checks also runs runtime validation, "
         "examples and tests. Use first, and again when others may have changed the package. "
         "Gotcha: runtime checks query the warehouse.",
-        _read_only_annotations("Project status"),
+        _check_annotations("Project status"),
     ),
     "list_project_files": (
         "Lists the package's files by relative path. Use to find where an object is defined "
@@ -202,18 +204,19 @@ TOOL_DESCRIPTIONS: dict[str, tuple[str, ToolAnnotations | None]] = {
         "times and measures. Fields merge; replace: true rewrites the model, keeping its "
         "relationships and calendar. calendar: true makes it the package calendar (kind time; "
         "one per calendar_id, and a package with calendars needs a default one); calendar_id "
-        "on a regular model binds its times to that calendar. Use after suggest_model. Gotcha: "
-        "relate models with upsert_relationship; joins is the legacy form strict packages "
-        "reject.",
+        "on a regular model binds its times to that calendar; time.fill reads its date_day, "
+        "week_start, month_start, quarter_start and year_start columns. Use after "
+        "suggest_model. Gotcha: relate models with upsert_relationship; joins is the legacy "
+        "form strict packages reject.",
         None,
     ),
     "upsert_relationship": (
-        "Relates two entities: columns are from_entity's columns holding to_entity's key, "
-        "written as a many-to-one reference in from_entity's model. cardinality (one_to_one; "
-        "one_to_many is recorded from the many side), name, allowed_directions, safety, "
+        "Relates two entities: columns are from_entity's columns holding to_entity's key "
+        "(to_columns, if given, must be that key), written as a many-to-one reference in "
+        "from_entity's model. cardinality one_to_one, name, allowed_directions, safety, "
         "path_preference, label and description also write graph.relationships.<name>. Use "
-        "once both models exist. Gotcha: only a key can be the target; many_to_many needs a "
-        "bridge model related to each side.",
+        "once both models exist. Gotcha: for one_to_many, columns are from_entity's key and "
+        "to_columns the foreign key on to_entity's model; many_to_many needs a bridge model.",
         None,
     ),
     "upsert_metric": (
@@ -314,8 +317,8 @@ TOOL_DESCRIPTIONS: dict[str, tuple[str, ToolAnnotations | None]] = {
         _check_annotations("Validate project"),
     ),
     "diff_project": (
-        "Returns the object-level changes between the package and compare_path, or base_ref "
-        "(a commit in the package's own git repository). Use to review a change.",
+        "Returns the object-level changes between the package and compare_path or a git "
+        "base_ref. Use to review a change.",
         _read_only_annotations("Diff project"),
     ),
     "impact_project": (
@@ -1142,17 +1145,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_mutation_annotations("Upsert semantic model"),
-        description=(
-            "Preview or atomically upsert a model and aligned graph entity. calendar: true makes "
-            'the entity the package calendar for calendar_id (default "default"): kind time, '
-            "not a query root, and allowed kind: date dimensions. time.fill and calendar "
-            "bucketing read its date_day, week_start, month_start, quarter_start and year_start "
-            "columns. A package with calendars needs a default one. calendar: false makes a "
-            "calendar a regular entity again once its date dimensions are removed. On a regular "
-            "model, calendar_id binds its times to an existing calendar. Fields merge into an "
-            "existing model; replace: true rewrites it from the arguments, keeping only its "
-            "entity references and calendar."
-        ),
     )
     def upsert_model(
         project_path: str,
@@ -1210,16 +1202,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_mutation_annotations("Upsert relationship"),
-        description=(
-            "Preview or atomically relate two entities through key columns. columns are "
-            "from_entity's columns holding to_entity's key (to_columns, if given, must be that "
-            "key); they are written to from_entity's model as a many-to-one reference. "
-            "cardinality one_to_one, name, allowed_directions (forward, reverse), safety (safe, "
-            "requires_rewrite, unsafe), path_preference (lower is preferred), label or "
-            "description also write graph.relationships.<name>, updating any entry for the same "
-            "pair. one_to_many is recorded from the many side (to_columns are then the foreign "
-            "key); many_to_many needs a bridge model."
-        ),
     )
     def upsert_relationship(
         project_path: str,
@@ -1309,14 +1291,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_mutation_annotations("Upsert segment"),
-        description=(
-            "Preview or atomically upsert a segment in segments/<file_name>. spec takes entity, "
-            "basis_metric, label, description, preview_dimensions and membership: where and/or "
-            "metric_filters (optionally time, temporal_role_overrides, path_policy). Membership "
-            "fields outside membership: are refused, since the engine would ignore them and "
-            "select the whole population, and so is a segment the engine cannot validate. spec "
-            "merges into an existing segment unless replace is true."
-        ),
     )
     def upsert_segment(
         project_path: str,
@@ -1354,12 +1328,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_mutation_annotations("Upsert example"),
-        description=(
-            "Preview or atomically upsert an example question in examples/<file_name>: spec "
-            "takes question, query and optionally expected_shape (columns, min_rows, max_rows). "
-            "The query must compile against the package. spec merges into an existing example "
-            "unless replace is true."
-        ),
     )
     def upsert_example(
         project_path: str,
@@ -1397,16 +1365,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_mutation_annotations("Upsert package test", open_world=True),
-        description=(
-            "Preview or atomically upsert a package test in tests/<file_name>. spec.kind is "
-            "query_returns_columns (query, columns), query_row_count_bounds (query, min_rows "
-            "and/or max_rows), query_matches_snapshot (query, expected_rows), "
-            "validate_fails_with_code (query, code), explain_contains (query, text) or "
-            "metric_equals_query (metric_query, expected_query). Queries must compile, and a "
-            "validate_fails_with_code query must fail with its code. capture_snapshot: true "
-            "runs a query_matches_snapshot query against the warehouse and writes its rows (up "
-            "to 200) as expected_rows. spec merges into an existing test unless replace is true."
-        ),
     )
     def upsert_test(
         project_path: str,
@@ -1446,12 +1404,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_query_annotations("Preview query"),
-        description=(
-            "Run a semantic query against the package's warehouse and return at most max_rows "
-            "rows (default 20, at most 200), with truncated when there were more. Values are "
-            "real warehouse data. Like runtime validation, this may build a seeded DuckDB "
-            "database."
-        ),
     )
     def preview_query(
         project_path: str, query: dict[str, Any], max_rows: int = 20
@@ -1465,15 +1417,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_mutation_annotations("Remove object"),
-        description=(
-            "Preview or atomically remove a model, dimension, time, measure, metric, segment, "
-            "relationship, example or test, keeping its YAML under .architect/archive/. model "
-            "picks the model when a dimension, time or measure key is on several; a relationship "
-            "is named as upsert_relationship reports it. Removing a model also removes its entity "
-            "and the relationships naming it. A removal that would break a measure, metric or "
-            "segment is refused, naming them; impact lists the examples and tests it breaks, "
-            "files still mentioning a removed id, and the behaviour changes. Preview with dry_run."
-        ),
     )
     def remove_object(
         project_path: str,
@@ -1585,11 +1528,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_read_only_annotations("Profile table columns"),
-        description=(
-            "Row, distinct and null counts, min/max and up to 20 sample values per column "
-            "(read-only). Scans at most max_rows rows, sampling beyond that; sample_limit=0 "
-            "returns no values."
-        ),
     )
     def profile_columns(
         relation: str,
@@ -1616,11 +1554,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_read_only_annotations("Suggest a model"),
-        description=(
-            "Propose a key, time roles, dimensions, measures (with aggregations) and foreign "
-            "keys for a relation, each with a confidence and a reason, plus draft upsert_model "
-            "arguments to review. Read-only."
-        ),
     )
     def suggest_model(
         relation: str, project_path: str = "", duckdb_path: str = ""
@@ -1660,12 +1593,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_read_only_annotations("Suggest models from dbt"),
-        description=(
-            "Read a dbt project's manifest.json and catalog.json (never run dbt) and propose a "
-            "model per dbt model: key, foreign keys and value sets from dbt tests and contracts, "
-            "times, dimensions and measures from column types, each with a confidence and a "
-            "reason, plus draft upsert_model arguments. select narrows by model name."
-        ),
     )
     def suggest_models_from_dbt(
         target_dir: str = "",
@@ -1686,13 +1613,6 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 
     @mcp.tool(
         annotations=_mutation_annotations("Import dbt models"),
-        description=(
-            "Preview or atomically create or update package models from dbt models (reads "
-            "manifest.json and catalog.json; dbt never runs), with foreign keys from "
-            "relationships tests as entity references. select names the dbt models; review them "
-            "with suggest_models_from_dbt first. Models without a key in dbt are reported in "
-            "skipped_models, references to models outside the package in skipped_references."
-        ),
     )
     def import_dbt_project(
         project_path: str,
@@ -1908,9 +1828,10 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
 def _describe_tools(mcp: FastMCP) -> None:
     """Give every tool its description and hints, and drop generated schema titles.
 
-    The descriptions live together so the whole tool list an agent reads can
-    be reviewed and sized in one place (docs/MCP_INTERFACE.md, "Writing Tool
-    Descriptions"). Titles such as ``"Project Path"`` repeat the property name.
+    The descriptions live here, and only here, so the whole tool list an agent
+    reads can be reviewed and sized in one place; they follow the query MCP's
+    rules (what the tool returns, when to use it, one gotcha). Titles such as
+    ``"Project Path"`` repeat the property name.
     """
     for tool in mcp._tool_manager.list_tools():
         description, annotations = TOOL_DESCRIPTIONS[tool.name]
@@ -1929,10 +1850,20 @@ def _warehouse_status(project: Path) -> dict[str, Any]:
     """
     from .dialects import supported_warehouses, warehouse_connector
 
-    document = yaml.safe_load((project / "package.yml").read_text(encoding="utf-8")) or {}
-    package = dict(dict(document).get("package", {}) or {})
-    warehouse = str(package.get("warehouse") or "duckdb").strip().lower()
-    kind = str(dict(package.get("connection", {}) or {}).get("kind") or "").strip()
+    try:
+        document = yaml.safe_load((project / "package.yml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return {"ok": False, "message": f"package.yml can't be read: {exc}"}
+    package = document.get("package") if isinstance(document, dict) else None
+    connection = package.get("connection", {}) if isinstance(package, dict) else None
+    if not isinstance(package, dict) or not isinstance(connection, dict):
+        return {
+            "ok": False,
+            "message": "package.yml needs a package mapping with a connection mapping",
+        }
+    # As the engine reads it: an explicit null is not duckdb.
+    warehouse = str(package.get("warehouse", "duckdb")).strip().lower()
+    kind = str(connection.get("kind") or "").strip()
     connector = warehouse_connector(warehouse)
     status: dict[str, Any] = {
         "warehouse": warehouse,

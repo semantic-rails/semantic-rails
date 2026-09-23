@@ -104,7 +104,7 @@
         "readOnlyHint": false,
         "title": "Create Semantic Rails project"
       },
-      "description": "Creates a runnable schema_version 1 package: package.yml, graph.yml, a first model, a metric, an example and a test. Use once per package, with expected_revision: absent. Gotcha: an existing package is replaced only with overwrite: true.",
+      "description": "Creates a runnable schema_version 1 package: package.yml, graph.yml, a first model, a metric, an example and a test. Use once per new package, with expected_revision: absent. Gotcha: on an existing package, pass its revision and overwrite: true, which rewrites only the starter files.",
       "inputSchema": {
         "properties": {
           "amount_column": {
@@ -362,7 +362,7 @@
       "annotations": {
         "destructiveHint": false,
         "idempotentHint": true,
-        "openWorldHint": false,
+        "openWorldHint": true,
         "readOnlyHint": true,
         "title": "Project status"
       },
@@ -694,7 +694,7 @@
         "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
-      "description": "Creates or updates a model and its graph entity: relation, primary_key, dimensions, times and measures. Fields merge; replace: true rewrites the model, keeping its relationships and calendar. calendar: true makes it the package calendar (kind time; one per calendar_id, and a package with calendars needs a default one); calendar_id on a regular model binds its times to that calendar. Use after suggest_model. Gotcha: relate models with upsert_relationship; joins is the legacy form strict packages reject.",
+      "description": "Creates or updates a model and its graph entity: relation, primary_key, dimensions, times and measures. Fields merge; replace: true rewrites the model, keeping its relationships and calendar. calendar: true makes it the package calendar (kind time; one per calendar_id, and a package with calendars needs a default one); calendar_id on a regular model binds its times to that calendar; time.fill reads its date_day, week_start, month_start, quarter_start and year_start columns. Use after suggest_model. Gotcha: relate models with upsert_relationship; joins is the legacy form strict packages reject.",
       "inputSchema": {
         "properties": {
           "calendar": {
@@ -1022,7 +1022,7 @@
         "readOnlyHint": false,
         "title": "Upsert relationship"
       },
-      "description": "Relates two entities: columns are from_entity's columns holding to_entity's key, written as a many-to-one reference in from_entity's model. cardinality (one_to_one; one_to_many is recorded from the many side), name, allowed_directions, safety, path_preference, label and description also write graph.relationships.<name>. Use once both models exist. Gotcha: only a key can be the target; many_to_many needs a bridge model related to each side.",
+      "description": "Relates two entities: columns are from_entity's columns holding to_entity's key (to_columns, if given, must be that key), written as a many-to-one reference in from_entity's model. cardinality one_to_one, name, allowed_directions, safety, path_preference, label and description also write graph.relationships.<name>. Use once both models exist. Gotcha: for one_to_many, columns are from_entity's key and to_columns the foreign key on to_entity's model; many_to_many needs a bridge model.",
       "inputSchema": {
         "properties": {
           "allowed_directions": {
@@ -3338,7 +3338,7 @@
         "readOnlyHint": true,
         "title": "Diff project"
       },
-      "description": "Returns the object-level changes between the package and compare_path, or base_ref (a commit in the package's own git repository). Use to review a change.",
+      "description": "Returns the object-level changes between the package and compare_path or a git base_ref. Use to review a change.",
       "inputSchema": {
         "properties": {
           "base_ref": {

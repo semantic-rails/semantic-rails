@@ -435,8 +435,9 @@ def test_raw_write_parse_failure_rolls_back_bytes_and_revision(tmp_path: Path):
 
 
 # Model-visible tokens of tools/list (name, description, input schema; tokens =
-# chars / 4, as scripts/mcp_context.py counts them). Raise it only with a reason.
-TOOL_LIST_BUDGET = 4800
+# chars / 4, as scripts/mcp_context.py counts them): 4,776 when set, plus 2%, the
+# tolerance C1's gate uses. Raise it only with a reason.
+TOOL_LIST_BUDGET = 4870
 
 
 def test_the_tool_list_is_described_once_and_stays_in_budget(tmp_path: Path) -> None:
@@ -453,8 +454,8 @@ def test_the_tool_list_is_described_once_and_stays_in_budget(tmp_path: Path) -> 
     for tool in tools:
         assert 60 <= len(tool.description or "") <= 700, tool.name
         assert tool.annotations is not None and tool.annotations.title, tool.name
-        schema = json.dumps(tool.inputSchema, sort_keys=True)
-        assert '"title"' not in schema, tool.name
+        assert not _schema_titles(tool.inputSchema), tool.name
+        assert not _schema_titles(tool.outputSchema or {}), tool.name
         visible += round(
             len(
                 json.dumps(
@@ -469,6 +470,32 @@ def test_the_tool_list_is_described_once_and_stays_in_budget(tmp_path: Path) -> 
             / 4
         )
     assert visible <= TOOL_LIST_BUDGET
+
+
+def _schema_titles(schema: object) -> list[str]:
+    """Title annotations left in a JSON schema (a property named title is not one)."""
+    if isinstance(schema, list):
+        return [title for item in schema for title in _schema_titles(item)]
+    if not isinstance(schema, dict):
+        return []
+    found = [str(schema["title"])] if isinstance(schema.get("title"), str) else []
+    for key, value in schema.items():
+        if key in {"properties", "$defs"} and isinstance(value, dict):
+            found += [title for sub in value.values() for title in _schema_titles(sub)]
+        elif key not in {"title", "default", "examples", "const", "enum"}:
+            found += _schema_titles(value)
+    return found
+
+
+def test_tools_that_may_query_the_warehouse_say_so(tmp_path: Path) -> None:
+    tools = {
+        tool.name: tool
+        for tool in _list_tools(create_architect_mcp_server(workspace_root=tmp_path))
+    }
+
+    for name in ("project_status", "validate_project", "promotion_check", "preview_query"):
+        annotations = tools[name].annotations
+        assert annotations is not None and annotations.openWorldHint is True, name
 
 
 def test_schema_titles_go_but_properties_named_title_stay() -> None:
@@ -515,3 +542,16 @@ def test_project_status_reports_the_warehouse_and_its_connection(tmp_path: Path)
     assert mismatched["warehouse"]["ok"] is False
     assert "snowflake packages connect with" in mismatched["warehouse"]["message"]
     assert "not postgres_native" in mismatched["warehouse"]["message"]
+
+
+def test_project_status_answers_for_a_broken_package_yml(tmp_path: Path) -> None:
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    project = Path(_create_project(server, "broken_status")["project_path"])
+    (project / "package.yml").write_text("<<<<<<< HEAD\npackage: [\n", encoding="utf-8")
+
+    status = _call_tool(server, "project_status", {"project_path": str(project)})
+
+    assert status["parse"]["ok"] is False
+    assert status["warehouse"]["ok"] is False
+    assert "can't be read" in status["warehouse"]["message"]
+    assert status["revision"].startswith("sha256:")
