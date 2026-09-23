@@ -1947,6 +1947,185 @@
       }
     },
     {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "List warehouse tables"
+      },
+      "description": "List tables and views (read-only) in a DuckDB package's database or a DuckDB file.",
+      "inputSchema": {
+        "properties": {
+          "duckdb_path": {
+            "default": "",
+            "title": "Duckdb Path",
+            "type": "string"
+          },
+          "project_path": {
+            "default": "",
+            "title": "Project Path",
+            "type": "string"
+          },
+          "schema": {
+            "default": "",
+            "title": "Schema",
+            "type": "string"
+          }
+        },
+        "title": "list_tablesArguments",
+        "type": "object"
+      },
+      "name": "list_tables",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "list_tablesDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Describe warehouse table"
+      },
+      "description": "Columns (type, nullability, default) and declared primary, unique and foreign keys.",
+      "inputSchema": {
+        "properties": {
+          "duckdb_path": {
+            "default": "",
+            "title": "Duckdb Path",
+            "type": "string"
+          },
+          "project_path": {
+            "default": "",
+            "title": "Project Path",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "title": "describe_tableArguments",
+        "type": "object"
+      },
+      "name": "describe_table",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "describe_tableDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Profile table columns"
+      },
+      "description": "Row, distinct and null counts, min/max and up to 20 sample values per column (read-only). Scans at most max_rows rows, sampling beyond that; sample_limit=0 returns no values.",
+      "inputSchema": {
+        "properties": {
+          "columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Columns"
+          },
+          "duckdb_path": {
+            "default": "",
+            "title": "Duckdb Path",
+            "type": "string"
+          },
+          "max_rows": {
+            "default": 1000000,
+            "title": "Max Rows",
+            "type": "integer"
+          },
+          "project_path": {
+            "default": "",
+            "title": "Project Path",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          },
+          "sample_limit": {
+            "default": 5,
+            "title": "Sample Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "title": "profile_columnsArguments",
+        "type": "object"
+      },
+      "name": "profile_columns",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "profile_columnsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Suggest a model"
+      },
+      "description": "Propose a key, time roles, dimensions, measures (with aggregations) and foreign keys for a relation, each with a confidence and a reason, plus draft upsert_model arguments to review. Read-only.",
+      "inputSchema": {
+        "properties": {
+          "duckdb_path": {
+            "default": "",
+            "title": "Duckdb Path",
+            "type": "string"
+          },
+          "project_path": {
+            "default": "",
+            "title": "Project Path",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "title": "suggest_modelArguments",
+        "type": "object"
+      },
+      "name": "suggest_model",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "suggest_modelDictOutput",
+        "type": "object"
+      }
+    },
+    {
       "description": "Run parse, runtime, examples, tests, impact, or release validation for a project path.",
       "inputSchema": {
         "properties": {
