@@ -858,6 +858,29 @@ def _closest_key_matches(name: str, candidates: Iterable[str], *, limit: int = 3
     return get_close_matches(str(name), [str(c) for c in candidates], n=limit, cutoff=0.5)
 
 
+def _aggregate_filter(raw: Any) -> dict[str, Any]:
+    """An aggregate's ``filter``: ``{all: [...]}``, or nothing.
+
+    Binding reads only ``filter.all``, so any other shape, such as a bare
+    ``{kind: comparison, ...}`` node or an ``any:`` list, would be silently
+    ignored and the aggregate would count every row.
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict) and set(raw) == {"all"} and isinstance(raw["all"], list):
+        return dict(raw)
+    shape = sorted(raw) if isinstance(raw, dict) else type(raw).__name__
+    raise SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        (
+            "An aggregate filter must be {all: [...]}, a list of {field, op, value} "
+            "conditions or {expression: <metric_predicate>} entries; got "
+            f"{shape}. Wrap a single condition in all: [...]."
+        ),
+        details={"received": shape},
+    )
+
+
 def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context: str) -> None:
     """Raise ``INVALID_EXPRESSION_KEY`` when an expression dict carries a
     top-level key that the kind's dispatch arm does not recognise. This
@@ -965,7 +988,7 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             aggregation=str(expr.get("aggregation", "")).strip(),
             temporal_role=str(expr.get("temporal_role", "")).strip(),
             parameters=dict(expr.get("parameters", {}) or {}),
-            filter=dict(expr.get("filter", {}) or {}),
+            filter=_aggregate_filter(expr.get("filter")),
             window=dict(expr.get("window", {}) or {}),
         )
     if kind == "aggregate_if":

@@ -167,7 +167,9 @@ def test_operand_filter_with_unsupported_combinator_is_rejected(runtime_factory)
         )
     )
     assert report["ok"] is False
-    assert report["errors"][0]["code"] == "CONVERSION_NOT_SUPPORTED"
+    # `any:` is not an aggregate filter shape anywhere, so it fails as an invalid AST
+    # before the conversion checks run.
+    assert report["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
 
 
 def test_operand_filter_with_unknown_dimension_is_rejected(runtime_factory):
