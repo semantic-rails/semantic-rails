@@ -12,11 +12,13 @@ DuckDB data as the other local comparison layers.
 ## Scoring Boundary
 
 - `q01`-`q07` use ordinary KtX sources, measures, joins, filters, and aggregate
-  locality, so they are scored as `native`.
+  locality, so the rubric (`../shared/rubric.md`) labels them `native`.
 - `q08`-`q16` execute through KtX `sql:` sources or query-level filters. In
   this pack the temporal-validity, conversion-window, and aggregate-predicate
   semantics are authored as SQL/query workarounds rather than as reusable
-  governed primitives in the KtX semantic model.
+  governed primitives in the KtX semantic model. The rubric labels q11 and
+  q12, which filter on the precomputed customer rollup columns, `precomputed`
+  and the other seven `workaround`.
 - Output check: KtX's rows match the independent answer key
   (`../shared/oracle/`) on all 16 questions.
 

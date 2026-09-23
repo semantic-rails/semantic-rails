@@ -1,59 +1,59 @@
 {
   "data": [
     {
+      "delivered_orders_with_customer_segment.customer_segment": null,
+      "delivered_orders_with_customer_segment.delivered_at.month": "2016-09-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 17477.700000000008
+    },
+    {
       "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2016-09-01 00:00:00",
       "delivered_orders_with_customer_segment.delivered_revenue": 575.58
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2016-09-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 17477.699999999993
+      "delivered_orders_with_customer_segment.delivered_at.month": "2016-10-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 21277.360000000004
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2016-10-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 646.59
-    },
-    {
-      "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2016-10-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 21277.359999999986
+      "delivered_orders_with_customer_segment.delivered_revenue": 646.5900000000003
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": null,
       "delivered_orders_with_customer_segment.delivered_at.month": "2016-11-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 27428.179999999997
+      "delivered_orders_with_customer_segment.delivered_revenue": 27428.180000000037
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2016-11-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 488.64000000000004
+      "delivered_orders_with_customer_segment.delivered_revenue": 488.64000000000027
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2016-12-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 724.9900000000001
+      "delivered_orders_with_customer_segment.delivered_revenue": 724.9900000000002
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": null,
       "delivered_orders_with_customer_segment.delivered_at.month": "2016-12-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 34952.610000000095
+      "delivered_orders_with_customer_segment.delivered_revenue": 34952.61000000004
+    },
+    {
+      "delivered_orders_with_customer_segment.customer_segment": null,
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-01-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 44504.93000000001
+    },
+    {
+      "delivered_orders_with_customer_segment.customer_segment": "new",
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-01-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 294.67000000000013
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "repeat",
       "delivered_orders_with_customer_segment.delivered_at.month": "2017-01-01 00:00:00",
       "delivered_orders_with_customer_segment.delivered_revenue": 218.35
-    },
-    {
-      "delivered_orders_with_customer_segment.customer_segment": "new",
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-01-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 294.67
-    },
-    {
-      "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-01-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 44504.929999999855
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "repeat",
@@ -63,12 +63,22 @@
     {
       "delivered_orders_with_customer_segment.customer_segment": null,
       "delivered_orders_with_customer_segment.delivered_at.month": "2017-02-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 42834.5
+      "delivered_orders_with_customer_segment.delivered_revenue": 42834.49999999988
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2017-02-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 376.29
+      "delivered_orders_with_customer_segment.delivered_revenue": 376.29000000000013
+    },
+    {
+      "delivered_orders_with_customer_segment.customer_segment": "new",
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-03-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 414.4300000000003
+    },
+    {
+      "delivered_orders_with_customer_segment.customer_segment": null,
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-03-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 73321.77000000008
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "repeat",
@@ -76,19 +86,14 @@
       "delivered_orders_with_customer_segment.delivered_revenue": 214.11999999999998
     },
     {
-      "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-03-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 73321.77000000016
-    },
-    {
-      "delivered_orders_with_customer_segment.customer_segment": "new",
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-03-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 414.43000000000006
-    },
-    {
       "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2017-04-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 362.5000000000001
+      "delivered_orders_with_customer_segment.delivered_revenue": 362.5000000000002
+    },
+    {
+      "delivered_orders_with_customer_segment.customer_segment": null,
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-04-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 82682.07000000101
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "repeat",
@@ -96,24 +101,29 @@
       "delivered_orders_with_customer_segment.delivered_revenue": 272.42
     },
     {
-      "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-04-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 82682.07000000148
-    },
-    {
       "delivered_orders_with_customer_segment.customer_segment": "repeat",
       "delivered_orders_with_customer_segment.delivered_at.month": "2017-05-01 00:00:00",
       "delivered_orders_with_customer_segment.delivered_revenue": 278.78000000000003
     },
     {
+      "delivered_orders_with_customer_segment.customer_segment": null,
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-05-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 95395.17000000286
+    },
+    {
       "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2017-05-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 396.40000000000003
+      "delivered_orders_with_customer_segment.delivered_revenue": 396.4000000000003
+    },
+    {
+      "delivered_orders_with_customer_segment.customer_segment": "new",
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-06-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 348.73000000000025
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-05-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 95395.17000000298
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-06-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 97728.07000000266
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "repeat",
@@ -122,23 +132,8 @@
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-06-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 97728.07000000273
-    },
-    {
-      "delivered_orders_with_customer_segment.customer_segment": "new",
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-06-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 348.7300000000001
-    },
-    {
-      "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2017-07-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 374.15000000000003
-    },
-    {
-      "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-07-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 94105.6900000026
+      "delivered_orders_with_customer_segment.delivered_revenue": 94105.69000000243
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "repeat",
@@ -146,19 +141,24 @@
       "delivered_orders_with_customer_segment.delivered_revenue": 377.34999999999997
     },
     {
-      "delivered_orders_with_customer_segment.customer_segment": "repeat",
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-08-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 171.72
-    },
-    {
-      "delivered_orders_with_customer_segment.customer_segment": null,
-      "delivered_orders_with_customer_segment.delivered_at.month": "2017-08-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 106851.1500000041
+      "delivered_orders_with_customer_segment.customer_segment": "new",
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-07-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 374.1500000000002
     },
     {
       "delivered_orders_with_customer_segment.customer_segment": "new",
       "delivered_orders_with_customer_segment.delivered_at.month": "2017-08-01 00:00:00",
-      "delivered_orders_with_customer_segment.delivered_revenue": 348.7200000000001
+      "delivered_orders_with_customer_segment.delivered_revenue": 348.7200000000003
+    },
+    {
+      "delivered_orders_with_customer_segment.customer_segment": null,
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-08-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 106851.15000000386
+    },
+    {
+      "delivered_orders_with_customer_segment.customer_segment": "repeat",
+      "delivered_orders_with_customer_segment.delivered_at.month": "2017-08-01 00:00:00",
+      "delivered_orders_with_customer_segment.delivered_revenue": 171.72
     }
   ]
 }

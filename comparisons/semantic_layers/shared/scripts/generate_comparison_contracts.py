@@ -17,6 +17,7 @@ QUESTIONS_PATH = SHARED_ROOT / "questions.yml"
 COMPARISON_DATA_PATH = SHARED_ROOT / "comparison_data.json"
 CAPABILITY_MATRIX_PATH = SHARED_ROOT / "capability_matrix.json"
 VALIDATION_REPORT_PATH = RESULTS_ROOT / "validation" / "output_consistency.json"
+RUBRIC_LABELS_PATH = RESULTS_ROOT / "rubric" / "labels.json"
 
 LAYER_ORDER = [
     "semantic_rails",
@@ -685,7 +686,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Semantic views package derived metrics, access modifiers, and query onboarding directly in the warehouse catalog.",
         ],
         "weaknesses": [
-            "Month-grain semantics require explicit `DATE_TRUNC(...)` query expressions; raw time dimensions stay at timestamp grain.",
+            "This pack's semantic view defines its time dimensions at timestamp grain, so month-grain questions apply `DATE_TRUNC(...)` in the query; the view could define month-grain dimensions instead.",
             "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, announced in preview on 2026-02-25, have not been modeled yet.",
         ],
         "capture_notes": [
@@ -915,11 +916,11 @@ LAYER_META: dict[str, dict[str, Any]] = {
 
 def default_note(status: str) -> str:
     return {
-        "native": "Executed with layer-native modeling on the shared Jaffle dataset.",
-        "workaround": "Executed, but required extra modeling or manual SQL beyond the layer's cleanest path.",
-        "precomputed": "Executed only after introducing extra helper logic beyond the common comparison shape.",
+        "native": "Executed with the layer's own semantic constructs.",
+        "workaround": "Executed through SQL written by hand for this pack.",
+        "precomputed": "Executed by reading a rollup column that the question declares.",
         "doc_backed": "Represented from the public spec/docs, but not executed locally in this repo.",
-        "unsupported": "Not represented faithfully enough to claim support in this pack.",
+        "unsupported": "Not executed in this pack.",
     }.get(status, f"Labeled {status}.")
 
 
@@ -1031,6 +1032,7 @@ def entry_for_question(
     return {
         "question_id": qid,
         "support_status": status,
+        "label_evidence": entry.get("label_evidence", []),
         "snippet_path": snippet_path,
         "query_path": query_path,
         "result_path": result_path,
@@ -1059,11 +1061,6 @@ SLICE_LABELS = {
     "shared": "Shared questions",
     "semantic_rails_targeted": "Semantic-Rails-targeted questions",
 }
-# Every layer answers these two from the same precomputed customer columns.
-PRECOMPUTED_COLUMN_QUESTIONS = [
-    "q11_repeat_customer_orders_by_store_by_month",
-    "q12_orders_by_month_with_lifetime_spend_500_filter",
-]
 SCALE_UP_CAVEAT = (
     "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits "
     "graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts "
@@ -1072,11 +1069,10 @@ SCALE_UP_CAVEAT = (
 )
 
 # Findings that describe how this pack models each layer. They must not rank the layers on the
-# Semantic-Rails-targeted questions until an executable rubric and idiomatic models exist.
+# Semantic-Rails-targeted questions until every layer is modeled with the features it ships.
 LAYER_FINDINGS = [
-    "MetricFlow answers q08 and q16 with validity-windowed semantic models; this pack answers q09-q15 through helper dbt views and has not modeled MetricFlow's native conversion metrics or metric filters yet.",
-    "Cube answers q08 through a declared join that carries the validity condition, and q05 and q09-q16 through helper cubes or joined rollup filters in this pack; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
-    "The labels are inconsistent with each other: Cube's q08 uses an ordinary declared join, yet it is labeled workaround, while MetricFlow's validity-windowed join is labeled native.",
+    "MetricFlow answers q08 and q16 with validity-windowed semantic models; this pack answers q09, q10 and q13-q15 through helper dbt views, and q11-q12 through helper views over the precomputed rollups. MetricFlow's native conversion metrics and metric filters have not been modeled yet.",
+    "Cube answers q08 through a declared join that carries the validity condition; this pack answers q05, q09, q10 and q13-q16 through helper cubes, and q11-q12 through filters on joined rollup columns. Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
     "Malloy answers q08-q16 through SQL sources or query-level filters in this pack; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet.",
     "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
     "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack.",
@@ -1154,13 +1150,13 @@ def claim_findings(
     mismatched = [item for item in items if item["comparison_status"] == "mismatched"]
     if summary["mismatched"] == 0 and summary["not_comparable"] == 0:
         output_check = (
-            f"On all {total} questions, {scope} return the same normalized outputs as the "
-            "independent answer key."
+            f"On all {total} questions, {scope} return the independent answer key's normalized "
+            "outputs, with numbers matching within 1e-6."
         )
     else:
         output_check = (
-            f"On {summary['matched']} of {total} questions, {scope} return the same normalized "
-            "outputs as the independent answer key."
+            f"On {summary['matched']} of {total} questions, {scope} return the independent answer "
+            "key's normalized outputs, with numbers matching within 1e-6."
         )
         if mismatched:
             listed = "; ".join(
@@ -1218,36 +1214,35 @@ def claim_findings(
         claims.append(
             f"{len(targeted)} of the {total} questions ({id_range(targeted)}) were chosen to "
             "exercise features Semantic Rails ships. The Semantic Rails authors wrote every "
-            "layer's models and assigned every support label, and several layers are not yet "
-            "modeled with native features they ship, so these questions are a capability "
-            "showcase, not a ranking."
+            "layer's models, and several layers are not yet modeled with native features they "
+            "ship, so these questions are a capability showcase, not a ranking."
         )
 
-    label_sets = []
-    for question_id in PRECOMPUTED_COLUMN_QUESTIONS:
-        by_status: dict[str, list[str]] = {}
+    claims.append(
+        "Every support label comes from one executable rubric applied to every layer, Semantic "
+        "Rails included (shared/rubric.md): unsupported when a layer didn't execute the question, "
+        "precomputed when its answer reads a rollup column the question declares, workaround "
+        "when the answer depends on SQL written by hand for this pack, and native otherwise."
+    )
+    for question in questions:
+        columns = question.get("bypass_columns") or []
+        if not columns:
+            continue
+        by_label: dict[str, list[str]] = {}
         for layer in layers_payload:
-            status = next(
+            label_of = next(
                 item["support_status"]
                 for item in layer["questions"]
-                if item["question_id"] == question_id
+                if item["question_id"] == question["id"]
             )
-            by_status.setdefault(status, []).append(layer["label"])
-        label_sets.append((short_id(question_id), by_status))
-    described = ". ".join(
-        f"{qid} is labeled "
-        + "; ".join(f"{status} for {join_names(names)}" for status, names in by_status.items())
-        for qid, by_status in label_sets
-    )
-    if all(len(by_status) == 1 for _, by_status in label_sets):
-        verdict = "and every layer gets the same label there"
-    else:
-        verdict = "yet the labels differ"
-    claims.append(
-        "Every layer that executes q11 and q12 answers them from the same precomputed customer "
-        f"columns, `lifetime_order_count` and `lifetime_spend_cents`, {verdict}: {described}. "
-        "Semantic Rails is labeled native whenever its query validates."
-    )
+            by_label.setdefault(label_of, []).append(layer["label"])
+        described = "; ".join(
+            f"{label_of} for {join_names(names)}" for label_of, names in by_label.items()
+        )
+        claims.append(
+            f"{short_id(question['id'])} asks for a rollup that the shared data already holds in "
+            f"{join_names([f'`{c}`' for c in columns])}; it is labeled {described}."
+        )
     return claims
 
 
@@ -1255,6 +1250,8 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
     questions = load_questions()
     question_by_id = {question["id"]: question for question in questions}
     validation_report = load_json(VALIDATION_REPORT_PATH)
+    rubric_output = load_json(RUBRIC_LABELS_PATH)
+    rubric = rubric_output["labels"]
     validation_by_question = {item["question_id"]: item for item in validation_report["questions"]}
     slice_ids: dict[str, list[str]] = {}
     for item in validation_report["questions"]:
@@ -1264,7 +1261,14 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
     for layer_id in LAYER_ORDER:
         summary_path = LAYER_META[layer_id]["summary_path"]
         summary = load_json(summary_path) if summary_path else {}
-        entries = load_summary_entries(layer_id)
+        entries = {
+            qid: {
+                **entry,
+                "status": rubric[layer_id][qid]["label"],
+                "label_evidence": rubric[layer_id][qid]["evidence"],
+            }
+            for qid, entry in load_summary_entries(layer_id).items()
+        }
         status_map = {qid: entry["status"] for qid, entry in entries.items()}
 
         question_entries = [
@@ -1331,6 +1335,7 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
     capability_matrix = {
         "generated_at": comparison_data["generated_at"],
         "claims": findings,
+        "rubric": {"rules": rubric_output["rules"], "labels": "shared/results/rubric/labels.json"},
         "layers": [
             {
                 "id": layer["id"],

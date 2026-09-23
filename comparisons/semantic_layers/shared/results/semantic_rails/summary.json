@@ -1,8 +1,9 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
-  "engine_or_package_modified": false,
-  "generated_at": "2026-09-23T01:34:46+00:00",
+  "generated_at": "2026-09-23T02:40:58+00:00",
+  "inputs_modified": true,
   "layer": "semantic_rails",
+  "layer_tree": "a5969173fc6bb9a86fa3d4c474fa9293578efe7c",
   "package_id": "comparison_semantic_rails",
   "package_tree": "03d43313aab13a0d29228b0918ea238baf55c4b3",
   "questions": [
@@ -12,7 +13,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q01_orders_by_month/result.json",
       "row_count": 12,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q01_orders_by_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q02_revenue_by_store_by_month.json",
@@ -20,7 +21,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q02_revenue_by_store_by_month/result.json",
       "row_count": 18,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q02_revenue_by_store_by_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q03_item_revenue_by_product_type_by_month.json",
@@ -28,7 +29,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q03_item_revenue_by_product_type_by_month/result.json",
       "row_count": 24,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q03_item_revenue_by_product_type_by_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q04_aov_by_store.json",
@@ -36,7 +37,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q04_aov_by_store/result.json",
       "row_count": 2,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q04_aov_by_store/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q05_orders_and_item_revenue_by_store_by_month.json",
@@ -44,7 +45,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q05_orders_and_item_revenue_by_store_by_month/result.json",
       "row_count": 18,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q05_orders_and_item_revenue_by_store_by_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q06_new_customer_orders_by_month.json",
@@ -52,7 +53,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q06_new_customer_orders_by_month/result.json",
       "row_count": 12,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q06_new_customer_orders_by_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q07_delivered_revenue_by_month.json",
@@ -60,7 +61,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q07_delivered_revenue_by_month/result.json",
       "row_count": 12,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q07_delivered_revenue_by_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q08_revenue_by_customer_segment_as_of_order_time.json",
@@ -68,7 +69,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q08_revenue_by_customer_segment_as_of_order_time/result.json",
       "row_count": 32,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q08_revenue_by_customer_segment_as_of_order_time/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q09_session_to_order_conversion_7d.json",
@@ -76,7 +77,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q09_session_to_order_conversion_7d/result.json",
       "row_count": 1,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q09_session_to_order_conversion_7d/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q10_orders_from_customers_with_10plus_orders_in_month.json",
@@ -84,7 +85,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q10_orders_from_customers_with_10plus_orders_in_month/result.json",
       "row_count": 12,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q10_orders_from_customers_with_10plus_orders_in_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q11_repeat_customer_orders_by_store_by_month.json",
@@ -92,7 +93,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q11_repeat_customer_orders_by_store_by_month/result.json",
       "row_count": 18,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q11_repeat_customer_orders_by_store_by_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q12_orders_by_month_with_lifetime_spend_500_filter.json",
@@ -100,7 +101,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q12_orders_by_month_with_lifetime_spend_500_filter/result.json",
       "row_count": 12,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q12_orders_by_month_with_lifetime_spend_500_filter/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q13_daily_orders_from_customers_with_10plus_orders_in_month.json",
@@ -108,7 +109,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q13_daily_orders_from_customers_with_10plus_orders_in_month/result.json",
       "row_count": 365,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q14_revenue_from_customers_with_10plus_orders_same_store_month.json",
@@ -116,7 +117,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q14_revenue_from_customers_with_10plus_orders_same_store_month/result.json",
       "row_count": 18,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q14_revenue_from_customers_with_10plus_orders_same_store_month/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q15_same_store_session_to_order_conversion_7d.json",
@@ -124,7 +125,7 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q15_same_store_session_to_order_conversion_7d/result.json",
       "row_count": 1,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q15_same_store_session_to_order_conversion_7d/sql.sql",
-      "status": "native"
+      "status": "executed"
     },
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q16_revenue_by_customer_segment_as_of_delivered_time.json",
@@ -132,10 +133,11 @@
       "result_path": "comparisons/semantic_layers/shared/results/semantic_rails/q16_revenue_by_customer_segment_as_of_delivered_time/result.json",
       "row_count": 32,
       "sql_path": "comparisons/semantic_layers/shared/results/semantic_rails/q16_revenue_by_customer_segment_as_of_delivered_time/sql.sql",
-      "status": "native"
+      "status": "executed"
     }
   ],
-  "semantic_rails_commit": "a764061ebe48c20486a759b093abf90a11097a37",
+  "questions_blob": "7c0154b68212d2f16248d41f2d3aef9110463747",
+  "semantic_rails_commit": "5f4399c78eb7dfc7488a47459c87aa54f037fa9c",
   "semantic_rails_tree": "e78ee078a4e5d3d6bcd05262461f8a7e465a57fb",
   "semantic_rails_version": "0.2.1"
 }

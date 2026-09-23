@@ -436,7 +436,7 @@ def main() -> None:
                     f"- `{mismatch['layer']}` differs from the answer key: `{json.dumps(mismatch['detail'], sort_keys=True)}`"
                 )
             groups = " | ".join(", ".join(group) for group in item["agreement_groups"])
-            markdown_lines.append(f"- Groups of layers with identical outputs: `{groups}`")
+            markdown_lines.append(f"- Groups of layers whose outputs match within 1e-6: `{groups}`")
         elif item["comparison_status"] == "not_comparable":
             markdown_lines.append(f"- Reason: {item['reason']}")
         else:

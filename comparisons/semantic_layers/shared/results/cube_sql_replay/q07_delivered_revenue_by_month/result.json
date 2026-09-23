@@ -2,51 +2,51 @@
   "data": [
     {
       "order_lifecycle.delivered_at.month": "2016-09-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 18053.28000000001
+      "order_lifecycle.delivered_revenue": 18053.28000000002
     },
     {
       "order_lifecycle.delivered_at.month": "2016-10-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 21923.949999999997
+      "order_lifecycle.delivered_revenue": 21923.95
     },
     {
       "order_lifecycle.delivered_at.month": "2016-11-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 27916.820000000003
+      "order_lifecycle.delivered_revenue": 27916.82000000004
     },
     {
       "order_lifecycle.delivered_at.month": "2016-12-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 35677.60000000007
+      "order_lifecycle.delivered_revenue": 35677.600000000006
     },
     {
       "order_lifecycle.delivered_at.month": "2017-01-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 45017.94999999986
+      "order_lifecycle.delivered_revenue": 45017.95000000001
     },
     {
       "order_lifecycle.delivered_at.month": "2017-02-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 43358.11999999999
+      "order_lifecycle.delivered_revenue": 43358.11999999988
     },
     {
       "order_lifecycle.delivered_at.month": "2017-03-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 73950.32000000033
+      "order_lifecycle.delivered_revenue": 73950.32000000023
     },
     {
       "order_lifecycle.delivered_at.month": "2017-04-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 83316.9900000015
+      "order_lifecycle.delivered_revenue": 83316.99000000105
     },
     {
       "order_lifecycle.delivered_at.month": "2017-05-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 96070.35000000303
+      "order_lifecycle.delivered_revenue": 96070.35000000296
     },
     {
       "order_lifecycle.delivered_at.month": "2017-06-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 98378.87000000277
+      "order_lifecycle.delivered_revenue": 98378.8700000028
     },
     {
       "order_lifecycle.delivered_at.month": "2017-07-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 94857.1900000027
+      "order_lifecycle.delivered_revenue": 94857.19000000248
     },
     {
       "order_lifecycle.delivered_at.month": "2017-08-01 00:00:00",
-      "order_lifecycle.delivered_revenue": 107371.59000000411
+      "order_lifecycle.delivered_revenue": 107371.59000000395
     }
   ]
 }

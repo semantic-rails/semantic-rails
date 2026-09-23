@@ -49,16 +49,16 @@
       "order_metrics.item_revenue_usd": 23902.0
     },
     {
-      "stores.store_name": "Brooklyn",
-      "order_metrics.ordered_at.month": "2017-04-01 00:00:00",
-      "order_metrics.orders": 2850,
-      "order_metrics.item_revenue_usd": 34058.0
-    },
-    {
       "stores.store_name": "Philadelphia",
       "order_metrics.ordered_at.month": "2017-04-01 00:00:00",
       "order_metrics.orders": 3746,
       "order_metrics.item_revenue_usd": 45188.0
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "order_metrics.ordered_at.month": "2017-04-01 00:00:00",
+      "order_metrics.orders": 2850,
+      "order_metrics.item_revenue_usd": 34058.0
     },
     {
       "stores.store_name": "Brooklyn",
@@ -73,16 +73,16 @@
       "order_metrics.item_revenue_usd": 51502.0
     },
     {
-      "stores.store_name": "Brooklyn",
-      "order_metrics.ordered_at.month": "2017-06-01 00:00:00",
-      "order_metrics.orders": 3965,
-      "order_metrics.item_revenue_usd": 46135.0
-    },
-    {
       "stores.store_name": "Philadelphia",
       "order_metrics.ordered_at.month": "2017-06-01 00:00:00",
       "order_metrics.orders": 3916,
       "order_metrics.item_revenue_usd": 47548.0
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "order_metrics.ordered_at.month": "2017-06-01 00:00:00",
+      "order_metrics.orders": 3965,
+      "order_metrics.item_revenue_usd": 46135.0
     },
     {
       "stores.store_name": "Philadelphia",
@@ -97,16 +97,16 @@
       "order_metrics.item_revenue_usd": 48049.0
     },
     {
-      "stores.store_name": "Philadelphia",
-      "order_metrics.ordered_at.month": "2017-08-01 00:00:00",
-      "order_metrics.orders": 3802,
-      "order_metrics.item_revenue_usd": 44961.0
-    },
-    {
       "stores.store_name": "Brooklyn",
       "order_metrics.ordered_at.month": "2017-08-01 00:00:00",
       "order_metrics.orders": 4940,
       "order_metrics.item_revenue_usd": 57418.0
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "order_metrics.ordered_at.month": "2017-08-01 00:00:00",
+      "order_metrics.orders": 3802,
+      "order_metrics.item_revenue_usd": 44961.0
     }
   ]
 }

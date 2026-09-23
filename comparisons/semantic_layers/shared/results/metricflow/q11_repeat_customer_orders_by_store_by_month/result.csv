@@ -7,8 +7,8 @@ metric_time__month,store__store_name,repeat_customer_orders
 2017-02-01 00:00:00,Philadelphia,3357
 2017-03-01 00:00:00,Brooklyn,2092
 2017-03-01 00:00:00,Philadelphia,3986
-2017-04-01 00:00:00,Brooklyn,2850
 2017-04-01 00:00:00,Philadelphia,3746
+2017-04-01 00:00:00,Brooklyn,2850
 2017-05-01 00:00:00,Brooklyn,3565
 2017-05-01 00:00:00,Philadelphia,4391
 2017-06-01 00:00:00,Brooklyn,3963

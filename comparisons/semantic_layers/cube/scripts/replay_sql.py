@@ -56,7 +56,7 @@ def main() -> None:
             questions.append(
                 {
                     "question_id": question_id,
-                    "status": entry["status"],
+                    "status": "executed",
                     "query_path": entry["query_path"],
                     "sql_path": entry["sql_path"],
                     "result_path": str(result_path.relative_to(REPO_ROOT)),

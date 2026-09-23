@@ -27,7 +27,7 @@ This folder is an executed Snowflake Semantic Views pack backed by the default S
 - Captured: `2026-04-06T23:05:57-04:00` (2026-04-07 UTC), on a trial account, on an earlier dataset. It has not been re-run since, so the output check reports it separately from the layers that ran on the current dataset. The captured `create_semantic_view.json` and `describe_semantic_view.json` reflect `jaffle_semantic_view.yaml` as it stood then.
 - Semantic view: `ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON`
 - Connection: `semantic_views_trial`
-- Support labels (provisional, assigned by the Semantic Rails authors): `7 native`, `9 workaround`
+- Support labels, from the rubric (`../shared/rubric.md`): `7 native`, `7 workaround`, `2 precomputed` (q11, q12)
 - Output check: this capture matches the independent answer key (`../shared/oracle/`) on 14 of 16 questions. q07 and q16 do not: this capture loaded the `comparison_order_lifecycle` view when it held only the 11 hand-authored lifecycle rows. The view now passes every order through. Re-running `scripts/export_trial_csvs.sh` and the steps below would load the current data.
 
 ## Dataset Provenance

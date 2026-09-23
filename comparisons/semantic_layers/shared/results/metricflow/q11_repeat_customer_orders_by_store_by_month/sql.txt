@@ -7,7 +7,9 @@
 ⠋ Initiating query…
 
 ⠙ Initiating query…
-✔ Success 🦄 - query completed after 0.06 seconds
+
+⠹ Initiating query…
+✔ Success 🦄 - query completed after 0.22 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
 SELECT

@@ -179,25 +179,6 @@ QUESTION_COMMANDS = {
     ],
 }
 
-QUESTION_STATUSES = {
-    "q01_orders_by_month": "native",
-    "q02_revenue_by_store_by_month": "native",
-    "q03_item_revenue_by_product_type_by_month": "native",
-    "q04_aov_by_store": "native",
-    "q05_orders_and_item_revenue_by_store_by_month": "native",
-    "q06_new_customer_orders_by_month": "native",
-    "q07_delivered_revenue_by_month": "native",
-    "q08_revenue_by_customer_segment_as_of_order_time": "native",
-    "q09_session_to_order_conversion_7d": "precomputed",
-    "q10_orders_from_customers_with_10plus_orders_in_month": "precomputed",
-    "q11_repeat_customer_orders_by_store_by_month": "precomputed",
-    "q12_orders_by_month_with_lifetime_spend_500_filter": "precomputed",
-    "q13_daily_orders_from_customers_with_10plus_orders_in_month": "precomputed",
-    "q14_revenue_from_customers_with_10plus_orders_same_store_month": "precomputed",
-    "q15_same_store_session_to_order_conversion_7d": "precomputed",
-    "q16_revenue_by_customer_segment_as_of_delivered_time": "native",
-}
-
 
 def _run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, env=ENV, text=True, capture_output=True)
@@ -283,7 +264,7 @@ def main() -> None:
         summary.append(
             {
                 "question_id": question_id,
-                "status": QUESTION_STATUSES[question_id]
+                "status": "executed"
                 if explained.returncode == 0 and executed.returncode == 0
                 else "unsupported",
                 "query_path": str(query_file.relative_to(REPO_ROOT)),

@@ -4,7 +4,7 @@ with bounds as (
   select
     cast(min(ordered_at) as date) - interval 30 day as min_day,
     cast(max(ordered_at) as date) + interval 30 day as max_day
-  from jaffle_order
+  from comparison_orders
 ),
 series as (
   select cast(gs.date_day as date) as date_day

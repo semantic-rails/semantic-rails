@@ -1,2 +1,2 @@
-Resolved 64 packages in 92ms
-Audited 64 packages in 1ms
+Resolved 64 packages in 20ms
+Audited 64 packages in 2ms

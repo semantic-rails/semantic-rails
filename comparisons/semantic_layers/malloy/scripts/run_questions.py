@@ -25,24 +25,24 @@ ENV = {
 }
 
 
-QUESTION_STATUSES = {
-    "q01_orders_by_month": "native",
-    "q02_revenue_by_store_by_month": "native",
-    "q03_item_revenue_by_product_type_by_month": "native",
-    "q04_aov_by_store": "native",
-    "q05_orders_and_item_revenue_by_store_by_month": "native",
-    "q06_new_customer_orders_by_month": "native",
-    "q07_delivered_revenue_by_month": "native",
-    "q08_revenue_by_customer_segment_as_of_order_time": "workaround",
-    "q09_session_to_order_conversion_7d": "workaround",
-    "q10_orders_from_customers_with_10plus_orders_in_month": "workaround",
-    "q11_repeat_customer_orders_by_store_by_month": "workaround",
-    "q12_orders_by_month_with_lifetime_spend_500_filter": "workaround",
-    "q13_daily_orders_from_customers_with_10plus_orders_in_month": "workaround",
-    "q14_revenue_from_customers_with_10plus_orders_same_store_month": "workaround",
-    "q15_same_store_session_to_order_conversion_7d": "workaround",
-    "q16_revenue_by_customer_segment_as_of_delivered_time": "workaround",
-}
+QUESTION_IDS = [
+    "q01_orders_by_month",
+    "q02_revenue_by_store_by_month",
+    "q03_item_revenue_by_product_type_by_month",
+    "q04_aov_by_store",
+    "q05_orders_and_item_revenue_by_store_by_month",
+    "q06_new_customer_orders_by_month",
+    "q07_delivered_revenue_by_month",
+    "q08_revenue_by_customer_segment_as_of_order_time",
+    "q09_session_to_order_conversion_7d",
+    "q10_orders_from_customers_with_10plus_orders_in_month",
+    "q11_repeat_customer_orders_by_store_by_month",
+    "q12_orders_by_month_with_lifetime_spend_500_filter",
+    "q13_daily_orders_from_customers_with_10plus_orders_in_month",
+    "q14_revenue_from_customers_with_10plus_orders_same_store_month",
+    "q15_same_store_session_to_order_conversion_7d",
+    "q16_revenue_by_customer_segment_as_of_delivered_time",
+]
 
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -106,7 +106,7 @@ def main() -> None:
         raise SystemExit("Malloy validation failed; see shared/results/malloy/validate.stderr.txt")
 
     summary: list[dict[str, object]] = []
-    for question_id, status in QUESTION_STATUSES.items():
+    for question_id in QUESTION_IDS:
         target_dir = RESULTS_DIR / question_id
         compile_cmd = [
             str(MALLOY_BIN),
@@ -144,7 +144,7 @@ def main() -> None:
         summary.append(
             {
                 "question_id": question_id,
-                "status": status if execution_status else "unsupported",
+                "status": "executed" if execution_status else "unsupported",
                 "query_path": str(query_file.relative_to(REPO_ROOT)),
                 "result_path": str((target_dir / "result.json").relative_to(REPO_ROOT)),
                 "sql_path": str((target_dir / "sql.sql").relative_to(REPO_ROOT)),

@@ -103,8 +103,8 @@
     },
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 3.16,
-      "compile_ms": 2.199,
+      "cache_lookup_ms": 1.03,
+      "compile_ms": 0.645,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2262,7 +2262,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 8.826,
+  "timing_ms": 3.481,
   "trace": {
     "fallback": {
       "reason": "",

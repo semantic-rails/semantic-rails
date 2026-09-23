@@ -29,5 +29,5 @@ The runner creates `.venv` if it is missing, syncs it to `requirements.lock` on 
 Notes:
 
 - `dbt-metricflow==0.11.0` requires the pre-release `dbt-semantic-interfaces==0.9.4.dev0`. `requirements.in` names it, so the lock resolves with `--prerelease=if-necessary-or-explicit` and every other package stays on a release. (`--prerelease=allow` pulled a DuckDB nightly.)
-- `order_items.sql` is intentionally enriched with `ordered_at`, `store_id`, and `customer_id` from `jaffle_order` so time and grouping work cleanly in MetricFlow on the shared item grain.
-- q09-q15 are implemented through helper dbt views, so they are labeled `precomputed` rather than native MetricFlow semantics. MetricFlow's native conversion metrics and metric filters are not modeled yet.
+- `order_items.sql` passes `comparison_order_items` through unchanged. That shared view, which every layer reads, adds each item's `ordered_at`, `store_id` and `customer_id`, so time and grouping work on the item grain.
+- q09, q10 and q13-q15 are implemented through helper dbt views, so the rubric (`../shared/rubric.md`) labels them `workaround`. q11 and q12 go through helper views that filter on the precomputed customer rollup columns, so they are labeled `precomputed`. MetricFlow's native conversion metrics and metric filters are not modeled yet.
