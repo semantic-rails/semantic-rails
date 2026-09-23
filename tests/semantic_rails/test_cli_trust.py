@@ -182,6 +182,35 @@ def test_interactive_ask_uses_the_sample_package_after_confirmation(
     assert [ref.package_id for ref in used] == ["jaffle_shop"]
 
 
+@pytest.mark.parametrize("command", ["ls", "project validate"])
+def test_interactive_listing_and_validation_also_ask_first(
+    nowhere: dict[str, str], monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    prompts = _answer(monkeypatch, "n")
+    args = argparse.Namespace(package="", path="", json=False)
+    run = dev_cli.cmd_ls if command == "ls" else dev_cli.cmd_project_validate
+
+    with pytest.raises(SemanticLayerError):
+        run(args)
+
+    assert prompts == ["Use the bundled `jaffle_shop` sample package? [y/N]: "]
+
+
+def test_local_profile_is_used_without_a_prompt(
+    nowhere: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from semantic_rails.local_config import init_local_profile
+
+    prompts = _answer(monkeypatch)
+    project = dev_cli.create_project_report(
+        package_id="profile_pkg", workspace_root=str(tmp_path), run_checks=False
+    )["project_path"]
+    init_local_profile(package_path=project)
+
+    assert dev_cli.default_package_ref(interactive=True).source_path == project
+    assert prompts == []
+
+
 def test_json_mode_and_chosen_packages_never_prompt(
     nowhere: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -212,15 +241,17 @@ def test_repl_without_a_package_asks_before_opening_the_sample_package(
     )
 
 
+ASK = ("ask", "monthly revenue by store", "--run", "--limit", "2")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX pseudo-terminal")
-@pytest.mark.parametrize(("reply", "code"), [("", 1), ("y", 0)])
+@pytest.mark.parametrize(("args", "reply", "code"), [(ASK, "", 1), (ASK, "y", 0), ((), "", 1)])
 def test_real_terminal_confirmation_gates_the_sample_package(
-    nowhere: dict[str, str], reply: str, code: int
+    nowhere: dict[str, str], args: tuple[str, ...], reply: str, code: int
 ) -> None:
     primary, secondary = os.openpty()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "semantic_rails", "ask", "monthly revenue by store", "--run"]
-        + ["--limit", "2"],
+        [sys.executable, "-m", "semantic_rails", *args],
         stdin=secondary,
         stdout=secondary,
         stderr=secondary,
@@ -311,7 +342,25 @@ class _StubRuntime:
         pass
 
 
-def test_ask_keeps_engine_warnings_and_fences_rows_instead_of_limiting_sql(
+@pytest.mark.parametrize(("planned", "sent"), [({}, 6), ({"limit": 3}, 3), ({"limit": 50}, 6)])
+def test_ask_limits_sql_to_one_extra_row_and_fences_at_the_limit(
+    monkeypatch: pytest.MonkeyPatch, planned: dict[str, int], sent: int
+) -> None:
+    runtime = _StubRuntime()
+    query = {"select": [{"expression": {"measure": "measure.orders"}}], **planned}
+    monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: runtime)
+    monkeypatch.setattr(
+        dev_cli, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
+    )
+
+    dev_cli.ask_report(
+        PackageReference(source_path="/nowhere"), question="q", execute=True, limit=5
+    )
+
+    assert runtime.queries == [{**query, "limit": sent, "limits": {"max_rows": 5}}]
+
+
+def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     runtime = _StubRuntime()
@@ -330,13 +379,10 @@ def test_ask_keeps_engine_warnings_and_fences_rows_instead_of_limiting_sql(
     )
     dev_cli._print_ask_report(report)
 
-    assert runtime.queries == [
-        {"select": [{"expression": {"measure": "measure.orders"}}], "limits": {"max_rows": 5}}
-    ]
     assert report["result"]["truncated"] is True
     output = capsys.readouterr().out
     assert "Rows: 1 (stopped at the 5-row limit; more rows match)" in output
-    assert "Add --limit 0 to `semantic-rails ask --run` to fetch every row." in output
+    assert "For every row, run: semantic-rails ask --path /nowhere orders --run --limit 0" in output
     assert "Warnings:\n  EMPTY_RESULT_WINDOW: No data in window.\n" in output
     assert "  Treated a blank grain as month.\n" in output
 
@@ -447,6 +493,39 @@ def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str
     proc = _run(nowhere, "ask", "--path", bundled, "monthly revenue by store", "--json")
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["package"]["bundled"] is True
+
+
+def test_dimension_columns_print_ids_and_years_as_stored() -> None:
+    rows = [{"store_id": 1234567, "fiscal_year": 2024, "revenue": 1234.5}]
+    columns = [
+        {"field": "store_id", "semantic_id": "dimension.store_id", "type": "integer"},
+        {"field": "fiscal_year", "semantic_id": "dimension.fiscal_year", "type": "integer"},
+        {"field": "revenue", "semantic_id": "measure.revenue", "type": "currency"},
+    ]
+
+    header, _rule, row = dev_cli._table_lines(rows, columns)
+
+    assert row.split(" | ") == [" 1234567", "       2024", "1,234.50"]
+
+
+def test_cells_and_headers_never_send_control_codes_to_the_terminal() -> None:
+    rows = [{"note": "a\x1b[31mred\tb\rc"}]
+    columns = [{"field": "note", "display_label": "No\x07te"}]
+
+    header, _rule, row = dev_cli._table_lines(rows, columns)
+
+    assert header == "No\\x07te"
+    assert row == "a\\x1b[31mred b c"
+
+
+def test_long_duplicate_labels_stay_distinct_after_shortening() -> None:
+    long_label = "Revenue from very long named product categories"
+    rows = [{"a" * 45: 1, "a" * 44 + "b": 2}]
+    columns = [{"field": field, "display_label": long_label} for field in rows[0]]
+
+    header = dev_cli._table_lines(rows, columns)[0]
+
+    assert header.split(" | ") == ["a" * 37 + "...", "a" * 37 + "... #2"]
 
 
 def test_table_headers_show_time_grain_and_disambiguate_duplicate_labels() -> None:

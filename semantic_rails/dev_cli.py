@@ -885,7 +885,14 @@ def ask_report(
         if execute:
             executable_query = dict(query)
             if limit and "max_rows" not in dict(executable_query.get("limits", {}) or {}):
-                # The engine's row fence fetches one extra row, so `truncated` is exact.
+                # Ask the warehouse for one row more than we show (keeping a smaller
+                # planned limit) and fence at `limit`: `truncated` is then exact and
+                # the warehouse still does top-N work.
+                planned_limit = executable_query.get("limit")
+                if isinstance(planned_limit, int) and not isinstance(planned_limit, bool):
+                    executable_query["limit"] = min(planned_limit, limit + 1)
+                else:
+                    executable_query["limit"] = limit + 1
                 executable_query["limits"] = {
                     **dict(executable_query.get("limits", {}) or {}),
                     "max_rows": limit,
@@ -2325,7 +2332,10 @@ def project_status_report(ref: PackageReference, *, checks: str = "parse") -> di
     parse = validation.get("checks", {}).get("parse", {}) or validation.get("parse", {})
     return {
         "ok": bool(validation.get("ok")),
-        "package": dict(validation.get("package", {}) or _ref_payload(ref)),
+        "package": {
+            **dict(validation.get("package", {}) or _ref_payload(ref)),
+            "bundled": _is_bundled_ref(ref),
+        },
         "source_path": ref.source_path,
         "project_root": str(root),
         "layout": "directory" if Path(ref.source_path).is_dir() else "single_file",
@@ -3238,9 +3248,10 @@ def _print_debug_report(report: dict[str, Any]) -> None:
 
 def _print_objects(report: dict[str, Any]) -> None:
     package = report.get("package", {})
-    print(
-        f"{package.get('id') or '(package)'}: {report['count']} {report['resource_type']} object(s)"
-    )
+    label = package.get("id") or "(package)"
+    if package.get("bundled"):
+        label += " (bundled sample package, not your data)"
+    print(f"{label}: {report['count']} {report['resource_type']} object(s)")
     if report.get("search"):
         print(f"Search: {report['search']}")
     for row in list(report.get("objects", []) or []):
@@ -3281,7 +3292,7 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         if len(rows) > len(shown):
             print(f"... {len(rows) - len(shown)} more rows not shown; use --json to see them all.")
         if truncated:
-            print("Add --limit 0 to `semantic-rails ask --run` to fetch every row.")
+            print(f"For every row, run: {_every_row_command(report)}")
         warnings.extend(list(result.get("warnings", []) or []))
         warnings.extend(list(result.get("assumptions", []) or []))
     compiled = report.get("compile")
@@ -3306,6 +3317,16 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         print("Errors:")
         for error in errors[:5]:
             print(f"  {error.get('code', 'ERROR')}: {error.get('message', error)}")
+
+
+def _every_row_command(report: dict[str, Any]) -> str:
+    package = dict(report.get("package", {}) or {})
+    source = (
+        f"--package {_quote(str(package['id']))}"
+        if package.get("bundled") and package.get("id")
+        else f"--path {_quote(str(package.get('source_path', '')))}"
+    )
+    return f"semantic-rails ask {source} {_quote(str(report.get('question', '')))} --run --limit 0"
 
 
 def _print_project_list(report: dict[str, Any]) -> None:
@@ -3349,7 +3370,10 @@ def _print_project_created(report: dict[str, Any]) -> None:
 
 def _print_project_status(report: dict[str, Any]) -> None:
     package = report.get("package", {})
-    print(f"Semantic Rails project: {package.get('id') or '(unknown)'}")
+    label = package.get("id") or "(unknown)"
+    if package.get("bundled"):
+        label += " (bundled sample package, not your data)"
+    print(f"Semantic Rails project: {label}")
     print(f"Path: {report['source_path']}")
     print(f"Layout: {report['layout']}")
     print(f"Files: {len(report['files'])}")
@@ -3459,9 +3483,11 @@ def _table_lines(rows: list[dict[str, Any]], output_columns: list[dict[str, Any]
     cells: dict[str, list[str]] = {}
     numeric: dict[str, bool] = {}
     for column in columns:
-        column_type = str(dict(meta.get(column, {}) or {}).get("type", "") or "")
+        info = dict(meta.get(column, {}) or {})
         cells[column], numeric[column] = _format_column(
-            [row.get(column) for row in rows], column_type=column_type
+            [row.get(column) for row in rows],
+            column_type=str(info.get("type", "") or ""),
+            as_stored=_is_dimension_column(info),
         )
     widths = {
         column: max(len(headers[column]), *(len(cell) for cell in cells[column]))
@@ -3479,23 +3505,43 @@ def _table_lines(rows: list[dict[str, Any]], output_columns: list[dict[str, Any]
 
 
 def _column_headers(columns: list[str], meta: dict[str, dict[str, Any]]) -> dict[str, str]:
-    headers: dict[str, str] = {}
+    labels: dict[str, str] = {}
     for column in columns:
         info = dict(meta.get(column, {}) or {})
-        header = str(info.get("display_label") or column)
+        label = str(info.get("display_label") or column)
         if info.get("type") == "time" and "__" in column:
-            header += f" ({column.rsplit('__', 1)[1]})"
+            label += f" ({column.rsplit('__', 1)[1]})"
+        labels[column] = _shorten(_printable(label))
+    shown = list(labels.values())
+    headers: dict[str, str] = {}
+    for column in columns:
+        # A label two columns share falls back to the column's own field name.
+        header = labels[column]
+        if shown.count(header) > 1:
+            header = _shorten(_printable(column))
+        base, suffix = header, 2
+        while header in headers.values():
+            header, suffix = f"{base} #{suffix}", suffix + 1
         headers[column] = header
-    labels = list(headers.values())
-    return {
-        column: _shorten(column if labels.count(header) > 1 else header)
-        for column, header in headers.items()
-    }
+    return headers
 
 
-def _format_column(values: list[Any], *, column_type: str) -> tuple[list[str], bool]:
+def _is_dimension_column(info: dict[str, Any]) -> bool:
+    """Group-by and time columns hold keys, codes and years: print them as stored."""
+
+    semantic_id = str(info.get("semantic_id", "") or "")
+    return semantic_id.startswith(("dimension.", "temporal_role.", "entity.")) or info.get(
+        "type"
+    ) in {"id", "time"}
+
+
+def _format_column(
+    values: list[Any], *, column_type: str, as_stored: bool = False
+) -> tuple[list[str], bool]:
     present = [value for value in values if value is not None]
     if present and all(_is_number(value) for value in present):
+        if as_stored:
+            return [_format_scalar(value) for value in values], True
         decimals = _column_decimals(present, column_type=column_type)
         return [
             "NULL" if value is None else _format_number(value, decimals) for value in values
@@ -3557,7 +3603,18 @@ def _format_scalar(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, dict | list):
         return json.dumps(value, sort_keys=True, default=str)
-    return str(value).replace("\n", " ")
+    return _printable(str(value))
+
+
+def _printable(text: str) -> str:
+    """Keep a cell on one line, and never send raw control codes to the terminal."""
+
+    return "".join(
+        char
+        if char.isprintable()
+        else (" " if char in "\n\r\t" else char.encode("unicode_escape").decode("ascii"))
+        for char in text
+    )
 
 
 def _shorten(text: str, width: int = _MAX_CELL_WIDTH) -> str:
