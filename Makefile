@@ -1,5 +1,33 @@
-.PHONY: clean-transient release-check packages test-backend test \
-	warehouses-up warehouses-down test-integration
+.PHONY: install lint format typecheck complexity contracts-check changelog-check clean-transient \
+	release-check packages test-backend test warehouses-up warehouses-down test-integration
+
+# The locked dev environment CI installs; --locked fails on a stale uv.lock.
+install:
+	uv sync --group dev --locked
+
+# The same checks as CI's lint job, except mypy (see typecheck).
+lint:
+	uv run ruff check .
+	uv run ruff format --check .
+
+format:
+	uv run ruff check --fix .
+	uv run ruff format .
+
+typecheck:
+	uv run mypy semantic_rails
+
+# Report-only; never fails. Ruff's McCabe complexity, branch and statement
+# counts at their default thresholds, then every function over 150 lines.
+complexity:
+	uv run ruff check semantic_rails mf2sr --select C901,PLR0912,PLR0915 --statistics --exit-zero
+	uv run python scripts/dev/function_lengths.py semantic_rails mf2sr
+
+contracts-check:
+	uv run python scripts/generate_contract_artifacts.py --check
+
+changelog-check:
+	uv run python scripts/changelog_fragments.py check
 
 clean-transient:
 	rm -rf build dist .pytest_cache .mypy_cache .ruff_cache
@@ -14,8 +42,9 @@ release-check:
 packages:
 	uv run semantic-rails packages
 
+# The same suites and parallelism as CI's backend job.
 test-backend:
-	uv run pytest -q tests/semantic_rails
+	uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
 
 test: test-backend release-check
 
@@ -29,5 +58,6 @@ warehouses-down:
 
 # Warehouses without env vars (or unreachable infra) skip; the suite
 # stays green. `source .env` first to enable the cloud targets.
+# Every test here carries the `integration` marker (tests/integration/conftest.py).
 test-integration:
 	uv run pytest -q tests/integration
