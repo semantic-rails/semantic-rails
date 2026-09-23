@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -168,6 +169,33 @@ def _picker(keys: str, ask: Callable[[PickerBackend], Any]) -> Any:
 
 
 DOWN, ENTER, CTRL_C, CLEAR_LINE = "\x1b[B", "\r", "\x03", "\x15"
+CTRL_A, CTRL_D = "\x01", "\x04"
+
+
+def _picker_within(keys: str, ask: Callable[[PickerBackend], Any], seconds: float = 10) -> Any:
+    """Like ``_picker``, but fails instead of hanging when the keys leave a prompt open."""
+
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    outcome: dict[str, Any] = {}
+    with create_pipe_input() as pipe:
+
+        def run() -> None:
+            try:
+                outcome["value"] = ask(PickerBackend(input=pipe, output=DummyOutput()))
+            except BaseException as exc:  # re-raised in the test's thread
+                outcome["error"] = exc
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        pipe.send_text(keys)
+        thread.join(seconds)
+        waiting = thread.is_alive()
+    assert not waiting, f"the prompt was still waiting for input after {keys!r}"
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 @pytest.mark.parametrize(
@@ -208,6 +236,28 @@ def test_pickers_answer_from_keystrokes(keys: str, ask: Any, expected: Any) -> N
 def test_pickers_cancel_like_plain_prompts(keys: str, ask: Any) -> None:
     with pytest.raises(Cancelled):
         _picker(keys, ask)
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        lambda b: b.choose("Pick", OPTIONS),
+        lambda b: b.choose("Pick", [(f"v{i}", f"Value number {i}") for i in range(20)]),
+        lambda b: b.multi_choose("Cols", OPTIONS, defaults=["c"]),
+        lambda b: b.text("Model key"),
+        lambda b: b.text("Model key", default="orders"),
+        lambda b: b.confirm("Create?", default=True),
+    ],
+)
+def test_ctrl_d_cancels_every_unedited_picker(ask: Any) -> None:
+    with pytest.raises(Cancelled):
+        _picker_within(CTRL_D, ask)
+
+
+def test_ctrl_d_edits_text_once_it_is_edited() -> None:
+    # With the cursor moved into the text, Ctrl-D deletes the next character.
+    answer = _picker_within(CTRL_A + CTRL_D + ENTER, lambda b: b.text("Key", default="orders"))
+    assert answer == "rders"
 
 
 class _Recorder:

@@ -13,8 +13,8 @@ The authoring wizards ask every question through :class:`PromptBackend`:
 its packages are installed and stdin and stdout are real terminals.
 ``SEMANTIC_RAILS_UI=plain`` forces plain prompts; ``SEMANTIC_RAILS_UI=pickers``
 insists on pickers and says why when they are unavailable. Every backend
-raises :class:`Cancelled` when the person cancels (``cancel``, Ctrl-C or
-Ctrl-D), so no wizard writes a file.
+raises :class:`Cancelled` when the person cancels (``cancel``, Ctrl-C, or
+Ctrl-D at a prompt they haven't edited), so no wizard writes a file.
 """
 
 from __future__ import annotations
@@ -142,7 +142,8 @@ class PickerBackend:
         self._io = {key: value for key, value in (("input", input), ("output", output)) if value}
         self._console = Console()
 
-    def _ask(self, question: Any) -> Any:
+    def _ask(self, question: Any, *, untouched: str = "") -> Any:
+        _cancel_on_ctrl_d(question.application, untouched=untouched)
         try:
             answer = question.unsafe_ask()
         except (EOFError, KeyboardInterrupt) as exc:
@@ -150,7 +151,8 @@ class PickerBackend:
         return answer
 
     def text(self, label: str, *, default: str = "") -> str:
-        value = str(self._ask(self._questionary.text(label, default=default, **self._io))).strip()
+        question = self._questionary.text(label, default=default, **self._io)
+        value = str(self._ask(question, untouched=default)).strip()
         if value.lower() in _CANCEL_WORDS:
             raise Cancelled
         return value or default
@@ -198,6 +200,33 @@ class PickerBackend:
 
         rendered = yaml.safe_dump(payload, sort_keys=False, allow_unicode=False).rstrip()
         self._console.print(Padding(Syntax(rendered, "yaml", background_color="default"), (0, 2)))
+
+
+def _cancel_on_ctrl_d(app: Any, *, untouched: str = "") -> None:
+    """Make Ctrl-D cancel a picker the way it cancels an empty line prompt.
+
+    questionary ends only an empty text prompt on Ctrl-D. This also cancels
+    lists, checkbox lists, and a text prompt still showing ``untouched`` (its
+    default). Once the person edits the text, Ctrl-D edits it as usual.
+    """
+
+    from prompt_toolkit.filters import Condition
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+
+    @Condition
+    def unedited() -> bool:
+        buffer = app.current_buffer  # a dummy empty buffer for lists
+        return buffer.text in {"", untouched} and buffer.cursor_position == len(buffer.text)
+
+    bindings = KeyBindings()
+
+    @bindings.add("c-d", filter=unedited, eager=True)
+    def _cancel(event: Any) -> None:
+        event.app.exit(exception=EOFError(), style="class:exiting")
+
+    app.key_bindings = merge_key_bindings(
+        [existing for existing in (app.key_bindings, bindings) if existing is not None]
+    )
 
 
 def pickers_available() -> bool:
