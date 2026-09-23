@@ -181,7 +181,10 @@ def add_developer_cli(sub: argparse._SubParsersAction, package_choices: list[str
         "--limit",
         type=int,
         default=20,
-        help="Row limit to apply when --run is used (default: 20; 0 fetches every row).",
+        help=(
+            "Row cap for --run results (default: 20). 0 removes this cap; a limit the "
+            "planned query carries itself still applies."
+        ),
     )
     p_ask.add_argument("--json", action="store_true", help="Print a JSON report.")
     p_ask.set_defaults(func=cmd_ask, human_cli=True)
