@@ -51,7 +51,7 @@ from .request_payload import (
 from .request_payload import (
     coerce_bool as _coerce_bool,
 )
-from .runtime import Runtime
+from .runtime import Runtime, _contains_inline_window_kind
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -94,6 +94,14 @@ MCP_INTERFACE_VERSION = "v1"
 # compile adds rendered_sql, execute adds rows+row_count. An explicit
 # 'verbosity' argument (outer envelope or inside `query`) always wins.
 MCP_DEFAULT_QUERY_VERBOSITY = "minimal"
+
+# Default row cap for MCP execute. Hosts warn about tool results over 10K
+# tokens; 200 rows keeps a typical answer well under that. A larger result
+# comes back truncated, with its total row count and a hint.
+MCP_DEFAULT_MAX_ROWS = 200
+# Execute reads up to this many rows, never past a limits.max_rows the query
+# sets itself, so a truncated result can still report its total.
+MCP_ROW_COUNT_CEILING = 10_000
 
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
     "semantic_rails_mcp_tool_request_context", default=None
@@ -643,6 +651,15 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "verbosity": VERBOSITY_SCHEMA,
                 "sql_profile": SQL_PROFILE_SCHEMA,
                 "row_format": ROW_FORMAT_SCHEMA,
+                "max_rows": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": MCP_DEFAULT_MAX_ROWS,
+                    "description": (
+                        "Most rows to return. A larger result sets truncated=true and "
+                        "total_row_count; aggregate further or raise max_rows."
+                    ),
+                },
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
             },
@@ -1133,6 +1150,16 @@ def _query_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def _partial_query_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the partial Query IR a metadata or plan tool received.
+
+    These tools take an argument envelope, so only ``query`` holds Query IR;
+    the tool's other arguments are never read as query fields. An absent seed
+    still carries the resolved policy context.
+    """
+    return _query_payload({**payload, "query": payload.get("query")})
+
+
 def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Build the query payload for validate/compile/execute with the
     MCP-adapter default verbosity applied.
@@ -1168,7 +1195,118 @@ def _row_format_arg(arguments: Mapping[str, Any]) -> str:
 def _strip_execute_transport_args(arguments: Mapping[str, Any]) -> dict[str, Any]:
     cleaned = dict(arguments or {})
     cleaned.pop("row_format", None)
+    cleaned.pop("max_rows", None)
     return cleaned
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _execute_row_limits(query: Mapping[str, Any], requested: Any) -> tuple[int, int]:
+    """Return (rows to return, rows to fetch) for MCP execute.
+
+    A ``max_rows`` argument replaces the default cap. A ``limits.max_rows``
+    inside the query is a fence neither may exceed; with no argument it is
+    the cap, as before. Without a fence, execute fetches up to
+    ``MCP_ROW_COUNT_CEILING`` rows so a truncated result can report its total.
+    """
+
+    limits = query.get("limits")
+    fence = _positive_int(limits.get("max_rows")) if isinstance(limits, Mapping) else None
+    cap = _coerce_int(requested, fence or MCP_DEFAULT_MAX_ROWS, field="max_rows", minimum=1)
+    if fence is not None:
+        return min(cap, fence), fence
+    return cap, max(cap, MCP_ROW_COUNT_CEILING)
+
+
+def _ungrained_window(query: Mapping[str, Any]) -> bool:
+    time = query.get("time")
+    if not isinstance(time, Mapping) or time.get("grain") or not time.get("temporal_role"):
+        return False
+    return any(time.get(key) for key in ("start", "end", "range"))
+
+
+def _truncate_rows(result: dict[str, Any], *, cap: int, query: Mapping[str, Any]) -> dict[str, Any]:
+    """Return at most ``cap`` rows, and say so loudly.
+
+    A truncated result carries ``truncated: true``, ``total_row_count``
+    (``None`` when more rows exist than were fetched) and an
+    ``EXECUTE_ROWS_TRUNCATED`` warning that says how to narrow the query.
+    """
+
+    rows = list(result.get("rows") or [])
+    beyond_fetch = bool(result.get("truncated"))
+    if len(rows) <= cap and not beyond_fetch:
+        return result
+    kept = rows[:cap]
+    total = None if beyond_fetch else len(rows)
+    counted = f"{total:,}" if total is not None else f"more than {len(rows):,}"
+    if _ungrained_window(query):
+        advice = (
+            "set time.grain (for example 'month', or 'year' for one row per group over the "
+            "window); without a grain, rows group by the raw timestamp"
+        )
+    elif isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
+        advice = "use a coarser time.grain, filter, or group by fewer dimensions"
+    else:
+        advice = "filter, or group by fewer dimensions"
+    warning = {
+        "code": "EXECUTE_ROWS_TRUNCATED",
+        "severity": "warning",
+        "message": f"Returned {len(kept):,} of {counted} rows. To narrow the result, {advice}. "
+        "Or raise max_rows.",
+        "details": {"returned_rows": len(kept), "total_row_count": total, "max_rows": cap},
+    }
+    return {
+        **result,
+        "rows": kept,
+        "row_count": len(kept),
+        "truncated": True,
+        "total_row_count": total,
+        "warnings": [*list(result.get("warnings") or []), warning],
+    }
+
+
+def _grouped_ungrained_window_warning(query: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Warn about a time window with no grain in a grouped query.
+
+    The runtime raises ``UNGRAINED_TIME_PROJECTION`` only for ungrouped
+    queries. A grouped one hits the same trap: each group returns one row
+    per distinct timestamp in the window.
+    """
+
+    if not query.get("group_by") or not _ungrained_window(query):
+        return None
+    if any(
+        _contains_inline_window_kind(item.get("expression") or {})
+        for item in query.get("select") or []
+        if isinstance(item, Mapping)
+    ):
+        return None
+    return {
+        "code": "UNGRAINED_TIME_PROJECTION",
+        "severity": "warning",
+        "message": (
+            "time has a window but no grain, so each group returns one row per distinct "
+            "timestamp in the window. Set time.grain (for example 'month', or 'year' for one "
+            "row per group over the window)."
+        ),
+        "details": {"temporal_role": str((query.get("time") or {}).get("temporal_role", ""))},
+    }
+
+
+def _with_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> dict[str, Any]:
+    if warning is None or not bool(result.get("ok", True)):
+        return result
+    existing = list(result.get("warnings") or [])
+    if any(isinstance(item, Mapping) and item.get("code") == warning["code"] for item in existing):
+        return result
+    return {**result, "warnings": [*existing, warning]}
 
 
 def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -1829,7 +1967,7 @@ class SemanticLayerMCPAdapter:
                 self.runtime,
                 terms=terms_str,
                 kinds=_coerce_kinds(args.get("kinds", [])),
-                partial_query=_query_payload(args)
+                partial_query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
                 stage=str(args.get("stage", "")),
@@ -1882,7 +2020,7 @@ class SemanticLayerMCPAdapter:
             lambda args: inspect_payload(
                 self.runtime,
                 object_id=str(args.get("object_id", "")),
-                partial_query=_query_payload(args)
+                partial_query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
                 verbosity=str(args.get("verbosity", "compact")),
@@ -1918,7 +2056,7 @@ class SemanticLayerMCPAdapter:
                     )
             payload = build_options_payload(
                 self.runtime,
-                partial_query=_query_payload(args),
+                partial_query=_partial_query_payload(args),
                 focus_terms=str(args.get("focus_terms", "")),
                 focus_object_id=str(args.get("focus_object_id", "")),
                 step=str(args.get("step", "")),
@@ -1939,7 +2077,7 @@ class SemanticLayerMCPAdapter:
             lambda args: valid_values_payload(
                 self.runtime,
                 dimension_id=str(args.get("dimension_id", "")),
-                query=_query_payload(args)
+                query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
                 search=str(args.get("search", "")),
@@ -1956,25 +2094,29 @@ class SemanticLayerMCPAdapter:
             lambda args: plan_payload(
                 self.runtime,
                 intent=str(args.get("intent", "")),
-                # Plan arguments are an envelope, not a flat Query IR.
-                # An absent seed must still carry the resolved policy context.
-                partial_query=_query_payload({**args, "query": args.get("query")}),
+                partial_query=_partial_query_payload(args),
                 detail=str(args.get("detail", "best") or "best"),
                 limit=_coerce_int(args.get("limit"), 3, field="limit", minimum=1),
             ),
         )
 
     def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: self.runtime.validate(_query_payload_with_mcp_default_verbosity(args)),
-        )
+        def _run(args: dict[str, Any]) -> dict[str, Any]:
+            query = _query_payload_with_mcp_default_verbosity(args)
+            return _with_warning(
+                self.runtime.validate(query), _grouped_ungrained_window_warning(query)
+            )
+
+        return self._guarded(arguments, _run)
 
     def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: self.runtime.compile(_query_payload_with_mcp_default_verbosity(args)),
-        )
+        def _run(args: dict[str, Any]) -> dict[str, Any]:
+            query = _query_payload_with_mcp_default_verbosity(args)
+            return _with_warning(
+                self.runtime.compile(query), _grouped_ungrained_window_warning(query)
+            )
+
+        return self._guarded(arguments, _run)
 
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
@@ -1982,7 +2124,16 @@ class SemanticLayerMCPAdapter:
             query_payload = _query_payload_with_mcp_default_verbosity(
                 _strip_execute_transport_args(args)
             )
+            cap, fetch = _execute_row_limits(query_payload, args.get("max_rows"))
+            limits = query_payload.get("limits")
+            query_payload["limits"] = {
+                **(dict(limits) if isinstance(limits, Mapping) else {}),
+                "max_rows": fetch,
+            }
             result = self.runtime.query(query_payload)
+            if bool(result.get("ok", True)):
+                result = _truncate_rows(result, cap=cap, query=query_payload)
+                result = _with_warning(result, _grouped_ungrained_window_warning(query_payload))
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
             # execute returns 0 rows and the user authored no filters —
             # the most common "successful but wrong" outcome from a

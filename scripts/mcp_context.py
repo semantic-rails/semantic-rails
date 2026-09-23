@@ -186,12 +186,18 @@ def tool_list_sizes(tools: Sequence[Mapping[str, Any]]) -> dict[str, int]:
 
 
 class QueryMCPClient:
-    """JSON-RPC client for the query MCP's stdio dispatcher, run in process."""
+    """JSON-RPC client for the query MCP's stdio dispatcher, run in process.
 
-    def __init__(self, package_path: Path) -> None:
+    With ``request_context``, every call arrives the way an authenticated
+    network transport delivers it: the transport, not the caller, supplies
+    the identity and policy context.
+    """
+
+    def __init__(self, package_path: Path, *, request_context: Any = None) -> None:
         from semantic_rails.mcp import SemanticLayerMCPAdapter
 
         self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path))
+        self.request_context = request_context
         self._next_id = 0
 
     def __enter__(self) -> QueryMCPClient:
@@ -206,7 +212,9 @@ class QueryMCPClient:
         self._next_id += 1
         # Encode params as a client would, so no call shares objects with another.
         message = {"jsonrpc": "2.0", "id": self._next_id, "method": method, "params": params or {}}
-        response = handle_jsonrpc_message(self.adapter, json.loads(json.dumps(message)))
+        response = handle_jsonrpc_message(
+            self.adapter, json.loads(json.dumps(message)), request_context=self.request_context
+        )
         if not isinstance(response, dict) or "result" not in response:
             raise RuntimeError(f"MCP {method} returned no result: {response!r}")
         # serve_stdio writes json.dumps(..., default=str); round-trip the same
@@ -341,6 +349,27 @@ DEFAULT_PROBES: list[Step] = [
     ("segment_explain", "segment-explain", {"segment_id": SEGMENT}),
     ("segment_preview", "segment-preview", {"segment_id": SEGMENT}),
 ]
+
+# Metadata calls behind an authenticated transport, which supplies a policy
+# context on every call. Query patches in these responses must stay pure IR.
+HOSTED_PROBES: list[Step] = [
+    ("discover", "discover", {"terms": "revenue by store"}),
+    ("inspect", "inspect", {"object_id": REVENUE["measure"]}),
+    ("build_options", "build-options", {"query": {"version": 2, "select": Q1["select"]}}),
+]
+
+
+def hosted_request_context() -> Any:
+    from semantic_rails.request_context import RequestContext
+
+    return RequestContext(
+        request_id="0" * 32,
+        actor="analyst@example.com",
+        tenant="example-tenant",
+        roles=("analyst",),
+        environment="development",
+    )
+
 
 # Typical agent mistakes, each with whether the call should still succeed and
 # the code it should report. Errors should be small and sent once.
@@ -488,6 +517,11 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
         for name, tool, arguments, ok, code in ERROR_PROBES:
             metrics[f"query.error.{name}_tokens"] = _measured_call(
                 client, name, tool, arguments, ok=ok, code=code
+            )[0]
+    with QueryMCPClient(package_path, request_context=hosted_request_context()) as client:
+        for name, tool, arguments in HOSTED_PROBES:
+            metrics[f"query.hosted.{name}_tokens"] = _measured_call(
+                client, f"hosted.{name}", tool, arguments
             )[0]
     for session, steps in SESSIONS.items():
         # A fresh runtime per session, so one session's caches can't shrink
