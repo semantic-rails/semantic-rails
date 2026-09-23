@@ -436,6 +436,16 @@ size — and it is engaged automatically by features that depend on
 dense rows (for example, the inline `prior_period` LAG window in the
 "Period shifts" section above).
 
+With an explicit `start` and `end`, the spine holds every bucket that
+contains a day of the window, the same buckets the unfilled query
+returns. So the first bucket's label can come before `start`: a week
+that begins on the Monday before a mid-week `start`, or the month of a
+mid-month `start`. Only rows inside `[start, end)` count toward any
+bucket. The days come from the calendar's `date_day` column. A calendar
+without a date- or timestamp-typed `date_day` bounds the spine by the
+bucket-start column instead, which leaves out a bucket that starts
+before `start`.
+
 ### Worked example — monthly query against a sparse table
 
 The jaffle source has orders in some months but not others. A

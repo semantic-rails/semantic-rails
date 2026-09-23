@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..ast import normalize_query
@@ -42,7 +42,7 @@ from ..ir import (
     PhysicalPlan,
     PhysicalPlanNode,
 )
-from ..schema import AggregateRelationConfig, PackageConfig
+from ..schema import AggregateRelationConfig, DimensionConfig, PackageConfig
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
@@ -74,6 +74,7 @@ from .bind import (
     _parse_public_expr,
 )
 from .conversion import _conversion_leaf_cte
+from .grain_recovery import _DATE_DATA_TYPES
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -3710,7 +3711,7 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
 
 def _calendar_fill_binding(
     plan: LogicalPlan, config: PackageConfig, *, force: bool = False
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str] | None:
     if not plan.time or (not plan.time.get("fill") and not force):
         return None
     grain = str(plan.time.get("grain", "") or "").lower()
@@ -3768,7 +3769,53 @@ def _calendar_fill_binding(
         )
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(dimension.id)
-    return calendar_entity.table, dimension.column
+    return calendar_entity.table, dimension.column, _day_column(config, dimension)
+
+
+def _day_column(config: PackageConfig, bucket: DimensionConfig) -> str:
+    """The calendar's date-typed ``date_day`` column, or the bucket's own column without one.
+
+    A fill window is bounded by day, so a week or month that starts before the window
+    keeps its in-window days. The calendar's key isn't used: it can be a surrogate,
+    such as an integer ``date_id``.
+    """
+    day = next(
+        (
+            row
+            for row in config.dimensions
+            if row.entity == bucket.entity
+            and row.column == "date_day"
+            and row.data_type in _DATE_DATA_TYPES
+        ),
+        None,
+    )
+    if day is None:
+        return bucket.column
+    # The fill window reads this column, so it is bound like the grain dimension.
+    _dimension_index(config).get(day.id)
+    return day.column
+
+
+def _whole_day_window(day: Any, time: dict[str, Any]) -> list[Any]:
+    """``day`` within the days that ``[start, end)`` touches.
+
+    A date-only bound is used as is. A bound with a time of day becomes its date, and an
+    ``end`` after midnight rounds up to the next day, so the last partial day stays in.
+    """
+    bounds = []
+    for key, operator in (("start", ">="), ("end", "<")):
+        value = time[key]
+        try:
+            moment = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except ValueError:
+            moment = None
+        if moment is not None and len(str(value).strip()) > 10:
+            day_value = moment.date()
+            if key == "end" and moment.time() != datetime.min.time():
+                day_value += timedelta(days=1)
+            value = day_value.isoformat()
+        bounds.append(SqlBinary(day, operator, SqlLiteral(value)))
+    return bounds
 
 
 def _tier_internal_aliases(
@@ -3932,15 +3979,12 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         base_name = "leaf_base"
 
     if fill_binding is not None:
-        calendar_table, calendar_column = fill_binding
+        calendar_table, calendar_column, day = fill_binding
         calendar_expr = _column_ref(calendar_table, calendar_column)
         dense_time_where: list[Any] = []
         dense_time_joins: list[SqlJoin] = []
         if plan.time.get("start") is not None and plan.time.get("end") is not None:
-            dense_time_where = [
-                SqlBinary(calendar_expr, ">=", SqlLiteral(plan.time["start"])),
-                SqlBinary(calendar_expr, "<", SqlLiteral(plan.time["end"])),
-            ]
+            dense_time_where = _whole_day_window(_column_ref(calendar_table, day), plan.time)
         else:
             ctes.append(
                 SqlCte(
