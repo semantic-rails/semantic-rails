@@ -32,7 +32,9 @@ semantic-rails mcp status --path "$PACKAGE_PATH"
 ```
 
 Managed `start/status/stop` is POSIX-only because it verifies process identity
-before signaling a background PID. On Windows, prefer
+before signaling a background PID. It uses `ps` for that, so it also refuses (and
+starts nothing) where `ps` is missing, as in minimal container images such as
+`python:3.12-slim`; install `procps` there. On Windows, prefer
 `semantic-rails mcp setup --install --yes` so the client launches stdio, or run
 `semantic-rails mcp http ...` as a foreground process in a separate terminal.
 
