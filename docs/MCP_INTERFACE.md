@@ -504,6 +504,60 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 }
 ```
 
+## Measuring Context Cost
+
+`scripts/mcp_context.py` measures how much context the query MCP costs an agent, and how often
+`plan` drafts the right query. It drives the packaged server in process, through the same JSON-RPC
+dispatcher as `semantic-rails mcp stdio`, against a throwaway copy of `jaffle_shop` whose DuckDB file
+it builds from the seed data. Token counts are `round(chars / 4)` of the JSON a model sees: the
+compact `structuredContent` (what Claude Code forwards) and the `content[0].text` channel (what
+text-forwarding hosts forward). The proxy needs no tokenizer. Compare runs with each other, not with
+provider bills.
+
+```bash
+uv run python scripts/mcp_context.py                  # report, then fail on any gate
+uv run python scripts/mcp_context.py --markdown       # tables for a PR description
+uv run python scripts/mcp_context.py --write-baseline # after an intended change
+```
+
+`tests/semantic_rails/test_mcp_context.py` runs the same gates in CI. Their data lives in
+`tests/semantic_rails/mcp_context/`:
+
+| Gate | Fails when |
+|---|---|
+| Context budgets (`budgets.json`) | A measured size exceeds its budget by more than 2% (and at least 8 tokens), a size has no budget, or a budgeted size is no longer measured. |
+| Planner accuracy (`plan_accuracy_baseline.json`) | A gold case's `plan(detail="query")` outcome gets worse. |
+| Gold answers | A gold query fails, its rows no longer match the frozen answer, or a listed alternative answers differently. |
+| Frozen eval set | `eval_jaffle.jsonl` changes. |
+
+The budgets cover `tools/list`, the `initialize` instructions, the resource and prompt lists, every
+resource read, one call per tool at its defaults (including an `execute` of a time window without a
+grain), four error envelopes, and two scripted three-question sessions. Architect MCP tool-list
+sizes are recorded under `tracked` and are not gated.
+
+Each planner outcome is one of:
+
+- `pass`: the drafted query matches the gold query's measures and metrics, grouping, time role,
+  grain, window, filters and limit (and, for rankings, the sort), or an unanswerable question gets
+  a non-`ok` status.
+- `wrong_flagged`: the draft is wrong, but the response says so with a non-`ok` status or a warning.
+- `wrong_silent`: the draft is wrong and the response reports `ok` with no warnings.
+
+When a change is intended, such as a smaller response or a planner fix, run `--write-baseline` and
+commit the updated budgets or outcomes with it. The report lists sizes under budget and cases that
+improved, so savings get locked in.
+
+### Eval Set
+
+`eval_jaffle.jsonl` is the frozen development split: 38 questions covering trends, calendar
+windows, rankings, multi-value filters, near-duplicate metrics, ratios, time expressions, a segment
+metric, out-of-scope questions and misspellings. Each answerable case has a hand-written gold query,
+any equivalent alternatives, and its frozen answer rows. Answers compare as sets of rows: column
+names are ignored, numbers match within a relative tolerance of 1e-6, row order counts only for
+rankings, and time buckets count only for trends. A held-out split of 12 more questions is kept
+outside the repository so the planner can't be tuned against it; `HELDOUT_SET_SHA256` in the script
+commits to its content, and `--eval-file` checks a copy against it.
+
 ## Production Readiness
 
 The packaged MCP server is suitable for local agents and trusted service wrappers that need stable
