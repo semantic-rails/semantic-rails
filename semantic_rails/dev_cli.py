@@ -3629,11 +3629,23 @@ def _magnitude(value: Any) -> int:
 
 
 def _format_significant(value: Any) -> str:
-    """A value in a column of very small numbers: about three significant digits below 1."""
+    """A value in a column of very small numbers, with three significant digits below 1.
 
-    if not _is_finite(value) or _is_integral(value) or abs(value) >= 1:
-        return _format_number(value, 0 if _is_integral(value) else 2)
-    return f"{value:.3g}"
+    Integers stay exact and values of 1 or more keep two decimals. Below 1, the
+    digits are always shown (0.9996 is ``1.000``, never ``1``), in fixed
+    notation down to 0.0001 and in scientific notation under that.
+    """
+
+    if not _is_finite(value):
+        return _format_number(value, 2)  # nan, inf; checked before any comparison
+    if _is_integral(value):
+        return _format_number(value, 0)
+    magnitude = _magnitude(abs(value))
+    if magnitude >= 0:
+        return _format_number(value, 2)
+    if magnitude >= -4:
+        return _format_number(value, 2 - magnitude)
+    return format(value, ".2e")
 
 
 def _format_number(value: Any, decimals: int) -> str:

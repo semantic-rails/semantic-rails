@@ -549,7 +549,7 @@ def test_number_edge_cases(value: Any, decimals: int, expected: str) -> None:
 
 def test_columns_never_round_a_nonzero_value_to_zero_or_a_big_int_through_float() -> None:
     assert dev_cli._format_column([1e-7, -1e-7], column_type="number") == (
-        ["1e-07", "-1e-07"],
+        ["1.00e-07", "-1.00e-07"],
         True,
     )
     assert dev_cli._format_column([9007199254740993, 0.5], column_type="number") == (
@@ -573,14 +573,19 @@ def test_columns_never_round_a_nonzero_value_to_zero_or_a_big_int_through_float(
         ([0.00012, 0.5], ["0.000120", "0.500000"]),
         ([Decimal("0.00012"), Decimal("0.5")], ["0.000120", "0.500000"]),
         # ...past that, fixed decimals would drop them, so the column prints significant digits.
-        ([0.000012, 0.5], ["1.2e-05", "0.5"]),
-        ([Decimal("0.000012"), Decimal("0.5")], ["0.000012", "0.5"]),
-        ([5.1e-7, 9.6e-7, 1.5e-6, 5e-7], ["5.1e-07", "9.6e-07", "1.5e-06", "5e-07"]),
+        ([0.000012, 0.5], ["1.20e-05", "0.500"]),
+        ([Decimal("0.000012"), Decimal("0.5")], ["1.20e-5", "0.500"]),
+        ([5.1e-7, 9.6e-7, 1.5e-6, 5e-7], ["5.10e-07", "9.60e-07", "1.50e-06", "5.00e-07"]),
         # Integers stay exact and larger values keep two decimals in such a column.
         (
             [1.5e-6, 0.25, 12, 1234.5678, 10**20, None],
-            ["1.5e-06", "0.25", "12", "1,234.57", "100,000,000,000,000,000,000", "NULL"],
+            ["1.50e-06", "0.250", "12", "1,234.57", "100,000,000,000,000,000,000", "NULL"],
         ),
+        # A rounded fraction never looks like an exact integer.
+        ([1.5e-6, 0.9996, 1], ["1.50e-06", "1.000", "1"]),
+        # Values that aren't finite print as they are, before any comparison.
+        ([Decimal("sNaN"), Decimal("NaN"), Decimal("5.1E-7")], ["snan", "nan", "5.10e-7"]),
+        ([float("nan"), float("-inf"), 1e-7], ["nan", "-inf", "1.00e-07"]),
     ],
 )
 def test_small_values_keep_their_significant_digits(column: list[Any], expected: list[str]) -> None:
@@ -593,7 +598,7 @@ def test_a_decimal_too_small_for_a_float_prints_instead_of_crashing() -> None:
 
     _header, _rule, *cells = dev_cli._table_lines(rows, columns)
 
-    assert [cell.strip() for cell in cells] == ["1e-400", "-1e-400", "0.25"]
+    assert [cell.strip() for cell in cells] == ["1.00e-400", "-1.00e-400", "0.250"]
 
 
 @pytest.mark.parametrize("selection", [("--package", "jaffle_shop"), ("--path", "<bundled>")])
