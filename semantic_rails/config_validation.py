@@ -20,7 +20,12 @@ from typing import Any
 import yaml
 
 from .compiler import _requires_query_time, compile_query
-from .config import get_package_path, load_package_config, package_root_for_source
+from .config import (
+    _merge_package_dir,
+    get_package_path,
+    load_package_config,
+    package_root_for_source,
+)
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
@@ -392,6 +397,19 @@ _SEGMENT_KEYS: frozenset[str] = frozenset(
         "topics",
     }
 )
+# The keys the loader reads from a segment's `membership:` block.
+_SEGMENT_MEMBERSHIP_KEYS: frozenset[str] = frozenset(
+    {"where", "metric_filters", "time", "temporal_role_overrides", "path_policy"}
+)
+# Membership spellings the loader doesn't read, from other tools or a singular typo,
+# and the membership key that holds such conditions.
+_SEGMENT_MEMBERSHIP_ALIASES: dict[str, str] = {
+    "dimension_filter": "where",
+    "dimension_filters": "where",
+    "filter": "where",
+    "filters": "where",
+    "metric_filter": "metric_filters",
+}
 
 # Fields each metric kind requires when the expression AST is not
 # authored directly. Keeps the "metric produced no expression" error
@@ -718,6 +736,40 @@ def _check_metric_shape(
         )
 
 
+def _check_segment_shape(
+    segment_key: str, spec: dict[str, Any], *, path_label: str, errors: list[str]
+) -> None:
+    label = f"{path_label}: segment '{segment_key}'"
+    membership_spellings = _SEGMENT_MEMBERSHIP_KEYS | _SEGMENT_MEMBERSHIP_ALIASES.keys()
+    for key in sorted(membership_spellings & set(spec)):
+        add_error(errors, f"{label} has {key!r} outside membership: — {_membership_fix(key)}")
+    top_level = {key: value for key, value in spec.items() if key not in membership_spellings}
+    if "meta" in top_level:
+        # The fuzzy match would suggest `metric`, the legacy alias of basis_metric.
+        del top_level["meta"]
+        add_error(errors, f"{label} has unknown key 'meta' — segments don't read meta:; remove it")
+    _unknown_key_errors(top_level, _SEGMENT_KEYS, label=label, errors=errors)
+    membership = spec.get("membership")
+    if not isinstance(membership, dict):
+        return
+    for key in sorted(_SEGMENT_MEMBERSHIP_ALIASES.keys() & set(membership)):
+        add_error(errors, f"{label} membership has unknown key {key!r} — {_membership_fix(key)}")
+    rest = {
+        key: value for key, value in membership.items() if key not in _SEGMENT_MEMBERSHIP_ALIASES
+    }
+    _unknown_key_errors(rest, _SEGMENT_MEMBERSHIP_KEYS, label=f"{label} membership", errors=errors)
+
+
+def _membership_fix(key: str) -> str:
+    """Where the loader reads what a segment author wrote under ``key``."""
+    target = _SEGMENT_MEMBERSHIP_ALIASES.get(key, key)
+    rows = " as {field, op, value} rows" if target == "where" and key != target else ""
+    return (
+        f"the loader reads membership.{target} only, so the segment ignores it; "
+        f"write it under membership.{target}{rows}"
+    )
+
+
 def _check_package_shapes(
     raw: dict[str, Any], *, path_label: str, errors: list[str], top_level: bool = True
 ) -> None:
@@ -783,12 +835,7 @@ def _check_package_shapes(
     if isinstance(segments, dict):
         for segment_key, spec in segments.items():
             if isinstance(spec, dict):
-                _unknown_key_errors(
-                    spec,
-                    _SEGMENT_KEYS,
-                    label=f"{path_label}: segment '{segment_key}'",
-                    errors=errors,
-                )
+                _check_segment_shape(str(segment_key), spec, path_label=path_label, errors=errors)
 
 
 def _connection_options_from_mapping(
@@ -1372,8 +1419,7 @@ def _validate_split_package(
             "package": package_root.get("package"),
             "graph": graph_root.get("graph"),
             "models": models,
-            "metrics": metrics_raw,
-            "segments": segments_raw,
+            **_loader_metrics_and_segments(path, errors),
         },
         path_label=str(path),
         errors=errors,
@@ -1393,6 +1439,34 @@ def _validate_split_package(
         )
 
     return errors
+
+
+def _loader_metrics_and_segments(path: Path, errors: list[str]) -> dict[str, Any]:
+    """The metric and segment specs the loader reads from a package directory.
+
+    Uses the loader's own source capture and merge, so the shape checks see every
+    supported layout (specs in package.yml, root metrics.yml and segments.yml, and
+    files under metrics/ and segments/: a mapping, a `metric:`/`segment:` wrapper or
+    a bare spec), skip the directories the loader skips, and check the copy the
+    loader keeps when a key is defined twice. If the merge fails, that is an error:
+    the checks can't run, even when a later load succeeds.
+    """
+    try:
+        source = capture_package_source(path)
+        merged = _merge_package_dir(source.source_path, captured=source)
+    except (
+        SemanticLayerError,
+        yaml.YAMLError,
+        OSError,
+        TypeError,
+        ValueError,
+        AttributeError,
+    ) as exc:
+        add_error(
+            errors, f"{path}: can't read the metric and segment specs to check their keys: {exc}"
+        )
+        return {"metrics": {}, "segments": {}}
+    return {"metrics": merged.get("metrics"), "segments": merged.get("segments")}
 
 
 def _load_metric_files(
@@ -1638,12 +1712,12 @@ def _check_strict_raw_yaml(
                         f"event, population.",
                     )
 
-    # 6. Metric strict checks — topics:/preferred_filter_ops:/etc. are
-    # metadata-only and dropped in v1. preferred_companion_metrics stays
-    # on metrics; see _STRICT_LEGACY_KEYS_ON_METRICS.
+    # 6. Metric strict checks — topics:/clock_variants:/etc. are metadata-only
+    # and dropped in v1 (keys outside _METRIC_KEYS are already reported as
+    # unknown). preferred_companion_metrics stays; see _STRICT_LEGACY_KEYS_ON_METRICS.
     for metric_key, (metric_path, metric_raw) in (metrics or {}).items():
         for legacy_key, message in _STRICT_LEGACY_KEYS_ON_METRICS.items():
-            if legacy_key in metric_raw:
+            if legacy_key in metric_raw and legacy_key in _METRIC_KEYS:
                 add_error(
                     errors,
                     f"{metric_path}: metric {metric_key!r}: {message}.",
@@ -1660,10 +1734,10 @@ def _check_strict_raw_yaml(
                 f"(common values: number, percent, currency, count, ratio).",
             )
 
-    # 7. Segment strict checks — same legacy fields as metrics.
+    # 7. Segment strict checks — the same legacy fields, where _SEGMENT_KEYS allows them.
     for segment_key, (segment_path, segment_raw) in (segments or {}).items():
         for legacy_key, message in _STRICT_LEGACY_KEYS_ON_METRICS.items():
-            if legacy_key in segment_raw:
+            if legacy_key in segment_raw and legacy_key in _SEGMENT_KEYS:
                 add_error(
                     errors,
                     f"{segment_path}: segment {segment_key!r}: {message}.",
