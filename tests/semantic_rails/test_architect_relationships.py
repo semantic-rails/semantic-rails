@@ -65,6 +65,20 @@ def _graph_relationships(workspace: Path) -> dict[str, Any]:
     return dict(_yaml(workspace / "shop" / "graph.yml")["graph"].get("relationships") or {})
 
 
+def _set_graph_relationships(workspace: Path, relationships: dict[str, Any]) -> None:
+    graph_path = workspace / "shop" / "graph.yml"
+    graph = _yaml(graph_path)
+    graph["graph"]["relationships"] = relationships
+    graph_path.write_text(yaml.safe_dump(graph, sort_keys=False), encoding="utf-8")
+
+
+def _edit_orders_model(workspace: Path, edit: Any) -> None:
+    orders_path = workspace / "shop" / "models" / "orders.yml"
+    orders = _yaml(orders_path)
+    edit(orders["model"])
+    orders_path.write_text(yaml.safe_dump(orders, sort_keys=False), encoding="utf-8")
+
+
 def _loaded(workspace: Path) -> dict[str, Any]:
     """Relationships as the engine loads them, by id."""
     config = load_package_config(str(workspace / "shop"))
@@ -274,12 +288,18 @@ def test_a_name_taken_by_another_pair_is_refused(workspace: Path) -> None:
 
 
 def test_an_entry_from_the_other_side_is_refused(workspace: Path) -> None:
-    graph_path = workspace / "shop" / "graph.yml"
-    graph = _yaml(graph_path)
-    graph["graph"]["relationships"] = {
-        "customer_orders": {"entities": ["customer", "order"], "cardinality": "one_to_many"}
-    }
-    graph_path.write_text(yaml.safe_dump(graph, sort_keys=False), encoding="utf-8")
+    _set_graph_relationships(
+        workspace,
+        {
+            "customer_orders": {
+                "entities": ["customer", "order"],
+                "cardinality": "one_to_many",
+                "via": ["customer_id"],
+                "target": ["customer_id"],
+            }
+        },
+    )
+    assert "relationship.customer_orders" in _loaded(workspace)  # the package loads
 
     with pytest.raises(SemanticLayerError, match="from the customer side"):
         _project(workspace).upsert_relationship(
@@ -302,6 +322,17 @@ def test_an_entry_from_the_other_side_is_refused(workspace: Path) -> None:
         ({"allowed_directions": ["sideways"]}, "allowed_directions must be"),
         ({"allowed_directions": []}, "allowed_directions must be"),
         ({"path_preference": 0}, "positive integer"),
+        ({"columns": [" "]}, "must not be blank"),
+        ({"to_entity": "bridge"}, "not an entity name"),
+        (
+            {
+                "from_entity": "customer",
+                "to_entity": "order",
+                "to_columns": ["customer_id", "store_id"],
+                "cardinality": "one_to_many",
+            },
+            r"to_columns \['customer_id', 'store_id'\] do not match the width",
+        ),
     ],
 )
 def test_requests_the_package_could_not_express_are_refused(
@@ -320,11 +351,13 @@ def test_requests_the_package_could_not_express_are_refused(
     assert project_revision(workspace / "shop") == before
 
 
-def test_a_bridge_false_model_gets_an_explicit_relationship(workspace: Path) -> None:
-    orders_path = workspace / "shop" / "models" / "orders.yml"
-    orders = _yaml(orders_path)
-    orders["model"]["entities"] = {"bridge": False, "order": {}}
-    orders_path.write_text(yaml.safe_dump(orders, sort_keys=False), encoding="utf-8")
+@pytest.mark.parametrize("bridge", [False, None, 0])
+def test_a_model_whose_bridge_option_is_off_gets_an_explicit_relationship(
+    workspace: Path, bridge: Any
+) -> None:
+    _edit_orders_model(
+        workspace, lambda model: model.update(entities={"bridge": bridge, "order": {}})
+    )
 
     mutation = _project(workspace).upsert_relationship(
         from_entity="order", to_entity="customer", columns=["customer_id"]
@@ -391,3 +424,178 @@ def test_a_change_that_breaks_a_pinned_route_is_rolled_back(workspace: Path) -> 
     assert "does not connect" in str(mutation.report)
     assert project_revision(workspace / "shop") == before
     assert _graph_relationships(workspace) == {}
+
+
+def test_one_to_many_directions_are_read_from_the_one_side(workspace: Path) -> None:
+    mutation = _project(workspace).upsert_relationship(
+        from_entity="customer",
+        to_entity="order",
+        columns=["customer_id"],
+        to_columns=["customer_id"],
+        cardinality="one_to_many",
+        allowed_directions=["forward"],  # customer to order only
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert _graph_relationships(workspace)["orders_customer"]["allowed_directions"] == ["reverse"]
+    assert _loaded(workspace)["relationship.orders_customer"].allowed_directions == ["reverse"]
+
+
+def test_an_entry_joining_through_via_is_kept_in_step(workspace: Path) -> None:
+    project = _project(workspace)
+    project.upsert_relationship(from_entity="order", to_entity="customer", columns=["customer_id"])
+    _set_graph_relationships(
+        workspace, {"orders_customer": {"entities": ["order", "customer"], "via": ["customer_id"]}}
+    )
+
+    mutation = project.upsert_relationship(
+        from_entity="order", to_entity="customer", columns=["buyer_id"]
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert _graph_relationships(workspace)["orders_customer"]["via"] == ["buyer_id"]
+    assert _orders_entities(workspace)["customer"] == {"expr": "buyer_id"}
+    assert _loaded(workspace)["relationship.orders_customer"].source_columns == ["buyer_id"]
+
+
+def test_an_entry_joining_off_the_key_is_refused(workspace: Path) -> None:
+    project = _project(workspace)
+    project.upsert_relationship(from_entity="order", to_entity="customer", columns=["customer_id"])
+    _set_graph_relationships(
+        workspace,
+        {"orders_customer": {"entities": ["order", "customer"], "target": ["customer_country"]}},
+    )
+    assert _loaded(workspace)["relationship.orders_customer"].target_columns == ["customer_country"]
+
+    with pytest.raises(SemanticLayerError, match="only relates to keys"):
+        project.upsert_relationship(
+            from_entity="order", to_entity="customer", columns=["customer_id"], safety="safe"
+        )
+
+
+def test_ids_follow_the_engine_for_model_keys_with_double_underscores(workspace: Path) -> None:
+    _edit_orders_model(workspace, lambda model: model.update(id="stg_shop__orders"))
+    graph_path = workspace / "shop" / "graph.yml"
+    graph = _yaml(graph_path)
+    graph["graph"]["entities"]["order"]["model"] = "stg_shop__orders"
+    graph_path.write_text(yaml.safe_dump(graph, sort_keys=False), encoding="utf-8")
+    project = _project(workspace)
+
+    plain = project.upsert_relationship(
+        from_entity="order", to_entity="customer", columns=["customer_id"]
+    )
+    ruled = project.upsert_relationship(
+        from_entity="order", to_entity="customer", columns=["customer_id"], safety="safe"
+    )
+
+    assert plain.report["relationship"]["override"] is False
+    assert ruled.report["ok"] is True, ruled.report
+    assert ruled.report["relationship"]["id"] == "relationship.stg_shop__orders_customer"
+    assert set(_loaded(workspace)) == {"relationship.stg_shop__orders_customer"}
+
+
+def test_bridge_is_not_an_entity_name(workspace: Path) -> None:
+    with pytest.raises(SemanticLayerError, match="not an entity name"):
+        _project(workspace).upsert_model(
+            model_id="bridges",
+            entity_key="bridge",
+            relation="main_marts.dim_stores",
+            primary_key=["store_id"],
+        )
+
+
+def test_a_model_without_an_entities_block_keeps_its_own_entity_first(workspace: Path) -> None:
+    _edit_orders_model(workspace, lambda model: model.pop("entities"))
+    assert "relationship.orders_customer" not in _loaded(workspace)  # the package loads
+
+    mutation = _project(workspace).upsert_relationship(
+        from_entity="order", to_entity="customer", columns=["customer_id"], label="Buyer"
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert list(_orders_entities(workspace)) == ["order", "customer"]
+    assert _loaded(workspace)["relationship.orders_customer"].label == "Buyer"
+
+
+def test_several_entries_for_one_pair_are_refused(workspace: Path) -> None:
+    project = _project(workspace)
+    project.upsert_relationship(from_entity="order", to_entity="customer", columns=["customer_id"])
+    pair = {"entities": ["order", "customer"], "cardinality": "many_to_one"}
+    _set_graph_relationships(workspace, {"order_customer_a": pair, "order_customer_b": pair})
+
+    with pytest.raises(SemanticLayerError, match="several entries"):
+        project.upsert_relationship(
+            from_entity="order",
+            to_entity="customer",
+            columns=["customer_id"],
+            safety="requires_rewrite",
+        )
+
+
+def test_the_reported_id_is_the_loaded_id(workspace: Path) -> None:
+    project = _project(workspace)
+    project.upsert_relationship(from_entity="order", to_entity="customer", columns=["customer_id"])
+    _set_graph_relationships(
+        workspace,
+        {"Order Customer": {"entities": ["order", "customer"], "cardinality": "many_to_one"}},
+    )
+
+    mutation = project.upsert_relationship(
+        from_entity="order", to_entity="customer", columns=["customer_id"], safety="safe"
+    )
+
+    assert mutation.report["relationship"]["id"] == "relationship.order_customer"
+    assert set(_loaded(workspace)) == {"relationship.order_customer"}
+
+
+def test_a_name_that_is_another_relationships_id_is_refused(workspace: Path) -> None:
+    project = _project(workspace)
+    project.upsert_relationship(from_entity="order", to_entity="customer", columns=["customer_id"])
+
+    with pytest.raises(SemanticLayerError, match="already names the relationship from order"):
+        project.upsert_relationship(
+            from_entity="order", to_entity="store", columns=["store_id"], name="orders_customer"
+        )
+
+
+def test_files_with_nothing_to_change_keep_their_formatting(workspace: Path) -> None:
+    project = _project(workspace)
+    request = {
+        "from_entity": "order",
+        "to_entity": "customer",
+        "columns": ["customer_id"],
+        "safety": "safe",
+    }
+    project.upsert_relationship(**request)
+    graph_path = workspace / "shop" / "graph.yml"
+    graph_path.write_text(
+        "# Hand-written notes survive.\n" + graph_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    before = graph_path.read_bytes()
+
+    mutation = project.upsert_relationship(**request)
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert mutation.report["changed_files"] == []
+    assert graph_path.read_bytes() == before
+
+
+def test_a_stale_revision_or_a_reused_key_is_refused(workspace: Path) -> None:
+    project = _project(workspace)
+    stale = project_revision(workspace / "shop")
+    customer = {"from_entity": "order", "to_entity": "customer", "columns": ["customer_id"]}
+    store = {"from_entity": "order", "to_entity": "store", "columns": ["store_id"]}
+    project.upsert_relationship(**customer, expected_revision=stale, idempotency_key="first")
+
+    with pytest.raises(SemanticLayerError) as stale_write:
+        project.upsert_relationship(**store, expected_revision=stale, idempotency_key="second")
+    with pytest.raises(SemanticLayerError) as reused_key:
+        project.upsert_relationship(
+            **store,
+            expected_revision=project_revision(workspace / "shop"),
+            idempotency_key="first",
+        )
+
+    assert stale_write.value.details["conflict_kind"] == "stale_revision"
+    assert reused_key.value.details["conflict_kind"] == "idempotency_key_reuse"

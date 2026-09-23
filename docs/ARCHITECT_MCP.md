@@ -107,12 +107,15 @@ id `relationship.<model>_<entity>` (for example `relationship.orders_customer`).
 Rules beyond that default go in `graph.relationships.<name>`. The tool writes that entry when you
 pass `cardinality: one_to_one`, a `name`, `allowed_directions` (`forward`, `reverse`), `safety`
 (`safe`, `requires_rewrite`, `unsafe`), `path_preference` (lower is preferred; the default is 100),
-`label` or `description`. The default name keeps the inferred id, so routes pinned in
+`label` or `description`. The entry keeps the inferred id, so routes pinned in
 `graph.path_preferences` still resolve. An existing entry for the same pair is updated in place and
-keeps the settings you do not pass. `one_to_many` is recorded from the many side (`to_columns` are
-then the foreign key on `to_entity`'s model); `many_to_many` is refused, because it needs a bridge:
-model the link table and relate it many-to-one to each side. A model marked `bridge: false` infers
-no joins, so its relationships are always written as explicit entries.
+keeps the settings you do not pass (its `via:` follows the new columns). The tool refuses a pair
+with several entries, an entry declared from the other side, and an entry that joins on columns
+other than the target's key. `one_to_many` is recorded from the many side: `to_columns` are then
+the foreign key on `to_entity`'s model, and `allowed_directions` keep the meaning you gave them.
+`many_to_many` is refused, because it needs a bridge: model the link table and relate it
+many-to-one to each side. A model whose `bridge` option is off infers no joins, so its
+relationships are always written as explicit entries (`bridge` is never an entity name).
 
 The usual mutation contract applies (`expected_revision`, `idempotency_key`, `dry_run`), and the
 parse gate rolls back a change the package cannot load, such as one that breaks a pinned route.

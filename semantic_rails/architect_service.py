@@ -28,6 +28,8 @@ from .architect_transactions import (
     ProjectTransaction,
     project_revision,
 )
+from .config import _slug as _engine_slug
+from .config_parts.package_loader import _slug as _loader_slug
 from .config_validation import PackageReference, parse_config_report
 from .errors import SemanticLayerError
 
@@ -43,6 +45,7 @@ _RELATIONSHIP_CARDINALITIES = {
 }
 
 _RELATIONSHIP_SAFETY = ("safe", "requires_rewrite", "unsafe")
+_FLIPPED_DIRECTION = {"forward": "reverse", "reverse": "forward"}
 
 _INVENTORY_KINDS = {
     "model": "models",
@@ -60,6 +63,11 @@ def _slug(value: str, *, fallback: str) -> str:
     while "__" in out:
         out = out.replace("__", "_")
     return out or fallback
+
+
+def _inferred_relationship_id(model_key: str, target: str) -> str:
+    """The id the engine gives the relationship a model's entity reference implies."""
+    return f"relationship.{_engine_slug(model_key)}_{_engine_slug(target)}"
 
 
 def _title(value: str) -> str:
@@ -588,8 +596,9 @@ class ArchitectProject:
         ``description`` also writes ``graph.relationships.<name>``; an existing
         entry for the same pair is updated in place, keeping what is not
         passed. ``one_to_many`` is recorded from the many side (``to_columns``
-        are then the foreign key on ``to_entity``'s model). ``many_to_many``
-        needs a bridge model, related many-to-one to each side.
+        are then the foreign key on ``to_entity``'s model, and directions are
+        read from the many side too). ``many_to_many`` needs a bridge model,
+        related many-to-one to each side.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         requested = str(cardinality or "").strip().lower()
@@ -606,20 +615,6 @@ class ArchitectProject:
                 "a many_to_many relationship needs a bridge model: model the link table, "
                 "then relate it many_to_one to each side",
             )
-        source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
-        fk_columns, target_columns = _as_list(columns), _as_list(to_columns)
-        if kind == "one_to_many":
-            source, target = target, source
-            fk_columns, target_columns = target_columns, fk_columns
-            kind = "many_to_one"
-        if not fk_columns:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                "a one_to_many relationship is recorded on the many side: pass to_columns, "
-                "the foreign key on to_entity's model"
-                if requested in {"one_to_many", "1:n"}
-                else "columns must name the foreign-key columns on from_entity's model",
-            )
         directions = [str(item).strip().lower() for item in allowed_directions or []]
         if allowed_directions is not None and (
             not directions or not set(directions) <= {"forward", "reverse"}
@@ -629,6 +624,31 @@ class ArchitectProject:
                 "allowed_directions must be forward, reverse or both "
                 f"(got {list(allowed_directions)!r})",
             )
+        source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
+        if "bridge" in {source, target}:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "'bridge' is an option of a model's entities block, not an entity name",
+            )
+        fk_columns, target_columns = _as_list(columns), _as_list(to_columns)
+        fk_param, target_param = "columns", "to_columns"
+        if kind == "one_to_many":
+            # Recorded from the many side, so the pair and its directions flip.
+            source, target = target, source
+            fk_columns, target_columns = target_columns, fk_columns
+            fk_param, target_param = target_param, fk_param
+            directions = [_FLIPPED_DIRECTION[direction] for direction in directions]
+            kind = "many_to_one"
+        if not fk_columns:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "a one_to_many relationship is recorded on the many side: pass to_columns, "
+                "the foreign key on to_entity's model"
+                if fk_param == "to_columns"
+                else "columns must name the foreign-key columns on from_entity's model",
+            )
+        if any(not column.strip() for column in [*fk_columns, *target_columns]):
+            raise SemanticLayerError("INVALID_CONFIG", "column names must not be blank")
         if path_preference is not None and (
             isinstance(path_preference, bool) or int(path_preference) < 1
         ):
@@ -658,14 +678,15 @@ class ArchitectProject:
         if target_columns and target_columns != target_key:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"{target} is related through its key {target_key}, not {target_columns}",
+                f"{target} is related through its key {target_key}, "
+                f"not {target_param} {target_columns}",
                 details={"entity": target, "key": target_key},
             )
         if len(fk_columns) != len(target_key):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"columns {fk_columns} do not match the width of {target}'s key {target_key}",
-                details={"columns": fk_columns, "key": target_key},
+                f"{fk_param} {fk_columns} do not match the width of {target}'s key {target_key}",
+                details={fk_param: fk_columns, "key": target_key},
             )
         model_row = self._entity_model(raw, source_row)
         if model_row is None:
@@ -678,23 +699,31 @@ class ArchitectProject:
         documents = self._load_documents(model_row.source_path, source_row.source_path)
         graph = dict(documents[source_row.source_path].get("graph", {}) or {})
         relationships = dict(graph.get("relationships", {}) or {})
-        default_name = f"{model_row.key}_{target}"  # the id the engine infers
-        existing_name = next(
-            (
-                str(entry_name)
-                for entry_name, entry in relationships.items()
-                if isinstance(entry, dict)
-                and sorted(_as_list(entry.get("entities"))) == sorted([source, target])
-            ),
-            "",
-        )
-        relationship_name = existing_name or _slug(name or default_name, fallback=default_name)
+        loaded_ids = self._relationship_ids(raw, relationships)
+        inferred_id = _inferred_relationship_id(model_row.key, target)
+        pair_entries = [
+            str(entry_name)
+            for entry_name, entry in relationships.items()
+            if isinstance(entry, dict)
+            and sorted(_as_list(entry.get("entities"))) == sorted([source, target])
+        ]
+        if len(pair_entries) > 1:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"graph.relationships has several entries for {source} and {target} "
+                f"({', '.join(pair_entries)}); keep one",
+                details={"relationships": pair_entries},
+            )
+        existing_name = pair_entries[0] if pair_entries else ""
+        current = dict(relationships.get(existing_name, {}) or {}) if existing_name else {}
         if existing_name:
-            if _as_list(dict(relationships[existing_name]).get("entities")) != [source, target]:
+            declared = _as_list(current.get("entities"))
+            if declared != [source, target]:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
-                    f"graph.relationships.{existing_name} relates {target} to {source} from "
-                    f"the {target} side; remove it before relating {source} to {target}",
+                    f"graph.relationships.{existing_name} declares this relationship from the "
+                    f"{declared[0]} side ({declared}); upsert_relationship records it from the "
+                    f"many side ({source} to {target}), so remove that entry first",
                     details={"relationship": existing_name},
                 )
             if name and _slug(name, fallback="") != _slug(existing_name, fallback=""):
@@ -705,12 +734,38 @@ class ArchitectProject:
                     "leave name empty",
                     details={"relationship": existing_name},
                 )
-        elif relationship_name in relationships:
+            joined_on = _as_list(current.get("target"))
+            if joined_on and joined_on != target_key:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"graph.relationships.{existing_name} joins {target} on {joined_on}, not "
+                    f"its key {target_key}; upsert_relationship only relates to keys",
+                    details={"relationship": existing_name},
+                )
+            relationship_name = existing_name
+            relationship_id = str(
+                current.get("id") or f"relationship.{_loader_slug(existing_name)}"
+            )
+        elif name:
+            relationship_name = _slug(name, fallback="relationship")
+            relationship_id = f"relationship.{relationship_name}"
+        else:
+            relationship_name = _slug(f"{model_row.key}_{target}", fallback="relationship")
+            relationship_id = inferred_id
+        if not existing_name and relationship_name in relationships:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"graph.relationships.{relationship_name} already relates other entities; "
                 "choose another name",
                 details={"relationship": relationship_name},
+            )
+        owner_of_id = loaded_ids.get(relationship_id)
+        if owner_of_id is not None and owner_of_id != (source, target):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{relationship_id} already names the relationship from {owner_of_id[0]} to "
+                f"{owner_of_id[1]}; choose another name",
+                details={"relationship": relationship_id},
             )
         options: dict[str, Any] = {
             field_name: value
@@ -723,21 +778,21 @@ class ArchitectProject:
             )
             if value is not None
         }
-        current = dict(relationships.get(relationship_name, {}) or {})
         effective = kind or _RELATIONSHIP_CARDINALITIES.get(
             str(current.get("cardinality", "") or "").strip().lower(), "many_to_one"
         )
+
         model_doc = documents[model_row.source_path]
         model, wrapper = self._model_for_update(model_doc, model_row, model_slug=model_row.key)
         model_entities = dict(model.get("entities", {}) or {})
-        # A `bridge: false` model infers no joins from its entities block, so
-        # the relationship exists only as an explicit entry.
+        # A model whose `bridge` option is off infers no joins from its
+        # entities block, so the relationship exists only as an explicit entry.
         with_override = bool(
             existing_name
             or options
             or effective != "many_to_one"
-            or relationship_name != default_name
-            or model_entities.get("bridge", True) is False
+            or relationship_id != inferred_id
+            or not model_entities.get("bridge", True)
         )
         previous = model_entities.get(target)
         entry = {
@@ -747,14 +802,27 @@ class ArchitectProject:
         }
         if fk_columns != target_key:
             entry["expr"] = fk_columns[0] if len(fk_columns) == 1 else fk_columns
-        model["entities"] = {**model_entities, target: entry}
+        # The loader takes the first entity in the block as the model's own.
+        model["entities"] = {
+            source: model_entities.get(source) or {},
+            **{
+                entity: value
+                for entity, value in model_entities.items()
+                if entity not in {source, target}
+            },
+            target: entry,
+        }
         self._store_model(model_doc, wrapper, model_row.key, model)
-        relationship_id = f"relationship.{relationship_name}"
         if with_override:
             spec = {**current, "entities": [source, target], **options}
             if kind or "cardinality" not in current:
                 spec["cardinality"] = effective
-            relationship_id = str(spec.get("id") or relationship_id)
+            if "via" in current:
+                spec["via"] = list(fk_columns)
+            if "id" not in current and relationship_id != (
+                f"relationship.{_loader_slug(relationship_name)}"
+            ):
+                spec["id"] = relationship_id
             graph["relationships"] = {**relationships, relationship_name: spec}
             documents[source_row.source_path]["graph"] = graph
         elif source_row.source_path != model_row.source_path:
@@ -798,6 +866,30 @@ class ArchitectProject:
                 }
             },
         )
+
+    def _relationship_ids(
+        self, raw: dict[str, list[_RawObject]], relationships: dict[str, Any]
+    ) -> dict[str, tuple[str, str]]:
+        """The id of every relationship the package loads, mapped to its entity pair."""
+        ids: dict[str, tuple[str, str]] = {}
+        overridden: set[tuple[str, str]] = set()
+        for entry_name, entry in relationships.items():
+            pair = _as_list(dict(entry).get("entities")) if isinstance(entry, dict) else []
+            if len(pair) != 2:
+                continue
+            overridden.add((pair[0], pair[1]))
+            entry_id = str(dict(entry).get("id") or f"relationship.{_loader_slug(entry_name)}")
+            ids[entry_id] = (pair[0], pair[1])
+        for model_row in raw["models"]:
+            primary = self._primary_entity_for_model(model_row, raw["entities"])
+            for target in dict(model_row.spec.get("entities", {}) or {}):
+                if target in {primary, "bridge"} or (primary, str(target)) in overridden:
+                    continue
+                ids[_inferred_relationship_id(model_row.key, str(target))] = (
+                    primary,
+                    str(target),
+                )
+        return ids
 
     def _entity_model(
         self, raw: dict[str, list[_RawObject]], entity: _RawObject
@@ -857,6 +949,12 @@ class ArchitectProject:
             if existing_entity is not None
             else _slug(requested_entity, fallback=model_slug)
         )
+        if entity_slug == "bridge":
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "'bridge' is an option of a model's entities block, not an entity name; "
+                "choose another entity_key",
+            )
         model_path = (
             existing_model.source_path
             if existing_model is not None
@@ -1211,6 +1309,12 @@ class ArchitectProject:
         }
         if extra:
             metadata.update(deepcopy(extra))
+        # Rewrite only what changed, so untouched files keep their formatting.
+        documents = {
+            path: doc
+            for path, doc in documents.items()
+            if not path.exists() or doc != _yaml_load(path)
+        }
         updates = [
             ProjectFileUpdate(
                 self._relative(path),
