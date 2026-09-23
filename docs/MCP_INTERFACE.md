@@ -159,12 +159,16 @@ filters, or time scope, `plan` returns `low_confidence` with
 `plan` resolves a time window only when the question names exactly one, in a form it reads
 unambiguously: a year after "in", "for" or "during", consecutive years, a quarter or half with a
 year, a month or month range with a year, days with a year, an ISO date, or a relative window
-("last 7 days"). Anything else, such as a bound ("before 2017", "since March 2017"), a qualifier
-("early 2017"), a comparison year ("2017 vs 2016"), a numeric date (4/3/2017) or two windows at
-once, returns `low_confidence` with `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases it
-couldn't resolve, never a window narrowed or widened to the nearest form that parses. A metric
-that looks back over earlier periods can't take a bounded `time.start`; `plan` then keeps the
-end and returns `why.code="TIME_WINDOW_START_DROPPED"` with the start to filter by.
+("last 7 days"). "and" joins a range only after "between": "between March and May 2017" is a
+range, while "March and May 2017" names two months. Anything else, such as a bound ("before
+2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs 2016", "2017 over
+2016"), a numeric date (4/3/2017), two periods joined by "and", or two windows at once, returns
+`low_confidence` with `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases it couldn't resolve,
+never a window narrowed or widened to the nearest form that parses. A total over a window gets
+one bucket when one calendar grain holds the window; an explicit grain ("monthly") wins. When a
+draft can't take the window's start, because the metric looks back over earlier periods or the
+question compares with an earlier period, `plan` keeps the end and returns
+`why.code="TIME_WINDOW_START_DROPPED"` with the start to filter by.
 Use `detail="full"` only when you need alternatives or blocked drafts.
 
 Use `compile` and read its `explain` payload to review relationship paths before executing a
@@ -212,7 +216,8 @@ so re-running it is capped the same way. This is an MCP-only default; the HTTP `
 endpoint doesn't cap rows.
 
 Query patches returned by `discover`, `inspect` and `build-options` (at every builder step) contain
-only Query IR fields and validate as returned. They never carry the caller's `policy_context` or
+only Query IR fields and validate as returned, except that a temporal role offered at the
+`time` step may not be one the selected measure uses. They never carry the caller's `policy_context` or
 the tool's own arguments, so pass the policy context again on the call that uses a patch. A patch
 that selects a metric needing a time window carries the metric's default one, and a `percentile`
 aggregation option carries `p: 0.5`. These tools read Query IR only from their `query` argument,

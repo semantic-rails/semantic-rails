@@ -485,7 +485,10 @@ def test_plan_preserves_period_shift_intent_instead_of_validating_generic_fallba
         payload = plan_payload(runtime, intent="revenue this month vs last month", detail="full")
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    # The comparison needs last month's rows, so the draft can't start at this
+    # month; plan says which rows answer the question.
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
     assert payload["best"]["pattern"] == "inline_period_shift"
     assert payload["best"]["validation_ok"] is True
     query = payload["best"]["query_ir"]

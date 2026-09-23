@@ -76,6 +76,12 @@ _NEGATION_RE = re.compile(
     r"(?!only\b)(?P<value>[^,.;]+)",
     re.IGNORECASE,
 )
+# "for all stores but Brooklyn": "but" excludes after all/every/each/any.
+_ALL_BUT_RE = re.compile(
+    r"\b(?:all|every|each|any)\s+(?:[a-z-]+\s+){0,3}?(?P<marker>but)\s+(?!not\b)"
+    r"(?P<value>[^,.;]+)",
+    re.IGNORECASE,
+)
 # Ranking requests: "top 5 products", "the 3 lowest-selling products", "the 5
 # customers who spent the most", "which store had the most orders", "rank
 # stores by revenue". "At least 10 orders" is a threshold and "the 5 most
@@ -165,6 +171,9 @@ _SHARE_WORDS = frozenset(
         "tier",
     }
 )
+# Words that open the clause naming a ranking's order ("the store with the most
+# orders", "3 products that sold the least").
+_RELATIVE = frozenset({"having", "that", "which", "who", "whose", "with"})
 # Words that can't be the thing ranked ("which one is ...", "which have ...").
 _NOT_RANKED = frozenset(
     {
@@ -375,7 +384,7 @@ def intent_faithfulness_why(
             )
         )
 
-    negation_match = _NEGATION_RE.search(text)
+    negation_match = _NEGATION_RE.search(text) or _ALL_BUT_RE.search(text)
     if negation_match:
         excluded_text = negation_match.group("value").strip()
         positive_filters = _positive_filter_evidence(query, excluded_text)
@@ -522,7 +531,10 @@ def _ranking_request(text: str, nouns: frozenset[str] = frozenset()) -> dict[str
     highest revenue", revenue is what is measured, not what is ranked.
     """
 
-    words = _WORD_RE.findall(" ".join(str(text or "").lower().split()))
+    lowered = " ".join(str(text or "").lower().split())
+    # "top-3 stores" is "top 3 stores".
+    lowered = re.sub(r"\b(top|bottom|best|worst)-(\d+)\b", r"\1 \2", lowered)
+    words = _WORD_RE.findall(lowered)
     for index in range(len(words)):
         request = _ranking_at(words, index, nouns)
         if request is not None:
@@ -575,14 +587,24 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         superlative = _superlative(words, cursor)
         if superlative:
             cursor += 1
-        elif before != "the":
-            return None
         noun, end = _noun_phrase(words, cursor)
         direction = superlative or _superlative_after(words, end)
-        if not noun or not direction:
+        # "5 best-selling products", "the 3 stores with the least revenue",
+        # "3 stores with the highest revenue" (a relative clause names the order).
+        relative = end < len(words) and words[end] in _RELATIVE
+        qualified = bool(superlative) or before == "the" or relative
+        if not noun or not direction or not qualified:
             return None
         start = index - 1 if before == "the" else index
         return _ranking(words, start, end, count, direction, noun, False)
+    if word == "the" and index + 1 < len(words) and words[index + 1] not in _NOT_RANKED:
+        # "the store with the most orders", "the product that sold the least"
+        noun, end = _noun_phrase(words, index + 1)
+        if noun and words[end : end + 1] and words[end] in _RELATIVE:
+            direction = _superlative_after(words, end)
+            if direction:
+                limit = 1 if _singular(noun) == noun else None
+                return _ranking(words, index, end, limit, direction, noun, False)
     if word == "which":
         # "which store had the most orders", "which of the stores ...",
         # "which 2 stores ..."
@@ -600,6 +622,12 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         limit = count if count is not None else (1 if one or _singular(noun) == noun else None)
         return _ranking(words, index, end, limit, direction, noun, False)
     superlative = _superlative(words, index)
+    if superlative and _count(words, index + 1, years=True) is not None:
+        # "best 3 stores by revenue", "highest 5 products"
+        noun, end = _noun_phrase(words, index + 2)
+        if noun:
+            count = _count(words, index + 1, years=True)
+            return _ranking(words, index, end, count, superlative, noun, False)
     if superlative:
         # "the best-selling product", "the highest revenue month", "the best store"
         noun, end = _noun_phrase(words, index + 1)
@@ -886,6 +914,10 @@ def _value_phrases(config: Any) -> dict[str, list[tuple[Any, Any]]]:
                 if len(phrase) >= 2 and not _is_number(phrase):
                     out.setdefault(phrase, []).append((domain, value))
     return out
+
+
+def _value_names(value: Any) -> list[str]:
+    return [str(item) for item in (value.value, value.label, *(value.aliases or [])) if item]
 
 
 def _is_number(value: Any) -> bool:
@@ -1393,11 +1425,15 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
     for row in _catalog_rows(runtime._config):
         if str(getattr(row, "id", "")) in referenced:
             vocabulary.update(_tokens(_object_text(row)))
+    labels = _value_phrases(runtime._config)
     for node in _dict_nodes(query):
         if "field" in node and "value" in node:
             value = node.get("value")
             for item in value if isinstance(value, list) else [value]:
                 vocabulary.update(_tokens(str(item)))
+                # A filter on 'jaffle' accounts for the question's "food".
+                for _domain, row in labels.get(_plain(item), []):
+                    vocabulary.update(_tokens(" ".join(_value_names(row))))
     by_initial: dict[str, list[str]] = {}
     for known in vocabulary:
         by_initial.setdefault(known[:1], []).append(known)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -1225,7 +1226,7 @@ def _max_rows_arg(value: Any) -> int | None:
     whole = isinstance(value, int) and not isinstance(value, bool)
     if isinstance(value, float) and value.is_integer():
         whole = True
-    if isinstance(value, str) and value.strip().isdigit():
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
         whole = True
     if not whole or not 1 <= int(value) <= MCP_MAX_ROWS_LIMIT:
         raise _argument_error(

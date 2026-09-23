@@ -103,6 +103,13 @@ def _gap_kinds(adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any
         ("which product type sold the most", 1, "DESC", "type"),
         ("which 3 stores have the highest revenue", 3, "DESC", "stores"),
         ("highest revenue month in 2017", 1, "DESC", "month"),
+        # A relative clause names the order; a plural fixes no count.
+        ("the store with the most orders in 2017", 1, "DESC", "store"),
+        ("the store with the fewest orders", 1, "ASC", "store"),
+        ("Show the stores which have the highest revenue", None, "DESC", "stores"),
+        ("3 stores with the highest revenue", 3, "DESC", "stores"),
+        ("best 3 stores by revenue", 3, "DESC", "stores"),
+        ("top-3 stores by revenue", 3, "DESC", "stores"),
     ],
 )
 def test_ranking_requests_parse(text: str, limit: int | None, direction: str, noun: str) -> None:
@@ -140,8 +147,6 @@ def test_best_ranks_a_catalog_noun_only() -> None:
         # Recency is a window, not a ranking by a measure.
         "most recent month revenue",
         "revenue for the 5 most recent months",
-        # Revenue is what is measured here, not what is ranked.
-        "Show the stores which have the highest revenue",
         # A share of a population is a threshold.
         "revenue from top decile of customers by lifetime spend",
         "orders from the top 10 percent of customers",
@@ -517,3 +522,90 @@ def test_an_unrealizable_plan_keeps_the_hints_its_why_names(
     assert payload["status"] == "unrealizable"
     assert "compose_hints" in payload["why"]["message"]
     assert payload["compose_hints"]
+
+
+def test_a_ranked_period_needs_its_grain(adapter: SemanticLayerMCPAdapter) -> None:
+    daily = _query(
+        order_by=[{"field": "revenue_usd", "direction": "DESC"}],
+        limit=1,
+        time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017},
+    )
+    text = "which month had the highest revenue in 2017"
+    assert _gap_kinds(adapter, text, daily) == ["ranking_unrealized"]
+    monthly = {**daily, "time": {**daily["time"], "grain": "month"}}
+    assert _gap_kinds(adapter, text, monthly) == []
+
+
+def test_all_but_is_an_exclusion(adapter: SemanticLayerMCPAdapter) -> None:
+    inverted = _query(
+        ORDERS,
+        where=[{"field": STORE, "op": "=", "value": "Brooklyn"}],
+        time={"temporal_role": ORDER_TIME, "grain": "month", **YEAR_2017},
+    )
+    text = "monthly orders in 2017 for all stores but Brooklyn"
+    assert _gap_kinds(adapter, text, inverted) == ["negation_reversed"]
+
+
+@pytest.mark.parametrize(
+    ("text", "query"),
+    [
+        # Another operator on the value's dimension can't be judged, so it counts.
+        ("revenue in Brooklyn", _query(where=[{"field": STORE, "op": "LIKE", "value": "Brook%"}])),
+        # So does a filter that drops the value, without any grouping.
+        (
+            "total revenue excluding Brooklyn",
+            _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}]),
+        ),
+    ],
+)
+def test_other_filters_on_a_value_honor_it(
+    adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any]
+) -> None:
+    assert _gap_kinds(adapter, text, query) == []
+
+
+def test_the_longest_value_wins() -> None:
+    runtime = _stand_in_runtime(["New York", "York"])
+    query = _query(
+        {"as": "revenue", "expression": {"measure": "measure.shop.revenue"}},
+        where=[{"field": "dimension.region", "op": "=", "value": "New York"}],
+    )
+    assert _filter_value_gaps(runtime, "revenue in New York", query) == []
+
+
+def test_unmatched_terms_read_only_so_far(
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from semantic_rails.planner import faithfulness
+
+    monkeypatch.setattr(faithfulness, "_MAX_SCANNED_WORDS", 3)
+    # "weather" is the fifth distinct word, past the three scanned.
+    words = unmatched_intent_terms(adapter.runtime, "revenue by month for weather", _query())
+    assert words == []
+
+
+def test_a_typo_keeps_its_first_letter(adapter: SemanticLayerMCPAdapter) -> None:
+    assert unmatched_intent_terms(adapter.runtime, "evenue by month", _query()) == ["evenue"]
+
+
+def test_a_filtered_values_label_is_accounted_for(adapter: SemanticLayerMCPAdapter) -> None:
+    food = _query(ITEM_REVENUE, where=[{"field": PRODUCT_TYPE, "value": "jaffle"}])
+    assert unmatched_intent_terms(adapter.runtime, "item revenue for food products", food) == []
+
+
+def test_an_unresolved_window_stays_visible_beside_other_gaps(
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    both = _query(
+        where=[
+            {"field": STORE, "op": "=", "value": "Brooklyn"},
+            {"field": STORE, "op": "=", "value": "Chicago"},
+        ]
+    )
+    _draft_plan(monkeypatch, both)
+    payload = adapter.call_tool(
+        "plan", {"intent": "revenue for Brooklyn and Chicago since March 2017"}
+    )
+    kinds = [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert "contradictory_filters" in kinds and "time_window_unresolved" in kinds

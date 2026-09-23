@@ -60,6 +60,9 @@ FIRST_WEEK_OF_APRIL = {"start": "2017-04-01", "end": "2017-04-08"}
             "orders from December 30, 2016 to January 2, 2017",
             {"start": "2016-12-30", "end": "2017-01-03"},
         ),
+        ("orders between April 3 and April 5, 2017", {"start": "2017-04-03", "end": "2017-04-06"}),
+        ("revenue between March and May 2017", {"start": "2017-03-01", "end": "2017-06-01"}),
+        ("orders over 2000 in 2017", YEAR_2017),
     ],
 )
 def test_clear_calendar_windows_resolve(text: str, bounds: dict[str, str]) -> None:
@@ -121,6 +124,20 @@ def test_quantities_are_not_years(text: str) -> None:
         ("revenue on Feb 30, 2017", "feb 30, 2017"),
         ("revenue for Q2", "q2"),
         ("revenue in March", "in march"),
+        # "and" names two periods; only "between ... and ..." is a range.
+        ("revenue in March and May 2017", "march and may 2017"),
+        ("revenue in January and December 2017", "january and december 2017"),
+        ("orders on April 3 and April 5, 2017", "april 3 and april 5, 2017"),
+        ("revenue on April 3 and 10, 2017", "april 3 and 10, 2017"),
+        ("orders on March 30 and April 2, 2017", "march 30 and april 2, 2017"),
+        ("revenue for the 1st and 15th of April 2017", "15th of april 2017"),
+        # Two years compared, even where "over 2000" alone would be a count.
+        ("revenue in 2017 over 2016", "2017 over 2016"),
+        ("revenue in 2017 below 2016", "2017 below 2016"),
+        ("did we make more revenue in 2017 than in 2016", "2017 than in 2016"),
+        # A month after its year, and a fiscal year.
+        ("revenue in 2017 March", "in 2017"),
+        ("revenue in 2017/18", "in 2017"),
     ],
 )
 def test_unclear_windows_are_reported(text: str, phrase: str) -> None:
@@ -148,6 +165,10 @@ def test_unclear_windows_are_reported(text: str, phrase: str) -> None:
         ("daily orders from April 1 to April 7, 2017", "day"),
         ("revenue trend in 2017", "month"),
         ("revenue by month", "month"),
+        # An explicit grain beats the quarter the window names.
+        ("monthly revenue in Q2 2017", "month"),
+        ("weekly orders in Q2 2017", "week"),
+        ("revenue per day in Q2 2017", "day"),
     ],
 )
 def test_totals_over_a_window_get_one_bucket(text: str, grain: str) -> None:
@@ -250,3 +271,99 @@ def test_the_catalog_fallback_resolves_windows_the_same_way(
     assert (time["start"], time["end"], time["grain"]) == ("2017-03-01", "2017-04-01", "month")
     assert unclear["status"] == "low_confidence"
     assert unclear["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+
+
+def test_today_follows_the_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import date
+
+    from semantic_rails.planner import _base
+
+    class Tomorrow(date):
+        @classmethod
+        def today(cls) -> date:
+            return date(2026, 10, 1)
+
+    before = _time_bounds_from_text("orders today")
+    monkeypatch.setattr(_base, "date", Tomorrow)
+    assert _time_bounds_from_text("orders today") == {"start": "2026-10-01", "end": "2026-10-02"}
+    assert _time_bounds_from_text("revenue this month")["start"] == "2026-10-01"
+    assert before != _time_bounds_from_text("orders today")
+
+
+def test_a_draft_cannot_edit_the_cached_window() -> None:
+    first = _time_bounds_from_text("revenue in the last 3 months")
+    first["range"]["last"]["value"] = 99
+    assert _time_bounds_from_text("revenue in the last 3 months")["range"]["last"]["value"] == 3
+
+
+def test_a_long_question_is_read_only_so_far() -> None:
+    import time
+
+    started = time.perf_counter()
+    assert _time_bounds_from_text("revenue " * 20000 + "in 2017") == {}
+    assert time.perf_counter() - started < 2
+
+
+def test_a_period_comparison_that_drops_the_start_says_so(runtime_factory: Any) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime, intent="revenue by month in 2017 compared to last year", detail="query"
+        )
+    finally:
+        runtime.close()
+    time = _best(payload)["time"]
+    assert "start" not in time and time["end"] == "2018-01-01"
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
+    assert payload["why"]["details"]["requested_start"] == "2017-01-01"
+
+
+def test_only_the_callers_window_settles_an_unresolved_phrase(
+    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from semantic_rails.planner import plan as plan_module
+    from semantic_rails.planner._base import RuntimeCompositionDraft
+    from semantic_rails.planner.intent_ir import parse_intent
+    from semantic_rails.planner.orchestrator import CompositionResult
+
+    # A draft that carries a window of its own doesn't settle "since March 2017".
+    bounded = {
+        "version": 2,
+        "select": [{"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}}],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "year", **YEAR_2017},
+    }
+    monkeypatch.setattr(
+        plan_module,
+        "compose",
+        lambda runtime, intent: CompositionResult(
+            intent_ir=parse_intent(runtime, intent),
+            draft=RuntimeCompositionDraft(
+                query=bounded, resolved=[], rationale=[], interpreted_intent={}
+            ),
+            pattern="test",
+        ),
+    )
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="orders since March 2017", detail="query")
+    finally:
+        runtime.close()
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+
+
+def test_a_callers_start_is_never_dropped(runtime_factory: Any) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    caller = {"time": {"start": "2017-01-01", "end": "2018-01-01"}}
+    try:
+        payload = plan_payload(
+            runtime,
+            intent="month-over-month revenue growth by month in 2017",
+            partial_query=caller,
+            detail="query",
+        )
+    finally:
+        runtime.close()
+    assert _best(payload)["time"]["start"] == "2017-01-01"
+    assert (payload.get("why") or {}).get("code") != "TIME_WINDOW_START_DROPPED"

@@ -6,6 +6,7 @@ need from this module so the orchestrator stays thin.
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -353,8 +354,6 @@ def _explicit_grain(text: str) -> str:
     """Return the grain the intent explicitly cues ("" when absent)."""
     lowered = str(text or "").lower()
     terms = _runtime_composition_terms(text)
-    if re.search(r"\bq[1-4]\s*['-]?\s*20\d{2}\b", lowered):
-        return "quarter"
     for candidate in _TIME_UNITS:
         if (
             f"by {candidate}" in lowered
@@ -536,10 +535,29 @@ _BOUNDARY_BEFORE_RE = re.compile(
 # The tail or head of a range the resolver couldn't parse: "1-7 April 2017",
 # "from Jan 1 2017 to Mar 2017".
 _UNPARSED_RANGE_BEFORE_RE = re.compile(
-    rf"(?:\d|\b(?:{_MONTH_ALT}))\.?,?\s*(?:[-–—]|\b(?:to|through|thru|until|till|and)\b)\s*$"
+    rf"(?:\d(?:st|nd|rd|th)?|\b(?:{_MONTH_ALT}))\.?,?\s*"
+    rf"(?:[-–—&]|\b(?:to|through|thru|until|till|and|or)\b)\s*$"
 )
+# After a calendar phrase: the tail of a range ("... to Mar 2017"), a month
+# after its year ("2017 March"), or a fiscal-year suffix ("2017/18").
 _UNPARSED_RANGE_AFTER_RE = re.compile(
-    rf"^\s*(?:[-–—]|\b(?:to|through|thru|until|till)\b)\s*(?:\d|\b(?:{_MONTH_ALT})\b|today\b|now\b)"
+    rf"^\s*(?:(?:[-–—]|\b(?:to|through|thru|until|till)\b)\s*"
+    rf"(?:\d|\b(?:{_MONTH_ALT})\b|today\b|now\b)|/\s*\d{{2}}\b|(?:{_MONTH_ALT})\b)"
+)
+# "revenue in 2017 over 2016", "more revenue in 2017 than in 2016": a
+# comparison of two years, even where "over 2000" alone would be a quantity.
+_YEAR_COMPARISON_RE = re.compile(
+    r"\b20\d{2}\s+(?:over|above|below|under|than|exceeding|versus|vs\.?|against|"
+    r"compared\s+(?:to|with)|relative\s+to)\s+(?:in\s+|the\s+)?(?:year\s+)?20\d{2}\b"
+)
+# Range forms whose connector may be "and": "and" makes a range only after
+# "between" ("between March and May 2017"); "March and May 2017" names two
+# periods, which the planner reports rather than spanning.
+_AND_JOINABLE_FORMS: tuple[re.Pattern[str], ...] = (
+    _ISO_RANGE_RE,
+    _DAY_RANGE_RE,
+    _MONTH_YEAR_RANGE_RE,
+    _MONTH_RANGE_SHARED_YEAR_RE,
 )
 
 # Cues that ask for a series over time even without a named grain.
@@ -596,8 +614,7 @@ def _relative_window_value(raw: str) -> int:
         return 1
 
 
-def _current_period_bounds(unit: str) -> dict[str, str]:
-    today = date.today()
+def _current_period_bounds(unit: str, today: date) -> dict[str, str]:
     if unit == "day":
         return {"start": today.isoformat(), "end": (today + timedelta(days=1)).isoformat()}
     if unit == "week":
@@ -791,6 +808,10 @@ def _calendar_windows(
                 bounds = to_bounds(match)
             except (KeyError, ValueError):
                 bounds = {}
+            text = match.group(0)
+            joined = pattern in _AND_JOINABLE_FORMS and re.search(r"\band\b", text)
+            if joined and not text.startswith("between"):
+                bounds = {}
             boundary = _BOUNDARY_BEFORE_RE.search(before)
             if boundary:
                 # Report the bound with its word: "since march 2017".
@@ -807,7 +828,9 @@ def _calendar_windows(
     return accepted, rejected
 
 
-def _relative_window(lowered: str) -> tuple[tuple[int, int], dict[str, Any], str] | None:
+def _relative_window(
+    lowered: str, today: date
+) -> tuple[tuple[int, int], dict[str, Any], str] | None:
     """The first relative window in the text: (span, bounds, unit)."""
 
     candidates: list[tuple[tuple[int, int], dict[str, Any], str]] = []
@@ -825,10 +848,10 @@ def _relative_window(lowered: str) -> tuple[tuple[int, int], dict[str, Any], str
         candidates.append((match.span(), {"range": {"last": {"unit": "day", "value": 1}}}, "day"))
     match = _THIS_PERIOD_RE.search(lowered)
     if match:
-        candidates.append((match.span(), _current_period_bounds(match.group(1)), ""))
+        candidates.append((match.span(), _current_period_bounds(match.group(1), today), ""))
     match = _TODAY_RE.search(lowered)
     if match:
-        candidates.append((match.span(), _current_period_bounds("day"), "day"))
+        candidates.append((match.span(), _current_period_bounds("day", today), "day"))
     return min(candidates, key=lambda row: row[0][0]) if candidates else None
 
 
@@ -858,7 +881,6 @@ def _phrase(lowered: str, span: tuple[int, int]) -> str:
     return text
 
 
-@lru_cache(maxsize=512)
 def _time_window(text: str) -> _TimeWindow:
     """Resolve the question's time window, or report why it can't be resolved.
 
@@ -870,9 +892,21 @@ def _time_window(text: str) -> _TimeWindow:
     unset, never narrowed or widened to the nearest form that parses.
     """
 
-    lowered = str(text or "").lower()
+    # "today" and "this month" depend on the date, so it is part of the cache
+    # key; each caller gets its own copy, so a draft can't edit the cache.
+    lowered = str(text or "")[:_MAX_TIME_TEXT].lower()
+    return copy.deepcopy(_resolved_time_window(lowered, date.today()))
+
+
+# Only this much of a question is read for time phrases; the resolver's cost
+# grows with the square of the text.
+_MAX_TIME_TEXT = 2000
+
+
+@lru_cache(maxsize=512)
+def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     accepted, rejected = _calendar_windows(lowered)
-    relative = _relative_window(lowered)
+    relative = _relative_window(lowered, today)
     windows: list[tuple[tuple[int, int], dict[str, Any], str]] = [
         (span, bounds, "") for span, bounds in accepted
     ]
@@ -880,6 +914,8 @@ def _time_window(text: str) -> _TimeWindow:
         windows.append(relative)
     covered = [row[0] for row in windows]
     unresolved_spans = [span for span in rejected if not _overlaps(span, covered)]
+    # Two years compared ("2017 over 2016") are reported, whatever resolved.
+    unresolved_spans += [match.span() for match in _YEAR_COMPARISON_RE.finditer(lowered)]
     # Longest cues first, so a year inside "4/3/2017" isn't reported twice.
     for span in sorted(_time_cues(lowered), key=lambda item: item[0] - item[1]):
         if not _overlaps(span, covered + unresolved_spans):

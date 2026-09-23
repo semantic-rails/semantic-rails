@@ -123,7 +123,7 @@ def test_rerunning_the_echoed_query_stays_capped(adapter: SemanticLayerMCPAdapte
     assert echoed["limits"] == {"max_rows": 5000}
 
 
-@pytest.mark.parametrize("bad", ["many", 0, -1, True, 1.5, float("inf"), 1e30, 100_001])
+@pytest.mark.parametrize("bad", ["many", "²", "٣", 0, -1, True, 1.5, float("inf"), 1e30, 100_001])
 def test_max_rows_must_be_a_whole_number_in_range(
     adapter: SemanticLayerMCPAdapter, bad: Any
 ) -> None:

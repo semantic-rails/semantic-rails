@@ -238,7 +238,10 @@ def plan_payload(
     # asked. Downgrade instead of marking it ready to execute.
     time_why = (
         _unresolved_time_why(intent_str, partial_query)
-        or _start_dropped_why(best.get("start_dropped"))
+        or _start_dropped_why(
+            best.get("start_dropped")
+            or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
+        )
         if best_ok
         else None
     )
@@ -269,7 +272,8 @@ def plan_payload(
     if fallback_drift_why is not None:
         payload["why"] = fallback_drift_why
     elif faithfulness_why is not None:
-        payload["why"] = faithfulness_why
+        # One why, but an unresolved or shortened window stays visible.
+        payload["why"] = _with_time_gap(faithfulness_why, time_why)
     elif time_why is not None:
         payload["why"] = time_why
     elif conversion_why is not None:
@@ -439,6 +443,61 @@ def _codes(validation: dict[str, Any]) -> set[str]:
         str(issue.get("code", ""))
         for issue in list(validation.get("errors") or [])
         if isinstance(issue, dict)
+    }
+
+
+def _pattern_dropped_start(
+    intent: str, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> str:
+    """The question's window start a draft left out while keeping its end.
+
+    The lookback retry records the start it drops; a pattern that bounds a
+    period comparison drops it itself. Either way plan says so.
+    """
+
+    from ._base import _time_bounds_from_text  # noqa: WPS433
+
+    caller_time = (partial_query or {}).get("time")
+    if isinstance(caller_time, dict) and any(
+        caller_time.get(key) for key in ("start", "end", "range")
+    ):
+        return ""
+    expected = _time_bounds_from_text(intent)
+    raw_time = query.get("time")
+    time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
+    if expected.get("start") and not time.get("start") and time.get("end") == expected.get("end"):
+        return str(expected["start"])
+    return ""
+
+
+def _with_time_gap(why: dict[str, Any], time_why: dict[str, Any] | None) -> dict[str, Any]:
+    """Add a time why (unresolved window, dropped start) to a coverage-gap why."""
+
+    if time_why is None:
+        return why
+    details = dict(time_why.get("details") or {})
+    clause = ", ".join(details.get("unresolved_phrases") or []) or str(
+        details.get("requested_start", "")
+    )
+    gaps = [
+        *list((why.get("details") or {}).get("gaps") or []),
+        {
+            "kind": str(time_why.get("code", "")).lower(),
+            "clause": clause,
+            "message": str(time_why.get("message", "")),
+        },
+    ]
+    hints = list(why.get("recovery_hints") or [])
+    kinds = {str(hint.get("kind", "")) for hint in hints if isinstance(hint, dict)}
+    hints += [
+        hint
+        for hint in list(time_why.get("recovery_hints") or [])
+        if isinstance(hint, dict) and str(hint.get("kind", "")) not in kinds
+    ]
+    return {
+        **why,
+        "details": {**dict(why.get("details") or {}), "gap_count": len(gaps), "gaps": gaps},
+        "recovery_hints": hints,
     }
 
 

@@ -240,7 +240,10 @@ def test_plan_period_shift_comparison_is_not_window_bounded(runtime_factory) -> 
         payload = plan_payload(runtime, intent="revenue this month vs last month")
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    # The draft keeps this month's end without its start (the lookback needs
+    # last month's rows), and plan says which rows answer the question.
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
     assert payload["best"]["pattern"] == "inline_period_shift"
     time_spec = payload["best"]["query_ir"]["time"]
     assert "range" not in time_spec
