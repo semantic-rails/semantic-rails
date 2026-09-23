@@ -10,9 +10,11 @@ a dbt project, a loader or a person may own it. This module keeps that promise:
   and that nothing has changed it since. Anything it cannot prove is False.
 - :func:`missing_duckdb_relations` resolves relation names the way compiled SQL
   does, so schema-qualified relations and views count.
-- :func:`rebuild_lock` serializes rebuilds of one file across threads and
-  processes, :func:`hold_database` keeps a shared lock on the judged file so a
-  writer that starts meanwhile fails instead of losing its work, and
+- :func:`hold_database` opens a file as it is now on disk (not a copy this
+  process opened before it was replaced) and keeps a shared lock on it, so a
+  writer that starts meanwhile fails instead of losing its work;
+  :func:`rebuild_lock` serializes rebuilds of one file across threads and
+  processes, and
   :func:`publish_seed_database` replaces only the file that was judged and never
   overwrites a file that appeared while a seed was being built.
 """
@@ -24,6 +26,7 @@ import errno
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -60,7 +63,7 @@ _NO_HARD_LINK_ERRNOS = frozenset(
 
 def db_reseed_allowed() -> bool:
     """Whether the operator opted in to replacing a database the package's seed did not build."""
-    return os.environ.get(DB_RESEED_ENV, "").strip().lower() in {"1", "true", "yes"}
+    return os.environ.get(DB_RESEED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _quote_identifier(name: str) -> str:
@@ -79,23 +82,22 @@ def _rows(conn: Any, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any
     return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
 
 
-def missing_duckdb_relations(db_path: str, relations: Iterable[str]) -> list[str]:
-    """Return the relations the DuckDB file at ``db_path`` cannot resolve.
+def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
+    """Return the relations a DuckDB file cannot resolve, probed as compiled SQL reads them.
 
-    Each name is probed as compiled SQL would read it. Raises if the file cannot
-    be opened read-only.
+    ``db`` is a connection from :func:`hold_database`, or a path, which is opened
+    that way. Raises if the file cannot be opened read-only.
     """
-    conn = duckdb.connect(db_path, read_only=True)
-    try:
-        missing: list[str] = []
-        for relation in sorted(set(relations)):
-            try:
-                conn.execute(f"SELECT 1 FROM {_quote_relation(relation)} LIMIT 0")
-            except Exception:  # noqa: BLE001 — any binder/catalog error means "not resolvable"
-                missing.append(relation)
-        return missing
-    finally:
-        conn.close()
+    if isinstance(db, (str, os.PathLike)):
+        with hold_database(os.fspath(db)) as (conn, _identity):
+            return missing_duckdb_relations(conn, relations)
+    missing: list[str] = []
+    for relation in sorted(set(relations)):
+        try:
+            db.execute(f"SELECT 1 FROM {_quote_relation(relation)} LIMIT 0")
+        except Exception:  # noqa: BLE001 — any binder/catalog error means "not resolvable"
+            missing.append(relation)
+    return missing
 
 
 # Every persisted catalog object of the open file except the provenance table
@@ -181,15 +183,12 @@ def record_seed_provenance(db_path: str, package_id: str) -> None:
     """
     inventory: str | None
     try:
-        reader = duckdb.connect(db_path, read_only=True)
-        try:
+        with hold_database(db_path) as (reader, _identity):
             catalog = _catalog(reader)
             inventory = json.dumps(
                 {"catalog": catalog, "contents": _contents(reader, catalog, hashed=True)},
                 sort_keys=True,
             )
-        finally:
-            reader.close()
     except Exception:  # noqa: BLE001 — fail closed: no inventory, never "unchanged"
         inventory = None
     conn = duckdb.connect(db_path)
@@ -230,21 +229,30 @@ def _file_identity(db_path: str) -> tuple[Any, ...] | None:
     )
 
 
-def seeded_database_unchanged(db_path: str, package_id: str) -> bool:
+def seeded_database_unchanged(db_path: str, package_id: str, *, conn: Any = None) -> bool:
     """True only when ``package_id``'s seed built this file and nothing has changed it since.
 
-    Anything that prevents proving that (an unreadable file, a missing or foreign
-    provenance record, another inventory format, a failing catalog query) is
-    False. The cheap catalog and row counts are compared before any row is
-    hashed, and a False verdict is cached per file identity so a refused file is
-    not rescanned on every request. A True verdict is never cached: a stale one
-    could allow a rebuild over a change the identity missed.
+    ``conn`` is the :func:`hold_database` connection to judge through; without
+    one the file is opened that way. Anything that prevents proving it (an
+    unreadable file, a missing or foreign provenance record, another inventory
+    format, a failing catalog query) is False. The cheap catalog and row counts
+    are compared before any row is hashed, and a False verdict is cached per file
+    identity so a refused file is not rescanned on every request. A True verdict
+    is never cached: a stale one could allow a rebuild over a change the
+    identity missed.
     """
     identity = _file_identity(db_path)
     key = (identity, package_id)
     if identity is not None and key in _REFUSED:
         return False
-    verdict = _judge(db_path, package_id)
+    if conn is not None:
+        verdict = _judge(conn, package_id)
+    else:
+        try:
+            with hold_database(db_path) as (opened, _identity):
+                verdict = _judge(opened, package_id)
+        except Exception:  # noqa: BLE001 — an unreadable file is never provably ours
+            verdict = False
     if not verdict and identity is not None:
         if len(_REFUSED) >= _MAX_REFUSED:
             _REFUSED.clear()
@@ -252,11 +260,7 @@ def seeded_database_unchanged(db_path: str, package_id: str) -> bool:
     return verdict
 
 
-def _judge(db_path: str, package_id: str) -> bool:
-    try:
-        conn = duckdb.connect(db_path, read_only=True)
-    except Exception:  # noqa: BLE001 — an unreadable file is never provably ours
-        return False
+def _judge(conn: Any, package_id: str) -> bool:
     try:
         records = _rows(conn, f"SELECT format, package_id, inventory FROM {_PROVENANCE_TABLE}")
         if len(records) != 1:
@@ -278,8 +282,6 @@ def _judge(db_path: str, package_id: str) -> bool:
         return bool(_contents(conn, catalog, hashed=True) == recorded["contents"])
     except Exception:  # noqa: BLE001 — no provenance table: another tool built the file
         return False
-    finally:
-        conn.close()
 
 
 _LOCAL_LOCKS: dict[str, threading.Lock] = {}
@@ -294,12 +296,44 @@ def _rebuild_busy(db_path: str) -> SemanticLayerError:
     )
 
 
+def _lock_unavailable(db_path: str, exc: OSError) -> SemanticLayerError:
+    return SemanticLayerError(
+        "INVALID_CONFIG",
+        f"cannot take the rebuild lock for package.default_db '{db_path}': "
+        f"{exc.strerror or type(exc).__name__} ({exc.filename or 'lock directory'})",
+        details={"default_db": db_path, "reason": "rebuild_lock_unavailable"},
+    )
+
+
+def _lock_directory() -> str:
+    """This user's private directory for rebuild locks.
+
+    Another user must not be able to create it first (and lock everyone out) or
+    hold a lock in it, so it is per user, mode 0700, and must be a real
+    directory the user owns that no one else can write.
+    """
+    uid = os.getuid() if hasattr(os, "getuid") else None
+    name = "semantic-rails-db-locks" if uid is None else f"semantic-rails-db-locks-{uid}"
+    path = os.path.join(tempfile.gettempdir(), name)
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(path, 0o700)
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or (
+        uid is not None and (info.st_uid != uid or info.st_mode & 0o077)
+    ):
+        raise PermissionError(errno.EPERM, "not a private directory of this user", path)
+    return path
+
+
 @contextlib.contextmanager
 def rebuild_lock(db_path: str, *, timeout: float = REBUILD_LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
     """Serialize judging and rebuilding one database file across threads and processes.
 
-    The lock file lives in the system temp directory, keyed by the file's real
-    path, so it never lands in (or changes the revision of) a package.
+    The lock file lives in this user's private lock directory, keyed by the
+    file's real path, so it never lands in (or changes the revision of) a
+    package. Rebuilders under different users are not serialized; the judged
+    file check at publish still keeps either from replacing a file it did not
+    judge.
     """
     # Imported here: architect_transactions imports config validation, which
     # imports this module's importers.
@@ -312,9 +346,12 @@ def rebuild_lock(db_path: str, *, timeout: float = REBUILD_LOCK_TIMEOUT_SECONDS)
         raise _rebuild_busy(db_path)
     descriptor: int | None = None
     try:
-        lock_dir = os.path.join(tempfile.gettempdir(), "semantic-rails-db-locks")
-        os.makedirs(lock_dir, exist_ok=True)
-        descriptor = os.open(os.path.join(lock_dir, f"{key}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            descriptor = os.open(
+                os.path.join(_lock_directory(), f"{key}.lock"), os.O_CREAT | os.O_RDWR, 0o600
+            )
+        except OSError as exc:
+            raise _lock_unavailable(db_path, exc) from exc
         deadline = time.monotonic() + timeout
         while not _try_file_lock(descriptor):
             if time.monotonic() >= deadline:
@@ -335,17 +372,43 @@ def file_identity(db_path: str) -> tuple[int, int]:
     return (stat.st_dev, stat.st_ino)
 
 
-@contextlib.contextmanager
-def hold_database(db_path: str) -> Iterator[Any]:
-    """Hold a read-only connection (a shared lock) on ``db_path``.
+def _catalog_name(db_path: str) -> str:
+    """The catalog name DuckDB gives the file, so three-part names probe as in compiled SQL.
 
-    While it is held, a writer such as ``dbt build`` cannot open the file, so a
-    rebuild judged safe cannot drop a write that started after the judgement.
-    Raises if the file cannot be opened (for example while a writer holds it).
+    DuckDB names it after the file name up to the first dot, renaming ``temp``
+    and ``system``. The attaching connection's own catalog is ``memory``, so a
+    file named ``memory.*`` is attached under another name, and three-part names
+    through it read as missing (the runtime then refuses rather than guesses).
     """
-    conn = duckdb.connect(db_path, read_only=True)
+    name = os.path.basename(db_path).split(".")[0] or "database"
+    if name.lower() in {"temp", "system"}:
+        name = f"{name}_db"
+    return "memory_db" if name.lower() == "memory" else name
+
+
+@contextlib.contextmanager
+def hold_database(db_path: str) -> Iterator[tuple[Any, tuple[int, int]]]:
+    """Open the file at ``db_path`` read-only, as it is now, and hold it.
+
+    Yields the connection and the file's (device, inode). The file is attached
+    to a private in-memory connection rather than opened with
+    ``duckdb.connect``: DuckDB reuses one open database per path within a
+    process, so a runtime that opened this path before the file was replaced
+    would hand back the old file. The file must be the same one before and after
+    it is attached. While the connection is held, a writer in another process
+    (such as ``dbt build``) cannot open the file, so a rebuild judged safe cannot
+    drop a write that started after the judgement. Raises if the file cannot be
+    opened, including while a writer in this process holds it.
+    """
+    before = file_identity(db_path)
+    conn = duckdb.connect(":memory:")
     try:
-        yield conn
+        alias = _quote_identifier(_catalog_name(db_path))
+        conn.execute(f"ATTACH '{db_path.replace(chr(39), chr(39) * 2)}' AS {alias} (READ_ONLY)")
+        conn.execute(f"USE {alias}")
+        if file_identity(db_path) != before:
+            raise OSError(errno.EAGAIN, "the file was replaced while it was opened", db_path)
+        yield conn, before
     finally:
         conn.close()
 
@@ -364,6 +427,7 @@ def publish_seed_database(
     *,
     replace_existing: bool,
     judged: tuple[int, int] | None = None,
+    allow_overwrite: bool = False,
 ) -> None:
     """Move a finished seed build at ``tmp_path`` into place at ``db_path``.
 
@@ -373,7 +437,9 @@ def publish_seed_database(
     is published only if no file exists, atomically: a hard link (or, on
     Windows, a rename, which never replaces) fails when another process created
     the file meanwhile, and a ``CONFIG_CONFLICT`` tells the caller to judge
-    that file. Where neither is possible the publish fails closed.
+    that file. Where neither is possible (a filesystem without hard links) the
+    publish fails closed, unless ``allow_overwrite`` (the operator's opt-in)
+    accepts that a file created meanwhile is replaced.
     """
     if replace_existing:
         if judged is not None and file_identity(db_path) != judged:
@@ -390,10 +456,15 @@ def publish_seed_database(
         if exc.errno not in _NO_HARD_LINK_ERRNOS:
             raise
         if os.name != "nt":
+            if allow_overwrite:
+                os.replace(tmp_path, db_path)
+                return
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"cannot publish package.default_db '{db_path}' atomically: its filesystem "
-                "does not support hard links; keep the database on a local filesystem",
+                f"cannot build package.default_db '{db_path}' safely: its filesystem does not "
+                "support hard links, so a file created meanwhile could be overwritten. Keep "
+                f"the database on a local filesystem, or set {DB_RESEED_ENV}=1 to build it "
+                "anyway.",
                 details={"default_db": db_path, "reason": "atomic_publish_unavailable"},
             ) from exc
         try:

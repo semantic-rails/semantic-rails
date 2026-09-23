@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import os
 import subprocess
 import sys
 import threading
@@ -298,6 +299,9 @@ def test_a_writer_cannot_start_while_a_rebuild_is_in_progress(tmp_path: Path, mo
     _ensure_db(package_dir)
 
     assert len(attempts) == 1 and attempts[0].returncode != 0
+    assert "lock" in attempts[0].stderr.lower(), attempts[
+        0
+    ].stderr  # locked out, not another failure
     assert missing_duckdb_relations(str(db_path), ["dim_customers"]) == []
 
 
@@ -372,18 +376,32 @@ def test_publish_replaces_only_the_judged_file(tmp_path: Path) -> None:
     assert file_digest(db_path) == before
 
 
-def test_a_filesystem_without_hard_links_fails_closed(tmp_path: Path, monkeypatch) -> None:
-    def no_hard_links(src: str, dst: str) -> None:
-        raise OSError(errno.EPERM, "hard links not supported")
+def _no_hard_links(src: str, dst: str) -> None:
+    raise OSError(errno.EPERM, "hard links not supported")
 
-    monkeypatch.setattr(seed_provenance.os, "link", no_hard_links)
+
+def test_a_filesystem_without_hard_links_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    """Even the first build: a file created meanwhile could be overwritten."""
+    monkeypatch.setattr(seed_provenance.os, "link", _no_hard_links)
     package_dir = write_orders_package(tmp_path, schema="")
 
     with pytest.raises(SemanticLayerError) as excinfo:
         _ensure_db(package_dir)
 
     assert excinfo.value.details["reason"] == "atomic_publish_unavailable"
+    assert "SEMANTIC_RAILS_ALLOW_DB_RESEED" in str(excinfo.value)
     assert not (package_dir / "data" / "warehouse.duckdb").exists()
+    assert not list((package_dir / "data").glob("*.tmp"))
+
+
+def test_without_hard_links_the_opt_in_builds_the_database(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(seed_provenance.os, "link", _no_hard_links)
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_DB_RESEED", "on")
+    package_dir = write_orders_package(tmp_path, schema="")
+
+    _ensure_db(package_dir)
+
+    assert _order_count(package_dir)
     assert not list((package_dir / "data").glob("*.tmp"))
 
 
@@ -734,3 +752,118 @@ def test_a_foreign_database_missing_a_pipeline_source_is_refused(
 
     assert excinfo.value.details["missing_relations"] == ["email_sends"]
     assert file_digest(db_path) == before
+
+
+# -- a file replaced while this process still has the old one open ---------------
+
+
+def _probe(db_path: Path, sql: str) -> str:
+    """Query the file from another process, which shares no DuckDB instance with this one."""
+    code = (
+        "import duckdb, sys; c = duckdb.connect(sys.argv[1], read_only=True); "
+        "print(c.execute(sys.argv[2]).fetchall())"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(db_path), sql], capture_output=True, text=True, timeout=60
+    )
+    return result.stdout.strip() or result.stderr.strip()
+
+
+def test_a_replaced_file_is_judged_as_it_is_on_disk(tmp_path: Path) -> None:
+    """A served runtime keeps the old database open, and DuckDB would hand a new
+    connection in this process that copy. The check reads the file at the path."""
+    package_dir = write_orders_package(tmp_path, schema="")
+    db_path = package_dir / "data" / "warehouse.duckdb"
+    served = Runtime.from_path(str(package_dir))
+    try:
+        assert served.query(ORDER_COUNT_QUERY)["rows"]  # the placeholder build, held open
+        dbt_file = build_dbt_warehouse(tmp_path / "dbt_out" / "warehouse.duckdb")
+        os.replace(dbt_file, db_path)  # dbt's output moved into place
+        write_orders_package(tmp_path, schema="main_marts")
+        before = file_digest(db_path)
+
+        _ensure_db(package_dir)  # dbt's file has every relation: nothing to do
+
+        assert file_digest(db_path) == before
+    finally:
+        served.close()
+
+
+def test_a_write_to_a_rebuilt_file_survives_while_the_old_file_is_still_open(
+    tmp_path: Path,
+) -> None:
+    package_dir, db_path = _seeded_orders_only_package(tmp_path)
+    served = Runtime.from_path(str(package_dir))
+    try:
+        assert served.query(ORDER_COUNT_QUERY)["rows"]  # holds the first build
+        write_orders_package(tmp_path, schema="")  # now needs dim_customers
+        _ensure_db(package_dir)  # a legitimate rebuild into a new file
+        writer = (
+            "import duckdb, sys; c = duckdb.connect(sys.argv[1]); "
+            "c.execute('CREATE TABLE my_work AS SELECT 42 AS answer'); c.close()"
+        )
+        subprocess.run([sys.executable, "-c", writer, str(db_path)], check=True, timeout=60)
+
+        _ensure_db(package_dir)  # judged by the rebuilt file, which has dim_customers
+
+        assert _probe(db_path, "SELECT answer FROM my_work") == "[(42,)]"
+    finally:
+        served.close()
+
+
+# -- the rebuild lock ----------------------------------------------------------------
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="per-user lock directories are POSIX")
+def test_the_rebuild_lock_directory_must_be_private(tmp_path: Path, monkeypatch) -> None:
+    """Another user (or a sudo run) can't make every query fail by creating the
+    lock directory first, and only a rebuild takes the lock at all."""
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(seed_provenance.tempfile, "tempdir", str(temp_root))
+    shared = temp_root / f"semantic-rails-db-locks-{os.getuid()}"
+    shared.mkdir()
+    shared.chmod(0o755)
+    package_dir, db_path = _seeded_orders_only_package(tmp_path)
+
+    assert _order_count(package_dir)  # nothing missing: no lock taken
+
+    write_orders_package(tmp_path, schema="")  # now needs dim_customers: a rebuild
+    with pytest.raises(SemanticLayerError) as excinfo:
+        _ensure_db(package_dir)
+    assert excinfo.value.details["reason"] == "rebuild_lock_unavailable"
+    assert seeded_database_unchanged(str(db_path), "shop")  # left alone
+
+
+# -- errors before work ----------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need privileges on Windows")
+def test_a_broken_default_db_link_is_reported_not_built(tmp_path: Path) -> None:
+    package_dir = write_orders_package(tmp_path, schema="")
+    db_path = package_dir / "data" / "warehouse.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(tmp_path / "gone.duckdb", db_path)
+
+    with pytest.raises(SemanticLayerError) as excinfo:
+        _ensure_db(package_dir)
+
+    assert excinfo.value.details["reason"] == "default_db_broken_link"
+    assert not (tmp_path / "gone.duckdb").exists()
+
+
+def test_a_missing_seed_source_is_reported_before_the_database_is_scanned(
+    tmp_path: Path, monkeypatch
+) -> None:
+    package_dir, _db_path = _seeded_orders_only_package(tmp_path)
+    write_orders_package(tmp_path, schema="")  # now needs dim_customers
+    (package_dir / "data" / "seed.sql").unlink()
+    scans: list[Any] = []
+    monkeypatch.setattr(
+        runtime_module, "seeded_database_unchanged", lambda *args, **kwargs: scans.append(args)
+    )
+
+    with pytest.raises(SemanticLayerError, match="package.seed.source"):
+        _ensure_db(package_dir)
+
+    assert scans == []

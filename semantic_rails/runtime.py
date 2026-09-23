@@ -85,7 +85,6 @@ from .scope import classify_question
 from .seed_provenance import (
     DB_RESEED_ENV,
     db_reseed_allowed,
-    file_identity,
     hold_database,
     missing_duckdb_relations,
     publish_seed_database,
@@ -1439,31 +1438,54 @@ class Runtime:
             return
         package_id = self._config.package.package_id
         for _attempt in range(2):
+            if os.path.islink(self.db_path) and not os.path.exists(self.db_path):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"package.default_db '{self.db_path}' is a symbolic link to a file that "
+                    "does not exist; Semantic Rails does not build a database through a "
+                    "broken link. Fix or remove the link.",
+                    details={"default_db": self.db_path, "reason": "default_db_broken_link"},
+                )
             if not os.path.exists(self.db_path):
                 try:
-                    self._publish_seed(replace_existing=False)
+                    self._publish_seed(
+                        self._seed_source(),
+                        replace_existing=False,
+                        allow_overwrite=db_reseed_allowed(),
+                    )
                 except SemanticLayerError as exc:
                     if exc.details.get("reason") != "default_db_created_concurrently":
                         raise
                     continue  # judge the file another process just published
                 return
-            # One rebuilder at a time; each holds the file it judges (a shared lock)
-            # until its rebuild is published, so no writer can start in between.
+            try:
+                with hold_database(self.db_path) as (view, _identity):
+                    missing = missing_duckdb_relations(view, self._expected_tables())
+            except Exception as exc:
+                raise self._unreadable_db_error() from exc
+            if not missing:
+                return
+            # One rebuilder at a time; each holds the file it judges (a shared
+            # lock) until its rebuild is published, so no writer can start in
+            # between, and re-checks it: another rebuilder may have finished.
             with rebuild_lock(self.db_path), contextlib.ExitStack() as held:
                 try:
-                    held.enter_context(hold_database(self.db_path))
-                    judged = file_identity(self.db_path)
+                    view, judged = held.enter_context(hold_database(self.db_path))
                 except Exception as exc:
                     raise self._unreadable_db_error() from exc
-                missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+                missing = missing_duckdb_relations(view, self._expected_tables())
                 if not missing:
                     return
                 opted_in = db_reseed_allowed()
-                if not opted_in and not seeded_database_unchanged(self.db_path, package_id):
+                source = self._seed_source()  # before the costly judgement
+                if not opted_in and not seeded_database_unchanged(
+                    self.db_path, package_id, conn=view
+                ):
                     raise self._foreign_db_error(missing)
                 if not _PUBLISH_KEEPS_WRITERS_OUT and not opted_in:
                     raise self._foreign_db_error(missing, windows=True)
                 self._publish_seed(
+                    source,
                     replace_existing=True,
                     judged=judged,
                     release=None if _PUBLISH_KEEPS_WRITERS_OUT else held.close,
@@ -1475,13 +1497,8 @@ class Runtime:
             details={"default_db": self.db_path, "reason": "default_db_created_concurrently"},
         )
 
-    def _publish_seed(
-        self,
-        *,
-        replace_existing: bool,
-        judged: tuple[int, int] | None = None,
-        release: Callable[[], None] | None = None,
-    ) -> None:
+    def _seed_source(self) -> str:
+        """The seed source's resolved path; a missing one is a clear INVALID_CONFIG."""
         seed = self._config.package.seed
         src = self._resolve_asset_path(seed.source, kind="seed_source")
         if not os.path.exists(src):
@@ -1496,6 +1513,18 @@ class Runtime:
                 f"'{package_candidate}' (relative to the package) and "
                 f"'{src}'; create the file or fix package.seed.source",
             )
+        return src
+
+    def _publish_seed(
+        self,
+        src: str,
+        *,
+        replace_existing: bool,
+        judged: tuple[int, int] | None = None,
+        release: Callable[[], None] | None = None,
+        allow_overwrite: bool = False,
+    ) -> None:
+        seed = self._config.package.seed
         tmp_path = build_seed_database(
             self.db_path,
             kind=seed.kind,
@@ -1510,7 +1539,11 @@ class Runtime:
             if release is not None:
                 release()
             publish_seed_database(
-                tmp_path, self.db_path, replace_existing=replace_existing, judged=judged
+                tmp_path,
+                self.db_path,
+                replace_existing=replace_existing,
+                judged=judged,
+                allow_overwrite=allow_overwrite,
             )
         finally:
             with contextlib.suppress(OSError):

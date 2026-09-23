@@ -6,6 +6,7 @@
   `INVALID_CONFIG` with `details.missing_relations` and leaves the file alone;
   `SEMANTIC_RAILS_ALLOW_DB_RESEED=1` allows the replacement as an explicit
   opt-in. A file another process is writing is never replaced, and databases
-  holding macros or user-defined types, on filesystems without hard links, or
-  on Windows are reported rather than rebuilt automatically. Databases built by
-  earlier releases record no seed provenance: delete one once to rebuild it.
+  holding macros or user-defined types, or on Windows, are reported rather than
+  rebuilt automatically. On a filesystem without hard links the runtime does not
+  build the database at all without the opt-in. Databases built by earlier
+  releases record no seed provenance: delete one once to rebuild it.

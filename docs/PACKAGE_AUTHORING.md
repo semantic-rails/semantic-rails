@@ -360,9 +360,12 @@ defaults:
   later package version reads relations the file lacks, the runtime rebuilds
   it, but only when this package's seed built it and nothing has changed it
   since. It errs on the side of keeping the file: a database holding macros or
-  user-defined types (which it cannot fingerprint completely), a database on a
-  filesystem without hard links, and on Windows any existing database are
-  reported rather than rebuilt.
+  user-defined types (which it cannot fingerprint completely), and on Windows
+  any existing database, are reported rather than rebuilt. On a filesystem
+  without hard links (FAT and exFAT drives, many network, FUSE and cloud-sync
+  folders) the runtime cannot publish a database without risking an overwrite,
+  so it does not build one there at all, not even the first time: keep the
+  database on a local disk, or set `SEMANTIC_RAILS_ALLOW_DB_RESEED=1`.
 - `external`: another tool (for example `dbt build` with dbt-duckdb) builds and
   owns the file. It takes no `source` or `post_sql`, and the runtime only reads
   the file: a missing file is an `INVALID_CONFIG` error, never a rebuild.
