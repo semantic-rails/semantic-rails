@@ -34,7 +34,7 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .compiler import compile_query
+from .compiler import BoundQuery, bind_query, compile_query
 from .config import (
     ensure_contained_package_path,
     get_package_config,
@@ -65,7 +65,7 @@ from .diagnostics import (
 )
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
-from .expressions import expr_to_dict
+from .expressions import collect_object_references, expr_to_dict
 from .fanout import build_hop_profile
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
@@ -360,114 +360,20 @@ def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
     return [history_warning_payload(paths=history_paths)]
 
 
-def _collect_expr_object_ids(expr_payload: dict[str, Any]) -> list[str]:
-    object_ids: list[str] = []
-    kind = str(expr_payload.get("kind", "") or "")
-    if "measure" in expr_payload:
-        object_ids.append(str(expr_payload.get("measure", "")))
-    if "metric" in expr_payload:
-        object_ids.append(str(expr_payload.get("metric", "")))
-    for key in ("left", "right", "input", "base", "converted", "value", "null_value"):
-        child = expr_payload.get(key)
-        if isinstance(child, dict):
-            object_ids.extend(_collect_expr_object_ids(child))
-    for key in ("args",):
-        for child in list(expr_payload.get(key, []) or []):
-            if isinstance(child, dict):
-                object_ids.extend(_collect_expr_object_ids(child))
-    for item in list(expr_payload.get("whens", []) or []):
-        if isinstance(item, dict):
-            if isinstance(item.get("when"), dict):
-                object_ids.extend(_collect_expr_object_ids(dict(item["when"])))
-            if isinstance(item.get("then"), dict):
-                object_ids.extend(_collect_expr_object_ids(dict(item["then"])))
-    if kind == "metric_predicate":
-        object_ids.append(str(expr_payload.get("entity", "")))
-    return [item for item in object_ids if item]
+def _collect_expr_object_ids(expr_payload: dict[str, Any], config: Any = None) -> list[str]:
+    return collect_object_references(expr_payload, config)
 
 
-_OBJECT_REF_KEYS = ("measure", "metric", "field", "entity", "basis_metric")
-
-
-def _collect_spec_object_ids(spec: Any) -> list[str]:
-    """Object ids referenced anywhere inside a recipe's filter/window spec.
-
-    These specs are free-form nested mappings (``where`` entries, nested
-    ``metric_filters``, partition keys), so this walks them generically
-    rather than enumerating shapes — an unrecognized shape should
-    over-collect and deny, never under-collect and allow.
-    """
-    object_ids: list[str] = []
-    if isinstance(spec, dict):
-        for key, value in spec.items():
-            if key in _OBJECT_REF_KEYS and isinstance(value, str) and value:
-                object_ids.append(value)
-            else:
-                object_ids.extend(_collect_spec_object_ids(value))
-    elif isinstance(spec, (list, tuple)):
-        for item in spec:
-            object_ids.extend(_collect_spec_object_ids(item))
-    return object_ids
-
-
-def _expand_object_id_closure(config: Any, object_ids: list[str]) -> list[str]:
-    """Follow metric recipes so a metric cannot launder a governed measure.
-
-    Policies are declared against the objects an author governs — usually
-    measures. A query that names a *metric* touches those measures just as
-    surely, but names none of them, so matching on the query's syntactic
-    ids alone lets any curated metric walk straight through ``deny``,
-    ``redact`` and ``metric_constraint``. Enforcement therefore runs over
-    the transitive closure: every measure, metric and entity the named
-    objects actually resolve to.
-    """
-    recipes = {row.id: row for row in config.metric_recipes}
-    seen: set[str] = set()
-    ordered: list[str] = []
-    pending = list(object_ids)
-    while pending:
-        object_id = pending.pop(0)
-        if not object_id or object_id in seen:
-            continue
-        seen.add(object_id)
-        ordered.append(object_id)
-        recipe = recipes.get(object_id)
-        if recipe is None:
-            continue
-        # Recipes can reference other recipes; the `seen` guard makes a
-        # cyclic or diamond-shaped definition terminate.
-        pending.extend(_collect_expr_object_ids(expr_to_dict(recipe.expression)))
-        pending.extend(_collect_spec_object_ids(recipe.filter_spec))
-        pending.extend(_collect_spec_object_ids(recipe.window_spec))
-        if recipe.temporal_role:
-            pending.append(recipe.temporal_role)
-    return ordered
+def _collect_spec_object_ids(spec: Any, config: Any = None) -> list[str]:
+    return collect_object_references(spec, config)
 
 
 def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
-    """Object ids a query touches, for policy matching.
-
-    Pass ``config`` wherever the result gates access — without it the
-    result is only the ids the caller spelled out, which is not what the
-    query reads. See :func:`_expand_object_id_closure`.
-    """
+    """Authorization identities come from actual compiler binding, never strings."""
+    if config is not None:
+        return sorted(bind_query(config, None, payload).object_ids)
     query = normalize_query(payload)
-    object_ids: list[str] = []
-    for select_item in query.select:
-        if select_item.expression is not None:
-            object_ids.extend(_collect_expr_object_ids(expr_to_dict(select_item.expression)))
-    for metric_filter in query.metric_filters:
-        if metric_filter.expression is not None:
-            object_ids.extend(_collect_expr_object_ids(expr_to_dict(metric_filter.expression)))
-    object_ids.extend(list(query.group_by))
-    object_ids.extend(item.field for item in query.where)
-    if query.time is not None and query.time.temporal_role:
-        object_ids.append(query.time.temporal_role)
-    object_ids.extend(list(dict(query.temporal_role_overrides).values()))
-    deduped = list(dict.fromkeys(item for item in object_ids if item))
-    if config is None:
-        return deduped
-    return _expand_object_id_closure(config, deduped)
+    return collect_object_references(query.to_dict())
 
 
 def _policy_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1739,7 +1645,11 @@ class Runtime:
         return json.dumps(payload, sort_keys=True, default=str)
 
     def _compile(
-        self, payload: dict[str, Any], *, policy_context: dict[str, str]
+        self,
+        payload: dict[str, Any],
+        *,
+        policy_context: dict[str, str],
+        binding: BoundQuery | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         normalized = normalize_query(payload).to_dict()
@@ -1775,7 +1685,7 @@ class Runtime:
                 "compile_stats": stats,
                 "explain": replace(cached.compiled["explain"], compile_stats=stats),
             }
-        compiled = compile_query(self._config, self.registry, payload)
+        compiled = compile_query(self._config, self.registry, payload, binding=binding)
         stats = {
             **dict(compiled.get("compile_stats", {}) or {}),
             "cache_hit": False,
@@ -1800,7 +1710,8 @@ class Runtime:
             refusal = _scope_refusal(payload)
             if refusal is not None:
                 raise refusal
-            object_ids = _query_object_ids(payload, self._config)
+            binding = bind_query(self._config, self.registry, payload)
+            object_ids = binding.object_ids
             policy_effects = enforce_query_policies(
                 self._config,
                 object_ids,
@@ -1809,7 +1720,7 @@ class Runtime:
                 roles=policy_context.get("roles", []),
                 query=payload,
             )
-            compiled = self._compile(payload, policy_context=policy_context)
+            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
             report = ValidationReport(
                 version=2,
                 ok=True,
@@ -1900,17 +1811,18 @@ class Runtime:
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
-        object_ids = _query_object_ids(payload, self._config)
-        policy_effects = enforce_query_policies(
-            self._config,
-            object_ids,
-            environment=str(policy_context.get("environment", "")),
-            audience=str(policy_context.get("audience", "")),
-            roles=policy_context.get("roles", []),
-            query=payload,
-        )
         try:
-            compiled = self._compile(payload, policy_context=policy_context)
+            binding = bind_query(self._config, self.registry, payload)
+            object_ids = binding.object_ids
+            policy_effects = enforce_query_policies(
+                self._config,
+                object_ids,
+                environment=str(policy_context.get("environment", "")),
+                audience=str(policy_context.get("audience", "")),
+                roles=policy_context.get("roles", []),
+                query=payload,
+            )
+            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
@@ -1956,17 +1868,18 @@ class Runtime:
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
-        object_ids = _query_object_ids(payload, self._config)
-        policy_effects = enforce_query_policies(
-            self._config,
-            object_ids,
-            environment=str(policy_context.get("environment", "")),
-            audience=str(policy_context.get("audience", "")),
-            roles=policy_context.get("roles", []),
-            query=payload,
-        )
         try:
-            compiled = self._compile(payload, policy_context=policy_context)
+            binding = bind_query(self._config, self.registry, payload)
+            object_ids = binding.object_ids
+            policy_effects = enforce_query_policies(
+                self._config,
+                object_ids,
+                environment=str(policy_context.get("environment", "")),
+                audience=str(policy_context.get("audience", "")),
+                roles=policy_context.get("roles", []),
+                query=payload,
+            )
+            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)

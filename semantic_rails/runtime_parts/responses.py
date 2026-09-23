@@ -4,7 +4,7 @@ from dataclasses import asdict
 from typing import Any
 
 from ..dialects import dialect_for_warehouse
-from ..expressions import expr_to_dict
+from ..expressions import collect_object_references, expr_to_dict
 
 _VALID_VERBOSITIES: tuple[str, ...] = ("minimal", "compact", "full")
 _VALID_SQL_PROFILES: tuple[str, ...] = ("audit", "compact", "debug", "off")
@@ -120,28 +120,7 @@ def apply_response_verbosity(
 
 
 def _collect_expr_object_ids(expr_payload: dict[str, Any]) -> list[str]:
-    object_ids: list[str] = []
-    kind = str(expr_payload.get("kind", "") or "")
-    if "measure" in expr_payload:
-        object_ids.append(str(expr_payload.get("measure", "")))
-    if "metric" in expr_payload:
-        object_ids.append(str(expr_payload.get("metric", "")))
-    for key in ("left", "right", "input", "base", "converted", "value", "null_value"):
-        child = expr_payload.get(key)
-        if isinstance(child, dict):
-            object_ids.extend(_collect_expr_object_ids(child))
-    for child in list(expr_payload.get("args", []) or []):
-        if isinstance(child, dict):
-            object_ids.extend(_collect_expr_object_ids(child))
-    for item in list(expr_payload.get("whens", []) or []):
-        if isinstance(item, dict):
-            if isinstance(item.get("when"), dict):
-                object_ids.extend(_collect_expr_object_ids(dict(item["when"])))
-            if isinstance(item.get("then"), dict):
-                object_ids.extend(_collect_expr_object_ids(dict(item["then"])))
-    if kind == "metric_predicate":
-        object_ids.append(str(expr_payload.get("entity", "")))
-    return [item for item in object_ids if item]
+    return collect_object_references(expr_payload)
 
 
 def _object_label_maps(config: Any) -> dict[str, dict[str, Any]]:
