@@ -744,6 +744,10 @@ def _check_segment_shape(
     for key in sorted(membership_spellings & set(spec)):
         add_error(errors, f"{label} has {key!r} outside membership: — {_membership_fix(key)}")
     top_level = {key: value for key, value in spec.items() if key not in membership_spellings}
+    if "meta" in top_level:
+        # The fuzzy match would suggest `metric`, the legacy alias of basis_metric.
+        del top_level["meta"]
+        add_error(errors, f"{label} has unknown key 'meta' — segments don't read meta:; remove it")
     _unknown_key_errors(top_level, _SEGMENT_KEYS, label=label, errors=errors)
     membership = spec.get("membership")
     if not isinstance(membership, dict):
@@ -1440,13 +1444,16 @@ def _validate_split_package(
 def _loader_metrics_and_segments(path: Path) -> dict[str, Any]:
     """The metric and segment specs the loader reads from a package directory.
 
-    Uses the loader's own merge, so the shape checks see every supported layout:
-    specs in package.yml, root metrics.yml and segments.yml, and files under
-    metrics/ and segments/ (a mapping, a `metric:`/`segment:` wrapper or a bare
-    spec). A package the merge can't read fails the load step instead.
+    Uses the loader's own source capture and merge, so the shape checks see every
+    supported layout (specs in package.yml, root metrics.yml and segments.yml, and
+    files under metrics/ and segments/: a mapping, a `metric:`/`segment:` wrapper or
+    a bare spec), skip the directories the loader skips, and check the copy the
+    loader keeps when a key is defined twice. A package the merge can't read fails
+    the load step instead.
     """
     try:
-        merged = _merge_package_dir(str(path))
+        source = capture_package_source(path)
+        merged = _merge_package_dir(source.source_path, captured=source)
     except (SemanticLayerError, yaml.YAMLError, OSError, TypeError, ValueError, AttributeError):
         return {"metrics": {}, "segments": {}}
     return {"metrics": merged.get("metrics"), "segments": merged.get("segments")}

@@ -7,8 +7,9 @@
   ignored. Unknown keys inside a segment's `membership:` block are now rejected
   in every package, and `filters` or `dimension_filters` point to
   `membership.where`. Directory-package metrics also get the checks single-file
-  packages already had, so an unknown `kind:` or a missing required field now
-  fails validation. A package that is not `schema_strict` now fails on
+  packages already had: an unknown `kind:` now fails validation, and a missing
+  required field gets a clearer error. A package that is not `schema_strict` now
+  fails on
   `preferred_filter_ops` on a metric, or on `clock_variants`, `comparison_peers`
   or `preferred_filter_ops` on a segment, as a single-file package already did.
   `mf2sr` writes `grain_to_date` on a cumulative metric, which the loader

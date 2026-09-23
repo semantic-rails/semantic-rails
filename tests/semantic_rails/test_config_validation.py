@@ -2108,7 +2108,18 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
             lambda segment: segment["membership"].update(
                 metric_filter=segment["membership"].pop("metric_filters")
             ),
-            "membership has unknown key 'metric_filter'",
+            "membership has unknown key 'metric_filter' — the loader reads "
+            "membership.metric_filters only",
+        ),
+        (
+            lambda segment: segment["membership"].update(
+                filter=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+            ),
+            "membership has unknown key 'filter' — the loader reads membership.where only",
+        ),
+        (
+            lambda segment: segment.update(meta={"owner_team": "growth"}),
+            "has unknown key 'meta' — segments don't read meta:",
         ),
         (
             lambda segment: segment["membership"].update(
@@ -2125,7 +2136,14 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
             "has 'filters' outside membership: — the loader reads membership.where only",
         ),
     ],
-    ids=["where-outside-membership", "membership-typo", "dimension-filters", "top-level-filters"],
+    ids=[
+        "where-outside-membership",
+        "membership-typo",
+        "membership-filter",
+        "segment-meta",
+        "dimension-filters",
+        "top-level-filters",
+    ],
 )
 def test_directory_validation_rejects_unknown_segment_keys(
     package_config_factory, mutate, expected
@@ -2261,3 +2279,72 @@ def test_key_checks_cover_every_layout_the_loader_reads(
     else:
         assert len(errors) == 1, errors
         assert f"unknown key '{extra_key}'" in errors[0]
+
+
+def _jaffle_with_duplicate_metric(package_config_factory, *, typo_in: str) -> Path:
+    """Define sales.aov_usd again in metrics/zz_extra.yml, with a typo in one copy.
+
+    The loader merges files in sorted path order, so metrics/zz_extra.yml wins
+    over metrics/core/core_metrics.yml.
+    """
+    _, package_dir = package_config_factory("jaffle_shop")
+    package_dir = Path(package_dir)
+    core = package_dir / "metrics" / "core" / "core_metrics.yml"
+    doc = yaml.safe_load(core.read_text(encoding="utf-8"))
+    extra = {"metrics": {"sales.aov_usd": dict(doc["metrics"]["sales.aov_usd"])}}
+    target = extra if typo_in == "kept" else doc
+    target["metrics"]["sales.aov_usd"]["valeu_type"] = "number"
+    _write_yaml(core, doc)
+    _write_yaml(package_dir / "metrics" / "zz_extra.yml", extra)
+    return package_dir
+
+
+@pytest.mark.parametrize(("typo_in", "expected_errors"), [("kept", 1), ("discarded", 0)])
+def test_key_checks_follow_the_copy_the_loader_keeps(
+    package_config_factory, typo_in, expected_errors
+):
+    package_dir = _jaffle_with_duplicate_metric(package_config_factory, typo_in=typo_in)
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == expected_errors, errors
+
+
+def test_key_checks_skip_the_directories_the_loader_skips(package_config_factory):
+    package_dir = _jaffle_with_segment(
+        package_config_factory,
+        lambda segment: segment.update(
+            where=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+        ),
+    )
+    stale = {"segments": {"stale": {"entity": "customer", "membership": {"filters": []}}}}
+    for skipped in ("__pycache__", ".compiled"):
+        _write_yaml(package_dir / "segments" / skipped / "stale.yml", stale)
+    (package_dir / "segments" / ".compiled" / "broken.yml").write_text(
+        "segments: [unclosed", encoding="utf-8"
+    )
+
+    errors = validate_runtime_package(package_dir)
+
+    # The loader never reads the skipped directories: a stale spec there adds no key
+    # error, and a broken file there doesn't turn the key checks off. (The per-file
+    # YAML readers still report the broken file, as they did before.)
+    assert not any("'stale'" in error for error in errors), errors
+    assert any(
+        "segment 'customer.high_value' has 'where' outside membership:" in error for error in errors
+    ), errors
+
+
+def test_key_checks_accept_a_relative_package_path(package_config_factory, monkeypatch):
+    package_dir = _jaffle_with_segment(
+        package_config_factory,
+        lambda segment: segment.update(
+            where=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+        ),
+    )
+    monkeypatch.chdir(package_dir.parent)
+
+    errors = validate_runtime_package(Path(package_dir.name))
+
+    assert len(errors) == 1, errors
+    assert "has 'where' outside membership:" in errors[0]
