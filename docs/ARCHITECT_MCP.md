@@ -126,23 +126,33 @@ Python callers use `ArchitectProject.upsert_relationship`.
 `remove_object` removes a model, dimension, time, measure, metric, segment, relationship, example or
 test, and keeps its YAML under `.architect/archive/<id>/removed.yml` (with the `reason` you give).
 Pass `model` when a dimension, time or measure key is on several models, and name a relationship
-the way `upsert_relationship` reports it (`orders_customer`). Removing a model also removes its
-entity, other models' references to that entity, and `graph.relationships` entries naming it. A
-file left with nothing in it is deleted.
+the way `upsert_relationship` reports it (`orders_customer`, or its id). Every definition of the key
+goes, including ones another file shadows, so an older definition can't take its place. Removing a
+model also removes its entity, its relationships, other models' references to that entity, and
+`graph.relationships` entries naming it. A file left with nothing in it is deleted. The exception
+is a root file such as `metrics.yml`, which stays behind empty so it keeps masking `package.yml`'s
+block.
 
-Every removal is checked against the package before anything is written. Measures, metrics,
-segments, examples and tests are compiled as they are and as they would be, without querying the
-warehouse. A removal that would stop a measure, metric or segment from compiling is refused and
-names them, so remove or change those first. The report's `impact` lists the examples and tests the
-removal breaks (`broken`), the authored files that still mention a removed id (`references`), and
-the behaviour changes against the current package (`behavior`, as in `impact_project`). Preview with
-`dry_run: true`; the usual mutation contract applies.
+Every removal is checked against the package before anything is written, without querying the
+warehouse. Measures, metrics (also over their time axis), segments, examples and tests are compiled
+as they are and as they would be. A removal that would stop a measure, metric or segment from
+compiling is refused and names them, so remove or change those first. The report's `impact` has
+four parts:
+
+- `broken`: the examples and tests the removal breaks;
+- `rerouted`: queries that still compile, but to different SQL (a join that would take another
+  path);
+- `references`: the authored files that still mention a removed id;
+- `behavior`: the behaviour changes against the current package, as in `impact_project`.
+
+Preview with `dry_run: true`; the usual mutation contract applies, and a retried removal replays.
 
 `upsert_model` and `upsert_metric` merge into an existing object by default. With `replace: true`,
 `upsert_metric` writes `spec` as the whole metric, and `upsert_model` rewrites the model from its
-arguments, keeping only its entity references and calendar. The dimensions, times and measures it
-drops are reported as `dropped` and checked the same way as a removal. `upsert_model` also takes a
-`label`.
+arguments, keeping only its entity references and calendar. The dimensions, times and measures a
+replace drops are reported as `dropped`, and its other dropped fields as `dropped_fields`. A replace
+is checked the same way as a removal. `upsert_model` doesn't manage fact models (`kind: fact`), and
+it takes a `label`.
 
 ## Package Calendar
 

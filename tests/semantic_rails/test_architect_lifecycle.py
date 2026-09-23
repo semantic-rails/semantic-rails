@@ -180,6 +180,7 @@ def test_mcp_session_previews_then_removes_a_dimension_and_its_checks(workspace:
     assert not (_package(workspace) / "tests" / "core.yml").exists()  # its only test
     assert dimension["ok"] is True, dimension
     assert dimension["impact"]["broken"] == [] and dimension["impact"]["references"] == []
+    assert dimension["impact"]["rerouted"] == []
     assert examples["ok"] is True, examples
     orders = _yaml(_package(workspace) / "models" / "orders.yml")["model"]
     assert "dimensions" not in orders  # status was its only dimension
@@ -253,9 +254,10 @@ def test_removing_a_relationship_by_its_inferred_or_explicit_name(workspace: Pat
 
     assert mutation.report["ok"] is True, mutation.report
     assert [row["source_file"] for row in mutation.report["removed"]] == [
-        "graph.relationships",
+        "graph.yml",
         "models/orders.yml",
     ]
+    assert mutation.report["removed"][0]["entry"] == "graph.relationships.orders_customer"
     assert "relationships" not in _yaml(_package(workspace) / "graph.yml")["graph"]
     assert (
         "customer" not in _yaml(_package(workspace) / "models" / "orders.yml")["model"]["entities"]
@@ -429,3 +431,256 @@ def test_mcp_upserts_take_replace_and_label(workspace: Path) -> None:
     assert metrics["revenue"] == metric  # the description is gone
     customers = _yaml(_package(workspace) / "models" / "customers.yml")["model"]
     assert customers["label"] == "Customer mart"
+
+
+def test_a_relationship_is_removed_by_its_inferred_name(workspace: Path) -> None:
+    project = _project(workspace)
+    project.remove_object(kind="example", key="orders_by_country")
+    project.remove_object(kind="segment", key="us_customers")
+
+    mutation = project.remove_object(kind="relationship", key="relationship.orders_customer")
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert [row["id"] for row in mutation.report["removed"]] == ["relationship.orders_customer"]
+    assert _yaml(_package(workspace) / "models" / "orders.yml")["model"]["entities"] == {
+        "order": {}
+    }
+
+
+def test_a_model_that_infers_no_joins_has_no_relationship_to_remove(workspace: Path) -> None:
+    orders_path = _package(workspace) / "models" / "orders.yml"
+    orders = _yaml(orders_path)
+    orders["model"]["entities"] = {"bridge": False, **orders["model"]["entities"]}
+    _dump(orders_path, orders)
+
+    with pytest.raises(SemanticLayerError, match="not in this package"):
+        _project(workspace).remove_object(kind="relationship", key="orders_customer")
+
+
+def test_every_definition_of_a_key_goes_including_shadowed_ones(workspace: Path) -> None:
+    package = _package(workspace)
+    project = _project(workspace)
+    project.remove_object(kind="segment", key="us_customers")
+    # A root metrics.yml masks package.yml's metrics block; both define metrics here.
+    package_doc = _yaml(package / "package.yml")
+    package_doc["metrics"] = {
+        "legacy_orders": {
+            "label": "Orders",
+            "kind": "aggregate",
+            "measure": "order_count",
+            "value_type": "count",
+        }
+    }
+    _dump(package / "package.yml", package_doc)
+    _dump(
+        package / "metrics.yml",
+        {
+            "metrics": {
+                "customer_count": {
+                    "label": "Customers (old)",
+                    "kind": "aggregate",
+                    "measure": "customer_count",
+                    "value_type": "count",
+                }
+            }
+        },
+    )
+    loaded = {metric.id for metric in load_package_config(str(package)).metric_recipes}
+    assert "metric.shop.legacy_orders" not in loaded  # masked by metrics.yml
+
+    mutation = project.remove_object(kind="metric", key="customer_count")
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert sorted(row["source_file"] for row in mutation.report["removed"]) == [
+        "metrics.yml",
+        "metrics/customers.yml",
+    ]
+    assert _yaml(package / "metrics.yml") == {"metrics": {}}  # kept, still masking
+    loaded = {metric.id for metric in load_package_config(str(package)).metric_recipes}
+    assert loaded == {"metric.shop.revenue"}
+
+
+def test_a_metric_pinned_to_a_time_keeps_its_time(workspace: Path) -> None:
+    package = _package(workspace)
+    orders_path = package / "models" / "orders.yml"
+    orders = _yaml(orders_path)
+    orders["model"]["times"]["delivered_at"] = {
+        "label": "Delivered",
+        "column": "delivered_at",
+        "kind": "timestamp",
+        "class": "event_time",
+        "supported_grains": ["day", "month"],
+    }
+    _dump(orders_path, orders)
+    metrics = _yaml(package / "metrics" / "core.yml")
+    metrics["metrics"]["revenue"]["temporal_role"] = "temporal_role.shop_order_ordered_at"
+    _dump(package / "metrics" / "core.yml", metrics)
+    project = _project(workspace)
+    project.remove_object(kind="example", key="orders_by_status")
+
+    with pytest.raises(SemanticLayerError, match="metric.shop.revenue@time"):
+        project.remove_object(kind="time", key="ordered_at")
+
+
+def test_engine_crashes_are_recorded_not_raised(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from semantic_rails.architect_service import _compile_sweep
+    from semantic_rails.runtime import Runtime
+
+    compile_query = Runtime.compile
+
+    def crash_on_status(self: Runtime, payload: dict[str, Any]) -> dict[str, Any]:
+        if ORDER_STATUS in str(payload):
+            raise KeyError("status")
+        return compile_query(self, payload)
+
+    monkeypatch.setattr(Runtime, "compile", crash_on_status)
+    probes = _compile_sweep(_package(workspace))
+
+    assert probes["example.orders_by_status"].code == "KeyError"
+    assert probes["example.orders_by_country"].code == ""
+
+
+def test_the_shipped_jaffle_package_previews_removals_without_crashing(tmp_path: Path) -> None:
+    import shutil
+
+    from semantic_rails.config import repo_root
+
+    package = tmp_path / "jaffle_shop"
+    shutil.copytree(Path(repo_root()) / "configs" / "semantic_rails" / "jaffle_shop", package)
+    project = ArchitectProject(package, workspace_root=tmp_path)
+
+    for arguments in (
+        {"kind": "time", "key": "ordered_at", "model": "orders"},
+        {"kind": "dimension", "key": "product_type", "model": "products"},
+    ):
+        try:
+            preview = project.remove_object(**arguments, dry_run=True)
+        except SemanticLayerError as refused:
+            assert refused.code == "INVALID_CONFIG" and "breaks" in str(refused)
+        else:
+            assert preview.report["impact"]["broken"] is not None
+
+
+def test_a_retried_removal_replays_and_a_stale_one_conflicts(workspace: Path) -> None:
+    project = _project(workspace)
+    stale = project_revision(_package(workspace))
+    request = {
+        "kind": "example",
+        "key": "orders_by_status",
+        "expected_revision": stale,
+        "idempotency_key": "remove-example",
+    }
+
+    first = project.remove_object(**request)
+    again = project.remove_object(**request)
+    with pytest.raises(SemanticLayerError) as conflict:
+        project.remove_object(
+            kind="example", key="orders_by_status", expected_revision=stale, idempotency_key="other"
+        )
+
+    assert first.report["ok"] is True and again.report["status"] == "replayed"
+    assert conflict.value.code == "CONFIG_CONFLICT"
+
+
+def test_failures_the_package_already_had_are_not_blamed_on_a_removal(workspace: Path) -> None:
+    package = _package(workspace)
+    examples = _yaml(package / "examples" / "core.yml")
+    examples["examples"]["already_broken"] = {
+        "question": "Broken already",
+        "query": _orders_query("dimension.shop_order_colour"),
+    }
+    _dump(package / "examples" / "core.yml", examples)
+
+    preview = _project(workspace).remove_object(
+        kind="test", key="order_status_columns", dry_run=True
+    )
+
+    assert preview.report["impact"]["broken"] == []
+
+
+def test_undo_removes_the_archive_too(workspace: Path) -> None:
+    applied = _project(workspace).remove_object(kind="example", key="orders_by_country")
+    archive = _package(workspace) / applied.report["archived_to"]
+    assert archive.exists()
+
+    assert applied.undo()["ok"] is True
+    assert not archive.exists()
+
+
+def test_replacing_a_metric_that_a_segment_uses_is_guarded(workspace: Path) -> None:
+    project = _project(workspace)
+    renamed = {
+        "label": "Customers",
+        "kind": "aggregate",
+        "measure": "customer_count",
+        "value_type": "count",
+        "as": "metric.shop.customers",
+    }
+
+    with pytest.raises(SemanticLayerError, match="breaks segment segment.shop.us_customers"):
+        project.upsert_metric(metric_key="customer_count", spec=renamed, replace=True)
+
+
+def test_a_replace_reports_the_model_fields_it_drops(workspace: Path) -> None:
+    project = _project(workspace)
+    for kind, key in (("example", "orders_by_status"), ("test", "order_status_columns")):
+        project.remove_object(kind=kind, key=key)
+    customers = {
+        "model_id": "customers",
+        "entity_key": "customer",
+        "relation": "main_marts.dim_customers",
+        "primary_key": ["customer_id"],
+        "dimensions": {"customer_country": {"label": "Country", "kind": "categorical"}},
+        "times": {
+            "signed_up_on": {
+                "label": "Signup",
+                "column": "signed_up_on",
+                "kind": "date",
+                "class": "event_time",
+                "default": True,
+            }
+        },
+        "measures": _yaml(_package(workspace) / "models" / "customers.yml")["model"]["measures"],
+    }
+
+    unlabelled = project.upsert_models([{**customers, "replace": True}])
+
+    assert unlabelled.report["ok"] is True, unlabelled.report
+    assert unlabelled.report["dropped_fields"] == {"customers": ["label"]}
+
+
+def test_fact_models_are_not_upserted(workspace: Path) -> None:
+    customers_path = _package(workspace) / "models" / "customers.yml"
+    customers = _yaml(customers_path)
+    customers["model"]["kind"] = "fact"
+    _dump(customers_path, customers)
+
+    with pytest.raises(SemanticLayerError, match="is a fact model"):
+        _project(workspace).upsert_model(
+            model_id="customers",
+            entity_key="customer",
+            relation="main_marts.dim_customers",
+            primary_key=["customer_id"],
+            replace=True,
+        )
+
+
+def test_models_held_under_another_mapping_key(workspace: Path) -> None:
+    package = _package(workspace)
+    customers = _yaml(package / "models" / "customers.yml")["model"]
+    (package / "models" / "customers.yml").unlink()
+    _dump(package / "models" / "dimensions.yml", {"models": {"customer_table": customers}})
+    project = _project(workspace)
+    project.remove_object(kind="segment", key="us_customers")
+    project.remove_object(kind="example", key="orders_by_country")
+
+    field = project.remove_object(kind="dimension", key="customer_country")
+    assert field.report["ok"] is True, field.report
+    assert set(_yaml(package / "models" / "dimensions.yml")["models"]) == {"customer_table"}
+
+    project.remove_object(kind="metric", key="customer_count")
+    model = project.remove_object(kind="model", key="customers")
+    assert model.report["ok"] is True, model.report
+    assert not (package / "models" / "dimensions.yml").exists()

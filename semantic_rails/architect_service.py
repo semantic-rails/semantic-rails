@@ -10,6 +10,7 @@ and mapping key that supplied an existing object.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import re
@@ -504,11 +505,12 @@ class ArchitectProject:
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
         extra: dict[str, Any] = {"entity": staged["entity"]}
-        if staged["dropped"]:
+        if staged["replaced"]:
             extra["dropped"] = [
                 {field: value for field, value in row.items() if field != "spec"}
                 for row in staged["dropped"]
             ]
+            extra["dropped_fields"] = staged["dropped_fields"]
             extra["impact"] = self._guarded_impact(
                 self._updates(documents), staged["dropped"], f"replacing model {model_id!r}"
             )
@@ -635,12 +637,17 @@ class ArchitectProject:
                 documents.pop(path, None)
         dropped = [row for fact in staged for row in fact["dropped"]]
         replaced: dict[str, Any] = {}
-        if dropped:
+        if any(fact["replaced"] for fact in staged):
             replaced = {
                 "dropped": [
                     {field: value for field, value in row.items() if field != "spec"}
                     for row in dropped
                 ],
+                "dropped_fields": {
+                    fact["model"]: fact["dropped_fields"]
+                    for fact in staged
+                    if fact["dropped_fields"]
+                },
                 "impact": self._guarded_impact(
                     self._updates(documents), dropped, "replacing these models"
                 ),
@@ -677,7 +684,8 @@ class ArchitectProject:
     def _staged_model(doc: dict[str, Any], model_slug: str) -> dict[str, Any]:
         """The live model mapping inside a staged document."""
         if "models" in doc:
-            return dict(doc["models"])[model_slug]
+            rows = dict(doc["models"])
+            return rows[_models_key(rows, model_slug)]
         return doc["model"]
 
     def upsert_relationship(
@@ -1100,7 +1108,16 @@ class ArchitectProject:
         model, model_wrapper = self._model_for_update(
             model_doc, existing_model, model_slug=model_slug
         )
+        if existing_model is not None and (
+            str(existing_model.spec.get("kind") or "model").strip().lower() == "fact"
+        ):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{model_slug} is a fact model; upsert_model manages entity models",
+                details={"model": model_slug},
+            )
         dropped: list[dict[str, Any]] = []
+        dropped_fields: list[str] = []
         if replace and existing_model is not None:
             kept = {"dimensions": dimensions, "times": times, "measures": measures}
             dropped = [
@@ -1109,6 +1126,18 @@ class ArchitectProject:
                 for row in raw[plural]
                 if row.model_key == model_slug and row.key not in dict(fields or {})
             ]
+            given = {"relation", "description"} | {
+                field
+                for field, value in (
+                    ("label", label),
+                    ("dimensions", dimensions),
+                    ("times", times),
+                    ("measures", measures),
+                    ("joins", joins),
+                )
+                if value
+            }
+            dropped_fields = sorted(set(model) - set(_KEPT_ON_REPLACE) - given)
             model = {field: model[field] for field in _KEPT_ON_REPLACE if field in model}
         model.update(
             {
@@ -1202,6 +1231,8 @@ class ArchitectProject:
             "entity_key": entity_slug,
             "calendar_changed": calendar is not None or bool(requested_calendar),
             "dropped": dropped,
+            "dropped_fields": dropped_fields,
+            "replaced": bool(replace and existing_model is not None),
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
@@ -1284,7 +1315,16 @@ class ArchitectProject:
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
-        expected, idempotency = self._mutation_identity(expected_revision, idempotency_key)
+        intent = {
+            "operation": "upsert_metric",
+            "metric_key": metric_key,
+            "spec": spec,
+            "group": group,
+            "replace": replace,
+        }
+        expected, idempotency, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay
         key = str(metric_key or "").strip()
         if not key:
             raise SemanticLayerError("INVALID_CONFIG", "metric_key is required")
@@ -1304,6 +1344,12 @@ class ArchitectProject:
             deepcopy(dict(spec or {})) if replace else {**current, **deepcopy(dict(spec or {}))}
         )
         self._store_mapping_object(doc, existing, wrapper="metrics", key=key, spec=merged)
+        extra: dict[str, Any] = {}
+        if replace and existing is not None:
+            # A rewritten metric can break what builds on it (segments, derived metrics).
+            extra["impact"] = self._guarded_impact(
+                self._updates(documents), [], f"replacing metric {key!r}"
+            )
         return self._commit(
             documents,
             kind="metric",
@@ -1315,13 +1361,8 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=idempotency,
             dry_run=dry_run,
-            intent={
-                "operation": "upsert_metric",
-                "metric_key": metric_key,
-                "spec": spec,
-                "group": group,
-                "replace": replace,
-            },
+            intent=intent,
+            extra=extra,
         )
 
     def upsert_segment(
@@ -1399,7 +1440,6 @@ class ArchitectProject:
         files that still mention a removed id (``references``) and the
         behaviour changes against the current package (``behavior``).
         """
-        expected, idempotency = self._mutation_identity(expected_revision, idempotency_key)
         singular = _REMOVABLE_KINDS.get(str(kind or "").strip().lower())
         if singular is None:
             raise SemanticLayerError(
@@ -1410,6 +1450,16 @@ class ArchitectProject:
         name = str(key or "").strip()
         if not name:
             raise SemanticLayerError("INVALID_CONFIG", "key is required")
+        intent = {
+            "operation": "remove_object",
+            "kind": singular,
+            "key": name,
+            "model": model,
+            "reason": reason,
+        }
+        expected, idempotency, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay
         raw = self._raw_inventory()
         documents: dict[Path, dict[str, Any]] = {}
         deletions: list[Path] = []
@@ -1446,13 +1496,7 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=idempotency,
             dry_run=dry_run,
-            intent={
-                "operation": "remove_object",
-                "kind": singular,
-                "key": name,
-                "model": model,
-                "reason": reason,
-            },
+            intent=intent,
             extra={
                 "removed": [
                     {field_name: value for field_name, value in row.items() if field_name != "spec"}
@@ -1483,6 +1527,74 @@ class ArchitectProject:
             "spec": deepcopy(row.spec),
         }
 
+    def _definitions(self, singular: str, key: str) -> list[tuple[Path, str, str]]:
+        """Every place an object named ``key`` is defined, including shadowed ones.
+
+        Returns ``(path, wrapper, mapping key)``; the wrapper is the plural
+        mapping (``metrics:``), or the singular one for a one-object file.
+        """
+        plural = f"{singular}s"
+        package_path = self._target_path("package.yml")
+        root_path = self._target_path(f"{plural}.yml")
+        sources = [package_path]
+        if singular != "model" and root_path.exists():
+            sources.append(root_path)
+        sources.extend(self._yaml_files(self._target_path(plural)))
+        found: list[tuple[Path, str, str]] = []
+        for path in sources:
+            doc = _yaml_load(path)
+            if isinstance(doc.get(plural), dict):
+                for mapping_key, spec in doc[plural].items():
+                    if (
+                        _defined_as(singular, str(mapping_key), dict(spec or {}), single=False)
+                        == key
+                    ):
+                        found.append((path, plural, str(mapping_key)))
+            elif doc and path not in (package_path, root_path):
+                spec = dict(doc.get(singular, doc) or {})
+                if _defined_as(singular, path.stem, spec, single=True) == key:
+                    found.append((path, singular, ""))
+        return found
+
+    def _drop_definitions(
+        self,
+        singular: str,
+        definitions: list[tuple[Path, str, str]],
+        documents: dict[Path, dict[str, Any]],
+        deletions: list[Path],
+        removed: list[dict[str, Any]],
+        in_use: _RawObject,
+        **fields: Any,
+    ) -> None:
+        """Remove every definition, keeping each one's YAML for the archive."""
+        package_path = self._target_path("package.yml")
+        root_path = self._target_path(f"{singular}s.yml")
+        for path, wrapper, mapping_key in definitions:
+            if wrapper == singular:
+                spec = dict(_yaml_load(path).get(singular, _yaml_load(path)) or {})
+                deletions.append(path)
+            else:
+                doc = self._document(documents, path)
+                rows = dict(doc.get(wrapper, {}) or {})
+                spec = dict(rows.pop(mapping_key, None) or {})
+                if rows or path == root_path:
+                    doc[wrapper] = rows  # an emptied root file still masks package.yml
+                elif path == package_path or len(doc) > 1:
+                    doc.pop(wrapper, None)
+                else:
+                    deletions.append(path)
+            removed.append(
+                {
+                    "kind": singular,
+                    "key": in_use.key,
+                    "id": in_use.object_id,
+                    "source_file": self._relative(path),
+                    **fields,
+                    **({} if path == in_use.source_path else {"shadowed": True}),
+                    "spec": spec,
+                }
+            )
+
     def _remove_mapping_object(
         self,
         raw: dict[str, list[_RawObject]],
@@ -1492,25 +1604,23 @@ class ArchitectProject:
         deletions: list[Path],
         removed: list[dict[str, Any]],
     ) -> None:
-        plural = f"{singular}s"
-        row = self._find_raw(raw[plural], name)
+        row = self._find_raw(raw[f"{singular}s"], name)
         if row is None:
             raise SemanticLayerError(
                 "OBJECT_NOT_FOUND",
                 f"{singular} {name!r} is not in this package",
                 details={"kind": singular, "key": name},
             )
-        doc = self._document(documents, row.source_path)
-        rows = dict(doc.get(plural, {}) or {}) if row.wrapper == plural else {}
-        rows.pop(row.key, None)
-        if rows:
-            doc[plural] = rows
-        elif row.wrapper == plural and len(doc) > 1:
-            doc.pop(plural, None)
-        else:
-            deletions.append(row.source_path)
-        # Examples and tests have no public id to look for elsewhere.
-        removed.append(self._removed_row(row, **({"id": ""} if singular in _CHECKS else {})))
+        self._drop_definitions(
+            singular,
+            self._definitions(singular, name),
+            documents,
+            deletions,
+            removed,
+            row,
+            # Examples and tests have no public id to look for elsewhere.
+            **({"id": ""} if singular in _CHECKS else {}),
+        )
 
     def _remove_model_field(
         self,
@@ -1555,11 +1665,11 @@ class ArchitectProject:
 
     def _graph_document(
         self, raw: dict[str, list[_RawObject]], documents: dict[Path, dict[str, Any]]
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """The staged document holding the graph, and a copy of its graph block."""
+    ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+        """The graph's file, its staged document, and a copy of its graph block."""
         path = raw["entities"][0].source_path if raw["entities"] else self._target_path("graph.yml")
         doc = self._document(documents, path)
-        return doc, dict(doc.get("graph", {}) or {})
+        return path, doc, dict(doc.get("graph", {}) or {})
 
     def _remove_relationship(
         self,
@@ -1568,20 +1678,33 @@ class ArchitectProject:
         documents: dict[Path, dict[str, Any]],
         removed: list[dict[str, Any]],
     ) -> None:
-        graph_doc, graph = self._graph_document(raw, documents)
+        graph_path, graph_doc, graph = self._graph_document(raw, documents)
         relationships = dict(graph.get("relationships", {}) or {})
-        entry = relationships.get(name)
+        wanted = {_slug(name, fallback=""), _slug(name.removeprefix("relationship."), fallback="")}
         pair: list[str] = []
-        if isinstance(entry, dict) and len(_as_list(entry.get("entities"))) == 2:
-            pair = _as_list(entry.get("entities"))
-        else:
+        for entry_name, entry in relationships.items():
+            declared = _as_list(dict(entry).get("entities")) if isinstance(entry, dict) else []
+            entry_id = str(dict(entry).get("id") or "") if isinstance(entry, dict) else ""
+            if len(declared) == 2 and (
+                str(entry_name) == name
+                or _slug(str(entry_name), fallback="") in wanted
+                or entry_id == name
+            ):
+                pair = declared
+        if not pair:
             for model_row in raw["models"]:
-                primary = self._primary_entity_for_model(model_row, raw["entities"])
                 references = dict(model_row.spec.get("entities", {}) or {})
+                if not references.get("bridge", True):
+                    continue  # infers no joins, so holds no relationships
+                primary = self._primary_entity_for_model(model_row, raw["entities"])
                 for target in references:
                     if target in {primary, "bridge"}:
                         continue
-                    if _slug(f"{model_row.key}_{target}", fallback="") == _slug(name, fallback=""):
+                    inferred = _inferred_relationship_id(model_row.key, str(target))
+                    if (
+                        name == inferred
+                        or _slug(f"{model_row.key}_{target}", fallback="") in wanted
+                    ):
                         pair = [primary, str(target)]
         if not pair:
             raise SemanticLayerError(
@@ -1590,7 +1713,7 @@ class ArchitectProject:
                 details={"kind": "relationship", "key": name},
             )
         source, target = pair
-        self._drop_relationship_entries(graph_doc, graph, {(source, target)}, removed)
+        self._drop_relationship_entries(graph_path, graph_doc, graph, {(source, target)}, removed)
         source_row = self._find_raw(raw["entities"], source)
         owner = self._entity_model(raw, source_row) if source_row is not None else None
         if owner is not None and target in dict(owner.spec.get("entities", {}) or {}):
@@ -1598,6 +1721,7 @@ class ArchitectProject:
 
     def _drop_relationship_entries(
         self,
+        graph_path: Path,
         graph_doc: dict[str, Any],
         graph: dict[str, Any],
         pairs: set[tuple[str, str]],
@@ -1615,8 +1739,11 @@ class ArchitectProject:
                     {
                         "kind": "relationship",
                         "key": str(entry_name),
-                        "id": str(dict(entry).get("id") or f"relationship.{entry_name}"),
-                        "source_file": "graph.relationships",
+                        "id": str(
+                            dict(entry).get("id") or f"relationship.{_loader_slug(entry_name)}"
+                        ),
+                        "source_file": self._relative(graph_path),
+                        "entry": f"graph.relationships.{entry_name}",
                         "spec": deepcopy(entry),
                     }
                 )
@@ -1644,8 +1771,8 @@ class ArchitectProject:
             removed.append(
                 {
                     "kind": "relationship",
-                    "key": f"{owner.key}_{target}",
-                    "id": f"relationship.{owner.key}_{target}",
+                    "key": _slug(f"{owner.key}_{target}", fallback="relationship"),
+                    "id": _inferred_relationship_id(owner.key, target),
                     "source_file": self._relative(owner.source_path),
                     "model": owner.key,
                     "spec": {target: deepcopy(references.pop(target))},
@@ -1669,26 +1796,36 @@ class ArchitectProject:
                 f"model {name!r} is not in this package",
                 details={"kind": "model", "key": name},
             )
-        removed.append(self._removed_row(owner))
+        self._drop_definitions(
+            "model", self._definitions("model", owner.key), documents, deletions, removed, owner
+        )
         for plural in ("dimensions", "times", "measures"):
             removed.extend(
                 self._removed_row(row, model=owner.key)
                 for row in raw[plural]
                 if row.model_key == owner.key
             )
-        if owner.wrapper == "models":
-            doc = self._document(documents, owner.source_path)
-            models = dict(doc.get("models", {}) or {})
-            models.pop(owner.key, None)
-            doc["models"] = models
-        else:
-            deletions.append(owner.source_path)
+        own = dict(owner.spec.get("entities", {}) or {})
+        primary = self._primary_entity_for_model(owner, raw["entities"])
+        if own.get("bridge", True):
+            removed.extend(
+                {
+                    "kind": "relationship",
+                    "key": _slug(f"{owner.key}_{target}", fallback="relationship"),
+                    "id": _inferred_relationship_id(owner.key, str(target)),
+                    "source_file": self._relative(owner.source_path),
+                    "model": owner.key,
+                    "spec": {target: deepcopy(own[target])},
+                }
+                for target in own
+                if target not in {primary, "bridge"}
+            )
         entities = {
             row.key
             for row in raw["entities"]
             if (bound := self._entity_model(raw, row)) is not None and bound.key == owner.key
         }
-        graph_doc, graph = self._graph_document(raw, documents)
+        graph_path, graph_doc, graph = self._graph_document(raw, documents)
         graph_entities = dict(graph.get("entities", {}) or {})
         for entity in sorted(entities):
             row = self._find_raw(raw["entities"], entity)
@@ -1698,7 +1835,7 @@ class ArchitectProject:
         graph["entities"] = graph_entities
         graph_doc["graph"] = graph
         self._drop_relationship_entries(
-            graph_doc, graph, set(), removed, entities=frozenset(entities)
+            graph_path, graph_doc, graph, set(), removed, entities=frozenset(entities)
         )
         for other in raw["models"]:
             if other.key != owner.key and entities & set(
@@ -1747,23 +1884,41 @@ class ArchitectProject:
             found = [object_id for object_id, pattern in patterns.items() if pattern.search(text)]
             if found:
                 references.append({"file": relative, "ids": found})
-        impact: dict[str, Any] = {"broken": [], "references": references, "behavior": {}}
+        impact: dict[str, Any] = {
+            "broken": None,
+            "rerouted": None,
+            "references": references,
+            "behavior": {},
+        }
         with transaction.virtual_project(updates) as proposed:
             parse, _ = parse_config_report(PackageReference(source_path=str(proposed)))
             if not parse.get("ok"):
                 impact["behavior"] = {"ok": False, "errors": list(parse.get("errors", []) or [])}
                 return impact
             try:
-                before = _compile_failures(self.project_path)
-            except SemanticLayerError as exc:
-                impact["broken"] = None
-                impact["behavior"] = {"ok": False, "errors": [_issue(exc)]}
+                before = _cached_sweep(str(self.project_path), transaction.current_revision())
+                after = _compile_sweep(proposed)
+            except Exception as exc:  # the engine could not load one side at all
+                impact["behavior"] = {
+                    "ok": False,
+                    "errors": [
+                        {"code": getattr(exc, "code", type(exc).__name__), "message": str(exc)}
+                    ],
+                }
                 return impact
-            after = _compile_failures(proposed)
             impact["broken"] = [
-                {"id": object_id, "kind": kind, "code": code, "message": message}
-                for object_id, (kind, code, message) in sorted(after.items())
-                if before.get(object_id, ("", "", ""))[1] != code
+                {"id": object_id, "kind": probe.kind, "code": probe.code, "message": probe.message}
+                for object_id, probe in sorted(after.items())
+                if _newly_broken(object_id, probe, before.get(object_id))
+            ]
+            # Still compiles, but to other SQL: a join that now takes another path.
+            impact["rerouted"] = [
+                {"id": object_id, "kind": probe.kind}
+                for object_id, probe in sorted(after.items())
+                if not probe.code
+                and object_id in before
+                and not before[object_id].code
+                and before[object_id].sql != probe.sql
             ]
             report = impact_report(
                 PackageReference(source_path=str(proposed)), compare_path=str(self.project_path)
@@ -2238,14 +2393,15 @@ class ArchitectProject:
         if existing is None:
             return {}, "model"
         if existing.wrapper == "models":
-            return dict(dict(doc.get("models", {}) or {}).get(existing.key, {}) or {}), "models"
+            rows = dict(doc.get("models", {}) or {})
+            return dict(rows.get(_models_key(rows, existing.key), {}) or {}), "models"
         return dict(doc.get("model", doc) or {}), "model"
 
     @staticmethod
     def _store_model(doc: dict[str, Any], wrapper: str, key: str, model: dict[str, Any]) -> None:
         if wrapper == "models":
             models = dict(doc.get("models", {}) or {})
-            models[key] = model
+            models[_models_key(models, key)] = model
             doc["models"] = models
             return
         doc.clear()
@@ -2313,52 +2469,113 @@ class ArchitectProject:
         return path.relative_to(self.project_path).as_posix()
 
 
+def _models_key(rows: dict[str, Any], model_id: str) -> str:
+    """The key a ``models:`` mapping holds a model under (its ``id`` may differ)."""
+    for mapping_key, spec in rows.items():
+        if str(dict(spec or {}).get("id") or mapping_key) == model_id:
+            return str(mapping_key)
+    return model_id
+
+
+def _defined_as(singular: str, fallback: str, spec: dict[str, Any], *, single: bool) -> str:
+    """The key an object definition is known by, as the inventory reads it."""
+    if singular == "model":
+        return str(spec.get("id") or fallback)
+    if single:
+        return str(spec.get("name") or spec.get("id") or fallback)
+    return fallback
+
+
 def _issue(exc: SemanticLayerError) -> dict[str, Any]:
     return {"code": exc.code, "message": str(exc), "details": dict(exc.details or {})}
 
 
-def _compile_failures(project: Path) -> dict[str, tuple[str, str, str]]:
-    """What in a package does not compile, as ``{id: (kind, code, message)}``.
+@dataclass(frozen=True)
+class _Probe:
+    """How one measure, metric, segment, example or test compiles."""
 
-    Measures, metrics and segments are compiled the way ``validate_project``
-    probes them, and example and test queries as written; nothing runs
-    against the warehouse.
+    kind: str
+    code: str  # empty when it compiles
+    message: str = ""
+    sql: str = ""  # digest of the rendered SQL when it compiles
+
+
+# Codes on which validate_project retries a metric probe with a time axis.
+_TIME_RETRY_CODES = frozenset({"INVALID_QUERY", "INVALID_TEMPORAL_ROLE", "PREDICATE_GRAIN_UNSAFE"})
+
+
+def _compile_sweep(project: Path) -> dict[str, _Probe]:
+    """Compile everything a package defines or checks, without querying the warehouse.
+
+    Measures and metrics are probed the way ``validate_project`` probes them,
+    and a metric with a time axis also over that axis (``<id>@time``);
+    segments go through ``segment_validate``; example and test queries are
+    compiled as written. Any failure, including an engine crash, is recorded
+    rather than raised.
     """
     from .config import package_root_for_source
-    from .config_validation import _probe_query_for_measure, _probe_query_for_metric
+    from .config_validation import (
+        _default_time_spec_for_metric,
+        _probe_query_for_measure,
+        _probe_query_for_metric,
+    )
     from .package_tools import _load_named_entries
     from .runtime import Runtime
 
     runtime = Runtime.from_path(str(project))
-    failures: dict[str, tuple[str, str, str]] = {}
+    probes: dict[str, _Probe] = {}
 
-    def check(object_id: str, kind: str, build: Any) -> None:
+    def check(object_id: str, kind: str, build: Any) -> _Probe:
         try:
-            runtime.compile(build())
+            compiled = runtime.compile(build())
         except SemanticLayerError as exc:
-            failures[object_id] = (kind, exc.code, str(exc))
+            probe = _Probe(kind, exc.code, str(exc))
+        except Exception as exc:  # the engine crashed on it; still a result
+            probe = _Probe(kind, type(exc).__name__, str(exc))
+        else:
+            # The same package compiled from another directory may name its
+            # own files, so the path is left out of the comparison.
+            sql = str(compiled.get("rendered_sql") or "")
+            for location in {str(project), str(Path(project).resolve())}:
+                sql = sql.replace(location, "<project>")
+            probe = _Probe(kind, "", sql=hashlib.sha256(sql.encode("utf-8")).hexdigest())
+        probes[object_id] = probe
+        return probe
 
     try:
         config = runtime.snapshot.config
         for measure in config.measures:
             check(measure.id, "measure", lambda measure=measure: _probe_query_for_measure(measure))
         for recipe in config.metric_recipes:
-            check(
-                recipe.id,
-                "metric",
-                lambda recipe=recipe: _probe_query_for_metric(recipe, runtime),
+            probe = check(
+                recipe.id, "metric", lambda recipe=recipe: _probe_query_for_metric(recipe, runtime)
             )
+            if "time" in _probe_query_or_empty(recipe, runtime):
+                continue
+            timed = check(
+                f"{recipe.id}@time",
+                "metric",
+                lambda recipe=recipe: {
+                    **_probe_query_for_metric(recipe, runtime),
+                    "time": _default_time_spec_for_metric(recipe, runtime),
+                },
+            )
+            if probe.code in _TIME_RETRY_CODES and not timed.code:
+                probes[recipe.id] = timed  # validate_project's retry
         for segment in config.segments:
-            report = runtime.segment_validate(segment.id)
-            if not report.get("ok"):
-                error = dict((report.get("errors") or [{}])[0] or {})
-                failures[segment.id] = (
-                    "segment",
-                    str(error.get("code", "")),
-                    str(error.get("message", "")),
-                )
+            try:
+                report = runtime.segment_validate(segment.id)
+            except Exception as exc:
+                probes[segment.id] = _Probe("segment", type(exc).__name__, str(exc))
+                continue
+            error = dict((report.get("errors") or [{}])[0] or {})
+            probes[segment.id] = _Probe(
+                "segment",
+                "" if report.get("ok") else str(error.get("code", "") or "INVALID"),
+                "" if report.get("ok") else str(error.get("message", "")),
+            )
         root = Path(package_root_for_source(str(project)))
-        for kind in ("example", "test"):
+        for kind in _CHECKS:
             for entry_id, spec in _load_named_entries(
                 root / f"{kind}s", plural_key=f"{kind}s", singular_key=kind
             ):
@@ -2367,7 +2584,36 @@ def _compile_failures(project: Path) -> dict[str, tuple[str, str, str]]:
                     check(f"{kind}.{entry_id}", kind, lambda query=query: deepcopy(query))
     finally:
         runtime.close()
-    return failures
+    return probes
+
+
+def _newly_broken(object_id: str, probe: _Probe, before: _Probe | None) -> bool:
+    """Whether a probe fails now where it did not, or fails differently.
+
+    A metric's ``@time`` probe is a second look at an existing metric, so it
+    only counts when that metric compiled over time before the change.
+    """
+    if not probe.code:
+        return False
+    if before is None:
+        return not object_id.endswith("@time")
+    return probe.code != before.code
+
+
+def _probe_query_or_empty(recipe: Any, runtime: Any) -> dict[str, Any]:
+    from .config_validation import _probe_query_for_metric
+
+    try:
+        return dict(_probe_query_for_metric(recipe, runtime))
+    except Exception:
+        return {}
+
+
+@functools.lru_cache(maxsize=4)
+def _cached_sweep(project: str, revision: str) -> dict[str, _Probe]:
+    """The sweep of a project at one revision; previews of one state reuse it."""
+    del revision  # part of the cache key only
+    return _compile_sweep(Path(project))
 
 
 def _normal_text(value: str) -> str:
