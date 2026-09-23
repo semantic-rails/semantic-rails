@@ -193,3 +193,12 @@ def test_mcp_dbt_paths_stay_inside_the_workspace(tmp_path: Path) -> None:
 
     assert result["ok"] is False and "workspace root" in result["error"]["message"]
     json.dumps(result)  # the error payload is serializable
+
+
+def test_a_ref_with_a_package_resolves_only_in_that_package(target: Path) -> None:
+    project = load_dbt_artifacts(target)
+
+    assert project.resolve("ref('shop_dbt', 'fct_orders')").relation == "main_marts.fct_orders"
+    assert project.resolve("ref('fct_orders')").relation == "main_marts.fct_orders"
+    assert project.resolve("ref('other_package', 'fct_orders')") is None
+    assert project.resolve("ref('fct_refunds')") is None

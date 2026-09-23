@@ -232,3 +232,204 @@ def test_mf2sr_imports_without_semantic_rails() -> None:
     code = "import sys; sys.modules['semantic_rails'] = None; import mf2sr.translate"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def _metrics_doc(report: Any) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for path in (report.package_dir / "metrics").glob("*.yml"):
+        merged.update(yaml.safe_load(path.read_text())["metrics"])
+    return merged
+
+
+def test_value_types_follow_the_metrics_a_ratio_names(tmp_path: Path) -> None:
+    """Current MetricFlow names metrics, not measures, as ratio and derived inputs."""
+    renamed = [
+        {"name": "total_revenue", "type": "simple", "type_params": {"measure": "revenue"}},
+        {"name": "order_total_count", "type": "simple", "type_params": {"measure": "orders"}},
+        {"name": "customer_orders", "type": "simple", "type_params": {"measure": "orders"}},
+        {
+            "name": "average_order",
+            "type": "ratio",
+            "type_params": {"numerator": "total_revenue", "denominator": "order_total_count"},
+        },
+        {
+            "name": "orders_per_order",
+            "type": "ratio",
+            "type_params": {"numerator": "customer_orders", "denominator": "order_total_count"},
+        },
+        {
+            "name": "revenue_per_order",
+            "type": "derived",
+            "type_params": {
+                "expr": "money / n",
+                "metrics": [
+                    {"name": "total_revenue", "alias": "money"},
+                    {"name": "order_total_count", "alias": "n"},
+                ],
+            },
+        },
+        {
+            "name": "average_of_average",
+            "type": "derived",
+            "type_params": {"expr": "average_order", "metrics": [{"name": "average_order"}]},
+        },
+    ]
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "semantic.yml").write_text(
+        yaml.safe_dump({"version": 2, "semantic_models": SEMANTIC_MODELS, "metrics": renamed}),
+        encoding="utf-8",
+    )
+
+    report = translate(models, tmp_path / "out", package_id="shop", schema_strict=True)
+
+    types = {key: spec["value_type"] for key, spec in _metrics_doc(report).items()}
+    assert types["average_order"] == "currency"  # money per order
+    assert types["orders_per_order"] == "ratio"  # count per count
+    assert types["revenue_per_order"] == "currency"
+    assert types["average_of_average"] == "currency"  # through another ratio
+    assert not [warning for warning in report.warnings if warning.startswith("strict parse")]
+
+
+def test_a_strict_parse_error_is_a_warning_and_fails_strict_runs(tmp_path: Path) -> None:
+    models = tmp_path / "models"
+    models.mkdir()
+    scored = [
+        {
+            **SEMANTIC_MODELS[0],
+            "measures": [*SEMANTIC_MODELS[0]["measures"], {"name": "score", "agg": "average"}],
+        },
+        SEMANTIC_MODELS[1],
+    ]
+    untyped = [
+        *METRICS,
+        {"name": "score", "type": "simple", "type_params": {"measure": "score"}},
+        {
+            "name": "score_twice",
+            "type": "derived",
+            "type_params": {"expr": "score + score", "metrics": [{"name": "score"}]},
+        },
+    ]
+    (models / "semantic.yml").write_text(
+        yaml.safe_dump({"version": 2, "semantic_models": scored, "metrics": untyped}),
+        encoding="utf-8",
+    )
+    arguments = [
+        sys.executable,
+        "-m",
+        "mf2sr",
+        "--source",
+        str(models),
+        "--output",
+        str(tmp_path / "out"),
+        "--package-id",
+        "shop",
+        "--schema-strict",
+    ]
+
+    report = translate(models, tmp_path / "direct", package_id="shop", schema_strict=True)
+    loose = subprocess.run(arguments, capture_output=True, text=True, check=False)
+    strict = subprocess.run([*arguments, "--strict"], capture_output=True, text=True, check=False)
+
+    assert any(w.startswith("metric `score_twice`: check its value_type") for w in report.warnings)
+    assert any(w.startswith("strict parse:") and "score_twice" in w for w in report.warnings)
+    assert loose.returncode == 0 and strict.returncode == 2
+
+
+def test_the_model_ref_never_changes_the_input_hash(tmp_path: Path) -> None:
+    dbt_form = _dbt_project(tmp_path / "dbt")
+    standalone = tmp_path / "standalone"
+    standalone.mkdir()
+    documents = [
+        {
+            "semantic_model": {
+                **{k: v for k, v in model.items() if k != "model"},
+                "node_relation": {"alias": model["model"].split("'")[1]},
+            }
+        }
+        for model in SEMANTIC_MODELS
+    ] + [{"metric": metric} for metric in METRICS]
+    (standalone / "all.yml").write_text(yaml.safe_dump_all(documents), encoding="utf-8")
+
+    with_ref = translate(dbt_form, tmp_path / "a", package_id="shop")
+    without = translate(standalone, tmp_path / "b", package_id="shop")
+
+    assert with_ref.provenance["parsed_input_hash"] == without.provenance["parsed_input_hash"]
+
+
+def test_only_a_dbt_target_makes_the_database_external(tmp_path: Path) -> None:
+    models = _dbt_project(tmp_path / "dbt")
+
+    report = translate(models, tmp_path / "out", package_id="shop", schema_strict=True)
+
+    assert _package(report)["seed"]["kind"] == "sql_script"
+
+
+def test_refs_resolve_to_the_relation_dbt_built_not_a_same_named_model(tmp_path: Path) -> None:
+    target = write_dbt_artifacts(
+        build_dbt_warehouse(tmp_path / "dbt" / "warehouse.duckdb"), tmp_path / "dbt" / "target"
+    )
+    manifest_path = target / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    orders = manifest["nodes"]["model.shop_dbt.fct_orders"]
+    orders["alias"] = "orders_mart"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    models = _dbt_project(tmp_path / "dbt")
+    standalone = tmp_path / "standalone"
+    standalone.mkdir()
+    body = {k: v for k, v in SEMANTIC_MODELS[1].items() if k != "model"}
+    (standalone / "customers.yml").write_text(
+        yaml.safe_dump({"semantic_model": {**body, "node_relation": {"alias": "dim_customers"}}}),
+        encoding="utf-8",
+    )
+
+    by_ref = translate(models, tmp_path / "out", package_id="shop", dbt_target=target)
+    by_alias = translate(standalone, tmp_path / "alias", package_id="shop", dbt_target=target)
+
+    assert _relation(by_ref, "orders") == "main_marts.orders_mart"
+    assert _relation(by_alias, "customers") == "main_marts.dim_customers"
+
+
+def test_snowflake_relations_keep_their_database(tmp_path: Path) -> None:
+    manifest = tmp_path / "semantic_manifest.json"
+    stores = {
+        "name": "stores",
+        "node_relation": {"alias": "STORES", "schema_name": "DBT_PROD", "database": "ANALYTICS"},
+        "entities": [{"name": "store", "type": "primary", "expr": "store_id"}],
+        "dimensions": [{"name": "store_country", "type": "categorical"}],
+        "measures": [{"name": "stores", "expr": "1", "agg": "sum"}],
+    }
+    manifest.write_text(
+        json.dumps(
+            {
+                "semantic_models": [stores],
+                "metrics": [
+                    {"name": "stores", "type": "simple", "type_params": {"measure": "stores"}}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snowflake = translate(
+        manifest, tmp_path / "sf", package_id="shop", schema_strict=True, warehouse="snowflake"
+    )
+    duckdb = translate(manifest, tmp_path / "db", package_id="shop", schema_strict=True)
+
+    assert _relation(snowflake, "stores") == "ANALYTICS.DBT_PROD.STORES"
+    assert _relation(duckdb, "stores") == "DBT_PROD.STORES"
+
+
+def test_a_target_built_for_another_warehouse_is_reported(tmp_path: Path) -> None:
+    models = _dbt_project(tmp_path / "dbt")
+    target = write_dbt_artifacts(
+        build_dbt_warehouse(tmp_path / "dbt" / "warehouse.duckdb"), tmp_path / "dbt" / "target"
+    )
+
+    report = translate(
+        models, tmp_path / "out", package_id="shop", dbt_target=target, warehouse="snowflake"
+    )
+
+    assert any(
+        "built for duckdb, but the package warehouse is snowflake" in w for w in report.warnings
+    )

@@ -229,8 +229,13 @@ def _target_of(to: str, relations: dict[str, DbtRelation]) -> DbtRelation | None
     ref = _REF.search(to)
     if ref:
         name = ref.group(2) or ref.group(1)
+        package = ref.group(1) if ref.group(2) else ""
         found = [
-            row for row in relations.values() if row.name == name and row.resource_type != "source"
+            row
+            for row in relations.values()
+            if row.name == name
+            and row.resource_type != "source"
+            and (not package or row.unique_id.split(".")[1:2] == [package])
         ]
         return found[0] if len(found) == 1 else None
     source = _SOURCE.search(to)

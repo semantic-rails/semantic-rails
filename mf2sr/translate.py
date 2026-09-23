@@ -126,9 +126,13 @@ def translate(
     out_root = Path(output_dir) / package_id
     out_root.mkdir(parents=True, exist_ok=True)
 
+    if schema_strict or dbt_target:
+        import semantic_rails.config_validation  # noqa: F401  (fail before writing anything)
     raw = parsers.load(src)
     report = TranslationReport(package_dir=out_root)
     dbt_project = _load_dbt_project(Path(dbt_target)) if dbt_target else None
+    if dbt_project is not None:
+        _check_dbt_target(dbt_project, warehouse=warehouse, default_db=default_db, report=report)
 
     graph = _build_graph(raw["semantic_models"], report)
     _write_package_yml(
@@ -169,7 +173,9 @@ def translate(
             graph,
             report,
             suppress_publish=metric_names,
-            relation=_relation_for(sm, dbt_project, keep_schema=schema_strict, report=report),
+            relation=_relation_for(
+                sm, dbt_project, keep_schema=schema_strict, warehouse=warehouse, report=report
+            ),
         )
         (models_dir / f"{name}.yml").write_text(_dump_yaml({"model": model_doc}))
         report.models_emitted.append(name)
@@ -179,6 +185,7 @@ def translate(
             measure_to_agg[measure_name] = default_agg
 
     metrics_by_owner: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    built: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for metric in raw["metrics"]:
         translated = _build_metric(
             metric,
@@ -190,10 +197,12 @@ def translate(
         if translated is None:
             continue
         metric_name, metric_doc, owner_hint = translated
-        if schema_strict:
-            _strict_value_type(metric, metric_doc, measure_to_value_type, report)
+        built.append((metric, metric_doc))
         metrics_by_owner.setdefault(owner_hint, []).append((metric_name, metric_doc))
         report.metrics_emitted.append(metric_name)
+
+    if schema_strict:
+        _strict_value_types(built, measure_to_value_type, report)
 
     if metrics_by_owner:
         metrics_dir = out_root / "metrics"
@@ -244,25 +253,48 @@ def _relation_for(
     dbt_project: DbtProject | None,
     *,
     keep_schema: bool,
+    warehouse: str,
     report: TranslationReport,
 ) -> str:
-    """The relation a semantic model reads, schema-qualified when that is known."""
+    """The relation a semantic model reads, qualified when that is known.
+
+    A ``ref()``/``source()`` resolves through the dbt manifest. A
+    ``node_relation`` that names its schema is what dbt built, so it is
+    trusted as is; otherwise the manifest is matched by alias, never by model
+    name. Without either option the bare alias is kept, as before.
+    """
     node = dict(sm.get("node_relation") or {})
     alias = str(node.get("alias") or sm.get("name"))
     name = sm.get("name")
-    if dbt_project is not None:
-        reference = str(sm.get("_model_ref") or f"ref('{alias}')")
-        target = dbt_project.resolve(reference)
+    reference = sm.get("_model_ref")
+    if dbt_project is not None and reference:
+        target = dbt_project.resolve(str(reference))
         if target is not None:
-            return target.relation
+            return _qualified(target.database, target.schema, target.alias, warehouse=warehouse)
         report.warnings.append(
             f"semantic model `{name}`: {reference} is not in the dbt manifest; its relation "
             f"stays `{alias}`"
         )
         return alias
+    if node.get("schema_name") and (keep_schema or dbt_project is not None):
+        return _qualified(
+            str(node.get("database") or ""), str(node["schema_name"]), alias, warehouse=warehouse
+        )
+    if dbt_project is not None:
+        matches = [
+            row
+            for row in dbt_project.relations.values()
+            if row.resource_type != "source" and row.alias.lower() == alias.lower()
+        ]
+        if len(matches) == 1:
+            row = matches[0]
+            return _qualified(row.database, row.schema, row.alias, warehouse=warehouse)
+        report.warnings.append(
+            f"semantic model `{name}`: `{alias}` matches {len(matches)} relations in the dbt "
+            f"manifest; its relation stays `{alias}`"
+        )
+        return alias
     if keep_schema:
-        if node.get("schema_name"):
-            return f"{node['schema_name']}.{alias}"
         report.warnings.append(
             f"semantic model `{name}`: `{alias}` has no schema; pass the dbt target/ "
             "directory to resolve it"
@@ -270,46 +302,113 @@ def _relation_for(
     return alias
 
 
-def _strict_value_type(
-    metric: dict[str, Any],
-    doc: dict[str, Any],
+def _qualified(database: str, schema: str, alias: str, *, warehouse: str) -> str:
+    """schema.alias, led by the database where that names a catalog (not DuckDB's file)."""
+    parts = [part for part in (schema, alias) if part]
+    if database and warehouse != "duckdb":
+        parts.insert(0, database)
+    return ".".join(parts)
+
+
+def _check_dbt_target(
+    dbt_project: DbtProject, *, warehouse: str, default_db: str | None, report: TranslationReport
+) -> None:
+    adapter = dbt_project.adapter_type.strip().lower()
+    if adapter and adapter != warehouse:
+        report.warnings.append(
+            f"the dbt target was built for {adapter}, but the package warehouse is {warehouse}; "
+            f"pass --warehouse {adapter}"
+        )
+    if warehouse == "duckdb":
+        location = default_db or "data/<package_id>.duckdb"
+        if Path(location).is_absolute() or ".." in Path(location).parts:
+            report.warnings.append(
+                f"default_db {location!r} must be a path inside the package; point the dbt "
+                "profile's path into the package instead"
+            )
+        elif not default_db:
+            report.warnings.append(
+                "the package reads the database at data/<package_id>.duckdb; point the dbt "
+                "profile's path there, or pass --default-db"
+            )
+
+
+def _strict_value_types(
+    built: list[tuple[dict[str, Any], dict[str, Any]]],
     measure_value_type: dict[str, str],
     report: TranslationReport,
 ) -> None:
-    """Give ratio and derived metrics the explicit value_type strict packages need."""
-    if doc.get("kind") not in {"ratio", "derived"}:
-        return
-    params = dict(metric.get("type_params") or {})
-    if (metric.get("type") or "").lower() == "ratio":
-        doc["value_type"] = _quotient_value_type(
-            measure_value_type.get(str(_normalize_metric_ref(params.get("numerator")).get("name"))),
-            measure_value_type.get(
-                str(_normalize_metric_ref(params.get("denominator")).get("name"))
-            ),
+    """Give ratio and derived metrics the explicit value_type strict packages need.
+
+    Inputs are metric names in current MetricFlow (measure names in older
+    projects), so each input is typed by the metric it names, recursively.
+    """
+    metrics = {str(metric.get("name")): (metric, doc) for metric, doc in built}
+    resolved: dict[str, str | None] = {}
+
+    def value_type(name: str, seen: frozenset[str]) -> str | None:
+        if name in resolved:
+            return resolved[name]
+        if name not in metrics or name in seen:
+            return measure_value_type.get(name)
+        metric, doc = metrics[name]
+        typed: str | None = (
+            _derived_value_type(metric, doc, lambda other: value_type(other, seen | {name}), report)
+            if doc.get("kind") in {"ratio", "derived"}
+            else doc.get("value_type")
         )
-        return
+        resolved[name] = typed
+        return typed
+
+    for name in metrics:
+        value_type(name, frozenset())
+
+
+def _derived_value_type(
+    metric: dict[str, Any],
+    doc: dict[str, Any],
+    typed: Any,
+    report: TranslationReport,
+) -> str:
+    params = dict(metric.get("type_params") or {})
+    name = metric.get("name")
+    if (metric.get("type") or "").lower() == "ratio":
+        sides = {
+            side: typed(str(_normalize_metric_ref(params.get(side)).get("name")))
+            for side in ("numerator", "denominator")
+        }
+        doc["value_type"] = _quotient_value_type(sides["numerator"], sides["denominator"])
+        unknown = [side for side, value in sides.items() if value is None]
+        if unknown:
+            report.warnings.append(
+                f"metric `{name}`: check its value_type (mf2sr couldn't type its "
+                f"{' and '.join(unknown)}; guessed {doc['value_type']})"
+            )
+        return str(doc["value_type"])
     names = {
         str(ref.get("alias") or ref.get("name")): str(ref.get("name"))
         for ref in (_normalize_metric_ref(item) for item in params.get("metrics") or [])
     }
     expression = str(params.get("expr") or "")
     quotient = _SIMPLE_QUOTIENT.fullmatch(expression)
-    types = {measure_value_type.get(name) for name in names.values()}
     if quotient and quotient.group(1) in names and quotient.group(2) in names:
-        doc["value_type"] = _quotient_value_type(
-            measure_value_type.get(names[quotient.group(1)]),
-            measure_value_type.get(names[quotient.group(2)]),
-        )
-        return
-    if len(types) == 1 and None not in types and not set(expression) & {"*", "/"}:
-        doc["value_type"] = next(iter(types))
-        if doc["value_type"] != "number":
-            return
+        numerator = typed(names[quotient.group(1)])
+        denominator = typed(names[quotient.group(2)])
+        doc["value_type"] = _quotient_value_type(numerator, denominator)
+        if numerator is not None and denominator is not None:
+            return str(doc["value_type"])
+    else:
+        types = {typed(input_name) for input_name in names.values()}
+        if len(types) == 1 and None not in types and not set(expression) & {"*", "/"}:
+            doc["value_type"] = next(iter(types))
+            if doc["value_type"] != "number":
+                return str(doc["value_type"])
     report.warnings.append(
-        f"metric `{metric.get('name')}`: check its value_type (mf2sr guessed "
+        f"metric `{name}`: check its value_type (mf2sr guessed "
         f"{doc.get('value_type', 'number')}); strict packages don't accept number for a "
         "derived metric"
     )
+    return str(doc.get("value_type", "number"))
 
 
 def _quotient_value_type(numerator: str | None, denominator: str | None) -> str:
@@ -1301,12 +1400,10 @@ def _write_package_yml(
     schema_strict: bool = False,
     external_db: bool = False,
 ) -> None:
-    # The translator emits `schema_strict: false` because MetricFlow
-    # measure metadata is too thin to satisfy strict checks out of the
-    # gate (most measures lack a meaningful `value_type:` distinction,
-    # so ratio/derived metrics fall back to `number` and strict mode
-    # rejects them). The author should flip this to `true` after
-    # reviewing measure value_types and adding business meaning.
+    # Without schema_strict the translator emits `schema_strict: false`:
+    # MetricFlow measure metadata is often too thin for strict checks (ratio
+    # and derived metrics default to `number`). Strict mode assigns value
+    # types and parse-checks the output instead.
     pkg: dict[str, Any] = {
         "id": package_id,
         "namespace": namespace,

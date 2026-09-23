@@ -110,17 +110,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    report = translate(
-        Path(args.source),
-        Path(args.output),
-        package_id=args.package_id,
-        namespace=args.namespace,
-        warehouse=args.warehouse,
-        default_db=args.default_db,
-        description=args.description,
-        schema_strict=args.schema_strict,
-        dbt_target=args.dbt_target,
-    )
+    try:
+        report = translate(
+            Path(args.source),
+            Path(args.output),
+            package_id=args.package_id,
+            namespace=args.namespace,
+            warehouse=args.warehouse,
+            default_db=args.default_db,
+            description=args.description,
+            schema_strict=args.schema_strict,
+            dbt_target=args.dbt_target,
+        )
+    except Exception as exc:  # an unreadable input or dbt target: say so, no traceback
+        print(f"mf2sr: {exc}", file=sys.stderr)
+        return 2
     print(f"Wrote package -> {report.package_dir}")
     print(f"  Models:  {len(report.models_emitted)}")
     print(f"  Metrics: {len(report.metrics_emitted)}")

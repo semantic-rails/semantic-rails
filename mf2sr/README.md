@@ -105,11 +105,19 @@ credentials from environment variables.
   `strict parse:` warning, so `--strict` fails the run.
 
 `--dbt-target <dbt target/ directory>` reads dbt's `manifest.json` (and
-`catalog.json` when present). Each `ref('model')` or `source('name',
-'table')` then resolves to the relation dbt built, for example
-`main_marts.fct_orders`. A DuckDB package gets `seed: {kind: external}`,
-so it reads the dbt-built database and never rebuilds it; point
-`--default-db` at that file. Run `dbt build` first.
+`catalog.json` when present). Each `ref('model')` (or `ref('package',
+'model')`) or `source('name', 'table')` then resolves to the relation dbt
+built, for example `main_marts.fct_orders`. A semantic model given by its
+`node_relation` keeps the schema recorded there, or is matched in the
+manifest by alias. A warning flags a target built for another warehouse
+than `--warehouse`. Snowflake and other catalog warehouses keep the
+database (`ANALYTICS.DBT_PROD.STORES`).
+
+A DuckDB package with a dbt target gets `seed: {kind: external}`, so it
+reads the database dbt builds and never rebuilds it. That database must
+live inside the package: point the dbt profile's `path` there (for example
+`../semantic/shop/data/warehouse.duckdb`) and pass `--default-db
+data/warehouse.duckdb`. Run `dbt build` first.
 
 ```bash
 uv run python -m mf2sr --source my_dbt_project/models --output configs/semantic_rails \
