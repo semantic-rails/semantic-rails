@@ -7,8 +7,8 @@ Nested functions count on their own and inside their parent.
 
 To check that no function a change touches got longer, save
 ``--by-name --min 0`` before and after and diff the two: each line is
-``qualified.name length path:line``, sorted by name, so a function moved to
-another module differs only in its path.
+``qualified.name length``, sorted, so edits elsewhere and moves to another
+module leave a function's line unchanged.
 
 Report-only: exits 0 unless the arguments are wrong. A file that can't be
 read or parsed is skipped with a note on stderr.
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("paths", nargs="*", metavar="PATH")
     parser.add_argument("--min", type=int, default=THRESHOLDS[0], metavar="LINES")
     parser.add_argument(
-        "--by-name", action="store_true", help="print 'name length path:line', sorted by name"
+        "--by-name", action="store_true", help="print 'name length', sorted, for diffing"
     )
     args = parser.parse_args(argv)
 
@@ -81,8 +81,8 @@ def main(argv: list[str] | None = None) -> int:
 
     listed = [row for row in lengths if row[0] > args.min]
     if args.by_name:
-        for length, name, where in sorted(listed, key=lambda row: (row[1], row[2])):
-            print(f"{name} {length} {where}")
+        for name, length in sorted((row[1], row[0]) for row in listed):
+            print(f"{name} {length}")
     else:
         for length, name, where in sorted(listed, key=lambda row: (-row[0], row[2])):
             print(f"{length:6d}  {where} {name}")

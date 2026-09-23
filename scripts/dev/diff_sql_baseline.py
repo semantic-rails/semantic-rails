@@ -137,7 +137,8 @@ def main(golden_path: str, after_path: str) -> int:
         return 1
 
     if regressions:
-        print(f"FAIL: {len(regressions)} metric(s) regressed:")
+        regressed = {r.split(":", 1)[0] for r in regressions}
+        print(f"FAIL: {len(regressed)} metric(s) regressed:")
         for r in regressions:
             print(f"  - {r}")
         return 1
