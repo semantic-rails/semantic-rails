@@ -13,22 +13,25 @@ from typing import Any
 import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.metadata import _QUERY_IR_KEYS
 from semantic_rails.request_context import RequestContext
 
-QUERY_IR_KEYS = {
-    "version",
-    "select",
-    "group_by",
-    "where",
-    "metric_filters",
-    "time",
-    "temporal_role_overrides",
-    "path_policy",
-    "order_by",
-    "limit",
-    "debug",
-    "explain",
-    "export",
+QUERY_IR_KEYS = set(_QUERY_IR_KEYS)
+REVENUE = [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}]
+STORE = "dimension.jaffle_store_name"
+# build-options arguments that reach each of its seven builder steps.
+BUILDER_STEPS = {
+    "measure": {},
+    "aggregation": {"step": "aggregation", "focus_object_id": "measure.jaffle.revenue_usd"},
+    "group_by": {"query": {"version": 2, "select": REVENUE}},
+    "filter_dimension": {"query": {"version": 2, "select": REVENUE, "group_by": [STORE]}},
+    "filter_value": {
+        "step": "filter_value",
+        "focus_object_id": STORE,
+        "query": {"version": 2, "select": REVENUE, "group_by": [STORE]},
+    },
+    "time": {"step": "time", "query": {"version": 2, "select": REVENUE, "group_by": [STORE]}},
+    "review": {"step": "review", "query": {"version": 2, "select": REVENUE, "group_by": [STORE]}},
 }
 POLICY_CONTEXT = {"environment": "development", "audience": "internal", "roles": ["analyst"]}
 CALLS = [
@@ -103,10 +106,39 @@ def test_patches_keep_the_callers_partial_query(adapter: SemanticLayerMCPAdapter
         assert "policy_context" not in patch
 
 
-def test_patches_run_as_is(adapter: SemanticLayerMCPAdapter) -> None:
+@pytest.mark.parametrize(("tool", "arguments"), CALLS, ids=[name for name, _ in CALLS])
+def test_every_patch_runs_as_is(
+    adapter: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
+) -> None:
     response = adapter.call_tool(
-        "discover", {"terms": "revenue", "policy_context": POLICY_CONTEXT, "unexpected": 1}
+        tool, {**arguments, "policy_context": POLICY_CONTEXT, "unexpected": 1}
     )
-    patch = response["measures"][0]["starter_query_patch"]
-    validated = adapter.call_tool("validate", {"query": patch})
-    assert validated["ok"], validated["errors"]
+    patches = [patch for patch in _patches(response) if patch.get("select")]
+    assert patches
+    # Windowed metrics (such as cumulative revenue) carry their default time block.
+    for patch in patches:
+        validated = adapter.call_tool("validate", {"query": patch})
+        assert validated["ok"], (patch, validated["errors"])
+
+
+@pytest.mark.parametrize("step", list(BUILDER_STEPS))
+def test_build_options_patches_are_pure_ir_and_run_at_every_step(
+    adapter: SemanticLayerMCPAdapter, step: str
+) -> None:
+    # Response options and a policy context must not leak into the patches.
+    arguments = {
+        **BUILDER_STEPS[step],
+        "policy_context": POLICY_CONTEXT,
+        "verbosity": "full",
+        "sql_profile": "off",
+    }
+    response = adapter.call_tool("build-options", arguments)
+    assert response["ok"], response["errors"]
+    assert response.get("builder_step", step) == step
+    patches = list(_patches(response))
+    assert patches, f"no patches at step {step}"
+    for patch in patches:
+        assert set(patch) <= QUERY_IR_KEYS, (step, sorted(set(patch) - QUERY_IR_KEYS))
+        if patch.get("select"):
+            validated = adapter.call_tool("validate", {"query": patch})
+            assert validated["ok"], (step, patch, validated["errors"])

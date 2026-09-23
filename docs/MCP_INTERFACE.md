@@ -171,15 +171,25 @@ keeps `rows` as objects (`[{...}]`). The opt-in columnar form returns
 `columns: [...]`, `rows: [[...]]`, `row_format: "columns"`, and the same
 `row_count`, warnings, and errors while avoiding repeated field names.
 
-`execute` returns at most `max_rows` rows (default 200). A larger result comes back with
-`truncated: true`, `total_row_count` (`null` when there are more than 10,000 rows) and an
-`EXECUTE_ROWS_TRUNCATED` warning that says how to narrow the query. Pass a larger `max_rows` to see
-more. A `limits.max_rows` inside the query is a ceiling that `max_rows` can't raise. This is an
-MCP-only default; the HTTP `/api/v1/query` endpoint doesn't cap rows.
+`execute` returns at most `max_rows` rows (default 200, at most 100,000). A larger result comes
+back with `truncated: true`, `total_row_count` and an `EXECUTE_ROWS_TRUNCATED` warning that says
+how to narrow the query. Execute asks the warehouse for up to 10,000 rows to count them, so
+`total_row_count` is `null` when more rows exist than were fetched. Some warehouse adapters fetch
+the whole result and then clip it; the cap bounds the response, not the warehouse work. Pass a
+larger `max_rows` to see more.
 
-Query patches returned by `discover`, `inspect` and `build-options` contain only Query IR fields.
-They never carry the caller's `policy_context` or the tool's own arguments, so pass the policy
-context again on the call that uses a patch.
+A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower the cap (and then
+`total_row_count` is `null` once it is reached), but it never raises it: without a `max_rows`
+argument the cap stays 200. The `query` that execute echoes back carries the caller's own `limits`,
+so re-running it is capped the same way. This is an MCP-only default; the HTTP `/api/v1/query`
+endpoint doesn't cap rows.
+
+Query patches returned by `discover`, `inspect` and `build-options` (at every builder step) contain
+only Query IR fields and validate as returned. They never carry the caller's `policy_context` or
+the tool's own arguments, so pass the policy context again on the call that uses a patch. A patch
+that selects a metric needing a time window carries the metric's default one, and a `percentile`
+aggregation option carries `p: 0.5`. These tools read Query IR only from their `query` argument,
+not from Query IR fields passed at the top level.
 
 ### Semantic Trace
 
@@ -210,7 +220,8 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
-| `UNGRAINED_TIME_PROJECTION` | `validate`, `compile`, `execute` | A time window has no grain, so rows group by the raw timestamp — set `time.grain` |
+| `UNGRAINED_TIME_PROJECTION` | `validate`, `compile`, `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
+| `UNGRAINED_GROUPED_TIME_PROJECTION` | `validate`, `compile`, `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
 | `SEMANTIC_CAVEAT_APPLIED` | `validate`, `compile`, `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `validate`, `compile`, `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
 

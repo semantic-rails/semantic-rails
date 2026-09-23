@@ -1096,6 +1096,7 @@
           "max_rows": {
             "default": 200,
             "description": "Most rows to return. A larger result sets truncated=true and total_row_count; aggregate further or raise max_rows.",
+            "maximum": 100000,
             "minimum": 1,
             "type": "integer"
           },

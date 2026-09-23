@@ -16,16 +16,17 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import date, timedelta
 from typing import Any
 
-from .ast import normalize_partial_query, normalize_query
+from .ast import NormalizedQuery, normalize_partial_query, normalize_query
 from .catalog_search import CatalogSearchDocument, SearchTerms
 from .compiler import (
     _conversion_supported,
     _predicate_context_entity_candidates,
     _reduced_context_entities,
+    _requires_query_time,
     _time_bound_relationship_ids,
 )
 from .diagnostics import relationship_contract_payload
@@ -96,23 +97,10 @@ from .schema import PackageConfig
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
 
-# Query IR fields. Query patches and query_state carry only these: never the
-# request's policy context, response options or the tool's own arguments.
-_QUERY_IR_KEYS = (
-    "version",
-    "select",
-    "group_by",
-    "where",
-    "metric_filters",
-    "time",
-    "temporal_role_overrides",
-    "path_policy",
-    "order_by",
-    "limit",
-    "debug",
-    "explain",
-    "export",
-)
+# Query IR fields: the fields of a normalized query. Query patches and
+# query_state carry only these: never the request's policy context, response
+# options or the tool's own arguments.
+_QUERY_IR_KEYS = tuple(field.name for field in fields(NormalizedQuery))
 
 
 def _query_ir(query: dict[str, Any] | None) -> dict[str, Any]:
@@ -2793,7 +2781,9 @@ def build_options_payload(
     base = _valid_next_base(runtime, partial_query)
     config = runtime._config
     maps = _config_maps(config)
-    raw_query = dict(partial_query or {})
+    # Patches build on the caller's Query IR only; the policy context in
+    # partial_query decides visibility, never a patch's contents.
+    raw_query = _query_ir(partial_query)
 
     def _infer_builder_step() -> str:
         if step:
@@ -2954,12 +2944,11 @@ def build_options_payload(
         for agg in guidance["allowed_aggregations"]:
             patch = dict(raw_query or {})
             patch.setdefault("version", 1)
-            patch["select"] = [
-                {
-                    "expression": {"measure": focus_measure.id, "aggregation": agg},
-                    "as": focus_measure.label,
-                }
-            ]
+            expression: dict[str, Any] = {"measure": focus_measure.id, "aggregation": agg}
+            if agg == "percentile":
+                # A percentile needs its p; the median is the neutral starting point.
+                expression["parameters"] = {"p": 0.5}
+            patch["select"] = [{"expression": expression, "as": focus_measure.label}]
             rank = 20.0 - (float(suggested_rank[agg]) / 10.0) if agg in suggested_rank else 10.0
             row = {
                 "id": agg,
@@ -3082,7 +3071,7 @@ def build_options_payload(
                 patch.setdefault("where", [])
                 patch["where"] = [
                     *list(patch.get("where", []) or []),
-                    {"dimension": target_dimension, "op": "=", "value": value_row["value"]},
+                    {"field": target_dimension, "op": "=", "value": value_row["value"]},
                 ]
                 option = {
                     "id": f"{target_dimension}={value_row['value']}",
@@ -3259,7 +3248,29 @@ def _query_patch_with_selection(
     query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["select"] = [_select_expr_for_choice(runtime, chosen)]
+    if chosen.get("kind") == "metric" and not query.get("time"):
+        time = _metric_patch_time(runtime, str(chosen.get("id", "")))
+        if time:
+            query["time"] = time
     return query
+
+
+def _metric_patch_time(runtime: Runtime, metric_id: str) -> dict[str, Any]:
+    """The default time block for a metric that can't run without one.
+
+    Windowed metrics (cumulative, rolling and the like) require query.time,
+    so a patch selecting one carries the metric's default window.
+    """
+
+    from .config_validation import _default_time_spec_for_metric
+
+    recipe = _config_maps(runtime._config)["metric_recipes"].get(metric_id)
+    if recipe is None:
+        return {}
+    with contextlib.suppress(SemanticLayerError):
+        if _requires_query_time(recipe.expression, runtime._config):
+            return dict(_default_time_spec_for_metric(recipe, runtime))
+    return {}
 
 
 def _query_patch_with_group_by(partial_query: dict[str, Any], dimension_id: str) -> dict[str, Any]:

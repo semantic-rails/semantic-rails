@@ -79,8 +79,8 @@ DEFAULT_TOLERANCE = 0.02
 # empty instructions string, a short error) don't fail on a one-word change.
 # Counts, such as the number of tools, get no slack.
 ABSOLUTE_SLACK_TOKENS = 8
-# Gold queries run with an explicit row limit so a default MCP row cap can't
-# truncate the reference answer.
+# Gold queries run with an explicit row limit and max_rows so a default MCP
+# row cap can't truncate the reference answer.
 GOLD_MAX_ROWS = 100_000
 
 
@@ -1168,7 +1168,11 @@ def query_answer(
     """Execute ``query`` and reduce its rows to an answer table for ``case``."""
 
     payload = client.tool_payload(
-        "execute", {"query": {**dict(query), "limits": {"max_rows": GOLD_MAX_ROWS}}}
+        "execute",
+        {
+            "query": {**dict(query), "limits": {"max_rows": GOLD_MAX_ROWS}},
+            "max_rows": GOLD_MAX_ROWS,
+        },
     )
     if not payload.get("ok"):
         codes = [issue.get("code") for issue in payload.get("errors") or []]

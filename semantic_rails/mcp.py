@@ -24,7 +24,7 @@ from typing import Any
 
 from .ast import QUERY_INPUT_KEYS
 from .catalog_service import resolve_catalog
-from .diagnostics import enrich_object_not_found, exception_issue
+from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
 from .errors import SemanticLayerError
 from .metadata import (
     build_options_payload,
@@ -51,7 +51,7 @@ from .request_payload import (
 from .request_payload import (
     coerce_bool as _coerce_bool,
 )
-from .runtime import Runtime, _contains_inline_window_kind
+from .runtime import Runtime
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -99,9 +99,12 @@ MCP_DEFAULT_QUERY_VERBOSITY = "minimal"
 # tokens; 200 rows keeps a typical answer well under that. A larger result
 # comes back truncated, with its total row count and a hint.
 MCP_DEFAULT_MAX_ROWS = 200
-# Execute reads up to this many rows, never past a limits.max_rows the query
-# sets itself, so a truncated result can still report its total.
+# Execute asks the warehouse for up to this many rows (never past a
+# limits.max_rows the query sets itself), so a truncated result can still
+# report its total. Some adapters fetch the full result and clip it.
 MCP_ROW_COUNT_CEILING = 10_000
+# The largest max_rows an MCP caller may request.
+MCP_MAX_ROWS_LIMIT = 100_000
 
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
     "semantic_rails_mcp_tool_request_context", default=None
@@ -654,6 +657,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "max_rows": {
                     "type": "integer",
                     "minimum": 1,
+                    "maximum": MCP_MAX_ROWS_LIMIT,
                     "default": MCP_DEFAULT_MAX_ROWS,
                     "description": (
                         "Most rows to return. A larger result sets truncated=true and "
@@ -1202,36 +1206,79 @@ def _strip_execute_transport_args(arguments: Mapping[str, Any]) -> dict[str, Any
 def _positive_int(value: Any) -> int | None:
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if number > 0 else None
 
 
-def _execute_row_limits(query: Mapping[str, Any], requested: Any) -> tuple[int, int]:
-    """Return (rows to return, rows to fetch) for MCP execute.
+def _max_rows_arg(value: Any) -> int | None:
+    """The ``max_rows`` argument as a whole number, or None when absent."""
+
+    if value is None or value == "":
+        return None
+    whole = isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(value, float) and value.is_integer():
+        whole = True
+    if isinstance(value, str) and value.strip().isdigit():
+        whole = True
+    if not whole or not 1 <= int(value) <= MCP_MAX_ROWS_LIMIT:
+        raise _argument_error(
+            f"MCP argument 'max_rows' for 'execute' must be a whole number from 1 to "
+            f"{MCP_MAX_ROWS_LIMIT:,}.",
+            field="max_rows",
+            value=value,
+        )
+    return int(value)
+
+
+def _execute_row_limits(query: Mapping[str, Any], requested: Any) -> tuple[int, int, bool]:
+    """Return (rows to return, rows to fetch, whether the query's limit binds).
 
     A ``max_rows`` argument replaces the default cap. A ``limits.max_rows``
-    inside the query is a fence neither may exceed; with no argument it is
-    the cap, as before. Without a fence, execute fetches up to
-    ``MCP_ROW_COUNT_CEILING`` rows so a truncated result can report its total.
+    inside the query is an operator's fetch ceiling: it can only lower the
+    cap and bounds what is fetched, but never becomes the response size.
+    Without it, execute fetches up to ``MCP_ROW_COUNT_CEILING`` rows so a
+    truncated result can report its total.
     """
 
     limits = query.get("limits")
     fence = _positive_int(limits.get("max_rows")) if isinstance(limits, Mapping) else None
-    cap = _coerce_int(requested, fence or MCP_DEFAULT_MAX_ROWS, field="max_rows", minimum=1)
+    cap = _max_rows_arg(requested) or MCP_DEFAULT_MAX_ROWS
+    if fence is not None and fence <= cap:
+        return fence, fence, True
     if fence is not None:
-        return min(cap, fence), fence
-    return cap, max(cap, MCP_ROW_COUNT_CEILING)
+        return cap, fence, False
+    return cap, max(cap, MCP_ROW_COUNT_CEILING), False
 
 
-def _ungrained_window(query: Mapping[str, Any]) -> bool:
+def _ungrained_time(query: Mapping[str, Any]) -> bool:
+    """A time block with a role and no grain: rows group by the raw timestamp."""
+
     time = query.get("time")
-    if not isinstance(time, Mapping) or time.get("grain") or not time.get("temporal_role"):
+    return isinstance(time, Mapping) and bool(time.get("temporal_role")) and not time.get("grain")
+
+
+# Expression kinds that aggregate over their own clock, so a grouped query
+# using them doesn't project the raw timestamp. Running totals (cumulative,
+# period_to_date) are not among them: their buckets come from time.grain.
+_OWN_CLOCK_KINDS = frozenset({"prior_period", "rolling", "conversion", "offset_window"})
+
+
+def _uses_own_clock(expression: Any) -> bool:
+    if not isinstance(expression, Mapping):
         return False
-    return any(time.get(key) for key in ("start", "end", "range"))
+    if str(expression.get("kind", "") or "") in _OWN_CLOCK_KINDS:
+        return True
+    for value in expression.values():
+        items = value if isinstance(value, list) else [value]
+        if any(_uses_own_clock(item) for item in items):
+            return True
+    return False
 
 
-def _truncate_rows(result: dict[str, Any], *, cap: int, query: Mapping[str, Any]) -> dict[str, Any]:
+def _truncate_rows(
+    result: dict[str, Any], *, cap: int, query: Mapping[str, Any], fence_binds: bool = False
+) -> dict[str, Any]:
     """Return at most ``cap`` rows, and say so loudly.
 
     A truncated result carries ``truncated: true``, ``total_row_count``
@@ -1246,20 +1293,25 @@ def _truncate_rows(result: dict[str, Any], *, cap: int, query: Mapping[str, Any]
     kept = rows[:cap]
     total = None if beyond_fetch else len(rows)
     counted = f"{total:,}" if total is not None else f"more than {len(rows):,}"
-    if _ungrained_window(query):
+    if _ungrained_time(query):
         advice = (
-            "set time.grain (for example 'month', or 'year' for one row per group over the "
-            "window); without a grain, rows group by the raw timestamp"
+            "set time.grain (for example 'month' or 'year'); without a grain, rows group by the "
+            "raw timestamp"
         )
     elif isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
         advice = "use a coarser time.grain, filter, or group by fewer dimensions"
     else:
         advice = "filter, or group by fewer dimensions"
+    raise_hint = (
+        " The query's limits.max_rows caps the rows fetched."
+        if fence_binds
+        else " Or raise max_rows."
+    )
     warning = {
         "code": "EXECUTE_ROWS_TRUNCATED",
         "severity": "warning",
-        "message": f"Returned {len(kept):,} of {counted} rows. To narrow the result, {advice}. "
-        "Or raise max_rows.",
+        "message": f"Returned {len(kept):,} of {counted} rows. To narrow the result, {advice}."
+        + raise_hint,
         "details": {"returned_rows": len(kept), "total_row_count": total, "max_rows": cap},
     }
     return {
@@ -1272,32 +1324,58 @@ def _truncate_rows(result: dict[str, Any], *, cap: int, query: Mapping[str, Any]
     }
 
 
-def _grouped_ungrained_window_warning(query: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Warn about a time window with no grain in a grouped query.
+def _grouped_ungrained_time_warning(query: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Warn about a temporal role with no grain in a grouped query.
 
-    The runtime raises ``UNGRAINED_TIME_PROJECTION`` only for ungrouped
-    queries. A grouped one hits the same trap: each group returns one row
-    per distinct timestamp in the window.
+    The runtime's ``UNGRAINED_TIME_PROJECTION`` covers ungrouped queries
+    only. A grouped one hits the same trap, each group returning one row per
+    distinct timestamp, so MCP adds its own code with the same shape.
     """
 
-    if not query.get("group_by") or not _ungrained_window(query):
+    if not query.get("group_by") or not _ungrained_time(query):
         return None
     if any(
-        _contains_inline_window_kind(item.get("expression") or {})
+        _uses_own_clock(item.get("expression"))
         for item in query.get("select") or []
         if isinstance(item, Mapping)
     ):
         return None
-    return {
-        "code": "UNGRAINED_TIME_PROJECTION",
-        "severity": "warning",
-        "message": (
-            "time has a window but no grain, so each group returns one row per distinct "
-            "timestamp in the window. Set time.grain (for example 'month', or 'year' for one "
-            "row per group over the window)."
+    temporal_role = str((query.get("time") or {}).get("temporal_role", ""))
+    return semantic_issue(
+        code="UNGRAINED_GROUPED_TIME_PROJECTION",
+        message=(
+            "query.time.temporal_role is set without time.grain in a grouped query, so each "
+            "group returns one row per distinct timestamp. Set time.grain (for example "
+            "'month' or 'year') to bucket the result."
         ),
-        "details": {"temporal_role": str((query.get("time") or {}).get("temporal_role", ""))},
-    }
+        severity="warning",
+        stage="mcp",
+        details={
+            "temporal_role": temporal_role,
+            "recovery_hints": [
+                {
+                    "code": "SET_TIME_GRAIN",
+                    "message": "Add time.grain to bucket each group's rows.",
+                    "suggested_patches": [{"add": {"time.grain": "month"}}],
+                }
+            ],
+        },
+    )
+
+
+def _echo_caller_limits(result: dict[str, Any], limits: Any) -> dict[str, Any]:
+    """Echo the caller's own ``limits``, not the fetch ceiling execute added.
+
+    Re-running an echoed query must not raise the default cap.
+    """
+
+    echoed = result.get("query")
+    if not isinstance(echoed, Mapping) or "limits" not in echoed:
+        return result
+    query = {key: value for key, value in echoed.items() if key != "limits"}
+    if isinstance(limits, Mapping):
+        query["limits"] = dict(limits)
+    return {**result, "query": query}
 
 
 def _with_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> dict[str, Any]:
@@ -2104,7 +2182,7 @@ class SemanticLayerMCPAdapter:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             query = _query_payload_with_mcp_default_verbosity(args)
             return _with_warning(
-                self.runtime.validate(query), _grouped_ungrained_window_warning(query)
+                self.runtime.validate(query), _grouped_ungrained_time_warning(query)
             )
 
         return self._guarded(arguments, _run)
@@ -2113,7 +2191,7 @@ class SemanticLayerMCPAdapter:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             query = _query_payload_with_mcp_default_verbosity(args)
             return _with_warning(
-                self.runtime.compile(query), _grouped_ungrained_window_warning(query)
+                self.runtime.compile(query), _grouped_ungrained_time_warning(query)
             )
 
         return self._guarded(arguments, _run)
@@ -2124,16 +2202,18 @@ class SemanticLayerMCPAdapter:
             query_payload = _query_payload_with_mcp_default_verbosity(
                 _strip_execute_transport_args(args)
             )
-            cap, fetch = _execute_row_limits(query_payload, args.get("max_rows"))
+            cap, fetch, fence_binds = _execute_row_limits(query_payload, args.get("max_rows"))
             limits = query_payload.get("limits")
             query_payload["limits"] = {
                 **(dict(limits) if isinstance(limits, Mapping) else {}),
                 "max_rows": fetch,
             }
-            result = self.runtime.query(query_payload)
+            result = _echo_caller_limits(self.runtime.query(query_payload), limits)
             if bool(result.get("ok", True)):
-                result = _truncate_rows(result, cap=cap, query=query_payload)
-                result = _with_warning(result, _grouped_ungrained_window_warning(query_payload))
+                result = _truncate_rows(
+                    result, cap=cap, query=query_payload, fence_binds=fence_binds
+                )
+                result = _with_warning(result, _grouped_ungrained_time_warning(query_payload))
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
             # execute returns 0 rows and the user authored no filters —
             # the most common "successful but wrong" outcome from a
