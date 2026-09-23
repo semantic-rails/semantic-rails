@@ -3322,12 +3322,17 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         warnings.extend(list(compiled.get("warnings", []) or []))
     if warnings:
         print("Warnings:")
+        lines = []
         for warning in warnings:
             if isinstance(warning, dict):
                 code = warning.get("code") or warning.get("kind") or "WARNING"
-                print(f"  {code}: {warning.get('message', '')}")
+                lines.append(f"  {code}: {warning.get('message', '')}")
             else:
-                print(f"  {warning}")
+                lines.append(f"  {warning}")
+        # The engine repeats a planning warning for each measure it applies to (a ratio
+        # has two), and the line doesn't name the measure, so print each line once.
+        for line in dict.fromkeys(lines):
+            print(line)
     query = report.get("query")
     if query:
         print("Query IR:")

@@ -437,6 +437,39 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     assert "  Treated a blank grain as month.\n" in output
 
 
+def test_ask_prints_a_warning_repeated_for_each_measure_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    aligned = {
+        "code": "REWRITE_APPLIED",
+        "message": "Metric leaf uses its own compatible time role and is aligned to the "
+        "requested query grain",
+    }
+
+    class _RatioRuntime(_StubRuntime):
+        def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+            return {
+                **super().query(payload),
+                "warnings": [
+                    {**aligned, "object_ids": ["measure.revenue"]},
+                    {**aligned, "object_ids": ["measure.order_count"]},
+                ],
+            }
+
+    plan = {"ok": True, "best": {"query_ir": {"select": [{"expression": {"metric": "m.aov"}}]}}}
+    monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: _RatioRuntime())
+    monkeypatch.setattr(dev_cli, "plan_payload", lambda *_a, **_k: plan)
+
+    report = dev_cli.ask_report(
+        PackageReference(source_path="/nowhere"), question="aov", execute=True
+    )
+    dev_cli._print_ask_report(report)
+
+    output = capsys.readouterr().out
+    assert output.count("REWRITE_APPLIED: Metric leaf uses its own compatible time role") == 1
+    assert len(report["result"]["warnings"]) == 2  # --json keeps every warning
+
+
 def test_table_formats_numbers_for_people() -> None:
     rows = [
         {
