@@ -22,7 +22,17 @@ from typing import Any
 
 import yaml
 
+from .architect_scaffold import (
+    FirstModel,
+    ProjectSpec,
+    ProjectWarehouse,
+    normalized_package_id,
+    project_scaffold_files,
+    project_setup_questions,
+    project_warehouse_options,
+)
 from .architect_transactions import (
+    ABSENT_PROJECT_REVISION,
     ProjectFileSnapshot,
     ProjectFileUpdate,
     ProjectTransaction,
@@ -188,11 +198,148 @@ class ArchitectMutation:
                 ],
             }
         self._active = False
-        parse, _ = parse_config_report(PackageReference(source_path=str(self.project_path)))
         report = dict(outcome.report)
+        if not (self.project_path / "package.yml").exists():
+            # Undoing create_project removes the package: nothing is left to parse.
+            report["ok"] = True
+            return report
+        parse, _ = parse_config_report(PackageReference(source_path=str(self.project_path)))
         report["parse"] = parse
         report["ok"] = bool(parse.get("ok"))
         return report
+
+
+__all__ = [
+    "ArchitectMutation",
+    "ArchitectProject",
+    "FirstModel",
+    "ProjectSpec",
+    "ProjectWarehouse",
+    "create_project",
+    "project_setup_questions",
+    "project_warehouse_options",
+]
+
+
+def create_project(
+    project_path: str | os.PathLike[str],
+    spec: ProjectSpec,
+    *,
+    workspace_root: str | os.PathLike[str] | None = None,
+    expected_revision: str = ABSENT_PROJECT_REVISION,
+    idempotency_key: str | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> ArchitectMutation:
+    """Create a new package from ``spec`` in one parse-gated transaction.
+
+    ``project_path`` is resolved against ``workspace_root`` (default: the
+    current directory) and must stay inside it and end with the package id.
+    A non-empty directory is replaced only with ``overwrite``; the transaction
+    still requires ``expected_revision`` to match it. The returned mutation
+    carries the transaction report and a one-step ``undo``.
+    """
+    root = Path(workspace_root).expanduser().resolve() if workspace_root else Path.cwd().resolve()
+    raw = Path(project_path).expanduser()
+    if raw.is_symlink():
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Architect project paths may not be symlinks",
+            details={"project_path": str(raw)},
+        )
+    project = (raw if raw.is_absolute() else root / raw).resolve()
+    if not _within(project, root):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Architect authoring only writes inside its configured workspace root",
+            details={"workspace_root": str(root), "requested_path": str(project)},
+        )
+    package_id = normalized_package_id(spec)
+    if project.name != package_id:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "For schema_version: 1 packages, package_id must match the project directory name",
+            details={"package_id": package_id, "project_directory": project.name},
+        )
+    current = project_revision(project)
+    if not overwrite and current != ABSENT_PROJECT_REVISION and current == expected_revision:
+        # A directory may already hold files that are not a project (the
+        # warehouse dbt built, say); replacing an existing package needs
+        # overwrite. A stale expected_revision is the transaction's conflict.
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Project directory already holds a package; pass overwrite=true to replace "
+            "its starter files",
+            details={"project_path": str(project)},
+        )
+    files = project_scaffold_files(spec)
+    key = f"internal-{uuid.uuid4()}" if idempotency_key is None else str(idempotency_key)
+    outcome = ProjectTransaction(project, workspace_root=root).apply(
+        [
+            ProjectFileUpdate(
+                relative_path,
+                content,
+                ((project / relative_path).stat().st_mode & 0o777)
+                if (project / relative_path).exists()
+                else None,
+            )
+            for relative_path, content in files.items()
+        ],
+        expected_revision=expected_revision,
+        idempotency_key=key,
+        intent={
+            "operation": "create_project",
+            "expected_revision": expected_revision,
+            "project_path": str(project),
+            "spec": _spec_intent(spec),
+            "overwrite": overwrite,
+        },
+        dry_run=dry_run,
+        validate_after=True,
+        success_status="created",
+        metadata={
+            "operation": "created",
+            "package_id": package_id,
+            "warehouse": spec.warehouse.kind,
+            "data": spec.warehouse.data,
+            "next_actions": _create_next_actions(spec),
+        },
+    )
+    return ArchitectMutation(
+        report=outcome.report,
+        project_path=project,
+        _snapshots=outcome.snapshots,
+        _active=bool(outcome.snapshots),
+    )
+
+
+def _spec_intent(spec: ProjectSpec) -> dict[str, Any]:
+    return {
+        "package_id": spec.package_id,
+        "description": spec.description,
+        "warehouse": vars(spec.warehouse)
+        | {"connection_options": dict(spec.warehouse.connection_options)},
+        "first_model": vars(spec.first_model),
+        "environments": list(spec.environments),
+    }
+
+
+def _create_next_actions(spec: ProjectSpec) -> list[str]:
+    actions = []
+    if spec.warehouse.kind == "duckdb" and spec.warehouse.data == "external":
+        actions.append(
+            "Build the database at default_db (for example with dbt build) before runtime "
+            "validation; Semantic Rails reads it and never rebuilds it."
+        )
+    actions.extend(
+        [
+            "Run validate_project with mode=runtime before trusting queries.",
+            "Use upsert_model to add dimensions, measures, joins, or additional entities.",
+            "When comparing changes, run impact_project with compare_path or base_ref before "
+            "opening a release review.",
+        ]
+    )
+    return actions
 
 
 @dataclass(frozen=True)

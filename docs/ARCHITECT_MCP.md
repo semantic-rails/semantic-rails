@@ -52,12 +52,31 @@ From a source checkout, prefix the same commands with `uv run`.
 1. Call `architect_guidance` to get the current workflow, safety notes, and validation order.
 2. Call `project_status` before editing an existing package and retain its
    `revision`.
-3. Call `setup_project_dialog` to collect starter project answers. Clients that support MCP
-   elicitation can run it interactively; other clients receive a structured dialog schema and draft
+3. Call `setup_project_dialog` to collect starter project answers, including the warehouse and
+   how to connect to it. Clients that support MCP elicitation can run it interactively; other
+   clients receive the questions (with `when` conditions and choices) and draft
    `create_project` arguments.
 4. Preview `create_project` with `expected_revision: absent`, `dry_run: true`,
    and a caller-generated `idempotency_key`; then repeat with `dry_run: false`
    after reviewing its exact file changes.
+
+`create_project` writes one scaffold, the same one the CLI and REPL use (`architect_service`
+`create_project` with a `ProjectSpec`): a strict package (`schema_strict: true`) with one model,
+its count and amount metrics, an example, a package test and a `.gitignore` for build outputs.
+
+- DuckDB with `data: starter` (the default) adds a two-row CSV seed, so the package runs at once.
+  Starter names are made safe (`Raw Events` becomes `raw_events`).
+- DuckDB with `data: external` reads a database another tool builds, such as dbt
+  (`seed.kind: external`, `default_db` defaulting to `data/<package_id>.duckdb`). Names must match
+  the warehouse: `relation` may be schema-qualified (`main_marts.fct_orders`) and is never renamed,
+  and the model gets only the columns you name (no starter dimension or amount). The database may
+  already sit in the project directory: a directory with no authored files still has revision
+  `absent`. Keep the database inside the package (for example, point the dbt profile's `path` at
+  `<package>/data/<package_id>.duckdb`); a path outside it needs
+  `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
+- Other warehouses take `connection_kind`, `connection_name` and `connection_options`, with
+  secrets named by environment variable only; a literal secret fails the parse gate and nothing is
+  written.
 5. Use `upsert_model`, `upsert_metric`, `upsert_segment`, or scoped file tools
    with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.

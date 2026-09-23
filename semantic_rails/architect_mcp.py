@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
@@ -25,11 +24,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .architect_service import ArchitectProject
+from .architect_service import (
+    ArchitectProject,
+    FirstModel,
+    ProjectSpec,
+    ProjectWarehouse,
+    project_setup_questions,
+)
+from .architect_service import create_project as create_project_service
 from .architect_transactions import (
     ABSENT_PROJECT_REVISION,
-    ProjectFileUpdate,
-    ProjectTransaction,
     project_revision,
 )
 from .config import repo_root
@@ -65,13 +69,24 @@ class ProjectSetupAnswers(BaseModel):
         description="Lowercase package directory name, for example analytics_core."
     )
     description: str = Field(default="Semantic Rails package managed through Architect MCP.")
+    warehouse: str = Field(default="duckdb", description="Warehouse kind, for example duckdb.")
+    data: str = Field(
+        default="starter",
+        description="DuckDB only: 'starter' (a two-row CSV) or 'external' (another tool builds it).",
+    )
+    default_db: str = Field(default="", description="DuckDB database path inside the package.")
+    connection_kind: str = Field(default="", description="Connection kind for other warehouses.")
+    connection_name: str = Field(default="", description="Named connection or profile.")
     first_entity: str = Field(default="event", description="Business entity to model first.")
     relation: str = Field(
-        default="raw_events", description="Warehouse table or CSV-derived relation name."
+        default="raw_events", description="Table or view backing it, schema-qualified if needed."
     )
     primary_key: str = Field(default="event_id")
     time_column: str = Field(default="occurred_at")
-    amount_column: str = Field(default="amount")
+    amount_column: str = Field(
+        default="", description="Numeric column to sum; blank for none (starter data: amount)."
+    )
+    dimension_column: str = Field(default="", description="Categorical column; blank for none.")
 
 
 class ArchitectMutationIssue(BaseModel):
@@ -344,369 +359,69 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
     }
 
 
+_DIALOG_ARGUMENTS = (
+    "description",
+    "warehouse",
+    "data",
+    "default_db",
+    "connection_kind",
+    "connection_name",
+    "first_entity",
+    "relation",
+    "primary_key",
+    "time_column",
+    "amount_column",
+    "dimension_column",
+)
+
+
 def _setup_dialog(package_id: str = "", project_path: str = "", goal: str = "") -> dict[str, Any]:
     package_slug = _slug(package_id, fallback="my_semantic_package")
+    questions = project_setup_questions(ProjectSpec(package_id=package_slug))
+    defaults = {row["id"]: row["default"] for row in questions}
     return {
         "goal": goal,
         "message": "Collect these answers before creating or reshaping a Semantic Rails package.",
-        "questions": [
-            {
-                "id": "package_id",
-                "prompt": "What package directory name should be used?",
-                "default": package_slug,
-            },
-            {
-                "id": "description",
-                "prompt": "What business domain does this package govern?",
-                "default": "Semantic Rails package managed through Architect MCP.",
-            },
-            {
-                "id": "first_entity",
-                "prompt": "What is the first business entity to model?",
-                "default": "event",
-            },
-            {
-                "id": "relation",
-                "prompt": "Which warehouse table or CSV-derived relation backs that entity?",
-                "default": "raw_events",
-            },
-            {
-                "id": "primary_key",
-                "prompt": "Which column uniquely identifies one row/entity?",
-                "default": "event_id",
-            },
-            {
-                "id": "time_column",
-                "prompt": "Which timestamp/date column anchors the first metric?",
-                "default": "occurred_at",
-            },
-            {
-                "id": "amount_column",
-                "prompt": "Which numeric column should become the starter flow metric?",
-                "default": "amount",
-            },
-        ],
+        "questions": questions,
         "recommended_next_tool": "create_project",
-        "draft_arguments": {
-            "project_path": project_path or f"configs/semantic_rails/{package_slug}",
-            "package_id": package_slug,
-            "description": "Semantic Rails package managed through Architect MCP.",
-            "first_entity": "event",
-            "relation": "raw_events",
-            "primary_key": "event_id",
-            "time_column": "occurred_at",
-            "amount_column": "amount",
-            "expected_revision": ABSENT_PROJECT_REVISION,
-            "idempotency_key": "<caller-generated-unique-key>",
-            "dry_run": True,
-        },
+        "draft_arguments": _draft_arguments(package_slug, project_path, defaults),
     }
 
 
-def _starter_documents(
-    *,
-    package_id: str,
-    description: str,
-    first_entity: str,
-    relation: str,
-    primary_key: str,
-    time_column: str,
-    amount_column: str,
+def _draft_arguments(
+    package_slug: str, project_path: str, answers: dict[str, Any]
 ) -> dict[str, Any]:
-    entity = _slug(first_entity, fallback="event")
-    model_id = f"{entity}s" if not entity.endswith("s") else entity
-    entity_title = _title(entity)
-    event_type_dim = f"dimension.{package_id}_{entity}_type"
-    temporal_role = f"temporal_role.{package_id}_{entity}_time"
-    count_metric = f"metric.{package_id}.{entity}_count"
-    amount_metric = f"metric.{package_id}.total_amount"
-    package = {
-        "schema_version": 1,
-        "package": {
-            "id": package_id,
-            "namespace": package_id,
-            "name": package_id,
-            "description": description,
-            "warehouse": "duckdb",
-            "default_db": f"data/{package_id}.duckdb",
-            "schema_strict": True,
-            "seed": {"kind": "csv_dir_duckdb", "source": f"data/{package_id}_csv"},
-            "environments": ["development", "staging", "production"],
-        },
-        "defaults": {
-            "dimension": {"groupable": True, "filterable": True},
-            "time": {
-                "timezone": "UTC",
-                "default_query_axis": False,
-                "supported_grains": ["day", "week", "month", "quarter", "year"],
-            },
-            "measure": {"subject_entity": "self", "aggregation_entity": "self"},
-            "relationship": {"traversal": ["forward", "reverse"]},
-        },
-    }
-    graph = {
-        "graph": {
-            "entities": {
-                entity: {
-                    "label": entity_title,
-                    "key": [primary_key],
-                    "model": model_id,
-                    "allowed_as_root": True,
-                }
-            }
-        }
-    }
-    model = {
-        "model": {
-            "id": model_id,
-            "relation": relation,
-            "entities": {entity: {}},
-            "description": f"One row per {entity.replace('_', ' ')}.",
-            "topics": [entity, "starter"],
-            "dimensions": {
-                "event_type": {
-                    "as": event_type_dim,
-                    "label": "Event type",
-                    "description": "Starter category used to verify grouping behavior.",
-                    "kind": "categorical",
-                    "synonyms": ["type", "category"],
-                },
-            },
-            "times": {
-                time_column: {
-                    "as": temporal_role,
-                    "label": _title(time_column),
-                    "column": time_column,
-                    "kind": "timestamp",
-                    "class": "event_time",
-                    "default_query_axis": True,
-                    "default": True,
-                }
-            },
-            "measures": {
-                f"{entity}_count": {
-                    "label": f"{entity_title} count",
-                    "description": f"Count of unique {entity.replace('_', ' ')} rows.",
-                    "kind": "entity_count",
-                    "entity_key": primary_key,
-                    "accumulation": {"kind": "event"},
-                    "value_type": "count",
-                    "examples": [f"How many {entity.replace('_', ' ')} rows are there by day?"],
-                    "meta": {
-                        "owner_team": "analytics",
-                        "review_priority": "medium",
-                        "change_risk": "low",
-                    },
-                },
-                "total_amount": {
-                    "label": "Total amount",
-                    "description": f"Sum of {amount_column} for the starter {entity.replace('_', ' ')} relation.",
-                    "expr": amount_column,
-                    "kind": "aggregate",
-                    "default_agg": "sum",
-                    "accumulation": {"kind": "flow"},
-                    "value_type": "number",
-                    "examples": ["How does total amount trend over time?"],
-                    "meta": {
-                        "owner_team": "analytics",
-                        "review_priority": "medium",
-                        "change_risk": "low",
-                    },
-                },
-            },
-        }
-    }
-    metrics = {
-        "metrics": {
-            f"{entity}_count": {
-                "as": count_metric,
-                "label": f"{entity_title} count",
-                "description": f"Count of unique {entity.replace('_', ' ')} rows.",
-                "kind": "aggregate",
-                "measure": f"{entity}_count",
-                "value_type": "count",
-                "temporal_role": temporal_role,
-                "meta": {
-                    "owner_team": "analytics",
-                    "review_priority": "medium",
-                    "change_risk": "low",
-                },
-            },
-            "total_amount": {
-                "as": amount_metric,
-                "label": "Total amount",
-                "description": f"Sum of {amount_column} for the starter {entity.replace('_', ' ')} relation.",
-                "kind": "aggregate",
-                "measure": "total_amount",
-                "value_type": "number",
-                "temporal_role": temporal_role,
-                "meta": {
-                    "owner_team": "analytics",
-                    "review_priority": "medium",
-                    "change_risk": "low",
-                },
-            },
-        }
-    }
-    examples = {
-        "examples": {
-            "starter_amount_by_type": {
-                "query": {
-                    "version": 1,
-                    "select": [{"expression": {"metric": amount_metric}, "as": "total_amount"}],
-                    "group_by": [event_type_dim],
-                    "time": {"temporal_role": temporal_role, "grain": "day"},
-                    "limit": 10,
-                },
-                "expected_shape": {"min_rows": 1},
-            }
-        }
-    }
-    tests = {
-        "tests": {
-            "starter_count_returns_rows": {
-                "kind": "query_row_count_bounds",
-                "query": {
-                    "version": 1,
-                    "select": [{"expression": {"metric": count_metric}, "as": "row_count"}],
-                    "time": {"temporal_role": temporal_role, "grain": "day"},
-                    "limit": 10,
-                },
-                "min_rows": 1,
-            }
-        }
-    }
-    csv = (
-        f"{primary_key},{time_column},event_type,{amount_column}\n"
-        f"1,2026-01-01T09:00:00,starter,100.0\n"
-        f"2,2026-01-02T09:00:00,starter,75.5\n"
-    )
     return {
-        "package": package,
-        "graph": graph,
-        "model": model,
-        "metrics": metrics,
-        "examples": examples,
-        "tests": tests,
-        "csv": csv,
-        "model_id": model_id,
-        "entity": entity,
+        "project_path": project_path or f"configs/semantic_rails/{package_slug}",
+        "package_id": package_slug,
+        **{name: answers.get(name, "") for name in _DIALOG_ARGUMENTS},
+        "expected_revision": ABSENT_PROJECT_REVISION,
+        "idempotency_key": "<caller-generated-unique-key>",
+        "dry_run": True,
     }
 
 
-def _create_project_impl(
-    *,
-    workspace_root: Path,
-    project_path: str,
-    package_id: str,
-    description: str,
-    first_entity: str,
-    relation: str,
-    primary_key: str,
-    time_column: str,
-    amount_column: str,
-    overwrite: bool,
-    expected_revision: str,
-    idempotency_key: str,
-    dry_run: bool,
-) -> dict[str, Any]:
-    package_slug = _slug(package_id)
-    relation_slug = _slug(relation, fallback="raw_events")
-    primary_key_slug = _slug(primary_key, fallback="event_id")
-    time_column_slug = _slug(time_column, fallback="occurred_at")
-    amount_column_slug = _slug(amount_column, fallback="amount")
-    project = _resolve_project_path(
-        project_path,
-        workspace_root=workspace_root,
-        package_id=package_slug,
-        require_exists=False,
-        require_package_root=False,
+def _project_spec(arguments: dict[str, Any]) -> ProjectSpec:
+    return ProjectSpec(
+        package_id=str(arguments["package_id"]),
+        description=str(arguments.get("description") or ""),
+        warehouse=ProjectWarehouse(
+            kind=str(arguments.get("warehouse") or "duckdb"),
+            data=arguments.get("data") or "starter",
+            default_db=str(arguments.get("default_db") or ""),
+            connection_kind=str(arguments.get("connection_kind") or ""),
+            connection_name=str(arguments.get("connection_name") or ""),
+            connection_options=dict(arguments.get("connection_options") or {}),
+        ),
+        first_model=FirstModel(
+            entity=str(arguments.get("first_entity") or "event"),
+            relation=str(arguments.get("relation") or "raw_events"),
+            primary_key=str(arguments.get("primary_key") or "event_id"),
+            time_column=str(arguments.get("time_column") or "occurred_at"),
+            amount_column=str(arguments.get("amount_column") or ""),
+            dimension_column=str(arguments.get("dimension_column") or ""),
+        ),
     )
-    if project.name != package_slug:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            "For schema_version: 1 packages, package_id must match the project directory name",
-            details={"package_id": package_slug, "project_directory": project.name},
-        )
-    if (
-        project.exists()
-        and any(project.iterdir())
-        and not overwrite
-        and project_revision(project) == expected_revision
-    ):
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            "Project directory already exists and is not empty; pass overwrite=true to replace starter files",
-            details={"project_path": str(project)},
-        )
-    docs = _starter_documents(
-        package_id=package_slug,
-        description=description,
-        first_entity=first_entity,
-        relation=relation_slug,
-        primary_key=primary_key_slug,
-        time_column=time_column_slug,
-        amount_column=amount_column_slug,
-    )
-    payloads: dict[str, bytes] = {}
-    for rel, payload in {
-        "package.yml": docs["package"],
-        "graph.yml": docs["graph"],
-        f"models/core/{docs['model_id']}.yml": docs["model"],
-        "metrics/core.yml": docs["metrics"],
-        "examples/core.yml": docs["examples"],
-        "tests/core.yml": docs["tests"],
-    }.items():
-        payloads[rel] = yaml.safe_dump(
-            payload,
-            sort_keys=False,
-            allow_unicode=False,
-        ).encode("utf-8")
-    csv_relative = f"data/{package_slug}_csv/{relation_slug}.csv"
-    payloads[csv_relative] = str(docs["csv"]).encode("utf-8")
-    outcome = ProjectTransaction(
-        project,
-        workspace_root=workspace_root,
-    ).apply(
-        [
-            ProjectFileUpdate(
-                relative_path,
-                content,
-                ((project / relative_path).stat().st_mode & 0o777)
-                if (project / relative_path).exists()
-                else None,
-            )
-            for relative_path, content in payloads.items()
-        ],
-        expected_revision=expected_revision,
-        idempotency_key=idempotency_key,
-        intent={
-            "operation": "create_project",
-            "expected_revision": expected_revision,
-            "project_path": str(project),
-            "package_id": package_slug,
-            "description": description,
-            "first_entity": first_entity,
-            "relation": relation_slug,
-            "primary_key": primary_key_slug,
-            "time_column": time_column_slug,
-            "amount_column": amount_column_slug,
-            "overwrite": overwrite,
-        },
-        dry_run=dry_run,
-        validate_after=True,
-        success_status="created",
-        metadata={
-            "operation": "created",
-            "package_id": package_slug,
-            "next_actions": [
-                "Run validate_project with mode=runtime before trusting queries.",
-                "Use upsert_model to add dimensions, measures, joins, or additional entities.",
-                "When comparing changes, run impact_project with compare_path or base_ref before opening a release review.",
-            ],
-        },
-    )
-    return outcome.report
 
 
 def _project_files(project: Path) -> list[dict[str, Any]]:
@@ -963,54 +678,75 @@ def create_architect_mcp_server(
             "mode": "elicitation",
             "answers": answers,
             "recommended_next_tool": "create_project",
-            "draft_arguments": {
-                "project_path": project_path or f"configs/semantic_rails/{package_slug}",
-                "package_id": package_slug,
-                "description": answers.get("description", ""),
-                "first_entity": answers.get("first_entity", "event"),
-                "relation": answers.get("relation", "raw_events"),
-                "primary_key": answers.get("primary_key", "event_id"),
-                "time_column": answers.get("time_column", "occurred_at"),
-                "amount_column": answers.get("amount_column", "amount"),
-                "expected_revision": ABSENT_PROJECT_REVISION,
-                "idempotency_key": "<caller-generated-unique-key>",
-                "dry_run": True,
-            },
+            "draft_arguments": _draft_arguments(package_slug, project_path, answers),
         }
 
-    @mcp.tool(annotations=_mutation_annotations("Create Semantic Rails project"))
+    @mcp.tool(
+        annotations=_mutation_annotations("Create Semantic Rails project"),
+        description=(
+            "Preview or atomically create a strict schema_version: 1 project. DuckDB packages "
+            "use a two-row starter CSV (data=starter) or read a database another tool builds, "
+            "such as dbt (data=external); other warehouses need connection_kind, with secrets "
+            "named by environment variable only."
+        ),
+    )
     def create_project(
         package_id: str,
         expected_revision: str,
         idempotency_key: str,
         project_path: str = "",
         description: str = "Semantic Rails package managed through Architect MCP.",
+        warehouse: str = "duckdb",
+        data: Literal["starter", "external"] = "starter",
+        default_db: str = "",
+        connection_kind: str = "",
+        connection_name: str = "",
+        connection_options: dict[str, Any] | None = None,
         first_entity: str = "event",
         relation: str = "raw_events",
         primary_key: str = "event_id",
         time_column: str = "occurred_at",
-        amount_column: str = "amount",
+        amount_column: str = "",
+        dimension_column: str = "",
         overwrite: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically create a runnable schema_version: 1 project."""
         try:
+            spec = _project_spec(
+                {
+                    "package_id": package_id,
+                    "description": description,
+                    "warehouse": warehouse,
+                    "data": data,
+                    "default_db": default_db,
+                    "connection_kind": connection_kind,
+                    "connection_name": connection_name,
+                    "connection_options": connection_options,
+                    "first_entity": first_entity,
+                    "relation": relation,
+                    "primary_key": primary_key,
+                    "time_column": time_column,
+                    "amount_column": amount_column,
+                    "dimension_column": dimension_column,
+                }
+            )
+            project = _resolve_project_path(
+                project_path,
+                workspace_root=root,
+                package_id=package_id,
+                require_exists=False,
+                require_package_root=False,
+            )
             return _mutation_result(
-                _create_project_impl(
+                create_project_service(
+                    project,
+                    spec,
                     workspace_root=root,
-                    project_path=project_path,
-                    package_id=package_id,
-                    description=description,
-                    first_entity=first_entity,
-                    relation=relation,
-                    primary_key=primary_key,
-                    time_column=time_column,
-                    amount_column=amount_column,
-                    overwrite=overwrite,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
+                    overwrite=overwrite,
                     dry_run=dry_run,
-                )
+                ).report
             )
         except Exception as exc:
             return _mutation_error_result(

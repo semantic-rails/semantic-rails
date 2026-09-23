@@ -113,12 +113,20 @@ def test_setup_project_dialog_returns_noninteractive_draft(tmp_path: Path):
     assert [question["id"] for question in result["questions"]] == [
         "package_id",
         "description",
+        "warehouse",
+        "data",
+        "default_db",
+        "connection_kind",
+        "connection_name",
         "first_entity",
         "relation",
         "primary_key",
         "time_column",
         "amount_column",
+        "dimension_column",
     ]
+    assert result["draft_arguments"]["warehouse"] == "duckdb"
+    assert result["draft_arguments"]["data"] == "starter"
 
 
 def test_create_project_scaffolds_parseable_and_runnable_package(tmp_path: Path):

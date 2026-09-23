@@ -187,6 +187,10 @@ def _authored_project_files(project_path: Path) -> dict[str, bytes]:
 
 
 def _revision_from_files(files: Mapping[str, bytes]) -> str:
+    # No authored files (a directory holding only a warehouse dbt built, say)
+    # is no project yet: the same revision as a missing directory.
+    if not files:
+        return ABSENT_PROJECT_REVISION
     digest = hashlib.sha256()
     digest.update(f"semantic-rails-project-revision-v{PROJECT_REVISION_FORMAT}\0".encode())
     for relative_path in sorted(files):
