@@ -123,6 +123,8 @@ def test_fastmcp_facade_sends_the_instructions(
     monkeypatch.setitem(sys.modules, "mcp", mcp_module)
     monkeypatch.setitem(sys.modules, "mcp.server", server_module)
     monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
+    # On SDK 2.x the facade prefers mcp.server.mcpserver; keep this test on the fake.
+    monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", None)
 
     create_optional_fastmcp_server(adapter)
     assert created["instructions"] == MCP_SERVER_INSTRUCTIONS

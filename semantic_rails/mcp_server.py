@@ -32,7 +32,7 @@ from .http_core import (
     clean_request_id,
     cors_origin_header,
 )
-from .mcp import MCP_SERVER_INSTRUCTIONS, SemanticLayerMCPAdapter
+from .mcp import MCP_SERVER_INSTRUCTIONS, SemanticLayerMCPAdapter, json_text
 from .request_context import (
     RequestContext,
     api_key_auth_result,
@@ -109,9 +109,7 @@ def _send_transport_headers(
 
 def _tool_content(payload: dict[str, Any]) -> dict[str, Any]:
     return {
-        "content": [
-            {"type": "text", "text": json.dumps(payload, indent=2, sort_keys=True, default=str)}
-        ],
+        "content": [{"type": "text", "text": json_text(payload)}],
         "structuredContent": payload,
         "isError": not bool(payload.get("ok", True)),
     }
