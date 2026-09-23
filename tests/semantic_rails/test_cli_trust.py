@@ -23,7 +23,14 @@ from typing import Any
 
 import pytest
 
-from semantic_rails import dev_cli
+import semantic_rails.cli.commands.project as project_commands
+import semantic_rails.cli.common as common
+import semantic_rails.cli.interpretation as interpretation
+import semantic_rails.cli.output as cli_output
+import semantic_rails.cli.reports as reports
+import semantic_rails.cli.scaffold as scaffold
+import semantic_rails.repl.shell as repl_shell
+from semantic_rails.config import list_package_paths
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
 
@@ -113,7 +120,7 @@ def test_json_commands_without_a_chosen_package_return_a_structured_error(
 def test_setup_reports_no_package_instead_of_checking_the_bundled_one(
     nowhere: dict[str, str],
 ) -> None:
-    report = dev_cli.setup_report(
+    report = reports.setup_report(
         argparse.Namespace(package="", path="", checks="parse", server=False)
     )
 
@@ -132,8 +139,8 @@ def _answer(monkeypatch: pytest.MonkeyPatch, *replies: str | type[BaseException]
             raise value
         return value
 
-    monkeypatch.setattr(dev_cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr(dev_cli.sys, "stdout", _TTYBuffer())
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdout", _TTYBuffer())
     monkeypatch.setattr("builtins.input", reply)
     return prompts
 
@@ -157,14 +164,14 @@ def test_interactive_ask_answers_nothing_unless_the_sample_package_is_confirmed(
     nowhere: dict[str, str], monkeypatch: pytest.MonkeyPatch, reply: str | type[BaseException]
 ) -> None:
     prompts = _answer(monkeypatch, reply)
-    monkeypatch.setattr(dev_cli, "ask_report", lambda *_a, **_k: pytest.fail("answered"))
+    monkeypatch.setattr(project_commands, "ask_report", lambda *_a, **_k: pytest.fail("answered"))
 
     with pytest.raises(SemanticLayerError) as exc:
-        dev_cli.cmd_ask(_ask_args())
+        project_commands.cmd_ask(_ask_args())
 
     assert exc.value.details["reason"] == "no_package_selected"
     assert prompts == ["Use the bundled `jaffle_shop` sample package? [y/N]: "]
-    notice = dev_cli.sys.stdout.getvalue()
+    notice = sys.stdout.getvalue()
     assert "No package selected." in notice
     assert "sample data, not yours" in notice
 
@@ -174,10 +181,12 @@ def test_interactive_ask_uses_the_sample_package_after_confirmation(
 ) -> None:
     _answer(monkeypatch, "y")
     used: list[PackageReference] = []
-    monkeypatch.setattr(dev_cli, "ask_report", lambda ref, **_k: used.append(ref) or {"ok": True})
-    monkeypatch.setattr(dev_cli, "_print_ask_report", lambda _report: None)
+    monkeypatch.setattr(
+        project_commands, "ask_report", lambda ref, **_k: used.append(ref) or {"ok": True}
+    )
+    monkeypatch.setattr(project_commands, "_print_ask_report", lambda _report: None)
 
-    dev_cli.cmd_ask(_ask_args())
+    project_commands.cmd_ask(_ask_args())
 
     assert [ref.package_id for ref in used] == ["jaffle_shop"]
 
@@ -188,7 +197,7 @@ def test_interactive_listing_and_validation_also_ask_first(
 ) -> None:
     prompts = _answer(monkeypatch, "n")
     args = argparse.Namespace(package="", path="", json=False)
-    run = dev_cli.cmd_ls if command == "ls" else dev_cli.cmd_project_validate
+    run = project_commands.cmd_ls if command == "ls" else project_commands.cmd_project_validate
 
     with pytest.raises(SemanticLayerError):
         run(args)
@@ -202,12 +211,12 @@ def test_local_profile_is_used_without_a_prompt(
     from semantic_rails.local_config import init_local_profile
 
     prompts = _answer(monkeypatch)
-    project = dev_cli.create_project_report(
+    project = scaffold.create_project_report(
         package_id="profile_pkg", workspace_root=str(tmp_path), run_checks=False
     )["project_path"]
     init_local_profile(package_path=project)
 
-    assert dev_cli.default_package_ref(interactive=True).source_path == project
+    assert common.default_package_ref(interactive=True).source_path == project
     assert prompts == []
 
 
@@ -216,13 +225,13 @@ def test_json_mode_and_chosen_packages_never_prompt(
 ) -> None:
     prompts = _answer(monkeypatch)
     with pytest.raises(SemanticLayerError):
-        dev_cli.cmd_ask(_ask_args(json=True))
+        project_commands.cmd_ask(_ask_args(json=True))
 
-    project = dev_cli.create_project_report(
+    project = scaffold.create_project_report(
         package_id="cwd_pkg", workspace_root=str(tmp_path), run_checks=False
     )["project_path"]
     monkeypatch.chdir(Path(project) / "models")
-    assert dev_cli.default_package_ref(interactive=True).source_path == project
+    assert common.default_package_ref(interactive=True).source_path == project
     assert prompts == []
 
 
@@ -231,14 +240,12 @@ def test_repl_without_a_package_asks_before_opening_the_sample_package(
 ) -> None:
     prompts = _answer(monkeypatch, "", "y", "exit")
     with pytest.raises(SemanticLayerError):
-        dev_cli.run_interactive_shell()
+        repl_shell.run_interactive_shell()
 
-    dev_cli.run_interactive_shell()
+    repl_shell.run_interactive_shell()
 
     assert prompts[:2] == ["Use the bundled `jaffle_shop` sample package? [y/N]: "] * 2
-    assert "package  jaffle_shop (bundled sample package, not your data)" in (
-        dev_cli.sys.stdout.getvalue()
-    )
+    assert "package  jaffle_shop (bundled sample package, not your data)" in (sys.stdout.getvalue())
 
 
 ASK = ("ask", "monthly revenue by store", "--run", "--limit", "2")
@@ -348,13 +355,13 @@ def test_ask_limits_sql_to_one_extra_row_and_fences_at_the_limit(
 ) -> None:
     runtime = _StubRuntime()
     query = {"select": [{"expression": {"measure": "measure.orders"}}], **planned}
-    monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: runtime)
+    monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: runtime)
     monkeypatch.setattr(
-        dev_cli, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
+        reports, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
     )
-    monkeypatch.setattr(dev_cli, "resolve_catalog", lambda *_a, **_k: {})
+    monkeypatch.setattr(interpretation, "resolve_catalog", lambda *_a, **_k: {})
 
-    dev_cli.ask_report(
+    reports.ask_report(
         PackageReference(source_path="/nowhere"), question="q", execute=True, limit=5
     )
 
@@ -392,16 +399,16 @@ def test_ask_separates_a_planned_limit_from_the_cli_cap(
     hint: str | None,
 ) -> None:
     query = {"select": [{"expression": {"measure": "measure.orders"}}], "limit": 5}
-    monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: _LimitingRuntime())
+    monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: _LimitingRuntime())
     monkeypatch.setattr(
-        dev_cli, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
+        reports, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
     )
-    monkeypatch.setattr(dev_cli, "resolve_catalog", lambda *_a, **_k: {})
+    monkeypatch.setattr(interpretation, "resolve_catalog", lambda *_a, **_k: {})
 
-    report = dev_cli.ask_report(
+    report = reports.ask_report(
         PackageReference(source_path="/nowhere"), question="q", execute=True, limit=limit
     )
-    dev_cli._print_ask_report(report)
+    cli_output._print_ask_report(report)
 
     output = capsys.readouterr().out
     assert report["result"]["planned_limit"] == 5
@@ -420,14 +427,14 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
             "resolved": [{"id": "measure.orders", "label": "Orders"}],
         },
     }
-    monkeypatch.setattr(dev_cli, "_runtime_from_ref", lambda _ref: runtime)
-    monkeypatch.setattr(dev_cli, "plan_payload", lambda *_a, **_k: plan)
-    monkeypatch.setattr(dev_cli, "resolve_catalog", lambda *_a, **_k: {})
+    monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: runtime)
+    monkeypatch.setattr(reports, "plan_payload", lambda *_a, **_k: plan)
+    monkeypatch.setattr(interpretation, "resolve_catalog", lambda *_a, **_k: {})
 
-    report = dev_cli.ask_report(
+    report = reports.ask_report(
         PackageReference(source_path="/nowhere"), question="orders", execute=True, limit=5
     )
-    dev_cli._print_ask_report(report)
+    cli_output._print_ask_report(report)
 
     assert report["result"]["truncated"] is True
     output = capsys.readouterr().out
@@ -466,7 +473,7 @@ def test_table_formats_numbers_for_people() -> None:
         {"field": "revenue", "display_label": "Revenue", "type": "currency"},
     ]
 
-    header, rule, first, second = dev_cli._table_lines(rows, columns)
+    header, rule, first, second = cli_output._table_lines(rows, columns)
 
     assert header.split(" | ") == [
         "Store name".ljust(40),
@@ -514,23 +521,23 @@ def test_table_formats_numbers_for_people() -> None:
     ],
 )
 def test_number_edge_cases(value: Any, decimals: int, expected: str) -> None:
-    assert dev_cli._format_number(value, decimals) == expected
+    assert cli_output._format_number(value, decimals) == expected
 
 
 def test_columns_never_round_a_nonzero_value_to_zero_or_a_big_int_through_float() -> None:
-    assert dev_cli._format_column([1e-7, -1e-7], column_type="number") == (
+    assert cli_output._format_column([1e-7, -1e-7], column_type="number") == (
         ["1e-07", "-1e-07"],
         True,
     )
-    assert dev_cli._format_column([9007199254740993, 0.5], column_type="number") == (
+    assert cli_output._format_column([9007199254740993, 0.5], column_type="number") == (
         ["9,007,199,254,740,993.000", "0.500"],
         True,
     )
-    assert dev_cli._format_column([10**309, 0.5], column_type="number") == (
+    assert cli_output._format_column([10**309, 0.5], column_type="number") == (
         [f"{10**309:,}.000", "0.500"],
         True,
     )
-    assert dev_cli._format_column([9007199254740993], column_type="currency") == (
+    assert cli_output._format_column([9007199254740993], column_type="currency") == (
         ["9,007,199,254,740,993.00"],
         True,
     )
@@ -541,7 +548,7 @@ def test_validation_labels_the_sample_package(
     nowhere: dict[str, str], selection: tuple[str, str]
 ) -> None:
     flag, value = selection
-    value = dev_cli.list_package_paths()["jaffle_shop"] if value == "<bundled>" else value
+    value = list_package_paths()["jaffle_shop"] if value == "<bundled>" else value
 
     human = _run(nowhere, "project", "validate", flag, value, "--mode", "parse")
     payload = json.loads(
@@ -556,28 +563,28 @@ def test_validation_labels_the_sample_package(
 def test_a_registered_package_that_is_not_a_shipped_sample_is_not_labelled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    mine = dev_cli.create_project_report(
+    mine = scaffold.create_project_report(
         package_id="my_company", workspace_root=str(tmp_path), run_checks=False
     )["project_path"]
-    registered = {**dev_cli.list_package_paths(), "my_company": mine}
-    monkeypatch.setattr(dev_cli, "list_package_paths", lambda: registered)
+    registered = {**list_package_paths(), "my_company": mine}
+    monkeypatch.setattr(common, "list_package_paths", lambda: registered)
     ref = PackageReference(source_path=mine, package_id="my_company")
 
-    assert not dev_cli._is_bundled_ref(ref)
-    assert dev_cli._ref_display(ref) == "my_company"
-    assert dev_cli._is_bundled_ref(PackageReference(source_path=registered["jaffle_shop"]))
+    assert not common._is_bundled_ref(ref)
+    assert common._ref_display(ref) == "my_company"
+    assert common._is_bundled_ref(PackageReference(source_path=registered["jaffle_shop"]))
 
 
 def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str, str]) -> None:
-    bundled = dev_cli.list_package_paths()["jaffle_shop"]
+    bundled = list_package_paths()["jaffle_shop"]
     for ref in (
         PackageReference(source_path=bundled, package_id="jaffle_shop"),
         PackageReference(source_path=bundled),
         PackageReference(source_path=str(Path(bundled) / "package.yml")),
     ):
-        assert dev_cli._is_bundled_ref(ref), ref
-        assert dev_cli._ref_display(ref).endswith("(bundled sample package, not your data)")
-    assert not dev_cli._is_bundled_ref(PackageReference(source_path=str(Path.cwd())))
+        assert common._is_bundled_ref(ref), ref
+        assert common._ref_display(ref).endswith("(bundled sample package, not your data)")
+    assert not common._is_bundled_ref(PackageReference(source_path=str(Path.cwd())))
 
     proc = _run(nowhere, "ask", "--path", bundled, "monthly revenue by store", "--json")
     assert proc.returncode == 0, proc.stderr
@@ -592,7 +599,7 @@ def test_dimension_columns_print_ids_and_years_as_stored() -> None:
         {"field": "revenue", "semantic_id": "measure.revenue", "type": "currency"},
     ]
 
-    header, _rule, row = dev_cli._table_lines(rows, columns)
+    header, _rule, row = cli_output._table_lines(rows, columns)
 
     assert row.split(" | ") == [" 1234567", "       2024", "1,234.50"]
 
@@ -601,7 +608,7 @@ def test_cells_and_headers_never_send_control_codes_to_the_terminal() -> None:
     rows = [{"note": "a\x1b[31mred\tb\rc"}]
     columns = [{"field": "note", "display_label": "No\x07te"}]
 
-    header, _rule, row = dev_cli._table_lines(rows, columns)
+    header, _rule, row = cli_output._table_lines(rows, columns)
 
     assert header == "No\\x07te"
     assert row == "a\\x1b[31mred b c"
@@ -618,13 +625,13 @@ def test_cells_and_headers_never_send_control_codes_to_the_terminal() -> None:
     ],
 )
 def test_real_world_text_prints_as_stored(value: str) -> None:
-    _header, _rule, row = dev_cli._table_lines([{"key": value}], [])
+    _header, _rule, row = cli_output._table_lines([{"key": value}], [])
 
     assert row == value
 
 
 def test_c1_controls_and_bidi_overrides_are_escaped() -> None:
-    _header, _rule, row = dev_cli._table_lines([{"key": "a\x9bb\x7fc\u202ed"}], [])
+    _header, _rule, row = cli_output._table_lines([{"key": "a\x9bb\x7fc\u202ed"}], [])
 
     assert row == "a\\x9bb\\x7fc\\u202ed"
 
@@ -634,7 +641,7 @@ def test_long_duplicate_labels_stay_distinct_after_shortening() -> None:
     rows = [{"a" * 45: 1, "a" * 44 + "b": 2}]
     columns = [{"field": field, "display_label": long_label} for field in rows[0]]
 
-    header = dev_cli._table_lines(rows, columns)[0]
+    header = cli_output._table_lines(rows, columns)[0]
 
     assert header.split(" | ") == ["a" * 37 + "...", "a" * 37 + "... #2"]
 
@@ -647,6 +654,6 @@ def test_table_headers_show_time_grain_and_disambiguate_duplicate_labels() -> No
         {"field": "b", "display_label": "Revenue", "type": "number"},
     ]
 
-    header = dev_cli._table_lines(rows, columns)[0]
+    header = cli_output._table_lines(rows, columns)[0]
 
     assert header.split(" | ") == ["Order time (month)", "a", "b"]
