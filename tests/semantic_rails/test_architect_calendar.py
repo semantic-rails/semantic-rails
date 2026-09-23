@@ -340,3 +340,24 @@ def test_a_regular_model_can_be_bound_to_a_calendar(workspace: Path) -> None:
     orders_model = yaml.safe_load((workspace / "shop" / "models" / "orders.yml").read_text())
     assert orders_model["model"]["calendar_id"] == "fiscal"
     assert "kind" not in _graph_entity(workspace, "order")
+
+
+def test_retries_replay_and_stale_writers_conflict_before_calendar_checks(
+    workspace: Path,
+) -> None:
+    project = _project(workspace)
+    stale = project_revision(workspace / "shop")
+    request = {**_calendar(), "expected_revision": stale, "idempotency_key": "calendar"}
+
+    first = project.upsert_model(**request)
+    again = project.upsert_model(**request)
+    with pytest.raises(SemanticLayerError) as conflict:
+        # Against today's package this second default calendar would be refused.
+        project.upsert_model(
+            **_calendar(model_id="days", entity_key="day"),
+            expected_revision=stale,
+            idempotency_key="days",
+        )
+
+    assert first.report["ok"] is True and again.report["status"] == "replayed"
+    assert conflict.value.details["conflict_kind"] == "stale_revision"

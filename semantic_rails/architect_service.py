@@ -426,7 +426,25 @@ class ArchitectProject:
         its ``kind: date`` dimensions are gone; ``None`` leaves it as it is.
         On a regular model, ``calendar_id`` binds its times to that calendar.
         """
-        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        intent = {
+            "operation": "upsert_model",
+            "model_id": model_id,
+            "entity_key": entity_key,
+            "relation": relation,
+            "primary_key": primary_key,
+            "dimensions": dimensions,
+            "times": times,
+            "measures": measures,
+            "joins": joins,
+            "group": group,
+            "description": description,
+            "label": label,
+            "calendar": calendar,
+            "calendar_id": calendar_id,
+        }
+        expected, key, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay
         documents: dict[Path, dict[str, Any]] = {}
         raw = self._raw_inventory()
         staged = self._stage_model(
@@ -461,22 +479,7 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            intent={
-                "operation": "upsert_model",
-                "model_id": model_id,
-                "entity_key": entity_key,
-                "relation": relation,
-                "primary_key": primary_key,
-                "dimensions": dimensions,
-                "times": times,
-                "measures": measures,
-                "joins": joins,
-                "group": group,
-                "description": description,
-                "label": label,
-                "calendar": calendar,
-                "calendar_id": calendar_id,
-            },
+            intent=intent,
             extra={"entity": staged["entity"]},
         )
 
@@ -503,7 +506,10 @@ class ArchitectProject:
         A reference whose target is missing, or which points at a column other
         than the target's key, is reported under ``skipped_references``.
         """
-        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        intent = {"operation": "upsert_models", "models": deepcopy(models), "group": group}
+        expected, key, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay
         if not models:
             raise SemanticLayerError("INVALID_CONFIG", "upsert_models needs at least one model")
         for field_name in ("model_id", "entity_key"):
@@ -594,7 +600,7 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            intent={"operation": "upsert_models", "models": deepcopy(models), "group": group},
+            intent=intent,
             extra={
                 "models": [
                     {
