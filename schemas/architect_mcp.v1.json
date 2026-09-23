@@ -1492,7 +1492,7 @@
         "readOnlyHint": false,
         "title": "Upsert metric"
       },
-      "description": "Preview or atomically upsert a metric; replace: true rewrites it from spec.",
+      "description": "Preview or atomically upsert a metric; replace: true rewrites it from spec.\n\n        A new metric goes in metrics/<file_name> when given (metrics can share it), else\n        metrics/<group>/<metric_key>.yml; an existing one stays in its file.\n        ",
       "inputSchema": {
         "properties": {
           "dry_run": {
@@ -1502,6 +1502,11 @@
           },
           "expected_revision": {
             "title": "Expected Revision",
+            "type": "string"
+          },
+          "file_name": {
+            "default": "",
+            "title": "File Name",
             "type": "string"
           },
           "group": {
@@ -1779,7 +1784,7 @@
         "readOnlyHint": false,
         "title": "Upsert segment"
       },
-      "description": "Preview or atomically upsert a segment definition.",
+      "description": "Preview or atomically upsert a segment in segments/<file_name>. spec takes entity, basis_metric, label, description, preview_dimensions and membership: where and/or metric_filters (optionally time, temporal_role_overrides, path_policy). Membership fields outside membership: are refused, since the engine would ignore them and select the whole population, and so is a segment the engine cannot validate. spec merges into an existing segment unless replace is true.",
       "inputSchema": {
         "properties": {
           "dry_run": {
@@ -1803,6 +1808,11 @@
           "project_path": {
             "title": "Project Path",
             "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "title": "Replace",
+            "type": "boolean"
           },
           "segment_key": {
             "title": "Segment Key",

@@ -93,6 +93,11 @@ TEST_KINDS = (
 )
 MAX_PREVIEW_ROWS = 200
 
+# What a segment's membership: block holds (config.py reads them from there only).
+_MEMBERSHIP_KEYS = frozenset(
+    {"where", "metric_filters", "time", "temporal_role_overrides", "path_policy"}
+)
+
 _INVENTORY_KINDS = {
     "model": "models",
     "entity": "entities",
@@ -1321,17 +1326,25 @@ class ArchitectProject:
         metric_key: str,
         spec: dict[str, Any],
         group: str = "core",
+        file_name: str = "",
         replace: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
+        """Create or update a metric; an existing one stays in its file.
+
+        A new metric goes in ``metrics/<file_name>`` when given (several
+        metrics can share it), else ``metrics/<group>/<metric_key>.yml``.
+        ``spec`` merges into an existing metric unless ``replace``.
+        """
         intent = {
             "operation": "upsert_metric",
             "metric_key": metric_key,
             "spec": spec,
             "group": group,
+            "file_name": file_name,
             "replace": replace,
         }
         expected, idempotency, replay = self._begin(expected_revision, idempotency_key, intent)
@@ -1346,7 +1359,9 @@ class ArchitectProject:
             existing.source_path
             if existing is not None
             else self._target_path(
-                f"metrics/{_slug(group, fallback='core')}/{_slug(key, fallback='metric')}.yml"
+                f"metrics/{_slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
+                if file_name
+                else f"metrics/{_slug(group, fallback='core')}/{_slug(key, fallback='metric')}.yml"
             )
         )
         documents = self._load_documents(path)
@@ -1383,12 +1398,32 @@ class ArchitectProject:
         segment_key: str,
         spec: dict[str, Any],
         file_name: str = "core.yml",
+        replace: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
-        expected, idempotency = self._mutation_identity(expected_revision, idempotency_key)
+        """Create or update a segment in ``segments/<file_name>``.
+
+        ``spec`` takes ``entity``, ``basis_metric``, ``label``, ``description``,
+        ``preview_dimensions`` and ``membership``: ``where`` and/or
+        ``metric_filters``, optionally ``time``, ``temporal_role_overrides``
+        and ``path_policy``. Membership fields outside ``membership:`` are
+        refused (the engine would ignore them and select the whole
+        population), as is a segment the engine cannot validate. ``spec``
+        merges into an existing segment unless ``replace``.
+        """
+        intent = {
+            "operation": "upsert_segment",
+            "segment_key": segment_key,
+            "spec": spec,
+            "file_name": file_name,
+            "replace": replace,
+        }
+        expected, idempotency, replay = self._begin(expected_revision, idempotency_key, intent)
+        if replay is not None:
+            return replay
         key = str(segment_key or "").strip()
         if not key:
             raise SemanticLayerError("INVALID_CONFIG", "segment_key is required")
@@ -1404,8 +1439,12 @@ class ArchitectProject:
         documents = self._load_documents(path)
         doc = documents[path]
         current = dict(existing.spec if existing is not None else {})
-        merged = {**current, **deepcopy(dict(spec or {}))}
+        merged = (
+            deepcopy(dict(spec or {})) if replace else {**current, **deepcopy(dict(spec or {}))}
+        )
+        _check_segment_shape(key, merged)
         self._store_mapping_object(doc, existing, wrapper="segments", key=key, spec=merged)
+        self._check_segment(self._updates(documents), key, merged)
         return self._commit(
             documents,
             kind="segment",
@@ -1417,13 +1456,39 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=idempotency,
             dry_run=dry_run,
-            intent={
-                "operation": "upsert_segment",
-                "segment_key": segment_key,
-                "spec": spec,
-                "file_name": file_name,
-            },
+            intent=intent,
         )
+
+    def _check_segment(
+        self, updates: list[ProjectFileUpdate], key: str, spec: dict[str, Any]
+    ) -> None:
+        """Refuse a segment the engine cannot validate once the change is applied."""
+        from .runtime import Runtime
+
+        transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+        with transaction.virtual_project(updates) as proposed:
+            parse, _ = parse_config_report(PackageReference(source_path=str(proposed)))
+            if not parse.get("ok"):
+                return  # the transaction's parse gate reports it
+            runtime = Runtime.from_path(str(proposed))
+            try:
+                report = runtime.segment_validate(
+                    _canonical_id("segment", key, spec, namespace=self._namespace())
+                )
+            finally:
+                runtime.close()
+        if not report.get("ok"):
+            error = dict((report.get("errors") or [{}])[0] or {})
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"segment {key!r} does not validate ({error.get('code', '')}: "
+                f"{error.get('message', '')})",
+                details={"segment": key, "error": error},
+            )
+
+    def _namespace(self) -> str:
+        package = dict(_yaml_load(self._target_path("package.yml")).get("package", {}) or {})
+        return str(package.get("namespace") or package.get("id") or self.project_path.name)
 
     def remove_object(
         self,
@@ -2878,6 +2943,38 @@ def _check_fields(test_kind: str, spec: dict[str, Any]) -> list[str]:
     elif test_kind == "explain_contains":
         need("text", text, "text")
     return problems
+
+
+def _check_segment_shape(key: str, spec: dict[str, Any]) -> None:
+    """Refuse segment fields the engine would ignore, and a segment with no membership."""
+    from .config_validation import _SEGMENT_KEYS
+
+    misplaced = sorted(set(spec) & _MEMBERSHIP_KEYS)
+    if misplaced:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"segment {key!r}: {', '.join(misplaced)} belong under membership:; outside it the "
+            "engine ignores them and the segment selects the whole population",
+            details={"segment": key, "fields": misplaced},
+        )
+    unknown = sorted(set(spec) - _SEGMENT_KEYS)
+    membership = spec.get("membership")
+    if isinstance(membership, dict):
+        unknown += [f"membership.{name}" for name in sorted(set(membership) - _MEMBERSHIP_KEYS)]
+    if unknown:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"segment {key!r} has unknown fields: {', '.join(unknown)}",
+            details={"segment": key, "fields": unknown},
+        )
+    if not isinstance(membership, dict) or not (
+        membership.get("where") or membership.get("metric_filters")
+    ):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"segment {key!r} needs membership: where and/or metric_filters",
+            details={"segment": key},
+        )
 
 
 def _issue(exc: SemanticLayerError) -> dict[str, Any]:

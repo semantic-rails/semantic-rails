@@ -1077,10 +1077,15 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
         expected_revision: str,
         idempotency_key: str,
         group: str = "core",
+        file_name: str = "",
         replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a metric; replace: true rewrites it from spec."""
+        """Preview or atomically upsert a metric; replace: true rewrites it from spec.
+
+        A new metric goes in metrics/<file_name> when given (metrics can share it), else
+        metrics/<group>/<metric_key>.yml; an existing one stays in its file.
+        """
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1088,6 +1093,7 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                     metric_key=metric_key,
                     spec=spec,
                     group=group,
+                    file_name=file_name,
                     replace=replace,
                     validate_after=True,
                     expected_revision=expected_revision,
@@ -1105,7 +1111,17 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                 dry_run=dry_run,
             )
 
-    @mcp.tool(annotations=_mutation_annotations("Upsert segment"))
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert segment"),
+        description=(
+            "Preview or atomically upsert a segment in segments/<file_name>. spec takes entity, "
+            "basis_metric, label, description, preview_dimensions and membership: where and/or "
+            "metric_filters (optionally time, temporal_role_overrides, path_policy). Membership "
+            "fields outside membership: are refused, since the engine would ignore them and "
+            "select the whole population, and so is a segment the engine cannot validate. spec "
+            "merges into an existing segment unless replace is true."
+        ),
+    )
     def upsert_segment(
         project_path: str,
         segment_key: str,
@@ -1113,9 +1129,9 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
         expected_revision: str,
         idempotency_key: str,
         file_name: str = "core.yml",
+        replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a segment definition."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1123,6 +1139,7 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                     segment_key=segment_key,
                     spec=spec,
                     file_name=file_name,
+                    replace=replace,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,

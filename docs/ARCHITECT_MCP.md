@@ -121,6 +121,20 @@ The usual mutation contract applies (`expected_revision`, `idempotency_key`, `dr
 parse gate rolls back a change the package cannot load, such as one that breaks a pinned route.
 Python callers use `ArchitectProject.upsert_relationship`.
 
+## Segments and Metric Files
+
+`upsert_segment` writes a segment to `segments/<file_name>`. `spec` takes `entity`, `basis_metric`,
+`label`, `description`, `preview_dimensions` and `membership`: `where` and/or `metric_filters`,
+optionally with `time`, `temporal_role_overrides` and `path_policy`. The engine reads membership
+fields only from `membership:`; placed at the top level they would be ignored, and the segment would
+select the whole population. The tool therefore refuses them, along with unknown fields, a segment
+without `where` or `metric_filters`, and a segment the engine cannot validate once the change is
+applied.
+
+`upsert_metric` puts a new metric in `metrics/<group>/<metric_key>.yml`, or in `metrics/<file_name>`
+when `file_name` is given, so several metrics can share one file. An existing metric stays in its
+file. Both tools take `replace`.
+
 ## Examples, Package Tests and Query Previews
 
 `upsert_example` writes an example question to `examples/<file_name>` (`core.yml` by default):
