@@ -1346,9 +1346,22 @@ with a structured `INVALID_CONFIG` error (`details.missing_assets` +
   no key dimensions, the `basis_metric` is unknown or rooted on another entity,
   or a preview dimension is unknown, not groupable, or belongs to another entity.
 - The query that `segment-validate` derives from it does not compile.
-- It has a key the loader doesn't read, such as `where` or `metric_filters` written
-  outside `membership:`, or an unknown key inside it. Unknown keys in metric files
-  are rejected the same way.
+
+### Unknown keys
+
+`parse-config`, `validate-config` and `check` reject a metric or segment key the
+loader doesn't read, in every layout it reads: files under `metrics/` and
+`segments/`, root `metrics.yml` and `segments.yml`, and `package.yml`. The loader
+would ignore such a key, so the package would behave differently from what it says:
+
+- a mistyped key, such as `valeu_type` on a metric;
+- a segment's `where` or `metric_filters` written outside `membership:`;
+- an unknown key inside `membership:`. The loader reads `where`, `metric_filters`,
+  `time`, `temporal_role_overrides` and `path_policy` there. `filters` and
+  `dimension_filters`, the spellings other tools use, point to `membership.where`.
+
+Every metric also gets the kind checks: a metric with an unknown `kind:`, or
+without a field its kind requires, such as a ratio's `denominator`, is rejected.
 
 ### Semantic collision warnings
 

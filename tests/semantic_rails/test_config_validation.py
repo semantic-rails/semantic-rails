@@ -2116,10 +2116,16 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
                     {"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}
                 ]
             ),
-            "write these conditions under membership.where",
+            "write it under membership.where as {field, op, value} rows",
+        ),
+        (
+            lambda segment: segment.update(
+                filters=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+            ),
+            "has 'filters' outside membership: — the loader reads membership.where only",
         ),
     ],
-    ids=["where-outside-membership", "membership-typo", "dimension-filters"],
+    ids=["where-outside-membership", "membership-typo", "dimension-filters", "top-level-filters"],
 )
 def test_directory_validation_rejects_unknown_segment_keys(
     package_config_factory, mutate, expected
@@ -2167,3 +2173,91 @@ def test_single_file_validation_rejects_unknown_membership_keys(tmp_path: Path):
 
     assert len(errors) == 1, errors
     assert "segment 'big_orders' membership has unknown key 'filters'" in errors[0]
+    assert "write it under membership.where" in errors[0]
+
+
+def test_directory_validation_accepts_every_membership_key_the_loader_reads(
+    package_config_factory,
+):
+    def add_every_key(segment):
+        for key in ("where", "metric_filters"):
+            segment["membership"].setdefault(key, [])
+        for key in ("time", "temporal_role_overrides", "path_policy"):
+            segment["membership"].setdefault(key, {})
+
+    errors = validate_runtime_package(_jaffle_with_segment(package_config_factory, add_every_key))
+
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "key", "expected"),
+    [
+        ("metric", "preferred_filter_ops", "has unknown key 'preferred_filter_ops'"),
+        ("metric", "clock_variants", "clock_variants is metadata-only and dropped"),
+        ("segment", "clock_variants", "has unknown key 'clock_variants'"),
+    ],
+)
+def test_strict_legacy_key_is_reported_once(package_config_factory, kind, key, expected):
+    _, package_dir = package_config_factory("jaffle_shop")
+    source = Path(package_dir) / (
+        "segments/core.yml" if kind == "segment" else "metrics/core/core_metrics.yml"
+    )
+    doc = yaml.safe_load(source.read_text(encoding="utf-8"))
+    next(iter(doc[f"{kind}s"].values()))[key] = ["legacy"]
+    _write_yaml(source, doc)
+
+    errors = validate_runtime_package(Path(package_dir))
+
+    assert len(errors) == 1, errors
+    assert expected in errors[0]
+
+
+def _jaffle_with_relocated_spec(
+    package_config_factory, kind: str, layout: str, extra_key: str | None
+) -> Path:
+    """Move one jaffle metric or segment into another layout the loader reads."""
+    _, package_dir = package_config_factory("jaffle_shop")
+    package_dir = Path(package_dir)
+    if kind == "segment":
+        source, key = package_dir / "segments" / "core.yml", "customer.high_value"
+    else:
+        source, key = package_dir / "metrics" / "core" / "core_metrics.yml", "sales.aov_usd"
+    doc = yaml.safe_load(source.read_text(encoding="utf-8"))
+    spec = doc[f"{kind}s"].pop(key)
+    _write_yaml(source, doc)
+    if extra_key:
+        target = spec["membership"] if kind == "segment" else spec
+        target[extra_key] = [] if kind == "segment" else "number"
+    if layout == "bare":
+        _write_yaml(package_dir / f"{kind}s" / "relocated.yml", {**spec, "name": key})
+    elif layout == "singular":
+        _write_yaml(package_dir / f"{kind}s" / "relocated.yml", {kind: {**spec, "name": key}})
+    elif layout == "root_file":
+        _write_yaml(package_dir / f"{kind}s.yml", {f"{kind}s": {key: spec}})
+    else:
+        package_yml = package_dir / "package.yml"
+        root = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
+        root[f"{kind}s"] = {key: spec}
+        _write_yaml(package_yml, root)
+    return package_dir
+
+
+@pytest.mark.parametrize("layout", ["bare", "singular", "root_file", "package_yml"])
+@pytest.mark.parametrize(
+    ("kind", "extra_key"),
+    [("segment", None), ("segment", "filters"), ("metric", None), ("metric", "valeu_type")],
+    ids=["valid-segment", "segment-unknown-key", "valid-metric", "metric-unknown-key"],
+)
+def test_key_checks_cover_every_layout_the_loader_reads(
+    package_config_factory, kind, extra_key, layout
+):
+    package_dir = _jaffle_with_relocated_spec(package_config_factory, kind, layout, extra_key)
+
+    errors = validate_runtime_package(package_dir)
+
+    if extra_key is None:
+        assert errors == []
+    else:
+        assert len(errors) == 1, errors
+        assert f"unknown key '{extra_key}'" in errors[0]
