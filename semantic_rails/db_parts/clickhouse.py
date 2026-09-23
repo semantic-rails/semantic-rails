@@ -103,7 +103,7 @@ class ClickHouseAdapter(WarehouseAdapter):
                 engine=self.engine,
                 connection_kind=self.connection_kind,
             )
-            self._client = driver.get_client(**self._connect_kwargs())
+            self._client = _without_redirects(driver.get_client(**self._connect_kwargs()))
         return self._client
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -130,3 +130,26 @@ class ClickHouseAdapter(WarehouseAdapter):
 
 def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:
     return ClickHouseAdapter(dict(getattr(package.connection, "options", {}) or {}))
+
+
+class _NoRedirects:
+    """The driver's HTTP pool, returning a redirect response instead of following it."""
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:
+        return self._pool.request(method, url, **{**kwargs, "redirect": False})
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pool, name)
+
+
+def _without_redirects(client: Any) -> Any:
+    """Keep the client on the host it was given: a redirect fails the request.
+
+    The driver still picks its own pool (TLS settings, proxies); only redirects change.
+    """
+    if getattr(client, "http", None) is not None:
+        client.http = _NoRedirects(client.http)
+    return client

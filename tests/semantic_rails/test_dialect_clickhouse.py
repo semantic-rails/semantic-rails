@@ -328,3 +328,85 @@ def test_battery_compiles_for_clickhouse():
     # ClickHouse 24.x has no LAG window function — prior_period must
     # compile through the window_lag emulation instead.
     assert "LAG(" not in all_sql
+
+
+# ---------------------------------------------------------------------------
+# (c) Connections stay on the configured host: redirects are not followed.
+# ---------------------------------------------------------------------------
+
+
+def test_adapter_client_pool_does_not_follow_redirects(monkeypatch: pytest.MonkeyPatch):
+    requests: list = []
+
+    class FakePool:
+        def request(self, method, url, **kwargs):
+            requests.append((method, url, kwargs))
+            return "response"
+
+        def clear(self):
+            return "cleared"
+
+    captured: dict = {}
+    _install_fake_driver(monkeypatch, captured)
+    module = sys.modules["clickhouse_connect"]
+    make_client = module.get_client
+
+    def get_client(**kwargs):
+        client = make_client(**kwargs)
+        client.http = FakePool()
+        return client
+
+    module.get_client = get_client
+    monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
+    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
+    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
+
+    client = ClickHouseAdapter(_adapter_options())._client_handle()
+
+    assert client.http.request("POST", "http://ch:8123/", body=b"q", retries=2) == "response"
+    assert requests == [
+        ("POST", "http://ch:8123/", {"body": b"q", "retries": 2, "redirect": False})
+    ]
+    # Everything else still reaches the driver's own pool.
+    assert client.http.clear() == "cleared"
+
+
+def test_no_redirect_pool_returns_the_redirect_instead_of_following_it():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import urllib3
+
+    from semantic_rails.db_parts.clickhouse import _NoRedirects
+
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server API
+            hits.append(self.path)
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/elsewhere")
+            else:
+                self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/start"
+    try:
+        followed = urllib3.PoolManager().request("GET", url)
+        hits_when_followed = list(hits)
+        hits.clear()
+        kept = _NoRedirects(urllib3.PoolManager()).request("GET", url)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert (followed.status, hits_when_followed) == (200, ["/start", "/elsewhere"])
+    assert (kept.status, hits) == (302, ["/start"])

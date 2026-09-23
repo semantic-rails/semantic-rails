@@ -437,3 +437,17 @@ def test_databricks_compiles_full_battery_offline():
             "TIMESTAMP_NTZ",
         ):
             assert forbidden not in sql, f"{case.name}: '{forbidden}' leaked into databricks SQL"
+
+
+def test_adapter_fetches_results_inline_not_from_result_links(monkeypatch: pytest.MonkeyPatch):
+    # CloudFetch downloads result batches from links the server hands back; the
+    # adapter asks for results inline instead.
+    captured: dict = {}
+    _install_fake_driver(monkeypatch, captured)
+    _set_connection_env(monkeypatch)
+
+    adapter = DatabricksNativeAdapter(_adapter_options())
+    adapter.query("select 1")
+    adapter.close()
+
+    assert captured["connect_kwargs"]["use_cloud_fetch"] is False
