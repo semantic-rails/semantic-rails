@@ -66,9 +66,18 @@ def _provenance() -> dict[str, object]:
         layer,
         questions,
     )
+    engine_tree = git("rev-parse", "HEAD:semantic_rails")
+    release = f"v{version('semantic-rails')}"
+    is_release = (
+        engine_tree is not None
+        and git("status", "--porcelain", "--", "semantic_rails") == ""
+        and engine_tree == git("rev-parse", f"{release}:semantic_rails")
+    )
     return {
         "semantic_rails_commit": git("rev-parse", "HEAD"),
-        "semantic_rails_tree": git("rev-parse", "HEAD:semantic_rails"),
+        "semantic_rails_tree": engine_tree,
+        # The release tag whose engine this is exactly, or null for any other engine.
+        "engine_release": release if is_release else None,
         "package_tree": git("rev-parse", f"HEAD:{package}"),
         # The package, its queries and this runner.
         "layer_tree": git("rev-parse", f"HEAD:{layer}"),

@@ -603,8 +603,26 @@ def test_semantic_rails_provenance_covers_queries_runner_and_questions() -> None
     assert set(module._provenance()) == {
         "semantic_rails_commit",
         "semantic_rails_tree",
+        "engine_release",
         "package_tree",
         "layer_tree",
         "questions_blob",
         "inputs_modified",
     }
+
+
+def test_an_unreleased_engine_is_not_labeled_as_the_release() -> None:
+    release = {"semantic_rails_version": "0.2.1", "engine_release": "v0.2.1"}
+    assert generator.recorded_version("semantic_rails", release) == "0.2.1"
+    unreleased = {
+        "semantic_rails_version": "0.2.1",
+        "engine_release": None,
+        "semantic_rails_tree": "2e1b2171d0c4b2926e42866c6337656f48b62ace",
+    }
+    assert generator.recorded_version("semantic_rails", unreleased) == (
+        "0.2.1, not a release (engine tree 2e1b217)"
+    )
+    no_git = {"semantic_rails_version": "0.2.1", "engine_release": None}
+    assert generator.recorded_version("semantic_rails", no_git) == (
+        "0.2.1, not a release (engine source not recorded)"
+    )

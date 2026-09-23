@@ -59,7 +59,8 @@ Dates are UTC. Cube's captured results record `lastRefreshTime` 2026-04-07T03:04
 Snowflake's summary records `2026-04-06T23:05:57-04:00`. Each runner records its tool versions,
 run timestamp and dataset fingerprint in its `summary.json` under `shared/results/`. The Semantic
 Rails runner also records the source trees of its engine, its package, its queries and runner,
-and the question suite. The fingerprint hashes the seed files and the `comparison_*` view
+and the question suite. It also records whether the engine is exactly a tagged release; an
+engine that isn't is labeled "not a release" wherever the version is shown. The fingerprint hashes the seed files and the `comparison_*` view
 definitions, so the output check can tell a capture made on other data from a real mismatch.
 
 ## Shared Questions: q01-q07

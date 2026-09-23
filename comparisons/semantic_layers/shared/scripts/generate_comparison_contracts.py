@@ -1110,7 +1110,15 @@ def join_names(names: list[str]) -> str:
 
 
 def recorded_version(layer_id: str, summary: dict[str, Any]) -> str:
-    return str(summary.get("semantic_rails_version") or LAYER_META[layer_id]["version"])
+    recorded = summary.get("semantic_rails_version")
+    if not recorded:
+        return str(LAYER_META[layer_id]["version"])
+    # An engine that isn't exactly a release is never labeled as that release.
+    if "engine_release" in summary and summary["engine_release"] is None:
+        tree = summary.get("semantic_rails_tree")
+        detail = f"engine tree {tree[:7]}" if tree else "engine source not recorded"
+        return f"{recorded}, not a release ({detail})"
+    return str(recorded)
 
 
 def recorded_capture(layer_id: str, summary: dict[str, Any]) -> str:
