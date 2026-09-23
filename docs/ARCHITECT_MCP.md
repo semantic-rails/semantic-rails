@@ -131,6 +131,29 @@ package: its `default_db`). They open the file read-only and never create, seed 
 Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
 The same functions are available to Python callers in `semantic_rails.architect_introspection`.
 
+## dbt Projects
+
+`suggest_models_from_dbt` reads a dbt project's artifacts; it never runs dbt. Pass `target_dir`
+(dbt's `target/`, inside the workspace) or `manifest_path`, and optionally `catalog_path`; `select`
+narrows the models by name. Run `dbt build` first, and `dbt docs generate` for `catalog.json`,
+which carries column types (without it, columns the manifest does not type are reported as
+`untyped_columns`).
+
+Each dbt model becomes a suggestion in the same shape as `suggest_model`, but the facts come from
+dbt:
+
+- the relation is the model's `schema.alias` (the database too when it is not the project's
+  default), so a model in a custom schema keeps it (`main_marts.fct_orders`);
+- the key comes from an enforced contract's `primary_key` constraint, a
+  `dbt_utils.unique_combination_of_columns` test, or `unique` + `not_null` tests on one column;
+- foreign keys come from `relationships` tests and contract `foreign_key` constraints;
+- `accepted_values` tests become dimension value sets (`domain`);
+- descriptions carry into the draft; times, dimensions and measures come from column types and
+  names.
+
+Python callers use `semantic_rails.dbt_artifacts` (`load_dbt_artifacts`,
+`suggest_models_from_dbt`).
+
 ## Tool Surface
 
 - `architect_guidance`
@@ -153,6 +176,7 @@ The same functions are available to Python callers in `semantic_rails.architect_
 - `describe_table`
 - `profile_columns`
 - `suggest_model`
+- `suggest_models_from_dbt`
 
 ## Safety Model
 

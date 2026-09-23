@@ -2173,6 +2173,58 @@
       }
     },
     {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Suggest models from dbt"
+      },
+      "description": "Read a dbt project's manifest.json and catalog.json (never run dbt) and propose a model per dbt model: key, foreign keys and value sets from dbt tests and contracts, times, dimensions and measures from column types, each with a confidence and a reason, plus draft upsert_model arguments. select narrows by model name.",
+      "inputSchema": {
+        "properties": {
+          "catalog_path": {
+            "default": "",
+            "title": "Catalog Path",
+            "type": "string"
+          },
+          "manifest_path": {
+            "default": "",
+            "title": "Manifest Path",
+            "type": "string"
+          },
+          "select": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Select"
+          },
+          "target_dir": {
+            "default": "",
+            "title": "Target Dir",
+            "type": "string"
+          }
+        },
+        "title": "suggest_models_from_dbtArguments",
+        "type": "object"
+      },
+      "name": "suggest_models_from_dbt",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "suggest_models_from_dbtDictOutput",
+        "type": "object"
+      }
+    },
+    {
       "description": "Run parse, runtime, examples, tests, impact, or release validation for a project path.",
       "inputSchema": {
         "properties": {
