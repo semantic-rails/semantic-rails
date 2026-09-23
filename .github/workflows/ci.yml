@@ -6,6 +6,7 @@ on:
       - main
       - master
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -19,6 +20,8 @@ concurrency:
 jobs:
   changes:
     name: Detect changes
+    # Merge groups always run every job, so there's nothing to filter.
+    if: ${{ github.event_name != 'merge_group' }}
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
@@ -58,7 +61,7 @@ jobs:
     name: Backend (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true') }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -91,7 +94,7 @@ jobs:
     name: Lint & type-check
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -115,7 +118,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -151,7 +154,7 @@ jobs:
     name: Docs
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.docs == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.docs == 'true') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
