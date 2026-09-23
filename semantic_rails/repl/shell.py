@@ -6,7 +6,14 @@ import sys
 from pathlib import Path
 
 from ..architect_service import ArchitectMutation
-from ..cli.common import _default_ref, _is_terminal, _ref_display, _repl_capabilities, _repl_color
+from ..cli.common import (
+    _default_ref,
+    _is_terminal,
+    _ref_display,
+    _repl_capabilities,
+    _repl_color,
+    _runtime_from_ref,
+)
 from ..cli.output import (
     _authoring_error_messages,
     _print_ask_report,
@@ -137,8 +144,7 @@ def _handle_repl_line(
                 "Usage: validate [parse|runtime|examples|tests|full]",
             )
         if mode in {"runtime", "examples", "tests", "full"}:
-            warehouse = _authoring_warehouse(current_ref)
-            print(f"Operational check: {mode} may query or refresh the {warehouse} warehouse.")
+            print(_operational_notice(current_ref, mode))
             try:
                 confirmed = _author_confirm("Continue with operational validation?", default=False)
             except _AuthoringCancelled:
@@ -206,6 +212,58 @@ def _handle_repl_line(
         "INVALID_CONFIG",
         f"Unknown interactive command '{command}'. Type help for commands.",
     )
+
+
+def _operational_notice(ref: PackageReference, mode: str) -> str:
+    """Name the selected database and describe the runtime's no-replacement rule."""
+
+    try:
+        runtime = _runtime_from_ref(ref)
+    except (OSError, SemanticLayerError):
+        warehouse = _authoring_warehouse(ref)
+        return (
+            f"Operational check: {mode} may query the {warehouse} warehouse. "
+            "Package details could not be read; validation will report why."
+        )
+    try:
+        if runtime.warehouse != "duckdb":
+            return (
+                f"Operational check: {mode} may query or refresh the {runtime.warehouse} warehouse."
+            )
+        database = Path(runtime.db_path)
+        shown = _shown_path(database)
+        seed = runtime.config.package.seed
+        if database.is_symlink() and not database.exists():
+            return (
+                f"Operational check: {mode} found a broken link at the DuckDB file {shown}. "
+                "Validation reports it and does not build through the link."
+            )
+        if not database.exists():
+            if seed.kind == "external":
+                return (
+                    f"Operational check: {mode} found no DuckDB file at {shown}. "
+                    "The package uses an external seed, so validation reports the missing file "
+                    "and does not create it."
+                )
+            return (
+                f"Operational check: {mode} may create the missing DuckDB file {shown} "
+                f"from the package seed ({seed.kind} {seed.source}), then query it. "
+                "Validation reports a missing or unusable seed."
+            )
+        return (
+            f"Operational check: {mode} queries the existing DuckDB file {shown}. "
+            "It is never rebuilt or replaced; validation reports missing relations "
+            "or an unreadable file."
+        )
+    finally:
+        runtime.close()
+
+
+def _shown_path(path: Path) -> str:
+    try:
+        return f"./{path.relative_to(Path.cwd().resolve()).as_posix()}"
+    except ValueError:
+        return str(path)
 
 
 def _print_repl_help() -> None:

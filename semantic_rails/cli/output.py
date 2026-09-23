@@ -249,11 +249,17 @@ def _print_project_validation(report: dict[str, Any]) -> None:
     errors = list(report.get("errors", []) or [])
     if errors:
         print("Errors:")
-        for error in errors[:10]:
-            message = error.get("message") or error
-            check = error.get("check")
-            prefix = f"{check}: " if check else ""
-            print(f"  {prefix}{message}")
+        # Each probe reports a shared failure (a missing seed, say) again: print it once.
+        counts: dict[str, int] = {}
+        for error in errors:
+            message = error.get("message") or error if isinstance(error, dict) else error
+            check = error.get("check") if isinstance(error, dict) else None
+            line = f"  {check}: {message}" if check else f"  {message}"
+            counts[line] = counts.get(line, 0) + 1
+        for line, count in list(counts.items())[:10]:
+            print(line + (f" ({count} times)" if count > 1 else ""))
+        if len(counts) > 10:
+            print(f"  ... {len(counts) - 10} more error(s)")
 
 
 def _print_profile_report(report: dict[str, Any]) -> None:
