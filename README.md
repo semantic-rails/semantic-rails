@@ -306,6 +306,6 @@ Support, issue reporting, conduct and security reporting are documented in
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [SECURITY.md](SECURITY.md).
 
 Semantic Rails is licensed under Apache 2.0; see [LICENSE](LICENSE). Everything in
-this repository is open source, with no gated features. The same team also runs a
-hosted service, described at [semantic-rails.com](https://semantic-rails.com); nothing
-here requires it.
+this repository is open source, with no gated features. Semantic Rails, Inc., which
+runs [semantic-rails.com](https://semantic-rails.com), also offers a hosted service;
+nothing here requires it.
