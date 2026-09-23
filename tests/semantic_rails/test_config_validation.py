@@ -18,6 +18,7 @@ from semantic_rails.config_validation import (
     parse_config_report,
     resolve_package_reference,
     validate_config_report,
+    validate_runtime_package,
 )
 from semantic_rails.db import Database, SnowflakeCliAdapter, load_csv_dir_to_duckdb
 from semantic_rails.errors import SemanticLayerError
@@ -1854,3 +1855,237 @@ def test_describe_table_columns_accepts_dotted_identifier():
     sql, params = adapter.queries[0]
     assert "?" in sql
     assert params == ("ORDERS", "SCHEMA")
+
+
+# Segment references. The loader keeps an unresolved segment reference as
+# written, so the package still loads; catalog, inspect and the segment-*
+# surfaces then fail on every request. Package validation must reject it.
+
+_HIGH_VALUE_SEGMENT = "segment.jaffle.high_value_customers"
+
+
+def _jaffle_with_segment(package_config_factory, mutate) -> Path:
+    _, package_dir = package_config_factory("jaffle_shop")
+    segment_file = Path(package_dir) / "segments" / "core.yml"
+    raw = yaml.safe_load(segment_file.read_text(encoding="utf-8"))
+    mutate(raw["segments"]["customer.high_value"])
+    _write_yaml(segment_file, raw)
+    return Path(package_dir)
+
+
+@pytest.mark.parametrize("entity_ref", ["customer", "jaffle.Customer", "entity.jaffle_customer"])
+def test_validation_accepts_segment_entity_by_key_name_or_id(package_config_factory, entity_ref):
+    package_dir = _jaffle_with_segment(
+        package_config_factory, lambda segment: segment.update(entity=entity_ref)
+    )
+
+    assert validate_runtime_package(package_dir) == []
+
+
+def test_validation_rejects_unknown_segment_entity(package_config_factory):
+    package_dir = _jaffle_with_segment(
+        package_config_factory, lambda segment: segment.update(entity="entity.jaffle.customer")
+    )
+
+    errors = validate_runtime_package(package_dir)
+
+    assert errors == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} targets unknown entity "
+        "'entity.jaffle.customer'; did you mean 'entity.jaffle_customer'?"
+    ]
+    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
+    assert report["ok"] is False
+    assert [error["message"] for error in report["errors"]] == errors
+
+
+def test_validation_rejects_unknown_entity_in_segment_membership(package_config_factory):
+    def mutate(segment: dict) -> None:
+        predicate = segment["membership"]["metric_filters"][0]["expression"]
+        predicate["entity"] = "entity.jaffle.customer"
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    assert validate_runtime_package(package_dir) == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
+        "'entity.jaffle.customer'; did you mean 'entity.jaffle_customer'?"
+    ]
+
+
+def test_validation_rejects_segment_the_runtime_cannot_normalize(package_config_factory):
+    package_dir = _jaffle_with_segment(
+        package_config_factory,
+        lambda segment: segment.update(preview_dimensions=["dimension.jaffle_store_name"]),
+    )
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert errors[0].startswith(
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} is invalid (INVALID_SEGMENT): "
+    )
+    assert "dimension_id=dimension.jaffle_store_name" in errors[0]
+
+
+def test_validation_rejects_segment_whose_query_does_not_compile(package_config_factory):
+    def mutate(segment: dict) -> None:
+        segment["membership"]["where"] = [
+            {"field": "dimension.jaffle_missing", "op": "=", "value": 1}
+        ]
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    assert validate_runtime_package(package_dir) == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} query does not compile "
+        "(OBJECT_NOT_FOUND): Unknown dimension 'dimension.jaffle_missing'"
+    ]
+
+
+@pytest.mark.parametrize("entity_ref", ["customer", "jaffle.Customer"])
+def test_validation_suggests_the_id_for_a_membership_entity_key_or_name(
+    package_config_factory, entity_ref
+):
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"][0]["expression"]["entity"] = entity_ref
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    assert validate_runtime_package(package_dir) == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
+        f"{entity_ref!r}; did you mean 'entity.jaffle_customer'?"
+    ]
+
+
+def test_membership_entity_suggestion_skips_labels_shared_by_entities(package_config_factory):
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"][0]["expression"]["entity"] = "customer"
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+    graph_file = package_dir / "graph.yml"
+    graph = yaml.safe_load(graph_file.read_text(encoding="utf-8"))
+    graph["graph"]["entities"]["store"]["label"] = "Customer"
+    _write_yaml(graph_file, graph)
+
+    assert validate_runtime_package(package_dir) == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
+        "'customer'; did you mean 'entity.jaffle_customer'?"
+    ]
+
+
+def test_validation_checks_predicates_nested_in_boolean_filters(package_config_factory):
+    def mutate(segment: dict) -> None:
+        predicate = segment["membership"]["metric_filters"][0]["expression"]
+        nested = {**predicate, "entity": "entity.jaffle.customer"}
+        segment["membership"]["metric_filters"][0]["expression"] = {
+            "kind": "boolean",
+            "op": "and",
+            "args": [predicate, nested],
+        }
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    assert validate_runtime_package(package_dir) == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
+        "'entity.jaffle.customer'; did you mean 'entity.jaffle_customer'?"
+    ]
+
+
+def test_validation_treats_predicate_shaped_literals_as_data(package_config_factory):
+    # Agrees with segment-validate: a literal is data, not a predicate to resolve.
+    literal = {"kind": "literal", "value": {"kind": "metric_predicate", "entity": "not_an_entity"}}
+
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"] = [
+            {"expression": literal, "op": "=", "value": "foo"}
+        ]
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    assert validate_runtime_package(package_dir) == []
+    config = config_module.load_package_config(str(package_dir))
+    runtime = Runtime.from_config(config, source_path=str(package_dir), package_id="jaffle_shop")
+    try:
+        assert runtime.segment_validate(_HIGH_VALUE_SEGMENT)["ok"] is True
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("change", "failure"),
+    [
+        ({"window": {"unit": "day", "value": "oops"}}, "ValueError"),
+        ({"window": 7}, "TypeError"),
+        (
+            {
+                "input": {
+                    "kind": "aggregate",
+                    "measure": "measure.jaffle.lifetime_spend_usd",
+                    "parameters": "abc",
+                }
+            },
+            "ValueError",
+        ),
+    ],
+)
+def test_validation_reports_malformed_membership_expressions(
+    package_config_factory, change, failure
+):
+    # The expression parser raises plain ValueError/TypeError for these.
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"][0]["expression"].update(change)
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert errors[0].startswith(
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} query does not compile ({failure}): "
+    )
+    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
+    assert report["ok"] is False
+    assert [error["message"] for error in report["errors"]] == errors
+
+
+def test_single_file_validation_checks_segment_references(tmp_path: Path):
+    package_file = tmp_path / "monolithic.yml"
+    _write_monolithic_package(package_file, "monolithic_demo")
+    payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
+    payload["segments"] = {
+        "big_orders": {
+            "id": "segment.demo.big_orders",
+            "entity": "entity.demo.order",
+            "basis_metric": "metric.sales.orders",
+        }
+    }
+    _write_yaml(package_file, payload)
+
+    assert validate_runtime_package(package_file) == [
+        f"{package_file}: segment segment.demo.big_orders targets unknown entity "
+        "'entity.demo.order'; did you mean 'entity.demo_order'?"
+    ]
+
+    payload["segments"]["big_orders"]["entity"] = "order"
+    _write_yaml(package_file, payload)
+
+    assert validate_runtime_package(package_file) == []
+
+    predicate = {
+        "kind": "metric_predicate",
+        "entity": "entity.demo_order",
+        "input": {"measure": "measure.demo.order_count"},
+        "op": ">=",
+        "value": 1,
+        "window": 7,
+    }
+    payload["segments"]["big_orders"]["membership"] = {
+        "metric_filters": [{"expression": predicate, "op": "=", "value": True}]
+    }
+    _write_yaml(package_file, payload)
+
+    errors = validate_runtime_package(package_file)
+    assert len(errors) == 1, errors
+    assert errors[0].startswith(
+        f"{package_file}: segment segment.demo.big_orders query does not compile (TypeError): "
+    )
+    report, config = parse_config_report(resolve_package_reference(path=str(package_file)))
+    assert (report["ok"], config) == (False, None)

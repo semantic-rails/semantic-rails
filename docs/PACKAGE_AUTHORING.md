@@ -1334,6 +1334,19 @@ its own warehouse. If a declared seed asset is missing on disk, the build fails
 with a structured `INVALID_CONFIG` error (`details.missing_assets` +
 `recovery_hints`) instead of shipping an artifact that cannot self-hydrate.
 
+### Segment references
+
+`parse-config`, `validate-config` and `check` reject a segment that `catalog`,
+`inspect` and the `segment-*` commands could not serve:
+
+- Its `entity:` names no graph entity. It may be a graph entity key, name or id.
+  An `entity:` inside a membership `metric_predicate` must be an entity id. When
+  one is close, the error suggests its id.
+- `catalog` cannot describe it: its entity is not allowed as a query root or has
+  no key dimensions, the `basis_metric` is unknown or rooted on another entity,
+  or a preview dimension is unknown, not groupable, or belongs to another entity.
+- The query that `segment-validate` derives from it does not compile.
+
 ### Semantic collision warnings
 
 `validate-config` flags pairs of measures, metrics, dimensions, or

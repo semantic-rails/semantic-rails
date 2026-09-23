@@ -11,14 +11,15 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .compiler import _requires_query_time
+from .compiler import _requires_query_time, compile_query
 from .config import get_package_path, load_package_config, package_root_for_source
 from .dialects import (
     connection_option_errors,
@@ -27,9 +28,12 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
+from .expressions import MetricPredicateExpr, parse_semantic_expression
 from .meta_contract import validate_meta_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
+from .registry import Registry
 from .runtime import Runtime, runtime_request_scope
+from .segments import build_segment_query, normalize_segment
 from .semantic_collisions import semantic_collision_warnings
 from .yaml_loader import safe_load as yaml_safe_load
 
@@ -1748,7 +1752,7 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
     if getattr(config.package, "schema_strict", False):
         _check_strict_authoring(config, source_path, errors)
 
-    return errors
+    return [*errors, *_segment_reference_errors(config, source_path)]
 
 
 def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> None:
@@ -1877,6 +1881,125 @@ def _check_disallowed_names(config, source_path: Path, errors: list[str]) -> Non
         if expr is not None and type(expr).__name__ == "ColumnRefExpr":
             column = str(getattr(expr, "column", "") or "")
         _check(measure.entity, measure.name, column, "measure", measure.id)
+
+
+def _segment_reference_errors(config, source_path: Path) -> list[str]:
+    """Reject segments that the catalog and segment surfaces cannot serve.
+
+    The loader keeps an unresolved segment ``entity`` as written, so a typo
+    such as ``entity.jaffle.customer`` (for ``entity.jaffle_customer``) still
+    loads. Catalog, inspect and segment-validate/explain/preview then fail on
+    every request. Each segment must name known entities, pass the
+    ``normalize_segment`` check that catalog runs, and compile the query that
+    ``segment-validate`` derives from it.
+    """
+    errors: list[str] = []
+    if not config.segments:
+        return errors
+    from difflib import get_close_matches
+
+    entity_ids = {entity.id for entity in config.entities}
+    # Ways an author may spell an entity, each mapped to the id to suggest,
+    # weakest first so a stronger spelling wins a collision. A label that
+    # several entities share is left out.
+    label_counts = Counter(entity.label.lower() for entity in config.entities)
+    candidates = [
+        *((e.label, e.id) for e in config.entities if label_counts[e.label.lower()] == 1),
+        *((e.name, e.id) for e in config.entities),
+        *((e.id.removeprefix("entity."), e.id) for e in config.entities),
+        *((e.id, e.id) for e in config.entities),
+    ]
+    spellings = {spelling.lower(): entity_id for spelling, entity_id in candidates if spelling}
+
+    def _unknown_entity(ref: str) -> str:
+        hints = get_close_matches(ref.lower(), sorted(spellings), n=1, cutoff=0.6)
+        return f"unknown entity {ref!r}" + (
+            f"; did you mean {spellings[hints[0]]!r}?" if hints else ""
+        )
+
+    registry = Registry(config)
+    for segment in config.segments:
+        prefix = f"{source_path}: segment {segment.id}"
+        # The loader maps the segment's own entity key or name to an id;
+        # membership predicates are compiled as written, so they need ids.
+        unknown: list[str] = []
+        if not segment.entity:
+            unknown.append("must declare an entity")
+        elif segment.entity not in entity_ids:
+            unknown.append(f"targets {_unknown_entity(segment.entity)}")
+        for ref in dict.fromkeys(_metric_predicate_entities(segment.metric_filters)):
+            if ref not in entity_ids:
+                unknown.append(f"membership references {_unknown_entity(ref)}")
+        for message in unknown:
+            add_error(errors, f"{prefix} {message}")
+        if unknown:
+            continue
+        # Report, never raise: the expression parser still raises plain
+        # ValueError/TypeError for some malformed values (a non-numeric window).
+        try:
+            normalized = normalize_segment(config, segment.id)
+            query = build_segment_query(normalized, include_preview_dimensions=True)
+        except Exception as exc:
+            failure = _describe_segment_failure(exc, with_details=True)
+            add_error(errors, f"{prefix} is invalid {failure}")
+            continue
+        try:
+            compile_query(config, registry, query)
+        except Exception as exc:
+            add_error(errors, f"{prefix} query does not compile {_describe_segment_failure(exc)}")
+    return errors
+
+
+def _describe_segment_failure(exc: Exception, *, with_details: bool = False) -> str:
+    """``(CODE): message``, optionally with the scalar details the message doesn't name.
+
+    ``normalize_segment``'s messages omit the offending object and its details
+    carry it (for example the preview dimension and the entity it belongs to);
+    compiler messages name it, and their details are guidance for API callers.
+    """
+    if not isinstance(exc, SemanticLayerError):
+        return f"({type(exc).__name__}): {exc}"
+    message = str(exc)
+    details = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted(exc.details.items())
+        if with_details
+        and key != "segment_id"
+        and isinstance(value, str | int | float | bool)
+        and str(value) not in message
+    )
+    return f"({exc.code}): {message}" + (f" [{details}]" if details else "")
+
+
+def _metric_predicate_entities(metric_filters: list[Any]) -> list[str]:
+    """Entity refs of the ``metric_predicate`` nodes in segment membership filters.
+
+    Each filter is parsed as the compiler parses it, so literal payloads stay
+    data; a filter that doesn't parse is left for the compile check to report.
+    """
+    refs: list[str] = []
+    for item in metric_filters:
+        try:
+            expression = parse_semantic_expression(item.get("expression") or {}, context="query")
+        except Exception:
+            continue
+        refs.extend(
+            node.entity
+            for node in _expression_nodes(expression)
+            if isinstance(node, MetricPredicateExpr) and node.entity
+        )
+    return refs
+
+
+def _expression_nodes(node: Any) -> Iterator[Any]:
+    """Every node of a parsed expression tree, depth first."""
+    if is_dataclass(node) and not isinstance(node, type):
+        yield node
+        for node_field in fields(node):
+            yield from _expression_nodes(getattr(node, node_field.name))
+    elif isinstance(node, list | tuple):
+        for item in node:
+            yield from _expression_nodes(item)
 
 
 def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str, Any]]:
