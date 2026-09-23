@@ -14,7 +14,8 @@ a dbt project, a loader or a person may own it. This module keeps that promise:
   process opened before it was replaced) and keeps a shared lock on it, so a
   writer that starts meanwhile fails instead of losing its work;
   :func:`rebuild_lock` serializes rebuilds of one file across threads and
-  processes, and
+  processes, :func:`probe_lock` keeps this process's probes from releasing a
+  rebuild's hold, and
   :func:`publish_seed_database` replaces only the file that was judged and never
   overwrites a file that appeared while a seed was being built.
 """
@@ -30,6 +31,7 @@ import stat
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Iterable, Iterator
 from typing import Any
 
@@ -308,9 +310,10 @@ def _lock_unavailable(db_path: str, exc: OSError) -> SemanticLayerError:
 def _lock_directory() -> str:
     """This user's private directory for rebuild locks.
 
-    Another user must not be able to create it first (and lock everyone out) or
-    hold a lock in it, so it is per user, mode 0700, and must be a real
-    directory the user owns that no one else can write.
+    It is per user, mode 0700, and must be a real directory the user owns that no
+    one else can write, so no other user can hold or remove a lock in it. If
+    another user created that path first, rebuilds fail closed with a clear
+    error; queries of a database that lacks nothing never take the lock.
     """
     uid = os.getuid() if hasattr(os, "getuid") else None
     name = "semantic-rails-db-locks" if uid is None else f"semantic-rails-db-locks-{uid}"
@@ -323,6 +326,32 @@ def _lock_directory() -> str:
     ):
         raise PermissionError(errno.EPERM, "not a private directory of this user", path)
     return path
+
+
+def _lock_key(db_path: str) -> str:
+    return hashlib.sha256(os.path.realpath(db_path).encode("utf-8")).hexdigest()
+
+
+def _local_lock(key: str) -> threading.Lock:
+    with _LOCAL_LOCKS_GUARD:
+        return _LOCAL_LOCKS.setdefault(key, threading.Lock())
+
+
+@contextlib.contextmanager
+def probe_lock(db_path: str, *, timeout: float = REBUILD_LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
+    """Keep this process's probes of ``db_path`` waiting while it rebuilds the file.
+
+    A rebuild holds the file it judged until it publishes. DuckDB locks files
+    with POSIX record locks, which belong to the process: a probe that opened
+    and closed its own descriptor for the file would release the rebuild's hold.
+    """
+    local = _local_lock(_lock_key(db_path))
+    if not local.acquire(timeout=timeout):
+        raise _rebuild_busy(db_path)
+    try:
+        yield
+    finally:
+        local.release()
 
 
 @contextlib.contextmanager
@@ -339,9 +368,8 @@ def rebuild_lock(db_path: str, *, timeout: float = REBUILD_LOCK_TIMEOUT_SECONDS)
     # imports this module's importers.
     from .architect_transactions import _release_file_lock, _try_file_lock
 
-    key = hashlib.sha256(os.path.realpath(db_path).encode("utf-8")).hexdigest()
-    with _LOCAL_LOCKS_GUARD:
-        local = _LOCAL_LOCKS.setdefault(key, threading.Lock())
+    key = _lock_key(db_path)
+    local = _local_lock(key)
     if not local.acquire(timeout=timeout):
         raise _rebuild_busy(db_path)
     descriptor: int | None = None
@@ -350,13 +378,13 @@ def rebuild_lock(db_path: str, *, timeout: float = REBUILD_LOCK_TIMEOUT_SECONDS)
             descriptor = os.open(
                 os.path.join(_lock_directory(), f"{key}.lock"), os.O_CREAT | os.O_RDWR, 0o600
             )
+            deadline = time.monotonic() + timeout
+            while not _try_file_lock(descriptor):
+                if time.monotonic() >= deadline:
+                    raise _rebuild_busy(db_path)
+                time.sleep(0.05)
         except OSError as exc:
             raise _lock_unavailable(db_path, exc) from exc
-        deadline = time.monotonic() + timeout
-        while not _try_file_lock(descriptor):
-            if time.monotonic() >= deadline:
-                raise _rebuild_busy(db_path)
-            time.sleep(0.05)
         yield
     finally:
         if descriptor is not None:
@@ -372,40 +400,79 @@ def file_identity(db_path: str) -> tuple[int, int]:
     return (stat.st_dev, stat.st_ino)
 
 
-def _catalog_name(db_path: str) -> str:
-    """The catalog name DuckDB gives the file, so three-part names probe as in compiled SQL.
+def _attach(db_path: str) -> Any:
+    """A private connection with the file at ``db_path`` attached read-only, in use.
 
-    DuckDB names it after the file name up to the first dot, renaming ``temp``
-    and ``system``. The attaching connection's own catalog is ``memory``, so a
-    file named ``memory.*`` is attached under another name, and three-part names
-    through it read as missing (the runtime then refuses rather than guesses).
+    DuckDB names the attachment as it names the file for ``duckdb.connect``
+    (``main.duckdb`` is ``main_db``, ``Main.duckdb`` is ``Main``), so three-part
+    names resolve as they do in compiled SQL. The connection's own in-memory
+    catalog is dropped first, so even a file named ``memory.*`` keeps its name.
     """
-    name = os.path.basename(db_path).split(".")[0] or "database"
-    if name.lower() in {"temp", "system"}:
-        name = f"{name}_db"
-    return "memory_db" if name.lower() == "memory" else name
+    conn = duckdb.connect(":memory:")
+    try:
+        scratch = _quote_identifier(f"semantic_rails_probe_{uuid.uuid4().hex}")
+        conn.execute(f"ATTACH ':memory:' AS {scratch}")
+        conn.execute(f"USE {scratch}")
+        conn.execute("DETACH memory")
+        names = "SELECT database_name FROM duckdb_databases()"
+        before = {row[0] for row in conn.execute(names).fetchall()}
+        conn.execute(f"ATTACH '{db_path.replace(chr(39), chr(39) * 2)}' (READ_ONLY)")
+        (name,) = {row[0] for row in conn.execute(names).fetchall()} - before
+        conn.execute(f"USE {_quote_identifier(name)}.main")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def _open_in_this_process(identity: tuple[int, int]) -> bool:
+    """Whether this process already has the file with ``identity`` (device, inode) open."""
+    try:
+        descriptors = os.listdir("/dev/fd")
+    except OSError:  # no /dev/fd (Windows): locks there belong to handles, not processes
+        return False
+    for descriptor in descriptors:
+        try:
+            info = os.fstat(int(descriptor))
+        except (OSError, ValueError):
+            continue
+        if (info.st_dev, info.st_ino) == identity:
+            return True
+    return False
 
 
 @contextlib.contextmanager
-def hold_database(db_path: str) -> Iterator[tuple[Any, tuple[int, int]]]:
+def hold_database(db_path: str, *, share: bool = False) -> Iterator[tuple[Any, tuple[int, int]]]:
     """Open the file at ``db_path`` read-only, as it is now, and hold it.
 
-    Yields the connection and the file's (device, inode). The file is attached
-    to a private in-memory connection rather than opened with
-    ``duckdb.connect``: DuckDB reuses one open database per path within a
-    process, so a runtime that opened this path before the file was replaced
-    would hand back the old file. The file must be the same one before and after
-    it is attached. While the connection is held, a writer in another process
-    (such as ``dbt build``) cannot open the file, so a rebuild judged safe cannot
-    drop a write that started after the judgement. Raises if the file cannot be
-    opened, including while a writer in this process holds it.
+    Yields the connection and the file's (device, inode), which must be the same
+    before and after it is opened. The file is attached to a private in-memory
+    connection (:func:`_attach`) rather than opened with ``duckdb.connect``,
+    which reuses one open database per path in a process: a runtime that opened
+    this path before the file was replaced would hand back the old file.
+
+    DuckDB locks files with POSIX record locks, and a process loses its locks on
+    a file when it closes any descriptor for it. With ``share``, when this
+    process already has the current file open (a runtime serving it), the
+    connection goes through that open database instead, so closing it cannot
+    release the serving runtime's lock. Judgements that may lead to a rebuild
+    never share: they need a view of the file that cannot be a stale copy. The
+    runtime judges only a file that lacks relations, and closing that fresh
+    attachment releases this process's locks on the file: a rebuild replaces the
+    file anyway, and a refusal leaves any runtime still serving it unlocked until
+    it reopens the file.
+
+    While the connection is held, a writer in another process (such as ``dbt
+    build``) cannot open the file, so a rebuild judged safe cannot drop a write
+    that started after the judgement. Raises if the file cannot be opened,
+    including while a writer in this process holds it.
     """
     before = file_identity(db_path)
-    conn = duckdb.connect(":memory:")
+    if share and _open_in_this_process(before):
+        conn = duckdb.connect(db_path, read_only=True)
+    else:
+        conn = _attach(db_path)
     try:
-        alias = _quote_identifier(_catalog_name(db_path))
-        conn.execute(f"ATTACH '{db_path.replace(chr(39), chr(39) * 2)}' AS {alias} (READ_ONLY)")
-        conn.execute(f"USE {alias}")
         if file_identity(db_path) != before:
             raise OSError(errno.EAGAIN, "the file was replaced while it was opened", db_path)
         yield conn, before

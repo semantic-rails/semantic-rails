@@ -13,6 +13,7 @@ from typing import Any
 
 import duckdb
 import pytest
+import yaml
 
 from semantic_rails import runtime as runtime_module
 from semantic_rails import seed_provenance
@@ -867,3 +868,98 @@ def test_a_missing_seed_source_is_reported_before_the_database_is_scanned(
         _ensure_db(package_dir)
 
     assert scans == []
+
+
+# -- file names, and locks that belong to the process -------------------------------
+
+_WRITER = (
+    "import duckdb, sys; c = duckdb.connect(sys.argv[1]); "
+    "c.execute('CREATE TABLE dbt_mart AS SELECT 7 AS x'); c.close()"
+)
+
+
+def _write_attempt(db_path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", _WRITER, str(db_path)], capture_output=True, text=True, timeout=60
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["main.duckdb", "Main.duckdb", "memory.duckdb", "information_schema.duckdb"]
+)
+def test_a_database_is_read_under_the_catalog_name_duckdb_gives_it(
+    tmp_path: Path, monkeypatch, name: str
+) -> None:
+    """DuckDB names ``main.duckdb`` ``main_db`` and ``Main.duckdb`` ``Main``. A
+    check that names the file otherwise misreads a healthy database, and with the
+    opt-in it would replace it on every start."""
+    package_dir = write_orders_package(tmp_path, schema="")
+    package_yml = package_dir / "package.yml"
+    document = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
+    document["package"]["default_db"] = f"data/{name}"
+    package_yml.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    db_path = package_dir / "data" / name
+    assert _order_count(package_dir)  # the seed builds it
+    inode = db_path.stat().st_ino
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_DB_RESEED", "1")  # a rebuild would go ahead
+
+    for _ in range(2):
+        _ensure_db(package_dir)
+
+    assert db_path.stat().st_ino == inode
+
+
+def test_a_probe_keeps_a_serving_runtimes_lock(tmp_path: Path) -> None:
+    """DuckDB's file locks belong to the process: a probe that closed a
+    descriptor of its own would let a writer in under a serving runtime."""
+    package_dir, db_path = _seeded_orders_only_package(tmp_path)
+    served = Runtime.from_path(str(package_dir))
+    try:
+        assert served.query(ORDER_COUNT_QUERY)["rows"]  # holds the file (a shared lock)
+
+        _ensure_db(package_dir)  # another runtime in this process checks the file
+
+        attempt = _write_attempt(db_path)
+        assert attempt.returncode != 0 and "lock" in attempt.stderr.lower(), attempt.stderr
+    finally:
+        served.close()
+
+
+def test_a_probe_waits_for_a_rebuild_in_this_process_and_keeps_its_hold(
+    tmp_path: Path, monkeypatch
+) -> None:
+    package_dir, db_path = _seeded_orders_only_package(tmp_path)
+    write_orders_package(tmp_path, schema="")  # now needs dim_customers
+    building, release = threading.Event(), threading.Event()
+    original_build = runtime_module.build_seed_database
+
+    def paused_build(*args: Any, **kwargs: Any) -> str:
+        building.set()
+        release.wait(60)
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "build_seed_database", paused_build)
+    errors: list[BaseException] = []
+
+    def ensure() -> None:
+        try:
+            _ensure_db(package_dir)
+        except BaseException as exc:  # noqa: BLE001 — collected and asserted below
+            errors.append(exc)
+
+    rebuilder, prober = threading.Thread(target=ensure), threading.Thread(target=ensure)
+    rebuilder.start()
+    try:
+        assert building.wait(60)  # the rebuilder holds the judged file
+        prober.start()
+        time.sleep(1.0)  # the prober reaches its probe
+        attempt = _write_attempt(db_path)
+    finally:
+        release.set()
+    rebuilder.join(120)
+    if prober.is_alive() or prober.ident is not None:
+        prober.join(120)
+
+    assert errors == []
+    assert attempt.returncode != 0 and "lock" in attempt.stderr.lower(), attempt.stderr
+    assert missing_duckdb_relations(str(db_path), ["dim_customers"]) == []

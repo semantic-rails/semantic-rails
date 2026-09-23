@@ -87,6 +87,7 @@ from .seed_provenance import (
     db_reseed_allowed,
     hold_database,
     missing_duckdb_relations,
+    probe_lock,
     publish_seed_database,
     rebuild_lock,
     seeded_database_unchanged,
@@ -1458,9 +1459,17 @@ class Runtime:
                         raise
                     continue  # judge the file another process just published
                 return
+            # The common case, once per runtime: nothing is missing. The probe
+            # waits for a rebuild this process is running, and shares a file this
+            # process already has open, so it never releases a lock held here.
             try:
-                with hold_database(self.db_path) as (view, _identity):
+                with (
+                    probe_lock(self.db_path),
+                    hold_database(self.db_path, share=True) as (view, _identity),
+                ):
                     missing = missing_duckdb_relations(view, self._expected_tables())
+            except SemanticLayerError:
+                raise
             except Exception as exc:
                 raise self._unreadable_db_error() from exc
             if not missing:

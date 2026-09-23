@@ -363,9 +363,9 @@ defaults:
   user-defined types (which it cannot fingerprint completely), and on Windows
   any existing database, are reported rather than rebuilt. On a filesystem
   without hard links (FAT and exFAT drives, many network, FUSE and cloud-sync
-  folders) the runtime cannot publish a database without risking an overwrite,
-  so it does not build one there at all, not even the first time: keep the
-  database on a local disk, or set `SEMANTIC_RAILS_ALLOW_DB_RESEED=1`.
+  folders) the runtime cannot publish a new database without risking an
+  overwrite, so it does not create one there: keep the database on a local
+  disk, or set `SEMANTIC_RAILS_ALLOW_DB_RESEED=1`.
 - `external`: another tool (for example `dbt build` with dbt-duckdb) builds and
   owns the file. It takes no `source` or `post_sql`, and the runtime only reads
   the file: a missing file is an `INVALID_CONFIG` error, never a rebuild.

@@ -8,5 +8,5 @@
   opt-in. A file another process is writing is never replaced, and databases
   holding macros or user-defined types, or on Windows, are reported rather than
   rebuilt automatically. On a filesystem without hard links the runtime does not
-  build the database at all without the opt-in. Databases built by earlier
-  releases record no seed provenance: delete one once to rebuild it.
+  create the database without the opt-in. Databases built by earlier releases
+  record no seed provenance: delete one once to rebuild it.
