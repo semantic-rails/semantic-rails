@@ -47,8 +47,9 @@ def test_optional_fastmcp_facade_is_strictly_stdio_only(runtime_factory, monkeyp
     calls: list[tuple[tuple, dict]] = []
 
     class FakeFastMCP:
-        def __init__(self, _name):
+        def __init__(self, _name, instructions=None):
             self.tools = []
+            self.instructions = instructions
 
         def add_tool(self, tool, **kwargs):
             self.tools.append((tool, kwargs))
