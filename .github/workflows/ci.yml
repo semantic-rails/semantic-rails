@@ -7,6 +7,7 @@ on:
       - master
   pull_request:
   merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +15,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Pushes to main arrive in bursts from the merge queue; each commit keeps its own run.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -181,6 +183,8 @@ jobs:
         # succeed for the gate to pass. The `lint` job runs ruff +
         # mypy and IS required — they were continue-on-error during
         # the round-six cleanup but are now load-bearing.
+        # A merge-queue group has no path filter, so there every suite
+        # job must have run and succeeded; a skip there means it never ran.
         run: |
           results='${{ toJSON(needs) }}'
           echo "$results"
@@ -189,6 +193,11 @@ jobs:
           needs = json.loads(os.environ["RESULTS"])
           bad = {n: r["result"] for n, r in needs.items()
                  if r["result"] in ("failure", "cancelled")}
+          if os.environ["EVENT"] == "merge_group":
+              for name in ("backend", "lint", "security", "docs"):
+                  result = needs.get(name, {}).get("result", "missing")
+                  if result != "success":
+                      bad[name] = result
           if bad:
               print(f"Failed jobs: {bad}", file=sys.stderr)
               sys.exit(1)
@@ -196,3 +205,4 @@ jobs:
           EOF
         env:
           RESULTS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
