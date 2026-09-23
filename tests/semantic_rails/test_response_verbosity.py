@@ -510,7 +510,8 @@ def test_mcp_plan_tool_schema_advertises_query_detail():
     detail = plan["inputSchema"]["properties"].get("detail") or {}
 
     assert detail.get("enum") == ["query", "best", "full", "debug"]
-    assert detail.get("default") == "best"
+    # The MCP default is the compact query projection; detail="best" adds the trace.
+    assert detail.get("default") == "query"
 
 
 # ---------------------------------------------------------------------------

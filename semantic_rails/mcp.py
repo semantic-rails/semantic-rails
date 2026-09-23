@@ -558,15 +558,14 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         name="plan",
         description=(
             "Single public intent-planning surface: natural-language intent "
-            "→ one best Query IR plus optional alternatives. Use "
-            "detail='query' for the tight QA loop before execute(row_format="
-            "'columns'). Returns "
-            "'status' ('ok' | 'low_confidence' | 'unrealizable' | "
-            "'out_of_scope') and 'best.query_ir'. 'status=ok' has already "
-            "paid validation cost, so agents may proceed to 'compile' or "
-            "'execute' with 'best.query_ir'. Use detail='full' for alternatives/blocked "
-            "drafts, or detail='debug' for compose_hints. Gotcha: branch on "
-            "'status' before reading 'best'."
+            "→ one best Query IR. Returns 'status' ('ok' | 'low_confidence' | "
+            "'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or "
+            "'warnings' naming any part of the question the draft doesn't "
+            "honor. 'status=ok' has already paid validation cost, so agents "
+            "may pass 'best.query_ir' to 'execute'. detail='best' adds "
+            "intent_ir, trace and next steps; 'full' adds alternatives and "
+            "blocked drafts; 'debug' adds compose_hints. Gotcha: read "
+            "'status' and 'warnings' before running 'best.query_ir'."
         ),
         input_schema=_schema(
             {
@@ -575,7 +574,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "detail": {
                     "type": "string",
                     "enum": ["query", "best", "full", "debug"],
-                    "default": "best",
+                    "default": "query",
                 },
                 "limit": {"type": "integer", "default": 3, "minimum": 1},
                 "policy_context": POLICY_CONTEXT_SCHEMA,
@@ -2095,7 +2094,7 @@ class SemanticLayerMCPAdapter:
                 self.runtime,
                 intent=str(args.get("intent", "")),
                 partial_query=_partial_query_payload(args),
-                detail=str(args.get("detail", "best") or "best"),
+                detail=str(args.get("detail", "query") or "query"),
                 limit=_coerce_int(args.get("limit"), 3, field="limit", minimum=1),
             ),
         )
