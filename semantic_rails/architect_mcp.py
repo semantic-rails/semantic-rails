@@ -1220,6 +1220,57 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
         except Exception as exc:
             return _report_error(exc)
 
+    @mcp.tool(
+        annotations=_mutation_annotations("Import dbt models"),
+        description=(
+            "Preview or atomically create or update package models from dbt models (reads "
+            "manifest.json and catalog.json; dbt never runs), with foreign keys from "
+            "relationships tests as entity references. select names the dbt models; review them "
+            "with suggest_models_from_dbt first. Models without a key in dbt are reported in "
+            "skipped_models, references to models outside the package in skipped_references."
+        ),
+    )
+    def import_dbt_project(
+        project_path: str,
+        select: list[str],
+        expected_revision: str,
+        idempotency_key: str,
+        target_dir: str = "",
+        manifest_path: str = "",
+        catalog_path: str = "",
+        group: str = "dbt",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            dbt = _dbt_project(target_dir, manifest_path, catalog_path)
+            items, skipped = dbt_artifacts.dbt_import_models(dbt, list(select or []))
+            if not items:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    "none of the selected dbt models has a key to import",
+                    details={"skipped_models": skipped},
+                )
+            report = (
+                ArchitectProject(project_path, workspace_root=root)
+                .upsert_models(
+                    items,
+                    group=group,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+            return _mutation_result({**report, "skipped_models": skipped})
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
     @mcp.tool()
     def validate_project(
         project_path: str,

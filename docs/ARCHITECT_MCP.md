@@ -82,8 +82,19 @@ dbt:
 - descriptions carry into the draft; times, dimensions and measures come from column types and
   names.
 
+`import_dbt_project` applies them: `select` names the dbt models, and one parse-gated transaction
+creates or updates a model per dbt model (in `models/<group>/`, `group` defaulting to `dbt`), with
+each `relationships` test written as an entity reference in the model's `entities:` block (`expr:`
+when the foreign-key column is named differently from the target's key), which the engine reads as
+a many-to-one relationship. It follows the usual mutation contract (`expected_revision`,
+`idempotency_key`, `dry_run`). A model whose target is imported in the same call, or already in the
+package, gets the reference; references elsewhere are listed in `skipped_references`, and dbt models
+without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
+(`fct_orders` and a model `orders` for entity `order`) updates that model.
+
 Python callers use `semantic_rails.dbt_artifacts` (`load_dbt_artifacts`,
-`suggest_models_from_dbt`).
+`suggest_models_from_dbt`, `dbt_import_models`) and `ArchitectProject.upsert_models`, which stages
+several models and their references in one transaction.
 
 ## Tool Surface
 
@@ -108,6 +119,7 @@ Python callers use `semantic_rails.dbt_artifacts` (`load_dbt_artifacts`,
 - `profile_columns`
 - `suggest_model`
 - `suggest_models_from_dbt`
+- `import_dbt_project`
 
 ## Safety Model
 

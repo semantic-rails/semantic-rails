@@ -424,3 +424,44 @@ def _suggest(project: DbtProject, relation: DbtRelation) -> dict[str, Any]:
             description=relation.description,
         ),
     }
+
+
+def dbt_import_models(
+    project: DbtProject, select: list[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``ArchitectProject.upsert_models`` items for the selected dbt models, and those left out.
+
+    Foreign keys become references by relation, so they resolve to models in
+    the same import or already in the package. A model without a key in dbt
+    (no contract primary key, uniqueness tests or column-combination test) is
+    left out, with the reason.
+    """
+    if not select:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            "select the dbt models to import (suggest_models_from_dbt lists them)",
+        )
+    items: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for suggestion in suggest_models_from_dbt(project, select):
+        draft = dict(suggestion["upsert_model"])
+        if not draft["primary_key"]:
+            skipped.append(
+                {
+                    "dbt_model": suggestion["dbt_unique_id"],
+                    "relation": suggestion["relation"],
+                    "reason": "no key in dbt: add unique and not_null tests or an enforced "
+                    "contract primary_key, or model it with suggest_model",
+                }
+            )
+            continue
+        draft["references"] = [
+            {
+                "relation": link["references"]["relation"],
+                "columns": [link["column"]],
+                "to_columns": list(link["references"].get("columns") or []),
+            }
+            for link in suggestion["foreign_keys"]
+        ]
+        items.append(draft)
+    return items, skipped
