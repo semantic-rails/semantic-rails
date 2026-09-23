@@ -763,7 +763,7 @@
         "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
-      "description": "Preview or atomically upsert a model and aligned graph entity. calendar: true makes the entity the package calendar for calendar_id (default \"default\"): kind time, not a query root, and allowed kind: date dimensions. time.fill and calendar bucketing read its date_day, week_start, month_start, quarter_start and year_start columns. A package with calendars needs a default one. calendar: false makes a calendar a regular entity again once its date dimensions are removed. On a regular model, calendar_id binds its times to an existing calendar.",
+      "description": "Preview or atomically upsert a model and aligned graph entity. calendar: true makes the entity the package calendar for calendar_id (default \"default\"): kind time, not a query root, and allowed kind: date dimensions. time.fill and calendar bucketing read its date_day, week_start, month_start, quarter_start and year_start columns. A package with calendars needs a default one. calendar: false makes a calendar a regular entity again once its date dimensions are removed. On a regular model, calendar_id binds its times to an existing calendar. Fields merge into an existing model; replace: true rewrites it from the arguments, keeping only its entity references and calendar.",
       "inputSchema": {
         "properties": {
           "calendar": {
@@ -836,6 +836,11 @@
             "default": null,
             "title": "Joins"
           },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
           "measures": {
             "anyOf": [
               {
@@ -867,6 +872,11 @@
           "relation": {
             "title": "Relation",
             "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "title": "Replace",
+            "type": "boolean"
           },
           "times": {
             "anyOf": [
@@ -1482,7 +1492,7 @@
         "readOnlyHint": false,
         "title": "Upsert metric"
       },
-      "description": "Preview or atomically upsert a curated metric recipe.",
+      "description": "Preview or atomically upsert a metric; replace: true rewrites it from spec.",
       "inputSchema": {
         "properties": {
           "dry_run": {
@@ -1510,6 +1520,11 @@
           "project_path": {
             "title": "Project Path",
             "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "title": "Replace",
+            "type": "boolean"
           },
           "spec": {
             "additionalProperties": true,
@@ -1810,6 +1825,292 @@
         "type": "object"
       },
       "name": "upsert_segment",
+      "outputSchema": {
+        "$defs": {
+          "ArchitectFileChange": {
+            "properties": {
+              "after_bytes": {
+                "default": 0,
+                "title": "After Bytes",
+                "type": "integer"
+              },
+              "after_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "After Sha256"
+              },
+              "before_bytes": {
+                "default": 0,
+                "title": "Before Bytes",
+                "type": "integer"
+              },
+              "before_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Before Sha256"
+              },
+              "content_encoding": {
+                "default": "none",
+                "enum": [
+                  "utf-8",
+                  "base64",
+                  "none"
+                ],
+                "title": "Content Encoding",
+                "type": "string"
+              },
+              "diff": {
+                "default": "",
+                "title": "Diff",
+                "type": "string"
+              },
+              "operation": {
+                "enum": [
+                  "create",
+                  "update",
+                  "delete"
+                ],
+                "title": "Operation",
+                "type": "string"
+              },
+              "path": {
+                "title": "Path",
+                "type": "string"
+              },
+              "proposed_content": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Proposed Content"
+              }
+            },
+            "required": [
+              "path",
+              "operation"
+            ],
+            "title": "ArchitectFileChange",
+            "type": "object"
+          },
+          "ArchitectMutationIssue": {
+            "additionalProperties": true,
+            "properties": {
+              "code": {
+                "title": "Code",
+                "type": "string"
+              },
+              "details": {
+                "additionalProperties": true,
+                "title": "Details",
+                "type": "object"
+              },
+              "message": {
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "title": "ArchitectMutationIssue",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "description": "Stable structured output shared by every Architect mutation tool.",
+        "properties": {
+          "base_revision": {
+            "title": "Base Revision",
+            "type": "string"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Files",
+            "type": "array"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/$defs/ArchitectFileChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "current_revision": {
+            "title": "Current Revision",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ArchitectMutationIssue"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/$defs/ArchitectMutationIssue"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "parse": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parse"
+          },
+          "project_path": {
+            "title": "Project Path",
+            "type": "string"
+          },
+          "proposed_revision": {
+            "title": "Proposed Revision",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "workspace_root": {
+            "default": "",
+            "title": "Workspace Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status",
+          "project_path",
+          "expected_revision",
+          "base_revision",
+          "current_revision",
+          "revision",
+          "proposed_revision",
+          "idempotency_key",
+          "idempotent_replay",
+          "dry_run",
+          "changed_files",
+          "changes"
+        ],
+        "title": "ArchitectMutationResult",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Remove object"
+      },
+      "description": "Preview or atomically remove a model, dimension, time, measure, metric, segment, relationship, example or test, keeping its YAML under .architect/archive/. model picks the model when a dimension, time or measure key is on several; a relationship is named as upsert_relationship reports it. Removing a model also removes its entity and the relationships naming it. A removal that would break a measure, metric or segment is refused, naming them; impact lists the examples and tests it breaks, files still mentioning a removed id, and the behaviour changes. Preview with dry_run.",
+      "inputSchema": {
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "project_path": {
+            "title": "Project Path",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_path",
+          "kind",
+          "key",
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "remove_objectArguments",
+        "type": "object"
+      },
+      "name": "remove_object",
       "outputSchema": {
         "$defs": {
           "ArchitectFileChange": {

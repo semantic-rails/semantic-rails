@@ -121,6 +121,29 @@ The usual mutation contract applies (`expected_revision`, `idempotency_key`, `dr
 parse gate rolls back a change the package cannot load, such as one that breaks a pinned route.
 Python callers use `ArchitectProject.upsert_relationship`.
 
+## Removing and Replacing Objects
+
+`remove_object` removes a model, dimension, time, measure, metric, segment, relationship, example or
+test, and keeps its YAML under `.architect/archive/<id>/removed.yml` (with the `reason` you give).
+Pass `model` when a dimension, time or measure key is on several models, and name a relationship
+the way `upsert_relationship` reports it (`orders_customer`). Removing a model also removes its
+entity, other models' references to that entity, and `graph.relationships` entries naming it. A
+file left with nothing in it is deleted.
+
+Every removal is checked against the package before anything is written. Measures, metrics,
+segments, examples and tests are compiled as they are and as they would be, without querying the
+warehouse. A removal that would stop a measure, metric or segment from compiling is refused and
+names them, so remove or change those first. The report's `impact` lists the examples and tests the
+removal breaks (`broken`), the authored files that still mention a removed id (`references`), and
+the behaviour changes against the current package (`behavior`, as in `impact_project`). Preview with
+`dry_run: true`; the usual mutation contract applies.
+
+`upsert_model` and `upsert_metric` merge into an existing object by default. With `replace: true`,
+`upsert_metric` writes `spec` as the whole metric, and `upsert_model` rewrites the model from its
+arguments, keeping only its entity references and calendar. The dimensions, times and measures it
+drops are reported as `dropped` and checked the same way as a removal. `upsert_model` also takes a
+`label`.
+
 ## Package Calendar
 
 `upsert_model` with `calendar: true` makes the model's entity the package calendar. The graph
@@ -152,6 +175,7 @@ the model's times to an existing calendar, as `time.calendar_id` queries expect.
 - `upsert_relationship`
 - `upsert_metric`
 - `upsert_segment`
+- `remove_object`
 - `archive_project_file`
 - `validate_project`
 - `diff_project`

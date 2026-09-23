@@ -938,7 +938,9 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
             "bucketing read its date_day, week_start, month_start, quarter_start and year_start "
             "columns. A package with calendars needs a default one. calendar: false makes a "
             "calendar a regular entity again once its date dimensions are removed. On a regular "
-            "model, calendar_id binds its times to an existing calendar."
+            "model, calendar_id binds its times to an existing calendar. Fields merge into an "
+            "existing model; replace: true rewrites it from the arguments, keeping only its "
+            "entity references and calendar."
         ),
     )
     def upsert_model(
@@ -955,8 +957,10 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
         joins: dict[str, Any] | None = None,
         group: str = "core",
         description: str = "",
+        label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
         try:
@@ -973,8 +977,10 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                     joins=joins,
                     group=group,
                     description=description,
+                    label=label,
                     calendar=calendar,
                     calendar_id=calendar_id,
+                    replace=replace,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1060,9 +1066,10 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
         expected_revision: str,
         idempotency_key: str,
         group: str = "core",
+        replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a curated metric recipe."""
+        """Preview or atomically upsert a metric; replace: true rewrites it from spec."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1070,6 +1077,7 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                     metric_key=metric_key,
                     spec=spec,
                     group=group,
+                    replace=replace,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1104,6 +1112,52 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                     segment_key=segment_key,
                     spec=spec,
                     file_name=file_name,
+                    validate_after=True,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Remove object"),
+        description=(
+            "Preview or atomically remove a model, dimension, time, measure, metric, segment, "
+            "relationship, example or test, keeping its YAML under .architect/archive/. model "
+            "picks the model when a dimension, time or measure key is on several; a relationship "
+            "is named as upsert_relationship reports it. Removing a model also removes its entity "
+            "and the relationships naming it. A removal that would break a measure, metric or "
+            "segment is refused, naming them; impact lists the examples and tests it breaks, "
+            "files still mentioning a removed id, and the behaviour changes. Preview with dry_run."
+        ),
+    )
+    def remove_object(
+        project_path: str,
+        kind: str,
+        key: str,
+        expected_revision: str,
+        idempotency_key: str,
+        model: str = "",
+        reason: str = "",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            return _mutation_result(
+                ArchitectProject(project_path, workspace_root=root)
+                .remove_object(
+                    kind=kind,
+                    key=key,
+                    model=model,
+                    reason=reason,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,

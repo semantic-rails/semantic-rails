@@ -71,6 +71,7 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
         "archive_project_file",
         "create_project",
         "import_dbt_project",
+        "remove_object",
         "upsert_metric",
         "upsert_model",
         "upsert_relationship",

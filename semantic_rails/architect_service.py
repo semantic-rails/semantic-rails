@@ -51,6 +51,35 @@ _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 # Dimension kinds only a calendar entity may carry.
 _DATE_KINDS = frozenset({"date", "timestamp", "datetime", "time"})
 
+_REMOVABLE_KINDS = {
+    **{
+        kind: kind
+        for kind in (
+            "model",
+            "dimension",
+            "time",
+            "measure",
+            "metric",
+            "segment",
+            "example",
+            "test",
+        )
+    },
+    **{
+        f"{kind}s": kind
+        for kind in ("model", "dimension", "measure", "metric", "segment", "example", "test")
+    },
+    "times": "time",
+    "relationship": "relationship",
+    "relationships": "relationship",
+}
+
+# What upsert_model(replace=True) keeps: identity, relationships and calendar.
+_KEPT_ON_REPLACE = ("id", "entities", "calendar_id")
+
+# Package checks: example questions and package tests.
+_CHECKS = ("example", "test")
+
 _INVENTORY_KINDS = {
     "model": "models",
     "entity": "entities",
@@ -413,6 +442,7 @@ class ArchitectProject:
         label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        replace: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -420,11 +450,14 @@ class ArchitectProject:
     ) -> ArchitectMutation:
         """Create or update a model and its primary graph entity.
 
-        ``calendar=True`` makes the entity the package calendar for
-        ``calendar_id`` (default ``"default"``): ``kind: time``, not a query
-        root. ``calendar=False`` makes a calendar a regular entity again, once
-        its ``kind: date`` dimensions are gone; ``None`` leaves it as it is.
-        On a regular model, ``calendar_id`` binds its times to that calendar.
+        Fields merge into an existing model; ``replace=True`` rewrites it from
+        the arguments instead, keeping only its entity references (see
+        :meth:`upsert_relationship`) and calendar. ``calendar=True`` makes the
+        entity the package calendar for ``calendar_id`` (default
+        ``"default"``): ``kind: time``, not a query root. ``calendar=False``
+        makes a calendar a regular entity again, once its ``kind: date``
+        dimensions are gone; ``None`` leaves it as it is. On a regular model,
+        ``calendar_id`` binds its times to that calendar.
         """
         intent = {
             "operation": "upsert_model",
@@ -441,6 +474,7 @@ class ArchitectProject:
             "label": label,
             "calendar": calendar,
             "calendar_id": calendar_id,
+            "replace": replace,
         }
         expected, key, replay = self._begin(expected_revision, idempotency_key, intent)
         if replay is not None:
@@ -463,11 +497,21 @@ class ArchitectProject:
             label=label,
             calendar=calendar,
             calendar_id=calendar_id,
+            replace=replace,
         )
         if staged["calendar_changed"]:
             self._check_calendars(raw, documents)
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
+        extra: dict[str, Any] = {"entity": staged["entity"]}
+        if staged["dropped"]:
+            extra["dropped"] = [
+                {field: value for field, value in row.items() if field != "spec"}
+                for row in staged["dropped"]
+            ]
+            extra["impact"] = self._guarded_impact(
+                self._updates(documents), staged["dropped"], f"replacing model {model_id!r}"
+            )
         return self._commit(
             documents,
             kind="model",
@@ -480,7 +524,7 @@ class ArchitectProject:
             idempotency_key=key,
             dry_run=dry_run,
             intent=intent,
-            extra={"entity": staged["entity"]},
+            extra=extra,
         )
 
     def upsert_models(
@@ -589,6 +633,18 @@ class ArchitectProject:
         if not any(fact["graph_changed"] for fact in staged):
             for path in graph_paths - model_paths:
                 documents.pop(path, None)
+        dropped = [row for fact in staged for row in fact["dropped"]]
+        replaced: dict[str, Any] = {}
+        if dropped:
+            replaced = {
+                "dropped": [
+                    {field: value for field, value in row.items() if field != "spec"}
+                    for row in dropped
+                ],
+                "impact": self._guarded_impact(
+                    self._updates(documents), dropped, "replacing these models"
+                ),
+            }
         return self._commit(
             documents,
             kind="models",
@@ -613,6 +669,7 @@ class ArchitectProject:
                 ],
                 "references": added,
                 "skipped_references": skipped,
+                **replaced,
             },
         )
 
@@ -989,6 +1046,7 @@ class ArchitectProject:
         label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        replace: bool = False,
     ) -> dict[str, Any]:
         """Apply one model upsert to ``documents`` (files load on first use).
 
@@ -1042,6 +1100,16 @@ class ArchitectProject:
         model, model_wrapper = self._model_for_update(
             model_doc, existing_model, model_slug=model_slug
         )
+        dropped: list[dict[str, Any]] = []
+        if replace and existing_model is not None:
+            kept = {"dimensions": dimensions, "times": times, "measures": measures}
+            dropped = [
+                self._removed_row(row, model=model_slug)
+                for plural, fields in kept.items()
+                for row in raw[plural]
+                if row.model_key == model_slug and row.key not in dict(fields or {})
+            ]
+            model = {field: model[field] for field in _KEPT_ON_REPLACE if field in model}
         model.update(
             {
                 "id": model_slug,
@@ -1133,6 +1201,7 @@ class ArchitectProject:
             "model": model_slug,
             "entity_key": entity_slug,
             "calendar_changed": calendar is not None or bool(requested_calendar),
+            "dropped": dropped,
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
@@ -1303,6 +1372,411 @@ class ArchitectProject:
             },
         )
 
+    def remove_object(
+        self,
+        *,
+        kind: str,
+        key: str,
+        model: str = "",
+        reason: str = "",
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Remove one object and keep its YAML under ``.architect/archive/``.
+
+        ``kind`` is model, dimension, time, measure, metric, segment,
+        relationship, example or test; ``model`` picks the model when a
+        dimension, time or measure key exists on several. A relationship is
+        named as :meth:`upsert_relationship` reports it (``orders_customer``).
+        Removing a model also removes its entity, other models' references to
+        that entity and ``graph.relationships`` entries naming it.
+
+        A removal that would stop a measure, metric or segment from compiling
+        is refused, naming them: remove or change those first. The report's
+        ``impact`` lists examples and tests it breaks (``broken``), authored
+        files that still mention a removed id (``references``) and the
+        behaviour changes against the current package (``behavior``).
+        """
+        expected, idempotency = self._mutation_identity(expected_revision, idempotency_key)
+        singular = _REMOVABLE_KINDS.get(str(kind or "").strip().lower())
+        if singular is None:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"kind must be one of {', '.join(sorted(set(_REMOVABLE_KINDS.values())))}",
+                details={"kind": kind},
+            )
+        name = str(key or "").strip()
+        if not name:
+            raise SemanticLayerError("INVALID_CONFIG", "key is required")
+        raw = self._raw_inventory()
+        documents: dict[Path, dict[str, Any]] = {}
+        deletions: list[Path] = []
+        removed: list[dict[str, Any]] = []
+        if singular in {"metric", "segment", "example", "test"}:
+            self._remove_mapping_object(raw, singular, name, documents, deletions, removed)
+        elif singular in {"dimension", "time", "measure"}:
+            self._remove_model_field(raw, singular, name, str(model or ""), documents, removed)
+        elif singular == "relationship":
+            self._remove_relationship(raw, name, documents, removed)
+        else:
+            self._remove_model(raw, name, documents, deletions, removed)
+        archive_path = (
+            f".architect/archive/{hashlib.sha256(idempotency.encode('utf-8')).hexdigest()[:16]}"
+            "/removed.yml"
+        )
+        archive = ProjectFileUpdate(
+            archive_path,
+            yaml.safe_dump(
+                {"reason": reason, "removed": removed}, sort_keys=False, allow_unicode=False
+            ).encode("utf-8"),
+        )
+        impact = self._guarded_impact(
+            self._updates(documents, tuple(deletions)), removed, f"removing {singular} {name!r}"
+        )
+        return self._commit(
+            documents,
+            kind=singular,
+            key=name,
+            existed=True,
+            source_file=str(removed[0]["source_file"]),
+            target_file="",
+            validate_after=validate_after,
+            expected_revision=expected,
+            idempotency_key=idempotency,
+            dry_run=dry_run,
+            intent={
+                "operation": "remove_object",
+                "kind": singular,
+                "key": name,
+                "model": model,
+                "reason": reason,
+            },
+            extra={
+                "removed": [
+                    {field_name: value for field_name, value in row.items() if field_name != "spec"}
+                    for row in removed
+                ],
+                "archived_to": archive_path,
+                "impact": impact,
+            },
+            deletions=tuple(deletions),
+            extra_updates=(archive,),
+            operation="removed",
+            success_status="removed",
+        )
+
+    def _document(self, documents: dict[Path, dict[str, Any]], path: Path) -> dict[str, Any]:
+        """The staged document for ``path``, loaded on first use."""
+        if path not in documents:
+            documents.update(self._load_documents(path))
+        return documents[path]
+
+    def _removed_row(self, row: _RawObject, **fields: Any) -> dict[str, Any]:
+        return {
+            "kind": row.kind,
+            "key": row.key,
+            "id": row.object_id,
+            "source_file": self._relative(row.source_path),
+            **fields,
+            "spec": deepcopy(row.spec),
+        }
+
+    def _remove_mapping_object(
+        self,
+        raw: dict[str, list[_RawObject]],
+        singular: str,
+        name: str,
+        documents: dict[Path, dict[str, Any]],
+        deletions: list[Path],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        plural = f"{singular}s"
+        row = self._find_raw(raw[plural], name)
+        if row is None:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"{singular} {name!r} is not in this package",
+                details={"kind": singular, "key": name},
+            )
+        doc = self._document(documents, row.source_path)
+        rows = dict(doc.get(plural, {}) or {}) if row.wrapper == plural else {}
+        rows.pop(row.key, None)
+        if rows:
+            doc[plural] = rows
+        elif row.wrapper == plural and len(doc) > 1:
+            doc.pop(plural, None)
+        else:
+            deletions.append(row.source_path)
+        # Examples and tests have no public id to look for elsewhere.
+        removed.append(self._removed_row(row, **({"id": ""} if singular in _CHECKS else {})))
+
+    def _remove_model_field(
+        self,
+        raw: dict[str, list[_RawObject]],
+        singular: str,
+        name: str,
+        model: str,
+        documents: dict[Path, dict[str, Any]],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        plural = _INVENTORY_KINDS[singular]
+        rows = [
+            row for row in raw[plural] if row.key == name and (not model or row.model_key == model)
+        ]
+        if not rows:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"{singular} {name!r} is not on "
+                + (f"model {model!r}" if model else "any model in this package"),
+                details={"kind": singular, "key": name, "model": model},
+            )
+        if len(rows) > 1:
+            models = sorted(row.model_key for row in rows)
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{singular} {name!r} is on several models ({', '.join(models)}); pass model",
+                details={"kind": singular, "key": name, "models": models},
+            )
+        row = rows[0]
+        owner = self._find_raw(raw["models"], row.model_key)
+        assert owner is not None
+        doc = self._document(documents, owner.source_path)
+        spec, wrapper = self._model_for_update(doc, owner, model_slug=owner.key)
+        fields = dict(spec.get(plural, {}) or {})
+        fields.pop(name, None)
+        if fields:
+            spec[plural] = fields
+        else:
+            spec.pop(plural, None)
+        self._store_model(doc, wrapper, owner.key, spec)
+        removed.append(self._removed_row(row, model=owner.key))
+
+    def _graph_document(
+        self, raw: dict[str, list[_RawObject]], documents: dict[Path, dict[str, Any]]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The staged document holding the graph, and a copy of its graph block."""
+        path = raw["entities"][0].source_path if raw["entities"] else self._target_path("graph.yml")
+        doc = self._document(documents, path)
+        return doc, dict(doc.get("graph", {}) or {})
+
+    def _remove_relationship(
+        self,
+        raw: dict[str, list[_RawObject]],
+        name: str,
+        documents: dict[Path, dict[str, Any]],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        graph_doc, graph = self._graph_document(raw, documents)
+        relationships = dict(graph.get("relationships", {}) or {})
+        entry = relationships.get(name)
+        pair: list[str] = []
+        if isinstance(entry, dict) and len(_as_list(entry.get("entities"))) == 2:
+            pair = _as_list(entry.get("entities"))
+        else:
+            for model_row in raw["models"]:
+                primary = self._primary_entity_for_model(model_row, raw["entities"])
+                references = dict(model_row.spec.get("entities", {}) or {})
+                for target in references:
+                    if target in {primary, "bridge"}:
+                        continue
+                    if _slug(f"{model_row.key}_{target}", fallback="") == _slug(name, fallback=""):
+                        pair = [primary, str(target)]
+        if not pair:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"relationship {name!r} is not in this package",
+                details={"kind": "relationship", "key": name},
+            )
+        source, target = pair
+        self._drop_relationship_entries(graph_doc, graph, {(source, target)}, removed)
+        source_row = self._find_raw(raw["entities"], source)
+        owner = self._entity_model(raw, source_row) if source_row is not None else None
+        if owner is not None and target in dict(owner.spec.get("entities", {}) or {}):
+            self._drop_entity_references(documents, owner, {target}, removed)
+
+    def _drop_relationship_entries(
+        self,
+        graph_doc: dict[str, Any],
+        graph: dict[str, Any],
+        pairs: set[tuple[str, str]],
+        removed: list[dict[str, Any]],
+        *,
+        entities: frozenset[str] = frozenset(),
+    ) -> None:
+        """Drop graph.relationships entries for ``pairs`` or naming ``entities``."""
+        relationships = dict(graph.get("relationships", {}) or {})
+        kept = {}
+        for entry_name, entry in relationships.items():
+            pair = _as_list(dict(entry).get("entities")) if isinstance(entry, dict) else []
+            if (len(pair) == 2 and tuple(pair) in pairs) or set(pair) & entities:
+                removed.append(
+                    {
+                        "kind": "relationship",
+                        "key": str(entry_name),
+                        "id": str(dict(entry).get("id") or f"relationship.{entry_name}"),
+                        "source_file": "graph.relationships",
+                        "spec": deepcopy(entry),
+                    }
+                )
+                continue
+            kept[entry_name] = entry
+        if kept != relationships:
+            if kept:
+                graph["relationships"] = kept
+            else:
+                graph.pop("relationships", None)
+            graph_doc["graph"] = graph
+
+    def _drop_entity_references(
+        self,
+        documents: dict[Path, dict[str, Any]],
+        owner: _RawObject,
+        targets: set[str],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        """Drop ``owner``'s references to ``targets`` from its entities block."""
+        doc = self._document(documents, owner.source_path)
+        spec, wrapper = self._model_for_update(doc, owner, model_slug=owner.key)
+        references = dict(spec.get("entities", {}) or {})
+        for target in sorted(targets & set(references)):
+            removed.append(
+                {
+                    "kind": "relationship",
+                    "key": f"{owner.key}_{target}",
+                    "id": f"relationship.{owner.key}_{target}",
+                    "source_file": self._relative(owner.source_path),
+                    "model": owner.key,
+                    "spec": {target: deepcopy(references.pop(target))},
+                }
+            )
+        spec["entities"] = references
+        self._store_model(doc, wrapper, owner.key, spec)
+
+    def _remove_model(
+        self,
+        raw: dict[str, list[_RawObject]],
+        name: str,
+        documents: dict[Path, dict[str, Any]],
+        deletions: list[Path],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        owner = self._find_raw(raw["models"], name)
+        if owner is None:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"model {name!r} is not in this package",
+                details={"kind": "model", "key": name},
+            )
+        removed.append(self._removed_row(owner))
+        for plural in ("dimensions", "times", "measures"):
+            removed.extend(
+                self._removed_row(row, model=owner.key)
+                for row in raw[plural]
+                if row.model_key == owner.key
+            )
+        if owner.wrapper == "models":
+            doc = self._document(documents, owner.source_path)
+            models = dict(doc.get("models", {}) or {})
+            models.pop(owner.key, None)
+            doc["models"] = models
+        else:
+            deletions.append(owner.source_path)
+        entities = {
+            row.key
+            for row in raw["entities"]
+            if (bound := self._entity_model(raw, row)) is not None and bound.key == owner.key
+        }
+        graph_doc, graph = self._graph_document(raw, documents)
+        graph_entities = dict(graph.get("entities", {}) or {})
+        for entity in sorted(entities):
+            row = self._find_raw(raw["entities"], entity)
+            assert row is not None
+            removed.append(self._removed_row(row))
+            graph_entities.pop(entity, None)
+        graph["entities"] = graph_entities
+        graph_doc["graph"] = graph
+        self._drop_relationship_entries(
+            graph_doc, graph, set(), removed, entities=frozenset(entities)
+        )
+        for other in raw["models"]:
+            if other.key != owner.key and entities & set(
+                dict(other.spec.get("entities", {}) or {})
+            ):
+                self._drop_entity_references(documents, other, entities, removed)
+
+    def _guarded_impact(
+        self, updates: list[ProjectFileUpdate], removed: list[dict[str, Any]], change: str
+    ) -> dict[str, Any]:
+        """:meth:`_change_impact`, refusing a change that breaks a definition."""
+        impact = self._change_impact(updates, removed)
+        broken = [
+            row for row in impact["broken"] or [] if row["kind"] in {"measure", "metric", "segment"}
+        ]
+        if broken:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{change} breaks "
+                + ", ".join(f"{row['kind']} {row['id']}" for row in broken)
+                + "; remove or change those first",
+                details={"broken": broken, "impact": impact},
+            )
+        return impact
+
+    def _change_impact(
+        self, updates: list[ProjectFileUpdate], removed: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """What a change breaks, where removed ids are still mentioned, and its impact.
+
+        ``broken`` lists measures, metrics, segments, examples and tests that
+        compile now but not after the change (or fail differently);
+        ``references`` lists authored files still naming a removed id;
+        ``behavior`` is the package impact report against the current package.
+        """
+        from .package_tools import impact_report
+
+        transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+        patterns = {
+            object_id: re.compile(rf"(?<![\w.]){re.escape(object_id)}(?:__\w+)?(?![\w.])")
+            for object_id in sorted({str(row["id"]) for row in removed if row.get("id")})
+        }
+        references = []
+        for relative, content in sorted(transaction.proposed_files(updates).items()):
+            text = content.decode("utf-8", errors="replace")
+            found = [object_id for object_id, pattern in patterns.items() if pattern.search(text)]
+            if found:
+                references.append({"file": relative, "ids": found})
+        impact: dict[str, Any] = {"broken": [], "references": references, "behavior": {}}
+        with transaction.virtual_project(updates) as proposed:
+            parse, _ = parse_config_report(PackageReference(source_path=str(proposed)))
+            if not parse.get("ok"):
+                impact["behavior"] = {"ok": False, "errors": list(parse.get("errors", []) or [])}
+                return impact
+            try:
+                before = _compile_failures(self.project_path)
+            except SemanticLayerError as exc:
+                impact["broken"] = None
+                impact["behavior"] = {"ok": False, "errors": [_issue(exc)]}
+                return impact
+            after = _compile_failures(proposed)
+            impact["broken"] = [
+                {"id": object_id, "kind": kind, "code": code, "message": message}
+                for object_id, (kind, code, message) in sorted(after.items())
+                if before.get(object_id, ("", "", ""))[1] != code
+            ]
+            report = impact_report(
+                PackageReference(source_path=str(proposed)), compare_path=str(self.project_path)
+            )
+            impact["behavior"] = {
+                "ok": True,
+                "summary": report["summary"],
+                "changes": report["changes"],
+                "impacted_metrics": report["impact"]["impacted_metrics"],
+                "risk": report["impact"]["risk"],
+            }
+        return impact
+
     def write_file(
         self,
         *,
@@ -1447,8 +1921,12 @@ class ArchitectProject:
         dry_run: bool,
         intent: dict[str, Any],
         extra: dict[str, Any] | None = None,
+        deletions: tuple[Path, ...] = (),
+        extra_updates: tuple[ProjectFileUpdate, ...] = (),
+        operation: str = "",
+        success_status: str = "upserted",
     ) -> ArchitectMutation:
-        operation = "updated" if existed else "created"
+        operation = operation or ("updated" if existed else "created")
         metadata: dict[str, Any] = {
             "operation": operation,
             "existing": existed,
@@ -1469,35 +1947,18 @@ class ArchitectProject:
         }
         if extra:
             metadata.update(deepcopy(extra))
-        # Rewrite only what changed, so untouched files keep their formatting.
-        documents = {
-            path: doc
-            for path, doc in documents.items()
-            if not path.exists() or doc != _yaml_load(path)
-        }
-        updates = [
-            ProjectFileUpdate(
-                self._relative(path),
-                yaml.safe_dump(
-                    documents[path],
-                    sort_keys=False,
-                    allow_unicode=False,
-                ).encode("utf-8"),
-                (path.stat().st_mode & 0o777) if path.exists() else None,
-            )
-            for path in documents
-        ]
         outcome = ProjectTransaction(
             self.project_path,
             workspace_root=self.workspace_root,
         ).apply(
-            updates,
+            [*self._updates(documents, deletions), *extra_updates],
             expected_revision=expected_revision,
             idempotency_key=idempotency_key,
             intent={**deepcopy(intent), "expected_revision": expected_revision},
             dry_run=dry_run,
             validate_after=validate_after,
-            success_status="upserted",
+            allow_internal_paths=bool(extra_updates),
+            success_status=success_status,
             metadata=metadata,
         )
         mutation = ArchitectMutation(
@@ -1507,6 +1968,30 @@ class ArchitectProject:
             _active=bool(outcome.snapshots),
         )
         return mutation
+
+    def _updates(
+        self, documents: dict[Path, dict[str, Any]], deletions: tuple[Path, ...] = ()
+    ) -> list[ProjectFileUpdate]:
+        """File updates for the staged documents that changed, plus deleted files.
+
+        A document whose data is unchanged is not rewritten, so it keeps its
+        comments and layout.
+        """
+        return [
+            *(
+                ProjectFileUpdate(
+                    self._relative(path),
+                    yaml.safe_dump(documents[path], sort_keys=False, allow_unicode=False).encode(
+                        "utf-8"
+                    ),
+                    (path.stat().st_mode & 0o777) if path.exists() else None,
+                )
+                for path in documents
+                if path not in deletions
+                and (not path.exists() or documents[path] != _yaml_load(path))
+            ),
+            *(ProjectFileUpdate(self._relative(path), None) for path in deletions),
+        ]
 
     def _raw_inventory(self) -> dict[str, list[_RawObject]]:
         package_path = self._target_path("package.yml")
@@ -1615,6 +2100,16 @@ class ArchitectProject:
             singular="segment",
             namespace=namespace,
         )
+        checks = {
+            f"{kind}s": self._mapping_inventory(
+                package_doc=package_doc,
+                package_path=package_path,
+                plural=f"{kind}s",
+                singular=kind,
+                namespace=namespace,
+            )
+            for kind in _CHECKS
+        }
         return {
             "models": models,
             "entities": entities,
@@ -1623,6 +2118,7 @@ class ArchitectProject:
             "measures": nested["measures"],
             "metrics": metrics,
             "segments": segments,
+            **checks,
         }
 
     def _mapping_inventory(
@@ -1815,6 +2311,63 @@ class ArchitectProject:
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.project_path).as_posix()
+
+
+def _issue(exc: SemanticLayerError) -> dict[str, Any]:
+    return {"code": exc.code, "message": str(exc), "details": dict(exc.details or {})}
+
+
+def _compile_failures(project: Path) -> dict[str, tuple[str, str, str]]:
+    """What in a package does not compile, as ``{id: (kind, code, message)}``.
+
+    Measures, metrics and segments are compiled the way ``validate_project``
+    probes them, and example and test queries as written; nothing runs
+    against the warehouse.
+    """
+    from .config import package_root_for_source
+    from .config_validation import _probe_query_for_measure, _probe_query_for_metric
+    from .package_tools import _load_named_entries
+    from .runtime import Runtime
+
+    runtime = Runtime.from_path(str(project))
+    failures: dict[str, tuple[str, str, str]] = {}
+
+    def check(object_id: str, kind: str, build: Any) -> None:
+        try:
+            runtime.compile(build())
+        except SemanticLayerError as exc:
+            failures[object_id] = (kind, exc.code, str(exc))
+
+    try:
+        config = runtime.snapshot.config
+        for measure in config.measures:
+            check(measure.id, "measure", lambda measure=measure: _probe_query_for_measure(measure))
+        for recipe in config.metric_recipes:
+            check(
+                recipe.id,
+                "metric",
+                lambda recipe=recipe: _probe_query_for_metric(recipe, runtime),
+            )
+        for segment in config.segments:
+            report = runtime.segment_validate(segment.id)
+            if not report.get("ok"):
+                error = dict((report.get("errors") or [{}])[0] or {})
+                failures[segment.id] = (
+                    "segment",
+                    str(error.get("code", "")),
+                    str(error.get("message", "")),
+                )
+        root = Path(package_root_for_source(str(project)))
+        for kind in ("example", "test"):
+            for entry_id, spec in _load_named_entries(
+                root / f"{kind}s", plural_key=f"{kind}s", singular_key=kind
+            ):
+                query = dict(spec or {}).get("query")
+                if isinstance(query, dict):
+                    check(f"{kind}.{entry_id}", kind, lambda query=query: deepcopy(query))
+    finally:
+        runtime.close()
+    return failures
 
 
 def _normal_text(value: str) -> str:
