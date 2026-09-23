@@ -129,6 +129,7 @@ def translate(
     measure_owner: dict[str, str] = {}
     measure_to_value_type: dict[str, str] = {}
     measure_to_agg: dict[str, str] = {}
+    running_total_problems: dict[str, str] = {}
     # Collect explicit metric names so we can suppress measure
     # auto-publish for any measure whose name will collide with a
     # metric we author explicitly. Without `publish: false` Semantic
@@ -156,6 +157,7 @@ def translate(
             measure_owner[measure_name] = name
             measure_to_value_type[measure_name] = vt
             measure_to_agg[measure_name] = default_agg
+        running_total_problems.update(_running_total_problems(sm, model_doc, graph))
 
     metrics_by_owner: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for metric in raw["metrics"]:
@@ -165,6 +167,7 @@ def translate(
             measure_value_type=measure_to_value_type,
             measure_agg=measure_to_agg,
             dimension_ids=dimension_ids,
+            running_total_problems=running_total_problems,
             report=report,
         )
         if translated is None:
@@ -173,6 +176,19 @@ def translate(
         metrics_by_owner.setdefault(owner_hint, []).append((metric_name, metric_doc))
         report.metrics_emitted.append(metric_name)
     _drop_dependents(metrics_by_owner, metric_names, set(measure_owner), report)
+
+    rolling = sorted(
+        metric_name
+        for entries in metrics_by_owner.values()
+        for metric_name, metric_doc in entries
+        if metric_doc.get("kind") == "rolling"
+    )
+    if rolling:
+        report.warnings.append(
+            f"rolling metrics ({', '.join(rolling)}) are computed over the package calendar, "
+            "which mf2sr doesn't write: add a `kind: time` entity whose table has date_day, "
+            "week_start, month_start, quarter_start and year_start before querying them"
+        )
 
     if metrics_by_owner:
         metrics_dir = out_root / "metrics"
@@ -798,6 +814,7 @@ def _build_metric(
     measure_value_type: dict[str, str],
     measure_agg: dict[str, str],
     dimension_ids: dict[str, str | None],
+    running_total_problems: dict[str, str],
     report: TranslationReport,
 ) -> tuple[str, dict[str, Any], str] | None:
     """Translate a MetricFlow metric. Returns
@@ -899,31 +916,43 @@ def _build_metric(
         return name, doc, owner
 
     if mtype == "cumulative":
-        measure = _normalize_metric_ref(type_params.get("measure")).get("name")
+        measure_ref = _normalize_metric_ref(type_params.get("measure"))
+        measure = measure_ref.get("name")
         if not measure:
             report.warnings.append(
                 f"metric `{name}`: cumulative missing `type_params.measure.name`"
             )
             return None
-        owner = measure_owner.get(measure, "core")
-        vt = measure_value_type.get(measure, "number")
-        doc = {
-            "label": label,
-            "description": description,
-            "kind": "cumulative",
-            "measure": measure,
-            "value_type": vt,
-        }
-        # Window can live at the top of type_params (legacy) or under
-        # cumulative_type_params (current). Forward whichever exists.
-        cum_params = type_params.get("cumulative_type_params") or {}
-        window = type_params.get("window") or cum_params.get("window")
-        grain_to_date = cum_params.get("grain_to_date")
-        if window:
-            doc["window"] = window
-        if grain_to_date:
-            doc["grain_to_date"] = grain_to_date
-        return name, doc, owner
+        shape, problem = _cumulative_shape(type_params)
+        if problem:
+            report.warnings.append(f"metric `{name}`: {problem}; skipped")
+            return None
+        if measure in running_total_problems:
+            report.warnings.append(
+                f"metric `{name}`: Semantic Rails adds up each period's value of `{measure}`, "
+                f"which {running_total_problems[measure]}, so its totals would be wrong; skipped"
+            )
+            return None
+        cumulative_params = dict(type_params.get("cumulative_type_params") or {})
+        period_agg = str(cumulative_params.get("period_agg") or "first").strip().lower()
+        caveats = _cumulative_caveats(shape, period_agg)
+        if caveats:
+            report.warnings.append(f"metric `{name}`: {'; '.join(caveats)}")
+        spec, problem = _metric_filter(
+            [*metric_filters, *_filter_strings(measure_ref.get("filter"))], dimension_ids
+        )
+        if problem:
+            report.warnings.append(f"metric `{name}`: {problem}; emitted without its filter")
+        doc = {"label": label, "description": description, "kind": shape["kind"]}
+        if spec is None:
+            doc.update({"measure": measure, **{k: v for k, v in shape.items() if k != "kind"}})
+        else:
+            doc["expression"] = {
+                **shape,
+                "input": _aggregate_ast(measure, spec, measure_agg),
+            }
+        doc["value_type"] = measure_value_type.get(measure, "number")
+        return name, doc, measure_owner.get(measure, "core")
 
     if mtype == "derived":
         expr_str = type_params.get("expr")
@@ -932,6 +961,35 @@ def _build_metric(
             report.warnings.append(f"metric `{name}`: derived metric missing `type_params.expr`")
             return None
         input_metrics = [_normalize_metric_ref(im) for im in input_metrics]
+        offsets = [
+            f"`{im.get('alias') or im.get('name')}` ({key})"
+            for im in input_metrics
+            for key in ("offset_window", "offset_to_grain")
+            if im.get(key)
+        ]
+        if offsets:
+            report.warnings.append(
+                f"metric `{name}`: input {', '.join(offsets)} reads another period, which "
+                "mf2sr doesn't translate; skipped rather than computed over the same period"
+            )
+            return None
+        filtered = [
+            f"`{im.get('alias') or im.get('name')}`"
+            for im in input_metrics
+            if _filter_strings(im.get("filter"))
+        ]
+        if filtered:
+            report.warnings.append(
+                f"metric `{name}`: mf2sr doesn't carry the filters on its inputs "
+                f"({', '.join(filtered)}) into a derived metric; skipped rather than computed "
+                "unfiltered"
+            )
+            return None
+        if metric_filters:
+            report.warnings.append(
+                f"metric `{name}`: mf2sr doesn't carry a filter into a derived metric; "
+                "emitted without its filter"
+            )
         alias_map = {}
         for im in input_metrics:
             base = im.get("name")
@@ -1046,6 +1104,85 @@ def _metric_filter(
     return ({"all": clauses} if clauses else None), ""
 
 
+# MetricFlow's time granularities, and the ones the engine's windowed kinds use.
+_METRICFLOW_GRAINS = frozenset(
+    {
+        "nanosecond",
+        "microsecond",
+        "millisecond",
+        "second",
+        "minute",
+        "hour",
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year",
+    }
+)
+_WINDOW_UNITS = ("day", "week", "month", "quarter", "year")
+_TO_DATE_PERIODS = ("week", "month", "quarter", "year")
+
+
+def _cumulative_caveats(shape: dict[str, Any], period_agg: str) -> list[str]:
+    """Where a translated cumulative metric's values can differ from MetricFlow's.
+
+    At the time dimension's own grain they match. The engine reads a coarser
+    period's value at its end, and counts its windows in whole query-grain
+    periods.
+    """
+    caveats = []
+    if period_agg != "last":
+        caveats.append(
+            f"at grains coarser than its time dimension's, MetricFlow reports each period's "
+            f"{period_agg} value (period_agg: {period_agg}), and Semantic Rails the value at "
+            "the period's end"
+        )
+    period = shape.get("period")
+    if shape["kind"] == "period_to_date" and period != "week":
+        caveats.append(
+            f"at week grain Semantic Rails counts each week toward the {period} it starts in, "
+            f"so a week that crosses into a new {period} differs from MetricFlow"
+        )
+    unit = dict(shape.get("window") or {}).get("unit")
+    if shape["kind"] == "rolling" and unit in {"month", "quarter", "year"}:
+        caveats.append(
+            f"Semantic Rails sums whole calendar {unit}s, while MetricFlow's window reaches "
+            f"back from each day, so values near a {unit}'s end can differ"
+        )
+    return caveats
+
+
+def _running_total_problems(
+    sm: dict[str, Any], model_doc: dict[str, Any], graph: dict[str, Any]
+) -> dict[str, str]:
+    """Why each of a model's measures doesn't add up across periods, by measure name.
+
+    The engine builds cumulative, rolling and period-to-date totals by adding
+    each period's value, which is right only when the periods add up: sums,
+    and counts of the model's own rows.
+    """
+    own_keys = {
+        str(spec["key"][0])
+        for spec in graph["entities"].values()
+        if spec.get("model") == sm.get("name") and spec.get("key")
+    }
+    source = {measure.get("name"): measure for measure in sm.get("measures") or []}
+    problems: dict[str, str] = {}
+    for name, doc in dict(model_doc.get("measures") or {}).items():
+        measure = dict(source.get(name) or {})
+        if measure.get("non_additive_dimension"):
+            problems[name] = "is semi-additive (non_additive_dimension)"
+        elif doc.get("kind") == "entity_count":
+            if doc.get("entity_key") not in own_keys:
+                problems[name] = f"counts distinct {doc.get('entity_key')} values"
+        elif str(measure.get("agg") or "").lower() == "count_distinct":
+            problems[name] = "counts distinct values"
+        elif doc.get("default_agg") != "sum":
+            problems[name] = f"aggregates with {doc.get('default_agg')}"
+    return problems
+
+
 def _drop_dependents(
     metrics_by_owner: dict[str, list[tuple[str, dict[str, Any]]]],
     metric_names: set[str],
@@ -1093,6 +1230,58 @@ def _metric_refs(doc: dict[str, Any], measure_names: set[str]) -> set[str]:
         elif isinstance(node, list):
             pending.extend(node)
     return refs
+
+
+def _cumulative_shape(type_params: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """The engine kind that computes a MetricFlow cumulative metric, or why none does.
+
+    No window or grain: a running total (``cumulative``). ``window: 7 days``: a
+    trailing window (``rolling``). ``grain_to_date: month``: a running total that
+    restarts each month (``period_to_date``). As in MetricFlow,
+    ``cumulative_type_params`` wins over the older top-level fields.
+    """
+    params = dict(type_params.get("cumulative_type_params") or {})
+    window = params.get("window") or type_params.get("window")
+    grain = params.get("grain_to_date") or type_params.get("grain_to_date")
+    if window and grain:
+        return {}, "it has both a window and grain_to_date, which MetricFlow rejects"
+    if grain:
+        period = str(grain).strip().lower()
+        if period not in _TO_DATE_PERIODS:
+            return {}, (
+                f"{period}-to-date isn't computed; Semantic Rails computes week-, month-, "
+                "quarter- and year-to-date"
+            )
+        return {"kind": "period_to_date", "period": period}, ""
+    if window:
+        parsed = _time_window(window)
+        if parsed is None:
+            return {}, f"its window {window!r} isn't `<count> <granularity>`"
+        count, unit = parsed
+        if unit not in _WINDOW_UNITS:
+            return {}, (
+                f"{unit} windows aren't computed; Semantic Rails windows are days, weeks, "
+                "months, quarters or years"
+            )
+        return {"kind": "rolling", "window": {"unit": unit, "value": count}}, ""
+    return {"kind": "cumulative"}, ""
+
+
+def _time_window(raw: Any) -> tuple[int, str] | None:
+    """``7 days`` (YAML) or ``{count: 7, granularity: day}`` (manifest) as ``(7, "day")``."""
+    if isinstance(raw, dict):
+        count, grain = raw.get("count"), raw.get("granularity")
+    elif isinstance(raw, str) and len(raw.split()) == 2:
+        count, grain = raw.split()
+    else:
+        return None
+    count_text = str(count).strip()
+    unit = str(grain or "").strip().lower()
+    if not count_text.isdigit() or int(count_text) < 1 or not unit:
+        return None
+    if unit.endswith("s") and unit[:-1] in _METRICFLOW_GRAINS:
+        unit = unit[:-1]
+    return int(count_text), unit
 
 
 def _dimension_ids(
