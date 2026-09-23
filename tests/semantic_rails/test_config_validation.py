@@ -1940,6 +1940,58 @@ def test_validation_rejects_segment_whose_query_does_not_compile(package_config_
     ]
 
 
+@pytest.mark.parametrize("entity_ref", ["customer", "jaffle.Customer"])
+def test_validation_suggests_the_id_for_a_membership_entity_key_or_name(
+    package_config_factory, entity_ref
+):
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"][0]["expression"]["entity"] = entity_ref
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    assert validate_runtime_package(package_dir) == [
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
+        f"{entity_ref!r}; did you mean 'entity.jaffle_customer'?"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "failure"),
+    [
+        ({"window": {"unit": "day", "value": "oops"}}, "ValueError"),
+        ({"window": 7}, "TypeError"),
+        (
+            {
+                "input": {
+                    "kind": "aggregate",
+                    "measure": "measure.jaffle.lifetime_spend_usd",
+                    "parameters": "abc",
+                }
+            },
+            "ValueError",
+        ),
+    ],
+)
+def test_validation_reports_malformed_membership_expressions(
+    package_config_factory, change, failure
+):
+    # The expression parser raises plain ValueError/TypeError for these.
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"][0]["expression"].update(change)
+
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert errors[0].startswith(
+        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} query does not compile ({failure}): "
+    )
+    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
+    assert report["ok"] is False
+    assert [error["message"] for error in report["errors"]] == errors
+
+
 def test_single_file_validation_checks_segment_references(tmp_path: Path):
     package_file = tmp_path / "monolithic.yml"
     _write_monolithic_package(package_file, "monolithic_demo")
@@ -1962,3 +2014,24 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
     _write_yaml(package_file, payload)
 
     assert validate_runtime_package(package_file) == []
+
+    predicate = {
+        "kind": "metric_predicate",
+        "entity": "entity.demo_order",
+        "input": {"measure": "measure.demo.order_count"},
+        "op": ">=",
+        "value": 1,
+        "window": 7,
+    }
+    payload["segments"]["big_orders"]["membership"] = {
+        "metric_filters": [{"expression": predicate, "op": "=", "value": True}]
+    }
+    _write_yaml(package_file, payload)
+
+    errors = validate_runtime_package(package_file)
+    assert len(errors) == 1, errors
+    assert errors[0].startswith(
+        f"{package_file}: segment segment.demo.big_orders query does not compile (TypeError): "
+    )
+    report, config = parse_config_report(resolve_package_reference(path=str(package_file)))
+    assert (report["ok"], config) == (False, None)

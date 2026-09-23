@@ -1747,11 +1747,10 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
 
     _check_default_query_axis_collisions(config, source_path, errors)
     _check_disallowed_names(config, source_path, errors)
-    _check_segment_references(config, source_path, errors)
     if getattr(config.package, "schema_strict", False):
         _check_strict_authoring(config, source_path, errors)
 
-    return errors
+    return [*errors, *_segment_reference_errors(config, source_path)]
 
 
 def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> None:
@@ -1882,7 +1881,7 @@ def _check_disallowed_names(config, source_path: Path, errors: list[str]) -> Non
         _check(measure.entity, measure.name, column, "measure", measure.id)
 
 
-def _check_segment_references(config, source_path: Path, errors: list[str]) -> None:
+def _segment_reference_errors(config, source_path: Path) -> list[str]:
     """Reject segments that the catalog and segment surfaces cannot serve.
 
     The loader keeps an unresolved segment ``entity`` as written, so a typo
@@ -1892,15 +1891,24 @@ def _check_segment_references(config, source_path: Path, errors: list[str]) -> N
     ``normalize_segment`` check that catalog runs, and compile the query that
     ``segment-validate`` derives from it.
     """
+    errors: list[str] = []
     if not config.segments:
-        return
+        return errors
     from difflib import get_close_matches
 
     entity_ids = {entity.id for entity in config.entities}
+    # Ways an author may spell an entity, each mapped to the id to suggest.
+    spellings = {
+        spelling.lower(): entity.id
+        for entity in config.entities
+        for spelling in (entity.id, entity.id.removeprefix("entity."), entity.name, entity.label)
+    }
 
     def _unknown_entity(ref: str) -> str:
-        hints = get_close_matches(ref, sorted(entity_ids), n=1, cutoff=0.6)
-        return f"unknown entity {ref!r}" + (f"; did you mean {hints[0]!r}?" if hints else "")
+        hints = get_close_matches(ref.lower(), sorted(spellings), n=1, cutoff=0.6)
+        return f"unknown entity {ref!r}" + (
+            f"; did you mean {spellings[hints[0]]!r}?" if hints else ""
+        )
 
     registry = Registry(config)
     for segment in config.segments:
@@ -1920,23 +1928,38 @@ def _check_segment_references(config, source_path: Path, errors: list[str]) -> N
             add_error(errors, f"{prefix} {message}")
         if unknown:
             continue
+        # Report, never raise: the expression parser still raises plain
+        # ValueError/TypeError for some malformed values (a non-numeric window).
         try:
             normalized = normalize_segment(config, segment.id)
-        except SemanticLayerError as exc:
-            # These messages don't name the offending object; the details do.
-            details = ", ".join(
-                f"{key}={value}"
-                for key, value in sorted(exc.details.items())
-                if key != "segment_id"
-            )
-            suffix = f" [{details}]" if details else ""
-            add_error(errors, f"{prefix} is invalid ({exc.code}): {exc}{suffix}")
+            query = build_segment_query(normalized, include_preview_dimensions=True)
+        except Exception as exc:
+            add_error(errors, f"{prefix} is invalid {_describe_segment_failure(exc)}")
             continue
-        query = build_segment_query(normalized, include_preview_dimensions=True)
         try:
             compile_query(config, registry, query)
-        except SemanticLayerError as exc:
-            add_error(errors, f"{prefix} query does not compile ({exc.code}): {exc}")
+        except Exception as exc:
+            add_error(errors, f"{prefix} query does not compile {_describe_segment_failure(exc)}")
+    return errors
+
+
+def _describe_segment_failure(exc: Exception) -> str:
+    """``(CODE): message``, plus the scalar details the message doesn't name.
+
+    ``normalize_segment``'s messages omit the offending object; its details
+    carry it (for example the preview dimension and the entity it belongs to).
+    """
+    if not isinstance(exc, SemanticLayerError):
+        return f"({type(exc).__name__}): {exc}"
+    message = str(exc)
+    details = ", ".join(
+        f"{key}={value}"
+        for key, value in sorted(exc.details.items())
+        if key != "segment_id"
+        and isinstance(value, str | int | float | bool)
+        and str(value) not in message
+    )
+    return f"({exc.code}): {message}" + (f" [{details}]" if details else "")
 
 
 def _metric_predicate_entities(node: Any) -> list[str]:

@@ -1340,11 +1340,11 @@ with a structured `INVALID_CONFIG` error (`details.missing_assets` +
 `inspect` and the `segment-*` commands could not serve:
 
 - Its `entity:` names no graph entity. It may be a graph entity key, name or id.
-  An `entity:` inside a membership `metric_predicate` must be an entity id. The
-  error suggests the closest id.
-- `catalog` cannot describe it: its entity is not allowed as a query root, the
-  `basis_metric` is unknown or rooted on another entity, or a preview dimension
-  is unknown, not groupable, or belongs to another entity.
+  An `entity:` inside a membership `metric_predicate` must be an entity id. When
+  one is close, the error suggests its id.
+- `catalog` cannot describe it: its entity is not allowed as a query root or has
+  no key dimensions, the `basis_metric` is unknown or rooted on another entity,
+  or a preview dimension is unknown, not groupable, or belongs to another entity.
 - The query that `segment-validate` derives from it does not compile.
 
 ### Semantic collision warnings
