@@ -11,7 +11,14 @@ rejected with a structured error.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
+
+from semantic_rails.config_validation import resolve_package_reference, validate_config_report
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 
 
 def _conversion_query(
@@ -220,7 +227,12 @@ def test_operand_measure_counting_another_column_is_rejected(runtime_factory):
         _conversion_query(base_measure="measure.jaffle.ordering_customer_count")
     )
     assert report["ok"] is False
-    assert report["errors"][0]["code"] == "CONVERSION_NOT_SUPPORTED"
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert "counts column 'customer_id'" in error["message"]
+    # No operand filter turns an order count into a customer count.
+    assert "whose rows are the events" in error["message"]
+    assert "'filter'" not in error["message"]
 
 
 _NEW_CUSTOMER_ORDER = {
@@ -260,3 +272,68 @@ def test_first_order_then_repeat_order_via_operand_filters_matches_oracle(runtim
     )
     assert 0 < oracle[0]["rate"] < 1
     assert rows[0]["a_then_b_conversion_rate"] == oracle[0]["rate"]
+
+
+def _runtime_with_measure(tmp_path: Path, model_file: str, name: str, spec: dict) -> Runtime:
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    model_path = package_dir / "models" / "core" / model_file
+    raw = yaml.safe_load(model_path.read_text(encoding="utf-8"))
+    raw["model"]["measures"][name] = spec
+    model_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return Runtime.from_path(str(package_dir))
+
+
+_EVENT_COUNT = {"kind": "entity_count", "accumulation": {"kind": "event"}, "value_type": "count"}
+
+
+@pytest.mark.parametrize(
+    "counted",
+    [
+        {"expr": {"kind": "column", "column": "order_id", "entity": "entity.jaffle_order"}},
+        {"expr": "jaffle_order.order_id"},
+        # Unquoted identifiers fold case in SQL, so this is the same column.
+        {"entity_key": "ORDER_ID"},
+    ],
+    ids=["entity-qualified", "table-qualified", "upper-case"],
+)
+def test_operand_measure_counting_its_key_is_accepted_however_it_is_written(tmp_path, counted):
+    runtime = _runtime_with_measure(
+        tmp_path, "orders.yml", "keyed_order_count", {**_EVENT_COUNT, **counted}
+    )
+    filters = {"base_filter": _NEW_CUSTOMER_ORDER, "converted_filter": _REPEAT_ORDER}
+    keyed = runtime.query(
+        _conversion_query(base_measure="measure.jaffle.keyed_order_count", **filters)
+    )["rows"]
+    plain = runtime.query(_conversion_query(**filters))["rows"]
+    assert 0 < plain[0]["a_then_b_conversion_rate"] < 1
+    assert keyed == plain
+
+
+def test_fact_model_operand_measure_is_rejected(tmp_path):
+    # A fact-model entity_count measure counts its time column, which is also the time
+    # entity's key, but it counts rows of the fact relation, not of the calendar table
+    # that conversion lowering reads.
+    runtime = _runtime_with_measure(tmp_path, "daily_metrics.yml", "rollup_day_count", _EVENT_COUNT)
+    report = runtime.validate(_conversion_query(base_measure="measure.jaffle.rollup_day_count"))
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+    assert "counts rows of 'jaffle_daily_metric_rollup'" in error["message"]
+
+
+def test_curated_conversion_metric_on_an_expression_measure_fails_package_validation(tmp_path):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    metrics_path = package_dir / "metrics" / "extensions" / "advanced_metrics.yml"
+    raw = yaml.safe_load(metrics_path.read_text(encoding="utf-8"))
+    metric = raw["metrics"]["sales.session_to_order_conversion_rate_7d"]
+    metric["expression"]["converted"]["measure"] = "new_customer_order_count"
+    metrics_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
+
+    assert report["ok"] is False
+    failed = [probe for probe in report["probes"] if not probe["ok"]]
+    assert [probe["object_id"] for probe in failed] == [
+        "metric.sales.session_to_order_conversion_rate_7d"
+    ]
+    assert failed[0]["error"]["code"] == "CONVERSION_NOT_SUPPORTED"

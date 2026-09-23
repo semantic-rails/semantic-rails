@@ -1,6 +1,12 @@
-- A conversion operand whose measure counts an expression, such as an
-  `entity_count` measure with a `CASE WHEN ... THEN key END` filter, or a
-  column other than its entity's key, is now rejected with
-  `CONVERSION_NOT_SUPPORTED`. Before, the conversion counted every row of the
-  entity and silently dropped the filter: a first-order-to-repeat-order rate
-  could come out as 1.0. Restrict an operand with its `filter` instead.
+- A conversion operand whose measure counts anything other than its entity's
+  rows is now rejected with `CONVERSION_NOT_SUPPORTED`: a measure that counts an
+  expression, such as an `entity_count` measure with a `CASE WHEN ... THEN key
+  END` filter, a column other than the entity's key, or a fact model's rows.
+  Before, the conversion counted every row of the entity and silently dropped
+  the measure's definition. On `jaffle_shop`, a new-customer-order-to-large-order
+  rate with `large_order_count` as the converted operand came out as 1.0
+  instead of 0.31: every order counted as a large order, so each base order
+  converted to itself. A package with a curated conversion metric built on such
+  a measure now fails `validate-config` and `check`, and `discover` lists the
+  metric as unavailable. Count the entity key and restrict the operand with its
+  `filter` instead.

@@ -120,7 +120,7 @@ from .ir import (
 )
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
-from .renderer import render_select_for_profile
+from .renderer import _quote_ident, render_select_for_profile
 from .schema import (
     AggregateRelationConfig,
     DimensionConfig,
@@ -2384,40 +2384,30 @@ def _resolve_conversion_source(
 def _measure_conversion_source(
     measure: MeasureConfig, bound: BoundMeasure, config: PackageConfig, *, side: str
 ) -> dict[str, Any]:
-    """The conversion source for an operand measure, which must count its entity's key.
+    """The conversion source for an operand measure, which must count its entity's rows.
 
-    Conversion lowering keys each event by its entity's key and never reads the
-    measure's expression. A measure that counts an expression (``CASE WHEN ...
-    THEN key END``) or another column would silently lose it, so it is rejected.
+    Conversion lowering keys each event by its entity's key, reads the entity's table
+    and never reads the measure's expression or fact relation. A measure that counts an
+    expression (``CASE WHEN ... THEN key END``), another column or a fact model's rows
+    would silently lose its definition, so it is rejected.
     """
     entity = _entity_index(config).get(measure.entity)
-    key = list(entity.key) if entity is not None else []
-    counted = measure.expr
-    if not (
-        isinstance(counted, ColumnRefExpr)
-        and [counted.column] == key
-        and counted.entity in {"", measure.entity}
-        and counted.table in {"", entity.table if entity is not None else ""}
-    ):
-        what = (
-            f"column '{counted.column}'" if isinstance(counted, ColumnRefExpr) else "an expression"
-        )
+    problem = _conversion_operand_problem(measure, entity)
+    if problem is not None:
+        what, hint = problem
         raise SemanticLayerError(
             "CONVERSION_NOT_SUPPORTED",
             (
-                f"Measure '{measure.id}' counts {what}, not the key of '{measure.entity}', "
-                f"so it can't be the conversion {side} operand: a conversion operand counts "
-                "its entity's rows by that key, which would ignore the measure's definition. "
-                "Use a measure that counts the entity key and restrict the operand with "
-                "'filter', for example filter: {all: [{field: <dimension id>, op: '=', "
-                "value: ...}]}."
+                f"Measure '{measure.id}' {what}, so it can't be the conversion {side} "
+                "operand: a conversion operand counts its entity's rows by the entity key, "
+                f"which would ignore the measure's definition. {hint}"
             ),
             details={
                 "side": side,
                 "measure": measure.id,
                 "entity": measure.entity,
-                "entity_key": key,
-                "measure_expr": expr_to_dict(counted),
+                "entity_key": list(entity.key) if entity is not None else [],
+                "measure_expr": expr_to_dict(measure.expr),
             },
         )
     return {
@@ -2427,6 +2417,44 @@ def _measure_conversion_source(
         "time_role": bound.temporal_role or _default_temporal_role(measure),
         "filters": [],
     }
+
+
+def _conversion_operand_problem(measure: MeasureConfig, entity: Any) -> tuple[str, str] | None:
+    """What an operand measure counts instead of its entity's rows, and the fix; None if fine."""
+    key = list(entity.key) if entity is not None else []
+    table = entity.table if entity is not None else ""
+    counted = measure.expr
+    if not isinstance(counted, ColumnRefExpr):
+        return (
+            f"counts an expression, not the key of '{measure.entity}'",
+            "Use a measure that counts the entity key and restrict the operand with "
+            "'filter', for example filter: {all: [{field: <dimension id>, op: '=', "
+            "value: ...}]}.",
+        )
+    events_hint = "Use a measure that counts the key of the entity whose rows are the events."
+    if not (
+        len(key) == 1
+        and _same_sql_column(counted.column, key[0])
+        and counted.entity in {"", measure.entity}
+        and counted.table in {"", table}
+    ):
+        return f"counts column '{counted.column}', not the key of '{measure.entity}'", events_hint
+    if measure.source_relation not in {"", table}:
+        return (
+            f"counts rows of '{measure.source_relation}', not of the '{measure.entity}' "
+            f"table '{table}'",
+            events_hint,
+        )
+    return None
+
+
+def _same_sql_column(name: str, other: str) -> bool:
+    """Whether two column names reach the same column: SQL folds unquoted names' case."""
+    return name == other or (
+        name.lower() == other.lower()
+        and _quote_ident(name) == name
+        and _quote_ident(other) == other
+    )
 
 
 def _conversion_dimension_paths(
