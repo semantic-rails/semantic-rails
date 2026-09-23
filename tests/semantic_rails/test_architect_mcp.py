@@ -432,3 +432,86 @@ def test_raw_write_parse_failure_rolls_back_bytes_and_revision(tmp_path: Path):
     assert package_path.read_bytes() == before
     status = _call_tool(server, "project_status", {"project_path": str(project_path)})
     assert status["revision"] == created["revision"]
+
+
+# Model-visible tokens of tools/list (name, description, input schema; tokens =
+# chars / 4, as scripts/mcp_context.py counts them). Raise it only with a reason.
+TOOL_LIST_BUDGET = 4800
+
+
+def test_the_tool_list_is_described_once_and_stays_in_budget(tmp_path: Path) -> None:
+    import json
+
+    from semantic_rails.architect_mcp import TOOL_DESCRIPTIONS
+
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    tools = _list_tools(server)
+
+    assert len(server.instructions or "") <= 2048
+    assert {tool.name for tool in tools} == set(TOOL_DESCRIPTIONS)
+    visible = 0
+    for tool in tools:
+        assert 60 <= len(tool.description or "") <= 700, tool.name
+        assert tool.annotations is not None and tool.annotations.title, tool.name
+        schema = json.dumps(tool.inputSchema, sort_keys=True)
+        assert '"title"' not in schema, tool.name
+        visible += round(
+            len(
+                json.dumps(
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.inputSchema,
+                    },
+                    sort_keys=True,
+                )
+            )
+            / 4
+        )
+    assert visible <= TOOL_LIST_BUDGET
+
+
+def test_schema_titles_go_but_properties_named_title_stay() -> None:
+    from semantic_rails.architect_mcp import _without_titles
+
+    schema = {
+        "title": "Arguments",
+        "type": "object",
+        "properties": {
+            "title": {"title": "Title", "type": "string", "default": "x"},
+            "spec": {"type": "object", "default": {"title": "kept in defaults"}},
+        },
+    }
+
+    assert _without_titles(schema) == {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "default": "x"},
+            "spec": {"type": "object", "default": {"title": "kept in defaults"}},
+        },
+    }
+
+
+def test_project_status_reports_the_warehouse_and_its_connection(tmp_path: Path) -> None:
+    import yaml
+
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    project = Path(_create_project(server, "warehouse_status")["project_path"])
+    status = _call_tool(server, "project_status", {"project_path": str(project)})
+    assert status["warehouse"] == {
+        "warehouse": "duckdb",
+        "dialect": "duckdb",
+        "connection_kind": "",
+        "ok": True,
+    }
+
+    package_path = project / "package.yml"
+    document = yaml.safe_load(package_path.read_text(encoding="utf-8"))
+    document["package"]["warehouse"] = "snowflake"
+    document["package"]["connection"] = {"kind": "postgres_native", "name": "analytics"}
+    package_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    mismatched = _call_tool(server, "project_status", {"project_path": str(project)})
+
+    assert mismatched["warehouse"]["ok"] is False
+    assert "snowflake packages connect with" in mismatched["warehouse"]["message"]
+    assert "not postgres_native" in mismatched["warehouse"]["message"]

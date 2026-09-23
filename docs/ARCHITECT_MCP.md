@@ -218,6 +218,17 @@ the model's times to an existing calendar, as `time.calendar_id` queries expect.
 
 ## Tool Surface
 
+The server instructions state the workflow and the write contract once. Every tool has a title and
+behavior hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), and a short
+description that says what it returns, when to use it, and one gotcha. The generated input schemas
+carry no per-property titles. A test keeps the tool list an agent reads within a token budget
+(`TOOL_LIST_BUDGET` in `tests/semantic_rails/test_architect_mcp.py`); raise it only with a reason.
+
+`project_status` also reports the package's `warehouse`: the declared warehouse, its SQL dialect,
+the connection kind, and whether that kind is one the warehouse accepts (`ok`, with a `message` when
+it isn't). It reads `package.yml` directly, so it answers even when the package does not parse.
+
+
 - `architect_guidance`
 - `setup_project_dialog`
 - `create_project`

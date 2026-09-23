@@ -114,7 +114,7 @@ def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
         async with create_connected_server_and_client_session(server) as session:
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
             description = tools["upsert_model"].description or ""
-            assert "calendar: true makes the entity the package calendar" in description
+            assert "calendar: true makes it the package calendar" in description
 
             async def call(name: str, **values: Any) -> dict[str, Any]:
                 return dict((await session.call_tool(name, values)).structuredContent or {})

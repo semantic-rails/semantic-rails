@@ -33,62 +33,66 @@
   ],
   "tools": [
     {
-      "description": "Return the recommended Architect MCP workflow and safety guidance.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Architect guidance"
+      },
+      "description": "Returns the Architect workflow, safety rules and next steps for a goal. Use when starting without a plan or when an error suggests a skipped step; on an existing package, project_status is the better first call.",
       "inputSchema": {
         "properties": {
           "goal": {
             "default": "",
-            "title": "Goal",
             "type": "string"
           },
           "project_path": {
             "default": "",
-            "title": "Project Path",
             "type": "string"
           }
         },
-        "title": "architect_guidanceArguments",
         "type": "object"
       },
       "name": "architect_guidance",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "architect_guidanceDictOutput",
         "type": "object"
       }
     },
     {
-      "description": "Start a guided project setup dialog, using MCP elicitation when requested and supported.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "New project dialog"
+      },
+      "description": "Returns the questions for a new package and draft create_project arguments; with interactive: true and a client that supports elicitation, it asks them. Use before create_project. Gotcha: it writes nothing; call create_project with the answers.",
       "inputSchema": {
         "properties": {
           "goal": {
             "default": "",
-            "title": "Goal",
             "type": "string"
           },
           "interactive": {
             "default": false,
-            "title": "Interactive",
             "type": "boolean"
           },
           "package_id": {
             "default": "",
-            "title": "Package Id",
             "type": "string"
           },
           "project_path": {
             "default": "",
-            "title": "Project Path",
             "type": "string"
           }
         },
-        "title": "setup_project_dialogArguments",
         "type": "object"
       },
       "name": "setup_project_dialog",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "setup_project_dialogDictOutput",
         "type": "object"
       }
     },
@@ -100,64 +104,52 @@
         "readOnlyHint": false,
         "title": "Create Semantic Rails project"
       },
-      "description": "Preview or atomically create a runnable schema_version: 1 project.",
+      "description": "Creates a runnable schema_version 1 package: package.yml, graph.yml, a first model, a metric, an example and a test. Use once per package, with expected_revision: absent. Gotcha: an existing package is replaced only with overwrite: true.",
       "inputSchema": {
         "properties": {
           "amount_column": {
             "default": "amount",
-            "title": "Amount Column",
             "type": "string"
           },
           "description": {
             "default": "Semantic Rails package managed through Architect MCP.",
-            "title": "Description",
             "type": "string"
           },
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "first_entity": {
             "default": "event",
-            "title": "First Entity",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "overwrite": {
             "default": false,
-            "title": "Overwrite",
             "type": "boolean"
           },
           "package_id": {
-            "title": "Package Id",
             "type": "string"
           },
           "primary_key": {
             "default": "event_id",
-            "title": "Primary Key",
             "type": "string"
           },
           "project_path": {
             "default": "",
-            "title": "Project Path",
             "type": "string"
           },
           "relation": {
             "default": "raw_events",
-            "title": "Relation",
             "type": "string"
           },
           "time_column": {
             "default": "occurred_at",
-            "title": "Time Column",
             "type": "string"
           }
         },
@@ -166,7 +158,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "create_projectArguments",
         "type": "object"
       },
       "name": "create_project",
@@ -176,7 +167,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -188,12 +178,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -205,8 +193,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -215,12 +202,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -229,11 +214,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -245,31 +228,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -277,7 +255,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -285,29 +262,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -325,23 +297,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -354,28 +321,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -394,69 +355,80 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
     {
-      "description": "Inspect package files and optionally run runtime validation, examples, and package tests.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Project status"
+      },
+      "description": "Returns the package's revision (pass it as expected_revision), files, parse health, object counts and next steps; include_runtime_checks also runs runtime validation, examples and tests. Use first, and again when others may have changed the package. Gotcha: runtime checks query the warehouse.",
       "inputSchema": {
         "properties": {
           "include_runtime_checks": {
             "default": false,
-            "title": "Include Runtime Checks",
             "type": "boolean"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           }
         },
         "required": [
           "project_path"
         ],
-        "title": "project_statusArguments",
         "type": "object"
       },
       "name": "project_status",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "project_statusDictOutput",
         "type": "object"
       }
     },
     {
-      "description": "List files inside a Semantic Rails project directory.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "List project files"
+      },
+      "description": "Lists the package's files by relative path. Use to find where an object is defined before read_project_file.",
       "inputSchema": {
         "properties": {
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           }
         },
         "required": [
           "project_path"
         ],
-        "title": "list_project_filesArguments",
         "type": "object"
       },
       "name": "list_project_files",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "list_project_filesDictOutput",
         "type": "object"
       }
     },
     {
-      "description": "Read a UTF-8 project file by relative path.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Read project file"
+      },
+      "description": "Returns one package file's text by relative path. Use to review YAML before an upsert, or a file a typed tool reported.",
       "inputSchema": {
         "properties": {
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "relative_path": {
-            "title": "Relative Path",
             "type": "string"
           }
         },
@@ -464,13 +436,11 @@
           "project_path",
           "relative_path"
         ],
-        "title": "read_project_fileArguments",
         "type": "object"
       },
       "name": "read_project_file",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "read_project_fileDictOutput",
         "type": "object"
       }
     },
@@ -482,37 +452,30 @@
         "readOnlyHint": false,
         "title": "Write project file"
       },
-      "description": "Preview or atomically write a UTF-8 file, rolling back parse failures.",
+      "description": "Writes one UTF-8 package file. Use only when no typed tool fits; the typed tools keep graph.yml and the models aligned. Gotcha: overwrite: false refuses an existing file.",
       "inputSchema": {
         "properties": {
           "content": {
-            "title": "Content",
             "type": "string"
           },
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "overwrite": {
             "default": true,
-            "title": "Overwrite",
             "type": "boolean"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "relative_path": {
-            "title": "Relative Path",
             "type": "string"
           }
         },
@@ -523,7 +486,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "write_project_fileArguments",
         "type": "object"
       },
       "name": "write_project_file",
@@ -533,7 +495,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -545,12 +506,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -562,8 +521,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -572,12 +530,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -586,11 +542,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -602,31 +556,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -634,7 +583,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -642,29 +590,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -682,23 +625,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -711,28 +649,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -751,7 +683,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -763,7 +694,7 @@
         "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
-      "description": "Preview or atomically upsert a model and aligned graph entity. calendar: true makes the entity the package calendar for calendar_id (default \"default\"): kind time, not a query root, and allowed kind: date dimensions. time.fill and calendar bucketing read its date_day, week_start, month_start, quarter_start and year_start columns. A package with calendars needs a default one. calendar: false makes a calendar a regular entity again once its date dimensions are removed. On a regular model, calendar_id binds its times to an existing calendar. Fields merge into an existing model; replace: true rewrites it from the arguments, keeping only its entity references and calendar.",
+      "description": "Creates or updates a model and its graph entity: relation, primary_key, dimensions, times and measures. Fields merge; replace: true rewrites the model, keeping its relationships and calendar. calendar: true makes it the package calendar (kind time; one per calendar_id, and a package with calendars needs a default one); calendar_id on a regular model binds its times to that calendar. Use after suggest_model. Gotcha: relate models with upsert_relationship; joins is the legacy form strict packages reject.",
       "inputSchema": {
         "properties": {
           "calendar": {
@@ -775,17 +706,14 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Calendar"
+            "default": null
           },
           "calendar_id": {
             "default": "",
-            "title": "Calendar Id",
             "type": "string"
           },
           "description": {
             "default": "",
-            "title": "Description",
             "type": "string"
           },
           "dimensions": {
@@ -798,29 +726,23 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Dimensions"
+            "default": null
           },
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "entity_key": {
-            "title": "Entity Key",
             "type": "string"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "group": {
             "default": "core",
-            "title": "Group",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "joins": {
@@ -833,12 +755,10 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Joins"
+            "default": null
           },
           "label": {
             "default": "",
-            "title": "Label",
             "type": "string"
           },
           "measures": {
@@ -851,31 +771,25 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Measures"
+            "default": null
           },
           "model_id": {
-            "title": "Model Id",
             "type": "string"
           },
           "primary_key": {
             "items": {
               "type": "string"
             },
-            "title": "Primary Key",
             "type": "array"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "relation": {
-            "title": "Relation",
             "type": "string"
           },
           "replace": {
             "default": false,
-            "title": "Replace",
             "type": "boolean"
           },
           "times": {
@@ -888,8 +802,7 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Times"
+            "default": null
           }
         },
         "required": [
@@ -901,7 +814,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "upsert_modelArguments",
         "type": "object"
       },
       "name": "upsert_model",
@@ -911,7 +823,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -923,12 +834,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -940,8 +849,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -950,12 +858,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -964,11 +870,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -980,31 +884,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -1012,7 +911,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -1020,29 +918,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -1060,23 +953,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -1089,28 +977,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -1129,7 +1011,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -1141,7 +1022,7 @@
         "readOnlyHint": false,
         "title": "Upsert relationship"
       },
-      "description": "Preview or atomically relate two entities through key columns. columns are from_entity's columns holding to_entity's key (to_columns, if given, must be that key); they are written to from_entity's model as a many-to-one reference. cardinality one_to_one, name, allowed_directions (forward, reverse), safety (safe, requires_rewrite, unsafe), path_preference (lower is preferred), label or description also write graph.relationships.<name>, updating any entry for the same pair. one_to_many is recorded from the many side (to_columns are then the foreign key); many_to_many needs a bridge model.",
+      "description": "Relates two entities: columns are from_entity's columns holding to_entity's key, written as a many-to-one reference in from_entity's model. cardinality (one_to_one; one_to_many is recorded from the many side), name, allowed_directions, safety, path_preference, label and description also write graph.relationships.<name>. Use once both models exist. Gotcha: only a key can be the target; many_to_many needs a bridge model related to each side.",
       "inputSchema": {
         "properties": {
           "allowed_directions": {
@@ -1156,51 +1037,41 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Allowed Directions"
+            "default": null
           },
           "cardinality": {
             "default": "",
-            "title": "Cardinality",
             "type": "string"
           },
           "columns": {
             "items": {
               "type": "string"
             },
-            "title": "Columns",
             "type": "array"
           },
           "description": {
             "default": "",
-            "title": "Description",
             "type": "string"
           },
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "from_entity": {
-            "title": "From Entity",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "label": {
             "default": "",
-            "title": "Label",
             "type": "string"
           },
           "name": {
             "default": "",
-            "title": "Name",
             "type": "string"
           },
           "path_preference": {
@@ -1212,16 +1083,13 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Path Preference"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "safety": {
             "default": "",
-            "title": "Safety",
             "type": "string"
           },
           "to_columns": {
@@ -1236,11 +1104,9 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "To Columns"
+            "default": null
           },
           "to_entity": {
-            "title": "To Entity",
             "type": "string"
           }
         },
@@ -1252,7 +1118,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "upsert_relationshipArguments",
         "type": "object"
       },
       "name": "upsert_relationship",
@@ -1262,7 +1127,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -1274,12 +1138,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -1291,8 +1153,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -1301,12 +1162,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -1315,11 +1174,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -1331,31 +1188,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -1363,7 +1215,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -1371,29 +1222,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -1411,23 +1257,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -1440,28 +1281,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -1480,7 +1315,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -1492,48 +1326,39 @@
         "readOnlyHint": false,
         "title": "Upsert metric"
       },
-      "description": "Preview or atomically upsert a metric; replace rewrites it; file_name shares a file.",
+      "description": "Creates or updates a metric from spec (kind, measure or inputs, value_type, label, description). A new metric goes in metrics/<file_name> when given, else metrics/<group>/<metric_key>.yml; an existing one stays in its file. Fields merge; replace: true rewrites it, refused if that breaks what builds on it. Gotcha: strict packages need an explicit value_type.",
       "inputSchema": {
         "properties": {
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "file_name": {
             "default": "",
-            "title": "File Name",
             "type": "string"
           },
           "group": {
             "default": "core",
-            "title": "Group",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "metric_key": {
-            "title": "Metric Key",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "replace": {
             "default": false,
-            "title": "Replace",
             "type": "boolean"
           },
           "spec": {
             "additionalProperties": true,
-            "title": "Spec",
             "type": "object"
           }
         },
@@ -1544,7 +1369,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "upsert_metricArguments",
         "type": "object"
       },
       "name": "upsert_metric",
@@ -1554,7 +1378,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -1566,12 +1389,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -1583,8 +1404,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -1593,12 +1413,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -1607,11 +1425,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -1623,31 +1439,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -1655,7 +1466,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -1663,29 +1473,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -1703,23 +1508,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -1732,28 +1532,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -1772,7 +1566,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -1784,43 +1577,35 @@
         "readOnlyHint": false,
         "title": "Upsert segment"
       },
-      "description": "Preview or atomically upsert a segment in segments/<file_name>. spec takes entity, basis_metric, label, description, preview_dimensions and membership: where and/or metric_filters (optionally time, temporal_role_overrides, path_policy). Membership fields outside membership: are refused, since the engine would ignore them and select the whole population, and so is a segment the engine cannot validate. spec merges into an existing segment unless replace is true.",
+      "description": "Creates or updates a segment in segments/<file_name>: entity, basis_metric, label, description, preview_dimensions and membership (where and/or metric_filters, optionally time). Fields merge unless replace. Gotcha: membership fields outside membership: are refused, because the engine would ignore them and select everyone, and so is a segment the engine can't validate.",
       "inputSchema": {
         "properties": {
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "file_name": {
             "default": "core.yml",
-            "title": "File Name",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "replace": {
             "default": false,
-            "title": "Replace",
             "type": "boolean"
           },
           "segment_key": {
-            "title": "Segment Key",
             "type": "string"
           },
           "spec": {
             "additionalProperties": true,
-            "title": "Spec",
             "type": "object"
           }
         },
@@ -1831,7 +1616,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "upsert_segmentArguments",
         "type": "object"
       },
       "name": "upsert_segment",
@@ -1841,7 +1625,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -1853,12 +1636,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -1870,8 +1651,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -1880,12 +1660,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -1894,11 +1672,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -1910,31 +1686,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -1942,7 +1713,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -1950,29 +1720,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -1990,23 +1755,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -2019,28 +1779,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -2059,7 +1813,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -2071,43 +1824,35 @@
         "readOnlyHint": false,
         "title": "Upsert example"
       },
-      "description": "Preview or atomically upsert an example question in examples/<file_name>: spec takes question, query and optionally expected_shape (columns, min_rows, max_rows). The query must compile against the package. spec merges into an existing example unless replace is true.",
+      "description": "Creates or updates an example question in examples/<file_name>: question, query and optionally expected_shape (columns, min_rows, max_rows). Use to show agents how to ask the package. Gotcha: the query must compile, so add examples after their objects.",
       "inputSchema": {
         "properties": {
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "example_key": {
-            "title": "Example Key",
             "type": "string"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "file_name": {
             "default": "core.yml",
-            "title": "File Name",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "replace": {
             "default": false,
-            "title": "Replace",
             "type": "boolean"
           },
           "spec": {
             "additionalProperties": true,
-            "title": "Spec",
             "type": "object"
           }
         },
@@ -2118,7 +1863,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "upsert_exampleArguments",
         "type": "object"
       },
       "name": "upsert_example",
@@ -2128,7 +1872,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -2140,12 +1883,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -2157,8 +1898,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -2167,12 +1907,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -2181,11 +1919,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -2197,31 +1933,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -2229,7 +1960,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -2237,29 +1967,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -2277,23 +2002,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -2306,28 +2026,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -2346,7 +2060,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -2358,48 +2071,39 @@
         "readOnlyHint": false,
         "title": "Upsert package test"
       },
-      "description": "Preview or atomically upsert a package test in tests/<file_name>. spec.kind is query_returns_columns (query, columns), query_row_count_bounds (query, min_rows and/or max_rows), query_matches_snapshot (query, expected_rows), validate_fails_with_code (query, code), explain_contains (query, text) or metric_equals_query (metric_query, expected_query). Queries must compile, and a validate_fails_with_code query must fail with its code. capture_snapshot: true runs a query_matches_snapshot query against the warehouse and writes its rows (up to 200) as expected_rows. spec merges into an existing test unless replace is true.",
+      "description": "Creates or updates a package test in tests/<file_name>. spec.kind is query_returns_columns (query, columns), query_row_count_bounds (query, min_rows or max_rows), query_matches_snapshot (query, expected_rows), validate_fails_with_code (query, code), explain_contains (query, text) or metric_equals_query (metric_query, expected_query). Gotcha: capture_snapshot: true fills expected_rows from the warehouse (at most 200 rows); every query must compile.",
       "inputSchema": {
         "properties": {
           "capture_snapshot": {
             "default": false,
-            "title": "Capture Snapshot",
             "type": "boolean"
           },
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "file_name": {
             "default": "core.yml",
-            "title": "File Name",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "replace": {
             "default": false,
-            "title": "Replace",
             "type": "boolean"
           },
           "spec": {
             "additionalProperties": true,
-            "title": "Spec",
             "type": "object"
           },
           "test_key": {
-            "title": "Test Key",
             "type": "string"
           }
         },
@@ -2410,7 +2114,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "upsert_testArguments",
         "type": "object"
       },
       "name": "upsert_test",
@@ -2420,7 +2123,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -2432,12 +2134,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -2449,8 +2149,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -2459,12 +2158,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -2473,11 +2170,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -2489,31 +2184,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -2521,7 +2211,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -2529,29 +2218,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -2569,23 +2253,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -2598,28 +2277,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -2638,7 +2311,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -2650,21 +2322,18 @@
         "readOnlyHint": true,
         "title": "Preview query"
       },
-      "description": "Run a semantic query against the package's warehouse and return at most max_rows rows (default 20, at most 200), with truncated when there were more. Values are real warehouse data. Like runtime validation, this may build a seeded DuckDB database.",
+      "description": "Runs a semantic query on the package's warehouse and returns at most max_rows rows (default 20, at most 200) and whether more were cut. Use to check values before writing a snapshot test or an example. Gotcha: the rows are real warehouse data.",
       "inputSchema": {
         "properties": {
           "max_rows": {
             "default": 20,
-            "title": "Max Rows",
             "type": "integer"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "query": {
             "additionalProperties": true,
-            "title": "Query",
             "type": "object"
           }
         },
@@ -2672,13 +2341,11 @@
           "project_path",
           "query"
         ],
-        "title": "preview_queryArguments",
         "type": "object"
       },
       "name": "preview_query",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "preview_queryDictOutput",
         "type": "object"
       }
     },
@@ -2690,42 +2357,34 @@
         "readOnlyHint": false,
         "title": "Remove object"
       },
-      "description": "Preview or atomically remove a model, dimension, time, measure, metric, segment, relationship, example or test, keeping its YAML under .architect/archive/. model picks the model when a dimension, time or measure key is on several; a relationship is named as upsert_relationship reports it. Removing a model also removes its entity and the relationships naming it. A removal that would break a measure, metric or segment is refused, naming them; impact lists the examples and tests it breaks, files still mentioning a removed id, and the behaviour changes. Preview with dry_run.",
+      "description": "Removes a model, dimension, time, measure, metric, segment, relationship, example or test, archiving its YAML. Refused when it would break a measure, metric or segment (named in the error); impact lists the examples and tests it breaks, joins that would take another path, and files still naming it. Use with dry_run: true first. Gotcha: pass model when a dimension, time or measure key is on several models.",
       "inputSchema": {
         "properties": {
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "key": {
-            "title": "Key",
             "type": "string"
           },
           "kind": {
-            "title": "Kind",
             "type": "string"
           },
           "model": {
             "default": "",
-            "title": "Model",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "reason": {
             "default": "",
-            "title": "Reason",
             "type": "string"
           }
         },
@@ -2736,7 +2395,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "remove_objectArguments",
         "type": "object"
       },
       "name": "remove_object",
@@ -2746,7 +2404,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -2758,12 +2415,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -2775,8 +2430,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -2785,12 +2439,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -2799,11 +2451,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -2815,31 +2465,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -2847,7 +2492,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -2855,29 +2499,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -2895,23 +2534,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -2924,28 +2558,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -2964,7 +2592,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -2976,33 +2603,27 @@
         "readOnlyHint": false,
         "title": "Archive project file"
       },
-      "description": "Preview or atomically move a file into the internal archive.",
+      "description": "Moves one package file into .architect/archive/. Use for whole files; remove_object removes one object and checks what breaks.",
       "inputSchema": {
         "properties": {
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "reason": {
             "default": "",
-            "title": "Reason",
             "type": "string"
           },
           "relative_path": {
-            "title": "Relative Path",
             "type": "string"
           }
         },
@@ -3012,7 +2633,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "archive_project_fileArguments",
         "type": "object"
       },
       "name": "archive_project_file",
@@ -3022,7 +2642,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -3034,12 +2653,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -3051,8 +2668,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -3061,12 +2677,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -3075,11 +2689,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -3091,31 +2703,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -3123,7 +2730,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -3131,29 +2737,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -3171,23 +2772,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -3200,28 +2796,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -3240,7 +2830,6 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
@@ -3252,32 +2841,27 @@
         "readOnlyHint": true,
         "title": "List warehouse tables"
       },
-      "description": "List tables and views (read-only) in a DuckDB package's database or a DuckDB file.",
+      "description": "Lists tables and views, with column counts, in a DuckDB file or a DuckDB package's database, optionally for one schema. Use first when modelling a warehouse. Gotcha: pass duckdb_path or project_path, not both.",
       "inputSchema": {
         "properties": {
           "duckdb_path": {
             "default": "",
-            "title": "Duckdb Path",
             "type": "string"
           },
           "project_path": {
             "default": "",
-            "title": "Project Path",
             "type": "string"
           },
           "schema": {
             "default": "",
-            "title": "Schema",
             "type": "string"
           }
         },
-        "title": "list_tablesArguments",
         "type": "object"
       },
       "name": "list_tables",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "list_tablesDictOutput",
         "type": "object"
       }
     },
@@ -3289,34 +2873,29 @@
         "readOnlyHint": true,
         "title": "Describe warehouse table"
       },
-      "description": "Columns (type, nullability, default) and declared primary, unique and foreign keys.",
+      "description": "Returns a relation's columns (type, nullability, default) and its declared primary, unique and foreign keys. Use after list_tables to choose keys. Gotcha: name the relation with its schema when it has one (main_marts.fct_orders).",
       "inputSchema": {
         "properties": {
           "duckdb_path": {
             "default": "",
-            "title": "Duckdb Path",
             "type": "string"
           },
           "project_path": {
             "default": "",
-            "title": "Project Path",
             "type": "string"
           },
           "relation": {
-            "title": "Relation",
             "type": "string"
           }
         },
         "required": [
           "relation"
         ],
-        "title": "describe_tableArguments",
         "type": "object"
       },
       "name": "describe_table",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "describe_tableDictOutput",
         "type": "object"
       }
     },
@@ -3328,7 +2907,7 @@
         "readOnlyHint": true,
         "title": "Profile table columns"
       },
-      "description": "Row, distinct and null counts, min/max and up to 20 sample values per column (read-only). Scans at most max_rows rows, sampling beyond that; sample_limit=0 returns no values.",
+      "description": "Returns row, distinct and null counts, min and max, and sample values per column. Use to judge keys, dimensions and measures. Gotcha: at most max_rows rows are scanned (a sample beyond that); samples are real data, and sample_limit: 0 returns none.",
       "inputSchema": {
         "properties": {
           "columns": {
@@ -3343,44 +2922,36 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Columns"
+            "default": null
           },
           "duckdb_path": {
             "default": "",
-            "title": "Duckdb Path",
             "type": "string"
           },
           "max_rows": {
             "default": 1000000,
-            "title": "Max Rows",
             "type": "integer"
           },
           "project_path": {
             "default": "",
-            "title": "Project Path",
             "type": "string"
           },
           "relation": {
-            "title": "Relation",
             "type": "string"
           },
           "sample_limit": {
             "default": 5,
-            "title": "Sample Limit",
             "type": "integer"
           }
         },
         "required": [
           "relation"
         ],
-        "title": "profile_columnsArguments",
         "type": "object"
       },
       "name": "profile_columns",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "profile_columnsDictOutput",
         "type": "object"
       }
     },
@@ -3392,34 +2963,29 @@
         "readOnlyHint": true,
         "title": "Suggest a model"
       },
-      "description": "Propose a key, time roles, dimensions, measures (with aggregations) and foreign keys for a relation, each with a confidence and a reason, plus draft upsert_model arguments to review. Read-only.",
+      "description": "Proposes a key, times, dimensions, measures (with aggregation) and foreign keys for a relation, each with a confidence and a reason, plus draft upsert_model arguments. Use before upsert_model. Gotcha: the draft leaves low-confidence choices out; review them.",
       "inputSchema": {
         "properties": {
           "duckdb_path": {
             "default": "",
-            "title": "Duckdb Path",
             "type": "string"
           },
           "project_path": {
             "default": "",
-            "title": "Project Path",
             "type": "string"
           },
           "relation": {
-            "title": "Relation",
             "type": "string"
           }
         },
         "required": [
           "relation"
         ],
-        "title": "suggest_modelArguments",
         "type": "object"
       },
       "name": "suggest_model",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "suggest_modelDictOutput",
         "type": "object"
       }
     },
@@ -3431,17 +2997,15 @@
         "readOnlyHint": true,
         "title": "Suggest models from dbt"
       },
-      "description": "Read a dbt project's manifest.json and catalog.json (never run dbt) and propose a model per dbt model: key, foreign keys and value sets from dbt tests and contracts, times, dimensions and measures from column types, each with a confidence and a reason, plus draft upsert_model arguments. select narrows by model name.",
+      "description": "Reads a dbt target (manifest.json, catalog.json; dbt never runs) and proposes a model per dbt model, with keys, foreign keys and value sets from dbt tests and contracts, plus draft upsert_model arguments. Use before import_dbt_project. Gotcha: run dbt build and dbt docs generate first; select narrows by model name.",
       "inputSchema": {
         "properties": {
           "catalog_path": {
             "default": "",
-            "title": "Catalog Path",
             "type": "string"
           },
           "manifest_path": {
             "default": "",
-            "title": "Manifest Path",
             "type": "string"
           },
           "select": {
@@ -3456,22 +3020,18 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Select"
+            "default": null
           },
           "target_dir": {
             "default": "",
-            "title": "Target Dir",
             "type": "string"
           }
         },
-        "title": "suggest_models_from_dbtArguments",
         "type": "object"
       },
       "name": "suggest_models_from_dbt",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "suggest_models_from_dbtDictOutput",
         "type": "object"
       }
     },
@@ -3483,51 +3043,42 @@
         "readOnlyHint": false,
         "title": "Import dbt models"
       },
-      "description": "Preview or atomically create or update package models from dbt models (reads manifest.json and catalog.json; dbt never runs), with foreign keys from relationships tests as entity references. select names the dbt models; review them with suggest_models_from_dbt first. Models without a key in dbt are reported in skipped_models, references to models outside the package in skipped_references.",
+      "description": "Creates or updates package models from selected dbt models in one transaction, writing relationships tests as entity references. Use after suggest_models_from_dbt. Gotcha: models without a key in dbt are reported in skipped_models, and references to models outside the package in skipped_references.",
       "inputSchema": {
         "properties": {
           "catalog_path": {
             "default": "",
-            "title": "Catalog Path",
             "type": "string"
           },
           "dry_run": {
             "default": false,
-            "title": "Dry Run",
             "type": "boolean"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "group": {
             "default": "dbt",
-            "title": "Group",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "manifest_path": {
             "default": "",
-            "title": "Manifest Path",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "select": {
             "items": {
               "type": "string"
             },
-            "title": "Select",
             "type": "array"
           },
           "target_dir": {
             "default": "",
-            "title": "Target Dir",
             "type": "string"
           }
         },
@@ -3537,7 +3088,6 @@
           "expected_revision",
           "idempotency_key"
         ],
-        "title": "import_dbt_projectArguments",
         "type": "object"
       },
       "name": "import_dbt_project",
@@ -3547,7 +3097,6 @@
             "properties": {
               "after_bytes": {
                 "default": 0,
-                "title": "After Bytes",
                 "type": "integer"
               },
               "after_sha256": {
@@ -3559,12 +3108,10 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "After Sha256"
+                "default": null
               },
               "before_bytes": {
                 "default": 0,
-                "title": "Before Bytes",
                 "type": "integer"
               },
               "before_sha256": {
@@ -3576,8 +3123,7 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Before Sha256"
+                "default": null
               },
               "content_encoding": {
                 "default": "none",
@@ -3586,12 +3132,10 @@
                   "base64",
                   "none"
                 ],
-                "title": "Content Encoding",
                 "type": "string"
               },
               "diff": {
                 "default": "",
-                "title": "Diff",
                 "type": "string"
               },
               "operation": {
@@ -3600,11 +3144,9 @@
                   "update",
                   "delete"
                 ],
-                "title": "Operation",
                 "type": "string"
               },
               "path": {
-                "title": "Path",
                 "type": "string"
               },
               "proposed_content": {
@@ -3616,31 +3158,26 @@
                     "type": "null"
                   }
                 ],
-                "default": null,
-                "title": "Proposed Content"
+                "default": null
               }
             },
             "required": [
               "path",
               "operation"
             ],
-            "title": "ArchitectFileChange",
             "type": "object"
           },
           "ArchitectMutationIssue": {
             "additionalProperties": true,
             "properties": {
               "code": {
-                "title": "Code",
                 "type": "string"
               },
               "details": {
                 "additionalProperties": true,
-                "title": "Details",
                 "type": "object"
               },
               "message": {
-                "title": "Message",
                 "type": "string"
               }
             },
@@ -3648,7 +3185,6 @@
               "code",
               "message"
             ],
-            "title": "ArchitectMutationIssue",
             "type": "object"
           }
         },
@@ -3656,29 +3192,24 @@
         "description": "Stable structured output shared by every Architect mutation tool.",
         "properties": {
           "base_revision": {
-            "title": "Base Revision",
             "type": "string"
           },
           "changed_files": {
             "items": {
               "type": "string"
             },
-            "title": "Changed Files",
             "type": "array"
           },
           "changes": {
             "items": {
               "$ref": "#/$defs/ArchitectFileChange"
             },
-            "title": "Changes",
             "type": "array"
           },
           "current_revision": {
-            "title": "Current Revision",
             "type": "string"
           },
           "dry_run": {
-            "title": "Dry Run",
             "type": "boolean"
           },
           "error": {
@@ -3696,23 +3227,18 @@
             "items": {
               "$ref": "#/$defs/ArchitectMutationIssue"
             },
-            "title": "Errors",
             "type": "array"
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "idempotency_key": {
-            "title": "Idempotency Key",
             "type": "string"
           },
           "idempotent_replay": {
-            "title": "Idempotent Replay",
             "type": "boolean"
           },
           "ok": {
-            "title": "Ok",
             "type": "boolean"
           },
           "parse": {
@@ -3725,28 +3251,22 @@
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Parse"
+            "default": null
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           },
           "proposed_revision": {
-            "title": "Proposed Revision",
             "type": "string"
           },
           "revision": {
-            "title": "Revision",
             "type": "string"
           },
           "status": {
-            "title": "Status",
             "type": "string"
           },
           "workspace_root": {
             "default": "",
-            "title": "Workspace Root",
             "type": "string"
           }
         },
@@ -3765,136 +3285,142 @@
           "changed_files",
           "changes"
         ],
-        "title": "ArchitectMutationResult",
         "type": "object"
       }
     },
     {
-      "description": "Run parse, runtime, examples, tests, impact, or release validation for a project path.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Validate project"
+      },
+      "description": "Validates the package. mode: parse (YAML and references), runtime (compiles and queries every measure and metric), examples, tests, impact or release. Use parse after each change and runtime before trusting answers. Gotcha: runtime modes query the warehouse and may build a seeded DuckDB file.",
       "inputSchema": {
         "properties": {
           "base_ref": {
             "default": "",
-            "title": "Base Ref",
             "type": "string"
           },
           "compare_path": {
             "default": "",
-            "title": "Compare Path",
             "type": "string"
           },
           "environment": {
             "default": "",
-            "title": "Environment",
             "type": "string"
           },
           "mode": {
             "default": "parse",
-            "title": "Mode",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           }
         },
         "required": [
           "project_path"
         ],
-        "title": "validate_projectArguments",
         "type": "object"
       },
       "name": "validate_project",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "validate_projectDictOutput",
         "type": "object"
       }
     },
     {
-      "description": "Diff one project against another path or a git base ref.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Diff project"
+      },
+      "description": "Returns the object-level changes between the package and compare_path, or base_ref (a commit in the package's own git repository). Use to review a change.",
       "inputSchema": {
         "properties": {
           "base_ref": {
             "default": "",
-            "title": "Base Ref",
             "type": "string"
           },
           "compare_path": {
             "default": "",
-            "title": "Compare Path",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           }
         },
         "required": [
           "project_path"
         ],
-        "title": "diff_projectArguments",
         "type": "object"
       },
       "name": "diff_project",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "diff_projectDictOutput",
         "type": "object"
       }
     },
     {
-      "description": "Return behavior-change impact, reviewer teams, and risk for a package change.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Impact of a change"
+      },
+      "description": "Returns the behaviour changes, impacted metrics, reviewer teams and risk between the package and compare_path or base_ref. Use before a release review.",
       "inputSchema": {
         "properties": {
           "base_ref": {
             "default": "",
-            "title": "Base Ref",
             "type": "string"
           },
           "compare_path": {
             "default": "",
-            "title": "Compare Path",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           }
         },
         "required": [
           "project_path"
         ],
-        "title": "impact_projectArguments",
         "type": "object"
       },
       "name": "impact_project",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "impact_projectDictOutput",
         "type": "object"
       }
     },
     {
-      "description": "Run promotion readiness checks for a target package environment.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Promotion check"
+      },
+      "description": "Returns whether the package is ready for an environment: parse, validation, examples, tests and impact. Use when an environment gate matters. Gotcha: it runs runtime checks against the warehouse.",
       "inputSchema": {
         "properties": {
           "base_ref": {
             "default": "",
-            "title": "Base Ref",
             "type": "string"
           },
           "compare_path": {
             "default": "",
-            "title": "Compare Path",
             "type": "string"
           },
           "environment": {
-            "title": "Environment",
             "type": "string"
           },
           "project_path": {
-            "title": "Project Path",
             "type": "string"
           }
         },
@@ -3902,43 +3428,43 @@
           "project_path",
           "environment"
         ],
-        "title": "promotion_checkArguments",
         "type": "object"
       },
       "name": "promotion_check",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "promotion_checkDictOutput",
         "type": "object"
       }
     },
     {
-      "description": "Return copy-ready client configuration hints for running Architect MCP.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Client configuration"
+      },
+      "description": "Returns client configuration for running this server over stdio, SSE or streamable HTTP, with the workspace root. Use when wiring a new client.",
       "inputSchema": {
         "properties": {
           "host": {
             "default": "127.0.0.1",
-            "title": "Host",
             "type": "string"
           },
           "port": {
             "default": 8010,
-            "title": "Port",
             "type": "integer"
           },
           "transport": {
             "default": "stdio",
-            "title": "Transport",
             "type": "string"
           }
         },
-        "title": "mcp_client_configArguments",
         "type": "object"
       },
       "name": "mcp_client_config",
       "outputSchema": {
         "additionalProperties": true,
-        "title": "mcp_client_configDictOutput",
         "type": "object"
       }
     }

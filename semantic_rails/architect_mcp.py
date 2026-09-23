@@ -123,6 +123,23 @@ def _query_annotations(title: str) -> ToolAnnotations:
     )
 
 
+ARCHITECT_INSTRUCTIONS = (
+    "Semantic Rails Architect: author a Semantic Rails package (YAML) inside the workspace "
+    "root.\n"
+    "Order: project_status (note its revision), then explore a DuckDB warehouse (list_tables, "
+    "describe_table, profile_columns, suggest_model) or a dbt project (suggest_models_from_dbt), "
+    "then write (create_project, import_dbt_project, upsert_model, upsert_relationship, "
+    "upsert_metric, upsert_segment, upsert_example, upsert_test, remove_object), then check "
+    "(validate_project: mode=parse after each change, mode=runtime before trusting answers; "
+    "preview_query shows real rows) and review (impact_project, diff_project).\n"
+    "Every write takes expected_revision (from project_status or the previous write's "
+    "revision) and a new idempotency_key per logical change; retrying the same call with the "
+    "same key replays it. dry_run: true returns the exact diff without writing. A write the "
+    "package can't parse is rolled back, and a stale revision returns CONFIG_CONFLICT. Prefer "
+    "the typed tools; write_project_file is the fallback."
+)
+
+
 def _mutation_annotations(title: str, *, open_world: bool = False) -> ToolAnnotations:
     return ToolAnnotations(
         title=title,
@@ -131,6 +148,193 @@ def _mutation_annotations(title: str, *, open_world: bool = False) -> ToolAnnota
         idempotentHint=True,
         openWorldHint=open_world,
     )
+
+
+def _check_annotations(title: str) -> ToolAnnotations:
+    """Read-only checks that may query the warehouse or build a seeded DuckDB file."""
+    return _query_annotations(title)
+
+
+# What an agent reads for each tool: returns, when to use it, and one gotcha.
+TOOL_DESCRIPTIONS: dict[str, tuple[str, ToolAnnotations | None]] = {
+    "architect_guidance": (
+        "Returns the Architect workflow, safety rules and next steps for a goal. Use when "
+        "starting without a plan or when an error suggests a skipped step; on an existing "
+        "package, project_status is the better first call.",
+        _read_only_annotations("Architect guidance"),
+    ),
+    "setup_project_dialog": (
+        "Returns the questions for a new package and draft create_project arguments; with "
+        "interactive: true and a client that supports elicitation, it asks them. Use before "
+        "create_project. Gotcha: it writes nothing; call create_project with the answers.",
+        _read_only_annotations("New project dialog"),
+    ),
+    "create_project": (
+        "Creates a runnable schema_version 1 package: package.yml, graph.yml, a first model, "
+        "a metric, an example and a test. Use once per package, with expected_revision: "
+        "absent. Gotcha: an existing package is replaced only with overwrite: true.",
+        None,
+    ),
+    "project_status": (
+        "Returns the package's revision (pass it as expected_revision), files, parse health, "
+        "object counts and next steps; include_runtime_checks also runs runtime validation, "
+        "examples and tests. Use first, and again when others may have changed the package. "
+        "Gotcha: runtime checks query the warehouse.",
+        _read_only_annotations("Project status"),
+    ),
+    "list_project_files": (
+        "Lists the package's files by relative path. Use to find where an object is defined "
+        "before read_project_file.",
+        _read_only_annotations("List project files"),
+    ),
+    "read_project_file": (
+        "Returns one package file's text by relative path. Use to review YAML before an "
+        "upsert, or a file a typed tool reported.",
+        _read_only_annotations("Read project file"),
+    ),
+    "write_project_file": (
+        "Writes one UTF-8 package file. Use only when no typed tool fits; the typed tools keep "
+        "graph.yml and the models aligned. Gotcha: overwrite: false refuses an existing file.",
+        None,
+    ),
+    "upsert_model": (
+        "Creates or updates a model and its graph entity: relation, primary_key, dimensions, "
+        "times and measures. Fields merge; replace: true rewrites the model, keeping its "
+        "relationships and calendar. calendar: true makes it the package calendar (kind time; "
+        "one per calendar_id, and a package with calendars needs a default one); calendar_id "
+        "on a regular model binds its times to that calendar. Use after suggest_model. Gotcha: "
+        "relate models with upsert_relationship; joins is the legacy form strict packages "
+        "reject.",
+        None,
+    ),
+    "upsert_relationship": (
+        "Relates two entities: columns are from_entity's columns holding to_entity's key, "
+        "written as a many-to-one reference in from_entity's model. cardinality (one_to_one; "
+        "one_to_many is recorded from the many side), name, allowed_directions, safety, "
+        "path_preference, label and description also write graph.relationships.<name>. Use "
+        "once both models exist. Gotcha: only a key can be the target; many_to_many needs a "
+        "bridge model related to each side.",
+        None,
+    ),
+    "upsert_metric": (
+        "Creates or updates a metric from spec (kind, measure or inputs, value_type, label, "
+        "description). A new metric goes in metrics/<file_name> when given, else "
+        "metrics/<group>/<metric_key>.yml; an existing one stays in its file. Fields merge; "
+        "replace: true rewrites it, refused if that breaks what builds on it. Gotcha: strict "
+        "packages need an explicit value_type.",
+        None,
+    ),
+    "upsert_segment": (
+        "Creates or updates a segment in segments/<file_name>: entity, basis_metric, label, "
+        "description, preview_dimensions and membership (where and/or metric_filters, "
+        "optionally time). Fields merge unless replace. Gotcha: membership fields outside "
+        "membership: are refused, because the engine would ignore them and select everyone, "
+        "and so is a segment the engine can't validate.",
+        None,
+    ),
+    "upsert_example": (
+        "Creates or updates an example question in examples/<file_name>: question, query and "
+        "optionally expected_shape (columns, min_rows, max_rows). Use to show agents how to "
+        "ask the package. Gotcha: the query must compile, so add examples after their objects.",
+        None,
+    ),
+    "upsert_test": (
+        "Creates or updates a package test in tests/<file_name>. spec.kind is "
+        "query_returns_columns (query, columns), query_row_count_bounds (query, min_rows or "
+        "max_rows), query_matches_snapshot (query, expected_rows), validate_fails_with_code "
+        "(query, code), explain_contains (query, text) or metric_equals_query (metric_query, "
+        "expected_query). Gotcha: capture_snapshot: true fills expected_rows from the "
+        "warehouse (at most 200 rows); every query must compile.",
+        None,
+    ),
+    "preview_query": (
+        "Runs a semantic query on the package's warehouse and returns at most max_rows rows "
+        "(default 20, at most 200) and whether more were cut. Use to check values before "
+        "writing a snapshot test or an example. Gotcha: the rows are real warehouse data.",
+        None,
+    ),
+    "remove_object": (
+        "Removes a model, dimension, time, measure, metric, segment, relationship, example or "
+        "test, archiving its YAML. Refused when it would break a measure, metric or segment "
+        "(named in the error); impact lists the examples and tests it breaks, joins that "
+        "would take another path, and files still naming it. Use with dry_run: true first. "
+        "Gotcha: pass model when a dimension, time or measure key is on several models.",
+        None,
+    ),
+    "archive_project_file": (
+        "Moves one package file into .architect/archive/. Use for whole files; remove_object "
+        "removes one object and checks what breaks.",
+        None,
+    ),
+    "list_tables": (
+        "Lists tables and views, with column counts, in a DuckDB file or a DuckDB package's "
+        "database, optionally for one schema. Use first when modelling a warehouse. Gotcha: "
+        "pass duckdb_path or project_path, not both.",
+        None,
+    ),
+    "describe_table": (
+        "Returns a relation's columns (type, nullability, default) and its declared primary, "
+        "unique and foreign keys. Use after list_tables to choose keys. Gotcha: name the "
+        "relation with its schema when it has one (main_marts.fct_orders).",
+        None,
+    ),
+    "profile_columns": (
+        "Returns row, distinct and null counts, min and max, and sample values per column. "
+        "Use to judge keys, dimensions and measures. Gotcha: at most max_rows rows are "
+        "scanned (a sample beyond that); samples are real data, and sample_limit: 0 returns "
+        "none.",
+        None,
+    ),
+    "suggest_model": (
+        "Proposes a key, times, dimensions, measures (with aggregation) and foreign keys for "
+        "a relation, each with a confidence and a reason, plus draft upsert_model arguments. "
+        "Use before upsert_model. Gotcha: the draft leaves low-confidence choices out; review "
+        "them.",
+        None,
+    ),
+    "suggest_models_from_dbt": (
+        "Reads a dbt target (manifest.json, catalog.json; dbt never runs) and proposes a "
+        "model per dbt model, with keys, foreign keys and value sets from dbt tests and "
+        "contracts, plus draft upsert_model arguments. Use before import_dbt_project. Gotcha: "
+        "run dbt build and dbt docs generate first; select narrows by model name.",
+        None,
+    ),
+    "import_dbt_project": (
+        "Creates or updates package models from selected dbt models in one transaction, "
+        "writing relationships tests as entity references. Use after "
+        "suggest_models_from_dbt. Gotcha: models without a key in dbt are reported in "
+        "skipped_models, and references to models outside the package in skipped_references.",
+        None,
+    ),
+    "validate_project": (
+        "Validates the package. mode: parse (YAML and references), runtime (compiles and "
+        "queries every measure and metric), examples, tests, impact or release. Use parse "
+        "after each change and runtime before trusting answers. Gotcha: runtime modes query "
+        "the warehouse and may build a seeded DuckDB file.",
+        _check_annotations("Validate project"),
+    ),
+    "diff_project": (
+        "Returns the object-level changes between the package and compare_path, or base_ref "
+        "(a commit in the package's own git repository). Use to review a change.",
+        _read_only_annotations("Diff project"),
+    ),
+    "impact_project": (
+        "Returns the behaviour changes, impacted metrics, reviewer teams and risk between the "
+        "package and compare_path or base_ref. Use before a release review.",
+        _read_only_annotations("Impact of a change"),
+    ),
+    "promotion_check": (
+        "Returns whether the package is ready for an environment: parse, validation, "
+        "examples, tests and impact. Use when an environment gate matters. Gotcha: it runs "
+        "runtime checks against the warehouse.",
+        _check_annotations("Promotion check"),
+    ),
+    "mcp_client_config": (
+        "Returns client configuration for running this server over stdio, SSE or streamable "
+        "HTTP, with the workspace root. Use when wiring a new client.",
+        _read_only_annotations("Client configuration"),
+    ),
+}
 
 
 def _slug(value: str, *, fallback: str = "semantic_project") -> str:
@@ -733,12 +937,7 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
     root = _server_workspace_root(workspace_root)
     mcp = FastMCP(
         name="Semantic Rails Architect MCP",
-        instructions=(
-            "Use architect_guidance and project_status before editing. Prefer setup_project_dialog "
-            "for new packages, then create_project, upsert_model, validate_project, and impact_project. "
-            "All writes are scoped to the configured workspace root and this server does not manage "
-            "cloud service processes."
-        ),
+        instructions=ARCHITECT_INSTRUCTIONS,
     )
 
     @mcp.prompt()
@@ -855,6 +1054,7 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
                 "workspace_root": str(root),
                 "revision": project_revision(project),
                 "files": _project_files(project),
+                "warehouse": _warehouse_status(project),
                 "parse": parse,
                 "next_actions": ["Fix parse errors first."]
                 if not parse.get("ok")
@@ -1701,7 +1901,82 @@ def create_architect_mcp_server(*, workspace_root: str | os.PathLike[str] | None
             "note": "Use port 8010 by default so the Architect MCP does not collide with the query MCP or local semantic-rails API.",
         }
 
+    _describe_tools(mcp)
     return mcp
+
+
+def _describe_tools(mcp: FastMCP) -> None:
+    """Give every tool its description and hints, and drop generated schema titles.
+
+    The descriptions live together so the whole tool list an agent reads can
+    be reviewed and sized in one place (docs/MCP_INTERFACE.md, "Writing Tool
+    Descriptions"). Titles such as ``"Project Path"`` repeat the property name.
+    """
+    for tool in mcp._tool_manager.list_tools():
+        description, annotations = TOOL_DESCRIPTIONS[tool.name]
+        tool.description = description
+        if annotations is not None:
+            tool.annotations = annotations
+        tool.parameters = _without_titles(tool.parameters)
+        if tool.fn_metadata.output_schema is not None:
+            tool.fn_metadata.output_schema = _without_titles(tool.fn_metadata.output_schema)
+
+
+def _warehouse_status(project: Path) -> dict[str, Any]:
+    """The package's warehouse, its SQL dialect, and whether its connection matches.
+
+    Read from package.yml directly, so it answers when the package does not parse.
+    """
+    from .dialects import supported_warehouses, warehouse_connector
+
+    document = yaml.safe_load((project / "package.yml").read_text(encoding="utf-8")) or {}
+    package = dict(dict(document).get("package", {}) or {})
+    warehouse = str(package.get("warehouse") or "duckdb").strip().lower()
+    kind = str(dict(package.get("connection", {}) or {}).get("kind") or "").strip()
+    connector = warehouse_connector(warehouse)
+    status: dict[str, Any] = {
+        "warehouse": warehouse,
+        "dialect": connector.dialect.name if connector else "",
+        "connection_kind": kind,
+        "ok": True,
+    }
+    if connector is None:
+        status.update(
+            ok=False,
+            message=f"unknown warehouse {warehouse!r}; supported: "
+            + ", ".join(supported_warehouses()),
+        )
+    elif connector.connection_kinds and kind not in connector.connection_kinds:
+        status.update(
+            ok=False,
+            message=f"{warehouse} packages connect with "
+            + " or ".join(connector.connection_kinds)
+            + (f", not {kind}" if kind else "; declare package.connection.kind"),
+        )
+    elif not connector.connection_kinds and kind:
+        status.update(ok=False, message=f"{warehouse} packages take no connection; remove {kind}")
+    return status
+
+
+def _without_titles(schema: Any) -> Any:
+    """A JSON schema without its ``title`` annotations (properties named title stay)."""
+    if isinstance(schema, list):
+        return [_without_titles(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    compact: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        if key in {"properties", "$defs", "definitions", "patternProperties"} and isinstance(
+            value, dict
+        ):
+            compact[key] = {name: _without_titles(sub) for name, sub in value.items()}
+        elif key in {"default", "examples", "const", "enum"}:
+            compact[key] = value
+        else:
+            compact[key] = _without_titles(value)
+    return compact
 
 
 def run_architect_mcp_server(
