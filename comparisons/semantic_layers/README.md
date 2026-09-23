@@ -7,7 +7,7 @@ compare latency, token use or cost. It runs without touching the active
 
 ## Read This First
 
-- **Output check: on all 16 questions, the five layers run on the current dataset return an
+- **Output check: on all 16 questions, the five layers checked on the current dataset return an
   independent answer key's normalized outputs, with numbers matching within 1e-6** (Semantic
   Rails, MetricFlow, Cube, Malloy and KtX). No layer is the reference: the answer key is SQL
   written against the same views without seeing any layer's models or outputs (see *Independent
@@ -83,7 +83,7 @@ sum and group-by-month surface every layer in the pack was built to answer.
 | Snowflake Semantic Views | 7 native |
 | KtX | 7 native |
 
-Output check: 7 of 7 match across the five layers run on the current dataset.
+Output check: 7 of 7 match the answer key across the five layers checked on the current dataset.
 
 ## Semantic-Rails-Targeted Questions: q08-q16
 
@@ -100,7 +100,7 @@ each layer today. It is not a ranking.
 | Snowflake Semantic Views | 7 workaround, 2 precomputed | SQL on the same tables outside `SEMANTIC_VIEW(...)`; range joins not modeled yet |
 | KtX | 7 workaround, 2 precomputed | SQL-backed sources, and query-level filters on the rollup columns for q11 and q12 |
 
-Output check: 9 of 9 match across the five layers run on the current dataset.
+Output check: 9 of 9 match the answer key across the five layers checked on the current dataset.
 
 ## Independent Answer Key
 
