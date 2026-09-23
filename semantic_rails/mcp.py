@@ -775,17 +775,26 @@ RESOURCE_DEFINITIONS: tuple[ResourceDefinition, ...] = (
     ResourceDefinition(
         uri="semantic-rails://capabilities",
         name="capabilities",
-        description="Dependency-free MCP interface capabilities, including tool, resource, and prompt definitions.",
+        description=(
+            "The MCP interface version and the names of this server's tools, resources and "
+            "prompts. tools/list has the tool schemas."
+        ),
     ),
     ResourceDefinition(
         uri="semantic-rails://catalog/summary",
         name="catalog-summary",
-        description="Compact summary catalog for the active package.",
+        description=(
+            "Counts and ids per object kind for the active package, as the catalog tool "
+            "returns by default."
+        ),
     ),
     ResourceDefinition(
         uri="semantic-rails://catalog/full",
         name="catalog-full",
-        description="Full catalog cards and payloads for the active package.",
+        description=(
+            "Every object's full card and the alias index for the active package. Large: "
+            "start with catalog-summary."
+        ),
     ),
 )
 
@@ -1762,10 +1771,17 @@ class SemanticLayerMCPAdapter:
         )
         request_id = request_context.request_id if request_context is not None else ""
         if uri == "semantic-rails://capabilities":
+            # An index, not a second copy of tools/list: names and titles only.
             payload: dict[str, Any] = {
                 "interface_version": MCP_INTERFACE_VERSION,
                 "package_id": self.package_id,
-                "tools": self.list_tools(),
+                "tools": [
+                    {
+                        "name": tool["name"],
+                        "title": (tool.get("annotations") or {}).get("title", tool["name"]),
+                    }
+                    for tool in self.list_tools()
+                ],
                 "resources": self.list_resources(),
                 "prompts": self.list_prompts(),
             }
@@ -1775,7 +1791,7 @@ class SemanticLayerMCPAdapter:
                     "catalog": resolve_catalog(
                         self.runtime,
                         view="summary",
-                        verbosity="compact",
+                        verbosity="summary",
                         policy_context=policy_context,
                     )
                 },

@@ -363,7 +363,7 @@ def test_mcp_adapter_resources_prompts_and_structured_errors(runtime_factory):
 
         assert capabilities["mimeType"] == "application/json"
         assert json.loads(capabilities["text"])["package_id"] == "jaffle_shop"
-        assert catalog_summary["payload"]["catalog"]["meta"]["verbosity"] == "compact"
+        assert catalog_summary["payload"]["catalog"]["meta"]["verbosity"] == "summary"
         assert "discover" in prompt["messages"][0]["content"]["text"]
         assert unknown["ok"] is False
         assert unknown["errors"][0]["code"] == "UNKNOWN_MCP_TOOL"

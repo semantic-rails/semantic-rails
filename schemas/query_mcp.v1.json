@@ -57,19 +57,19 @@
   ],
   "resources": [
     {
-      "description": "Dependency-free MCP interface capabilities, including tool, resource, and prompt definitions.",
+      "description": "The MCP interface version and the names of this server's tools, resources and prompts. tools/list has the tool schemas.",
       "mimeType": "application/json",
       "name": "capabilities",
       "uri": "semantic-rails://capabilities"
     },
     {
-      "description": "Compact summary catalog for the active package.",
+      "description": "Counts and ids per object kind for the active package, as the catalog tool returns by default.",
       "mimeType": "application/json",
       "name": "catalog-summary",
       "uri": "semantic-rails://catalog/summary"
     },
     {
-      "description": "Full catalog cards and payloads for the active package.",
+      "description": "Every object's full card and the alias index for the active package. Large: start with catalog-summary.",
       "mimeType": "application/json",
       "name": "catalog-full",
       "uri": "semantic-rails://catalog/full"

@@ -368,9 +368,14 @@ The warn-and-ignore tools cannot reject all unknown keys because callers legitim
 
 Declarative resources:
 
-- `semantic-rails://capabilities`
-- `semantic-rails://catalog/summary`
-- `semantic-rails://catalog/full`
+- `semantic-rails://capabilities`: the interface version and the names and titles of the tools,
+  resources and prompts. `tools/list` has the tool schemas.
+- `semantic-rails://catalog/summary`: counts and ids per object kind, the same as the `catalog`
+  tool's default `summary` view.
+- `semantic-rails://catalog/full`: every object's full card and the alias index. It grows with the
+  package (about 200K tokens for `jaffle_shop`), so read the summary first. `resources/read` has
+  no paging arguments; paging this resource needs resource templates, planned with the
+  `2026-07-28` work below.
 
 Declarative prompts:
 
