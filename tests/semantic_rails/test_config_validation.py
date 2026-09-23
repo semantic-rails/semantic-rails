@@ -2378,3 +2378,90 @@ def test_key_checks_fail_closed_when_their_merge_fails(
     assert "can't read the metric and segment specs to check their keys" in errors[0]
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
     assert report["ok"] is False
+
+
+# A metric's temporal_role must be a clock its measures can be timed by. Otherwise each
+# leaf falls back to its own clock and the answer is labeled with the declared one.
+
+
+def _jaffle_with_metric_role(package_config_factory, metric_file: str, key: str, role: str):
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / metric_file
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["metrics"][key]["temporal_role"] = role
+    _write_yaml(path, doc)
+    return Path(package_dir)
+
+
+def test_validation_rejects_a_metric_timed_by_a_clock_its_measures_lack(package_config_factory):
+    # AOV over order measures, labeled with the sessions table's clock.
+    package_dir = _jaffle_with_metric_role(
+        package_config_factory,
+        "core/core_metrics.yml",
+        "sales.aov_usd",
+        "temporal_role.jaffle_session_started_at",
+    )
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert (
+        "metric metric.sales.aov_usd has temporal_role "
+        "'temporal_role.jaffle_session_started_at', but its measures are timed by "
+        "temporal_role.jaffle_order_time"
+    ) in errors[0]
+
+
+def test_validation_times_a_conversion_metric_by_its_base_operand(package_config_factory):
+    # Sessions to orders: the sessions clock is right, the orders clock is not.
+    package_dir = _jaffle_with_metric_role(
+        package_config_factory,
+        "extensions/advanced_metrics.yml",
+        "sales.session_to_order_conversion_rate_7d",
+        "temporal_role.jaffle_order_time",
+    )
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert "sales.session_to_order_conversion_rate_7d has temporal_role" in errors[0]
+    assert "timed by temporal_role.jaffle_session_started_at" in errors[0]
+
+
+def _add(left: dict, right: dict) -> dict:
+    return {"kind": "binary", "op": "add", "left": left, "right": right}
+
+
+_SESSIONS = {"kind": "aggregate", "measure": "measure.jaffle.session_starts"}
+_ORDERS = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        _add(_SESSIONS, _ORDERS),
+        _add(_add(_SESSIONS, _ORDERS), _ORDERS),
+        _add(_SESSIONS, _add(_ORDERS, _ORDERS)),
+    ],
+    ids=["a+b", "(a+b)+b", "a+(b+b)"],
+)
+def test_validation_accepts_a_mixed_clock_metric_however_it_is_grouped(
+    package_config_factory, expression
+):
+    # Sessions plus orders on the sessions clock: the planner aligns the orders to their
+    # own clock on purpose, and the label is right for the sessions.
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / "extensions" / "derived_metrics.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["metrics"]["sales.sessions_plus_orders"] = {
+        "as": "metric.sales.sessions_plus_orders",
+        "label": "Sessions plus orders",
+        "description": "Two clocks in one expression.",
+        "kind": "derived",
+        "value_type": "count",
+        "temporal_role": "temporal_role.jaffle_session_started_at",
+        "expression": expression,
+    }
+    _write_yaml(path, doc)
+
+    assert validate_runtime_package(Path(package_dir)) == []
