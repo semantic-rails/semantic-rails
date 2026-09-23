@@ -24,7 +24,7 @@ This folder is an executed Snowflake Semantic Views pack backed by the default S
 
 ## Executed Outcome
 
-- Captured: 2026-04-06 23:05 US Eastern (2026-04-07 UTC), on a trial account. It has not been re-run since.
+- Captured: `2026-04-06T23:05:57-04:00` (2026-04-07 UTC), on a trial account. It has not been re-run since. The captured `create_semantic_view.json` and `describe_semantic_view.json` reflect `jaffle_semantic_view.yaml` as it stood then.
 - Semantic view: `ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON`
 - Connection: `semantic_views_trial`
 - Support labels (provisional, assigned by the Semantic Rails authors): `7 native`, `9 workaround`

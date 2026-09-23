@@ -18,9 +18,10 @@ DuckDB data as the other local comparison layers.
   semantics are authored as SQL/query workarounds rather than as reusable
   governed primitives in the KtX semantic model.
 - Output check: KtX's rows match Semantic Rails on every question except q07
-  and q16. Those two read the 11-row `comparison_order_lifecycle` view, where
-  KtX agrees with MetricFlow, Cube, Malloy and Snowflake Semantic Views; the
-  Semantic Rails pack reads the full lifecycle table (see the pack README).
+  and q16. Those two read the 11-row `comparison_order_lifecycle` view. There
+  KtX agrees with Cube, Malloy and Snowflake Semantic Views, which read the same
+  view, and with MetricFlow's stale committed answers. The Semantic Rails pack
+  reads the full lifecycle table (see the pack README).
 
 Run from the repository root:
 

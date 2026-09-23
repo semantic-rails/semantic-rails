@@ -20,8 +20,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.431,
-      "compile_ms": 0.493,
+      "cache_lookup_ms": 0.424,
+      "compile_ms": 0.567,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -925,7 +925,7 @@
   "row_count": 12,
   "rows": [
     {
-      "delivered_revenue": 18053.279999999988,
+      "delivered_revenue": 18053.28000000002,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-09-01 00:00:00"
     },
     {
@@ -933,43 +933,43 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-10-01 00:00:00"
     },
     {
-      "delivered_revenue": 27916.820000000018,
+      "delivered_revenue": 27916.820000000003,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-11-01 00:00:00"
     },
     {
-      "delivered_revenue": 35677.60000000001,
+      "delivered_revenue": 35677.59999999997,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-12-01 00:00:00"
     },
     {
-      "delivered_revenue": 45017.94999999982,
+      "delivered_revenue": 45017.94999999983,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01 00:00:00"
     },
     {
-      "delivered_revenue": 43358.119999999995,
+      "delivered_revenue": 43358.11999999985,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01 00:00:00"
     },
     {
-      "delivered_revenue": 73950.32000000027,
+      "delivered_revenue": 73950.32000000018,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-03-01 00:00:00"
     },
     {
-      "delivered_revenue": 83316.99000000146,
+      "delivered_revenue": 83316.99000000142,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-04-01 00:00:00"
     },
     {
-      "delivered_revenue": 96070.35000000337,
+      "delivered_revenue": 96070.350000003,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01 00:00:00"
     },
     {
-      "delivered_revenue": 98378.87000000344,
+      "delivered_revenue": 98378.87000000295,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01 00:00:00"
     },
     {
-      "delivered_revenue": 94857.19000000316,
+      "delivered_revenue": 94857.19000000264,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-07-01 00:00:00"
     },
     {
-      "delivered_revenue": 107371.5900000041,
+      "delivered_revenue": 107371.59000000423,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01 00:00:00"
     }
   ],

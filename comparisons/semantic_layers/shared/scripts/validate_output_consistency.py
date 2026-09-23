@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -80,7 +80,9 @@ def _load_questions() -> dict[str, dict[str, Any]]:
     payload = yaml.safe_load(QUESTIONS_PATH.read_text(encoding="utf-8"))
     questions = {question["id"]: question for question in payload["questions"]}
     unknown = sorted(
-        qid for qid, question in questions.items() if question["scope_level"] not in SLICE_BY_SCOPE
+        qid
+        for qid, question in questions.items()
+        if question.get("scope_level") not in SLICE_BY_SCOPE
     )
     if unknown:
         raise SystemExit(
@@ -287,11 +289,15 @@ def _rows_equal(
 
 
 def _agreement_groups(rows_by_layer: dict[str, list[dict[str, Any]]]) -> list[list[str]]:
-    """Group layers whose normalized rows are equal, so a report says who disagrees with whom."""
+    """Group layers whose normalized rows are equal, so a report says who disagrees with whom.
+
+    Equality within a tolerance isn't transitive, so a layer joins a group only if it equals
+    every member: every advertised group agrees pairwise.
+    """
     groups: list[list[str]] = []
     for layer, rows in rows_by_layer.items():
         for group in groups:
-            if _rows_equal(rows_by_layer[group[0]], rows)[0]:
+            if all(_rows_equal(rows_by_layer[member], rows)[0] for member in group):
                 group.append(layer)
                 break
         else:
@@ -392,7 +398,7 @@ def main() -> None:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report = {
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "reference_layer": REFERENCE_LAYER,
         "summary": summary_counts,
         "summary_by_slice": summary_by_slice,
@@ -434,7 +440,7 @@ def main() -> None:
                     f"- Mismatch vs {REFERENCE_LAYER} on `{mismatch['layer']}`: `{json.dumps(mismatch['detail'], sort_keys=True)}`"
                 )
             groups = " | ".join(", ".join(group) for group in item["agreement_groups"])
-            markdown_lines.append(f"- Layers that agree with each other: `{groups}`")
+            markdown_lines.append(f"- Groups of layers with identical outputs: `{groups}`")
         elif item["comparison_status"] == "not_comparable":
             markdown_lines.append(f"- Reason: {item['reason']}")
         else:

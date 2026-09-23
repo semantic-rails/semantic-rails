@@ -32,7 +32,10 @@ compare latency, token use or cost. It runs without touching the active
   MetricFlow `precomputed` and the other four `workaround`. Several layers are not yet modeled with
   native features they ship: MetricFlow conversion metrics and metric filters, Cube multi-fact
   queries, multi-stage measures and subquery dimensions, Malloy arbitrary-condition joins and
-  query-derived join sources, and Snowflake range joins. An independent answer key, an executable
+  query-derived join sources, and Snowflake range joins; KtX's `ktx-sl` hasn't been reviewed for
+  native alternatives. The labels are also inconsistent with each other: Cube's q08 uses an
+  ordinary declared join that carries the validity condition, yet it is labeled `workaround`,
+  while MetricFlow's validity-windowed join is labeled `native`. An independent answer key, an executable
   labeling rubric and idiomatic models for each layer are in progress. Until they land, nothing in
   this pack shows that Semantic Rails is better at q08-q16.
 
@@ -48,7 +51,7 @@ compare latency, token use or cost. It runs without touching the active
 | KtX | `ktx-sl 0.13.1` / KtX `a155c0b` | by 2026-06-24 (exact date not recorded) | yes; clones KtX at `a155c0b` |
 
 Dates are UTC. Cube's results record `lastRefreshTime` 2026-04-07T03:04:57Z, and Snowflake's
-summary records 2026-04-06 23:05 US Eastern. The other June captures predate the consistency
+summary records `2026-04-06T23:05:57-04:00`. The other June captures predate the consistency
 report generated at 2026-06-24T03:47:13Z. The Semantic Rails runner records its engine version,
 commit and run timestamp in `shared/results/semantic_rails/summary.json`.
 
@@ -87,7 +90,8 @@ Output check: 8 of 9 match across all six layers. q16 does not; see *Read This F
 
 ## What This Pack Does Not Measure
 
-- Performance: no latency, compile time, token or cost data is recorded.
+- Performance. Latency, compile time, token use and cost aren't compared. The Semantic Rails
+  evidence files carry compile timings, but nothing compares them across layers.
 - Compiler-surface controls. Other layers have real advantages here that this pack does not
   score, for example MetricFlow's metric-time-only planning, distinct-values planning, and
   duplicate-alias rejection.

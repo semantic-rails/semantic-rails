@@ -27,16 +27,6 @@ LAYER_ORDER = [
     "ktx",
 ]
 
-BASELINE_QUESTION_IDS = [
-    "q01_orders_by_month",
-    "q02_revenue_by_store_by_month",
-    "q03_item_revenue_by_product_type_by_month",
-    "q04_aov_by_store",
-    "q05_orders_and_item_revenue_by_store_by_month",
-    "q06_new_customer_orders_by_month",
-    "q07_delivered_revenue_by_month",
-]
-
 
 def rel(path: str | Path | None) -> str | None:
     if path is None:
@@ -462,7 +452,9 @@ LAYER_META: dict[str, dict[str, Any]] = {
         ],
         "weaknesses": [
             "In this pack, q05 and q09-q16 run through helper cubes or joined rollup filters; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
-            "This 1.6.32 capture cannot be re-run until its dependency advisories are resolved.",
+        ],
+        "capture_notes": [
+            "This 1.6.32 capture cannot be re-run until the captured lockfile's dependency advisories are resolved.",
         ],
         "scale": {
             "baseline_files": [
@@ -693,6 +685,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "weaknesses": [
             "Month-grain semantics require explicit `DATE_TRUNC(...)` query expressions; raw time dimensions stay at timestamp grain.",
             "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, announced in preview on 2026-02-25, have not been modeled yet.",
+        ],
+        "capture_notes": [
             "The capture comes from a trial account and cannot be re-run without a live Snowflake account.",
         ],
         "scale": {
@@ -775,7 +769,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "notes": {
             "q05_orders_and_item_revenue_by_store_by_month": "This mixed-grain question stays native as long as the query explicitly defines month grain in the `SEMANTIC_VIEW(...)` call.",
             "q08_revenue_by_customer_segment_as_of_order_time": "Executed as SQL on the comparison tables; range joins, which could express the as-of join inside the semantic view, are not modeled yet.",
-            "q09_session_to_order_conversion_7d": "Executed as verified SQL on the base tables after a Snowflake internal error on the equivalent lateral-query form.",
+            "q09_session_to_order_conversion_7d": "Executed as SQL on the comparison tables.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "Executed as SQL on the comparison tables.",
             "q11_repeat_customer_orders_by_store_by_month": "Executed as SQL over the precomputed customer lifetime order count.",
             "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as SQL over the precomputed customer lifetime spend.",
@@ -924,7 +918,7 @@ def default_note(status: str) -> str:
         "precomputed": "Executed only after introducing extra helper logic beyond the common comparison shape.",
         "doc_backed": "Represented from the public spec/docs, but not executed locally in this repo.",
         "unsupported": "Not represented faithfully enough to claim support in this pack.",
-    }[status]
+    }.get(status, f"Labeled {status}.")
 
 
 def load_summary_entries(layer_id: str) -> dict[str, dict[str, Any]]:
@@ -953,28 +947,16 @@ def load_summary_entries(layer_id: str) -> dict[str, dict[str, Any]]:
     return entries
 
 
-def layer_scale(layer_id: str, statuses: dict[str, str]) -> dict[str, Any]:
+def layer_scale(layer_id: str) -> dict[str, Any]:
+    """Authored-size counts for the 4-model and 7-model sets (not question slices)."""
     meta = LAYER_META[layer_id]["scale"]
     baseline_files = meta["baseline_files"]
     stretch_files = meta["stretch_files"]
 
     if "baseline_marker" in meta:
         baseline_loc = marker_loc(baseline_files[0], meta["baseline_marker"])
-        stretch_loc = loc_for_paths(stretch_files)
     else:
         baseline_loc = loc_for_paths(baseline_files)
-        stretch_loc = loc_for_paths(stretch_files)
-
-    baseline_non_native = sum(
-        1 for qid in BASELINE_QUESTION_IDS if statuses.get(qid) in {"workaround", "precomputed"}
-    )
-    stretch_non_native = sum(
-        1 for status in statuses.values() if status in {"workaround", "precomputed"}
-    )
-    baseline_supported = sum(
-        1 for qid in BASELINE_QUESTION_IDS if statuses.get(qid) != "unsupported"
-    )
-    stretch_supported = sum(1 for status in statuses.values() if status != "unsupported")
 
     return {
         "baseline": {
@@ -982,16 +964,12 @@ def layer_scale(layer_id: str, statuses: dict[str, str]) -> dict[str, Any]:
             "files": len(baseline_files),
             "loc": baseline_loc,
             "relationships": meta["baseline_relationships"],
-            "supported_questions": baseline_supported,
-            "non_native_questions": baseline_non_native,
         },
         "stretch": {
             "models": 7,
             "files": len(stretch_files),
-            "loc": stretch_loc,
+            "loc": loc_for_paths(stretch_files),
             "relationships": meta["stretch_relationships"],
-            "supported_questions": stretch_supported,
-            "non_native_questions": stretch_non_native,
         },
     }
 
@@ -1077,7 +1055,8 @@ PRECOMPUTED_COLUMN_QUESTIONS = [
 SCALE_UP_CAVEAT = (
     "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits "
     "graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts "
-    "every layer's authored files the same way."
+    "every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model "
+    "and 7-model sets, not question slices."
 )
 
 # Findings that describe how this pack models each layer. They must not rank the layers on the
@@ -1085,6 +1064,7 @@ SCALE_UP_CAVEAT = (
 LAYER_FINDINGS = [
     "MetricFlow answers q08 and q16 with validity-windowed semantic models; this pack answers q09-q15 through helper dbt views and has not modeled MetricFlow's native conversion metrics or metric filters yet.",
     "Cube answers q08 through a declared join that carries the validity condition, and q05 and q09-q16 through helper cubes or joined rollup filters in this pack; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
+    "The labels are inconsistent with each other: Cube's q08 uses an ordinary declared join, yet it is labeled workaround, while MetricFlow's validity-windowed join is labeled native.",
     "Malloy answers q08-q16 through SQL sources or query-level filters in this pack; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet.",
     "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
     "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack.",
@@ -1211,7 +1191,7 @@ def claim_findings(
             "showcase, not a ranking."
         )
 
-    labels_by_question = []
+    label_sets = []
     for question_id in PRECOMPUTED_COLUMN_QUESTIONS:
         by_status: dict[str, list[str]] = {}
         for layer in layers_payload:
@@ -1221,15 +1201,20 @@ def claim_findings(
                 if item["question_id"] == question_id
             )
             by_status.setdefault(status, []).append(layer["label"])
-        labels_by_question.append(
-            f"{short_id(question_id)} is labeled "
-            + "; ".join(f"{status} for {join_names(names)}" for status, names in by_status.items())
-        )
+        label_sets.append((short_id(question_id), by_status))
+    described = ". ".join(
+        f"{qid} is labeled "
+        + "; ".join(f"{status} for {join_names(names)}" for status, names in by_status.items())
+        for qid, by_status in label_sets
+    )
+    if all(len(by_status) == 1 for _, by_status in label_sets):
+        verdict = "and every layer gets the same label there"
+    else:
+        verdict = "yet the labels differ"
     claims.append(
-        "Every layer answers q11 and q12 from the same precomputed customer columns, "
-        "`lifetime_order_count` and `lifetime_spend_cents`, yet the labels differ: "
-        + ". ".join(labels_by_question)
-        + ". Semantic Rails is labeled native whenever its query validates."
+        "Every layer that executes q11 and q12 answers them from the same precomputed customer "
+        f"columns, `lifetime_order_count` and `lifetime_spend_cents`, {verdict}: {described}. "
+        "Semantic Rails is labeled native whenever its query validates."
     )
     return claims
 
@@ -1264,19 +1249,20 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                 "comparison_type": LAYER_META[layer_id]["comparison_type"],
                 "strengths": LAYER_META[layer_id]["strengths"],
                 "weaknesses": LAYER_META[layer_id]["weaknesses"],
+                "capture_notes": LAYER_META[layer_id].get("capture_notes", []),
                 # Scored per slice only: the targeted questions are not a ranking.
                 "status_totals_by_slice": {
                     slice_name: status_totals([status_map[qid] for qid in ids])
                     for slice_name, ids in slice_ids.items()
                 },
-                "scale": layer_scale(layer_id, status_map),
+                "scale": layer_scale(layer_id),
                 "questions": question_entries,
             }
         )
 
     findings = claim_findings(validation_report, questions, slice_ids, layers_payload)
     comparison_data = {
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "headline_findings": findings + LAYER_FINDINGS,
         "validation_summary": validation_report["summary"],
         "validation_summary_by_slice": validation_report["summary_by_slice"],

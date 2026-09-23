@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-09-22T21:01:40-04:00",
+  "generated_at": "2026-09-23T01:28:02+00:00",
   "claims": [
     "14 of 16 questions return matching normalized outputs across all 6 layers. 2 do not match: q07 Delivered Revenue By Month; q16 Revenue By Historical Customer Segment As Of Delivered Time.",
     "On q07 and q16: MetricFlow, Cube, Malloy, Snowflake Semantic Views and KtX agree with each other; Semantic Rails differs.",
     "Shared questions (q01-q07): 6 of 7 match. Semantic-Rails-targeted questions (q08-q16): 8 of 9 match.",
     "9 of the 16 questions (q08-q16) were chosen to exercise features Semantic Rails ships. The Semantic Rails authors wrote every layer's models and assigned every support label, and several layers are not yet modeled with native features they ship, so these questions are a capability showcase, not a ranking.",
-    "Every layer answers q11 and q12 from the same precomputed customer columns, `lifetime_order_count` and `lifetime_spend_cents`, yet the labels differ: q11 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. q12 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. Semantic Rails is labeled native whenever its query validates."
+    "Every layer that executes q11 and q12 answers them from the same precomputed customer columns, `lifetime_order_count` and `lifetime_spend_cents`, yet the labels differ: q11 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. q12 is labeled native for Semantic Rails; precomputed for MetricFlow; workaround for Cube, Malloy, Snowflake Semantic Views and KtX. Semantic Rails is labeled native whenever its query validates."
   ],
   "layers": [
     {
@@ -463,7 +463,7 @@
         "questions": 7
       }
     },
-    "scale_up_caveat": "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts every layer's authored files the same way.",
+    "scale_up_caveat": "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model and 7-model sets, not question slices.",
     "scale_up": [
       {
         "layer": "semantic_rails",
@@ -472,14 +472,10 @@
         "baseline_files": 5,
         "baseline_loc": 180,
         "baseline_relationships": 3,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 9,
         "stretch_loc": 416,
-        "stretch_relationships": 12,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 0
+        "stretch_relationships": 12
       },
       {
         "layer": "metricflow",
@@ -488,14 +484,10 @@
         "baseline_files": 6,
         "baseline_loc": 199,
         "baseline_relationships": 5,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 14,
         "stretch_loc": 512,
-        "stretch_relationships": 16,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 7
+        "stretch_relationships": 16
       },
       {
         "layer": "cube",
@@ -504,14 +496,10 @@
         "baseline_files": 5,
         "baseline_loc": 155,
         "baseline_relationships": 4,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 1,
         "stretch_models": 7,
         "stretch_files": 13,
         "stretch_loc": 480,
-        "stretch_relationships": 9,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 10
+        "stretch_relationships": 9
       },
       {
         "layer": "malloy",
@@ -520,14 +508,10 @@
         "baseline_files": 1,
         "baseline_loc": 23,
         "baseline_relationships": 3,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 1,
         "stretch_loc": 277,
-        "stretch_relationships": 4,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 9
+        "stretch_relationships": 4
       },
       {
         "layer": "snowflake_semantic_views",
@@ -536,14 +520,10 @@
         "baseline_files": 1,
         "baseline_loc": 140,
         "baseline_relationships": 3,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 1,
         "stretch_loc": 358,
-        "stretch_relationships": 7,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 9
+        "stretch_relationships": 7
       },
       {
         "layer": "ktx",
@@ -552,14 +532,10 @@
         "baseline_files": 5,
         "baseline_loc": 127,
         "baseline_relationships": 5,
-        "baseline_supported_questions": 7,
-        "baseline_non_native_questions": 0,
         "stretch_models": 7,
         "stretch_files": 12,
         "stretch_loc": 336,
-        "stretch_relationships": 5,
-        "stretch_supported_questions": 16,
-        "stretch_non_native_questions": 9
+        "stretch_relationships": 5
       }
     ]
   }

@@ -100,8 +100,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.802,
-      "compile_ms": 0.761,
+      "cache_lookup_ms": 0.784,
+      "compile_ms": 0.689,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2187,82 +2187,82 @@
   "rows": [
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 59714.469999999164,
+      "revenue_usd": 59714.469999999004,
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 54589.11999999984,
+      "revenue_usd": 54589.11999999994,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 50398.65999999972,
+      "revenue_usd": 50398.659999999865,
       "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 49970.74999999958,
+      "revenue_usd": 49970.74999999963,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 49092.329999999936,
+      "revenue_usd": 49092.329999999696,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 47980.20999999966,
+      "revenue_usd": 47980.209999999825,
       "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 47896.7899999998,
+      "revenue_usd": 47896.789999999804,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 47657.119999999944,
+      "revenue_usd": 47657.1199999999,
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 45017.94999999982,
+      "revenue_usd": 45017.94999999983,
       "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 44886.439999999995,
+      "revenue_usd": 44886.44000000006,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 43358.119999999995,
+      "revenue_usd": 43358.11999999985,
       "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 41481.23000000002,
+      "revenue_usd": 41481.23000000011,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 35677.60000000001,
+      "revenue_usd": 35677.59999999997,
       "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 35420.20000000022,
+      "revenue_usd": 35420.20000000035,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 27916.820000000018,
+      "revenue_usd": 27916.820000000003,
       "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 24857.990000000183,
+      "revenue_usd": 24857.990000000256,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
@@ -2272,7 +2272,7 @@
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 18053.27999999999,
+      "revenue_usd": 18053.28000000002,
       "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
     }
   ],
