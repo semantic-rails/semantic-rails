@@ -74,7 +74,7 @@ def terminal() -> Iterator[_Terminal]:
     end.close()
 
 
-def test_pickers_are_chosen_only_for_a_real_terminal(
+def test_pickers_need_a_real_terminal_and_the_repl_extra(
     monkeypatch: pytest.MonkeyPatch, terminal: _Terminal
 ) -> None:
     monkeypatch.delenv(backend.UI_ENV, raising=False)
@@ -84,6 +84,17 @@ def test_pickers_are_chosen_only_for_a_real_terminal(
     assert backend.select_backend(terminal, terminal).name == "pickers"
     assert backend.select_backend(fake_tty, fake_tty).name == "plain"
     monkeypatch.setenv("TERM", "dumb")
+    assert backend.select_backend(terminal, terminal).name == "plain"
+
+    # Without semantic-rails[repl], a real terminal falls back to plain prompts.
+    monkeypatch.setenv("TERM", "xterm-256color")
+    find_spec = backend.importlib.util.find_spec
+    monkeypatch.setattr(
+        backend.importlib.util,
+        "find_spec",
+        lambda name, *rest: None if name in {"questionary", "rich"} else find_spec(name, *rest),
+    )
+    assert not backend.pickers_available()
     assert backend.select_backend(terminal, terminal).name == "plain"
 
 
