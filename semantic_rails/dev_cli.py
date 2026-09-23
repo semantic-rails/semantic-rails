@@ -12,11 +12,13 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import math
 import os
 import shlex
 import shutil
 import sys
 from collections.abc import Iterable
+from decimal import Decimal
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,10 @@ from .runtime import Runtime
 
 PROJECT_CHECK_MODES = ("parse", "runtime", "examples", "tests", "full")
 CATALOG_KINDS = ("all", "entity", "dimension", "measure", "metric", "segment", "time")
+# The only bundled package offered when a person runs a command without choosing one.
+DEMO_PACKAGE_ID = "jaffle_shop"
+_MAX_HUMAN_ROWS = 500
+_MAX_CELL_WIDTH = 40
 _EXCLUDED_DISCOVERY_DIRS = {
     ".git",
     ".mypy_cache",
@@ -171,7 +177,7 @@ def add_developer_cli(sub: argparse._SubParsersAction, package_choices: list[str
         "--limit",
         type=int,
         default=20,
-        help="Row limit to apply when --run is used (default: 20).",
+        help="Row limit to apply when --run is used (default: 20; 0 fetches every row).",
     )
     p_ask.add_argument("--json", action="store_true", help="Print a JSON report.")
     p_ask.set_defaults(func=cmd_ask, human_cli=True)
@@ -525,7 +531,7 @@ def cmd_debug(args: argparse.Namespace) -> None:
 
 
 def cmd_ls(args: argparse.Namespace) -> None:
-    ref = _ref_from_args(args)
+    ref = _ref_from_args(args, interactive=_prompts_allowed(args))
     report = list_objects_report(
         ref,
         resource_type=args.resource_type,
@@ -547,6 +553,8 @@ def cmd_ask(args: argparse.Namespace) -> None:
             "INVALID_CONFIG",
             "Choose either --run or --compile, not both.",
         )
+    # Settle which package answers before asking anything else.
+    ref = _ref_from_args(args, interactive=_prompts_allowed(args))
     if not question and sys.stdin.isatty() and not args.json:
         question = input("Question: ").strip()
     if not question:
@@ -555,7 +563,6 @@ def cmd_ask(args: argparse.Namespace) -> None:
             "Provide a question, for example: semantic-rails ask 'monthly revenue by store'",
             details={"path": "question"},
         )
-    ref = _ref_from_args(args)
     report = ask_report(
         ref,
         question=question,
@@ -666,7 +673,7 @@ def cmd_init_project(args: argparse.Namespace) -> None:
 
 
 def cmd_project_status(args: argparse.Namespace) -> None:
-    ref = _ref_from_args(args)
+    ref = _ref_from_args(args, interactive=_prompts_allowed(args))
     report = project_status_report(ref, checks=args.checks)
     if args.json:
         _print_json(report)
@@ -677,7 +684,7 @@ def cmd_project_status(args: argparse.Namespace) -> None:
 
 
 def cmd_project_validate(args: argparse.Namespace) -> None:
-    ref = _ref_from_args(args)
+    ref = _ref_from_args(args, interactive=_prompts_allowed(args))
     report = project_validation_report(
         ref,
         mode=args.mode,
@@ -877,14 +884,23 @@ def ask_report(
             return out
         if execute:
             executable_query = dict(query)
-            if limit and "limit" not in executable_query:
-                executable_query["limit"] = limit
+            if limit and "max_rows" not in dict(executable_query.get("limits", {}) or {}):
+                # The engine's row fence fetches one extra row, so `truncated` is exact.
+                executable_query["limits"] = {
+                    **dict(executable_query.get("limits", {}) or {}),
+                    "max_rows": limit,
+                }
             result = runtime.query(executable_query)
+            rows = list(result.get("rows", []) or [])
             out["result"] = {
                 "ok": bool(result.get("ok", True)),
-                "rows": list(result.get("rows", []) or []),
-                "row_count": result.get("row_count", len(result.get("rows", []) or [])),
+                "rows": rows,
+                "row_count": result.get("row_count", len(rows)),
+                "row_limit": limit,
+                "truncated": bool(result.get("truncated", False)),
                 "output_columns": list(result.get("output_columns", []) or []),
+                "warnings": list(result.get("warnings", []) or []),
+                "assumptions": list(result.get("assumptions", []) or []),
             }
             out["ok"] = out["ok"] and bool(out["result"]["ok"])
         if compile_sql:
@@ -894,6 +910,7 @@ def ask_report(
                 "sql": compiled.get("rendered_sql", compiled.get("sql", "")),
                 "dialect": compiled.get("dialect", runtime.warehouse),
                 "output_columns": list(compiled.get("output_columns", []) or []),
+                "warnings": list(compiled.get("warnings", []) or []),
             }
             out["ok"] = out["ok"] and bool(out["compile"]["ok"])
         return out
@@ -990,7 +1007,11 @@ def create_project_report(
 
 
 def run_interactive_shell(*, package: str = "", path: str = "") -> None:
-    current_ref = _default_ref(package=package, path=path)
+    current_ref = _default_ref(
+        package=package,
+        path=path,
+        interactive=_is_terminal(sys.stdin) and _is_terminal(sys.stdout),
+    )
     undo_stack: list[ArchitectMutation] = []
     _print_repl_welcome(current_ref)
     while True:
@@ -1019,7 +1040,7 @@ def _print_repl_welcome(current_ref: PackageReference) -> None:
     if not visual:
         print("Semantic Rails interactive")
         print("Type help for commands, exit to quit.")
-        print(f"Using {_ref_label(current_ref)}")
+        print(f"Using {_ref_display(current_ref)}")
         return
 
     def accent(text: str) -> str:
@@ -1035,7 +1056,7 @@ def _print_repl_welcome(current_ref: PackageReference) -> None:
     print(accent(f"╭{title_rule}╮"))
     print(f"{accent('│')}{middle}{accent('│')}")
     print(accent(f"╰{'─' * inner_width}╯"))
-    print(f"  package  {_ref_label(current_ref)}")
+    print(f"  package  {_ref_display(current_ref)}")
     print("  help     type help for the timetable · exit when done")
     print()
 
@@ -1096,7 +1117,7 @@ def _handle_repl_line(
             current_ref = resolve_package_reference(path=rest)
         else:
             current_ref = resolve_package_reference(package_id=rest)
-        print(f"Using {_ref_label(current_ref)}")
+        print(f"Using {_ref_display(current_ref)}")
         return current_ref
     if command in {"debug", "status"}:
         _print_project_status(project_status_report(current_ref, checks="parse"))
@@ -2607,6 +2628,7 @@ def _runtime_package_payload(runtime: Runtime, ref: PackageReference) -> dict[st
         "id": runtime.package_id or ref.package_id or _package_id_from_yaml(ref.source_path),
         "source_path": ref.source_path,
         "warehouse": runtime.warehouse,
+        "bundled": _is_bundled_ref(ref),
     }
 
 
@@ -2708,29 +2730,92 @@ def _payload_ok(payload: dict[str, Any]) -> bool:
     return status in {"", "ok", "success"} and not list(payload.get("errors", []) or [])
 
 
-def _ref_from_args(args: argparse.Namespace, *, allow_default: bool = True) -> PackageReference:
+def _ref_from_args(
+    args: argparse.Namespace, *, allow_default: bool = True, interactive: bool = False
+) -> PackageReference:
     package = str(getattr(args, "package", "") or "").strip()
     path = str(getattr(args, "path", "") or "").strip()
     if package or path or not allow_default:
         return resolve_package_reference(package_id=package, path=path)
-    return _default_ref()
+    return default_package_ref(interactive=interactive)
 
 
-def _default_ref(*, package: str = "", path: str = "") -> PackageReference:
+def _default_ref(
+    *, package: str = "", path: str = "", interactive: bool = False
+) -> PackageReference:
     package = str(package or "").strip()
     path = str(path or "").strip()
     if package or path:
         return resolve_package_reference(package_id=package, path=path)
+    return default_package_ref(interactive=interactive)
+
+
+def default_package_ref(*, interactive: bool = False) -> PackageReference:
+    """Resolve the package for a command that names none with ``--package``/``--path``.
+
+    A ``package.yml`` in the working directory (or a parent) wins, then the
+    local profile. Nothing else is implicit: answering from the bundled sample
+    package takes ``--package jaffle_shop``, or a confirmation at an
+    interactive terminal. Otherwise the command stops with guidance.
+    """
+
     cwd_ref = _package_ref_from_cwd()
     if cwd_ref is not None:
         return cwd_ref
     local_path = resolve_local_package_path()
     if local_path:
         return resolve_package_reference(path=local_path)
-    package_ids = sorted(list_package_paths().keys())
-    if package_ids:
-        return resolve_package_reference(package_id=package_ids[0])
-    return resolve_package_reference()
+    demo_available = DEMO_PACKAGE_ID in list_package_paths()
+    if interactive and demo_available and _confirm_demo_package():
+        return resolve_package_reference(package_id=DEMO_PACKAGE_ID)
+    raise _no_package_selected_error(demo_available=demo_available)
+
+
+def _confirm_demo_package() -> bool:
+    _, color = _repl_capabilities()
+    print()
+    print(_repl_color("No package selected.", "1;33", enabled=color))
+    print("  There is no --package or --path, no package.yml in this directory or")
+    print("  its parents, and no local profile.")
+    print(f"  The bundled `{DEMO_PACKAGE_ID}` package holds sample data, not yours.")
+    try:
+        return _confirm(f"Use the bundled `{DEMO_PACKAGE_ID}` sample package?", default=False)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def _no_package_selected_error(*, demo_available: bool) -> SemanticLayerError:
+    choices = [
+        "pass --path <package-dir>",
+        "run the command inside a package directory",
+        "set a default: semantic-rails profile init --package-path <package-dir>",
+        "create a package: semantic-rails init my_package",
+    ]
+    if demo_available:
+        choices.append(f"try the bundled sample data: --package {DEMO_PACKAGE_ID}")
+    return SemanticLayerError(
+        "INVALID_CONFIG",
+        "No package selected. Choose one:\n" + "\n".join(f"  - {choice}" for choice in choices),
+        details={"reason": "no_package_selected"},
+    )
+
+
+def _is_terminal(stream: Any) -> bool:
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _prompts_allowed(args: argparse.Namespace) -> bool:
+    """True when a human command may ask the person at the terminal a question."""
+
+    return not getattr(args, "json", False) and _is_terminal(sys.stdin) and _is_terminal(sys.stdout)
+
+
+def _is_bundled_ref(ref: PackageReference) -> bool:
+    return bool(ref.package_id) and ref.package_id in list_package_paths()
 
 
 def _package_ref_from_cwd() -> PackageReference | None:
@@ -3069,6 +3154,22 @@ def _ref_label(ref: PackageReference) -> str:
     return ref.package_id or ref.source_path
 
 
+def _ref_display(ref: PackageReference) -> str:
+    if _is_bundled_ref(ref):
+        return f"{ref.package_id} (bundled sample package, not your data)"
+    return _ref_label(ref)
+
+
+def _package_display(package: dict[str, Any]) -> str:
+    package_id = str(package.get("id", "") or "")
+    source_path = str(package.get("source_path", "") or "")
+    if package.get("bundled"):
+        return f"{package_id} (bundled sample package, not your data)"
+    if package_id and source_path:
+        return f"{package_id} ({source_path})"
+    return package_id or source_path or "(unknown)"
+
+
 def _prompt(label: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
     value = input(f"{label}{suffix}: ").strip()
@@ -3147,9 +3248,9 @@ def _print_objects(report: dict[str, Any]) -> None:
 
 
 def _print_ask_report(report: dict[str, Any]) -> None:
-    package = report.get("package", {})
+    package = dict(report.get("package", {}) or {})
     print(f"Question: {report.get('question', '')}")
-    print(f"Package: {package.get('id') or package.get('source_path') or '(unknown)'}")
+    print(f"Package: {_package_display(package)}")
     plan = dict(report.get("plan", {}) or {})
     print(f"Plan: {plan.get('pattern') or '(none)'}")
     resolved = list(plan.get("resolved", []) or [])
@@ -3157,19 +3258,43 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         print("Resolved:")
         for row in resolved:
             print(f"  {row.get('kind')}: {row.get('id')} ({row.get('label')})")
-    query = report.get("query")
-    if query:
-        print("Query IR:")
-        print(json.dumps(query, indent=2, sort_keys=True, default=str))
+    warnings: list[Any] = []
+    result = report.get("result")
+    if isinstance(result, dict):
+        rows = list(result.get("rows", []) or [])
+        count = result.get("row_count", len(rows))
+        truncated = bool(result.get("truncated"))
+        limit_note = (
+            f" (stopped at the {result.get('row_limit')}-row limit; more rows match)"
+            if truncated
+            else ""
+        )
+        print(f"Rows: {count}{limit_note}")
+        shown = rows[:_MAX_HUMAN_ROWS]
+        _print_rows(shown, list(result.get("output_columns", []) or []))
+        if len(rows) > len(shown):
+            print(f"... {len(rows) - len(shown)} more rows not shown; use --json to see them all.")
+        if truncated:
+            print("Add --limit 0 to `semantic-rails ask --run` to fetch every row.")
+        warnings.extend(list(result.get("warnings", []) or []))
+        warnings.extend(list(result.get("assumptions", []) or []))
     compiled = report.get("compile")
     if isinstance(compiled, dict):
         print("SQL:")
         print(compiled.get("sql", ""))
-    result = report.get("result")
-    if isinstance(result, dict):
-        rows = list(result.get("rows", []) or [])
-        print(f"Rows: {result.get('row_count', len(rows))}")
-        _print_rows(rows[:20])
+        warnings.extend(list(compiled.get("warnings", []) or []))
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            if isinstance(warning, dict):
+                code = warning.get("code") or warning.get("kind") or "WARNING"
+                print(f"  {code}: {warning.get('message', '')}")
+            else:
+                print(f"  {warning}")
+    query = report.get("query")
+    if query:
+        print("Query IR:")
+        print(json.dumps(query, indent=2, sort_keys=True, default=str))
     errors = list(report.get("errors", []) or [])
     if errors:
         print("Errors:")
@@ -3297,25 +3422,133 @@ def _print_named_check(name: str, check: dict[str, Any]) -> None:
     print("  " + " ".join(bits))
 
 
-def _print_rows(rows: list[dict[str, Any]]) -> None:
+def _print_rows(
+    rows: list[dict[str, Any]], output_columns: list[dict[str, Any]] | None = None
+) -> None:
+    for line in _table_lines(rows, output_columns or []):
+        print(line)
+
+
+def _table_lines(rows: list[dict[str, Any]], output_columns: list[dict[str, Any]]) -> list[str]:
+    """Render result rows as an aligned text table for people.
+
+    Numbers get thousands separators and consistent decimals per column and
+    are right-aligned and never cut short. Long text is shortened with
+    ``...``. JSON output keeps the raw values.
+    """
+
     if not rows:
-        return
+        return []
     columns: list[str] = []
     for row in rows:
         for key in row:
-            if key not in columns:
+            if str(key) not in columns:
                 columns.append(str(key))
-    widths = {
-        col: min(
-            40,
-            max(len(col), *(len(str(row.get(col, ""))) for row in rows)),
-        )
-        for col in columns
+    meta = {
+        str(column.get("field", "")): column
+        for column in output_columns
+        if isinstance(column, dict) and column.get("field")
     }
-    header = " | ".join(col.ljust(widths[col]) for col in columns)
-    print(header)
-    print("-+-".join("-" * widths[col] for col in columns))
-    for row in rows:
-        print(
-            " | ".join(str(row.get(col, ""))[: widths[col]].ljust(widths[col]) for col in columns)
+    headers = _column_headers(columns, meta)
+    cells: dict[str, list[str]] = {}
+    numeric: dict[str, bool] = {}
+    for column in columns:
+        column_type = str(dict(meta.get(column, {}) or {}).get("type", "") or "")
+        cells[column], numeric[column] = _format_column(
+            [row.get(column) for row in rows], column_type=column_type
         )
+    widths = {
+        column: max(len(headers[column]), *(len(cell) for cell in cells[column]))
+        for column in columns
+    }
+
+    def fit(text: str, column: str) -> str:
+        return text.rjust(widths[column]) if numeric[column] else text.ljust(widths[column])
+
+    lines = [" | ".join(fit(headers[column], column) for column in columns).rstrip()]
+    lines.append("-+-".join("-" * widths[column] for column in columns))
+    for index in range(len(rows)):
+        lines.append(" | ".join(fit(cells[column][index], column) for column in columns).rstrip())
+    return lines
+
+
+def _column_headers(columns: list[str], meta: dict[str, dict[str, Any]]) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for column in columns:
+        info = dict(meta.get(column, {}) or {})
+        header = str(info.get("display_label") or column)
+        if info.get("type") == "time" and "__" in column:
+            header += f" ({column.rsplit('__', 1)[1]})"
+        headers[column] = header
+    labels = list(headers.values())
+    return {
+        column: _shorten(column if labels.count(header) > 1 else header)
+        for column, header in headers.items()
+    }
+
+
+def _format_column(values: list[Any], *, column_type: str) -> tuple[list[str], bool]:
+    present = [value for value in values if value is not None]
+    if present and all(_is_number(value) for value in present):
+        decimals = _column_decimals(present, column_type=column_type)
+        return [
+            "NULL" if value is None else _format_number(value, decimals) for value in values
+        ], True
+    return [_shorten(_format_scalar(value)) for value in values], False
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float | Decimal) and not isinstance(value, bool)
+
+
+def _is_finite(value: Any) -> bool:
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, Decimal):
+        return value.is_finite()
+    return True
+
+
+def _is_integral(value: Any) -> bool:
+    if isinstance(value, float):
+        return value.is_integer()
+    if isinstance(value, Decimal):
+        return value == value.to_integral_value()
+    return True
+
+
+def _column_decimals(values: list[Any], *, column_type: str) -> int:
+    if column_type == "currency":
+        return 2
+    finite = [value for value in values if _is_finite(value)]
+    if all(_is_integral(value) for value in finite):
+        return 0
+    smallest = min((abs(float(value)) for value in finite if value != 0), default=0.0)
+    if smallest == 0.0 or smallest >= 1:
+        return 2
+    # Keep about three significant digits on the smallest value, e.g. 0.00340.
+    return min(6, 2 - math.floor(math.log10(smallest)))
+
+
+def _format_number(value: Any, decimals: int) -> str:
+    if not _is_finite(value):
+        return str(value).lower()
+    # Exact for big ints: formatting an int with "f" goes through float.
+    text = f"{value:,}" if isinstance(value, int) and decimals == 0 else f"{value:,.{decimals}f}"
+    if text.startswith("-") and not any(digit in text for digit in "123456789"):
+        text = text[1:]
+    return text
+
+
+def _format_scalar(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, dict | list):
+        return json.dumps(value, sort_keys=True, default=str)
+    return str(value).replace("\n", " ")
+
+
+def _shorten(text: str, width: int = _MAX_CELL_WIDTH) -> str:
+    return text if len(text) <= width else text[: width - 3] + "..."
