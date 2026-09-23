@@ -9,5 +9,6 @@
   instead of 0.31: every order counted as a large order, so each base order
   converted to itself. A package with a curated conversion metric built on such
   a measure now fails `validate-config` and `check`, and `discover` lists the
-  metric as unavailable. Count the entity key and restrict the operand with its
-  `filter` instead.
+  metric as unavailable. Instead of a filtered measure, count the entity key and
+  restrict the operand with its `filter`. Instead of a measure counting another
+  column, use a measure on the entity whose rows are the events.
