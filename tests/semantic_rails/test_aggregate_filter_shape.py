@@ -42,6 +42,15 @@ def _aggregate(filter_spec) -> dict:
         {"all": [_NEW_CUSTOMER], "any": [_NEW_CUSTOMER]},
         {"all": _NEW_CUSTOMER},
         [_NEW_CUSTOMER],
+        [],
+        "",
+        0,
+        False,
+        {"all": [{}]},
+        {"all": [{"bogus": 1}]},
+        {"all": [None]},
+        {"all": [{"field": "", "op": "=", "value": True}]},
+        {"all": [{**_NEW_CUSTOMER, "bogus": 1}]},
     ],
     ids=[
         "bare-comparison",
@@ -50,6 +59,15 @@ def _aggregate(filter_spec) -> dict:
         "all-and-any",
         "all-not-a-list",
         "list",
+        "empty-list",
+        "empty-string",
+        "zero",
+        "false",
+        "empty-entry",
+        "unknown-entry-key",
+        "null-entry",
+        "empty-field",
+        "unknown-dimension-key",
     ],
 )
 def test_aggregate_filter_rejects_every_shape_but_all(filter_spec):
@@ -59,7 +77,7 @@ def test_aggregate_filter_rejects_every_shape_but_all(filter_spec):
     assert "{all: [...]}" in str(exc.value)
 
 
-@pytest.mark.parametrize("filter_spec", [{"all": [_NEW_CUSTOMER]}, {}, None])
+@pytest.mark.parametrize("filter_spec", [{"all": [_NEW_CUSTOMER]}, {"all": []}, {}, None])
 def test_aggregate_filter_accepts_all_or_nothing(filter_spec):
     expr = parse_semantic_expression(_aggregate(filter_spec), context="query")
     assert expr.filter == (filter_spec or {})
@@ -88,10 +106,46 @@ def test_query_with_an_any_filter_is_rejected_not_unfiltered(runtime_factory):
         runtime.close()
 
 
+@pytest.mark.parametrize("filter_spec", [[], {"all": [{}]}, {"all": [{"bogus": 1}]}])
+def test_query_rejects_malformed_filter_that_would_be_ignored(runtime_factory, filter_spec):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        report = _orders_by_year(runtime, filter_spec)
+    finally:
+        runtime.close()
+    assert report["ok"] is False
+    assert report["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
+
+
+def test_legacy_dimension_clause_is_applied_not_ignored(runtime_factory):
+    field_filter = {"all": [_NEW_CUSTOMER]}
+    dimension_filter = {"all": [{"dimension": _NEW_CUSTOMER["field"], "op": "=", "value": True}]}
+    runtime = runtime_factory("jaffle_shop")
+    try:
+
+        def rows(filter_spec):
+            result = runtime.query(
+                {
+                    "version": 2,
+                    "select": [{"expression": _aggregate(filter_spec), "as": "orders"}],
+                    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "year"},
+                }
+            )["rows"]
+            return sorted(result, key=lambda row: str(row["temporal_role.jaffle_order_time__year"]))
+
+        assert rows(dimension_filter) == rows(field_filter)
+        assert rows(field_filter) != rows(None)
+        report = _orders_by_year(runtime, {"all": [{"dimension": None, "op": "=", "value": True}]})
+    finally:
+        runtime.close()
+    assert report["ok"] is False
+    assert report["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+
+
 @pytest.mark.parametrize(
     "filter_spec",
-    [_BARE_COMPARISON, {"any": [_NEW_CUSTOMER]}, {"all": _NEW_CUSTOMER}],
-    ids=["bare-comparison", "any", "all-not-a-list"],
+    [_BARE_COMPARISON, {"any": [_NEW_CUSTOMER]}, {"all": _NEW_CUSTOMER}, [], {"all": [{}]}],
+    ids=["bare-comparison", "any", "all-not-a-list", "empty-list", "empty-entry"],
 )
 def test_package_metric_with_a_filter_that_is_not_all_fails_validation(tmp_path: Path, filter_spec):
     # Each of these passed package validation.

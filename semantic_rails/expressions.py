@@ -858,18 +858,48 @@ def _closest_key_matches(name: str, candidates: Iterable[str], *, limit: int = 3
     return get_close_matches(str(name), [str(c) for c in candidates], n=limit, cutoff=0.5)
 
 
-def _aggregate_filter(raw: Any) -> dict[str, Any]:
-    """An aggregate's ``filter``: ``{all: [...]}``, or nothing.
+def _aggregate_filter_entries(raw: Any) -> tuple[list[dict[str, Any]] | None, list[str] | str]:
+    if not isinstance(raw, dict) or set(raw) != {"all"} or not isinstance(raw["all"], list):
+        return None, sorted(raw) if isinstance(raw, dict) else type(raw).__name__
+    clauses: list[dict[str, Any]] = []
+    for index, item in enumerate(raw["all"]):
+        if not isinstance(item, dict):
+            return None, f"all[{index}]"
+        is_predicate = (
+            set(item) == {"expression"}
+            and isinstance(item["expression"], dict)
+            and item["expression"].get("kind") == "metric_predicate"
+        )
+        is_field = (
+            "field" in item
+            and set(item) <= {"field", "op", "value"}
+            and not (isinstance(item["field"], str) and not item["field"].strip())
+        )
+        if is_predicate or is_field:
+            clauses.append(item)
+        elif (
+            "dimension" in item
+            and set(item) <= {"dimension", "op", "value"}
+            and not (isinstance(item["dimension"], str) and not item["dimension"].strip())
+        ):
+            clauses.append(
+                {
+                    "field": str(item["dimension"]),
+                    **{k: v for k, v in item.items() if k != "dimension"},
+                }
+            )
+        else:
+            return None, f"all[{index}]"
+    return clauses, ""
 
-    Binding reads only ``filter.all``, so any other shape, such as a bare
-    ``{kind: comparison, ...}`` node or an ``any:`` list, would be silently
-    ignored and the aggregate would count every row.
-    """
-    if not raw:
+
+def _aggregate_filter(raw: Any) -> dict[str, Any]:
+    """Reject filter shapes binding would ignore; accept ``{all: [...]}`` or nothing."""
+    if raw is None or (isinstance(raw, dict) and not raw):
         return {}
-    if isinstance(raw, dict) and set(raw) == {"all"} and isinstance(raw["all"], list):
-        return dict(raw)
-    shape = sorted(raw) if isinstance(raw, dict) else type(raw).__name__
+    clauses, shape = _aggregate_filter_entries(raw)
+    if clauses is not None:
+        return {"all": clauses}
     raise SemanticLayerError(
         "INVALID_EXPRESSION_AST",
         (

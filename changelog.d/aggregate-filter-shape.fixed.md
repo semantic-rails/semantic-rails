@@ -8,3 +8,8 @@
   and the expected shape, in queries and at package validation. A conversion
   operand's `any:` filter reports `INVALID_EXPRESSION_AST` instead of
   `CONVERSION_NOT_SUPPORTED`.
+- Falsy malformed filter values (`[]`, empty text, zero, and false) and invalid
+  entries under `all:` now fail closed instead of disappearing and producing
+  unfiltered counts. The package loader preserves supplied filter values so
+  the same validation applies to authored metrics. The package-authoring
+  example now uses the supported `all:` predicate form.
