@@ -14,6 +14,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.architect_transactions import project_revision
+from semantic_rails.dbt_artifacts import dbt_import_models, load_dbt_artifacts
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import (
@@ -164,6 +165,175 @@ def _customers(**extra: Any) -> dict[str, Any]:
     }
 
 
+def _target_model(entity: str, *, model_id: str | None = None) -> dict[str, Any]:
+    return _customers(model_id=model_id or f"{entity}_lookup", entity_key=entity)
+
+
+def _referencing_lines(reference: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model_id": "lines",
+        "entity_key": "line",
+        "relation": "main_marts.fct_order_lines",
+        "primary_key": ["order_id", "line_number"],
+        "references": [{**reference, "columns": ["buyer_id"], "to_columns": ["customer_id"]}],
+    }
+
+
+@pytest.mark.parametrize(
+    ("existing", "staged", "expected"),
+    [
+        ([], [], None),
+        (["customer"], [], "customer"),
+        ([], ["customer"], "customer"),
+        (["customer", "client"], [], None),
+        ([], ["customer", "client"], None),
+        (["customer"], ["client"], None),
+    ],
+    ids=["zero", "one-existing", "one-staged", "two-existing", "two-staged", "mixed"],
+)
+def test_relation_reference_requires_one_eligible_entity(
+    workspace: Path, existing: list[str], staged: list[str], expected: str | None
+) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    for entity in existing:
+        assert project.upsert_model(**_target_model(entity)).report["ok"] is True
+    before = project_revision(workspace / "shop")
+    models = [_target_model(entity) for entity in staged]
+    models.append(_referencing_lines({"relation": "main_marts.dim_customers"}))
+
+    preview = project.upsert_models(models, dry_run=True).report
+
+    assert preview["ok"] is True, preview
+    assert project_revision(workspace / "shop") == before
+    if expected:
+        assert preview["references"] == [
+            {"model": "lines", "entity": expected, "columns": ["buyer_id"]}
+        ]
+        assert preview["skipped_references"] == []
+    else:
+        assert preview["references"] == []
+        assert len(preview["skipped_references"]) == 1
+        reason = preview["skipped_references"][0]["reason"]
+        assert (
+            "multiple eligible entities" in reason
+            if existing or staged
+            else "not a model" in reason
+        )
+
+
+def test_explicit_entity_and_staged_update_override_relation_ambiguity(workspace: Path) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    assert project.upsert_model(**_target_model("customer")).report["ok"] is True
+    assert project.upsert_model(**_target_model("client")).report["ok"] is True
+
+    explicit = project.upsert_models(
+        [_referencing_lines({"entity": "customer", "relation": "main_marts.dim_customers"})],
+        dry_run=True,
+    ).report
+    assert explicit["references"][0]["entity"] == "customer"
+    assert explicit["skipped_references"] == []
+
+    update = project.upsert_models(
+        [
+            _target_model("customer"),
+            _referencing_lines(
+                {
+                    "target_dbt_unique_id": "model.shop_dbt.dim_customers",
+                    "relation": "main_marts.dim_customers",
+                }
+            ),
+        ],
+        dry_run=True,
+    ).report
+    assert update["references"] == []
+    assert "multiple eligible entities" in update["skipped_references"][0]["reason"]
+
+    same = project.upsert_models(
+        [
+            _target_model("customer"),
+            _referencing_lines({"entity": "customer", "relation": "main_marts.dim_customers"}),
+        ],
+        dry_run=True,
+    ).report
+    assert same["references"][0]["entity"] == "customer"
+
+
+def test_staging_an_existing_model_does_not_count_its_old_entity_twice(workspace: Path) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    assert project.upsert_model(**_target_model("customer")).report["ok"] is True
+
+    preview = project.upsert_models(
+        [
+            _target_model("customer"),
+            _referencing_lines({"relation": "main_marts.dim_customers"}),
+        ],
+        dry_run=True,
+    ).report
+
+    assert preview["ok"] is True, preview
+    assert preview["references"] == [
+        {"model": "lines", "entity": "customer", "columns": ["buyer_id"]}
+    ]
+    assert preview["skipped_references"] == []
+
+
+def test_selected_dbt_identity_must_match_its_relation(workspace: Path) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    target = {**_target_model("customer"), "dbt_unique_id": "model.shop_dbt.dim_customers"}
+    wrong = _referencing_lines(
+        {
+            "relation": "main_marts.dim_stores",
+            "target_dbt_unique_id": "model.shop_dbt.dim_customers",
+        }
+    )
+
+    preview = project.upsert_models([target, wrong], dry_run=True).report
+
+    assert preview["ok"] is True, preview
+    assert preview["references"] == []
+    assert "does not read the referenced relation" in preview["skipped_references"][0]["reason"]
+
+
+def test_dbt_selected_identity_beats_ambiguous_relation_on_dry_run_and_apply(
+    workspace: Path,
+) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    assert project.upsert_model(**_target_model("client")).report["ok"] is True
+    dbt = load_dbt_artifacts(workspace / "dbt" / "target")
+    items, skipped = dbt_import_models(dbt, ["dim_customers", "fct_orders"])
+    assert skipped == []
+    customers = next(item for item in items if item["dbt_unique_id"].endswith("dim_customers"))
+    orders = next(item for item in items if item["dbt_unique_id"].endswith("fct_orders"))
+    assert customers["dbt_unique_id"] == orders["references"][0]["target_dbt_unique_id"]
+    before = project_revision(workspace / "shop")
+
+    preview = project.upsert_models(items, dry_run=True).report
+    assert preview["ok"] is True and project_revision(workspace / "shop") == before
+    assert {row["entity"] for row in preview["references"]} >= {"customer"}
+    assert not any("multiple eligible" in row["reason"] for row in preview["skipped_references"])
+
+    applied = project.upsert_models(items).report
+    assert applied["ok"] is True, applied
+    assert project_revision(workspace / "shop") != before
+    assert "customer" in _model(workspace / "shop" / "models" / "orders.yml")["entities"]
+
+
+def test_dbt_unselected_ambiguous_target_is_reported_on_apply(workspace: Path) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    for entity in ("customer", "client"):
+        assert project.upsert_model(**_target_model(entity)).report["ok"] is True
+    dbt = load_dbt_artifacts(workspace / "dbt" / "target")
+    items, _ = dbt_import_models(dbt, ["fct_orders"])
+
+    applied = project.upsert_models(items).report
+
+    assert applied["ok"] is True, applied
+    assert not any(row["entity"] in ("customer", "client") for row in applied["references"])
+    assert any(
+        "multiple eligible entities" in row["reason"] for row in applied["skipped_references"]
+    )
+
+
 def test_references_resolve_by_entity_or_relation_and_otherwise_are_reported(
     workspace: Path,
 ) -> None:
@@ -259,6 +429,50 @@ def test_import_revision_and_idempotency_are_enforced_at_the_mcp_boundary(
     assert stale["ok"] is False and stale["error"]["details"]["conflict_kind"] == "stale_revision"
     assert reused["ok"] is False
     assert reused["error"]["details"]["conflict_kind"] == "idempotency_key_reuse"
+
+
+def test_completed_import_replay_preserves_a_later_authored_edit(workspace: Path) -> None:
+    server = create_architect_mcp_server(workspace_root=workspace)
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    before = project_revision(workspace / "shop")
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["dim_customers"],
+        "expected_revision": before,
+        "idempotency_key": "completed-import",
+    }
+    (imported,) = _calls(server, [("import_dbt_project", request)])
+    assert imported["ok"] is True, imported
+
+    edited = project.upsert_model(
+        model_id="customers",
+        entity_key="customer",
+        relation="main_marts.dim_customers",
+        primary_key=["customer_id"],
+        description="Edited after dbt import",
+        expected_revision=imported["revision"],
+        idempotency_key="later-authoring",
+    ).report
+    assert edited["ok"] is True, edited
+    assert edited["revision"] != imported["revision"]
+
+    replayed, stale = _calls(
+        server,
+        [
+            ("import_dbt_project", request),
+            ("import_dbt_project", {**request, "idempotency_key": "fresh-stale-key"}),
+        ],
+    )
+    assert replayed["ok"] is True and replayed["idempotent_replay"] is True
+    assert replayed["revision"] == imported["revision"]
+    assert project_revision(workspace / "shop") == edited["revision"]
+    assert (
+        _model(workspace / "shop" / "models" / "dbt" / "customers.yml")["description"]
+        == "Edited after dbt import"
+    )
+    assert stale["ok"] is False
+    assert stale["error"]["details"]["conflict_kind"] == "stale_revision"
 
 
 def _contract_manifest(

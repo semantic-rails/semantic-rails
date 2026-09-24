@@ -172,6 +172,9 @@ a many-to-one relationship. It follows the usual mutation contract (`expected_re
 package, gets the reference; references elsewhere are listed in `skipped_references`, and dbt models
 without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
 (`fct_orders` and a model `orders` for entity `order`) updates that model.
+An imported target's dbt manifest identity selects that staged model even when another package
+model reads the same relation. A relation-only reference resolves when exactly one eligible
+semantic entity reads it; ambiguous targets are listed in `skipped_references` for review.
 
 Python callers use `semantic_rails.dbt_artifacts` (`load_dbt_artifacts`,
 `suggest_models_from_dbt`, `dbt_import_models`) and `ArchitectProject.upsert_models`, which stages

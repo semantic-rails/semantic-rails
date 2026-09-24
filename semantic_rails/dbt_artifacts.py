@@ -482,8 +482,9 @@ def dbt_import_models(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """``ArchitectProject.upsert_models`` items for the selected dbt models, and those left out.
 
-    Foreign keys become references by relation, so they resolve to models in
-    the same import or already in the package. A model without a key in dbt
+    Foreign keys retain the selected target's manifest identity where known;
+    otherwise they resolve by relation only when the package has one eligible
+    semantic target. A model without a key in dbt
     (no contract primary key, uniqueness tests or column-combination test) is
     left out, with the reason.
     """
@@ -506,11 +507,17 @@ def dbt_import_models(
                 }
             )
             continue
+        draft["dbt_unique_id"] = suggestion["dbt_unique_id"]
         draft["references"] = [
             {
                 "relation": link["references"]["relation"],
                 "columns": list(link["columns"]),
                 "to_columns": list(link["references"].get("columns") or []),
+                **(
+                    {"target_dbt_unique_id": link["references"]["dbt_unique_id"]}
+                    if link["references"].get("dbt_unique_id") in project.relations
+                    else {}
+                ),
             }
             for link in suggestion["foreign_keys"]
         ]

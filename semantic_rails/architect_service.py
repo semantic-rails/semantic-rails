@@ -683,11 +683,15 @@ class ArchitectProject:
         ``{"relation": <relation>}`` with ``"columns"`` (this model's key
         columns) and optionally ``"to_columns"`` (the target's). A target is an
         entity already in the package or created by this batch; a relation
-        resolves to the entity of the model reading it. Each becomes an entry in
-        the model's ``entities`` block (``expr`` when the column differs from the
-        target's key), which strict packages read as a many-to-one relationship.
-        A reference whose target is missing, or which points at a column other
-        than the target's key, is reported under ``skipped_references``.
+        resolves only when exactly one eligible entity reads it. dbt imports may
+        pass a selected model's ``dbt_unique_id`` and a reference's
+        ``target_dbt_unique_id`` to identify that staged target exactly. Each
+        becomes an entry in the model's ``entities`` block (``expr`` when the
+        column differs from the target's key), which strict packages read as a
+        many-to-one relationship.
+        A reference whose target is missing or ambiguous, or which points at a
+        column other than the target's key, is reported under
+        ``skipped_references``.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         if not models:
@@ -708,7 +712,10 @@ class ArchitectProject:
             self._stage_model(
                 raw,
                 documents,
-                **{"group": group, **{k: v for k, v in item.items() if k != "references"}},
+                **{
+                    "group": group,
+                    **{k: v for k, v in item.items() if k not in ("references", "dbt_unique_id")},
+                },
             )
             for item in models
         ]
@@ -719,37 +726,54 @@ class ArchitectProject:
             graph = dict(documents[fact["graph_path"]].get("graph", {}) or {})
             for name, spec in dict(graph.get("entities", {}) or {}).items():
                 entity_keys[str(name)] = _as_list(dict(spec or {}).get("key"))
-        relation_entities = {
-            str(row.spec.get("relation") or ""): self._primary_entity_for_model(
-                row, raw["entities"]
-            )
-            for row in raw["models"]
-        }
-        relation_entities.update(
-            {
-                str(item.get("relation") or ""): fact["entity_key"]
-                for item, fact in zip(models, staged, strict=True)
-            }
-        )
+        relation_entities: dict[str, set[str]] = {}
+        staged_models = {fact["model"] for fact in staged}
+        for row in raw["models"]:
+            if row.key in staged_models:
+                continue
+            relation = str(row.spec.get("relation") or "")
+            entity = self._primary_entity_for_model(row, raw["entities"])
+            if relation and entity in entity_keys:
+                relation_entities.setdefault(relation, set()).add(entity)
+        dbt_targets: dict[str, set[tuple[str, str]]] = {}
+        for item, fact in zip(models, staged, strict=True):
+            relation = str(item.get("relation") or "")
+            if relation:
+                relation_entities.setdefault(relation, set()).add(fact["entity_key"])
+            dbt_unique_id = str(item.get("dbt_unique_id") or "")
+            if dbt_unique_id:
+                dbt_targets.setdefault(dbt_unique_id, set()).add((relation, fact["entity_key"]))
         added: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         for item, fact in zip(models, staged, strict=True):
             for reference in list(item.get("references") or []):
-                target = str(
-                    reference.get("entity")
-                    or relation_entities.get(str(reference.get("relation") or ""), "")
-                )
+                target = str(reference.get("entity") or "")
+                relation = str(reference.get("relation") or "")
+                target_identity = str(reference.get("target_dbt_unique_id") or "")
+                candidates = relation_entities.get(relation, set())
+                reason = ""
+                if not target and target_identity in dbt_targets:
+                    identity_candidates = dbt_targets[target_identity]
+                    if len(identity_candidates) > 1:
+                        reason = "the selected dbt target identity is ambiguous"
+                    else:
+                        target_relation, target = next(iter(identity_candidates))
+                        if relation != target_relation:
+                            reason = "the selected dbt target does not read the referenced relation"
+                elif not target and len(candidates) == 1:
+                    target = next(iter(candidates))
+                elif not target and len(candidates) > 1:
+                    reason = f"the relation has multiple eligible entities: {', '.join(sorted(candidates))}"
                 columns = _as_list(reference.get("columns"))
                 to_columns = _as_list(reference.get("to_columns"))
                 target_key = entity_keys.get(target, [])
-                reason = ""
-                if not target or target not in entity_keys:
+                if not reason and (not target or target not in entity_keys):
                     reason = "the target is not a model in this package or batch"
-                elif target == fact["entity_key"]:
+                elif not reason and target == fact["entity_key"]:
                     reason = "a model cannot reference its own entity"
-                elif not columns or len(columns) != len(target_key):
+                elif not reason and (not columns or len(columns) != len(target_key)):
                     reason = f"the columns do not match the width of {target}'s key {target_key}"
-                elif to_columns and to_columns != target_key:
+                elif not reason and to_columns and to_columns != target_key:
                     reason = f"it points at {to_columns}, not {target}'s key {target_key}"
                 if reason:
                     skipped.append({"model": fact["model"], **reference, "reason": reason})

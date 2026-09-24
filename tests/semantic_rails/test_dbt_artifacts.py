@@ -203,6 +203,7 @@ def test_contract_foreign_keys_resolve_ref_and_keep_target_columns(
         "relation": "main_marts.dim_customers",
         "columns": ["customer_id"],
         "to_columns": ["customer_id"],
+        "target_dbt_unique_id": "model.shop_dbt.dim_customers",
     } in orders["references"]
 
 
