@@ -8,6 +8,8 @@ something else fails here.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -426,6 +428,31 @@ def test_retranslation_refuses_nonempty_destination_without_changing_files(
         assert cli_main([*args, *(["--strict"] if strict else [])]) == 2
         assert "cannot reuse nonempty package destination" in capsys.readouterr().err
         assert snapshot() == before
+
+    public_cli = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "semantic_rails",
+            "import",
+            "--from",
+            "metricflow",
+            "--source",
+            str(source),
+            "--output",
+            str(output),
+            "--package-id",
+            "shop",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert public_cli.returncode == 1
+    error = json.loads(public_cli.stdout)
+    assert error["ok"] is False
+    assert error["error"]["code"] == "CONFIG_CONFLICT"
+    assert "cannot reuse nonempty package destination" in error["error"]["message"]
+    assert snapshot() == before
 
     fresh = translate(source, tmp_path / "fresh", package_id="shop")
     assert fresh.metrics_emitted == []
