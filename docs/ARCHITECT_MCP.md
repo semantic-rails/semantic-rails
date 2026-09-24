@@ -166,10 +166,12 @@ archive) use one engine-owned transaction layer:
   a completed creation receipt. Successful creation receipts record hashes for the complete
   generated scaffold, including files unchanged by an overwrite; an intervening edit to one of
   those files cannot become the next scaffold's provenance. Byte-identical files need no
-  replacement. For a missing graph or changed scaffold file, restore the recorded bytes or
-  archive the authored project and create a new one. Changing the first entity also retires its
-  old model only when that model matches the receipt. Other authored files and warehouse data
-  stay in place.
+  replacement, but a no-op without proof does not establish new provenance. Older change-only
+  receipts can authorize an overwrite only when one receipt proves the complete current generated
+  scaffold. For a missing graph or changed scaffold file without that proof, restore the recorded
+  bytes or archive the authored project and create a new one. Changing the first entity also
+  retires its old model only when that model matches the receipt. Other authored files and
+  warehouse data stay in place.
 
 Exact existing keys are updated in their current source file instead of
 creating duplicate definitions elsewhere. Successful internal REPL mutations

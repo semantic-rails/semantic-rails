@@ -460,6 +460,233 @@ def _create_via_route(
     return report
 
 
+def _receipt_path(workspace_root: Path, key: str) -> Path:
+    receipt_root = next((workspace_root / ".semantic-rails" / "architect-transactions").glob("*"))
+    return receipt_root / f"{hashlib.sha256(key.encode('utf-8')).hexdigest()}.json"
+
+
+def _make_legacy_creation_receipt(workspace_root: Path, key: str) -> None:
+    path = _receipt_path(workspace_root, key)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["scaffold_files"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+def test_legacy_receipt_cannot_launder_byte_identical_authored_model(
+    tmp_path: Path, through_mcp: bool
+) -> None:
+    project = tmp_path / "shop"
+    assert _create_via_route(
+        tmp_path, EXTERNAL_SHOP, through_mcp=through_mcp, key="create", expected_revision="absent"
+    )["ok"]
+    _make_legacy_creation_receipt(tmp_path, "create")
+    second = replace(
+        EXTERNAL_SHOP,
+        description="Description B",
+        first_model=replace(ORDERS, relation="main_marts.orders_v2"),
+    )
+    model_path = project / "models" / "core" / "orders.yml"
+    model_path.write_bytes(project_scaffold_files(second)["models/core/orders.yml"])
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    third = replace(second, first_model=replace(ORDERS, relation="main_marts.orders_v3"))
+    for candidate_name, candidate in (("second", second), ("third", third)):
+        for dry_run in (True, False):
+            key = f"{candidate_name}-{dry_run}"
+            if through_mcp:
+                report = _create_via_route(
+                    tmp_path,
+                    candidate,
+                    through_mcp=True,
+                    key=key,
+                    expected_revision=revision,
+                    overwrite=True,
+                    dry_run=dry_run,
+                )
+                assert report["ok"] is False, report
+            else:
+                with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+                    _create_via_route(
+                        tmp_path,
+                        candidate,
+                        through_mcp=False,
+                        key=key,
+                        expected_revision=revision,
+                        overwrite=True,
+                        dry_run=dry_run,
+                    )
+            assert _project_bytes(project) == before
+            assert project_revision(project) == revision
+            assert not _receipt_path(tmp_path, key).exists()
+    assert project_scaffold_files(third)["models/core/orders.yml"] != model_path.read_bytes()
+    assert model_path.read_bytes() == before["models/core/orders.yml"]
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+def test_legacy_receipt_proves_complete_original_before_new_snapshot(
+    tmp_path: Path, through_mcp: bool
+) -> None:
+    project = tmp_path / "shop"
+    assert _create_via_route(
+        tmp_path, EXTERNAL_SHOP, through_mcp=through_mcp, key="create", expected_revision="absent"
+    )["ok"]
+    _make_legacy_creation_receipt(tmp_path, "create")
+    for index in (1, 2):
+        spec = replace(EXTERNAL_SHOP, description=f"Description {index}")
+        revision = project_revision(project)
+        preview = _create_via_route(
+            tmp_path,
+            spec,
+            through_mcp=through_mcp,
+            key=f"preview-{index}",
+            expected_revision=revision,
+            overwrite=True,
+            dry_run=True,
+        )
+        assert preview["ok"] is True, preview
+        applied = _create_via_route(
+            tmp_path,
+            spec,
+            through_mcp=through_mcp,
+            key=f"apply-{index}",
+            expected_revision=revision,
+            overwrite=True,
+        )
+        assert applied["ok"] is True, applied
+    assert "scaffold_files" in json.loads(
+        _receipt_path(tmp_path, "apply-1").read_text(encoding="utf-8")
+    )
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+@pytest.mark.parametrize("noop_first", [False, True], ids=["direct", "after-noop"])
+def test_partial_legacy_receipt_cannot_claim_complete_scaffold(
+    tmp_path: Path, through_mcp: bool, noop_first: bool
+) -> None:
+    project = tmp_path / "shop"
+    assert _create_via_route(
+        tmp_path, EXTERNAL_SHOP, through_mcp=through_mcp, key="create", expected_revision="absent"
+    )["ok"]
+    second = replace(EXTERNAL_SHOP, description="Description B")
+    assert _create_via_route(
+        tmp_path,
+        second,
+        through_mcp=through_mcp,
+        key="second",
+        expected_revision=project_revision(project),
+        overwrite=True,
+    )["ok"]
+    _make_legacy_creation_receipt(tmp_path, "second")
+    revision = project_revision(project)
+    if noop_first:
+        noop = _create_via_route(
+            tmp_path,
+            second,
+            through_mcp=through_mcp,
+            key="noop",
+            expected_revision=revision,
+            overwrite=True,
+        )
+        assert noop["ok"] is True and noop["changes"] == []
+        assert "scaffold_files" not in json.loads(
+            _receipt_path(tmp_path, "noop").read_text(encoding="utf-8")
+        )
+    before = _project_bytes(project)
+    third = replace(EXTERNAL_SHOP, description="Description C")
+    for dry_run in (True, False):
+        if through_mcp:
+            report = _create_via_route(
+                tmp_path,
+                third,
+                through_mcp=True,
+                key=f"third-{dry_run}",
+                expected_revision=revision,
+                overwrite=True,
+                dry_run=dry_run,
+            )
+            assert report["ok"] is False, report
+        else:
+            with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+                _create_via_route(
+                    tmp_path,
+                    third,
+                    through_mcp=False,
+                    key=f"third-{dry_run}",
+                    expected_revision=revision,
+                    overwrite=True,
+                    dry_run=dry_run,
+                )
+        assert _project_bytes(project) == before
+        assert project_revision(project) == revision
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+def test_byte_identical_noop_without_receipt_creates_no_provenance(
+    tmp_path: Path, through_mcp: bool
+) -> None:
+    project = tmp_path / "shop"
+    assert _create_via_route(
+        tmp_path, EXTERNAL_SHOP, through_mcp=through_mcp, key="create", expected_revision="absent"
+    )["ok"]
+    _receipt_path(tmp_path, "create").unlink()
+    revision = project_revision(project)
+    noop = _create_via_route(
+        tmp_path,
+        EXTERNAL_SHOP,
+        through_mcp=through_mcp,
+        key="noop",
+        expected_revision=revision,
+        overwrite=True,
+    )
+    assert noop["ok"] is True and noop["changes"] == []
+    assert "scaffold_files" not in json.loads(
+        _receipt_path(tmp_path, "noop").read_text(encoding="utf-8")
+    )
+    changed = replace(EXTERNAL_SHOP, description="Description B")
+    if through_mcp:
+        report = _create_via_route(
+            tmp_path,
+            changed,
+            through_mcp=True,
+            key="changed",
+            expected_revision=revision,
+            overwrite=True,
+        )
+        assert report["ok"] is False, report
+    else:
+        with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+            _create_via_route(
+                tmp_path,
+                changed,
+                through_mcp=False,
+                key="changed",
+                expected_revision=revision,
+                overwrite=True,
+            )
+
+
+def test_overwrite_does_not_replace_authored_ignored_file_in_absent_project(tmp_path: Path) -> None:
+    project = tmp_path / "shop"
+    project.mkdir()
+    ignore = project / ".gitignore"
+    ignore.write_bytes(b"authored ignore rules\n")
+    before = _project_bytes(project)
+    revision = project_revision(project)
+
+    with pytest.raises(SemanticLayerError, match="modified|receipt|provenance|graph is missing"):
+        create_project(
+            "shop",
+            EXTERNAL_SHOP,
+            workspace_root=tmp_path,
+            expected_revision=revision,
+            idempotency_key="replace-authored-ignore",
+            overwrite=True,
+        )
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+
+
 @pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("transition", ["description", "same_graph_model", "moved_model"])
 def test_repeated_scaffold_overwrites_keep_complete_receipt(

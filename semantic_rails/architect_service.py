@@ -286,8 +286,10 @@ def create_project(
         )
         for relative_path, content in files.items()
     ]
+    trusted_scaffold = True
     if overwrite:
-        updates.extend(_guard_and_retire_scaffold_model(project, root, files, current))
+        retire, trusted_scaffold = _guard_and_retire_scaffold_model(project, root, files, current)
+        updates.extend(retire)
     key = f"internal-{uuid.uuid4()}" if idempotency_key is None else str(idempotency_key)
     outcome = ProjectTransaction(project, workspace_root=root).apply(
         updates,
@@ -310,7 +312,7 @@ def create_project(
             "data": spec.warehouse.data,
             "next_actions": _create_next_actions(spec),
         },
-        scaffold_files=files,
+        scaffold_files=files if trusted_scaffold else None,
     )
     return ArchitectMutation(
         report=outcome.report,
@@ -340,18 +342,22 @@ def _validate_project_connection_options(spec: ProjectSpec) -> None:
 
 def _guard_and_retire_scaffold_model(
     project: Path, workspace_root: Path, new_files: dict[str, bytes], current_revision: str
-) -> list[ProjectFileUpdate]:
+) -> tuple[list[ProjectFileUpdate], bool]:
     """Prove replaced scaffold bytes before interpreting the old graph or retiring a model."""
     transaction = ProjectTransaction(project, workspace_root=workspace_root)
-    replaced: dict[str, bytes] = {}
+    existing: dict[str, bytes] = {}
+    changed_targets: set[str] = set()
     for name, content in new_files.items():
         path = project / name
         if path.is_symlink():
             raise SemanticLayerError("INVALID_CONFIG", "Project scaffold files may not be symlinks")
         if path.is_file():
             before = path.read_bytes()
+            existing[name] = before
             if before != content:
-                replaced[name] = before
+                changed_targets.add(name)
+        else:
+            changed_targets.add(name)
     graph_path = project / "graph.yml"
     if current_revision != ABSENT_PROJECT_REVISION and not graph_path.is_file():
         raise SemanticLayerError(
@@ -359,39 +365,38 @@ def _guard_and_retire_scaffold_model(
             "The prior scaffold graph is missing; restore it or remove the old project explicitly",
             details={"reason": "scaffold_provenance_missing", "path": "graph.yml"},
         )
-    if replaced:
-        evidence = dict(replaced)
-        if graph_path.is_file():
-            evidence["graph.yml"] = graph_path.read_bytes()
-        if not graph_path.is_file() or not transaction.matches_creation_files(evidence):
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                "An existing scaffold file is modified or has no creation receipt; "
-                "archive or remove it explicitly before overwrite",
-                details={"reason": "scaffold_source_modified", "paths": sorted(replaced)},
-            )
+    trusted = (current_revision == ABSENT_PROJECT_REVISION and not existing) or (
+        bool(existing) and transaction.matches_creation_files(existing)
+    )
+    if changed_targets and not trusted:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "An existing scaffold file is modified or has no creation receipt; "
+            "archive or remove it explicitly before overwrite",
+            details={"reason": "scaffold_source_modified", "paths": sorted(changed_targets)},
+        )
     if not graph_path.exists():
-        return []
+        return [], trusted
     if graph_path.is_symlink():
         raise SemanticLayerError("INVALID_CONFIG", "Project graph may not be a symlink")
     try:
         graph = yaml.safe_load(graph_path.read_bytes())
         entities = graph["graph"]["entities"]
         if len(entities) != 1:
-            return []
+            return [], trusted
         entity, graph_row = next(iter(entities.items()))
         entity = str(entity)
         if slug(entity, fallback="") != entity:
-            return []
+            return [], trusted
         model_id = entity if entity.endswith("s") else f"{entity}s"
         if graph_row["model"] != model_id:
-            return []
+            return [], trusted
     except (KeyError, TypeError, AttributeError, yaml.YAMLError):
-        return []
+        return [], trusted
     old_path = f"models/core/{model_id}.yml"
     model_path = project / old_path
     if not model_path.exists():
-        return []
+        return [], trusted
     if model_path.is_symlink():
         raise SemanticLayerError("INVALID_CONFIG", "Project model may not be a symlink")
     if (
@@ -399,17 +404,17 @@ def _guard_and_retire_scaffold_model(
         and graph_path.read_bytes() == new_files["graph.yml"]
         and model_path.read_bytes() == new_files[old_path]
     ):
-        return []  # The model is already identical; no retirement or replacement is needed.
-    if not transaction.matches_creation_files(
-        {"graph.yml": graph_path.read_bytes(), old_path: model_path.read_bytes()}
-    ):
+        return [], trusted  # The model is already identical; no retirement is needed.
+    if not transaction.matches_creation_files({**existing, old_path: model_path.read_bytes()}):
         raise SemanticLayerError(
             "INVALID_CONFIG",
             "The prior scaffold first model is modified or has no creation receipt; "
             "remove or archive it explicitly before overwrite",
             details={"reason": "scaffold_model_modified", "path": old_path},
         )
-    return [] if old_path in new_files else [ProjectFileUpdate(old_path, None)]
+    return (
+        ([], trusted) if old_path in new_files else ([ProjectFileUpdate(old_path, None)], trusted)
+    )
 
 
 def _spec_intent(spec: ProjectSpec) -> dict[str, Any]:

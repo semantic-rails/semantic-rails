@@ -353,6 +353,20 @@ class ProjectTransaction:
     def current_revision(self) -> str:
         return project_revision(self.project_path)
 
+    def _matches_receipt_file(self, name: str, digest: str | None) -> bool:
+        relative = Path(name)
+        source = self.project_path / relative
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or not _within(source.resolve(), self.project_path.resolve())
+            or source.is_symlink()
+        ):
+            return False
+        if digest is None:
+            return not source.exists()
+        return source.is_file() and f"sha256:{_digest(source.read_bytes())}" == digest
+
     def matches_creation_files(self, files: Mapping[str, bytes]) -> bool:
         """Whether a completed create_project receipt recorded these exact file bytes.
 
@@ -375,36 +389,35 @@ class ProjectTransaction:
                     continue
                 scaffold_files = payload.get("scaffold_files")
                 if scaffold_files is not None:
-                    matches = isinstance(scaffold_files, dict) and all(
-                        scaffold_files.get(name) == f"sha256:{_digest(content)}"
-                        for name, content in files.items()
+                    matches = (
+                        isinstance(scaffold_files, dict)
+                        and all(
+                            scaffold_files.get(name) == f"sha256:{_digest(content)}"
+                            for name, content in files.items()
+                        )
+                        and all(
+                            isinstance(name, str)
+                            and isinstance(digest, str)
+                            and self._matches_receipt_file(name, digest)
+                            for name, digest in scaffold_files.items()
+                        )
                     )
-                    if matches:
-                        for name, digest in scaffold_files.items():
-                            if not isinstance(name, str) or not isinstance(digest, str):
-                                matches = False
-                                break
-                            relative = Path(name)
-                            source = self.project_path / relative
-                            if (
-                                relative.is_absolute()
-                                or ".." in relative.parts
-                                or not _within(source.resolve(), self.project_path.resolve())
-                                or source.is_symlink()
-                                or not source.is_file()
-                                or f"sha256:{_digest(source.read_bytes())}" != digest
-                            ):
-                                matches = False
-                                break
                 else:
-                    # Older receipts only contain effective changes. They can
-                    # still prove a queried set when every file was changed.
+                    # A legacy receipt can be promoted only when its effective
+                    # changes prove all queried files and still match disk.
                     changes = {row["path"]: row for row in report["changes"]}
                     matches = all(
                         changes.get(name, {}).get("content_encoding") == "utf-8"
                         and changes[name].get("proposed_content", "").encode("utf-8") == content
                         and changes[name].get("after_sha256") == f"sha256:{_digest(content)}"
                         for name, content in files.items()
+                    ) and all(
+                        isinstance(name, str)
+                        and (digest is None or isinstance(digest, str))
+                        and self._matches_receipt_file(name, digest)
+                        for name, digest in (
+                            (row["path"], row.get("after_sha256")) for row in report["changes"]
+                        )
                     )
                 if matches:
                     return True
