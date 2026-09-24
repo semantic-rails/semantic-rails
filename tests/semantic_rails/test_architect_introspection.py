@@ -313,6 +313,64 @@ def test_introspection_never_writes_or_creates_a_database(
     assert not missing.exists()
 
 
+def test_external_data_view_cannot_be_profiled_or_suggested(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "outside.csv"
+    sentinel = "SYNTHETIC_OUTSIDE_WORKSPACE"
+    external.write_text(f"secret\n{sentinel}\n", encoding="utf-8")
+    db_path = workspace / "warehouse.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE local_data AS SELECT 1 AS id, 'inside' AS value")
+        conn.execute("CREATE VIEW local_view AS SELECT * FROM local_data")
+        escaped = str(external).replace("'", "''")
+        conn.execute(f"CREATE VIEW external_view AS SELECT secret FROM read_csv_auto('{escaped}')")
+
+    with open_duckdb(db_path) as warehouse:
+        tables = _by(list_tables(warehouse), "relation")
+        described = describe_table(warehouse, "external_view")
+        native_profile = profile_columns(warehouse, "local_view", ["value"])
+        native_suggestion = suggest_model(warehouse, "local_view")
+        for operation in (
+            lambda: profile_columns(warehouse, "external_view"),
+            lambda: suggest_model(warehouse, "external_view"),
+        ):
+            with pytest.raises(SemanticLayerError) as excinfo:
+                operation()
+            assert excinfo.value.code == "UNSUPPORTED_PLATFORM"
+            assert excinfo.value.details == {"reason": "external_access_disabled"}
+            assert sentinel not in str(excinfo.value) and str(external) not in str(excinfo.value)
+
+    assert tables["external_view"]["kind"] == "view"
+    assert described["columns"][0]["name"] == "secret"
+    assert native_profile["columns"][0]["samples"] == ["inside"]
+    assert native_suggestion["relation"] == "local_view"
+
+    server = create_architect_mcp_server(workspace_root=workspace)
+    path = {"duckdb_path": "warehouse.duckdb"}
+    mcp_tables, mcp_described, external_profile, external_suggestion, local_profile = _session(
+        server,
+        [
+            ("list_tables", path),
+            ("describe_table", {**path, "relation": "external_view"}),
+            ("profile_columns", {**path, "relation": "external_view"}),
+            ("suggest_model", {**path, "relation": "external_view"}),
+            ("profile_columns", {**path, "relation": "local_view"}),
+        ],
+    )
+    assert mcp_tables["ok"] is True
+    assert "external_view" in _by(mcp_tables["tables"], "relation")
+    assert mcp_described["ok"] is True
+    assert mcp_described["columns"][0]["name"] == "secret"
+    for denied in (external_profile, external_suggestion):
+        assert denied["ok"] is False
+        assert denied["error"]["code"] == "UNSUPPORTED_PLATFORM"
+        assert denied["error"]["details"] == {"reason": "external_access_disabled"}
+        assert sentinel not in str(denied) and str(external) not in str(denied)
+    assert local_profile["ok"] is True
+    assert local_profile["columns"][1]["samples"] == ["inside"]
+
+
 def test_suggest_model_for_a_fact_table(warehouse_path: Path) -> None:
     with open_duckdb(warehouse_path) as warehouse:
         orders = suggest_model(warehouse, "main_marts.fct_orders")

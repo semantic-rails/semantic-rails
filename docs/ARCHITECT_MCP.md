@@ -114,7 +114,8 @@ similar-definition warnings, a pre-write YAML preview, and session-local
 
 Four read-only tools look at a DuckDB database before or while you model it. Pass `duckdb_path`
 (a file inside the workspace, for example the one `dbt build` wrote) or `project_path` (a DuckDB
-package: its `default_db`). They open the file read-only and never create, seed or change it.
+package: its `default_db`). They open the file read-only with DuckDB external access disabled and
+never create, seed or change it.
 
 - `list_tables`: tables and views, optionally for one `schema`, with column counts.
 - `describe_table`: columns with types, nullability and defaults, and declared primary, unique and
@@ -137,6 +138,9 @@ package: its `default_db`). They open the file read-only and never create, seed 
   return draft `upsert_model` arguments to review before calling `upsert_model`.
 
 Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
+Tables and views backed by data stored in the DuckDB file work normally. A view that needs an
+external file or resource can still appear in metadata-only list/describe results, but cannot be
+profiled or used for a model suggestion; materialize it in the DuckDB file before introspection.
 Relation components with hyphens, spaces or double quotes use their raw names, as in
 `create_project`; introspection quotes them in SQL.
 The same functions are available to Python callers in `semantic_rails.architect_introspection`.

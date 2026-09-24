@@ -16,7 +16,8 @@ answers those questions without ever writing to the warehouse:
   plus draft ``upsert_model`` arguments.
 
 It reads DuckDB files (by path, or a package's ``default_db``) today; the
-DuckDB connection is always opened read-only and the file is never created.
+DuckDB connection is opened read-only with external access disabled, and the
+file is never created.
 """
 
 from __future__ import annotations
@@ -84,20 +85,30 @@ _TABLE_PREFIXES = ("fct_", "fact_", "dim_", "stg_", "int_", "raw_", "mart_", "vw
 
 @dataclass(frozen=True)
 class DuckDBWarehouse:
-    """A read-only connection to one DuckDB file."""
+    """A read-only DuckDB connection with external access disabled."""
 
     path: str
     connection: Any
 
+    def execute(self, sql: str, params: list[Any] | None = None) -> Any:
+        try:
+            return self.connection.execute(sql, params or [])
+        except duckdb.PermissionException:
+            raise SemanticLayerError(
+                "UNSUPPORTED_PLATFORM",
+                "introspection cannot read a relation that requires DuckDB external access",
+                details={"reason": "external_access_disabled"},
+            ) from None
+
     def rows(self, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
-        cursor = self.connection.execute(sql, params or [])
+        cursor = self.execute(sql, params)
         names = [column[0] for column in cursor.description]
         return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
 
 
 @contextlib.contextmanager
 def open_duckdb(path: str | os.PathLike[str]) -> Iterator[DuckDBWarehouse]:
-    """Open an existing DuckDB file read-only; never create one."""
+    """Open an existing DuckDB file read-only, without external access."""
     db_path = str(path)
     if not os.path.isfile(db_path):
         raise SemanticLayerError(
@@ -107,7 +118,9 @@ def open_duckdb(path: str | os.PathLike[str]) -> Iterator[DuckDBWarehouse]:
             details={"duckdb_path": db_path, "reason": "database_missing"},
         )
     try:
-        connection = duckdb.connect(db_path, read_only=True)
+        connection = duckdb.connect(
+            db_path, read_only=True, config={"enable_external_access": "false"}
+        )
     except Exception as exc:  # noqa: BLE001 — never surface driver text (paths, PIDs)
         raise SemanticLayerError(
             "INVALID_CONFIG",
@@ -299,7 +312,7 @@ def profile_columns(
         )
     limit = max(0, min(int(sample_limit), MAX_SAMPLE_VALUES))
     row_cap = max(1, min(int(max_rows), MAX_PROFILE_ROWS))
-    (row_count,) = warehouse.connection.execute(f"SELECT count(*) FROM {source}").fetchone()
+    (row_count,) = warehouse.execute(f"SELECT count(*) FROM {source}").fetchone()
     sampled = int(row_count) > row_cap
     scan = f"(SELECT * FROM {source} USING SAMPLE {row_cap} ROWS)" if sampled else source
     profiles: list[dict[str, Any]] = []
@@ -307,14 +320,14 @@ def profile_columns(
         quoted = _quote(column)
         data_type = str(available[column]["type"])
         extremes = f", min({quoted}), max({quoted})" if _orderable(data_type) else ", NULL, NULL"
-        counted, distinct, nulls, low, high = warehouse.connection.execute(
+        counted, distinct, nulls, low, high = warehouse.execute(
             f"SELECT count(*), count(DISTINCT {quoted}), count(*) - count({quoted})"
             f"{extremes} FROM {scan} AS t"
         ).fetchone()
         samples = (
             [
                 _sample_text(row[0])
-                for row in warehouse.connection.execute(
+                for row in warehouse.execute(
                     f"SELECT DISTINCT {quoted} FROM {scan} AS t WHERE {quoted} IS NOT NULL "
                     f"ORDER BY 1 LIMIT {limit}"
                 ).fetchall()
@@ -526,7 +539,7 @@ def _suggest_key(
     probe = f"(SELECT * FROM {source} LIMIT {MAX_PROFILE_ROWS})" if sampled else source
     for index, first in enumerate(id_like):
         for second in id_like[index + 1 :]:
-            checked, present_first, present_second, pairs = warehouse.connection.execute(
+            checked, present_first, present_second, pairs = warehouse.execute(
                 f"SELECT count(*), count({_quote(first)}), count({_quote(second)}), "
                 f"count(DISTINCT ({_quote(first)}, {_quote(second)})) FROM {probe}"
             ).fetchone()
@@ -634,7 +647,7 @@ def _foreign_keys(
         )
         for target in targets[:MAX_FK_TARGETS_PER_COLUMN]:
             quoted = _quote(target["column"])
-            (target_rows,) = warehouse.connection.execute(
+            (target_rows,) = warehouse.execute(
                 f"SELECT count(*) FROM (SELECT 1 FROM {target['source']} "
                 f"LIMIT {MAX_PROFILE_ROWS + 1})"
             ).fetchone()
@@ -644,7 +657,7 @@ def _foreign_keys(
                 # undeclared target key.
                 continue
             if not target["declared_key"]:
-                rows, present, distinct = warehouse.connection.execute(
+                rows, present, distinct = warehouse.execute(
                     f"SELECT count(*), count({quoted}), count(DISTINCT {quoted}) "
                     f"FROM {target['source']}"
                 ).fetchone()
@@ -652,7 +665,7 @@ def _foreign_keys(
                     continue
             orphans = None
             if not target_large:
-                (orphans,) = warehouse.connection.execute(
+                (orphans,) = warehouse.execute(
                     f"SELECT count(*) FROM {child_probe} AS child "
                     f"WHERE child.{_quote(column)} IS NOT NULL "
                     f"AND NOT EXISTS (SELECT 1 FROM {target['source']} AS parent "
