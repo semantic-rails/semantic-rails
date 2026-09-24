@@ -925,8 +925,10 @@ there fails validation with `OBJECT_NOT_FOUND` ("Unknown measure
 'revenue_usd'"). Metric references inside an AST (`{kind: metric, metric:
 revenue_usd}`) still resolve package-relative.
 
-`value_type:` is required on every metric. Default is `number` only when nothing
-is authored.
+With `schema_strict: true`, every authored metric needs an explicit, nonblank string
+`value_type:` in either a directory or single-file package. `number` is valid when
+intentional, including on ratio and derived metrics. Without strict validation,
+an omitted authored value defaults to `number`.
 
 ### Filtered aggregates — author via the `expression:` AST
 
@@ -1031,10 +1033,11 @@ rejects `as:` whose namespace doesn't match `package.namespace` and warns when
 ## Validation profile
 
 When `schema_strict: true` is set on the package, the loader rejects the
-authoring forms below with clear errors and migration pointers. These raw-YAML
-checks run for directory packages; single-file packages get the compiled-config
-checks but skip the raw-YAML strict pass (which is why the `init` starter can
-author `grain:` alongside `entities:`).
+authoring forms below with clear errors and migration pointers. Authored metric
+shape and `value_type:` validation runs in both directory and single-file layouts
+before loader defaults. The other raw-YAML strict checks run for directory
+packages; single-file packages skip that pass but still get compiled-config
+checks (which is why the `init` starter can author `grain:` alongside `entities:`).
 
 | Rejected | Use instead |
 |---|---|
@@ -1046,7 +1049,7 @@ author `grain:` alongside `entities:`).
 | Authored `model.grain:` alongside an `entities:` block (directory packages; single-file packages accept both) | Derived from the primary entity's key via `graph.entities.<x>.model:` |
 | Names appearing in any entity's `disallowed_names:` | Use the canonical column or `expr:` rename |
 | `accumulation:` value not in `{flow, stock, event, population}` | Use the canonical enum |
-| Metric without `value_type:` | Always declare; default to `number` only when intentional |
+| Metric with absent, null, empty or whitespace-only `value_type:` (both layouts) | Declare a nonblank string explicitly; `number` is valid when intentional, including for ratio or derived metrics |
 | Buried `expression:` AST on metric kinds with direct named fields | Use direct fields (`kind: derived` and `kind: conversion` keep the AST) |
 | `dimension.preferred_filter_ops` | Drop — metadata-only, no planner gating |
 | `measure.clock_variants`, `comparison_peers`, `preferred_companion_metrics` | Drop on measures — metadata-only, no planner gating. (`preferred_companion_metrics` is allowed on metrics as advisory governance metadata; companion-metric relationships are too volatile to lock in at the measure layer.) |
