@@ -18,7 +18,7 @@ from ..errors import SemanticLayerError
 from ..local_config import local_profile_report
 from ..package_tools import check_package_report, run_examples_report, run_package_tests_report
 from ..planner import plan_payload
-from ..runtime import Runtime
+from ..runtime import Runtime, _normalize_query_limits
 from .common import (
     _EXCLUDED_DISCOVERY_DIRS,
     _is_bundled_ref,
@@ -206,16 +206,19 @@ def ask_report(
             planned_limit = query.get("limit")
             if not isinstance(planned_limit, int) or isinstance(planned_limit, bool):
                 planned_limit = None
-            if limit and "max_rows" not in dict(executable_query.get("limits", {}) or {}):
+            # The executor recognizes a planned row fence even when --limit is 0.
+            planned_row_limit = _normalize_query_limits(query.get("limits")).get("max_rows")
+            row_limit = min((cap for cap in (limit, planned_row_limit) if cap), default=0)
+            if row_limit:
                 # Ask the warehouse for one row more than we show (keeping a smaller
-                # planned limit) and fence at `limit`: `truncated` is then exact and
+                # planned limit) and fence at `row_limit`: `truncated` is then exact and
                 # the warehouse still does top-N work.
                 executable_query["limit"] = (
-                    limit + 1 if planned_limit is None else min(planned_limit, limit + 1)
+                    row_limit + 1 if planned_limit is None else min(planned_limit, row_limit + 1)
                 )
                 executable_query["limits"] = {
                     **dict(executable_query.get("limits", {}) or {}),
-                    "max_rows": limit,
+                    "max_rows": row_limit,
                 }
             result = runtime.query(executable_query)
             rows = list(result.get("rows", []) or [])
@@ -223,8 +226,9 @@ def ask_report(
                 "ok": bool(result.get("ok", True)),
                 "rows": rows,
                 "row_count": result.get("row_count", len(rows)),
-                "row_limit": limit,
+                "row_limit": row_limit,
                 "planned_limit": planned_limit,
+                "planned_row_limit": planned_row_limit,
                 "truncated": bool(result.get("truncated", False)),
                 "output_columns": list(result.get("output_columns", []) or []),
                 "warnings": list(result.get("warnings", []) or []),

@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+import semantic_rails.cli.app as cli_app
 import semantic_rails.cli.commands.project as project_commands
 import semantic_rails.cli.common as common
 import semantic_rails.cli.interpretation as interpretation
@@ -312,18 +313,33 @@ def test_ask_names_the_bundled_package_and_formats_numbers(
 
 
 def test_ask_json_reports_an_exact_row_limit(nowhere: dict[str, str]) -> None:
-    def ask(limit: str) -> dict[str, Any]:
+    def ask(limit: str | None) -> dict[str, Any]:
         args = ("ask", "--package", "jaffle_shop", "monthly revenue by store", "--run")
-        proc = _run(nowhere, *args, "--limit", limit, "--json")
+        extra = ("--limit", limit) if limit is not None else ()
+        proc = _run(nowhere, *args, *extra, "--json")
         assert proc.returncode == 0, proc.stderr
         return dict(json.loads(proc.stdout))
 
-    cut, full = ask("2"), ask("0")
+    cut, default, full = ask("2"), ask(None), ask("0")
 
     assert cut["package"]["bundled"] is True
     assert (cut["result"]["row_count"], cut["result"]["truncated"]) == (2, True)
+    assert (cut["result"]["row_limit"], cut["result"]["planned_row_limit"]) == (2, None)
+    assert (default["result"]["row_limit"], default["result"]["planned_row_limit"]) == (20, None)
     assert full["result"]["truncated"] is False
     assert full["result"]["row_count"] > 2
+    assert (full["result"]["row_limit"], full["result"]["planned_row_limit"]) == (0, None)
+
+
+def test_top_level_help_describes_package_selection(nowhere: dict[str, str]) -> None:
+    proc = _run(nowhere, "--help")
+
+    assert proc.returncode == 0, proc.stderr
+    help_text = " ".join(proc.stdout.split())
+    assert "Commands that use a package" in help_text
+    assert "Setup and debug report no package selected" in help_text
+    assert "Packages, project list and init need no existing package" in help_text
+    assert "Package build and check commands require explicit --package or --path" in help_text
 
 
 class _StubRuntime:
@@ -726,3 +742,66 @@ def test_table_headers_show_time_grain_and_disambiguate_duplicate_labels() -> No
     header = cli_output._table_lines(rows, columns)[0]
 
     assert header.split(" | ") == ["Order time (month)", "a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("limit", "count", "cap_source"),
+    [
+        (None, 5, "planned"),
+        ("0", 5, "planned"),
+        ("2", 2, "cli"),
+        ("20", 5, "planned"),
+    ],
+)
+def test_cli_with_a_planned_row_fence_uses_real_execution_and_reports_the_binding_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    limit: str | None,
+    count: int,
+    cap_source: str,
+) -> None:
+    # The current planner does not emit limits.max_rows. Add one to its real
+    # plan so the rest of the CLI path and DuckDB execution remain real.
+    planner = reports.plan_payload
+
+    def plan_with_fence(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        plan = planner(*args, **kwargs)
+        best = dict(plan["best"])
+        best["query_ir"] = {**best["query_ir"], "limits": {"max_rows": 5}}
+        return {**plan, "best": best}
+
+    monkeypatch.setattr(reports, "plan_payload", plan_with_fence)
+    args = [
+        "semantic-rails",
+        "ask",
+        "--package",
+        "jaffle_shop",
+        "monthly revenue by store",
+        "--run",
+    ]
+    if limit is not None:
+        args.extend(["--limit", limit])
+
+    monkeypatch.setattr(sys, "argv", [*args, "--json"])
+    cli_app.main()
+    payload = json.loads(capsys.readouterr().out)
+    result = payload["result"]
+    assert payload["ok"] is True
+    assert (result["row_count"], len(result["rows"]), result["truncated"]) == (
+        count,
+        count,
+        True,
+    )
+    assert (result["row_limit"], result["planned_row_limit"]) == (count, 5)
+    assert payload["query"]["limits"] == {"max_rows": 5}
+
+    monkeypatch.setattr(sys, "argv", args)
+    cli_app.main()
+    output = capsys.readouterr().out
+    if cap_source == "planned":
+        assert "Rows: 5 (stopped at the planned query's own 5-row cap; more rows match)" in output
+        assert "To lift the" not in output
+    else:
+        assert "Rows: 2 (stopped at the 2-row limit; more rows match)" in output
+        assert "To lift the 2-row cap" in output
+        assert "the planned query's own 5-row cap still applies" in output
