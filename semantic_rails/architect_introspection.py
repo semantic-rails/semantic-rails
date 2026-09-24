@@ -613,15 +613,16 @@ def _foreign_keys(
 ) -> list[dict[str, Any]]:
     links: list[dict[str, Any]] = [
         {
-            "column": fk["columns"][0],
+            ("column" if len(fk["columns"]) == 1 else "columns"): (
+                fk["columns"][0] if len(fk["columns"]) == 1 else list(fk["columns"])
+            ),
             "references": fk["references"],
             "confidence": "high",
             "reason": "declared FOREIGN KEY",
         }
         for fk in described["foreign_keys"]
-        if len(fk["columns"]) == 1
     ]
-    declared = {link["column"] for link in links}
+    declared = {column for fk in described["foreign_keys"] for column in fk["columns"]}
     # A single-column key identifies this relation; a composite key's parts
     # usually point at other entities (order_id in order lines).
     own_key = set(key) if len(key) == 1 else set()
@@ -647,6 +648,7 @@ def _foreign_keys(
             ),
             key=lambda target: not target["declared_key"],
         )
+        proposed: list[tuple[dict[str, Any], int | None]] = []
         for target in targets[:MAX_FK_TARGETS_PER_COLUMN]:
             quoted = _quote(target["column"])
             (target_rows,) = warehouse.execute(
@@ -693,19 +695,40 @@ def _foreign_keys(
             )
             if (target_large or child_sampled) and not orphans:
                 evidence += "; full-relation referential integrity must be confirmed"
-            links.append(
-                {
-                    "column": column,
-                    "references": {"relation": target["relation"], "columns": [target["column"]]},
-                    "confidence": confidence,
-                    "reason": (
-                        f"{target['relation']}.{target['column']} is "
-                        + ("its declared key" if target["declared_key"] else "unique there")
-                        + evidence
-                    ),
-                }
+            proposed.append(
+                (
+                    {
+                        "column": column,
+                        "references": {
+                            "relation": target["relation"],
+                            "columns": [target["column"]],
+                        },
+                        "confidence": confidence,
+                        "reason": (
+                            f"{target['relation']}.{target['column']} is "
+                            + ("its declared key" if target["declared_key"] else "unique there")
+                            + evidence
+                        ),
+                    },
+                    orphans,
+                )
             )
-            break
+        # An unmatched child value makes a candidate weaker than one whose
+        # observed values all match. Unknown values in a large target remain
+        # possible, and cannot establish a unique destination either.
+        plausible = [item for item in proposed if not item[1]]
+        selected = plausible if plausible else proposed
+        ambiguous = len(selected) > 1
+        truncated = len(targets) > MAX_FK_TARGETS_PER_COLUMN
+        for link, _ in selected:
+            if ambiguous or truncated:
+                link["confidence"] = "low"
+                if ambiguous:
+                    link["reason"] += "; multiple possible target relations match"
+                if truncated:
+                    link["reason"] += "; additional target relations were not checked"
+                link["reason"] += "; confirm the intended relationship"
+            links.append(link)
     return links
 
 
@@ -723,7 +746,7 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     key = _suggest_key(warehouse, described, profile, entity, source)
     key_columns = list(key["columns"]) if key else []
     links = _foreign_keys(warehouse, described, key_columns, source, profile)
-    linked = {link["column"] for link in links}
+    linked = {column for link in links for column in (link.get("columns") or [link["column"]])}
     rows = profile["row_count"]
     by_name = {column["name"]: column for column in profile["columns"]}
 

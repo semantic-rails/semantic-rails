@@ -133,6 +133,12 @@ never create, seed or change it.
   check at most the first one million rows and eight key-like columns. Inferred foreign-key probes
   consider at most eight child columns and eight target relations per column; a bounded child
   prefix can miss an unmatched row, so such links are low-confidence and call for confirmation.
+  If multiple physical targets fit the observed child values, each is shown as a low-confidence
+  candidate; no target is selected by catalog order. If more than eight targets exist, even a sole
+  observed candidate remains low-confidence because other targets were not checked. A declared
+  foreign key is authoritative: single-column links use `column`, while composite links use
+  `columns` and preserve the ordered local and referenced columns. Foreign-key links are review
+  evidence, not arguments in the draft `upsert_model` call.
   Target relations above one million rows are checked for a declared key but their values are not
   matched. Declared warehouse keys and foreign keys retain their declared evidence. All suggestions
   return draft `upsert_model` arguments to review before calling `upsert_model`.

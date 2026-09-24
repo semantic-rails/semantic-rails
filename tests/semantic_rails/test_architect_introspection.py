@@ -102,8 +102,8 @@ def test_declared_foreign_key_keeps_schema_and_quoted_composite_target(tmp_path:
         )
         conn.execute(
             'CREATE TABLE "sales-data"."fct orders" '
-            '("tenant id" INTEGER, "customer-id" INTEGER, '
-            'FOREIGN KEY ("tenant id", "customer-id") REFERENCES '
+            '("tenant_id" INTEGER, "customer_id" INTEGER, '
+            'FOREIGN KEY ("tenant_id", "customer_id") REFERENCES '
             '"sales-data"."dim""customers" ("tenant id", "customer-id"))'
         )
 
@@ -112,6 +112,7 @@ def test_declared_foreign_key_keeps_schema_and_quoted_composite_target(tmp_path:
         suggested = suggest_model(warehouse, "main_marts.orders")
         target = describe_table(warehouse, orders["foreign_keys"][0]["references"]["relation"])
         quoted = describe_table(warehouse, "sales-data.fct orders")
+        quoted_suggested = suggest_model(warehouse, "sales-data.fct orders")
         quoted_target = describe_table(
             warehouse, quoted["foreign_keys"][0]["references"]["relation"]
         )
@@ -123,11 +124,17 @@ def test_declared_foreign_key_keeps_schema_and_quoted_composite_target(tmp_path:
         }
     ]
     assert target["relation"] == "main_marts.customers"
-    assert suggested["foreign_keys"][0]["references"] == orders["foreign_keys"][0]["references"]
-    assert suggested["foreign_keys"][0]["confidence"] == "high"
+    assert suggested["foreign_keys"] == [
+        {
+            "column": "customer_id",
+            "references": orders["foreign_keys"][0]["references"],
+            "confidence": "high",
+            "reason": "declared FOREIGN KEY",
+        }
+    ]
     assert quoted["foreign_keys"] == [
         {
-            "columns": ["tenant id", "customer-id"],
+            "columns": ["tenant_id", "customer_id"],
             "references": {
                 "relation": 'sales-data.dim"customers',
                 "columns": ["tenant id", "customer-id"],
@@ -135,24 +142,126 @@ def test_declared_foreign_key_keeps_schema_and_quoted_composite_target(tmp_path:
         }
     ]
     assert quoted_target["primary_key"] == ["tenant id", "customer-id"]
+    assert quoted_suggested["foreign_keys"] == [
+        {
+            "columns": ["tenant_id", "customer_id"],
+            "references": quoted["foreign_keys"][0]["references"],
+            "confidence": "high",
+            "reason": "declared FOREIGN KEY",
+        }
+    ]
+    assert not {"tenant_id", "customer_id"} & {
+        item["column"] for item in quoted_suggested["dimensions"]
+    }
+    assert not {"tenant_id", "customer_id"} & set(quoted_suggested["upsert_model"]["dimensions"])
 
     server = create_architect_mcp_server(workspace_root=tmp_path)
     path = {"duckdb_path": "keys.duckdb"}
-    mcp_orders, mcp_suggested, mcp_target, mcp_quoted, mcp_quoted_target = _session(
-        server,
-        [
-            ("describe_table", {**path, "relation": "main_marts.orders"}),
-            ("suggest_model", {**path, "relation": "main_marts.orders"}),
-            ("describe_table", {**path, "relation": "main_marts.customers"}),
-            ("describe_table", {**path, "relation": "sales-data.fct orders"}),
-            ("describe_table", {**path, "relation": 'sales-data.dim"customers'}),
-        ],
+    mcp_orders, mcp_suggested, mcp_target, mcp_quoted, mcp_quoted_suggested, mcp_quoted_target = (
+        _session(
+            server,
+            [
+                ("describe_table", {**path, "relation": "main_marts.orders"}),
+                ("suggest_model", {**path, "relation": "main_marts.orders"}),
+                ("describe_table", {**path, "relation": "main_marts.customers"}),
+                ("describe_table", {**path, "relation": "sales-data.fct orders"}),
+                ("suggest_model", {**path, "relation": "sales-data.fct orders"}),
+                ("describe_table", {**path, "relation": 'sales-data.dim"customers'}),
+            ],
+        )
     )
     assert mcp_orders["foreign_keys"] == orders["foreign_keys"]
     assert mcp_suggested["foreign_keys"][0]["references"] == orders["foreign_keys"][0]["references"]
     assert mcp_target["relation"] == mcp_orders["foreign_keys"][0]["references"]["relation"]
     assert mcp_quoted["foreign_keys"] == quoted["foreign_keys"]
+    assert mcp_quoted_suggested["foreign_keys"] == quoted_suggested["foreign_keys"]
     assert mcp_quoted_target["relation"] == mcp_quoted["foreign_keys"][0]["references"]["relation"]
+
+
+@pytest.mark.parametrize("parent_order", [("main", "main_marts"), ("main_marts", "main")])
+def test_undeclared_foreign_key_reports_all_matching_targets(
+    tmp_path: Path, parent_order: tuple[str, str]
+) -> None:
+    db_path = tmp_path / "ambiguous.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE SCHEMA main_marts")
+        for schema in parent_order:
+            conn.execute(f"CREATE TABLE {schema}.customers (customer_id INTEGER PRIMARY KEY)")
+            conn.execute(f"INSERT INTO {schema}.customers VALUES (1)")
+        conn.execute(
+            "CREATE TABLE main_marts.orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)"
+        )
+        conn.execute("INSERT INTO main_marts.orders VALUES (10, 1)")
+
+    with open_duckdb(db_path) as warehouse:
+        suggested = suggest_model(warehouse, "main_marts.orders")
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (mcp_suggested,) = _session(
+        server,
+        [("suggest_model", {"duckdb_path": db_path.name, "relation": "main_marts.orders"})],
+    )
+    links = suggested["foreign_keys"]
+    assert {link["references"]["relation"] for link in links} == {
+        "customers",
+        "main_marts.customers",
+    }
+    assert all(link["column"] == "customer_id" for link in links)
+    assert all(link["confidence"] == "low" for link in links)
+    assert all("multiple possible target relations" in link["reason"] for link in links)
+    assert mcp_suggested["foreign_keys"] == links
+
+
+def test_undeclared_foreign_key_with_one_matching_target_remains_high_confidence(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "unambiguous.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE SCHEMA main_marts")
+        conn.execute("CREATE TABLE main.customers (customer_id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO main.customers VALUES (2)")
+        conn.execute("CREATE TABLE main_marts.customers (customer_id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO main_marts.customers VALUES (1)")
+        conn.execute(
+            "CREATE TABLE main_marts.orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)"
+        )
+        conn.execute("INSERT INTO main_marts.orders VALUES (10, 1)")
+
+    with open_duckdb(db_path) as warehouse:
+        suggested = suggest_model(warehouse, "main_marts.orders")
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (mcp_suggested,) = _session(
+        server,
+        [("suggest_model", {"duckdb_path": db_path.name, "relation": "main_marts.orders"})],
+    )
+    assert suggested["foreign_keys"] == [
+        {
+            "column": "customer_id",
+            "references": {"relation": "main_marts.customers", "columns": ["customer_id"]},
+            "confidence": "high",
+            "reason": "main_marts.customers.customer_id is its declared key; every value here matches a row there",
+        }
+    ]
+    assert mcp_suggested["foreign_keys"] == suggested["foreign_keys"]
+
+
+def test_undeclared_foreign_key_target_cap_does_not_imply_unique_target(tmp_path: Path) -> None:
+    db_path = tmp_path / "many-targets.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)")
+        conn.execute("INSERT INTO orders VALUES (10, 1)")
+        for index in range(9):
+            schema = f"s{index:02d}"
+            conn.execute(f"CREATE SCHEMA {schema}")
+            conn.execute(f"CREATE TABLE {schema}.customers (customer_id INTEGER PRIMARY KEY)")
+            conn.execute(f"INSERT INTO {schema}.customers VALUES ({1 if index == 0 else 2})")
+
+    with open_duckdb(db_path) as warehouse:
+        suggested = suggest_model(warehouse, "orders")
+    links = suggested["foreign_keys"]
+    assert len(links) == 1
+    assert links[0]["references"]["relation"] == "s00.customers"
+    assert links[0]["confidence"] == "low"
+    assert "additional target relations were not checked" in links[0]["reason"]
 
 
 def test_profile_counts_and_caps_what_it_returns(tmp_path: Path) -> None:
@@ -455,10 +564,18 @@ def test_suggest_model_for_a_fact_table(warehouse_path: Path) -> None:
     assert _by(orders["dimensions"], "column")["status"]["confidence"] == "high"
     measures = _by(orders["measures"], "key")
     assert measures["order_total"]["aggregation"] == "sum"
-    links = _by(orders["foreign_keys"], "column")
-    assert links["customer_id"]["references"]["relation"] == "main_marts.dim_customers"
-    assert links["customer_id"]["confidence"] == "high"  # a declared key, no orphans
-    assert links["store_id"]["confidence"] == "medium"  # unique there, not declared
+    links = orders["foreign_keys"]
+    assert {
+        link["references"]["relation"] for link in links if link["column"] == "customer_id"
+    } == {
+        "main_marts.dim_customers",
+        "main_staging.stg_customers",
+    }
+    assert {link["references"]["relation"] for link in links if link["column"] == "store_id"} == {
+        "main_marts.dim_stores",
+        "main_staging.stg_stores",
+    }
+    assert all(link["confidence"] == "low" for link in links)
 
 
 def test_suggest_model_for_a_line_table_finds_the_composite_key(warehouse_path: Path) -> None:
@@ -466,9 +583,16 @@ def test_suggest_model_for_a_line_table_finds_the_composite_key(warehouse_path: 
         lines = suggest_model(warehouse, "main_marts.fct_order_lines")
 
     assert lines["primary_key"]["columns"] == ["order_id", "line_number"]
-    links = _by(lines["foreign_keys"], "column")
-    assert links["order_id"]["references"]["relation"] == "main_marts.fct_orders"
-    assert links["product_id"]["references"]["relation"] == "main_marts.dim_products"
+    links = lines["foreign_keys"]
+    assert {link["references"]["relation"] for link in links if link["column"] == "order_id"} == {
+        "main_marts.fct_orders",
+        "main_staging.stg_orders",
+    }
+    assert {link["references"]["relation"] for link in links if link["column"] == "product_id"} == {
+        "main_marts.dim_products",
+        "main_staging.stg_products",
+    }
+    assert all(link["confidence"] == "low" for link in links)
     measures = _by(lines["measures"], "key")
     assert measures["unit_price"]["aggregation"] == "avg"  # summing unit prices is wrong
     assert measures["net_amount"]["aggregation"] == "sum"
