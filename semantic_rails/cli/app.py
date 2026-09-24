@@ -94,11 +94,14 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Semantic Rails CLI — inspect, validate, compile, and execute "
             "Semantic Rails packages. See docs/QUERY_API.md and docs/CAPABILITIES.md "
-            "for the agent loop and supported runtime surfaces. Commands use --package "
-            "or --path, else the package directory you are in, else the local profile "
-            "(semantic-rails profile init). With none of these, ask, ls, project, repl and "
-            "bare semantic-rails first offer the bundled jaffle_shop sample package at a "
-            "terminal (default No); every other case stops and lists how to choose one."
+            "for the agent loop and supported runtime surfaces. Commands that use a package "
+            "take --package or --path, else the package directory you are in, else the local "
+            "profile (semantic-rails profile init). With none of these, ask, ls, project "
+            "status/validate, repl and bare semantic-rails offer the bundled jaffle_shop "
+            "sample package at a terminal (default No); noninteractive package reads stop "
+            "with selection guidance. Setup and debug report no package selected. Packages, "
+            "project list and init need no existing package. Package build and check commands "
+            "require explicit --package or --path."
         ),
     )
     from semantic_rails import __version__

@@ -113,7 +113,14 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         count = result.get("row_count", len(rows))
         truncated = bool(result.get("truncated"))
         planned = result.get("planned_limit")
-        if truncated:
+        planned_row_limit = result.get("planned_row_limit")
+        plan_capped = bool(planned_row_limit) and planned_row_limit == result.get("row_limit")
+        if truncated and plan_capped:
+            limit_note = (
+                f" (stopped at the planned query's own {planned_row_limit}-row cap;"
+                " more rows match)"
+            )
+        elif truncated:
             limit_note = f" (stopped at the {result.get('row_limit')}-row limit; more rows match)"
         elif planned and count >= planned:
             limit_note = f" (the planned query itself returns at most {planned} rows)"
@@ -124,12 +131,14 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         _print_rows(shown, list(result.get("output_columns", []) or []))
         if len(rows) > len(shown):
             print(f"... {len(rows) - len(shown)} more rows not shown; use --json to see them all.")
-        if truncated:
+        if truncated and not plan_capped:
             hint = (
                 f"To lift the {result.get('row_limit')}-row cap, run: {_every_row_command(report)}"
             )
             if planned:
                 hint += f" (the planned query's own limit of {planned} rows still applies)"
+            if planned_row_limit:
+                hint += f" (the planned query's own {planned_row_limit}-row cap still applies)"
             print(hint)
         warnings.extend(list(result.get("warnings", []) or []))
         warnings.extend(list(result.get("assumptions", []) or []))
