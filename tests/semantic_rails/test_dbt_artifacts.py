@@ -350,6 +350,44 @@ def test_suggestions_prefer_dbt_facts_over_guesses(target: Path) -> None:
     assert draft["description"] == "One row per order."
 
 
+def test_dbt_catalog_container_types_stay_unmodeled_in_suggestion_and_import(
+    target: Path,
+) -> None:
+    catalog_path = target / "catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    columns = catalog["nodes"]["model.shop_dbt.fct_orders"]["columns"]
+    for index, (name, data_type) in enumerate(
+        (
+            ("weights", "INTEGER[]"),
+            ("attrs", "STRUCT(score INTEGER)"),
+            ("lookup", "MAP(VARCHAR,INTEGER)"),
+        ),
+        start=100,
+    ):
+        columns[name] = {"name": name, "type": data_type, "index": index}
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
+    items, skipped = dbt_import_models(project, ["fct_orders"])
+
+    assert {"weights", "attrs", "lookup"} <= set(suggestion["untyped_columns"])
+    assert {"weights", "attrs", "lookup"}.isdisjoint(suggestion["upsert_model"]["measures"])
+    assert "order_total" in suggestion["upsert_model"]["measures"]
+    assert skipped == []
+    assert len(items) == 1
+    assert {"weights", "attrs", "lookup"}.isdisjoint(items[0]["measures"])
+
+    server = create_architect_mcp_server(workspace_root=target.parent)
+    result = _call(
+        server,
+        "suggest_models_from_dbt",
+        {"target_dir": "target", "select": ["fct_orders"]},
+    )
+    assert result["ok"] is True
+    assert {"weights", "attrs", "lookup"} <= set(result["models"][0]["untyped_columns"])
+
+
 def test_by_default_every_model_and_no_seed_is_suggested(target: Path) -> None:
     suggestions = suggest_models_from_dbt(load_dbt_artifacts(target))
 

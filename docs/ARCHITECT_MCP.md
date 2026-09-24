@@ -173,7 +173,8 @@ The same functions are available to Python callers in `semantic_rails.architect_
 narrows the models by name. Run `dbt build` first, and `dbt docs generate` for `catalog.json`,
 which carries column types (without it, columns the manifest does not type are reported as
 `untyped_columns`). The final manifest and catalog files must resolve inside the workspace;
-in-workspace links are supported.
+in-workspace links are supported. Container catalog types are also reported in `untyped_columns`
+and excluded from draft scalar measures.
 
 Each dbt model becomes a suggestion in the same shape as `suggest_model`, but the facts come from
 dbt:
