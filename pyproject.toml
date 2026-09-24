@@ -183,6 +183,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests/semantic_rails", "tests/mf2sr"]
+markers = [
+  "integration: cross-warehouse conformance suite in tests/integration (`make test-integration`)",
+]
 
 [tool.ruff]
 line-length = 100
@@ -201,7 +204,7 @@ ignore = ["E501"]
 python_version = "3.11"
 files = ["semantic_rails"]
 ignore_missing_imports = true
-check_untyped_defs = false
+check_untyped_defs = true
 disallow_untyped_defs = false
 warn_unused_ignores = true
 

@@ -3,7 +3,7 @@
 Used to verify that SQL-quality refactors preserve outputs.
 
 Usage:
-    UV_INDEX_URL=https://pypi.org/simple uv run python scripts/capture_sql_baseline.py /tmp/sql_baseline.json
+    uv run python scripts/dev/capture_sql_baseline.py /tmp/sql_baseline.json
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from typing import Any
 
 import yaml
 
-from semantic_rails import config as config_module
 from semantic_rails.config import resolve_repo_path
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.runtime import Runtime
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -197,8 +197,11 @@ PAYLOADS: list[dict[str, Any]] = [
                     "as": "rolling_7d_revenue_direct",
                 },
             ],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
-            "filters": [{"column": "jaffle_order.ordered_at", "op": "<", "value": "2017-01-08"}],
+            "time": {
+                "temporal_role": "temporal_role.jaffle_order_time",
+                "grain": "day",
+                "end": "2017-01-08",
+            },
             "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
             "limit": 10000,
         },
@@ -212,8 +215,11 @@ PAYLOADS: list[dict[str, Any]] = [
                     "as": "prior_week_revenue_direct",
                 },
             ],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
-            "filters": [{"column": "jaffle_order.ordered_at", "op": "<", "value": "2017-01-15"}],
+            "time": {
+                "temporal_role": "temporal_role.jaffle_order_time",
+                "grain": "day",
+                "end": "2017-01-15",
+            },
             "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
             "limit": 10000,
         },
@@ -227,8 +233,11 @@ PAYLOADS: list[dict[str, Any]] = [
                     "as": "revenue_mtd_direct",
                 },
             ],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
-            "filters": [{"column": "jaffle_order.ordered_at", "op": "<", "value": "2017-01-08"}],
+            "time": {
+                "temporal_role": "temporal_role.jaffle_order_time",
+                "grain": "day",
+                "end": "2017-01-08",
+            },
             "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
             "limit": 10000,
         },
@@ -376,15 +385,19 @@ def _setup_runtime() -> Runtime:
     package_path = target / "package.yml"
     raw = dict(yaml.safe_load(package_path.read_text(encoding="utf-8")) or {})
     package = dict(raw.get("package", {}) or {})
-    default_db = run_dir / f"{package_id}.duckdb"
-    package["default_db"] = str(default_db)
+    # Relative, so the copy passes the loader's package-root containment check;
+    # the runtime below resolves it against the copy, not the repo checkout.
+    package["default_db"] = f"{package_id}.duckdb"
     raw["package"] = package
     package_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     if seeded_db.exists():
-        shutil.copy2(seeded_db, default_db)
+        shutil.copy2(seeded_db, target / f"{package_id}.duckdb")
 
-    config_module.list_package_paths = lambda: {package_id: str(target)}  # type: ignore[assignment]
-    return Runtime(package_id)
+    return Runtime.from_snapshot(
+        load_package_snapshot(str(target)),
+        package_id=package_id,
+        prefer_package_root_assets=True,
+    )
 
 
 def _normalize_rows(rows: Any) -> list[dict[str, Any]]:
