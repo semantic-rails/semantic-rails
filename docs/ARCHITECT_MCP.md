@@ -55,7 +55,12 @@ From a source checkout, prefix the same commands with `uv run`.
 3. Call `setup_project_dialog` to collect starter project answers, including the warehouse and
    how to connect to it. Clients that support MCP elicitation can run it interactively; other
    clients receive the questions (with `when` conditions and choices) and draft
-   `create_project` arguments.
+   `create_project` arguments. That schema-only draft is for DuckDB; select a warehouse and
+   complete its conditional connection answers before using it. The elicitation form accepts
+   `connection_options` as a JSON object string and returns it as a parsed object in the
+   `create_project` draft. For a non-DuckDB warehouse the dialog sets `data: external` and
+   clears `default_db`. Missing connection details return `ok: false` with
+   `status: needs_connection_details` and `required_answers` instead of a ready draft.
 4. Preview `create_project` with `expected_revision: absent`, `dry_run: true`,
    and a caller-generated `idempotency_key`; then repeat with `dry_run: false`
    after reviewing its exact file changes.
@@ -74,7 +79,8 @@ its count and amount metrics, an example, a package test and a `.gitignore` for 
   `absent`. Keep the database inside the package (for example, point the dbt profile's `path` at
   `<package>/data/<package_id>.duckdb`); a path outside it needs
   `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
-- Other warehouses take `connection_kind`, `connection_name` and `connection_options`, with
+- Other warehouses take `connection_kind` and either `connection_name` or
+  `connection_options`, with
   secrets named by environment variable only; a literal secret fails the parse gate and nothing is
   written.
 5. Use `upsert_model`, `upsert_metric`, `upsert_segment`, or scoped file tools
@@ -144,6 +150,9 @@ archive) use one engine-owned transaction layer:
 - `dry_run: true` validates a temporary virtual project and reports exact
   proposed content, unified diffs, hashes, and the proposed revision without
   writing the project or consuming the idempotency key.
+- When `overwrite: true` changes the first entity, the same transaction retires the prior
+  model only if its graph and model still match the generated scaffold. A modified first model
+  must be archived explicitly. Other authored files and warehouse data stay in place.
 
 Exact existing keys are updated in their current source file instead of
 creating duplicate definitions elsewhere. Successful internal REPL mutations

@@ -38,6 +38,7 @@ from .architect_transactions import (
 )
 from .config import repo_root
 from .config_validation import PackageReference, parse_config_report, validate_config_report
+from .dialects import snowflake_native_direct_connect_errors
 from .errors import SemanticLayerError
 from .package_tools import (
     diff_package_report,
@@ -77,6 +78,9 @@ class ProjectSetupAnswers(BaseModel):
     default_db: str = Field(default="", description="DuckDB database path inside the package.")
     connection_kind: str = Field(default="", description="Connection kind for other warehouses.")
     connection_name: str = Field(default="", description="Named connection or profile.")
+    connection_options: str = Field(
+        default="{}", description="JSON object of connection options; use *_env names for secrets."
+    )
     first_entity: str = Field(default="event", description="Business entity to model first.")
     relation: str = Field(
         default="raw_events", description="Table or view backing it, schema-qualified if needed."
@@ -366,6 +370,7 @@ _DIALOG_ARGUMENTS = (
     "default_db",
     "connection_kind",
     "connection_name",
+    "connection_options",
     "first_entity",
     "relation",
     "primary_key",
@@ -381,7 +386,12 @@ def _setup_dialog(package_id: str = "", project_path: str = "", goal: str = "") 
     defaults = {row["id"]: row["default"] for row in questions}
     return {
         "goal": goal,
-        "message": "Collect these answers before creating or reshaping a Semantic Rails package.",
+        "message": (
+            "Collect these answers before creating or reshaping a Semantic Rails package. "
+            "The draft is for DuckDB only; for another warehouse supply its connection "
+            "details and use data=external before calling create_project."
+        ),
+        "draft_warehouse": "duckdb",
         "questions": questions,
         "recommended_next_tool": "create_project",
         "draft_arguments": _draft_arguments(package_slug, project_path, defaults),
@@ -391,7 +401,7 @@ def _setup_dialog(package_id: str = "", project_path: str = "", goal: str = "") 
 def _draft_arguments(
     package_slug: str, project_path: str, answers: dict[str, Any]
 ) -> dict[str, Any]:
-    return {
+    draft = {
         "project_path": project_path or f"configs/semantic_rails/{package_slug}",
         "package_id": package_slug,
         **{name: answers.get(name, "") for name in _DIALOG_ARGUMENTS},
@@ -399,6 +409,40 @@ def _draft_arguments(
         "idempotency_key": "<caller-generated-unique-key>",
         "dry_run": True,
     }
+    raw_options = draft["connection_options"]
+    try:
+        options = json.loads(raw_options) if isinstance(raw_options, str) else raw_options
+    except json.JSONDecodeError as exc:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS", "connection_options must be a JSON object"
+        ) from exc
+    if not isinstance(options, dict):
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS", "connection_options must be a JSON object"
+        )
+    draft["connection_options"] = options
+    if str(draft["warehouse"] or "duckdb").strip().lower() != "duckdb":
+        draft["data"] = "external"
+        draft["default_db"] = ""
+    return draft
+
+
+def _missing_setup_answers(draft: dict[str, Any]) -> list[str]:
+    if str(draft["warehouse"] or "duckdb").strip().lower() == "duckdb":
+        return []
+    missing = []
+    if not draft["connection_kind"]:
+        missing.append("connection_kind")
+    if not draft["connection_options"] and not draft["connection_name"]:
+        missing.append("connection_options or connection_name")
+    if draft["warehouse"] == "snowflake" and not draft["connection_name"]:
+        if draft["connection_kind"] == "snowflake_cli":
+            missing.append("connection_name")
+        elif draft["connection_kind"] == "snowflake_native" and (
+            snowflake_native_direct_connect_errors(draft["connection_options"])
+        ):
+            missing.append("connection_name or direct connection_options")
+    return missing
 
 
 def _project_spec(arguments: dict[str, Any]) -> ProjectSpec:
@@ -673,12 +717,27 @@ def create_architect_mcp_server(
             return {"ok": False, "status": str(result.action), "mode": "elicitation", **dialog}
         answers = result.data.model_dump()
         package_slug = _slug(str(answers.get("package_id") or package_id))
+        try:
+            draft = _draft_arguments(package_slug, project_path, answers)
+        except SemanticLayerError as exc:
+            return {**dialog, **_report_error(exc), "mode": "elicitation", "answers": answers}
+        missing = _missing_setup_answers(draft)
+        if missing:
+            return {
+                "ok": False,
+                "status": "needs_connection_details",
+                "mode": "elicitation",
+                "answers": answers,
+                "required_answers": missing,
+                "recommended_next_tool": "setup_project_dialog",
+                "draft_arguments": draft,
+            }
         return {
             "ok": True,
             "mode": "elicitation",
             "answers": answers,
             "recommended_next_tool": "create_project",
-            "draft_arguments": _draft_arguments(package_slug, project_path, answers),
+            "draft_arguments": draft,
         }
 
     @mcp.tool(

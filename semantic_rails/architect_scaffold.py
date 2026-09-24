@@ -114,7 +114,7 @@ def project_warehouse_options() -> list[dict[str, Any]]:
             {
                 "kind": kind,
                 "executable": bool(connector.adapter),
-                "data_modes": ["starter", "external"] if connector.requires_seed else [],
+                "data_modes": ["starter", "external"] if connector.requires_seed else ["external"],
                 "default_db": connector.requires_default_db,
                 "connection_kinds": list(connector.connection_kinds),
                 "connection_options": list(connector.connection_options),
@@ -176,6 +176,18 @@ def project_setup_questions(spec: ProjectSpec | None = None) -> list[dict[str, A
             "id": "connection_name",
             "prompt": "Named connection or profile (for example a Snow CLI connection)?",
             "default": spec.warehouse.connection_name,
+            "when": {"warehouse": [kind for kind in warehouses if kind != "duckdb"]},
+        },
+        {
+            "id": "connection_options",
+            "prompt": "Connection options as a JSON object; name credentials with *_env keys, "
+            'never literal secrets (for example {"host_env":"PGHOST"})?',
+            "default": "{}",
+            "options_by_warehouse": {
+                row["kind"]: row["connection_options"]
+                for row in project_warehouse_options()
+                if row["connection_options"]
+            },
             "when": {"warehouse": [kind for kind in warehouses if kind != "duckdb"]},
         },
         {

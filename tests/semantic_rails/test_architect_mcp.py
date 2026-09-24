@@ -118,6 +118,7 @@ def test_setup_project_dialog_returns_noninteractive_draft(tmp_path: Path):
         "default_db",
         "connection_kind",
         "connection_name",
+        "connection_options",
         "first_entity",
         "relation",
         "primary_key",
@@ -127,6 +128,8 @@ def test_setup_project_dialog_returns_noninteractive_draft(tmp_path: Path):
     ]
     assert result["draft_arguments"]["warehouse"] == "duckdb"
     assert result["draft_arguments"]["data"] == "starter"
+    assert result["draft_warehouse"] == "duckdb"
+    assert "another warehouse" in result["message"]
 
 
 def test_create_project_scaffolds_parseable_and_runnable_package(tmp_path: Path):
