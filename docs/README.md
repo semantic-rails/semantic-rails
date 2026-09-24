@@ -2,9 +2,8 @@
 
 Start with these canonical docs:
 
-- [Agent API path](AGENT_API_PATH.md) for the recommended `/api/v1/*` route sequence.
-- [Agent quickstart](AGENT_QUICKSTART.md) for local MCP, local HTTP, and
-  supported-vs-experimental guidance for agent clients.
+- [Agent quickstart](AGENT_QUICKSTART.md) for local MCP, the `/api/v1/*` route sequence, `plan`
+  statuses, and supported-vs-experimental guidance for agent clients.
 - [Deployment](DEPLOYMENT.md) for Docker, ASGI, health/readiness, request context, and API-key shim setup.
 - [Package authoring](PACKAGE_AUTHORING.md) for the schema.
 - [Architect MCP](ARCHITECT_MCP.md) for revision-safe concurrent package mutations.
@@ -70,7 +69,7 @@ uv run python scripts/check_contract_compatibility.py \
 The active interface direction is:
 
 - Humans author durable primitives in the `schema_version: 1` ergonomic YAML shape; the loader normalizes them into the internal `PackageConfig`.
-- Agents use catalog/inspect/plan/validate/compile/query. `plan` returns a validated best Query IR draft, and `compile` returns SQL without execution. `plan` status and detail semantics live in [AGENT_API_PATH.md](AGENT_API_PATH.md) and [QUERY_API.md](QUERY_API.md#post-apiv1plan).
+- Agents use catalog/inspect/plan/validate/compile/query. `plan` returns a validated best Query IR draft, and `compile` returns SQL without execution. `plan` status and detail semantics live in [AGENT_QUICKSTART.md](AGENT_QUICKSTART.md#plan-status-and-detail) and [QUERY_API.md](QUERY_API.md#post-apiv1plan).
 - SQL is rendered through per-warehouse dialect capabilities. DuckDB is the zero-setup local default; Snowflake (via `snowflake_cli` or `snowflake_native`), Postgres, BigQuery, Databricks, Athena, ClickHouse, MotherDuck, and DuckLake connect through `package.connection` blocks (see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)). Response metadata includes `output_columns`, `sql_profile`, `warehouse`, `dialect`, physical plan, and performance risk.
 - Runtime deployment is self-hostable: Docker/ASGI, health/readiness, request
   context, audit logs, and an optional API-key shim are shipped. Service
