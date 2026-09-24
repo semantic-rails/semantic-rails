@@ -56,6 +56,32 @@ LABELS = {
         ),
         (
             {
+                "select": [{"expression": {"measure": "measure.revenue"}}],
+                "order_by": [{"field": "measure.revenue", "direction": "ASC"}],
+            },
+            "Revenue, ordered by Revenue ascending",
+        ),
+        (
+            {
+                "select": [{"expression": {"measure": "measure.revenue"}}],
+                "order_by": [{"field": "measure.revenue", "direction": "DESC"}],
+            },
+            "Revenue, ordered by Revenue descending",
+        ),
+        (
+            {"select": [{"expression": {"measure": "measure.revenue"}}], "limit": 0},
+            "Revenue, first 0 rows",
+        ),
+        (
+            {
+                "select": [{"expression": {"measure": "measure.revenue"}}],
+                "order_by": [{"field": "measure.revenue", "direction": "DESC"}],
+                "limit": 0,
+            },
+            "Revenue, first 0 rows by Revenue descending",
+        ),
+        (
+            {
                 "select": [
                     {"expression": {"measure": "measure.revenue"}},
                     {
@@ -414,6 +440,49 @@ def test_labels_fall_back_to_the_plan_when_the_catalog_fails(
     assert report["interpretation"] == "Orders"
 
 
+def test_ask_report_restates_ordering_before_the_default_execution_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OrderedRuntime(_StubRuntime):
+        def query(self, query: dict[str, Any]) -> dict[str, Any]:
+            assert query["limit"] == 21
+            assert query["limits"]["max_rows"] == 20
+            descending = query["order_by"][0]["direction"] == "DESC"
+            values = sorted(range(30), reverse=descending)[:20]
+            return {"ok": True, "rows": [{"revenue": value} for value in values]}
+
+    direction = "ASC"
+
+    def planned(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "best": {
+                "query_ir": {
+                    "select": [{"expression": {"measure": "measure.revenue"}}],
+                    "order_by": [{"field": "measure.revenue", "direction": direction}],
+                }
+            },
+        }
+
+    monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: OrderedRuntime())
+    monkeypatch.setattr(reports, "plan_payload", planned)
+    monkeypatch.setattr(reports, "_object_labels", lambda *_args: LABELS)
+
+    ascending = reports.ask_report(
+        PackageReference(source_path="/nowhere"), question="revenue", execute=True
+    )
+    direction = "DESC"
+    descending = reports.ask_report(
+        PackageReference(source_path="/nowhere"), question="revenue", execute=True
+    )
+
+    assert ascending["query"].get("limit") is None
+    assert ascending["interpretation"] == "Revenue, ordered by Revenue ascending"
+    assert descending["interpretation"] == "Revenue, ordered by Revenue descending"
+    assert ascending["result"]["rows"][0] == {"revenue": 0}
+    assert descending["result"]["rows"][0] == {"revenue": 29}
+
+
 def test_ask_prints_what_the_query_computes(tmp_path: Path) -> None:
     env = dict(os.environ, SEMANTIC_RAILS_HOME=str(tmp_path / "home"), PYTHONPATH=str(REPO_ROOT))
     args = ("ask", "--package", "jaffle_shop", "monthly revenue by store")
@@ -430,6 +499,9 @@ def test_ask_prints_what_the_query_computes(tmp_path: Path) -> None:
         assert proc.returncode == 0, proc.stderr
         return proc.stdout
 
-    expected = "Revenue (sum) by Store name, per month of Order time"
+    expected = (
+        "Revenue (sum) by Store name, per month of Order time, "
+        "ordered by time ascending, Store name ascending"
+    )
     assert f"\nInterpreted as: {expected}\n" in run()
     assert json.loads(run("--json"))["interpretation"] == expected

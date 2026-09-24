@@ -199,7 +199,9 @@ class PickerBackend:
         from rich.syntax import Syntax
 
         rendered = yaml.safe_dump(payload, sort_keys=False, allow_unicode=False).rstrip()
-        self._console.print(Padding(Syntax(rendered, "yaml", background_color="default"), (0, 2)))
+        self._console.print(
+            Padding(Syntax(rendered, "yaml", background_color="default", word_wrap=True), (0, 2))
+        )
 
 
 def _cancel_on_ctrl_d(app: Any, *, untouched: str = "") -> None:

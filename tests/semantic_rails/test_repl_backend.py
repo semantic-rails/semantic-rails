@@ -8,15 +8,19 @@ drive the same flows and a cancel never writes files.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterator
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
+from rich.console import Console
 
 from semantic_rails.cli import scaffold
 from semantic_rails.errors import SemanticLayerError
@@ -331,6 +335,26 @@ def test_authoring_previews_go_through_the_backend(tmp_path: Path) -> None:
         )
 
     assert ("yaml", {"metrics": {"revenue": {"kind": "aggregate"}}}) in recorder.calls
+
+
+@pytest.mark.parametrize("width", [30, 40, 80])
+def test_picker_preview_shows_every_character_at_terminal_width(width: int) -> None:
+    payload = {
+        "expr": "gross_revenue_amount - refunds_amount",
+        "filter": "customer_region == Northeast and refunds_amount >= 100",
+        "identifier": "customer_segment_with_extremely_long_identifier_123456789",
+    }
+    output = StringIO()
+    picker = PickerBackend()
+    picker._console = Console(file=output, width=width, force_terminal=False, color_system=None)
+
+    picker.show_yaml(payload)
+
+    expected = yaml.safe_dump(payload, sort_keys=False, allow_unicode=False).rstrip()
+    # Rich may wrap a token between characters; ignore only layout whitespace.
+    assert re.sub(r"\s+", "", output.getvalue()) == re.sub(r"\s+", "", expected)
+    assert "gross_revenue_amount" in output.getvalue()
+    assert "refunds_amount" in output.getvalue()
 
 
 def test_repl_banner_says_which_prompts_are_in_use(monkeypatch: pytest.MonkeyPatch) -> None:

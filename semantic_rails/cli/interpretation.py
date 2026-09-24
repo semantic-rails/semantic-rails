@@ -87,15 +87,24 @@ def describe_query(query: dict[str, Any], labels: dict[str, str] | None = None) 
     if filters:
         text += ", where " + " and ".join(filters)
     limit = query.get("limit")
-    if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
-        ordering = [
-            f"{aliases.get(str(order.get('field', '')), label(order.get('field')))} "
-            f"{'descending' if str(order.get('direction', '')).upper() == 'DESC' else 'ascending'}"
-            for order in list(query.get("order_by", []) or [])
-            if isinstance(order, dict) and order.get("field")
-        ]
+    order_by = list(query.get("order_by", []) or [])
+    ordering = [
+        f"{aliases.get(str(order.get('field', '')), label(order.get('field')))} "
+        f"{'descending' if str(order.get('direction', '')).upper() == 'DESC' else 'ascending'}"
+        for order in order_by
+        if isinstance(order, dict) and order.get("field")
+    ]
+    has_limit = isinstance(limit, int) and not isinstance(limit, bool) and limit >= 0
+    if has_limit:
         text += f", first {limit} rows" + (f" by {', '.join(ordering)}" if ordering else "")
-    return text + _with(query, _DESCRIBED_QUERY_KEYS | _RESPONSE_QUERY_KEYS)
+    elif ordering:
+        text += f", ordered by {', '.join(ordering)}"
+    described_keys = set(_DESCRIBED_QUERY_KEYS | _RESPONSE_QUERY_KEYS)
+    if len(ordering) != len(order_by):
+        described_keys.remove("order_by")
+    if limit is not None and not has_limit:
+        described_keys.remove("limit")
+    return text + _with(query, described_keys)
 
 
 def _with(item: dict[str, Any], used: set[str] | frozenset[str], prefix: str = "") -> str:
