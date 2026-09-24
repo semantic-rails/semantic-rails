@@ -1,8 +1,8 @@
-"""MCP execute caps rows by default and says so when it does.
+"""MCP execute caps rows when requested and says so when it does.
 
 An agent's plausible mistake, a time window with no grain, used to return one
 row per order timestamp: hundreds of thousands of tokens in a single result.
-Execute now returns at most ``max_rows`` rows (default 200). A truncated
+Execute returns at most ``max_rows`` rows when explicitly requested. A truncated
 result carries ``truncated``, ``total_row_count`` and a warning that says how
 to narrow the query.
 """
@@ -56,14 +56,25 @@ def _truncation(response: dict[str, Any]) -> dict[str, Any]:
     return next(w for w in response["warnings"] if w["code"] == "EXECUTE_ROWS_TRUNCATED")
 
 
-def test_execute_advertises_the_default_cap() -> None:
+def test_execute_advertises_an_optional_cap() -> None:
     execute = next(tool for tool in list_tool_definitions() if tool["name"] == "execute")
     max_rows = execute["inputSchema"]["properties"]["max_rows"]
-    assert max_rows["default"] == MCP_DEFAULT_MAX_ROWS == 200
+    assert "default" not in max_rows
+    assert max_rows["maximum"] == 100_000
+
+
+def test_unchanged_v1_execute_call_returns_all_rows(adapter: SemanticLayerMCPAdapter) -> None:
+    response = adapter.call_tool("execute", {"query": DAILY_REVENUE})
+    assert response["ok"], response["errors"]
+    assert response["row_count"] == len(response["rows"]) == 365
+    assert "EXECUTE_ROWS_TRUNCATED" not in _codes(response)
+    assert "total_row_count" not in response
+    limited = adapter.call_tool("execute", {"query": {**DAILY_REVENUE, "limits": {"max_rows": 50}}})
+    assert limited["row_count"] == 50
 
 
 def test_a_large_result_is_capped_with_its_exact_total(adapter: SemanticLayerMCPAdapter) -> None:
-    response = adapter.call_tool("execute", {"query": DAILY_REVENUE})
+    response = adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 200})
     assert response["ok"], response["errors"]
     assert response["row_count"] == len(response["rows"]) == MCP_DEFAULT_MAX_ROWS
     assert response["truncated"] is True
@@ -74,7 +85,7 @@ def test_a_large_result_is_capped_with_its_exact_total(adapter: SemanticLayerMCP
 
 
 def test_a_window_without_a_grain_is_capped_and_flagged(adapter: SemanticLayerMCPAdapter) -> None:
-    response = adapter.call_tool("execute", {"query": NO_GRAIN_WINDOW})
+    response = adapter.call_tool("execute", {"query": NO_GRAIN_WINDOW, "max_rows": 200})
     assert response["ok"], response["errors"]
     assert response["row_count"] == MCP_DEFAULT_MAX_ROWS
     assert response["truncated"] is True
@@ -95,7 +106,7 @@ def test_max_rows_raises_the_cap(adapter: SemanticLayerMCPAdapter) -> None:
 
 def test_the_querys_own_row_limit_only_lowers_the_cap(adapter: SemanticLayerMCPAdapter) -> None:
     fenced = {**DAILY_REVENUE, "limits": {"max_rows": 50}}
-    alone = adapter.call_tool("execute", {"query": fenced})
+    alone = adapter.call_tool("execute", {"query": fenced, "max_rows": 200})
     assert alone["row_count"] == 50
     assert alone["truncated"] is True
     assert alone["total_row_count"] is None
@@ -107,19 +118,24 @@ def test_the_querys_own_row_limit_only_lowers_the_cap(adapter: SemanticLayerMCPA
     assert lowered["row_count"] == 10
     # An operator's ceiling above the default is not a response size.
     ceiling = {**DAILY_REVENUE, "limits": {"max_rows": 1000}}
-    assert adapter.call_tool("execute", {"query": ceiling})["row_count"] == MCP_DEFAULT_MAX_ROWS
+    assert adapter.call_tool("execute", {"query": ceiling})["row_count"] == 365
+    assert adapter.call_tool("execute", {"query": ceiling, "max_rows": 200})["row_count"] == 200
     assert adapter.call_tool("execute", {"query": ceiling, "max_rows": 400})["row_count"] == 365
 
 
-def test_rerunning_the_echoed_query_stays_capped(adapter: SemanticLayerMCPAdapter) -> None:
-    first = adapter.call_tool("execute", {"query": NO_GRAIN_WINDOW, "verbosity": "compact"})
+def test_the_explicit_cap_is_transport_only(adapter: SemanticLayerMCPAdapter) -> None:
+    first = adapter.call_tool(
+        "execute", {"query": DAILY_REVENUE, "verbosity": "compact", "max_rows": 200}
+    )
     assert first["row_count"] == MCP_DEFAULT_MAX_ROWS
     # The echo is the caller's query, without the fetch ceiling execute added.
     assert "limits" not in first["query"]
     again = adapter.call_tool("execute", {"query": first["query"]})
-    assert again["row_count"] == MCP_DEFAULT_MAX_ROWS
-    fenced = {**NO_GRAIN_WINDOW, "limits": {"max_rows": 5000}}
-    echoed = adapter.call_tool("execute", {"query": fenced, "verbosity": "compact"})["query"]
+    assert again["row_count"] == 365
+    fenced = {**DAILY_REVENUE, "limits": {"max_rows": 5000}}
+    echoed = adapter.call_tool(
+        "execute", {"query": fenced, "verbosity": "compact", "max_rows": 200}
+    )["query"]
     assert echoed["limits"] == {"max_rows": 5000}
 
 
@@ -148,7 +164,9 @@ def test_small_results_are_untouched(adapter: SemanticLayerMCPAdapter) -> None:
 
 
 def test_columnar_results_are_capped_too(adapter: SemanticLayerMCPAdapter) -> None:
-    response = adapter.call_tool("execute", {"query": DAILY_REVENUE, "row_format": "columns"})
+    response = adapter.call_tool(
+        "execute", {"query": DAILY_REVENUE, "row_format": "columns", "max_rows": 200}
+    )
     assert response["row_format"] == "columns"
     assert len(response["rows"]) == response["row_count"] == MCP_DEFAULT_MAX_ROWS
     assert response["total_row_count"] == 365
@@ -183,7 +201,7 @@ def test_a_grouped_role_without_a_window_or_grain_is_flagged(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     role_only = {**NO_GRAIN_WINDOW, "time": {"temporal_role": ORDER_TIME}}
-    response = adapter.call_tool("execute", {"query": role_only})
+    response = adapter.call_tool("execute", {"query": role_only, "max_rows": 200})
     assert "UNGRAINED_GROUPED_TIME_PROJECTION" in _codes(response)
     assert "time.grain" in _truncation(response)["message"]
 

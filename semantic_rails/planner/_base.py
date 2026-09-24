@@ -830,29 +830,25 @@ def _calendar_windows(
 
 def _relative_window(
     lowered: str, today: date
-) -> tuple[tuple[int, int], dict[str, Any], str] | None:
-    """The first relative window in the text: (span, bounds, unit)."""
+) -> list[tuple[tuple[int, int], dict[str, Any], str]]:
+    """Every relative window in the text: (span, bounds, unit)."""
 
     candidates: list[tuple[tuple[int, int], dict[str, Any], str]] = []
-    match = _RELATIVE_WINDOW_RE.search(lowered)
-    if match:
+    for match in _RELATIVE_WINDOW_RE.finditer(lowered):
         unit = match.group(2)
         bounds = {
             "range": {"last": {"unit": unit, "value": _relative_window_value(match.group(1))}}
         }
         candidates.append((match.span(), bounds, unit))
-    match = _YESTERDAY_RE.search(lowered)
-    if match:
+    for match in _YESTERDAY_RE.finditer(lowered):
         # ``range.last`` floors ``end`` to the start of the current period,
         # so {day, 1} is exactly yesterday (end-exclusive).
         candidates.append((match.span(), {"range": {"last": {"unit": "day", "value": 1}}}, "day"))
-    match = _THIS_PERIOD_RE.search(lowered)
-    if match:
+    for match in _THIS_PERIOD_RE.finditer(lowered):
         candidates.append((match.span(), _current_period_bounds(match.group(1), today), ""))
-    match = _TODAY_RE.search(lowered)
-    if match:
+    for match in _TODAY_RE.finditer(lowered):
         candidates.append((match.span(), _current_period_bounds("day", today), "day"))
-    return min(candidates, key=lambda row: row[0][0]) if candidates else None
+    return sorted(candidates, key=lambda row: row[0][0])
 
 
 def _time_cues(lowered: str) -> list[tuple[int, int]]:
@@ -915,8 +911,9 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     windows: list[tuple[tuple[int, int], dict[str, Any], str]] = [
         (span, bounds, "") for span, bounds in accepted
     ]
-    if relative is not None and not _overlaps(relative[0], [row[0] for row in windows]):
-        windows.append(relative)
+    for row in relative:
+        if not _overlaps(row[0], [item[0] for item in windows]):
+            windows.append(row)
     covered = [row[0] for row in windows]
     unresolved_spans = [span for span in rejected if not _overlaps(span, covered)]
     # Two years compared ("2017 over 2016") are reported, whatever resolved.
@@ -925,17 +922,16 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     for span in sorted(_time_cues(lowered), key=lambda item: item[0] - item[1]):
         if not _overlaps(span, covered + unresolved_spans):
             unresolved_spans.append(span)
-    distinct = {repr(bounds): (span, bounds, unit) for span, bounds, unit in windows}
     time_spans = tuple(sorted(covered + unresolved_spans))
-    if unresolved_spans or len(distinct) > 1:
+    if unresolved_spans or len(windows) > 1:
         # Report every time phrase, resolved or not: resolving part of an
         # ambiguous question would answer a different one.
-        spans = sorted(unresolved_spans + (covered if len(distinct) > 1 else []))
+        spans = sorted(unresolved_spans + (covered if len(windows) > 1 else []))
         phrases = list(dict.fromkeys(_phrase(lowered, span) for span in spans))
         return _TimeWindow(unresolved=tuple(phrases), spans=time_spans)
-    if not distinct:
+    if not windows:
         return _TimeWindow()
-    _span, bounds, unit = next(iter(distinct.values()))
+    _span, bounds, unit = windows[0]
     return _TimeWindow(bounds=dict(bounds), relative_unit=unit, spans=time_spans)
 
 

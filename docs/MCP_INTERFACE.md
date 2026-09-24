@@ -129,11 +129,12 @@ genuinely need descriptions or the alias index.
 object directly. Metadata tools accept the same request fields documented in
 [QUERY_API.md](QUERY_API.md), including optional `policy_context`.
 
-`plan` is the only public natural-language intent tool. Over MCP it defaults to
-`detail="query"`: `status`, `best.query_ir`, and a `why` or `warnings` entry for any part of
-the question the draft doesn't honor. For the lowest-token QA loop, forward `best.query_ir`
-to `execute` with `row_format="columns"`. `detail="best"` (the HTTP default) adds
-`intent_ir`, `best.trace` and a `next` block. When `status="ok"`, the draft has already
+`plan` is the only public natural-language intent tool. Stable v1 MCP calls without a
+`detail` argument keep `detail="best"`: `status`, `best.query_ir`, `intent_ir`, `best.trace`,
+`next`, and a `why` or `warnings` entry for any part of the question the draft doesn't honor.
+For the lowest-token QA loop, pass `detail="query"` to return `status`, `best.query_ir` and
+any `why` or `warnings`, then forward `best.query_ir` to `execute` with
+`row_format="columns"` and an explicit `max_rows`. When `status="ok"`, the draft has already
 paid validation cost, so call `validate` again only when you are editing the IR or
 need full diagnostics.
 
@@ -163,7 +164,8 @@ year, a month or month range with a year, days with a year, an ISO date, or a re
 ("last 7 days"). "and" joins a range only after "between": "between March and May 2017" is a
 range, while "March and May 2017" names two months. Anything else, such as a bound ("before
 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs 2016", "2017 over
-2016"), a numeric date (4/3/2017), two periods joined by "and", or two windows at once, returns
+2016"), a numeric date (4/3/2017), two periods joined by "and", or two windows at once (such as
+"last month and this month"), returns
 `low_confidence` with `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases it couldn't resolve,
 never a window narrowed or widened to the nearest form that parses. A total over a window gets
 one bucket when one calendar grain holds the window; an explicit grain ("monthly") wins. When a
@@ -208,18 +210,20 @@ keeps `rows` as objects (`[{...}]`). The opt-in columnar form returns
 `columns: [...]`, `rows: [[...]]`, `row_format: "columns"`, and the same
 `row_count`, warnings, and errors while avoiding repeated field names.
 
-`execute` returns at most `max_rows` rows (default 200, at most 100,000). A larger result comes
-back with `truncated: true`, `total_row_count` and an `EXECUTE_ROWS_TRUNCATED` warning that says
-how to narrow the query. Execute asks the warehouse for up to 10,000 rows to count them, so
+Stable v1 MCP `execute` calls without `max_rows` keep the caller's existing Query IR row limit;
+they do not add a response cap. Pass `max_rows=200` (or another value up to 100,000) to bound
+the response. A larger result comes back with `truncated: true`, `total_row_count` and an
+`EXECUTE_ROWS_TRUNCATED` warning that says how to narrow the query. With an explicit cap,
+execute asks the warehouse for up to 10,000 rows to count them, so
 `total_row_count` is `null` when more rows exist than were fetched. Some warehouse adapters fetch
 the whole result and then clip it; the cap bounds the response, not the warehouse work. Pass a
 larger `max_rows` to see more.
 
-A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower the cap (and then
-`total_row_count` is `null` once it is reached), but it never raises it: without a `max_rows`
-argument the cap stays 200. The `query` that execute echoes back carries the caller's own `limits`,
-so re-running it is capped the same way. This is an MCP-only default; the HTTP `/api/v1/query`
-endpoint doesn't cap rows.
+A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower an explicit
+`max_rows` cap (and then `total_row_count` is `null` once it is reached), but it never raises it.
+The `query` that execute echoes back carries the caller's own `limits`; a transport-level
+`max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint also leaves
+the response uncapped unless the query itself sets a limit.
 
 Query patches returned by `discover`, `inspect` and `build-options` (at every builder step) contain
 only Query IR fields and validate as returned, except that a temporal role offered at the
@@ -594,8 +598,9 @@ uv run python scripts/mcp_context.py --eval-file PATH # score a copy of a frozen
 | Frozen eval set | `eval_jaffle.jsonl` no longer matches `DEV_SET_SHA256` in the script. |
 
 The budgets cover `tools/list`, the `initialize` instructions, the resource and prompt lists, every
-resource read, one call per tool at its defaults (including an `execute` of a time window without a
-grain), three metadata calls behind an authenticated transport, four common mistakes, and two
+resource read, one compact opt-in call per tool (`plan(detail="query")` and
+`execute(max_rows=200)`, including a time window without a grain), three metadata calls behind
+an authenticated transport, four common mistakes, and two
 scripted three-question sessions. Three of the mistakes fail with a specific error code; the fourth,
 a misspelled `discover` argument, succeeds with a warning. A scripted call that fails when it should
 succeed (or the reverse), or that reports a different code, stops the measurement rather than

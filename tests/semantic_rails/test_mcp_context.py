@@ -55,10 +55,10 @@ def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
     )
 
 
-def test_default_probes_call_every_tool(jaffle_package: Path) -> None:
+def test_compact_probes_call_every_tool(jaffle_package: Path) -> None:
     with mcp_context.QueryMCPClient(jaffle_package) as client:
         listed = {tool["name"] for tool in client.request("tools/list")["tools"]}
-    assert {tool for _name, tool, _arguments in mcp_context.DEFAULT_PROBES} == listed
+    assert {tool for _name, tool, _arguments in mcp_context.COMPACT_PROBES} == listed
 
 
 def test_architect_tool_list_is_tracked(tmp_path: Path) -> None:

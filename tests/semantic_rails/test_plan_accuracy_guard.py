@@ -724,20 +724,21 @@ def test_mcp_plan_keeps_negated_include_negative(
         assert "negation_reversed" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
 
 
-def test_mcp_plan_defaults_to_the_query_detail(adapter: SemanticLayerMCPAdapter) -> None:
+def test_mcp_plan_keeps_the_v1_best_default(adapter: SemanticLayerMCPAdapter) -> None:
     default = adapter.call_tool("plan", {"intent": "revenue by store"})
     assert default["best"]["query_ir"]
-    for key in ("intent_ir", "next"):
-        assert key not in default
-    assert "trace" not in default["best"]
+    assert "intent_ir" in default and "next" in default
+    assert "trace" in default["best"]
     # An unknown detail level gets the same default.
     unknown = adapter.call_tool("plan", {"intent": "revenue by store", "detail": "brief"})
     envelope = {"request_id", "timing_ms"}
     assert {key: value for key, value in unknown.items() if key not in envelope} == {
         key: value for key, value in default.items() if key not in envelope
     }
-    detailed = adapter.call_tool("plan", {"intent": "revenue by store", "detail": "best"})
-    assert "intent_ir" in detailed and "trace" in detailed["best"]
+    compact = adapter.call_tool("plan", {"intent": "revenue by store", "detail": "query"})
+    for key in ("intent_ir", "next"):
+        assert key not in compact
+    assert "trace" not in compact["best"]
 
 
 def test_an_unrealizable_plan_keeps_the_hints_its_why_names(

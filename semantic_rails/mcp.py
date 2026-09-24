@@ -96,9 +96,9 @@ MCP_INTERFACE_VERSION = "v1"
 # 'verbosity' argument (outer envelope or inside `query`) always wins.
 MCP_DEFAULT_QUERY_VERBOSITY = "minimal"
 
-# Default row cap for MCP execute. Hosts warn about tool results over 10K
-# tokens; 200 rows keeps a typical answer well under that. A larger result
-# comes back truncated, with its total row count and a hint.
+# Recommended opt-in row cap for MCP execute. The v1 default remains uncapped.
+# Hosts warn about tool results over 10K tokens; 200 rows keeps a typical
+# answer well under that. A larger result comes back with a truncation hint.
 MCP_DEFAULT_MAX_ROWS = 200
 # Execute asks the warehouse for up to this many rows (never past a
 # limits.max_rows the query sets itself), so a truncated result can still
@@ -566,8 +566,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or "
             "'warnings' naming any part of the question the draft doesn't "
             "honor. 'status=ok' has already paid validation cost, so agents "
-            "may pass 'best.query_ir' to 'execute'. detail='best' adds "
-            "intent_ir, trace and next steps; 'full' adds alternatives and "
+            "may pass 'best.query_ir' to 'execute'. By default the v1 response "
+            "includes intent_ir, trace and next steps; detail='query' opts "
+            "into a compact response. 'full' adds alternatives and "
             "blocked drafts; 'debug' adds compose_hints. Gotcha: read "
             "'status' and 'warnings' before running 'best.query_ir'."
         ),
@@ -578,7 +579,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "detail": {
                     "type": "string",
                     "enum": ["query", "best", "full", "debug"],
-                    "default": "query",
+                    "default": "best",
                 },
                 "limit": {"type": "integer", "default": 3, "minimum": 1},
                 "policy_context": POLICY_CONTEXT_SCHEMA,
@@ -645,7 +646,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "side-effecting. Use 'compile' for SQL only. Defaults to "
             "verbosity='minimal' (rows + row_count) — pass verbosity="
             "compact|full for SQL/plans/explain. Use row_format='columns' "
-            "for compact answers. IR shape: see the "
+            "for compact answers, and max_rows=200 to bound row output. "
+            "IR shape: see the "
             "'validate' tool or 'build-options'."
         ),
         input_schema=_schema(
@@ -658,10 +660,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "type": "integer",
                     "minimum": 1,
                     "maximum": MCP_MAX_ROWS_LIMIT,
-                    "default": MCP_DEFAULT_MAX_ROWS,
                     "description": (
-                        "Most rows to return. A larger result sets truncated=true and "
-                        "total_row_count; aggregate further or raise max_rows."
+                        "Optional row cap; omitted v1 calls keep the caller's query limit. "
+                        "A larger result sets truncated=true and total_row_count."
                     ),
                 },
                 "policy_context": POLICY_CONTEXT_SCHEMA,
@@ -1204,10 +1205,10 @@ def _strip_execute_transport_args(arguments: Mapping[str, Any]) -> dict[str, Any
 
 
 def _plan_detail(value: Any) -> str:
-    """MCP plan's detail level; anything unknown gets the MCP default, 'query'."""
+    """MCP plan's detail level; anything unknown gets the v1 default, 'best'."""
 
     detail = str(value or "").strip().lower()
-    return detail if detail in {"query", "best", "full", "debug"} else "query"
+    return detail if detail in {"query", "best", "full", "debug"} else "best"
 
 
 def _positive_int(value: Any) -> int | None:
@@ -1238,10 +1239,10 @@ def _max_rows_arg(value: Any) -> int | None:
     return int(value)
 
 
-def _execute_row_limits(query: Mapping[str, Any], requested: Any) -> tuple[int, int, bool]:
+def _execute_row_limits(query: Mapping[str, Any], requested: int) -> tuple[int, int, bool]:
     """Return (rows to return, rows to fetch, whether the query's limit binds).
 
-    A ``max_rows`` argument replaces the default cap. A ``limits.max_rows``
+    An explicit ``max_rows`` argument sets the response cap. A ``limits.max_rows``
     inside the query is an operator's fetch ceiling: it can only lower the
     cap and bounds what is fetched, but never becomes the response size.
     Without it, execute fetches up to ``MCP_ROW_COUNT_CEILING`` rows so a
@@ -1250,7 +1251,7 @@ def _execute_row_limits(query: Mapping[str, Any], requested: Any) -> tuple[int, 
 
     limits = query.get("limits")
     fence = _positive_int(limits.get("max_rows")) if isinstance(limits, Mapping) else None
-    cap = _max_rows_arg(requested) or MCP_DEFAULT_MAX_ROWS
+    cap = requested
     if fence is not None and fence <= cap:
         return fence, fence, True
     if fence is not None:
@@ -2206,20 +2207,25 @@ class SemanticLayerMCPAdapter:
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             row_format = _row_format_arg(args)
+            requested_cap = _max_rows_arg(args.get("max_rows"))
             query_payload = _query_payload_with_mcp_default_verbosity(
                 _strip_execute_transport_args(args)
             )
-            cap, fetch, fence_binds = _execute_row_limits(query_payload, args.get("max_rows"))
-            limits = query_payload.get("limits")
-            query_payload["limits"] = {
-                **(dict(limits) if isinstance(limits, Mapping) else {}),
-                "max_rows": fetch,
-            }
-            result = _echo_caller_limits(self.runtime.query(query_payload), limits)
+            if requested_cap is None:
+                result = self.runtime.query(query_payload)
+            else:
+                cap, fetch, fence_binds = _execute_row_limits(query_payload, requested_cap)
+                limits = query_payload.get("limits")
+                query_payload["limits"] = {
+                    **(dict(limits) if isinstance(limits, Mapping) else {}),
+                    "max_rows": fetch,
+                }
+                result = _echo_caller_limits(self.runtime.query(query_payload), limits)
             if bool(result.get("ok", True)):
-                result = _truncate_rows(
-                    result, cap=cap, query=query_payload, fence_binds=fence_binds
-                )
+                if requested_cap is not None:
+                    result = _truncate_rows(
+                        result, cap=cap, query=query_payload, fence_binds=fence_binds
+                    )
                 result = _with_warning(result, _grouped_ungrained_time_warning(query_payload))
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
             # execute returns 0 rows and the user authored no filters —

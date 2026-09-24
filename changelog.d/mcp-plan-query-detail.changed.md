@@ -1,3 +1,3 @@
-- MCP `plan` defaults to `detail="query"`: `status`, `best.query_ir`, and any `why` or
-  `warnings`. Pass `detail="best"` for `intent_ir`, `best.trace` and the `next` block. The
-  HTTP API keeps `detail="best"`.
+- MCP `plan` supports opt-in `detail="query"`: `status`, `best.query_ir`, and any `why` or
+  `warnings`. An unchanged v1 call keeps the `best` response, including `intent_ir`,
+  `best.trace` and `next`. The HTTP API also keeps `detail="best"`.

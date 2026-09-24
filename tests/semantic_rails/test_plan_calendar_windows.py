@@ -73,6 +73,39 @@ def test_clear_calendar_windows_resolve(text: str, bounds: dict[str, str]) -> No
 @pytest.mark.parametrize(
     "text",
     [
+        "revenue last month and this month",
+        "revenue this month and last month",
+        "revenue this month and this year",
+        "revenue this year and this month",
+        "revenue current month and last month",
+        "revenue last month and current month",
+    ],
+)
+def test_multiple_relative_windows_are_unresolved(text: str) -> None:
+    assert _time_bounds_from_text(text) == {}
+    phrases = _unresolved_time_phrases(text)
+    assert len(phrases) == 2, phrases
+
+
+@pytest.mark.parametrize(
+    "text", ["revenue last month", "revenue this month", "revenue current year"]
+)
+def test_single_relative_window_still_resolves(text: str) -> None:
+    assert _time_bounds_from_text(text)
+    assert _unresolved_time_phrases(text) == []
+
+
+@pytest.mark.parametrize(
+    "text", ["revenue this month vs last month", "revenue this month compared to last month"]
+)
+def test_comparison_relative_period_stays_outside_window_resolution(text: str) -> None:
+    assert _time_bounds_from_text(text)
+    assert _unresolved_time_phrases(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "top 2000 customers",
         "orders over 2000",
         "orders over $2000",
@@ -209,6 +242,31 @@ def test_plan_reports_a_window_it_cannot_resolve(runtime_factory: Any, intent: s
         assert payload["status"] == "low_confidence"
         assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
         assert not {"start", "end"} & set(_best(payload).get("time") or {})
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "revenue last month and this month",
+        "revenue this month and last month",
+        "revenue this month and this year",
+        "revenue this year and this month",
+        "revenue current month and last month",
+        "revenue last month and current month",
+    ],
+)
+def test_public_plan_rejects_multiple_relative_windows(runtime_factory: Any, intent: str) -> None:
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = SemanticLayerMCPAdapter(runtime).call_tool("plan", {"intent": intent})
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+        assert len(payload["why"]["details"]["unresolved_phrases"]) == 2
+        assert not {"start", "end", "range"} & set(_best(payload).get("time") or {})
     finally:
         runtime.close()
 

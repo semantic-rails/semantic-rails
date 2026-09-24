@@ -79,7 +79,7 @@ DEFAULT_TOLERANCE = 0.02
 # empty instructions string, a short error) don't fail on a one-word change.
 # Counts, such as the number of tools, get no slack.
 ABSOLUTE_SLACK_TOKENS = 8
-# Gold queries run with an explicit row limit and max_rows so a default MCP
+# Gold queries run with an explicit row limit and max_rows so the MCP
 # row cap can't truncate the reference answer.
 GOLD_MAX_ROWS = 100_000
 
@@ -286,21 +286,21 @@ MINIMAL_DISCOVER = {"verbosity": "minimal", "limit": 5}
 Step = tuple[str, str, dict[str, Any]]
 
 SESSIONS: dict[str, list[Step]] = {
-    # The loop the tool descriptions prescribe, at every tool's default
-    # verbosity and detail.
+    # The loop the tool descriptions prescribe, explicitly using compact plan
+    # responses and bounded execute results on the stable v1 interface.
     "by_the_book": [
         ("s0_capabilities", "capabilities", {}),
         ("s1_catalog", "catalog", {}),
         ("q1_discover", "discover", {"terms": "monthly revenue by store"}),
         ("q1_inspect_measure", "inspect", {"object_id": REVENUE["measure"]}),
         ("q1_inspect_dimension", "inspect", {"object_id": STORE}),
-        ("q1_plan", "plan", {"intent": QUESTIONS[0]}),
+        ("q1_plan", "plan", {"intent": QUESTIONS[0], "detail": "query"}),
         ("q1_validate", "validate", {"query": Q1}),
         ("q1_compile", "compile", {"query": Q1}),
-        ("q1_execute", "execute", {"query": Q1}),
+        ("q1_execute", "execute", {"query": Q1, "max_rows": 200}),
         ("q2_discover", "discover", {"terms": "top products by revenue"}),
         ("q2_inspect_dimension", "inspect", {"object_id": PRODUCT}),
-        ("q2_plan", "plan", {"intent": QUESTIONS[1]}),
+        ("q2_plan", "plan", {"intent": QUESTIONS[1], "detail": "query"}),
         (
             "q2_build_options",
             "build-options",
@@ -308,43 +308,43 @@ SESSIONS: dict[str, list[Step]] = {
         ),
         ("q2_validate", "validate", {"query": Q2}),
         ("q2_compile", "compile", {"query": Q2}),
-        ("q2_execute", "execute", {"query": Q2}),
+        ("q2_execute", "execute", {"query": Q2, "max_rows": 200}),
         ("q3_discover", "discover", {"terms": "average order value"}),
         ("q3_inspect_metric", "inspect", {"object_id": "metric.sales.aov_usd"}),
         ("q3_valid_values", "valid-values", {"dimension_id": STORE}),
-        ("q3_plan", "plan", {"intent": QUESTIONS[2]}),
+        ("q3_plan", "plan", {"intent": QUESTIONS[2], "detail": "query"}),
         ("q3_validate", "validate", {"query": Q3}),
         ("q3_compile", "compile", {"query": Q3}),
-        ("q3_execute", "execute", {"query": Q3}),
+        ("q3_execute", "execute", {"query": Q3, "max_rows": 200}),
     ],
     # The leanest path the current surface supports.
     "lean": [
         ("q1_discover", "discover", {"terms": "monthly revenue by store", **MINIMAL_DISCOVER}),
         ("q1_plan", "plan", {"intent": QUESTIONS[0], "detail": "query"}),
-        ("q1_execute", "execute", {"query": Q1, "row_format": "columns"}),
+        ("q1_execute", "execute", {"query": Q1, "row_format": "columns", "max_rows": 200}),
         ("q2_discover", "discover", {"terms": "top products by revenue", **MINIMAL_DISCOVER}),
         ("q2_plan", "plan", {"intent": QUESTIONS[1], "detail": "query"}),
-        ("q2_execute", "execute", {"query": Q2, "row_format": "columns"}),
+        ("q2_execute", "execute", {"query": Q2, "row_format": "columns", "max_rows": 200}),
         ("q3_discover", "discover", {"terms": "average order value", **MINIMAL_DISCOVER}),
         ("q3_plan", "plan", {"intent": QUESTIONS[2], "detail": "query"}),
-        ("q3_execute", "execute", {"query": Q3, "row_format": "columns"}),
+        ("q3_execute", "execute", {"query": Q3, "row_format": "columns", "max_rows": 200}),
     ],
 }
 
-# One call per tool, passing only what a caller must supply. Claude Code warns
+# One call per tool, explicitly requesting compact plans and bounded results. Claude Code warns
 # about tool results over 10K tokens and spills results over 25K to a file.
-DEFAULT_PROBES: list[Step] = [
+COMPACT_PROBES: list[Step] = [
     ("capabilities", "capabilities", {}),
     ("catalog", "catalog", {}),
     ("discover", "discover", {"terms": "revenue by store"}),
     ("inspect", "inspect", {"object_id": REVENUE["measure"]}),
     ("build_options", "build-options", {"query": {"version": 2, "select": Q1["select"]}}),
     ("valid_values", "valid-values", {"dimension_id": STORE}),
-    ("plan", "plan", {"intent": QUESTIONS[0]}),
+    ("plan", "plan", {"intent": QUESTIONS[0], "detail": "query"}),
     ("validate", "validate", {"query": Q1}),
     ("compile", "compile", {"query": Q1}),
-    ("execute", "execute", {"query": Q1}),
-    ("execute_no_grain_window", "execute", {"query": NO_GRAIN_WINDOW}),
+    ("execute", "execute", {"query": Q1, "max_rows": 200}),
+    ("execute_no_grain_window", "execute", {"query": NO_GRAIN_WINDOW, "max_rows": 200}),
     ("segment_validate", "segment-validate", {"segment_id": SEGMENT}),
     ("segment_explain", "segment-explain", {"segment_id": SEGMENT}),
     ("segment_preview", "segment-preview", {"segment_id": SEGMENT}),
@@ -474,7 +474,7 @@ def _measured_call(
 
 
 def measure_query_mcp(package_path: Path) -> dict[str, int]:
-    """Measure the query MCP's upfront surface, default responses and sessions."""
+    """Measure the query MCP's upfront surface, compact responses and sessions."""
 
     metrics: dict[str, int] = {}
     with QueryMCPClient(package_path) as client:
@@ -505,15 +505,15 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
             )
         prompts = client.request("prompts/list")["prompts"]
         metrics["query.prompts_list_tokens"] = approx_tokens(json.dumps(prompts, sort_keys=True))
-        default_structured: list[int] = []
-        default_text: list[int] = []
-        for name, tool, arguments in DEFAULT_PROBES:
+        compact_structured: list[int] = []
+        compact_text: list[int] = []
+        for name, tool, arguments in COMPACT_PROBES:
             structured, text_tokens = _measured_call(client, name, tool, arguments)
-            metrics[f"query.default.{name}_tokens"] = structured
-            default_structured.append(structured)
-            default_text.append(text_tokens)
-        metrics["query.default.max_structured_tokens"] = max(default_structured)
-        metrics["query.default.max_text_tokens"] = max(default_text)
+            metrics[f"query.compact.{name}_tokens"] = structured
+            compact_structured.append(structured)
+            compact_text.append(text_tokens)
+        metrics["query.compact.max_structured_tokens"] = max(compact_structured)
+        metrics["query.compact.max_text_tokens"] = max(compact_text)
         for name, tool, arguments, ok, code in ERROR_PROBES:
             metrics[f"query.error.{name}_tokens"] = _measured_call(
                 client, name, tool, arguments, ok=ok, code=code
