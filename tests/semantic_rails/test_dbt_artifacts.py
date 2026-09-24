@@ -71,6 +71,198 @@ def test_tests_and_contracts_become_keys_links_and_value_sets(target: Path) -> N
     assert orders.columns["order_total"].data_type.startswith("DECIMAL")
 
 
+def _relationship_manifest(target: Path) -> tuple[Path, dict[str, Any], str, dict[str, Any]]:
+    path = target / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    test_id = "test.shop_dbt.relationships_fct_orders_customer_id"
+    return path, manifest, test_id, manifest["nodes"][test_id]
+
+
+@pytest.mark.parametrize("attachment", ["missing", "null"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unattached_relationship_uses_manifest_target_identity_not_dependency_order(
+    target: Path, attachment: str, reverse: bool
+) -> None:
+    path, manifest, _, test = _relationship_manifest(target)
+    if attachment == "missing":
+        test.pop("attached_node")
+    else:
+        test["attached_node"] = None
+    depends = ["model.shop_dbt.fct_orders", "model.shop_dbt.dim_customers"]
+    test["depends_on"]["nodes"] = list(reversed(depends)) if reverse else depends
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    orders = project.find("fct_orders")
+    customers = project.find("dim_customers")
+    assert project.warnings == []
+    assert [fk for fk in orders.foreign_keys if fk["to"] == customers.unique_id] == [
+        {
+            "columns": ["customer_id"],
+            "to": customers.unique_id,
+            "to_relation": customers.relation,
+            "to_columns": ["customer_id"],
+            "source": "relationships test",
+        }
+    ]
+    assert customers.foreign_keys == []
+    (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
+    assert suggestion["foreign_keys"][0]["references"]["dbt_unique_id"] == customers.unique_id
+
+
+@pytest.mark.parametrize("target_kind", ["model", "source"])
+def test_unattached_relationship_can_resolve_model_or_source_target(
+    target: Path, target_kind: str
+) -> None:
+    path, manifest, _, test = _relationship_manifest(target)
+    test.pop("attached_node")
+    if target_kind == "source":
+        source_id = "source.shop_dbt.raw.customer_feed"
+        manifest["sources"][source_id] = {
+            "unique_id": source_id,
+            "resource_type": "source",
+            "name": "customer_feed",
+            "database": "warehouse",
+            "schema": "main",
+            "identifier": "raw_customers",
+            "columns": {"customer_id": {"name": "customer_id"}},
+        }
+        test["test_metadata"]["kwargs"]["to"] = "source('raw', 'customer_feed')"
+    else:
+        source_id = "model.shop_dbt.dim_customers"
+    test["depends_on"]["nodes"] = [source_id, "model.shop_dbt.fct_orders"]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    assert project.warnings == []
+    assert any(fk["to"] == source_id for fk in project.find("fct_orders").foreign_keys)
+    assert project.relations[source_id].foreign_keys == []
+
+
+def test_unattached_relationship_uses_package_qualified_ref_when_names_repeat(target: Path) -> None:
+    path, manifest, _, test = _relationship_manifest(target)
+    duplicate = dict(manifest["nodes"]["model.shop_dbt.dim_customers"])
+    duplicate["unique_id"] = "model.other.dim_customers"
+    manifest["nodes"][duplicate["unique_id"]] = duplicate
+    test.pop("attached_node")
+    test["test_metadata"]["kwargs"]["to"] = "ref('shop_dbt', 'dim_customers')"
+    test["depends_on"]["nodes"] = [
+        "model.shop_dbt.dim_customers",
+        "model.shop_dbt.fct_orders",
+    ]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    assert project.warnings == []
+    assert any(
+        fk["to"] == "model.shop_dbt.dim_customers" for fk in project.find("fct_orders").foreign_keys
+    )
+    assert project.relations["model.other.dim_customers"].foreign_keys == []
+
+
+def test_unattached_single_dependency_and_explicit_attachment_are_preserved(target: Path) -> None:
+    path, manifest, test_id, test = _relationship_manifest(target)
+    test.pop("attached_node")
+    test["depends_on"]["nodes"] = ["model.shop_dbt.fct_orders"]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert any(
+        fk["to"] == "model.shop_dbt.dim_customers"
+        for fk in load_dbt_artifacts(target).find("fct_orders").foreign_keys
+    )
+
+    manifest["nodes"][test_id]["attached_node"] = "model.shop_dbt.fct_orders"
+    manifest["nodes"][test_id]["depends_on"]["nodes"] = [
+        "model.shop_dbt.dim_customers",
+        "model.shop_dbt.dim_stores",
+    ]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    project = load_dbt_artifacts(target)
+    assert project.warnings == []
+    assert any(
+        fk["to"] == "model.shop_dbt.dim_customers" for fk in project.find("fct_orders").foreign_keys
+    )
+    assert project.find("dim_customers").foreign_keys == []
+
+
+def test_unresolved_explicit_attachment_is_reported_without_dependency_fallback(
+    target: Path,
+) -> None:
+    path, manifest, test_id, test = _relationship_manifest(target)
+    test["attached_node"] = "model.shop_dbt.not_in_manifest"
+    test["depends_on"]["nodes"] = ["model.shop_dbt.fct_orders"]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    assert [warning["test"] for warning in project.warnings] == [test_id]
+    assert not any(
+        fk["to"] == "model.shop_dbt.dim_customers" for fk in project.find("fct_orders").foreign_keys
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ["missing_target", "ambiguous_target", "extra_dependency", "missing_child"]
+)
+def test_unattached_relationship_reports_unresolved_identity_without_a_false_fk(
+    target: Path, case: str
+) -> None:
+    path, manifest, test_id, test = _relationship_manifest(target)
+    test["attached_node"] = None
+    test["depends_on"]["nodes"] = [
+        "model.shop_dbt.fct_orders",
+        "model.shop_dbt.dim_customers",
+    ]
+    if case == "missing_target":
+        test["test_metadata"]["kwargs"]["to"] = "ref('missing_customers')"
+    elif case == "ambiguous_target":
+        duplicate = dict(manifest["nodes"]["model.shop_dbt.dim_customers"])
+        duplicate["unique_id"] = "model.other.dim_customers"
+        manifest["nodes"][duplicate["unique_id"]] = duplicate
+    elif case == "extra_dependency":
+        test["depends_on"]["nodes"].append("model.shop_dbt.dim_stores")
+    else:
+        test["depends_on"]["nodes"] = ["model.shop_dbt.dim_customers"] * 2 + [
+            "model.shop_dbt.unknown"
+        ]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    assert [warning["test"] for warning in project.warnings] == [test_id]
+    assert "missing or ambiguous" in project.warnings[0]["reason"]
+    assert not any(
+        fk["to"] in {"model.shop_dbt.dim_customers", "model.other.dim_customers"}
+        for relation in project.relations.values()
+        for fk in relation.foreign_keys
+    )
+
+
+def test_duplicate_dependency_and_duplicate_relationship_test_do_not_duplicate_fk(
+    target: Path,
+) -> None:
+    path, manifest, test_id, test = _relationship_manifest(target)
+    test.pop("attached_node")
+    test["depends_on"]["nodes"] = [
+        "model.shop_dbt.fct_orders",
+        "model.shop_dbt.dim_customers",
+        "model.shop_dbt.fct_orders",
+    ]
+    duplicate = json.loads(json.dumps(test))
+    manifest["nodes"][f"{test_id}_duplicate"] = duplicate
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    assert project.warnings == []
+    assert (
+        len(
+            [
+                fk
+                for fk in project.find("fct_orders").foreign_keys
+                if fk["to"] == "model.shop_dbt.dim_customers"
+            ]
+        )
+        == 1
+    )
+
+
 def test_suggestions_prefer_dbt_facts_over_guesses(target: Path) -> None:
     (orders,) = suggest_models_from_dbt(load_dbt_artifacts(target), ["fct_orders"])
 

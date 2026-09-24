@@ -184,6 +184,11 @@ dbt:
 - descriptions carry into the draft; times, dimensions and measures come from column types and
   names.
 
+Both dbt tools return `dbt_warnings` for tests whose attachment or relationship target cannot be
+identified uniquely from the manifest. Such tests do not create a foreign key. With no
+`attached_node`, a relationship test uses the resolved `ref()` or `source()` target identity and a
+single remaining relation dependency to identify the child; dependency order is not an identity.
+
 `import_dbt_project` applies them: `select` names the dbt models, and one parse-gated transaction
 creates or updates a model per dbt model (in `models/<group>/`, `group` defaulting to `dbt`), with
 each resolved foreign key written as an entity reference in the model's `entities:` block (`expr:`

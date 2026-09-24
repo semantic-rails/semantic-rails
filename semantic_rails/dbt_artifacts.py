@@ -67,6 +67,7 @@ class DbtProject:
     adapter_type: str
     dbt_version: str
     relations: dict[str, DbtRelation]
+    warnings: list[dict[str, str]] = field(default_factory=list)
 
     def find(self, name: str) -> DbtRelation:
         """A relation by unique_id, model/seed/snapshot name, or relation string."""
@@ -158,13 +159,14 @@ def load_dbt_artifacts(
         key: _relation(key, entry, catalog_entries.get(key, {}), default_database)
         for key, entry in entries.items()
     }
-    _apply_tests(relations, nodes)
+    warnings = _apply_tests(relations, nodes)
     _resolve_contract_foreign_keys(relations)
     return DbtProject(
         project_name=str(metadata.get("project_name") or ""),
         adapter_type=str(metadata.get("adapter_type") or ""),
         dbt_version=str(metadata.get("dbt_version") or ""),
         relations=relations,
+        warnings=warnings,
     )
 
 
@@ -291,18 +293,37 @@ def _resolve_contract_foreign_keys(relations: dict[str, DbtRelation]) -> None:
                 foreign_key["to_relation"] = target.relation
 
 
-def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> None:
-    for node in nodes.values():
+def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> list[dict[str, str]]:
+    warnings: list[dict[str, str]] = []
+    for test_id, node in nodes.items():
         if not isinstance(node, dict) or node.get("resource_type") != "test":
             continue
         metadata = dict(node.get("test_metadata", {}) or {})
         kwargs = dict(metadata.get("kwargs", {}) or {})
+        test = str(metadata.get("name") or "")
+        target = (
+            _target_of(str(kwargs.get("to") or ""), relations) if test == "relationships" else None
+        )
         attached = str(node.get("attached_node") or "")
-        if not attached:
-            depends = list(dict(node.get("depends_on", {}) or {}).get("nodes", []) or [])
-            attached = str(depends[-1]) if depends else ""
-        relation = relations.get(attached)
+        if attached:
+            candidates = [attached] if attached in relations else []
+        else:
+            depends = dict.fromkeys(
+                str(value)
+                for value in list(dict(node.get("depends_on", {}) or {}).get("nodes", []) or [])
+                if str(value) in relations
+            )
+            candidates = list(depends)
+            if test == "relationships" and target is not None:
+                candidates = [value for value in candidates if value != target.unique_id]
+        relation = relations.get(candidates[0]) if len(candidates) == 1 else None
         if relation is None:
+            warnings.append(
+                {
+                    "test": str(test_id),
+                    "reason": "dbt test attachment is missing or ambiguous in the manifest",
+                }
+            )
             continue
         column_name = str(node.get("column_name") or kwargs.get("column_name") or "")
         # A column test proves the column exists, even when neither the catalog
@@ -312,7 +333,6 @@ def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> No
             if column_name
             else None
         )
-        test = str(metadata.get("name") or "")
         if test == "not_null" and column is not None:
             column.not_null = True
         elif test == "unique" and column is not None:
@@ -325,15 +345,21 @@ def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> No
                 relation.primary_key = combination
                 relation.primary_key_source = "unique_combination_of_columns test"
         elif test == "relationships" and column is not None:
-            target = _target_of(str(kwargs.get("to") or ""), relations)
             if target is not None:
-                relation.foreign_keys.append(
+                foreign_key = {
+                    "columns": [column.name],
+                    "to": target.unique_id,
+                    "to_relation": target.relation,
+                    "to_columns": [str(kwargs.get("field") or column.name)],
+                    "source": "relationships test",
+                }
+                if foreign_key not in relation.foreign_keys:
+                    relation.foreign_keys.append(foreign_key)
+            else:
+                warnings.append(
                     {
-                        "columns": [column.name],
-                        "to": target.unique_id,
-                        "to_relation": target.relation,
-                        "to_columns": [str(kwargs.get("field") or column.name)],
-                        "source": "relationships test",
+                        "test": str(test_id),
+                        "reason": "dbt relationships target is missing or ambiguous in the manifest",
                     }
                 )
     for relation in relations.values():
@@ -345,6 +371,7 @@ def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> No
         if keys:
             relation.primary_key = [keys[0]]
             relation.primary_key_source = "unique and not_null tests"
+    return warnings
 
 
 def suggest_models_from_dbt(

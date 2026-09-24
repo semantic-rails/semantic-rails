@@ -102,6 +102,104 @@ def test_mcp_session_imports_the_marts_as_a_joined_star(workspace: Path) -> None
     ]
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unattached_relationship_suggests_and_imports_the_child_reference(
+    workspace: Path, reverse: bool
+) -> None:
+    manifest_path = workspace / "dbt" / "target" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    test = manifest["nodes"]["test.shop_dbt.relationships_fct_orders_customer_id"]
+    test.pop("attached_node")
+    dependencies = ["model.shop_dbt.fct_orders", "model.shop_dbt.dim_customers"]
+    test["depends_on"]["nodes"] = list(reversed(dependencies)) if reverse else dependencies
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    server = create_architect_mcp_server(workspace_root=workspace)
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["dim_customers", "fct_orders"],
+        "expected_revision": project_revision(workspace / "shop"),
+        "idempotency_key": f"unattached-{reverse}",
+    }
+
+    suggested, preview, applied, replay = _calls(
+        server,
+        [
+            ("suggest_models_from_dbt", {"target_dir": "dbt/target", "select": ["fct_orders"]}),
+            ("import_dbt_project", {**request, "dry_run": True}),
+            ("import_dbt_project", request),
+            ("import_dbt_project", request),
+        ],
+    )
+
+    assert suggested["ok"] is True and suggested["dbt_warnings"] == []
+    assert preview["ok"] is True and preview["dry_run"] is True
+    assert applied["ok"] is True and applied["dbt_warnings"] == []
+    assert replay["ok"] is True and replay["idempotent_replay"] is True
+    assert replay["revision"] == applied["revision"]
+    link = suggested["models"][0]["foreign_keys"]
+    assert any(
+        row["column"] == "customer_id"
+        and row["references"]["dbt_unique_id"] == "model.shop_dbt.dim_customers"
+        for row in link
+    )
+    for receipt in (preview, applied):
+        assert {"model": "orders", "entity": "customer", "columns": ["customer_id"]} in receipt[
+            "references"
+        ]
+        assert not any(row["model"] == "customers" for row in receipt["references"])
+    assert "customer" in _model(workspace / "shop" / "models" / "orders.yml")["entities"]
+    assert "customer" in _model(workspace / "shop" / "models" / "dbt" / "customers.yml")["entities"]
+
+
+def test_unattached_ambiguous_relationship_reports_warning_through_mcp_without_false_fk(
+    workspace: Path,
+) -> None:
+    manifest_path = workspace / "dbt" / "target" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    test_id = "test.shop_dbt.relationships_fct_orders_customer_id"
+    test = manifest["nodes"][test_id]
+    test["attached_node"] = None
+    test["depends_on"]["nodes"] = [
+        "model.shop_dbt.fct_orders",
+        "model.shop_dbt.dim_customers",
+        "model.shop_dbt.dim_stores",
+    ]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    server = create_architect_mcp_server(workspace_root=workspace)
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["dim_customers", "fct_orders"],
+        "expected_revision": project_revision(workspace / "shop"),
+        "idempotency_key": "ambiguous-attachment",
+    }
+
+    suggested, preview, applied = _calls(
+        server,
+        [
+            ("suggest_models_from_dbt", {"target_dir": "dbt/target", "select": ["fct_orders"]}),
+            ("import_dbt_project", {**request, "dry_run": True}),
+            ("import_dbt_project", request),
+        ],
+    )
+
+    assert suggested["ok"] is True
+    assert suggested["dbt_warnings"][0]["test"] == test_id
+    assert "missing or ambiguous" in suggested["dbt_warnings"][0]["reason"]
+    assert not any(
+        row.get("column") == "customer_id" for row in suggested["models"][0]["foreign_keys"]
+    )
+    for receipt in (preview, applied):
+        assert receipt["ok"] is True
+        assert receipt["dbt_warnings"] == suggested["dbt_warnings"]
+        assert not any(
+            row["model"] == "orders" and row["entity"] == "customer"
+            for row in receipt["references"]
+        )
+    assert "customer" not in _model(workspace / "shop" / "models" / "orders.yml")["entities"]
+
+
 def test_a_dry_run_import_writes_nothing(workspace: Path) -> None:
     server = create_architect_mcp_server(workspace_root=workspace)
     before = project_revision(workspace / "shop")

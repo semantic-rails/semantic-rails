@@ -1266,6 +1266,7 @@ def create_architect_mcp_server(
                 "dbt_project": project.project_name,
                 "adapter_type": project.adapter_type,
                 "models": dbt_artifacts.suggest_models_from_dbt(project, list(select or [])),
+                "dbt_warnings": project.warnings,
             }
         except Exception as exc:
             return _report_error(exc)
@@ -1311,7 +1312,9 @@ def create_architect_mcp_server(
                 )
                 .report
             )
-            return _mutation_result({**report, "skipped_models": skipped})
+            return _mutation_result(
+                {**report, "skipped_models": skipped, "dbt_warnings": dbt.warnings}
+            )
         except Exception as exc:
             return _mutation_error_result(
                 exc,
