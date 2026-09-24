@@ -178,9 +178,11 @@ bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a compari
 windows at once (such as "last month and this month"), return `low_confidence` with
 `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases they couldn't resolve, rather than the
 nearest parsed window. **Qualified relative periods remain a limitation:** for phrases such as
-"before today", "after last month", or "until this week", `plan` may accept the embedded period
-and return `status="ok"` with a `PLAN_UNMATCHED_TERMS` warning for the qualifier instead of
-`TIME_WINDOW_UNRESOLVED`. Inspect `best.query_ir.time` or provide explicit `query.time` before
+"before today", "after last month", or "until this week", `plan` may return `status="ok"`
+with the embedded period's bounds but without the qualifier, rather than
+`TIME_WINDOW_UNRESOLVED`. A `PLAN_UNMATCHED_TERMS` warning may appear, but "until" is treated as
+a framing word, so "until this week" can have no qualifier warning. Regardless of warnings,
+compare `best.query_ir.time` with the intended bounds or provide explicit `query.time` before
 executing such a draft. A total over a window gets
 one bucket when one calendar grain holds the window; an explicit grain ("monthly") wins. When a
 draft can't take the window's start, because the metric looks back over earlier periods or the
