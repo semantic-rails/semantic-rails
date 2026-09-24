@@ -349,6 +349,83 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
 
 
 @pytest.mark.parametrize(
+    ("text", "op", "value", "honored"),
+    [
+        ("revenue for Brooklyn", "=", "Brooklyn", True),
+        ("revenue for Brooklyn", "IN", "Brooklyn", True),
+        ("revenue for Brooklyn", "IN", ["Brooklyn", "Philadelphia"], True),
+        ("revenue for Brooklyn", "IN", [], False),
+        ("revenue for Brooklyn", "IN", [["Brooklyn"]], False),
+        ("revenue for Brooklyn", "=", ["Brooklyn", "Philadelphia"], False),
+        ("revenue for Brooklyn", "=", [["Brooklyn"]], False),
+        ("revenue for Brooklyn", "!=", "Brooklyn", False),
+        ("revenue for Brooklyn", "NOT IN", ["Brooklyn"], False),
+        ("revenue for Brooklyn", "LIKE", "Brook%", False),
+        ("revenue for Brooklyn", ">", "Brooklyn", False),
+        ("revenue excluding Brooklyn", "!=", "Brooklyn", True),
+        ("revenue excluding Brooklyn", "NOT IN", "Brooklyn", True),
+        ("revenue excluding Brooklyn", "NOT IN", ["Brooklyn", "Philadelphia"], True),
+        ("revenue excluding Brooklyn", "NOT IN", [], False),
+        ("revenue excluding Brooklyn", "NOT IN", [["Brooklyn"]], False),
+        ("revenue excluding Brooklyn", "!=", ["Brooklyn", "Philadelphia"], False),
+        ("revenue excluding Brooklyn", "!=", [["Brooklyn"]], False),
+        ("revenue excluding Brooklyn", "=", "Brooklyn", False),
+        ("revenue excluding Brooklyn", "IN", ["Brooklyn"], False),
+        ("revenue excluding Brooklyn", "NOT LIKE", "Brook%", False),
+    ],
+)
+def test_named_value_coverage_respects_operator_and_value_shape(
+    adapter: SemanticLayerMCPAdapter,
+    text: str,
+    op: str,
+    value: Any,
+    honored: bool,
+) -> None:
+    draft = _query(group_by=[STORE], where=[{"field": STORE, "op": op, "value": value}])
+    kinds = _gap_kinds(adapter, text, draft)
+    if honored:
+        assert kinds == []
+    else:
+        assert kinds
+        assert "filter_values_unrealized" in kinds or "negation_reversed" in kinds
+
+
+@pytest.mark.parametrize(
+    ("where", "honored"),
+    [
+        (
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "=", "value": "Philadelphia"},
+            ],
+            True,
+        ),
+        (
+            [
+                {"field": STORE, "op": "!=", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "=", "value": "Philadelphia"},
+            ],
+            False,
+        ),
+        ([{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}], False),
+        (
+            [
+                {"field": STORE, "op": "=", "value": ["Philadelphia"]},
+                {"field": STORE, "op": "!=", "value": "Brooklyn"},
+            ],
+            False,
+        ),
+    ],
+)
+def test_mixed_value_coverage_respects_each_values_polarity_and_shape(
+    adapter: SemanticLayerMCPAdapter, where: list[dict[str, Any]], honored: bool
+) -> None:
+    draft = _query(where=where)
+    kinds = _gap_kinds(adapter, "revenue excluding Brooklyn, including Philadelphia", draft)
+    assert ("filter_values_unrealized" not in kinds) is honored
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "revenue excluding Brooklyn, including Philadelphia",
@@ -722,6 +799,78 @@ def test_mcp_plan_keeps_correct_value_and_ranking_drafts(
 
 
 @pytest.mark.parametrize(
+    ("text", "where", "honored"),
+    [
+        (
+            "revenue for Brooklyn and Philadelphia",
+            [{"field": STORE, "op": "=", "value": ["Brooklyn", "Philadelphia"]}],
+            False,
+        ),
+        (
+            "revenue for Brooklyn and Philadelphia",
+            [{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
+            True,
+        ),
+        ("revenue for Brooklyn", [{"field": STORE, "op": "=", "value": "Brooklyn"}], True),
+        ("revenue for Brooklyn", [{"field": STORE, "op": "IN", "value": "Brooklyn"}], True),
+        (
+            "revenue excluding Brooklyn, Philadelphia",
+            [{"field": STORE, "op": "!=", "value": ["Brooklyn", "Philadelphia"]}],
+            False,
+        ),
+        (
+            "revenue excluding Brooklyn, Philadelphia",
+            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}],
+            True,
+        ),
+        ("revenue excluding Brooklyn", [{"field": STORE, "op": "!=", "value": "Brooklyn"}], True),
+        (
+            "revenue excluding Brooklyn",
+            [{"field": STORE, "op": "NOT IN", "value": "Brooklyn"}],
+            True,
+        ),
+        ("revenue for Brooklyn", [{"field": STORE, "op": "LIKE", "value": "Brook%"}], False),
+        (
+            "revenue excluding Brooklyn",
+            [{"field": STORE, "op": "NOT LIKE", "value": "Brook%"}],
+            False,
+        ),
+        (
+            "revenue excluding Brooklyn, including Philadelphia",
+            [
+                {"field": STORE, "op": "!=", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "=", "value": "Philadelphia"},
+            ],
+            False,
+        ),
+        (
+            "revenue excluding Brooklyn, including Philadelphia",
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "=", "value": "Philadelphia"},
+            ],
+            True,
+        ),
+    ],
+)
+def test_mcp_plan_checks_named_value_predicate_shapes(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    where: list[dict[str, Any]],
+    honored: bool,
+) -> None:
+    _draft_plan(monkeypatch, _query(where=where))
+    payload = adapter.call_tool("plan", {"intent": text})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == ("ok" if honored else "low_confidence")
+    if honored:
+        assert payload.get("why") is None
+    else:
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+
+
+@pytest.mark.parametrize(
     ("text", "excluded", "expected_status"),
     [
         (
@@ -840,22 +989,11 @@ def test_all_but_is_an_exclusion(adapter: SemanticLayerMCPAdapter) -> None:
     assert _gap_kinds(adapter, text, inverted) == ["negation_reversed"]
 
 
-@pytest.mark.parametrize(
-    ("text", "query"),
-    [
-        # Another operator on the value's dimension can't be judged, so it counts.
-        ("revenue in Brooklyn", _query(where=[{"field": STORE, "op": "LIKE", "value": "Brook%"}])),
-        # So does a filter that drops the value, without any grouping.
-        (
-            "total revenue excluding Brooklyn",
-            _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}]),
-        ),
-    ],
-)
-def test_other_filters_on_a_value_honor_it(
-    adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any]
+def test_pattern_filter_cannot_prove_an_exact_named_value(
+    adapter: SemanticLayerMCPAdapter,
 ) -> None:
-    assert _gap_kinds(adapter, text, query) == []
+    draft = _query(where=[{"field": STORE, "op": "LIKE", "value": "Brook%"}])
+    assert _gap_kinds(adapter, "revenue in Brooklyn", draft) == ["filter_values_unrealized"]
 
 
 def test_the_longest_value_wins() -> None:

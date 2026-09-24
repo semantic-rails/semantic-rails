@@ -146,8 +146,10 @@ A draft that validates can still leave out part of the question. `plan` returns
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue";
-- excludes a value requested positively, or otherwise neither filters on nor groups by
-  a value the question names (`filter_values_unrealized`);
+- excludes a value requested positively, or cannot prove that its filter keeps or drops
+  each named value with the requested polarity (`filter_values_unrealized`). Scalar `=`/`!=`
+  and scalar or list `IN`/`NOT IN` can prove it; list-valued `=`/`!=`, empty membership
+  lists and pattern filters cannot. Grouping does not cure an uncertain filter;
 - requires one field to equal two values at once, which returns no rows
   (`contradictory_filters`);
 - misses a negation, a prior-period comparison or one of several named subjects.

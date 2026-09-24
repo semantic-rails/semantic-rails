@@ -1104,7 +1104,7 @@ def _ubiquitous_words(config: Any) -> set[str]:
 
 
 def _field_predicates(query: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """For each filtered field, anywhere in the draft: the values kept or dropped."""
+    """For each filtered field, values provably kept or dropped by its predicates."""
 
     out: dict[str, dict[str, Any]] = {}
     for node in _dict_nodes(query):
@@ -1112,16 +1112,33 @@ def _field_predicates(query: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if not isinstance(name, str) or not ("op" in node or "value" in node):
             continue
         op = " ".join(str(node.get("op") or "=").upper().split())
-        raw = node.get("value")
-        values = {_plain(item) for item in (raw if isinstance(raw, list) else [raw])}
-        entry = out.setdefault(name, {"keeps": set(), "drops": set(), "other": False})
+        literals = _membership_literals(op, node.get("value"))
+        entry = out.setdefault(name, {"keeps": set(), "drops": set(), "uncertain": False})
+        if literals is None:
+            entry["uncertain"] = True
+            continue
+        values = {_plain(item) for item in literals}
         if op in _KEEPING_OPS:
             entry["keeps"] |= values
         elif op in _EXCLUDING_OPS:
             entry["drops"] |= values
-        else:
-            entry["other"] = True
     return out
+
+
+def _membership_literals(op: str, raw: Any) -> list[Any] | None:
+    """Only exact scalar comparisons and membership ops prove named-value polarity."""
+
+    if op in {"IN", "NOT IN"}:
+        literals = raw if isinstance(raw, list) else [raw]
+    elif op in (_KEEPING_OPS | _EXCLUDING_OPS) and not isinstance(raw, (list, tuple, dict)):
+        literals = [raw]
+    else:
+        return None
+    if not literals or any(
+        item is None or isinstance(item, (list, tuple, dict)) for item in literals
+    ):
+        return None
+    return literals
 
 
 def _value_honored(
@@ -1137,11 +1154,13 @@ def _value_honored(
     for dimension in (str(item) for item in domain.dimensions):
         entry = predicates.get(dimension)
         if entry is not None:
+            if entry["uncertain"]:
+                continue  # this filter might remove the value, even when grouped
             if negative and names & entry["drops"] and not names & entry["keeps"]:
                 return True
             if names & entry["drops"]:
                 continue
-            if not negative and (names & entry["keeps"] or entry["other"]):
+            if not negative and names & entry["keeps"]:
                 return True
             if entry["keeps"]:
                 continue  # the filter keeps other values only
@@ -1157,12 +1176,12 @@ def _contradictory_filter_gaps(query: dict[str, Any]) -> list[CoverageGap]:
     for row in list(query.get("where") or []):
         if not isinstance(row, dict) or not isinstance(row.get("field"), str):
             continue
-        if " ".join(str(row.get("op") or "=").upper().split()) not in _KEEPING_OPS:
+        op = " ".join(str(row.get("op") or "=").upper().split())
+        if op not in _KEEPING_OPS:
             continue
-        raw = row.get("value")
-        kept.setdefault(row["field"], []).append(
-            {str(item) for item in (raw if isinstance(raw, list) else [raw])}
-        )
+        literals = _membership_literals(op, row.get("value"))
+        if literals is not None:
+            kept.setdefault(row["field"], []).append({str(item) for item in literals})
     conflicts = [
         {"field": name, "values": sorted(set().union(*sets))}
         for name, sets in kept.items()
@@ -1290,11 +1309,13 @@ def _positive_filter_evidence(query: dict[str, Any], excluded_text: str) -> list
         if not isinstance(row, dict):
             continue
         op = " ".join(str(row.get("op", "") or "").upper().split())
-        if op not in {"=", "==", "IN", "IS"}:
+        if op not in _KEEPING_OPS:
             continue
         values = row.get("value")
-        items = values if isinstance(values, list) else [values]
-        if any(str(value).casefold() in lowered for value in items if value not in (None, "")):
+        items = _membership_literals(op, values)
+        if items is not None and any(
+            str(value).casefold() in lowered for value in items if value != ""
+        ):
             out.append(
                 {"field": row.get("field") or row.get("dimension"), "op": op, "value": values}
             )
