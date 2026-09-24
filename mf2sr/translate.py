@@ -146,6 +146,15 @@ def translate(
     # Rails auto-creates a measure-derived metric and the explicit
     # metric becomes a duplicate ID.
     metric_names: set[str] = {m["name"] for m in raw["metrics"] if m.get("name")}
+    # Preserve explicit source references before lowering a ratio side to a
+    # measure aggregate. A source metric wins over a same-named measure, even
+    # when that metric cannot be emitted.
+    metric_dependencies = {
+        metric["name"]: _source_metric_refs(metric, metric_names)
+        for metric in raw["metrics"]
+        if metric.get("name")
+    }
+    source_metrics = {metric["name"]: metric for metric in raw["metrics"] if metric.get("name")}
 
     owning_models: set[str] = graph.get("_owning_models", set())
     models_dir = out_root / "models"
@@ -178,6 +187,7 @@ def translate(
             measure_agg=measure_to_agg,
             dimension_ids=dimension_ids,
             running_total_problems=running_total_problems,
+            source_metrics=source_metrics,
             report=report,
         )
         if translated is None:
@@ -185,7 +195,7 @@ def translate(
         metric_name, metric_doc, owner_hint = translated
         metrics_by_owner.setdefault(owner_hint, []).append((metric_name, metric_doc))
         report.metrics_emitted.append(metric_name)
-    _drop_dependents(metrics_by_owner, metric_names, set(measure_owner), report)
+    _drop_dependents(metrics_by_owner, metric_dependencies, report)
 
     rolling = sorted(
         metric_name
@@ -825,6 +835,7 @@ def _build_metric(
     measure_agg: dict[str, str],
     dimension_ids: dict[str, str | None],
     running_total_problems: dict[str, str],
+    source_metrics: dict[str, dict[str, Any]],
     report: TranslationReport,
 ) -> tuple[str, dict[str, Any], str] | None:
     """Translate a MetricFlow metric. Returns
@@ -900,6 +911,27 @@ def _build_metric(
             return None
         num_spec, den_spec = specs
         if num_spec or den_spec:
+            operands = []
+            for side_name, side_spec in ((num_name, num_spec), (den_name, den_spec)):
+                if side_spec is None and side_name in source_metrics:
+                    operands.append({"kind": "metric", "metric": side_name})
+                    continue
+                if side_spec is not None and side_name in source_metrics:
+                    source_metric = source_metrics[side_name]
+                    source_params = source_metric.get("type_params") or {}
+                    source_measure = _normalize_metric_ref(source_params.get("measure"))
+                    if (
+                        (source_metric.get("type") or "simple").lower() != "simple"
+                        or source_measure.get("name") != side_name
+                        or _filter_strings(source_metric.get("filter"))
+                        or _filter_strings(source_measure.get("filter"))
+                    ):
+                        report.warnings.append(
+                            f"metric `{name}`: cannot apply a ratio-side filter to source "
+                            f"metric `{side_name}` without changing its meaning; skipped"
+                        )
+                        return None
+                operands.append(_aggregate_ast(side_name, side_spec, measure_agg))
             doc = {
                 "label": label,
                 "description": description,
@@ -908,8 +940,8 @@ def _build_metric(
                 "expression": {
                     "kind": "arithmetic",
                     "op": "divide",
-                    "left": _aggregate_ast(num_name, num_spec, measure_agg),
-                    "right": _aggregate_ast(den_name, den_spec, measure_agg),
+                    "left": operands[0],
+                    "right": operands[1],
                     "null_behavior": "null_if_zero",
                 },
             }
@@ -1198,17 +1230,22 @@ def _running_total_problems(
 
 def _drop_dependents(
     metrics_by_owner: dict[str, list[tuple[str, dict[str, Any]]]],
-    metric_names: set[str],
-    measure_names: set[str],
+    metric_dependencies: dict[str, set[str]],
     report: TranslationReport,
 ) -> None:
-    """Drop metrics that use a metric mf2sr skipped, which would fail at query time."""
-    skipped = metric_names - set(report.metrics_emitted)
+    """Drop metrics whose explicit source metric inputs mf2sr skipped."""
+    skipped = metric_dependencies.keys() - set(report.metrics_emitted)
     while True:
         dropped = []
         for entries in metrics_by_owner.values():
             for name, doc in list(entries):
-                missing = sorted(_metric_refs(doc, measure_names) & skipped)
+                # Source refs retain ratio identity through lowering. Scan
+                # emitted expressions as a fallback for derived formulas
+                # that omitted their MetricFlow ``metrics`` input list.
+                refs = metric_dependencies.get(name, set()) | _expression_metric_refs(
+                    doc.get("expression")
+                )
+                missing = sorted(refs & skipped)
                 if missing:
                     report.warnings.append(
                         f"metric `{name}`: it uses {', '.join(f'`{m}`' for m in missing)}, "
@@ -1222,18 +1259,29 @@ def _drop_dependents(
         skipped.update(dropped)
 
 
-def _metric_refs(doc: dict[str, Any], measure_names: set[str]) -> set[str]:
-    """The metric names a translated metric uses.
+def _source_metric_refs(metric: dict[str, Any], metric_names: set[str]) -> set[str]:
+    """Explicit metric inputs in MetricFlow's source definition.
 
-    A ratio side names a metric or a measure; the loader falls back to the
-    measure, so a side that names one doesn't count.
+    Simple and cumulative ``measure`` inputs are measures even when a metric
+    shares their name. Ratio inputs resolve to an explicit metric first, then
+    to a measure. Derived inputs are metrics by definition.
     """
-    refs = {
-        str(doc[side])
-        for side in ("numerator", "denominator")
-        if doc.get(side) and str(doc[side]) not in measure_names
+    params = metric.get("type_params") or {}
+    mtype = (metric.get("type") or "simple").lower()
+    if mtype == "ratio":
+        inputs = [params.get("numerator"), params.get("denominator")]
+    elif mtype == "derived":
+        inputs = params.get("metrics") or []
+    else:
+        return set()
+    return {
+        name for item in inputs if (name := _normalize_metric_ref(item).get("name")) in metric_names
     }
-    pending: list[Any] = [doc.get("expression")]
+
+
+def _expression_metric_refs(expression: Any) -> set[str]:
+    refs: set[str] = set()
+    pending = [expression]
     while pending:
         node = pending.pop()
         if isinstance(node, dict):

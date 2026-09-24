@@ -42,8 +42,9 @@ from typing import Any
 
 _JINJA_RE = re.compile(r"\{\{\s*(\w+)\(([^)]*)\)\s*\}\}")
 _DIM_NAME_RE = re.compile(r"['\"]([\w.]+?__)?(\w+)['\"]")
-# One SQL literal: a quoted string (a doubled quote escapes itself) or a number.
-_LITERAL = r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|-?\d+(?:\.\d+)?"
+# SQL strings use single quotes; double quotes name identifiers in DuckDB.
+# Doubled single quotes escape a quote inside a string.
+_LITERAL = r"'(?:[^']|'')*'|-?\d+(?:\.\d+)?"
 _LITERAL_LIST_RE = re.compile(rf"\s*(?:{_LITERAL})\s*(?:,\s*(?:{_LITERAL})\s*)*")
 
 
@@ -78,10 +79,8 @@ def _coerce_scalar(token: str) -> Any:
     passes through unchanged so callers can decide what to do with
     unparseable values."""
     part = token.strip()
-    if (part.startswith("'") and part.endswith("'")) or (
-        part.startswith('"') and part.endswith('"')
-    ):
-        return part[1:-1].replace(part[0] * 2, part[0])
+    if part.startswith("'") and part.endswith("'"):
+        return part[1:-1].replace("''", "'")
     if part.upper() in {"TRUE", "FALSE"}:
         return part.upper() == "TRUE"
     try:
@@ -189,8 +188,8 @@ def parse_filter(filter_str: str) -> dict[str, Any] | None:
     # ``expr >= low AND expr <= high`` (or the inverted OR form) pattern.
     m = re.fullmatch(
         r"\{\{\s*Dimension\(([^)]*)\)\s*\}\}\s+(NOT\s+)?BETWEEN\s+"
-        r"('[^']*'|\"[^\"]*\"|-?\d+(?:\.\d+)?)\s+AND\s+"
-        r"('[^']*'|\"[^\"]*\"|-?\d+(?:\.\d+)?)",
+        rf"({_LITERAL})\s+AND\s+"
+        rf"({_LITERAL})",
         raw,
         re.IGNORECASE,
     )

@@ -307,6 +307,147 @@ def test_a_ratio_whose_filter_cannot_be_kept_is_skipped(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "unsupported",
+    [
+        "{{ Dimension('order__status') }} LIKE 'd%'",
+        "{{ Dimension('order__status') }} = \"expected_status\"",
+    ],
+)
+def test_omitted_source_metric_wins_over_same_named_measure_in_dependents(
+    tmp_path: Path, unsupported: str
+) -> None:
+    report = _translate(
+        tmp_path,
+        [
+            {
+                "name": "orders",
+                "type": "simple",
+                "type_params": {"measure": "orders"},
+                "filter": unsupported,
+            },
+            {"name": "all_orders", "type": "simple", "type_params": {"measure": "orders"}},
+            {
+                "name": "delivered_share",
+                "type": "ratio",
+                "type_params": {"numerator": "orders", "denominator": "all_orders"},
+            },
+            {
+                "name": "filtered_share",
+                "type": "ratio",
+                "type_params": {
+                    "numerator": {"name": "orders", "filter": DELIVERED},
+                    "denominator": "all_orders",
+                },
+            },
+            {
+                "name": "share_twice",
+                "type": "derived",
+                "type_params": {
+                    "expr": "delivered_share * 2",
+                    "metrics": [{"name": "delivered_share"}],
+                },
+            },
+            {
+                "name": "twice_over_all",
+                "type": "ratio",
+                "type_params": {"numerator": "share_twice", "denominator": "all_orders"},
+            },
+            {
+                "name": "direct_derived",
+                "type": "derived",
+                "type_params": {"expr": "orders * 2", "metrics": [{"name": "orders"}]},
+            },
+            {
+                "name": "implicit_derived",
+                "type": "derived",
+                "type_params": {"expr": "orders * 2"},
+            },
+        ],
+    )
+
+    assert report.metrics_emitted == ["all_orders"]
+    assert set(_metrics(report)) == {"all_orders"}
+    for name in (
+        "orders",
+        "delivered_share",
+        "filtered_share",
+        "share_twice",
+        "twice_over_all",
+        "direct_derived",
+        "implicit_derived",
+    ):
+        assert any(w.startswith(f"metric `{name}`:") and "skipped" in w for w in report.warnings)
+    _assert_valid(report)
+    assert _by_month(report, "all_orders")["all_orders"] == [2, 3, 3]
+
+
+def test_ratio_can_use_a_measure_without_an_explicit_source_metric(tmp_path: Path) -> None:
+    report = _translate(
+        tmp_path,
+        [
+            {
+                "name": "revenue_per_order",
+                "type": "ratio",
+                "type_params": {"numerator": "revenue", "denominator": "orders"},
+            }
+        ],
+    )
+    assert report.metrics_emitted == ["revenue_per_order"]
+    _assert_valid(report)
+    assert _by_month(report, "revenue_per_order")["revenue_per_order"] == pytest.approx(
+        [35.0, 50.0, 235.0 / 3]
+    )
+
+
+def test_ratio_keeps_emitted_source_metric_filters(tmp_path: Path) -> None:
+    report = _translate(
+        tmp_path,
+        [
+            {
+                "name": "delivered_orders",
+                "type": "simple",
+                "type_params": {"measure": "orders"},
+                "filter": DELIVERED,
+            },
+            {"name": "all_orders", "type": "simple", "type_params": {"measure": "orders"}},
+            {
+                "name": "delivered_share",
+                "type": "ratio",
+                "type_params": {
+                    "numerator": "delivered_orders",
+                    "denominator": "all_orders",
+                },
+            },
+            {
+                "name": "filtered_source_share",
+                "type": "ratio",
+                "type_params": {
+                    "numerator": {"name": "delivered_orders", "filter": FIRST_ORDER},
+                    "denominator": "all_orders",
+                },
+            },
+            {
+                "name": "filtered_measure_over_source",
+                "type": "ratio",
+                "type_params": {
+                    "numerator": {"name": "orders", "filter": DELIVERED},
+                    "denominator": "delivered_orders",
+                },
+            },
+        ],
+    )
+    assert "filtered_source_share" not in report.metrics_emitted
+    assert "filtered_source_share" not in _metrics(report)
+    assert any(
+        w.startswith("metric `filtered_source_share`:") and "skipped" in w for w in report.warnings
+    )
+    _assert_valid(report)
+    values = _by_month(report, "delivered_share", "filtered_measure_over_source")
+    assert values["delivered_share"] == pytest.approx([1.0, 2 / 3, 1 / 3])
+    assert values["filtered_measure_over_source"] == pytest.approx([1.0, 1.0, 1.0])
+
+
+@pytest.mark.parametrize(
     ("filter_text", "reason"),
     [
         ("{{ Dimension('order__status') }} NOT BETWEEN 'a' AND 'm'", "NOT BETWEEN"),

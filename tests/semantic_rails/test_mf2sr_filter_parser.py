@@ -157,6 +157,38 @@ def test_filter_clauses_compare_and_exclude():
     )
 
 
+@pytest.mark.parametrize(
+    "condition",
+    [
+        '= "expected_status"',
+        'IN ("expected_status")',
+        "NOT IN ('delivered', \"expected_status\")",
+        "BETWEEN \"first_status\" AND 'last'",
+        "NOT BETWEEN 'first' AND \"last_status\"",
+    ],
+)
+def test_double_quoted_identifier_operands_are_not_string_literals(condition):
+    source = "{{ Dimension('order__status') }} " + condition
+    assert parse_filter(source) is None
+    assert filter_clauses(source, DIMENSIONS)[0] == []
+
+
+def test_single_quoted_escaped_strings_still_parse():
+    assert filter_clauses("{{ Dimension('order__status') }} = 'it''s'", DIMENSIONS) == (
+        [{"field": "dimension.shop_order_status", "op": "=", "value": "it's"}],
+        "",
+    )
+    assert filter_clauses(
+        "{{ Dimension('order__status') }} BETWEEN 'it''s' AND 'later'", DIMENSIONS
+    ) == (
+        [
+            {"field": "dimension.shop_order_status", "op": ">=", "value": "it's"},
+            {"field": "dimension.shop_order_status", "op": "<=", "value": "later"},
+        ],
+        "",
+    )
+
+
 def test_in_lists_keep_quoted_commas_and_reject_anything_else():
     assert filter_clauses(
         "{{ Dimension('customer__country') }} IN ('Washington, D.C.', 'NL')", DIMENSIONS
