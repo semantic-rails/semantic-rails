@@ -358,6 +358,67 @@ def test_explicit_bounds_settle_a_long_questions_time_scope(runtime_factory: Any
         runtime.close()
 
 
+@pytest.mark.parametrize("detail", ["query", "best", "full"])
+@pytest.mark.parametrize("endpoint", ["start", "end"])
+def test_one_endpoint_does_not_settle_a_long_question(
+    runtime_factory: Any, detail: str, endpoint: str
+) -> None:
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = SemanticLayerMCPAdapter(runtime).call_tool(
+            "plan",
+            {
+                "intent": "revenue " + "please " * 300 + "in 2017",
+                "detail": detail,
+                "query": {
+                    "time": {
+                        "temporal_role": "temporal_role.jaffle_order_time",
+                        "grain": "year",
+                        endpoint: YEAR_2017[endpoint],
+                    }
+                },
+            },
+        )
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+        hint = payload["why"]["recovery_hints"][1]["message"]
+        assert "query.time" in hint and "partial_query" not in hint
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("detail", ["query", "best", "full"])
+@pytest.mark.parametrize("bounds", [YEAR_2017, {"range": {"last": {"unit": "year", "value": 1}}}])
+def test_public_query_argument_settles_complete_long_question_bounds(
+    runtime_factory: Any, detail: str, bounds: dict[str, Any]
+) -> None:
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = SemanticLayerMCPAdapter(runtime).call_tool(
+            "plan",
+            {
+                "intent": "revenue " + "please " * 300 + "in 2017",
+                "detail": detail,
+                "query": {
+                    "time": {
+                        "temporal_role": "temporal_role.jaffle_order_time",
+                        "grain": "year",
+                        **bounds,
+                    }
+                },
+            },
+        )
+        assert payload["status"] == "ok"
+        assert all(_best(payload)["time"][key] == value for key, value in bounds.items())
+        assert not payload.get("warnings")
+    finally:
+        runtime.close()
+
+
 def test_a_period_comparison_that_drops_the_start_says_so(runtime_factory: Any) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:

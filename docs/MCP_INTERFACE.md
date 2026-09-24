@@ -170,9 +170,10 @@ draft can't take the window's start, because the metric looks back over earlier 
 question compares with an earlier period, `plan` keeps the end and returns
 `why.code="TIME_WINDOW_START_DROPPED"` with the start to filter by.
 Questions longer than 2,000 characters are not partially parsed for time: unless the caller
-provides explicit bounds in `partial_query.time`, they return `TIME_WINDOW_UNRESOLVED` with
-a request to shorten the question or supply those bounds. A date or qualifier beyond the
-limit therefore cannot silently disappear from an otherwise ready draft.
+provides a complete window in `query.time` (both `start` and `end`, or a relative `range`),
+they return `TIME_WINDOW_UNRESOLVED` with a request to shorten the question or supply those
+bounds. Include the selected `temporal_role` and `grain` in that time block. A date or
+qualifier beyond the limit therefore cannot silently disappear from an otherwise ready draft.
 Use `detail="full"` only when you need alternatives or blocked drafts.
 
 Use `compile` and read its `explain` payload to review relationship paths before executing a

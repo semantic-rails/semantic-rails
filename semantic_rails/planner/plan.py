@@ -1112,10 +1112,12 @@ def _unresolved_time_why(
     if not phrases and not too_long:
         return None
     caller_time = (partial_query or {}).get("time")
-    if isinstance(caller_time, dict) and any(
-        caller_time.get(key) for key in ("start", "end", "range")
-    ):
-        return None
+    if isinstance(caller_time, dict):
+        # An unread suffix may supply either missing endpoint. Only a
+        # complete caller window can settle an overlong question's scope.
+        complete = caller_time.get("range") or (caller_time.get("start") and caller_time.get("end"))
+        if complete or (not too_long and any(caller_time.get(key) for key in ("start", "end"))):
+            return None
     return {
         "code": "TIME_WINDOW_UNRESOLVED",
         "message": (
@@ -1145,10 +1147,10 @@ def _unresolved_time_why(
             {
                 "kind": "provide_explicit_bounds",
                 "message": (
-                    "Or pass explicit bounds via partial_query, e.g. "
-                    '{"time": {"start": "2025-01-01", "end": "2025-02-01"}} '
-                    "(end-exclusive), or the relative form "
-                    '{"time": {"range": {"last": {"unit": "month", "value": 1}}}}.'
+                    "Or pass a complete window in the plan tool's query argument: "
+                    "set query.time.start and query.time.end (end-exclusive), or "
+                    "query.time.range.last with unit and value. Include the selected "
+                    "temporal_role and grain in query.time; use build-options to choose them."
                 ),
             },
         ],
