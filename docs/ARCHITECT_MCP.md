@@ -8,11 +8,42 @@ reconfigure cloud services.
 
 ```bash
 semantic-rails-architect-mcp --transport stdio
-semantic-rails-architect-mcp --transport streamable-http --host 127.0.0.1 --port 8010
+semantic-rails-architect-mcp --transport streamable-http --host 127.0.0.1 --port 8010 \
+  --token-file ~/.config/semantic-rails/architect.token
 ```
 
 The default HTTP port is `8010` so the Architect server does not collide with the local API server
 or the query MCP defaults.
+
+### Network transports
+
+The `sse` and `streamable-http` transports can write files, so they require a bearer token and
+refuse to start without one. The server reads it from `--token-file`, then the file named by
+`SEMANTIC_RAILS_ARCHITECT_TOKEN_FILE`, then `SEMANTIC_RAILS_ARCHITECT_TOKEN`. A token is at least 32
+characters of letters, digits and `- . _ ~ + /` (optionally ending in `=`). Create one without
+printing it:
+
+```bash
+mkdir -p ~/.config/semantic-rails && (umask 077 && python3 -c \
+  "import secrets; print(secrets.token_urlsafe(32))" > ~/.config/semantic-rails/architect.token)
+```
+
+Clients send `Authorization: Bearer <token>`; every other request, including a browser's CORS
+preflight, gets `401`. `mcp_client_config` returns the header as a template,
+`Bearer ${SEMANTIC_RAILS_ARCHITECT_TOKEN}`, for clients that expand environment variables, and never
+the token itself. To give such a client the token without printing it:
+
+```bash
+export SEMANTIC_RAILS_ARCHITECT_TOKEN="$(cat ~/.config/semantic-rails/architect.token)"
+```
+
+The server binds to `127.0.0.1` by default. Host and Origin (DNS-rebinding) checks apply to every
+network bind: requests must name a loopback host (`127.0.0.1`, `localhost`, `[::1]`) or the
+address given to `--host`, with or without a port, and a browser `Origin` must be `http://` on one
+of those names. A wildcard bind (`0.0.0.0`, `::`) therefore serves only clients that reach it
+through a loopback name, such as a container port-forwarded to `localhost`. The token travels in
+clear text over plain HTTP, so reach a server on another machine through an SSH tunnel or a TLS
+proxy rather than binding it to a network address. The stdio transport needs none of this.
 
 From a source checkout, prefix the same commands with `uv run`.
 
