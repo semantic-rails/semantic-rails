@@ -285,6 +285,8 @@ def test_validate_rejects_equals_with_a_list_instead_of_matching_nothing(runtime
         )
         assert report["ok"] is False
         assert report["errors"][0]["code"] == "INVALID_QUERY"
+        assert [hint["code"] for hint in report["recovery_hints"]] == ["USE_IN_FOR_LIST_VALUE"]
+        assert report["errors"][0]["recovery_hints"] == report["recovery_hints"]
         report = _validate(
             runtime, where=[{"field": "dimension.jaffle_store_name", "op": "in", "value": stores}]
         )
@@ -307,6 +309,75 @@ def test_list_on_a_numeric_dimension_gets_the_in_hint_not_a_type_error(runtime_f
         runtime.close()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dimension.jaffle_store_name", [1, 2]),
+        ("dimension.jaffle_order_customer_order_number", ["bad", 2]),
+    ],
+)
+def test_wrong_type_list_still_gets_scalar_op_shape_hint_on_public_paths(
+    runtime_factory, field, value
+):
+    runtime = runtime_factory("jaffle_shop")
+    query = {
+        "version": 1,
+        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "group_by": ["dimension.jaffle_store_name"],
+        "where": [{"field": field, "op": "=", "value": value}],
+    }
+    try:
+        report = runtime.validate(query)
+        assert report["ok"] is False
+        issue = report["errors"][0]
+        assert issue["code"] == "INVALID_QUERY"
+        assert [hint["code"] for hint in issue["recovery_hints"]] == ["USE_IN_FOR_LIST_VALUE"]
+        assert report["recovery_hints"] == issue["recovery_hints"]
+        for method in (runtime.compile, runtime.query):
+            with pytest.raises(SemanticLayerError) as exc:
+                method(query)
+            assert exc.value.code == "INVALID_QUERY"
+            assert [hint["code"] for hint in exc.value.details["recovery_hints"]] == [
+                "USE_IN_FOR_LIST_VALUE"
+            ]
+    finally:
+        runtime.close()
+
+
+def test_numeric_membership_lists_and_scalar_type_diagnostics_stay_intact(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    field = "dimension.jaffle_order_customer_order_number"
+    try:
+        for op in ("IN", "NOT IN"):
+            query = {
+                "version": 1,
+                "select": [
+                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
+                ],
+                "group_by": ["dimension.jaffle_store_name"],
+                "where": [{"field": field, "op": op, "value": [1, 2]}],
+            }
+            assert runtime.validate(query)["ok"]
+            assert runtime.compile(query)["ok"]
+            assert runtime.query(query)["ok"]
+        for op, value in (("=", "bad"), ("IN", ["bad", 2])):
+            report = _validate(runtime, where=[{"field": field, "op": op, "value": value}])
+            assert report["ok"] is False
+            issue = report["errors"][0]
+            assert issue["code"] == "INVALID_QUERY"
+            assert "expects a numeric value" in issue["message"]
+            assert issue["recovery_hints"] == []
+        string_report = _validate(
+            runtime,
+            where=[{"field": "dimension.jaffle_store_name", "op": "=", "value": 1}],
+        )
+        assert string_report["ok"] is False
+        assert "expects a string value" in string_report["errors"][0]["message"]
+        assert string_report["errors"][0]["recovery_hints"] == []
+    finally:
+        runtime.close()
+
+
 def test_validate_rejects_a_list_in_a_metric_filter_comparison(runtime_factory):
     # Used to validate, then fail in the warehouse on the stringified list.
     runtime = runtime_factory("jaffle_shop")
@@ -323,5 +394,7 @@ def test_validate_rejects_a_list_in_a_metric_filter_comparison(runtime_factory):
         )
         assert report["ok"] is False
         assert report["errors"][0]["code"] == "INVALID_QUERY"
+        assert [hint["code"] for hint in report["recovery_hints"]] == ["USE_IN_FOR_LIST_VALUE"]
+        assert report["errors"][0]["recovery_hints"] == report["recovery_hints"]
     finally:
         runtime.close()

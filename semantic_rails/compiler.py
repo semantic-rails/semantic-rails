@@ -152,6 +152,7 @@ from .sql_ast import (
     SqlWindow,
     SqlWithinGroup,
     build_filter_condition,
+    validate_single_value_filter_shape,
 )
 
 __all__ = [
@@ -952,7 +953,9 @@ def _validate_where_value_type(dim, item) -> None:
     Per-dim `data_type` may be empty when the catalog hasn't classified
     the column; in that case skip the check (nothing to enforce).
     """
-    # Check a list's elements for any op; the lowering rejects a list outside IN / NOT IN.
+    # Report an invalid scalar-op/list shape before any element type mismatch.
+    validate_single_value_filter_shape(item.op, item.value)
+    # For valid IN / NOT IN lists, keep checking every element's type.
     values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:
