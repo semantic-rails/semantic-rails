@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -3797,26 +3797,71 @@ def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, 
     return day.column
 
 
-def _calendar_bound(value: Any, zone: tzinfo) -> datetime | None:
-    """Interpret an offset bound in the role's calendar zone; keep naive wall time."""
+def _calendar_bound(value: Any) -> datetime | None:
+    """Parse a bound without projecting it through the finite datetime range."""
     try:
-        moment = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return moment.astimezone(zone) if moment.tzinfo is not None else moment
 
 
 def _fractional_second(value: Any) -> Decimal:
     """Keep digits beyond ``datetime``'s microsecond limit for bound decisions."""
-    match = re.match(r"^\d{4}(?:-?\d{2}){2}.\d{2}:?\d{2}:?\d{2}\.(\d+)", str(value).strip())
+    match = re.match(r"^\d{4}(?:-?\d{2}){2}.\d{2}:?\d{2}:?\d{2}[.,](\d+)", str(value).strip())
     return Decimal(f"0.{match[1]}") if match else Decimal(0)
+
+
+def _offset_microseconds(offset: timedelta) -> int:
+    return ((offset.days * 86400 + offset.seconds) * 1_000_000) + offset.microseconds
+
+
+def _instant_tick(moment: datetime, value: Any) -> tuple[int, Decimal]:
+    """Represent an instant without constructing an out-of-range UTC datetime."""
+    offset = moment.utcoffset() or timedelta()
+    micros = (
+        (moment.toordinal() * 86400 + moment.hour * 3600 + moment.minute * 60 + moment.second)
+        * 1_000_000
+        + moment.microsecond
+        - _offset_microseconds(offset)
+    )
+    return micros, _fractional_second(value) - Decimal(moment.microsecond) / 1_000_000
+
+
+def _calendar_day(moment: datetime, value: Any, zone: tzinfo) -> tuple[int, bool]:
+    """Return the role-zone day and whether the bound is after its midnight."""
+    if moment.tzinfo is None:
+        local = moment
+    else:
+        try:
+            local = moment.astimezone(zone)
+        except OverflowError:
+            # UTC may be outside years 1..9999 even when the role-zone day is in range.
+            # ZoneInfo's edge offset projects that instant without a UTC datetime.
+            edge = datetime.min if moment.year == 1 else datetime.max
+            role_offset = zone.utcoffset(edge.replace(tzinfo=zone)) or timedelta()
+            instant_us, tail = _instant_tick(moment, value)
+            local_us = instant_us + _offset_microseconds(role_offset)
+            ordinal, day_us = divmod(local_us, 86_400_000_000)
+            if 1 <= ordinal <= datetime.max.toordinal():
+                seconds, micros = divmod(day_us, 1_000_000)
+                hours, seconds = divmod(seconds, 3600)
+                minutes, seconds = divmod(seconds, 60)
+                local = datetime.fromordinal(ordinal).replace(
+                    hour=hours, minute=minutes, second=seconds, microsecond=micros, tzinfo=zone
+                )
+                checked_offset = local.utcoffset() or timedelta()
+                if checked_offset != role_offset:
+                    local_us = instant_us + _offset_microseconds(checked_offset)
+                    ordinal, day_us = divmod(local_us, 86_400_000_000)
+            return ordinal, bool(day_us or tail)
+    return local.toordinal(), bool(local.time() != datetime.min.time() or _fractional_second(value))
 
 
 def _has_offset_bound(time: dict[str, Any]) -> bool:
     if time.get("start") is None or time.get("end") is None:
         return False
     return any(
-        (moment := _calendar_bound(time.get(key), UTC)) is not None and moment.tzinfo is not None
+        (moment := _calendar_bound(time.get(key))) is not None and moment.tzinfo is not None
         for key in ("start", "end")
     )
 
@@ -3825,8 +3870,9 @@ def _nonpositive_window(
     start: datetime, end: datetime, zone: tzinfo, start_value: Any, end_value: Any
 ) -> bool:
     if start.tzinfo is not None or end.tzinfo is not None:
-        start = (start if start.tzinfo is not None else start.replace(tzinfo=zone)).astimezone(UTC)
-        end = (end if end.tzinfo is not None else end.replace(tzinfo=zone)).astimezone(UTC)
+        return _instant_tick(
+            start if start.tzinfo is not None else start.replace(tzinfo=zone), start_value
+        ) >= _instant_tick(end if end.tzinfo is not None else end.replace(tzinfo=zone), end_value)
     return (start, _fractional_second(start_value)) >= (end, _fractional_second(end_value))
 
 
@@ -3839,7 +3885,7 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
     role = _temporal_role_index(config).get(str(time.get("temporal_role") or ""))
     zone_name = str(getattr(role, "timezone", "UTC") or "UTC")
     zone = UTC if zone_name == "UTC" else ZoneInfo(zone_name)
-    moments = {key: _calendar_bound(time[key], zone) for key in ("start", "end")}
+    moments = {key: _calendar_bound(time[key]) for key in ("start", "end")}
     start, end = moments["start"], moments["end"]
     if (
         start is not None
@@ -3852,11 +3898,15 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
         value = time[key]
         moment = moments[key]
         if moment is not None and len(str(value).strip()) > 10:
-            day_value = moment.date()
-            if key == "end" and (moment.time() != datetime.min.time() or _fractional_second(value)):
-                # The last representable date cannot be incremented.
+            ordinal, after_midnight = _calendar_day(moment, value, zone)
+            if (key == "start" and ordinal > datetime.max.toordinal()) or (
+                key == "end" and ordinal < 1
+            ):
+                return [SqlBinary(SqlLiteral(1), "=", SqlLiteral(0))]
+            day_value = datetime.fromordinal(min(max(ordinal, 1), datetime.max.toordinal()))
+            if key == "end" and (after_midnight or ordinal > datetime.max.toordinal()):
                 operator = "<="
-            value = day_value.isoformat()
+            value = day_value.date().isoformat()
         bounds.append(SqlBinary(day, operator, SqlLiteral(value)))
     return bounds
 
