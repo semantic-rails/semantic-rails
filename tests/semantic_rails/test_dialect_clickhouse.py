@@ -3,14 +3,17 @@
 Covers (a) dialect rendering for every overridden method, (b) adapter
 option normalization / secret hygiene / error redaction with a faked
 ``clickhouse_connect`` driver, and (c) a compile-only sweep of the full
-integration battery against the clickhouse dialect. No network.
+integration battery against the clickhouse dialect. The redirect
+regressions use loopback HTTP only; no external network is required.
 """
 
 from __future__ import annotations
 
 import sys
+import threading
 import types
 from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -133,9 +136,31 @@ class _FakeResult:
 
 
 def _install_fake_driver(monkeypatch: pytest.MonkeyPatch, captured: dict, *, fail: str = ""):
+    class FakePool:
+        def request(self, method, url, **kwargs):
+            captured.setdefault("requests", []).append((method, url, kwargs))
+            return "response"
+
+        def clear(self):
+            captured["pool_cleared"] = True
+
+    httputil = types.ModuleType("clickhouse_connect.driver.httputil")
+    httputil.all_managers = {}
+    httputil.check_env_proxy = lambda scheme, host, port: None
+
+    def get_pool_manager(**kwargs):
+        captured["pool_kwargs"] = kwargs
+        pool = FakePool()
+        httputil.all_managers[pool] = 1
+        captured["pool"] = pool
+        return pool
+
+    httputil.get_pool_manager = get_pool_manager
+
     class FakeClient:
         def __init__(self, **kwargs):
             captured["connect_kwargs"] = kwargs
+            self.http = kwargs["pool_mgr"]
 
         def query(self, sql, settings=None):
             captured["sql"] = sql
@@ -149,7 +174,12 @@ def _install_fake_driver(monkeypatch: pytest.MonkeyPatch, captured: dict, *, fai
 
     module = types.ModuleType("clickhouse_connect")
     module.get_client = lambda **kwargs: FakeClient(**kwargs)
+    driver = types.ModuleType("clickhouse_connect.driver")
+    driver.httputil = httputil
+    module.driver = driver
     monkeypatch.setitem(sys.modules, "clickhouse_connect", module)
+    monkeypatch.setitem(sys.modules, "clickhouse_connect.driver", driver)
+    monkeypatch.setitem(sys.modules, "clickhouse_connect.driver.httputil", httputil)
 
 
 def _adapter_options() -> dict[str, str]:
@@ -336,39 +366,53 @@ def test_battery_compiles_for_clickhouse():
 
 
 def test_adapter_client_pool_does_not_follow_redirects(monkeypatch: pytest.MonkeyPatch):
-    requests: list = []
-
-    class FakePool:
-        def request(self, method, url, **kwargs):
-            requests.append((method, url, kwargs))
-            return "response"
-
-        def clear(self):
-            return "cleared"
-
     captured: dict = {}
     _install_fake_driver(monkeypatch, captured)
     module = sys.modules["clickhouse_connect"]
     make_client = module.get_client
 
     def get_client(**kwargs):
-        client = make_client(**kwargs)
-        client.http = FakePool()
-        return client
+        # Real clickhouse-connect sends its first request inside get_client.
+        kwargs["pool_mgr"].request("POST", "http://ch:8123/", body=b"init", retries=2)
+        return make_client(**kwargs)
 
     module.get_client = get_client
     monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
     monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
     monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
 
-    client = ClickHouseAdapter(_adapter_options())._client_handle()
+    adapter = ClickHouseAdapter(_adapter_options())
+    client = adapter._client_handle()
 
-    assert client.http.request("POST", "http://ch:8123/", body=b"q", retries=2) == "response"
-    assert requests == [
-        ("POST", "http://ch:8123/", {"body": b"q", "retries": 2, "redirect": False})
+    assert captured["requests"] == [
+        ("POST", "http://ch:8123/", {"body": b"init", "retries": 2, "redirect": False})
     ]
-    # Everything else still reaches the driver's own pool.
-    assert client.http.clear() == "cleared"
+    assert client.http is captured["pool"]
+    adapter.close()
+    assert captured["pool_cleared"] is True
+    assert captured["pool"] not in sys.modules["clickhouse_connect.driver.httputil"].all_managers
+
+
+def test_adapter_uses_driver_https_proxy_pool(monkeypatch: pytest.MonkeyPatch):
+    captured: dict = {}
+    _install_fake_driver(monkeypatch, captured)
+    httputil = sys.modules["clickhouse_connect.driver.httputil"]
+
+    def proxy_for(scheme, host, port):
+        captured["proxy_lookup"] = (scheme, host, port)
+        return "http://proxy.local:8080"
+
+    httputil.check_env_proxy = proxy_for
+    monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
+    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
+    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
+    adapter = ClickHouseAdapter({**_adapter_options(), "secure": "true"})
+    adapter._client_handle()
+    adapter.close()
+
+    assert captured["proxy_lookup"] == ("https", "ch.example.com", 9000)
+    assert captured["pool_kwargs"] == {"https_proxy": "http://proxy.local:8080"}
+    assert captured["connect_kwargs"]["pool_mgr"] is captured["pool"]
 
 
 def test_no_redirect_pool_returns_the_redirect_instead_of_following_it():
@@ -377,7 +421,7 @@ def test_no_redirect_pool_returns_the_redirect_instead_of_following_it():
 
     import urllib3
 
-    from semantic_rails.db_parts.clickhouse import _NoRedirects
+    from semantic_rails.db_parts.clickhouse import _no_redirect_pool
 
     hits: list[str] = []
 
@@ -403,10 +447,74 @@ def test_no_redirect_pool_returns_the_redirect_instead_of_following_it():
         followed = urllib3.PoolManager().request("GET", url)
         hits_when_followed = list(hits)
         hits.clear()
-        kept = _NoRedirects(urllib3.PoolManager()).request("GET", url)
+        manager = urllib3.PoolManager()
+        httputil = types.SimpleNamespace(
+            check_env_proxy=lambda scheme, host, port: None,
+            get_pool_manager=lambda **kwargs: manager,
+        )
+        kept = _no_redirect_pool(
+            httputil, {"host": "127.0.0.1", "port": server.server_port, "secure": False}
+        ).request("GET", url)
     finally:
         server.shutdown()
         server.server_close()
 
     assert (followed.status, hits_when_followed) == (200, ["/start", "/elsewhere"])
     assert (kept.status, hits) == (302, ["/start"])
+
+
+def test_real_driver_constructor_cannot_follow_redirect(monkeypatch: pytest.MonkeyPatch):
+    pytest.importorskip("clickhouse_connect")
+    from clickhouse_connect.driver import httputil
+
+    managers_before = set(httputil.all_managers)
+    hits: list[str] = []
+
+    class Destination(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server API
+            hits.append("destination")
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    destination = HTTPServer(("127.0.0.1", 0), Destination)
+
+    class Configured(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server API
+            hits.append("configured")
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{destination.server_port}/target")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    configured = HTTPServer(("127.0.0.1", 0), Configured)
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True)
+        for server in (destination, configured)
+    ]
+    for thread in threads:
+        thread.start()
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("SR_CH_TEST_HOST", "127.0.0.1")
+    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
+    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
+    try:
+        options = {**_adapter_options(), "port": str(configured.server_port)}
+        with pytest.raises(SemanticLayerError) as exc:
+            ClickHouseAdapter(options).query("select 1")
+    finally:
+        for server in (configured, destination):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=2)
+
+    assert exc.value.code == "QUERY_EXECUTION_ERROR"
+    assert hits == ["configured"]
+    assert set(httputil.all_managers) == managers_before
