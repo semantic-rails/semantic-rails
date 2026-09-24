@@ -540,6 +540,119 @@ def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected,
         assert results[True] == []
 
 
+@pytest.mark.parametrize(
+    ("start", "end", "expected_operator", "expected_day", "empty_interval"),
+    [
+        ("2017-07-03", "9999-12-31T23:59:59", "<=", "9999-12-31", False),
+        ("2017-07-03", "9999-12-31T00:00:00", "<", "9999-12-31", False),
+        ("2017-07-03", "9999-12-31T00:00:00.000000001", "<=", "9999-12-31", False),
+        ("0001-01-01T00:00:00.000000001", "2017-07-04", "<", "2017-07-04", False),
+        ("9999-12-31T00:00:00.000000001", "9999-12-31T00:00:00.000000001", None, None, True),
+        ("9999-12-31T00:00:00.000000002", "9999-12-31T00:00:00.000000001", None, None, True),
+    ],
+    ids=[
+        "max-late",
+        "max-midnight",
+        "max-submicrosecond",
+        "min-submicrosecond",
+        "max-equal",
+        "max-reversed",
+    ],
+)
+def test_fill_boundary_dates_do_not_overflow(
+    runtime_factory, start, end, expected_operator, expected_day, empty_interval
+):
+    runtime = runtime_factory("jaffle_shop")
+    query = {
+        **_JULY_BY_WEEK,
+        "time": {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end},
+    }
+    try:
+        sql = compile_query(runtime.config, Registry(runtime.config), query)["sql"]
+        rows = runtime._get_adapter().query(sql)
+    finally:
+        runtime.close()
+
+    if empty_interval:
+        assert rows == []
+        assert "1 = 0" in sql
+    else:
+        assert rows
+        assert sum(row["orders"] for row in rows) >= 1
+        assert f"jaffle_calendar.date_day {expected_operator} '{expected_day}'" in sql
+
+
+@pytest.mark.parametrize(
+    ("zone", "calendar_day", "start", "end", "expected"),
+    [
+        (
+            "UTC",
+            "9999-12-31",
+            "9999-12-30T00:00:00",
+            "9999-12-31T00:00:00",
+            [],
+        ),
+        (
+            "UTC",
+            "9999-12-31",
+            "9999-12-30T00:00:00",
+            "9999-12-31T00:00:00.000000001",
+            [date(9999, 12, 31)],
+        ),
+        (
+            "America/New_York",
+            "9999-12-31",
+            "9999-12-30T00:00:00+00:00",
+            "9999-12-31T23:59:59+00:00",
+            [date(9999, 12, 31)],
+        ),
+        (
+            "Asia/Tokyo",
+            "0001-01-01",
+            "0001-01-01T00:00:00+00:00",
+            "0001-01-02T00:00:00+00:00",
+            [date(1, 1, 1)],
+        ),
+    ],
+    ids=[
+        "maximum-exact-midnight-excludes-last-day",
+        "maximum-submicrosecond-includes-last-day",
+        "maximum-in-negative-offset-zone",
+        "minimum-in-positive-offset-zone",
+    ],
+)
+def test_fill_date_extremes_with_representable_zone_conversion(
+    tmp_path, zone, calendar_day, start, end, expected
+):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
+        connection.execute("INSERT INTO jaffle_calendar VALUES (?, ?, ?, ?, ?)", [calendar_day] * 5)
+        from semantic_rails.config import load_package_config
+
+        config = load_package_config(str(package_dir))
+        config = dataclasses.replace(
+            config,
+            temporal_roles=[
+                dataclasses.replace(row, timezone=zone)
+                if row.id == "temporal_role.jaffle_order_time"
+                else row
+                for row in config.temporal_roles
+            ],
+        )
+        query = {
+            **_JULY_BY_WEEK,
+            "time": {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end},
+        }
+        sql = compile_query(config, Registry(config), query)["sql"]
+        rows = connection.execute(
+            'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
+            f"FROM ({sql}) AS boundary_result"
+        ).fetchall()
+
+    assert [day for day, _ in rows] == expected
+    assert all(count == 0 for _, count in rows)
+
+
 def test_offset_fill_marks_source_bucket_presence_for_clickhouse():
     # ClickHouse defaults unmatched FULL OUTER JOIN fields to their type's zero
     # value, so the chosen bucket must not depend on an unmatched field being NULL.

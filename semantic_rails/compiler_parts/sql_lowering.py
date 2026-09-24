@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, datetime, tzinfo
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -3854,7 +3854,8 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
         if moment is not None and len(str(value).strip()) > 10:
             day_value = moment.date()
             if key == "end" and (moment.time() != datetime.min.time() or _fractional_second(value)):
-                day_value += timedelta(days=1)
+                # The last representable date cannot be incremented.
+                operator = "<="
             value = day_value.isoformat()
         bounds.append(SqlBinary(day, operator, SqlLiteral(value)))
     return bounds
