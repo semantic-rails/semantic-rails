@@ -131,6 +131,63 @@ def test_a_dry_run_import_writes_nothing(workspace: Path) -> None:
     assert project_revision(workspace / "shop") == before
 
 
+@pytest.mark.parametrize("artifact", ["manifest.json", "catalog.json"])
+@pytest.mark.parametrize("tool", ["suggest_models_from_dbt", "import_dbt_project"])
+def test_dbt_target_children_must_resolve_inside_workspace(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, artifact: str, tool: str
+) -> None:
+    target = workspace / "dbt" / "target"
+    child = target / artifact
+    outside = workspace.parent / f"{workspace.name}-{artifact}"
+    sentinel = "SYNTHETIC_OUTSIDE_ARTIFACT"
+    payload = json.loads(child.read_text(encoding="utf-8"))
+    payload["synthetic_marker"] = sentinel
+    outside.write_text(json.dumps(payload), encoding="utf-8")
+    child.unlink()
+    child.symlink_to(outside)
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path.resolve() == outside:
+            raise AssertionError("outside artifact was read")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    server = create_architect_mcp_server(workspace_root=workspace)
+    args: dict[str, Any] = {"target_dir": "dbt/target", "select": ["fct_orders"]}
+    if tool == "import_dbt_project":
+        args.update(
+            project_path="shop",
+            expected_revision=project_revision(workspace / "shop"),
+            idempotency_key="child-symlink",
+            dry_run=True,
+        )
+
+    (result,) = _calls(server, [(tool, args)])
+
+    assert result["ok"] is False
+    assert "workspace root" in result["error"]["message"]
+    assert sentinel not in str(result)
+
+
+@pytest.mark.parametrize("artifact", ["manifest.json", "catalog.json"])
+def test_dbt_target_children_may_link_within_workspace(workspace: Path, artifact: str) -> None:
+    target = workspace / "dbt" / "target"
+    child = target / artifact
+    stored = target / f"stored-{artifact}"
+    child.rename(stored)
+    child.symlink_to(stored)
+    server = create_architect_mcp_server(workspace_root=workspace)
+
+    (result,) = _calls(
+        server,
+        [("suggest_models_from_dbt", {"target_dir": "dbt/target", "select": ["fct_orders"]})],
+    )
+
+    assert result["ok"] is True, result
+    assert result["dbt_project"] == "shop_dbt"
+
+
 def test_models_without_a_dbt_key_are_reported_not_imported(workspace: Path) -> None:
     server = create_architect_mcp_server(workspace_root=workspace)
 
@@ -176,6 +233,78 @@ def _referencing_lines(reference: dict[str, Any]) -> dict[str, Any]:
         "relation": "main_marts.fct_order_lines",
         "primary_key": ["order_id", "line_number"],
         "references": [{**reference, "columns": ["buyer_id"], "to_columns": ["customer_id"]}],
+    }
+
+
+@pytest.mark.parametrize("columns", [["buyer_id", "seller_id"], ["seller_id", "buyer_id"]])
+def test_two_foreign_keys_to_one_entity_are_reported_without_a_chosen_join(
+    workspace: Path, columns: list[str]
+) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    before = project_revision(workspace / "shop")
+    lines = _referencing_lines({"entity": "customer"})
+    lines["references"] = [
+        {"entity": "customer", "columns": [column], "to_columns": ["customer_id"]}
+        for column in columns
+    ]
+    models = [_target_model("customer"), lines]
+
+    preview = project.upsert_models(
+        models, expected_revision=before, idempotency_key="dual-fk", dry_run=True
+    ).report
+    assert preview["ok"] is True, preview
+    assert preview["references"] == []
+    assert len(preview["skipped_references"]) == 2
+    assert {tuple(row["columns"]) for row in preview["skipped_references"]} == {
+        ("buyer_id",),
+        ("seller_id",),
+    }
+    assert all("multiple foreign keys" in row["reason"] for row in preview["skipped_references"])
+    assert project_revision(workspace / "shop") == before
+
+    applied = project.upsert_models(
+        models, expected_revision=before, idempotency_key="dual-fk"
+    ).report
+    assert applied["ok"] is True, applied
+    assert applied["references"] == preview["references"]
+    assert applied["skipped_references"] == preview["skipped_references"]
+    assert (
+        "customer" not in _model(workspace / "shop" / "models" / "core" / "lines.yml")["entities"]
+    )
+    revision = project_revision(workspace / "shop")
+    replayed = project.upsert_models(
+        models, expected_revision=before, idempotency_key="dual-fk"
+    ).report
+    assert replayed["idempotent_replay"] is True
+    assert replayed["references"] == applied["references"]
+    assert project_revision(workspace / "shop") == revision
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_identical_foreign_keys_to_one_entity_are_recorded_once(
+    workspace: Path, reverse: bool
+) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    lines = _referencing_lines({"entity": "customer"})
+    references = [
+        {"entity": "customer", "columns": ["buyer_id"], "to_columns": ["customer_id"]},
+        {
+            "relation": "main_marts.dim_customers",
+            "columns": ["buyer_id"],
+            "to_columns": ["customer_id"],
+        },
+    ]
+    lines["references"] = list(reversed(references)) if reverse else references
+
+    applied = project.upsert_models([_target_model("customer"), lines]).report
+
+    assert applied["ok"] is True, applied
+    assert applied["references"] == [
+        {"model": "lines", "entity": "customer", "columns": ["buyer_id"]}
+    ]
+    assert applied["skipped_references"] == []
+    assert _model(workspace / "shop" / "models" / "core" / "lines.yml")["entities"]["customer"] == {
+        "expr": "buyer_id"
     }
 
 

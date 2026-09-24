@@ -119,7 +119,7 @@ never create, seed or change it.
 
 - `list_tables`: tables and views, optionally for one `schema`, with column counts.
 - `describe_table`: columns with types, nullability and defaults, and declared primary, unique and
-  foreign keys.
+  foreign keys, with referenced relations schema-qualified when needed.
 - `profile_columns`: row, distinct and null counts, min/max and up to 20 sample values per column
   (`sample_limit`, default 5; `0` returns none). At most one million rows are profiled;
   `max_rows` can lower that cap. Larger tables use a uniform sample, reported as `sampled`.
@@ -151,7 +151,8 @@ The same functions are available to Python callers in `semantic_rails.architect_
 (dbt's `target/`, inside the workspace) or `manifest_path`, and optionally `catalog_path`; `select`
 narrows the models by name. Run `dbt build` first, and `dbt docs generate` for `catalog.json`,
 which carries column types (without it, columns the manifest does not type are reported as
-`untyped_columns`).
+`untyped_columns`). The final manifest and catalog files must resolve inside the workspace;
+in-workspace links are supported.
 
 Each dbt model becomes a suggestion in the same shape as `suggest_model`, but the facts come from
 dbt:
@@ -179,6 +180,9 @@ without a key in dbt in `skipped_models`. A dbt model whose derived id matches a
 An imported target's dbt manifest identity selects that staged model even when another package
 model reads the same relation. A relation-only reference resolves when exactly one eligible
 semantic entity reads it; ambiguous targets are listed in `skipped_references` for review.
+If a model has different foreign-key columns pointing to the same semantic entity, both links
+are reported in `skipped_references` because one entity reference cannot represent both joins.
+Identical links are recorded once.
 
 Python callers use `semantic_rails.dbt_artifacts` (`load_dbt_artifacts`,
 `suggest_models_from_dbt`, `dbt_import_models`) and `ArchitectProject.upsert_models`, which stages

@@ -745,6 +745,7 @@ class ArchitectProject:
                 dbt_targets.setdefault(dbt_unique_id, set()).add((relation, fact["entity_key"]))
         added: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
+        pending: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any], list[str]]]] = {}
         for item, fact in zip(models, staged, strict=True):
             for reference in list(item.get("references") or []):
                 target = str(reference.get("entity") or "")
@@ -778,14 +779,33 @@ class ArchitectProject:
                 if reason:
                     skipped.append({"model": fact["model"], **reference, "reason": reason})
                     continue
-                model = self._staged_model(documents[fact["model_path"]], fact["model"])
-                entry = (
-                    {}
-                    if columns == target_key
-                    else {"expr": columns[0] if len(columns) == 1 else columns}
-                )
-                model["entities"] = {**dict(model.get("entities", {}) or {}), target: entry}
-                added.append({"model": fact["model"], "entity": target, "columns": columns})
+                pending.setdefault((fact["model"], target), []).append((fact, reference, columns))
+        for (_, target), references in pending.items():
+            if len({tuple(columns) for _, _, columns in references}) > 1:
+                for fact, reference, _ in sorted(
+                    references, key=lambda row: (tuple(row[2]), str(row[1]))
+                ):
+                    skipped.append(
+                        {
+                            "model": fact["model"],
+                            **reference,
+                            "reason": (
+                                f"multiple foreign keys to {target} use different columns; "
+                                "one entity cannot represent both relationships"
+                            ),
+                        }
+                    )
+                continue
+            fact, _, columns = references[0]
+            target_key = entity_keys[target]
+            model = self._staged_model(documents[fact["model_path"]], fact["model"])
+            entry = (
+                {}
+                if columns == target_key
+                else {"expr": columns[0] if len(columns) == 1 else columns}
+            )
+            model["entities"] = {**dict(model.get("entities", {}) or {}), target: entry}
+            added.append({"model": fact["model"], "entity": target, "columns": columns})
         graph_paths = {fact["graph_path"] for fact in staged}
         model_paths = {fact["model_path"] for fact in staged}
         if not any(fact["graph_changed"] for fact in staged):

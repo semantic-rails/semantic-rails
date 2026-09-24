@@ -247,7 +247,9 @@ def describe_table(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
                 {
                     "columns": names,
                     "references": {
-                        "relation": str(row["referenced_table"] or ""),
+                        # DuckDB permits declared foreign keys only within the
+                        # same schema and reports the target table without it.
+                        "relation": _relation_name(schema, str(row["referenced_table"] or "")),
                         "columns": [str(column) for column in row["referenced_column_names"] or []],
                     },
                 }

@@ -84,6 +84,77 @@ def test_describe_table_reports_types_nullability_and_declared_keys(tmp_path: Pa
     ]
 
 
+def test_declared_foreign_key_keeps_schema_and_quoted_composite_target(tmp_path: Path) -> None:
+    db_path = tmp_path / "keys.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE SCHEMA main_marts")
+        conn.execute("CREATE TABLE main.customers (customer_id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE main_marts.customers (customer_id INTEGER PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE main_marts.orders (order_id INTEGER PRIMARY KEY, "
+            "customer_id INTEGER REFERENCES main_marts.customers(customer_id))"
+        )
+        conn.execute('CREATE SCHEMA "sales-data"')
+        conn.execute(
+            'CREATE TABLE "sales-data"."dim""customers" '
+            '("tenant id" INTEGER, "customer-id" INTEGER, '
+            'PRIMARY KEY ("tenant id", "customer-id"))'
+        )
+        conn.execute(
+            'CREATE TABLE "sales-data"."fct orders" '
+            '("tenant id" INTEGER, "customer-id" INTEGER, '
+            'FOREIGN KEY ("tenant id", "customer-id") REFERENCES '
+            '"sales-data"."dim""customers" ("tenant id", "customer-id"))'
+        )
+
+    with open_duckdb(db_path) as warehouse:
+        orders = describe_table(warehouse, "main_marts.orders")
+        suggested = suggest_model(warehouse, "main_marts.orders")
+        target = describe_table(warehouse, orders["foreign_keys"][0]["references"]["relation"])
+        quoted = describe_table(warehouse, "sales-data.fct orders")
+        quoted_target = describe_table(
+            warehouse, quoted["foreign_keys"][0]["references"]["relation"]
+        )
+
+    assert orders["foreign_keys"] == [
+        {
+            "columns": ["customer_id"],
+            "references": {"relation": "main_marts.customers", "columns": ["customer_id"]},
+        }
+    ]
+    assert target["relation"] == "main_marts.customers"
+    assert suggested["foreign_keys"][0]["references"] == orders["foreign_keys"][0]["references"]
+    assert suggested["foreign_keys"][0]["confidence"] == "high"
+    assert quoted["foreign_keys"] == [
+        {
+            "columns": ["tenant id", "customer-id"],
+            "references": {
+                "relation": 'sales-data.dim"customers',
+                "columns": ["tenant id", "customer-id"],
+            },
+        }
+    ]
+    assert quoted_target["primary_key"] == ["tenant id", "customer-id"]
+
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    path = {"duckdb_path": "keys.duckdb"}
+    mcp_orders, mcp_suggested, mcp_target, mcp_quoted, mcp_quoted_target = _session(
+        server,
+        [
+            ("describe_table", {**path, "relation": "main_marts.orders"}),
+            ("suggest_model", {**path, "relation": "main_marts.orders"}),
+            ("describe_table", {**path, "relation": "main_marts.customers"}),
+            ("describe_table", {**path, "relation": "sales-data.fct orders"}),
+            ("describe_table", {**path, "relation": 'sales-data.dim"customers'}),
+        ],
+    )
+    assert mcp_orders["foreign_keys"] == orders["foreign_keys"]
+    assert mcp_suggested["foreign_keys"][0]["references"] == orders["foreign_keys"][0]["references"]
+    assert mcp_target["relation"] == mcp_orders["foreign_keys"][0]["references"]["relation"]
+    assert mcp_quoted["foreign_keys"] == quoted["foreign_keys"]
+    assert mcp_quoted_target["relation"] == mcp_quoted["foreign_keys"][0]["references"]["relation"]
+
+
 def test_profile_counts_and_caps_what_it_returns(tmp_path: Path) -> None:
     db_path = tmp_path / "wide.duckdb"
     conn = duckdb.connect(str(db_path))

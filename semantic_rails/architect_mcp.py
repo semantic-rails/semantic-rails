@@ -1228,14 +1228,20 @@ def create_architect_mcp_server(
                 "INVALID_MCP_ARGUMENTS",
                 "Pass target_dir (dbt's target/ directory) or manifest_path",
             )
+        target = _workspace_file(target_dir, argument="target_dir") if target_dir else None
+        if manifest_path:
+            manifest = _workspace_file(manifest_path, argument="manifest_path")
+        else:
+            assert target is not None  # target_dir or manifest_path is required above
+            manifest = _workspace_file(str(target / "manifest.json"), argument="manifest_path")
+        catalog = None
+        if catalog_path:
+            catalog = _workspace_file(catalog_path, argument="catalog_path")
+        elif target is not None and (target / "catalog.json").exists():
+            catalog = _workspace_file(str(target / "catalog.json"), argument="catalog_path")
         return dbt_artifacts.load_dbt_artifacts(
-            _workspace_file(target_dir, argument="target_dir") if target_dir else None,
-            manifest_path=_workspace_file(manifest_path, argument="manifest_path")
-            if manifest_path
-            else None,
-            catalog_path=_workspace_file(catalog_path, argument="catalog_path")
-            if catalog_path
-            else None,
+            manifest_path=manifest,
+            catalog_path=catalog,
         )
 
     @mcp.tool(
