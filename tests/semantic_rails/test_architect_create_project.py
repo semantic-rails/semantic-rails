@@ -15,6 +15,7 @@ from mcp.shared.context import RequestContext
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import ElicitRequestParams, ElicitResult
 
+import semantic_rails.architect_service as architect_service
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_scaffold import project_scaffold_files
 from semantic_rails.architect_service import (
@@ -115,22 +116,115 @@ def test_other_warehouses_get_a_connection_block(tmp_path: Path) -> None:
     assert load_package_config(str(tmp_path / "pg_shop")).package.warehouse == "postgres"
 
 
-def test_a_literal_secret_fails_the_parse_gate_and_writes_nothing(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("warehouse", "kind", "options"),
+    [
+        (
+            "motherduck",
+            "motherduck_native",
+            {"database": "analytics", "token_file": "secrets/token.txt"},
+        ),
+        (
+            "databricks",
+            "databricks_native",
+            {"host_env": "DB_HOST", "http_path_env": "DB_PATH", "token_file": "secrets/token.txt"},
+        ),
+    ],
+)
+def test_connection_file_references_remain_valid(
+    tmp_path: Path, warehouse: str, kind: str, options: dict[str, str]
+) -> None:
+    spec = ProjectSpec(
+        package_id="referenced",
+        warehouse=ProjectWarehouse(
+            kind=warehouse, data="external", connection_kind=kind, connection_options=options
+        ),
+        first_model=ORDERS,
+    )
+
+    mutation = create_project("referenced", spec, workspace_root=tmp_path)
+    assert mutation.report["ok"] is True, mutation.report
+    assert (
+        _yaml(tmp_path / "referenced" / "package.yml")["package"]["connection"]["options"]
+        == options
+    )
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"password": "SYNTHETIC_CREDENTIAL_MARKER"},
+        {"options": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}},
+        {"account_env": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}},
+    ],
+)
+def test_invalid_connection_options_stop_before_scaffold_or_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool, options: dict[str, Any]
+) -> None:
+    marker = "SYNTHETIC_CREDENTIAL_MARKER"
     spec = ProjectSpec(
         package_id="leaky",
         warehouse=ProjectWarehouse(
             kind="snowflake",
             data="external",
             connection_kind="snowflake_native",
-            connection_options={"account_env": "SF_ACCOUNT", "password": "hunter2"},
+            connection_options=options,
         ),
         first_model=ORDERS,
     )
 
-    mutation = create_project("leaky", spec, workspace_root=tmp_path)
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("invalid options reached scaffold or transaction")
 
-    assert mutation.report["ok"] is False
-    assert not (tmp_path / "leaky" / "package.yml").exists()
+    monkeypatch.setattr(architect_service, "project_scaffold_files", forbidden)
+    monkeypatch.setattr(architect_service.ProjectTransaction, "apply", forbidden)
+    with pytest.raises(SemanticLayerError) as exc:
+        create_project("leaky", spec, workspace_root=tmp_path, dry_run=dry_run)
+
+    assert exc.value.code == "INVALID_CONFIG"
+    assert marker not in str(exc.value)
+    assert marker not in json.dumps(exc.value.details)
+    assert not (tmp_path / "leaky").exists()
+    assert not (tmp_path / ".semantic-rails").exists()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"password": "SYNTHETIC_CREDENTIAL_MARKER"},
+        {"options": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}},
+        {"host_env": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}},
+    ],
+)
+def test_mcp_create_rejects_invalid_options_without_echo_or_receipt(
+    tmp_path: Path, dry_run: bool, options: dict[str, Any]
+) -> None:
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (result,) = _session_call(
+        server,
+        [
+            (
+                "create_project",
+                {
+                    "package_id": "leaky",
+                    "warehouse": "postgres",
+                    "data": "external",
+                    "connection_kind": "postgres_native",
+                    "connection_options": options,
+                    "expected_revision": "absent",
+                    "idempotency_key": "invalid-options",
+                    "dry_run": dry_run,
+                },
+            )
+        ],
+    )
+    assert result["ok"] is False
+    assert result["changes"] == []
+    assert "SYNTHETIC_CREDENTIAL_MARKER" not in json.dumps(result)
+    assert not (tmp_path / "configs" / "semantic_rails" / "leaky").exists()
+    assert not (tmp_path / ".semantic-rails").exists()
 
 
 @pytest.mark.parametrize(
@@ -531,7 +625,8 @@ def test_mcp_dialog_does_not_claim_missing_connection_details_are_ready(tmp_path
     )
     assert dialog["ok"] is False
     assert dialog["status"] == "needs_connection_details"
-    assert dialog["draft_arguments"]["data"] == "external"
+    assert dialog["warehouse"] == "postgres"
+    assert "draft_arguments" not in dialog
 
 
 def test_mcp_dialog_requires_named_snowflake_cli_connection(tmp_path: Path) -> None:
@@ -667,6 +762,43 @@ def test_mcp_dialog_rejects_unsupported_named_connection(
     assert dialog["ok"] is False
     assert dialog["status"] == "needs_connection_details"
     assert expected_missing in dialog["required_answers"]
+
+
+@pytest.mark.parametrize(
+    "raw_options",
+    [
+        '{"password":"SYNTHETIC_CREDENTIAL_MARKER"}',
+        '{"options":{"password":"SYNTHETIC_CREDENTIAL_MARKER"}}',
+        '{"host_env":{"password":"SYNTHETIC_CREDENTIAL_MARKER"}}',
+        '{"host_env":"SYNTHETIC_CREDENTIAL_MARKER"',
+    ],
+)
+def test_mcp_dialog_rejects_invalid_options_without_echo(tmp_path: Path, raw_options: str) -> None:
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    async def answer(
+        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
+    ) -> ElicitResult:
+        return ElicitResult(
+            action="accept",
+            content={
+                "package_id": "leaky",
+                "warehouse": "postgres",
+                "connection_kind": "postgres_native",
+                "connection_options": raw_options,
+            },
+        )
+
+    (dialog,) = _session_call(
+        server,
+        [("setup_project_dialog", {"package_id": "leaky", "interactive": True})],
+        elicitation_callback=answer,
+    )
+    assert dialog["ok"] is False
+    assert "answers" not in dialog
+    assert "draft_arguments" not in dialog
+    assert "SYNTHETIC_CREDENTIAL_MARKER" not in json.dumps(dialog)
+    assert not (tmp_path / ".semantic-rails").exists()
 
 
 @pytest.mark.parametrize(

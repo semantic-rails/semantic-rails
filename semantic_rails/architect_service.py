@@ -40,6 +40,7 @@ from .architect_transactions import (
     project_revision,
 )
 from .config_validation import PackageReference, parse_config_report
+from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
 
 _INVENTORY_KINDS = {
@@ -240,6 +241,7 @@ def create_project(
     still requires ``expected_revision`` to match it. The returned mutation
     carries the transaction report and a one-step ``undo``.
     """
+    _validate_project_connection_options(spec)
     root = Path(workspace_root).expanduser().resolve() if workspace_root else Path.cwd().resolve()
     raw = Path(project_path).expanduser()
     if raw.is_symlink():
@@ -315,6 +317,24 @@ def create_project(
         _snapshots=outcome.snapshots,
         _active=bool(outcome.snapshots),
     )
+
+
+def _validate_project_connection_options(spec: ProjectSpec) -> None:
+    """Reject invalid options before they become scaffold bytes or a receipt intent."""
+    warehouse = str(spec.warehouse.kind or "duckdb").strip().lower()
+    connector = warehouse_connector(warehouse)
+    options = spec.warehouse.connection_options
+    if not isinstance(options, dict) or (
+        connector is not None
+        and connector.connection_kinds
+        and connection_option_errors(warehouse, spec.warehouse.connection_kind, options)
+    ):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Connection options contain unsupported or malformed fields; use supported "
+            "option names and environment or file references",
+            details={"reason": "invalid_connection_options"},
+        )
 
 
 def _retired_scaffold_model(

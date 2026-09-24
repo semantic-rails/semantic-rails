@@ -753,8 +753,15 @@ def create_architect_mcp_server(
                 "Answer these starter-package questions. Architect MCP will return create_project arguments.",
                 ProjectSetupAnswers,
             )
-        except Exception as exc:  # pragma: no cover - depends on MCP client support
-            return {**dialog, **_report_error(exc), "mode": "dialog_schema"}
+        except Exception:  # pragma: no cover - depends on MCP client support
+            return {
+                **_report_error(
+                    SemanticLayerError(
+                        "INVALID_MCP_ARGUMENTS", "Project setup answers were not accepted"
+                    )
+                ),
+                "mode": "dialog_schema",
+            }
         if result.action != "accept" or result.data is None:
             return {"ok": False, "status": str(result.action), "mode": "elicitation", **dialog}
         answers = result.data.model_dump()
@@ -762,22 +769,20 @@ def create_architect_mcp_server(
         try:
             draft = _draft_arguments(package_slug, project_path, answers)
         except SemanticLayerError as exc:
-            return {**dialog, **_report_error(exc), "mode": "elicitation", "answers": answers}
+            return {**_report_error(exc), "mode": "elicitation"}
         missing = _missing_setup_answers(draft)
         if missing:
             return {
                 "ok": False,
                 "status": "needs_connection_details",
                 "mode": "elicitation",
-                "answers": answers,
+                "warehouse": draft["warehouse"],
                 "required_answers": missing,
                 "recommended_next_tool": "setup_project_dialog",
-                "draft_arguments": draft,
             }
         return {
             "ok": True,
             "mode": "elicitation",
-            "answers": answers,
             "recommended_next_tool": "create_project",
             "draft_arguments": draft,
         }

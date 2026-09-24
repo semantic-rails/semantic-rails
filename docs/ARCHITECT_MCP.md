@@ -59,8 +59,9 @@ From a source checkout, prefix the same commands with `uv run`.
    complete its conditional connection answers before using it. The elicitation form accepts
    `connection_options` as a JSON object string and returns it as a parsed object in the
    `create_project` draft. For a non-DuckDB warehouse the dialog sets `data: external` and
-   clears `default_db`. Missing connection details return `ok: false` with
-   `status: needs_connection_details` and `required_answers` instead of a ready draft.
+   clears `default_db`. Missing or invalid connection details return `ok: false` with
+   `status: needs_connection_details` and `required_answers`, without echoing the submitted
+   answers or a draft.
    The dialog normalizes warehouse names and checks each adapter's required input groups:
    Databricks needs host, HTTP path and token; MotherDuck needs database and token; DuckLake
    needs a catalog path; and Athena needs region and an S3 staging directory. Snowflake accepts
@@ -73,8 +74,8 @@ From a source checkout, prefix the same commands with `uv run`.
    and a caller-generated `idempotency_key`; then repeat with `dry_run: false`
    after reviewing its exact file changes.
 
-`create_project` writes one scaffold, the same one the CLI and REPL use (`architect_service`
-`create_project` with a `ProjectSpec`): a strict package (`schema_strict: true`) with one model,
+`create_project` uses `architect_service.create_project` with a `ProjectSpec`. This service is
+available for later CLI/REPL integration. It writes a strict package (`schema_strict: true`) with one model,
 its count and amount metrics, an example, a package test and a `.gitignore` for build outputs.
 
 - DuckDB with `data: starter` (the default) adds a two-row CSV seed, so the package runs at once.
@@ -89,8 +90,9 @@ its count and amount metrics, an example, a package test and a `.gitignore` for 
   `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
 - Other warehouses take `connection_kind` and their adapter's required connection inputs.
   Named connections apply only to Snowflake; other adapters use `connection_options` or their
-  documented ambient defaults. Name secrets by environment variable only; a literal secret
-  fails the parse gate and nothing is written.
+  documented ambient defaults. Name secrets by environment variable only; unsupported or
+  malformed connection options are rejected before scaffold files or transaction receipts are
+  created, without returning their values.
 5. Use `upsert_model`, `upsert_metric`, `upsert_segment`, or scoped file tools
    with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.
