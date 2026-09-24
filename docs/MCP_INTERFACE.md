@@ -143,8 +143,9 @@ A draft that validates can still leave out part of the question. `plan` returns
 
 - carries no time window, or a different one, where the question names one
   (`time_window_unrealized`);
-- loses a ranking's limit, sorts by a different selected measure, cannot identify the
-  ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`);
+- loses a ranking's stated limit, sort direction or selected measure, cannot identify the
+  ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
+  including count-free requests such as "top stores by revenue";
 - excludes a value requested positively, or otherwise neither filters on nor groups by
   a value the question names (`filter_values_unrealized`);
 - requires one field to equal two values at once, which returns no rows

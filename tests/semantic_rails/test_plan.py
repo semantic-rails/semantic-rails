@@ -81,7 +81,9 @@ def test_plan_prefers_explicit_revenue_qualifier_over_generic_revenue(
     assert expected_id in {row["id"] for row in payload["best"]["resolved"]}
 
 
-def test_plan_resolves_historical_customer_segment_grouping(runtime_factory) -> None:
+def test_plan_keeps_historical_segment_grouping_but_reports_its_missing_revenue_order(
+    runtime_factory,
+) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
@@ -89,7 +91,9 @@ def test_plan_resolves_historical_customer_segment_grouping(runtime_factory) -> 
         )
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert "ranking_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
     assert "dimension.jaffle_customer_history_segment" in payload["best"]["query_ir"]["group_by"]
 
 

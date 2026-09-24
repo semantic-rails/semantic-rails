@@ -759,31 +759,31 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
     problems: list[str] = []
     if request["limit"] is not None and query.get("limit") != request["limit"]:
         problems.append("limit")
-    # Order decides the answer when a limit cuts it off, or when it is the ask ("rank ...").
-    if request["limit"] is not None or request["requires_order"]:
-        first = order_by[0] if order_by else {}
-        direction = str(first.get("direction") or "ASC").upper()
-        if (
-            not first
-            or not _orders_by_a_value(first, query)
-            or (request["direction"] and direction != request["direction"])
-        ):
-            problems.append("order")
-        ranked_ids = _ranking_measure_ids(config, text, request)
-        selected = [row for row in list(query.get("select") or []) if isinstance(row, dict)]
-        ordered = next((row for row in selected if row.get("as") == first.get("field")), {})
-        expression = ordered.get("expression")
-        ordered_id = (
-            expression.get("measure") or expression.get("metric")
-            if isinstance(expression, dict)
-            else None
-        )
-        if first and not ordered and "order" not in problems:
-            problems.append("order")
-        if len(ranked_ids) == 1 and ordered_id not in ranked_ids:
-            problems.append("ranked_measure")
-        elif len(ranked_ids) > 1 or (not ranked_ids and len(selected) > 1):
-            problems.append("ranked_measure_uncertain")
+    # Every ranking needs the requested order, even when no count was stated.
+    # A draft's own limit can otherwise silently return the opposite end.
+    first = order_by[0] if order_by else {}
+    direction = str(first.get("direction") or "ASC").upper()
+    if (
+        not first
+        or not _orders_by_a_value(first, query)
+        or (request["direction"] and direction != request["direction"])
+    ):
+        problems.append("order")
+    ranked_ids = _ranking_measure_ids(config, text, request)
+    selected = [row for row in list(query.get("select") or []) if isinstance(row, dict)]
+    ordered = next((row for row in selected if row.get("as") == first.get("field")), {})
+    expression = ordered.get("expression")
+    ordered_id = (
+        expression.get("measure") or expression.get("metric")
+        if isinstance(expression, dict)
+        else None
+    )
+    if first and not ordered and "order" not in problems:
+        problems.append("order")
+    if len(ranked_ids) == 1 and ordered_id not in ranked_ids:
+        problems.append("ranked_measure")
+    elif len(ranked_ids) > 1 or (not ranked_ids and len(selected) > 1):
+        problems.append("ranked_measure_uncertain")
     noun = _singular(request["noun"])
     time = _time_block(query)
     if noun in _TIME_UNITS:
@@ -824,7 +824,9 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
                 "kind": "provide_ranking",
                 "message": (
                     "Group by the ranked dimension (or set time.grain for ranked periods), order "
-                    "by the measure in the requested direction, and set limit, then validate."
+                    "by the measure in the requested direction"
+                    + (", and set the requested limit" if request["limit"] is not None else "")
+                    + ", then validate."
                 ),
             },
         )

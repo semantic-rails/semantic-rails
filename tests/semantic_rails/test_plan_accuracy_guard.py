@@ -209,6 +209,44 @@ def test_ranking_uses_the_named_measure_when_two_are_selected(
     assert "ranked_measure_uncertain" in uncertain[0]["message"]
 
 
+def _count_free_ranked_draft(
+    order_by: list[dict[str, str]], *, limit: int | None = 3
+) -> dict[str, Any]:
+    draft = _query(group_by=[STORE], order_by=order_by)
+    draft["select"].append(ORDERS)
+    if limit is not None:
+        draft["limit"] = limit
+    return draft
+
+
+@pytest.mark.parametrize(("word", "direction"), [("top", "DESC"), ("bottom", "ASC")])
+@pytest.mark.parametrize("problem", ["missing", "reversed", "wrong_measure"])
+def test_count_free_ranking_requires_the_requested_order_and_measure(
+    adapter: SemanticLayerMCPAdapter, word: str, direction: str, problem: str
+) -> None:
+    order_by = {
+        "missing": [],
+        "reversed": [
+            {"field": "revenue_usd", "direction": "ASC" if direction == "DESC" else "DESC"}
+        ],
+        "wrong_measure": [{"field": "order_count", "direction": direction}],
+    }[problem]
+    gaps = _gaps(adapter, f"{word} stores by revenue", _count_free_ranked_draft(order_by))
+    assert [gap["kind"] for gap in gaps] == ["ranking_unrealized"]
+    assert ("ranked_measure" if problem == "wrong_measure" else "order") in gaps[0]["message"]
+
+
+@pytest.mark.parametrize(("word", "direction"), [("top", "DESC"), ("bottom", "ASC")])
+@pytest.mark.parametrize("limit", [None, 3])
+def test_count_free_ranking_keeps_correct_order_with_or_without_a_draft_limit(
+    adapter: SemanticLayerMCPAdapter, word: str, direction: str, limit: int | None
+) -> None:
+    draft = _count_free_ranked_draft(
+        [{"field": "revenue_usd", "direction": direction}], limit=limit
+    )
+    assert _gap_kinds(adapter, f"{word} stores by revenue", draft) == []
+
+
 # --- time windows -------------------------------------------------------------
 
 
@@ -619,6 +657,35 @@ def test_mcp_plan_downgrades_reversed_value_or_ranked_measure(
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     assert expected_gap in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+
+
+@pytest.mark.parametrize(("word", "direction"), [("top", "DESC"), ("bottom", "ASC")])
+@pytest.mark.parametrize("problem", ["missing", "reversed", "wrong_measure", "correct"])
+def test_mcp_plan_checks_count_free_ranking(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    word: str,
+    direction: str,
+    problem: str,
+) -> None:
+    order_by = {
+        "missing": [],
+        "reversed": [
+            {"field": "revenue_usd", "direction": "ASC" if direction == "DESC" else "DESC"}
+        ],
+        "wrong_measure": [{"field": "order_count", "direction": direction}],
+        "correct": [{"field": "revenue_usd", "direction": direction}],
+    }[problem]
+    _draft_plan(monkeypatch, _count_free_ranked_draft(order_by))
+    payload = adapter.call_tool("plan", {"intent": f"{word} stores by revenue"})
+    assert payload["best"]["validation_ok"] is True
+    if problem == "correct":
+        assert payload["status"] == "ok"
+        assert payload.get("why") is None
+    else:
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert "ranking_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
 
 
 @pytest.mark.parametrize(
