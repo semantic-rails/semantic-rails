@@ -18,7 +18,7 @@ import pytest
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 
 SLIM_KEYS = {"id", "kind", "label", "score", "description", "default_temporal_role", "available"}
-VALUE_KEYS = {"id", "kind", "dimension_id", "value", "score"}
+VALUE_KEYS = {"id", "kind", "dimension_id", "value", "label", "available", "score"}
 SESSION_STARTS = {
     "version": 2,
     "select": [{"as": "s", "expression": {"measure": "measure.jaffle.session_starts"}}],
@@ -56,6 +56,43 @@ def test_explicit_minimal_discover_returns_five_slim_cards_per_kind(
             assert set(row) <= SLIM_KEYS, (bucket, sorted(set(row) - SLIM_KEYS))
     for row in response["dimension_values"]:
         assert set(row) <= VALUE_KEYS | {"blocked_reason"}
+
+
+@pytest.mark.parametrize(
+    ("terms", "value", "label"),
+    [("Food", "jaffle", "Food"), ("Drink", "beverage", "Drink")],
+)
+def test_minimal_dimension_value_keeps_business_label_and_availability(
+    adapter: SemanticLayerMCPAdapter, terms: str, value: str, label: str
+) -> None:
+    arguments = {"terms": terms, "limit": 5}
+    full = adapter.call_tool("discover", {**arguments, "verbosity": "compact"})
+    minimal = adapter.call_tool("discover", {**arguments, "verbosity": "minimal"})
+    expected_id = f"dimension.jaffle_item_product_type={value}"
+    full_value = next(row for row in full["dimension_values"] if row["id"] == expected_id)
+    slim_value = next(row for row in minimal["dimension_values"] if row["id"] == expected_id)
+    assert full_value["label"] == slim_value["label"] == label
+    assert full_value["value"] == slim_value["value"] == value
+    assert full_value["available"] is slim_value["available"] is True
+    assert set(slim_value) <= VALUE_KEYS
+
+
+def test_minimal_blocked_dimension_value_keeps_label_availability_and_reason(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    arguments = {"terms": "Food", "limit": 5, "query": SESSION_STARTS}
+    full = adapter.call_tool("discover", {**arguments, "verbosity": "compact"})
+    minimal = adapter.call_tool("discover", {**arguments, "verbosity": "minimal"})
+    value_id = "dimension.jaffle_item_product_type=jaffle"
+    full_value = next(row for row in full["blocked"] if row["id"] == value_id)
+    slim_value = next(row for row in minimal["blocked"] if row["id"] == value_id)
+    for key in ("id", "kind", "dimension_id", "value", "label", "available", "blocked_reason"):
+        assert slim_value[key] == full_value[key], key
+    assert slim_value["label"] == "Food"
+    assert slim_value["value"] == "jaffle"
+    assert slim_value["available"] is False
+    assert slim_value["blocked_reason"]
+    assert set(slim_value) <= VALUE_KEYS | {"blocked_reason"}
 
 
 def test_omitted_discover_options_keep_v1_full_cards_and_count(

@@ -2685,7 +2685,14 @@ def _slim_discover_minimal(payload: dict[str, Any]) -> dict[str, Any]:
     verbosity='compact'."""
 
     def _slim_value(row: dict[str, Any]) -> dict[str, Any]:
-        slim = {k: row[k] for k in ("id", "kind", "dimension_id", "value", "score") if k in row}
+        # The raw value can differ from the business-facing label (for
+        # example, "jaffle" is displayed as "Food"). Keep both, and the
+        # explicit availability flag, for regular and blocked value cards.
+        slim = {
+            k: row[k]
+            for k in ("id", "kind", "dimension_id", "value", "label", "available", "score")
+            if k in row
+        }
         if isinstance(slim.get("score"), float):
             slim["score"] = round(slim["score"], 1)
         return slim

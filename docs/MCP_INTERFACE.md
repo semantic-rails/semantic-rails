@@ -131,6 +131,8 @@ genuinely need descriptions or the alias index.
 10 full cards per kind, with match reasons, starter patches and comparison metadata. When the
 question uses an object's whole name ("revenue by store"), that object ranks above near-duplicates
 that add a qualifier the question doesn't use ("Delivered revenue").
+Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
+`available` flag, including when a value is blocked.
 
 `inspect(verbosity="minimal")` states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
