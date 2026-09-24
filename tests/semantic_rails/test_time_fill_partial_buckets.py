@@ -404,6 +404,34 @@ def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path
     assert results[True] == results[False]
 
 
+def test_offset_fill_marks_source_bucket_presence_for_clickhouse():
+    # ClickHouse defaults unmatched FULL OUTER JOIN fields to their type's zero
+    # value, so the chosen bucket must not depend on an unmatched field being NULL.
+    from semantic_rails.config import load_package_config, resolve_repo_path
+
+    config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
+    config = dataclasses.replace(
+        config, package=dataclasses.replace(config.package, warehouse="clickhouse")
+    )
+    query = {
+        **_JULY_BY_WEEK,
+        "time": {
+            **_JULY_BY_WEEK["time"],
+            "grain": "day",
+            "start": "2017-07-03T23:00:00-02:00",
+            "end": "2017-07-04T01:00:00-02:00",
+        },
+    }
+    sql = compile_query(config, Registry(config), query)["sql"]
+
+    assert "1 AS source_present" in sql
+    assert (
+        "CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END"
+        in sql
+    )
+    assert "COALESCE(calendar_time" not in sql
+
+
 @pytest.mark.parametrize(
     ("start", "end"),
     [

@@ -3848,12 +3848,35 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
     return bounds
 
 
-def _source_bucket_recovery_cte(time_alias: str) -> SqlCte:
+def _source_bucket_recovery_ctes(time_alias: str) -> list[SqlCte]:
     """Keep buckets selected by the source when offset typing is unspecified."""
     calendar_bucket = SqlIdentifier(parts=["calendar_time", time_alias])
-    leaf_bucket = SqlIdentifier(parts=["leaf_base", time_alias])
-    time_bucket = SqlCall("COALESCE", [calendar_bucket, leaf_bucket])
-    return SqlCte(
+    leaf_bucket = SqlIdentifier(parts=["leaf_time_keys", time_alias])
+    # An unmatched ClickHouse outer-join field defaults to zero rather than NULL.
+    # A constant marker identifies real source rows on both join behaviors.
+    time_bucket = SqlCase(
+        whens=[
+            SqlCaseWhen(
+                condition=SqlBinary(
+                    SqlIdentifier(parts=["leaf_time_keys", "source_present"]), "=", SqlLiteral(1)
+                ),
+                result=leaf_bucket,
+            )
+        ],
+        else_expr=calendar_bucket,
+    )
+    keys = SqlCte(
+        name="leaf_time_keys",
+        query=SqlSelect(
+            select=[
+                SqlField(SqlIdentifier(parts=["leaf_base", time_alias]), time_alias),
+                SqlField(SqlLiteral(1), "source_present"),
+            ],
+            from_table=SqlTableRef(name="leaf_base"),
+            group_by=[SqlIdentifier(parts=["leaf_base", time_alias])],
+        ),
+    )
+    dense = SqlCte(
         name="dense_time",
         query=SqlSelect(
             select=[SqlField(time_bucket, time_alias)],
@@ -3861,13 +3884,14 @@ def _source_bucket_recovery_cte(time_alias: str) -> SqlCte:
             joins=[
                 SqlJoin(
                     join_type="FULL OUTER",
-                    table=SqlTableRef(name="leaf_base"),
+                    table=SqlTableRef(name="leaf_time_keys"),
                     on=SqlBinary(calendar_bucket, "=", leaf_bucket),
                 )
             ],
             group_by=[time_bucket],
         ),
     )
+    return [keys, dense]
 
 
 def _tier_internal_aliases(
@@ -4083,7 +4107,7 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
             )
         )
         if calendar_time_name != "dense_time":
-            ctes.append(_source_bucket_recovery_cte(time_alias))
+            ctes.extend(_source_bucket_recovery_ctes(time_alias))
 
         joins: list[SqlJoin] = []
         filled_fields: list[SqlField] = []
