@@ -2526,6 +2526,26 @@ def _quote_schema_version(package_dir: Path) -> None:
     _write_yaml(package_yml, root)
 
 
+@pytest.mark.parametrize("version", [".inf", "-.inf", ".nan"])
+def test_nonfinite_schema_version_returns_invalid_report(tmp_path: Path, version: str):
+    package_dir = tmp_path / "nonfinite_version"
+    package_dir.mkdir()
+    (package_dir / "package.yml").write_text(
+        f"schema_version: {version}\npackage: {{}}\n", encoding="utf-8"
+    )
+
+    errors = validate_runtime_package(package_dir)
+    report, config = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    assert any("failed to load package config" in error for error in errors)
+    assert config is None
+    assert report["ok"] is False
+    assert any(
+        error["code"] == "INVALID_CONFIG" and "failed to load package config" in error["message"]
+        for error in report["errors"]
+    )
+
+
 @pytest.mark.parametrize(
     ("value_type", "expected_ok"),
     [("omitted", False), (None, False), ("", False), ("number", True)],

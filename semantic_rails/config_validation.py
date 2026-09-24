@@ -1163,7 +1163,7 @@ def _schema_version(package_root: dict[str, Any]) -> Any:
     """schema_version as the loader reads it, which also accepts "1"."""
     try:
         return int(package_root.get("schema_version", 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return package_root.get("schema_version")
 
 
