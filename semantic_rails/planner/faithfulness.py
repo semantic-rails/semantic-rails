@@ -395,7 +395,7 @@ def intent_faithfulness_why(
             negation_match.span("value"),
         )
         excluded_text = text[excluded_span[0] : excluded_span[1]].strip()
-        positive_filters = _positive_filter_evidence(query, excluded_text)
+        positive_filters = _positive_filter_evidence(runtime, query, excluded_text)
         reversed_clause = bool(positive_filters)
         negative_present = _query_has_negative_semantics(query)
         # A matching positive predicate is still a reversal when an unrelated
@@ -458,8 +458,13 @@ def intent_faithfulness_why(
     ):
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
-    gaps.extend(_filter_value_gaps(runtime, text, query))
-    gaps.extend(_contradictory_filter_gaps(query))
+    contradictions = _contradictory_filter_gaps(query)
+    if contradictions:
+        # No row can satisfy the draft. Report that decisive failure once;
+        # value-specific absences are consequences of the same contradiction.
+        gaps.extend(contradictions)
+    else:
+        gaps.extend(_filter_value_gaps(runtime, text, query))
 
     if not gaps:
         return None
@@ -957,16 +962,16 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
         # The dedicated negation check already reports a missing negative
         # predicate or a positive predicate on this excluded value.
         if negative and (
-            not _query_has_negative_semantics(query) or _positive_filter_evidence(query, phrase)
+            not _query_has_negative_semantics(query)
+            or _positive_filter_evidence(runtime, query, phrase)
         ):
             continue
-        explicitly_dropped = any(
-            {_plain(name) for name in _value_names(value)}
-            & predicates.get(str(dimension), {}).get("drops", set())
+        relevant_filter = any(
+            str(dimension) in predicates
             for domain, value in rows
             for dimension in domain.dimensions
         )
-        if not negative and not explicitly_dropped and set(_tokens(phrase)) <= carried:
+        if not negative and not relevant_filter and set(_tokens(phrase)) <= carried:
             continue
         said.append(phrase)
         for domain, value in rows:
@@ -1103,25 +1108,73 @@ def _ubiquitous_words(config: Any) -> set[str]:
     return {token for token, count in counts.items() if count * 2 > len(rows)}
 
 
-def _field_predicates(query: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """For each filtered field, values provably kept or dropped by its predicates."""
+@dataclass
+class _FieldConstraints:
+    """One query-level field's conjunctive predicates, in executable literals."""
 
-    out: dict[str, dict[str, Any]] = {}
-    for node in _dict_nodes(query):
-        name = node.get("field")
-        if not isinstance(name, str) or not ("op" in node or "value" in node):
+    keeping: list[list[Any]] = field(default_factory=list)
+    dropping: list[list[Any]] = field(default_factory=list)
+    uncertain: bool = False
+
+    def surviving_literals(self) -> list[Any] | None:
+        """Values admitted by every known top-level predicate, if bounded."""
+
+        if not self.keeping:
+            return None
+        candidates = list(self.keeping[0])
+        for choices in self.keeping[1:]:
+            candidates = [item for item in candidates if _contains_literal(choices, item)]
+        return [
+            item
+            for item in candidates
+            if not any(_contains_literal(choices, item) for choices in self.dropping)
+        ]
+
+    def keeps(self, canonical: Any, *, grouped: bool) -> bool:
+        if self.uncertain:
+            return False
+        survivors = self.surviving_literals()
+        if survivors is not None:
+            return _contains_literal(survivors, canonical)
+        return grouped and not self.drops(canonical)
+
+    def drops(self, canonical: Any) -> bool:
+        return not self.uncertain and any(
+            _contains_literal(choices, canonical) for choices in self.dropping
+        )
+
+
+def _contains_literal(literals: list[Any], canonical: Any) -> bool:
+    """SQL string equality has no catalog-label, case or punctuation rewrite."""
+
+    return any(type(item) is type(canonical) and item == canonical for item in literals)
+
+
+def _field_predicates(query: dict[str, Any]) -> dict[str, _FieldConstraints]:
+    """Build query-level AND constraints; nested expression scopes remain unproven."""
+
+    out: dict[str, _FieldConstraints] = {}
+    for node in list(query.get("where") or []):
+        if not isinstance(node, dict) or not isinstance(node.get("field"), str):
             continue
+        name = node["field"]
+        entry = out.setdefault(name, _FieldConstraints())
         op = " ".join(str(node.get("op") or "=").upper().split())
         literals = _membership_literals(op, node.get("value"))
-        entry = out.setdefault(name, {"keeps": set(), "drops": set(), "uncertain": False})
         if literals is None:
-            entry["uncertain"] = True
-            continue
-        values = {_plain(item) for item in literals}
-        if op in _KEEPING_OPS:
-            entry["keeps"] |= values
+            entry.uncertain = True
+        elif op in _KEEPING_OPS:
+            entry.keeping.append(literals)
         elif op in _EXCLUDING_OPS:
-            entry["drops"] |= values
+            entry.dropping.append(literals)
+    # A selected expression can have its own where/predicate scope. Its rows
+    # are not interchangeable with query-level where rows, so do not union or
+    # intersect its values with the outer filter (or credit grouping through it).
+    nested = {key: value for key, value in query.items() if key != "where"}
+    for node in _dict_nodes(nested):
+        name = node.get("field")
+        if isinstance(name, str) and ("op" in node or "value" in node):
+            out.setdefault(name, _FieldConstraints()).uncertain = True
     return out
 
 
@@ -1144,49 +1197,39 @@ def _membership_literals(op: str, raw: Any) -> list[Any] | None:
 def _value_honored(
     domain: Any,
     value: Any,
-    predicates: dict[str, dict[str, Any]],
+    predicates: dict[str, _FieldConstraints],
     grouped: set[str],
     negative: bool,
 ) -> bool:
     """A filter has the requested polarity, or grouping keeps a positive value."""
 
-    names = {_plain(item) for item in (value.value, value.label, *(value.aliases or []))} - {""}
+    canonical = value.value
     for dimension in (str(item) for item in domain.dimensions):
         entry = predicates.get(dimension)
         if entry is not None:
-            if entry["uncertain"]:
-                continue  # this filter might remove the value, even when grouped
-            if negative and names & entry["drops"] and not names & entry["keeps"]:
+            if negative and entry.drops(canonical):
                 return True
-            if names & entry["drops"]:
-                continue
-            if not negative and names & entry["keeps"]:
+            if not negative and entry.keeps(canonical, grouped=dimension in grouped):
                 return True
-            if entry["keeps"]:
-                continue  # the filter keeps other values only
-        if not negative and dimension in grouped:
+        elif not negative and dimension in grouped:
             return True
     return False
 
 
 def _contradictory_filter_gaps(query: dict[str, Any]) -> list[CoverageGap]:
-    """Filters on one field that keep values no row can match together."""
+    """Query-level conjunctions that leave no kept literal after exclusions."""
 
-    kept: dict[str, list[set[str]]] = {}
-    for row in list(query.get("where") or []):
-        if not isinstance(row, dict) or not isinstance(row.get("field"), str):
+    conflicts: list[dict[str, Any]] = []
+    for name, entry in _field_predicates(query).items():
+        survivors = entry.surviving_literals()
+        if survivors is None or survivors:
             continue
-        op = " ".join(str(row.get("op") or "=").upper().split())
-        if op not in _KEEPING_OPS:
-            continue
-        literals = _membership_literals(op, row.get("value"))
-        if literals is not None:
-            kept.setdefault(row["field"], []).append({str(item) for item in literals})
-    conflicts = [
-        {"field": name, "values": sorted(set().union(*sets))}
-        for name, sets in kept.items()
-        if len(sets) > 1 and not set.intersection(*sets)
-    ]
+        conflicts.append(
+            {
+                "field": name,
+                "values": sorted({str(item) for group in entry.keeping for item in group}),
+            }
+        )
     if not conflicts:
         return []
     return [
@@ -1196,8 +1239,8 @@ def _contradictory_filter_gaps(query: dict[str, Any]) -> list[CoverageGap]:
                 f"{row['field']} = " + " and ".join(row["values"]) for row in conflicts
             ),
             message=(
-                "The draft requires one field to equal different values at once, so it returns "
-                "no rows."
+                "The draft's filters on one field cannot retain any value together, so it "
+                "returns no rows."
             ),
             expected={"filters": "one filter per field, op 'in' for several values"},
             actual={"conflicts": conflicts},
@@ -1302,23 +1345,32 @@ def _query_has_negative_semantics(query: dict[str, Any]) -> bool:
     return False
 
 
-def _positive_filter_evidence(query: dict[str, Any], excluded_text: str) -> list[dict[str, Any]]:
-    lowered = excluded_text.casefold()
+def _positive_filter_evidence(
+    runtime: Any, query: dict[str, Any], excluded_text: str
+) -> list[dict[str, Any]]:
+    """Positive outer filters that actually retain a canonical excluded value."""
+
+    constraints = _field_predicates(query)
+    phrases = _value_phrases(runtime._config)
     out: list[dict[str, Any]] = []
-    for row in list(query.get("where") or []):
-        if not isinstance(row, dict):
-            continue
-        op = " ".join(str(row.get("op", "") or "").upper().split())
-        if op not in _KEEPING_OPS:
-            continue
-        values = row.get("value")
-        items = _membership_literals(op, values)
-        if items is not None and any(
-            str(value).casefold() in lowered for value in items if value != ""
-        ):
-            out.append(
-                {"field": row.get("field") or row.get("dimension"), "op": op, "value": values}
-            )
+    for _span, phrase in _value_matches(_plain(excluded_text), phrases):
+        for domain, value in phrases[phrase]:
+            for dimension in (str(item) for item in domain.dimensions):
+                entry = constraints.get(dimension)
+                if entry is None or not entry.keeps(value.value, grouped=False):
+                    continue
+                for row in list(query.get("where") or []):
+                    if not isinstance(row, dict) or row.get("field") != dimension:
+                        continue
+                    op = " ".join(str(row.get("op") or "=").upper().split())
+                    literals = _membership_literals(op, row.get("value"))
+                    if (
+                        op in _KEEPING_OPS
+                        and literals
+                        and _contains_literal(literals, value.value)
+                        and row not in out
+                    ):
+                        out.append(row)
     return out
 
 

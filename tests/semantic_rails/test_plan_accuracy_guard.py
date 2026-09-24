@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
+import duckdb
 import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -321,6 +322,259 @@ def test_every_named_value_must_reach_a_filter(adapter: SemanticLayerMCPAdapter)
     assert _gap_kinds(adapter, text, one) == ["filter_values_unrealized"]
 
 
+@pytest.mark.parametrize(
+    ("where", "text", "honored"),
+    [
+        (
+            [{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
+            "revenue for Brooklyn and Philadelphia",
+            True,
+        ),
+        (
+            [
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "New Orleans"]},
+            ],
+            "revenue for Brooklyn and Philadelphia",
+            False,
+        ),
+        (
+            [
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+            ],
+            "revenue for Brooklyn and Philadelphia",
+            False,
+        ),
+        (
+            [
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+            ],
+            "revenue excluding Brooklyn, including Philadelphia",
+            True,
+        ),
+    ],
+)
+def test_conjunctive_value_constraints_have_effective_intersection(
+    adapter: SemanticLayerMCPAdapter,
+    where: list[dict[str, Any]],
+    text: str,
+    honored: bool,
+) -> None:
+    kinds = _gap_kinds(adapter, text, _query(where=where))
+    assert (kinds == []) is honored
+    if not honored:
+        assert "filter_values_unrealized" in kinds
+
+
+def test_nested_value_scopes_do_not_supply_query_level_membership(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    query = _query(
+        {
+            "as": "brooklyn_revenue",
+            "expression": {
+                "kind": "scoped_aggregate",
+                "measure": "measure.jaffle.revenue_usd",
+                "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
+            },
+        },
+        where=[{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
+    )
+    assert "filter_values_unrealized" in _gap_kinds(
+        adapter, "revenue for Brooklyn and Philadelphia", query
+    )
+    separate = _query(
+        {
+            "as": "brooklyn_revenue",
+            "expression": {
+                "kind": "scoped_aggregate",
+                "measure": "measure.jaffle.revenue_usd",
+                "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
+            },
+        }
+    )
+    separate["select"].append(
+        {
+            "as": "philadelphia_revenue",
+            "expression": {
+                "kind": "scoped_aggregate",
+                "measure": "measure.jaffle.revenue_usd",
+                "where": [{"field": STORE, "op": "=", "value": "Philadelphia"}],
+            },
+        }
+    )
+    assert "filter_values_unrealized" in _gap_kinds(
+        adapter, "revenue for Brooklyn and Philadelphia", separate
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "field", "canonical", "literal", "op", "honored"),
+    [
+        ("item revenue for food products", PRODUCT_TYPE, "jaffle", "jaffle", "=", True),
+        ("item revenue for food products", PRODUCT_TYPE, "jaffle", "Food", "=", False),
+        ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "jaffle", "!=", True),
+        ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "Food", "!=", False),
+        ("revenue for Brooklyn", STORE, "Brooklyn", "Brooklyn", "=", True),
+        ("revenue for Brooklyn", STORE, "Brooklyn", "brooklyn", "=", False),
+        ("revenue excluding Brooklyn", STORE, "Brooklyn", "Brooklyn", "!=", True),
+        ("revenue excluding Brooklyn", STORE, "Brooklyn", "brooklyn", "!=", False),
+        ("revenue for New Orleans", STORE, "New Orleans", "New Orleans", "=", True),
+        ("revenue for New Orleans", STORE, "New Orleans", "New-Orleans", "=", False),
+        ("revenue excluding New Orleans", STORE, "New Orleans", "New Orleans", "!=", True),
+        ("revenue excluding New Orleans", STORE, "New Orleans", "New-Orleans", "!=", False),
+    ],
+)
+def test_named_question_values_require_executable_canonical_literals(
+    adapter: SemanticLayerMCPAdapter,
+    text: str,
+    field: str,
+    canonical: str,
+    literal: str,
+    op: str,
+    honored: bool,
+) -> None:
+    select = ITEM_REVENUE if field == PRODUCT_TYPE else REVENUE
+    gaps = _gaps(
+        adapter, text, _query(select, where=[{"field": field, "op": op, "value": literal}])
+    )
+    assert (gaps == []) is honored
+    if not honored:
+        assert canonical in [
+            value["value"]
+            for gap in gaps
+            if gap["kind"] == "filter_values_unrealized"
+            for value in gap["expected"]["values"]
+        ]
+
+
+@pytest.mark.parametrize(
+    ("text", "field", "canonical", "where", "sql_where", "source_values"),
+    [
+        (
+            "revenue for Philadelphia",
+            STORE,
+            "Philadelphia",
+            [
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "New Orleans"]},
+            ],
+            "v IN ('Brooklyn', 'Philadelphia') AND v IN ('Brooklyn', 'New Orleans')",
+            ("Brooklyn", "Philadelphia", "New Orleans"),
+        ),
+        (
+            "revenue for Philadelphia",
+            STORE,
+            "Philadelphia",
+            [
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+            ],
+            "v IN ('Brooklyn', 'Philadelphia') AND v NOT IN ('Brooklyn')",
+            ("Brooklyn", "Philadelphia"),
+        ),
+        (
+            "revenue for Brooklyn",
+            STORE,
+            "Brooklyn",
+            [
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+            ],
+            "v IN ('Brooklyn', 'Philadelphia') AND v NOT IN ('Brooklyn')",
+            ("Brooklyn", "Philadelphia"),
+        ),
+        (
+            "revenue excluding Brooklyn",
+            STORE,
+            "Brooklyn",
+            [{"field": STORE, "op": "!=", "value": "brooklyn"}],
+            "v != 'brooklyn'",
+            ("Brooklyn", "Philadelphia"),
+        ),
+        (
+            "revenue excluding Brooklyn",
+            STORE,
+            "Brooklyn",
+            [{"field": STORE, "op": "!=", "value": "Brooklyn"}],
+            "v != 'Brooklyn'",
+            ("Brooklyn", "Philadelphia"),
+        ),
+        (
+            "item revenue for food products",
+            PRODUCT_TYPE,
+            "jaffle",
+            [{"field": PRODUCT_TYPE, "op": "=", "value": "Food"}],
+            "v = 'Food'",
+            ("jaffle", "drink"),
+        ),
+        (
+            "item revenue for food products",
+            PRODUCT_TYPE,
+            "jaffle",
+            [{"field": PRODUCT_TYPE, "op": "=", "value": "jaffle"}],
+            "v = 'jaffle'",
+            ("jaffle", "drink"),
+        ),
+        (
+            "revenue for New Orleans",
+            STORE,
+            "New Orleans",
+            [{"field": STORE, "op": "=", "value": "New-Orleans"}],
+            "v = 'New-Orleans'",
+            ("New Orleans", "Brooklyn"),
+        ),
+    ],
+)
+def test_named_value_guard_agrees_with_executable_predicate_results(
+    adapter: SemanticLayerMCPAdapter,
+    text: str,
+    field: str,
+    canonical: str,
+    where: list[dict[str, Any]],
+    sql_where: str,
+    source_values: tuple[str, ...],
+) -> None:
+    # This small, fixed DuckDB domain checks the observable behavior of the
+    # supported operators. The guard must never credit a requested value that
+    # the executable predicate removes (or a forbidden value that survives).
+    relation = ", ".join(f"('{value}')" for value in source_values)
+    connection = duckdb.connect(":memory:")
+    try:
+        actual = {
+            row[0]
+            for row in connection.execute(
+                f"SELECT v FROM (VALUES {relation}) AS source(v) WHERE {sql_where}"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+    assert canonical in source_values
+    should_honor = canonical not in actual if "excluding" in text else canonical in actual
+    select = ITEM_REVENUE if field == PRODUCT_TYPE else REVENUE
+    gaps = _gap_kinds(adapter, text, _query(select, where=where))
+    assert (gaps == []) is should_honor
+
+
+def test_question_alias_maps_to_canonical_but_draft_alias_is_not_literal() -> None:
+    runtime = _stand_in_runtime(["New York"])
+    value = runtime._config.value_domains[0].values[0]
+    value.aliases = ["Big Apple"]
+    query = _query({"as": "revenue", "expression": {"measure": "measure.shop.revenue"}})
+    for text, op in (("revenue in Big Apple", "="), ("revenue excluding Big Apple", "!=")):
+        canonical = {
+            **query,
+            "where": [{"field": "dimension.region", "op": op, "value": "New York"}],
+        }
+        alias = {**query, "where": [{"field": "dimension.region", "op": op, "value": "Big Apple"}]}
+        assert _filter_value_gaps(runtime, text, canonical) == []
+        assert [gap.kind for gap in _filter_value_gaps(runtime, text, alias)] == [
+            "filter_values_unrealized"
+        ]
+
+
 @pytest.mark.parametrize("op", ["!=", "NOT IN"])
 def test_positive_requested_value_cannot_be_excluded(
     adapter: SemanticLayerMCPAdapter, op: str
@@ -525,6 +779,14 @@ def test_contradictory_filters_are_a_gap(adapter: SemanticLayerMCPAdapter) -> No
         "where": [{"field": STORE, "op": "in", "value": ["Philadelphia", "Brooklyn"]}],
     }
     assert _gap_kinds(adapter, "Philadelphia vs Brooklyn revenue by month", merged) == []
+    excluded = {
+        **both,
+        "where": [
+            {"field": STORE, "op": "IN", "value": ["Brooklyn"]},
+            {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+        ],
+    }
+    assert "contradictory_filters" in _gap_kinds(adapter, "revenue for Brooklyn", excluded)
 
 
 def _stand_in_runtime(values: list[Any]) -> Any:
@@ -850,6 +1112,127 @@ def test_mcp_plan_checks_named_value_predicate_shapes(
         assert payload.get("why") is None
     else:
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+
+
+@pytest.mark.parametrize(
+    ("text", "select", "where", "honored"),
+    [
+        (
+            "revenue for Brooklyn and Philadelphia",
+            REVENUE,
+            [{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
+            True,
+        ),
+        (
+            "revenue for Brooklyn and Philadelphia",
+            REVENUE,
+            [
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "New Orleans"]},
+            ],
+            False,
+        ),
+        (
+            "revenue excluding Brooklyn, including Philadelphia",
+            REVENUE,
+            [
+                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+            ],
+            True,
+        ),
+        (
+            "item revenue for food products",
+            ITEM_REVENUE,
+            [{"field": PRODUCT_TYPE, "op": "=", "value": "jaffle"}],
+            True,
+        ),
+        (
+            "item revenue for food products",
+            ITEM_REVENUE,
+            [{"field": PRODUCT_TYPE, "op": "=", "value": "Food"}],
+            False,
+        ),
+        (
+            "item revenue excluding food products",
+            ITEM_REVENUE,
+            [{"field": PRODUCT_TYPE, "op": "!=", "value": "jaffle"}],
+            True,
+        ),
+        (
+            "item revenue excluding food products",
+            ITEM_REVENUE,
+            [{"field": PRODUCT_TYPE, "op": "!=", "value": "Food"}],
+            False,
+        ),
+        ("revenue for Brooklyn", REVENUE, [{"field": STORE, "op": "=", "value": "Brooklyn"}], True),
+        (
+            "revenue for Brooklyn",
+            REVENUE,
+            [{"field": STORE, "op": "=", "value": "brooklyn"}],
+            False,
+        ),
+        (
+            "revenue excluding Brooklyn",
+            REVENUE,
+            [{"field": STORE, "op": "!=", "value": "Brooklyn"}],
+            True,
+        ),
+        (
+            "revenue excluding Brooklyn",
+            REVENUE,
+            [{"field": STORE, "op": "!=", "value": "brooklyn"}],
+            False,
+        ),
+        (
+            "revenue for New Orleans",
+            REVENUE,
+            [{"field": STORE, "op": "=", "value": "New-Orleans"}],
+            False,
+        ),
+    ],
+)
+def test_mcp_plan_checks_effective_value_constraints_and_exact_literals(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    select: dict[str, Any],
+    where: list[dict[str, Any]],
+    honored: bool,
+) -> None:
+    _draft_plan(monkeypatch, _query(select, where=where))
+    payload = adapter.call_tool("plan", {"intent": text})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == ("ok" if honored else "low_confidence")
+    if honored:
+        assert payload.get("why") is None
+    else:
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert "filter_values_unrealized" in [
+            gap["kind"] for gap in payload["why"]["details"]["gaps"]
+        ]
+
+
+def test_mcp_plan_does_not_merge_nested_value_scopes(
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    query = _query(
+        {
+            "as": "brooklyn_revenue",
+            "expression": {
+                "kind": "scoped_aggregate",
+                "measure": "measure.jaffle.revenue_usd",
+                "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
+            },
+        },
+        where=[{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
+    )
+    _draft_plan(monkeypatch, query)
+    payload = adapter.call_tool("plan", {"intent": "revenue for Brooklyn and Philadelphia"})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert "filter_values_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
 
 
 @pytest.mark.parametrize(

@@ -149,8 +149,11 @@ A draft that validates can still leave out part of the question. `plan` returns
 - excludes a value requested positively, or cannot prove that its filter keeps or drops
   each named value with the requested polarity (`filter_values_unrealized`). Scalar `=`/`!=`
   and scalar or list `IN`/`NOT IN` can prove it; list-valued `=`/`!=`, empty membership
-  lists and pattern filters cannot. Grouping does not cure an uncertain filter;
-- requires one field to equal two values at once, which returns no rows
+  lists and pattern filters cannot. The guard intersects top-level filters on the same
+  field, accounts for exclusions, and compares draft literals to stored values exactly;
+  catalog labels and aliases only identify values named in the question. Nested filter
+  scopes do not prove an outer filter's result. Grouping does not cure an uncertain filter;
+- combines top-level filters on one field so no value can survive, which returns no rows
   (`contradictory_filters`);
 - misses a negation, a prior-period comparison or one of several named subjects.
 
