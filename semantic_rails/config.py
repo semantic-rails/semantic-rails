@@ -914,8 +914,8 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
             out["temporal_role"] = str(expr.get("temporal_role", ""))
         if expr.get("parameters"):
             out["parameters"] = dict(expr.get("parameters", {}) or {})
-        if expr.get("filter"):
-            out["filter"] = dict(expr.get("filter", {}) or {})
+        if "filter" in expr:
+            out["filter"] = expr["filter"]
         if expr.get("window"):
             out["window"] = dict(expr.get("window", {}) or {})
         return out

@@ -949,21 +949,24 @@ metrics:
       measure: measure.shop.order_count
       aggregation: count_distinct
       filter:
-        kind: metric_predicate
-        scope_mode: contextual
-        input:
-          kind: aggregate
-          measure: measure.shop.lifetime_order_count
-          aggregation: max
-        op: ">"
-        value: 1
+        all:
+          - expression:
+              kind: metric_predicate
+              entity: entity.shop_customer
+              scope_mode: entity_only
+              input:
+                measure: measure.shop.lifetime_order_count
+              op: ">"
+              value: 1
 ```
 
 The buried `expression:` form is the canonical surface for filtered
 aggregates. There is intentionally no top-level `filter:` direct field on
 `kind: aggregate` — once a filter is involved, the metric needs the AST's
-expressive power (multiple filter kinds: dimension, metric_predicate,
-boolean composition).
+filter expression. Each `all:` item is either a dimension
+condition with `field`, `op`, and `value`, or an `expression:` containing a
+`metric_predicate`. All items are combined with AND. Other filter combinators,
+including `any:`, are unsupported.
 
 ### Long-tail kind — `derived` (expression AST)
 
