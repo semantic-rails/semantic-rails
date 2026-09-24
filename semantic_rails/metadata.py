@@ -2756,32 +2756,42 @@ def inspect_payload(
 # usage_summary repeats the aggregation guidance beside it, and top_values
 # repeats sample_values.
 _INSPECT_DUPLICATE_FIELDS = frozenset({"object_type", "usage_summary", "top_values"})
-# Fields holding Query IR or tool arguments, kept verbatim: an empty value
-# inside them can be meaningful.
-_INSPECT_VERBATIM_FIELDS = frozenset(
-    {"starter_query_patches", "derived_query_summary", "starter_preview_request"}
-)
-
-
-def _without_empty(value: Any) -> Any:
-    if isinstance(value, dict):
-        cleaned = {key: _without_empty(item) for key, item in value.items()}
-        return {key: item for key, item in cleaned.items() if item not in (None, "", [], {})}
-    if isinstance(value, list):
-        return [_without_empty(item) for item in value]
-    return value
 
 
 def _slim_inspect_card(card: dict[str, Any]) -> dict[str, Any]:
-    """The card with each fact once: no duplicated fields, no empty fields,
-    and only the first starter patch (the others extend it with a clause
-    the agent can add itself)."""
+    """The card with each fact once: no duplicated or empty structural
+    fields, and only the first starter patch. Declared raw values and Query IR
+    literals stay verbatim."""
 
     slim: dict[str, Any] = {}
     for key, value in card.items():
         if key in _INSPECT_DUPLICATE_FIELDS:
             continue
-        value = value if key in _INSPECT_VERBATIM_FIELDS else _without_empty(value)
+        if key == "accumulation" and isinstance(value, dict):
+            value = {field: item for field, item in value.items() if item not in (None, "", [], {})}
+        elif key == "policy_effects" and isinstance(value, list):
+            # Trim only empty top-level effect metadata. Constraint bodies can
+            # themselves contain meaningful empty sets or false flags.
+            value = [
+                {field: item for field, item in effect.items() if item not in (None, "", [], {})}
+                if isinstance(effect, dict)
+                else effect
+                for effect in value
+            ]
+        elif key == "sample_values" and isinstance(value, list):
+            # Empty aliases/descriptions are display scaffolding, but even an
+            # empty or null raw value is a declared filter value. Never
+            # recurse into it (structured values are legal too).
+            value = [
+                {
+                    field: item
+                    for field, item in row.items()
+                    if field == "value" or item not in (None, "", [], {})
+                }
+                if isinstance(row, dict)
+                else row
+                for row in value
+            ]
         if value in (None, "", [], {}):
             continue
         slim[key] = value

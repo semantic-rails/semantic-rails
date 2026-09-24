@@ -136,7 +136,8 @@ Dimension-value cards keep the raw filter `value`, its business-facing `label`, 
 
 `inspect(verbosity="minimal")` states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
-the label, empty fields, and every starter patch after the first. Omitted verbosity and explicit
+the label, empty structural fields, and every starter patch after the first. Declared sample values
+and query literals remain exact, including blank and null values. Omitted verbosity and explicit
 `"compact"` or `"full"` keep the whole v1 card.
 
 The segment tools offer an explicit `verbosity="minimal"` response.
