@@ -196,7 +196,24 @@
       "description": "Semantic Rails MCP question-answering entrypoint: answer with discover, plan and execute (validate and compile are optional dry runs); use catalog to list ids. Returns what this package supports and doesn't: rolling windows, prior-period offsets, metric predicates, scoped aggregates, conversion metrics, with runnable expression_shapes examples. Gotcha: capabilities are package-scoped; call again after switching packages.",
       "inputSchema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "name": "capabilities",
@@ -252,6 +269,22 @@
           },
           "kind": {
             "description": "Optional object kind filter.",
+            "type": "string"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
             "type": "string"
           },
           "search": {
@@ -341,10 +374,26 @@
             "minimum": 1,
             "type": "integer"
           },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
+          },
+          "request_id": {
+            "type": "string"
           },
           "stage": {
             "description": "Builder stage that tunes ranking: initial, post_measure, post_dimension or comparison. Inferred when omitted.",
@@ -415,10 +464,26 @@
           "object_id": {
             "type": "string"
           },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
+          },
+          "request_id": {
+            "type": "string"
           },
           "verbosity": {
             "default": "compact",
@@ -500,10 +565,26 @@
             "minimum": 1,
             "type": "integer"
           },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
+          },
+          "request_id": {
+            "type": "string"
           },
           "stage": {
             "description": "Builder stage that tunes ranking: initial, post_measure, post_dimension or comparison. Inferred when omitted.",
@@ -589,10 +670,26 @@
             "minimum": 0,
             "type": "integer"
           },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
+          },
+          "request_id": {
+            "type": "string"
           },
           "search": {
             "type": "string"
@@ -646,7 +743,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Single public intent-planning surface: natural-language intent → one best Query IR. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. 'status=ok' has already paid validation cost, so agents may be passed to 'execute'. By default the v1 response includes intent_ir, trace and next steps; detail='query' opts into a compact response. 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: read 'status' and 'warnings' before running 'best.query_ir'.",
+      "description": "Single public intent-planning surface: natural-language intent → one best Query IR. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. 'status=ok' has already paid validation cost, so agents may pass 'best.query_ir' to 'execute'. By default the v1 response includes intent_ir, trace and next steps; detail='query' opts into a compact response. 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: read 'status' and 'warnings' before running 'best.query_ir'.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -669,10 +766,26 @@
             "minimum": 1,
             "type": "integer"
           },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
+          },
+          "request_id": {
+            "type": "string"
           }
         },
         "required": [
@@ -727,6 +840,19 @@
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as INVALID_QUERY (offenders under details.unsupported_keys).",
@@ -820,6 +946,9 @@
             },
             "type": "object"
           },
+          "request_id": {
+            "type": "string"
+          },
           "sql_profile": {
             "default": "audit",
             "description": "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; 'off' suppresses rendered_sql + sql_plan entirely.",
@@ -891,10 +1020,26 @@
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
+          },
+          "request_id": {
+            "type": "string"
           },
           "sql_profile": {
             "default": "audit",
@@ -973,10 +1118,26 @@
             "minimum": 1,
             "type": "integer"
           },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'validate' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
+          },
+          "request_id": {
+            "type": "string"
           },
           "row_format": {
             "default": "records",
@@ -1058,6 +1219,22 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
           "segment_id": {
             "type": "string"
           },
@@ -1122,6 +1299,22 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
           "segment_id": {
             "type": "string"
           },
@@ -1190,6 +1383,22 @@
             "default": 50,
             "minimum": 1,
             "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
           },
           "segment_id": {
             "type": "string"

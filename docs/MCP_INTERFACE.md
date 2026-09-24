@@ -96,7 +96,7 @@ conventions every tool shares: full ids, response detail controls, recovery hint
 `policy_context`. Each tool description then says what the tool does, when to use it, and its
 one gotcha.
 
-Every tool accepts `request_id` and `policy_context`, but no tool schema advertises them.
+Every v1 tool schema advertises and accepts optional `request_id` and `policy_context`.
 `policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
 transports supply the trusted context and ignore the argument.
 
@@ -135,8 +135,9 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
 - **Accurate cost claims.** Say which tools query the warehouse, and match the annotations
   (`readOnlyHint`, `openWorldHint`).
 - **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
-  meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Don't
-  advertise envelope arguments every tool accepts, such as `request_id`.
+  meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Keep
+  the v1 `request_id` and `policy_context` properties until a separately versioned interface
+  can remove them.
 - **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
   and the instructions (see "Measuring Context Cost").
 

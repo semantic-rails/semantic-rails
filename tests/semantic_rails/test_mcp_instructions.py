@@ -3,11 +3,10 @@
 The workflow used to be spread over the thirteen tool descriptions as "loop
 position" prose, some of it contradictory (plan said a status-ok draft could
 go straight to execute; execute said to run it only after validate and
-compile). request_id and policy_context were advertised on every tool. Now
-``initialize`` returns the workflow and shared conventions as
+compile). ``initialize`` now returns the workflow and shared conventions as
 ``instructions``; each description says what its tool does, when to use it and
-its one gotcha; and every tool still accepts request_id and policy_context
-without advertising them.
+its one gotcha. The published v1 schemas still advertise and accept
+request_id and policy_context, including on tools with closed input schemas.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator, ValidationError
 
 from semantic_rails.mcp import (
     MCP_SERVER_INSTRUCTIONS,
@@ -83,15 +83,15 @@ def test_descriptions_carry_no_loop_ceremony() -> None:
         assert "loop position" not in tool["description"].lower(), tool["name"]
 
 
-def test_request_id_and_policy_context_are_accepted_but_not_advertised(
+def test_request_id_and_policy_context_remain_advertised_and_accepted(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     tools = list_tool_definitions()
     assert {tool["name"] for tool in tools} == set(MINIMAL_ARGUMENTS)
     for tool in tools:
         properties = tool["inputSchema"]["properties"]
-        assert "request_id" not in properties, tool["name"]
-        assert "policy_context" not in properties, tool["name"]
+        assert properties["request_id"]["type"] == "string", tool["name"]
+        assert properties["policy_context"]["type"] == "object", tool["name"]
     extra = {"request_id": "req-accepted", "policy_context": {"environment": "development"}}
     for name, arguments in MINIMAL_ARGUMENTS.items():
         response = adapter.call_tool(name, {**arguments, **extra})
@@ -100,6 +100,25 @@ def test_request_id_and_policy_context_are_accepted_but_not_advertised(
         warnings = [issue.get("code", "") for issue in response.get("warnings") or []]
         assert not [code for code in warnings if code.endswith("_UNKNOWN_ARG")], (name, warnings)
         assert response["request_id"] == "req-accepted", name
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["capabilities", "catalog", "segment-validate", "segment-explain", "segment-preview"],
+)
+def test_published_v1_closed_schemas_validate_existing_context_arguments(tool_name: str) -> None:
+    tool = next(tool for tool in list_tool_definitions() if tool["name"] == tool_name)
+    schema = tool["inputSchema"]
+    assert schema["additionalProperties"] is False
+    validator = Draft202012Validator(schema)
+    arguments = {
+        **MINIMAL_ARGUMENTS[tool_name],
+        "request_id": "old-client",
+        "policy_context": {"environment": "development"},
+    }
+    validator.validate(arguments)
+    with pytest.raises(ValidationError):
+        validator.validate({**arguments, "unknown_v1_argument": True})
 
 
 def test_fastmcp_facade_sends_the_instructions(

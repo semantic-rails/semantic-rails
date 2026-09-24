@@ -370,9 +370,14 @@ def _schema(
     required: list[str] | None = None,
     additional_properties: bool = False,
 ) -> dict[str, Any]:
+    # These optional fields are part of the published v1 tool schemas. Keep
+    # them advertised even though the workflow explains them only once.
+    schema_properties = copy.deepcopy(dict(properties))
+    schema_properties.setdefault("request_id", {"type": "string"})
+    schema_properties.setdefault("policy_context", copy.deepcopy(POLICY_CONTEXT_SCHEMA))
     schema: dict[str, Any] = {
         "type": "object",
-        "properties": copy.deepcopy(dict(properties)),
+        "properties": schema_properties,
         "additionalProperties": additional_properties,
     }
     if required:
@@ -620,7 +625,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or "
             "'warnings' naming any part of the question the draft doesn't "
             "honor. 'status=ok' has already paid validation cost, so agents "
-            "may be passed to 'execute'. By default the v1 response "
+            "may pass 'best.query_ir' to 'execute'. By default the v1 response "
             "includes intent_ir, trace and next steps; detail='query' opts "
             "into a compact response. 'full' adds alternatives and "
             "blocked drafts; 'debug' adds compose_hints. Gotcha: read "
@@ -877,13 +882,6 @@ def _argument_error(message: str, *, field: str, value: Any | None = None) -> Se
     return SemanticLayerError("INVALID_MCP_ARGUMENTS", message, details=details)
 
 
-# Every tool accepts these, but no schema advertises them: request_id is an
-# envelope convention, and policy_context (local testing only; hosted
-# transports supply the trusted context) is documented once, in
-# MCP_SERVER_INSTRUCTIONS, instead of on all thirteen tools.
-_UNADVERTISED_ARGS: frozenset[str] = frozenset({"request_id", "policy_context"})
-
-
 def _tool_required_properties(tool_name: str) -> tuple[list[str], list[str]]:
     """Return (required, known) properties from the tool's input_schema."""
     for definition in TOOL_DEFINITIONS:
@@ -899,23 +897,18 @@ def _tool_required_properties(tool_name: str) -> tuple[list[str], list[str]]:
 def _tool_known_args(tool_name: str) -> frozenset[str]:
     """Source of truth for the legitimate argument keys per tool.
 
-    Combines the tool's ``input_schema.properties`` keys with:
-
-    * :data:`_UNADVERTISED_ARGS` (``request_id`` and ``policy_context``),
-      which every tool accepts but no schema advertises.
-    * For tools that accept top-level Query-IR passthrough
-      (``validate``, ``compile``, ``execute``), the canonical IR keys
-      declared in :data:`semantic_rails.ast.QUERY_INPUT_KEYS` so callers can skip the
-      ``query`` wrapper without tripping the unknown-arg check. Query
-      IR's own additional-keys gate (in ``ast.py``) handles unknown IR
-      keys separately — no double-validation here.
+    Combines the tool's ``input_schema.properties`` keys with canonical
+    :data:`semantic_rails.ast.QUERY_INPUT_KEYS` for tools that accept top-level
+    Query-IR passthrough (``validate``, ``compile``, ``execute``). Callers can
+    skip the ``query`` wrapper without tripping the unknown-arg check. Query
+    IR's own additional-keys gate (in ``ast.py``) handles unknown IR keys
+    separately — no double-validation here.
     """
     for definition in TOOL_DEFINITIONS:
         if definition.name != tool_name:
             continue
         schema = dict(definition.input_schema or {})
         known = set((schema.get("properties") or {}).keys())
-        known.update(_UNADVERTISED_ARGS)
         if tool_name in {"validate", "compile", "execute"}:
             known.update(QUERY_INPUT_KEYS)
         return frozenset(known)
