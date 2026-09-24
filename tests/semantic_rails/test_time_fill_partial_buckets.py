@@ -249,3 +249,52 @@ def test_a_windowed_fill_binds_the_calendar_day_it_reads():
 
     assert days & compiler.bind_query(config, None, _JULY_BY_WEEK).object_ids
     assert not days & compiler.bind_query(config, None, unfilled).object_ids
+
+
+@pytest.mark.parametrize(
+    ("bounds", "reads_day"),
+    [
+        ({}, False),
+        ({"start": "2017-07-01"}, False),
+        ({"end": "2017-08-01"}, False),
+        ({"start": "2017-07-01", "end": "2017-08-01"}, True),
+    ],
+    ids=["unbounded", "start-only", "end-only", "both-bounds"],
+)
+def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads_day):
+    from semantic_rails.compiler import bind_query
+    from semantic_rails.config import load_package_config, resolve_repo_path
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.policies import enforce_query_policies
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
+    day_id = next(
+        row.id
+        for row in config.dimensions
+        if row.entity == "entity.jaffle_time" and row.column == "date_day"
+    )
+    time = {
+        key: value for key, value in _JULY_BY_WEEK["time"].items() if key not in {"start", "end"}
+    }
+    query = {**_JULY_BY_WEEK, "time": {**time, **bounds}}
+    bound = bind_query(config, None, query)
+    assert (day_id in bound.object_ids) is reads_day
+
+    denied_day = dataclasses.replace(
+        config,
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.test.calendar_day",
+                kind="object_access",
+                object_ids=[day_id],
+                action="deny",
+            )
+        ],
+    )
+    if reads_day:
+        with pytest.raises(SemanticLayerError) as excinfo:
+            enforce_query_policies(denied_day, bound.object_ids, query=query)
+        assert excinfo.value.code == "POLICY_DENIED"
+    else:
+        assert enforce_query_policies(denied_day, bound.object_ids, query=query) == []

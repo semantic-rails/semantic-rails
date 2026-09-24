@@ -3769,16 +3769,16 @@ def _calendar_fill_binding(
         )
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(dimension.id)
-    return calendar_entity.table, dimension.column, _day_column(config, dimension)
+    return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)
 
 
-def _day_column(config: PackageConfig, bucket: DimensionConfig) -> str:
-    """The calendar's date-typed ``date_day`` column, or the bucket's own column without one.
+def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, Any]) -> str:
+    """Use calendar ``date_day`` for two-bound fill windows, else the bucket column.
 
-    A fill window is bounded by day, so a week or month that starts before the window
-    keeps its in-window days. The calendar's key isn't used: it can be a surrogate,
-    such as an integer ``date_id``.
+    The calendar key may be a surrogate, such as integer ``date_id``.
     """
+    if time.get("start") is None or time.get("end") is None:
+        return bucket.column
     day = next(
         (
             row
