@@ -2077,7 +2077,7 @@
         "readOnlyHint": true,
         "title": "Profile table columns"
       },
-      "description": "Row, distinct and null counts, min/max and up to 20 sample values per column (read-only). Scans at most max_rows rows, sampling beyond that; sample_limit=0 returns no values.",
+      "description": "Row, distinct and null counts, min/max and up to 20 sample values per column (read-only). Profiles at most max_rows rows (capped at one million), sampling beyond that; sample_limit=0 returns no values.",
       "inputSchema": {
         "properties": {
           "columns": {

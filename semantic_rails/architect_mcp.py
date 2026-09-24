@@ -1166,7 +1166,8 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Profile table columns"),
         description=(
             "Row, distinct and null counts, min/max and up to 20 sample values per column "
-            "(read-only). Scans at most max_rows rows, sampling beyond that; sample_limit=0 "
+            "(read-only). Profiles at most max_rows rows (capped at one million), sampling "
+            "beyond that; sample_limit=0 "
             "returns no values."
         ),
     )

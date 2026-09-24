@@ -105,6 +105,12 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
     return payload
 
 
+def _mapping(value: Any, *, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SemanticLayerError("INVALID_CONFIG", f"dbt {label} must be an object")
+    return value
+
+
 def load_dbt_artifacts(
     target_dir: str | os.PathLike[str] | None = None,
     *,
@@ -128,9 +134,9 @@ def load_dbt_artifacts(
         if catalog_file is not None and (catalog_path or catalog_file.exists())
         else {}
     )
-    metadata = dict(manifest.get("metadata", {}) or {})
-    nodes = dict(manifest.get("nodes", {}) or {})
-    sources = dict(manifest.get("sources", {}) or {})
+    metadata = _mapping(manifest.get("metadata", {}), label="manifest metadata")
+    nodes = _mapping(manifest.get("nodes", {}), label="manifest nodes")
+    sources = _mapping(manifest.get("sources", {}), label="manifest sources")
     entries = {
         key: dict(value)
         for key, value in {**nodes, **sources}.items()
@@ -139,8 +145,8 @@ def load_dbt_artifacts(
     databases = Counter(str(entry.get("database") or "") for entry in entries.values())
     default_database = databases.most_common(1)[0][0] if databases else ""
     catalog_entries = {
-        **dict(catalog.get("nodes", {}) or {}),
-        **dict(catalog.get("sources", {}) or {}),
+        **_mapping(catalog.get("nodes", {}), label="catalog nodes"),
+        **_mapping(catalog.get("sources", {}), label="catalog sources"),
     }
     relations = {
         key: _relation(key, entry, catalog_entries.get(key, {}), default_database)

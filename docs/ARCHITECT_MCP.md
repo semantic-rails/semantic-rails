@@ -120,8 +120,8 @@ package: its `default_db`). They open the file read-only and never create, seed 
 - `describe_table`: columns with types, nullability and defaults, and declared primary, unique and
   foreign keys.
 - `profile_columns`: row, distinct and null counts, min/max and up to 20 sample values per column
-  (`sample_limit`, default 5; `0` returns none). At most `max_rows` rows are scanned (default one
-  million; a uniform sample beyond that, reported as `sampled`).
+  (`sample_limit`, default 5; `0` returns none). At most one million rows are profiled;
+  `max_rows` can lower that cap. Larger tables use a uniform sample, reported as `sampled`.
 - `suggest_model`: a key, time roles, dimensions, measures with an aggregation and foreign-key
   links, each with a `confidence` (`high`, `medium`, `low`) and a `reason`. Declared keys come first,
   then uniqueness in the data, then names; foreign keys are checked for rows with no match. It also
@@ -129,6 +129,8 @@ package: its `default_db`). They open the file read-only and never create, seed 
   calling `upsert_model`.
 
 Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
+Relation components with hyphens, spaces or double quotes use their raw names, as in
+`create_project`; introspection quotes them in SQL.
 The same functions are available to Python callers in `semantic_rails.architect_introspection`.
 
 ## dbt Projects

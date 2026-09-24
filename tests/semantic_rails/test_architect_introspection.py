@@ -11,6 +11,7 @@ import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from semantic_rails.architect_introspection import (
+    MAX_PROFILE_ROWS,
     MAX_SAMPLE_CHARS,
     MAX_SAMPLE_VALUES,
     describe_table,
@@ -121,6 +122,51 @@ def test_unknown_or_unsafe_relations_are_refused(
     with open_duckdb(warehouse_path) as warehouse, pytest.raises(SemanticLayerError) as excinfo:
         describe_table(warehouse, relation)
     assert excinfo.value.code == error
+
+
+def test_introspection_quotes_project_relation_components(tmp_path: Path) -> None:
+    db_path = tmp_path / "quoted.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute('CREATE SCHEMA "sales-data"')
+    conn.execute(
+        'CREATE TABLE "sales-data"."fct""orders" '
+        '("order id" INTEGER PRIMARY KEY, "net amount" DECIMAL(10, 2))'
+    )
+    conn.execute('INSERT INTO "sales-data"."fct""orders" VALUES (1, 12.5)')
+    conn.close()
+
+    relation = 'sales-data.fct"orders'
+    with open_duckdb(db_path) as warehouse:
+        described = describe_table(warehouse, relation)
+        profiled = profile_columns(warehouse, relation, ["net amount"])
+        suggested = suggest_model(warehouse, relation)
+
+    assert described["primary_key"] == ["order id"]
+    assert profiled["row_count"] == 1
+    assert profiled["columns"][0]["samples"] == ["12.50"]
+    assert suggested["relation"] == relation
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (mcp_described,) = _session(
+        server, [("describe_table", {"relation": relation, "duckdb_path": str(db_path)})]
+    )
+    assert mcp_described["ok"] is True and mcp_described["primary_key"] == ["order id"]
+
+
+def test_profile_row_cap_cannot_be_raised_by_the_caller(tmp_path: Path) -> None:
+    db_path = tmp_path / "large.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(f"CREATE TABLE events AS SELECT range AS id FROM range({MAX_PROFILE_ROWS + 7})")
+    conn.close()
+
+    with open_duckdb(db_path) as warehouse:
+        profile = profile_columns(
+            warehouse, "events", ["id"], sample_limit=0, max_rows=MAX_PROFILE_ROWS * 10
+        )
+
+    assert profile["row_count"] == MAX_PROFILE_ROWS + 7
+    assert profile["rows_profiled"] == MAX_PROFILE_ROWS
+    assert profile["sampled"] is True
+    assert profile["columns"][0]["distinct_count"] <= MAX_PROFILE_ROWS
 
 
 def test_introspection_never_writes_or_creates_a_database(

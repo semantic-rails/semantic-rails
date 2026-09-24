@@ -9,8 +9,8 @@ answers those questions without ever writing to the warehouse:
 - :func:`describe_table` returns columns (types, nullability, defaults) and
   declared primary, unique and foreign keys;
 - :func:`profile_columns` counts rows, distinct values and nulls, reports
-  min/max and a few sample values (hard-capped), scanning at most
-  ``max_rows`` rows;
+  min/max and a few sample values (hard-capped), profiling at most one
+  million rows;
 - :func:`suggest_model` proposes a key, time roles, dimensions, measures (with
   an aggregation) and foreign-key links, each with a confidence and a reason,
   plus draft ``upsert_model`` arguments.
@@ -36,8 +36,9 @@ from .errors import SemanticLayerError
 MAX_SAMPLE_VALUES = 20
 MAX_SAMPLE_CHARS = 200
 DEFAULT_PROFILE_ROWS = 1_000_000
+MAX_PROFILE_ROWS = 1_000_000
 
-_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+_IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_$" -]*')
 _TIME_TYPES = ("DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP_S", "TIMESTAMP_MS")
 _NUMERIC_TYPES = (
     "TINYINT",
@@ -277,9 +278,10 @@ def profile_columns(
 ) -> dict[str, Any]:
     """Row, distinct and null counts, min/max and a few sample values per column.
 
-    At most ``max_rows`` rows are scanned (a uniform reservoir sample beyond
-    that, reported as ``sampled``), and at most 20 distinct sample values of at
-    most 200 characters are returned per column.
+    At most one million rows are profiled (``max_rows`` can lower that cap; a
+    uniform reservoir sample beyond it is reported as ``sampled``), and at
+    most 20 distinct sample values of at most 200 characters are returned per
+    column. Counting the total rows may inspect the full relation.
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
@@ -294,7 +296,7 @@ def profile_columns(
             details={"relation": described["relation"], "unknown_columns": unknown},
         )
     limit = max(0, min(int(sample_limit), MAX_SAMPLE_VALUES))
-    row_cap = max(1, int(max_rows))
+    row_cap = max(1, min(int(max_rows), MAX_PROFILE_ROWS))
     (row_count,) = warehouse.connection.execute(f"SELECT count(*) FROM {source}").fetchone()
     sampled = int(row_count) > row_cap
     scan = f"(SELECT * FROM {source} USING SAMPLE {row_cap} ROWS)" if sampled else source

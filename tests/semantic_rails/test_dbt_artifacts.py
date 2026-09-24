@@ -116,6 +116,28 @@ def test_missing_or_corrupt_artifacts_are_reported(target: Path, setup: Any, mes
         load_dbt_artifacts(target)
 
 
+@pytest.mark.parametrize(
+    ("file_name", "field", "value"),
+    [
+        ("manifest.json", "nodes", []),
+        ("manifest.json", "metadata", None),
+        ("catalog.json", "sources", "broken"),
+    ],
+)
+def test_malformed_dbt_sections_report_config_errors(
+    target: Path, file_name: str, field: str, value: Any
+) -> None:
+    path = target / file_name
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[field] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SemanticLayerError) as excinfo:
+        load_dbt_artifacts(target)
+    assert excinfo.value.code == "INVALID_CONFIG"
+    assert field in str(excinfo.value)
+
+
 def test_an_unknown_or_ambiguous_model_is_reported(target: Path) -> None:
     project = load_dbt_artifacts(target)
 

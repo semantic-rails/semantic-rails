@@ -226,3 +226,35 @@ def test_one_batch_cannot_repeat_a_model(workspace: Path) -> None:
 
     with pytest.raises(SemanticLayerError, match="repeated: customers"):
         project.upsert_models([_customers(), _customers(entity_key="client")])
+
+
+def test_import_revision_and_idempotency_are_enforced_at_the_mcp_boundary(
+    workspace: Path,
+) -> None:
+    server = create_architect_mcp_server(workspace_root=workspace)
+    before = project_revision(workspace / "shop")
+    base = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["dim_customers"],
+        "expected_revision": before,
+    }
+    applied, replayed, stale, reused = _calls(
+        server,
+        [
+            ("import_dbt_project", {**base, "idempotency_key": "one"}),
+            ("import_dbt_project", {**base, "idempotency_key": "one"}),
+            ("import_dbt_project", {**base, "idempotency_key": "two"}),
+            (
+                "import_dbt_project",
+                {**base, "select": ["dim_stores"], "idempotency_key": "one"},
+            ),
+        ],
+    )
+
+    assert applied["ok"] is True and applied["revision"] != before
+    assert replayed["ok"] is True and replayed["idempotent_replay"] is True
+    assert replayed["revision"] == applied["revision"]
+    assert stale["ok"] is False and stale["error"]["details"]["conflict_kind"] == "stale_revision"
+    assert reused["ok"] is False
+    assert reused["error"]["details"]["conflict_kind"] == "idempotency_key_reuse"
