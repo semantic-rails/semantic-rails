@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 import yaml
 
+from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import _slim_inspect_card
 from semantic_rails.runtime import Runtime
@@ -209,3 +210,28 @@ def test_omitted_inspect_verbosity_keeps_v1_whole_card(
     assert default["card"] == compact["card"]
     assert default["verbosity"] == "compact"
     assert {"object_type", "usage_summary", "starter_query_patches"} <= set(default["card"])
+
+
+def test_http_inspect_defaults_to_whole_card_and_explicit_minimal_is_slim(
+    runtime_factory: Any,
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    service = SemanticHTTPService(runtime)
+    arguments = {"object_id": "measure.jaffle.revenue_usd"}
+    try:
+        omitted, omitted_status = service.handle("POST", "/inspect", arguments)
+        compact, compact_status = service.handle(
+            "POST", "/inspect", {**arguments, "verbosity": "compact"}
+        )
+        full, full_status = service.handle("POST", "/inspect", {**arguments, "verbosity": "full"})
+        minimal, minimal_status = service.handle(
+            "POST", "/inspect", {**arguments, "verbosity": "minimal"}
+        )
+        assert {omitted_status, compact_status, full_status, minimal_status} == {200}
+        assert omitted["card"] == compact["card"] == full["card"]
+        assert {"object_type", "usage_summary"} <= set(omitted["card"])
+        assert "object_type" not in minimal["card"]
+        assert "usage_summary" not in minimal["card"]
+        assert minimal["card"] == _slim_inspect_card(omitted["card"])
+    finally:
+        runtime.close()

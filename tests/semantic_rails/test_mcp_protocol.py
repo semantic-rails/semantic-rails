@@ -1,10 +1,10 @@
-"""MCP text channels are compact, and the SDK facade runs on SDK 1.x and 2.x.
+"""MCP text channels are compact, and the SDK facade selects either module shape.
 
 Hosts that forward ``content[].text`` to the model paid for indented JSON:
 about half again the size of the same payload in ``structuredContent``. Tool
 results and resource reads now carry compact JSON. The optional stdio facade
-uses the SDK's ``MCPServer`` on SDK 2.x, where ``FastMCP`` no longer exists,
-and ``FastMCP`` on 1.x.
+selects ``MCPServer`` for a simulated SDK 2.x module, and ``FastMCP`` for
+the SDK 1.x module shape. This does not qualify an installed SDK 2.x package.
 """
 
 from __future__ import annotations

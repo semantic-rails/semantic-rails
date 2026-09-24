@@ -92,7 +92,7 @@ The tool names mirror the public API operations:
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
 `discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
 first, so `validate` and `compile` are optional dry runs. The instructions also carry the
-conventions every tool shares: full ids, the minimal-by-default verbosity, recovery hints, and
+conventions every tool shares: full ids, response detail controls, recovery hints, and
 `policy_context`. Each tool description then says what the tool does, when to use it, and its
 one gotcha.
 
@@ -170,7 +170,8 @@ Dimension-value cards keep the raw filter `value`, its business-facing `label`, 
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
 the label, empty structural fields, and every starter patch after the first. Declared sample values
 and query literals remain exact, including blank and null values. Omitted verbosity and explicit
-`"compact"` or `"full"` keep the whole v1 card.
+`"compact"` or `"full"` keep the whole v1 card on MCP and HTTP. Explicit HTTP
+`verbosity="minimal"` uses the same slim projection.
 
 The segment tools offer an explicit `verbosity="minimal"` response.
 `segment-validate` returns validity, the segment's definition and its derived query;
@@ -581,9 +582,10 @@ each request declares, so older clients see no change:
 
 ### MCP Python SDK 2.x
 
-The engine pins `mcp<2`. SDK 2.x renamed `FastMCP` to `MCPServer`, and
-`mcp.server.fastmcp` now only raises an error. The query MCP's SDK facade and its tests support
-both. Against SDK 2.2.0, three things still stand in the way of lifting the pin:
+The engine pins `mcp<2`. The query MCP facade selects `MCPServer` when an SDK 2.x module is
+present and falls back to `FastMCP` on 1.x. The 2.x branch has a simulated module test; it has
+not been qualified against an installed SDK 2.x package. Before lifting the pin, qualify these
+known integration points on the chosen SDK version:
 
 - **The Architect MCP.** `semantic_rails.architect_mcp` imports `mcp.server.fastmcp` at import
   time. Its tests also read `call_tool` results as a `(content, structured)` pair and read

@@ -134,9 +134,9 @@ MCP_SERVER_INSTRUCTIONS = (
     "there are no warnings; otherwise why and warnings name what the draft misses, so fix"
     " the Query IR or ask the user. out_of_scope or unrealizable means the package can't "
     "answer.\n"
-    "3. execute(query) validates, compiles and runs Query IR and returns up to max_rows "
-    "rows (default 200); a larger result says truncated. validate and compile are "
-    "optional dry runs.\n"
+    "3. execute(query) validates, compiles and runs Query IR. Omitted max_rows keeps the "
+    "query's limit; set max_rows to cap rows and receive a truncation hint when needed. "
+    "validate and compile are optional dry runs.\n"
     "\n"
     'Query IR: select measures or metrics, group_by dimension ids, where filters (op "in"'
     " for several values), and time {temporal_role, grain, start, end}. A window without "
@@ -147,8 +147,9 @@ MCP_SERVER_INSTRUCTIONS = (
     "build-options suggests the next choice for a guided builder; segment-validate, "
     "segment-explain and segment-preview work with package-authored segments.\n"
     "\n"
-    'Responses are minimal by default: pass verbosity "compact" or "full" (plan: detail '
-    '"best") for more. Errors carry recovery_hints and closest_matches; follow them '
+    'MCP validate, compile and execute default to minimal; pass verbosity "compact" or "full" '
+    'for more. plan defaults to detail "best"; detail "query" is shorter. Errors carry '
+    "recovery_hints and closest_matches; follow them "
     "before retrying. For local testing, any tool accepts policy_context {environment, "
     "audience, roles}; hosted servers set it for you."
 )
@@ -694,7 +695,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Validate, compile and run Query IR against the warehouse. Omitted "
+            "Validate, compile and run Query IR against the warehouse after "
+            "plan, or once Query IR is ready. Omitted "
             "max_rows keeps the caller's query limit; set max_rows to cap output. "
             "A capped result reports truncated and total_row_count. Gotcha: "
             "this tool incurs warehouse cost and latency. row_format='columns' "
@@ -2471,8 +2473,8 @@ def create_optional_fastmcp_server(
 ) -> Any:
     """Create a stdio-only MCP SDK facade if the SDK is installed.
 
-    Works with SDK 1.x (``FastMCP``) and 2.x (``MCPServer``). The import is
-    intentionally local so importing semantic_rails.mcp never requires an
+    Selects ``FastMCP`` on SDK 1.x or ``MCPServer`` when the SDK 2.x module
+    is present. The import is intentionally local so importing semantic_rails.mcp never requires an
     external MCP runtime. This helper deliberately cannot start
     or expose FastMCP's SSE/Streamable-HTTP apps: those generic network
     runners do not pass Semantic Rails' transport-authenticated
