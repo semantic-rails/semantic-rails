@@ -914,8 +914,8 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
             out["temporal_role"] = str(expr.get("temporal_role", ""))
         if expr.get("parameters"):
             out["parameters"] = dict(expr.get("parameters", {}) or {})
-        if expr.get("filter"):
-            out["filter"] = dict(expr.get("filter", {}) or {})
+        if "filter" in expr:
+            out["filter"] = expr["filter"]
         if expr.get("window"):
             out["window"] = dict(expr.get("window", {}) or {})
         return out
@@ -1064,6 +1064,11 @@ def ensure_contained_package_path(value: str, *, field: str, path: str = "") -> 
     return text
 
 
+# A DuckDB database another tool builds (dbt, a loader): the runtime reads it
+# as is and never creates or replaces it, so the seed names no source.
+SEED_KIND_EXTERNAL = "external"
+
+
 def _parse_connection_spec(raw: dict[str, Any]) -> ConnectionSpec:
     mapping = dict(raw or {})
     options = dict(mapping.get("options", {}) or {})
@@ -1112,10 +1117,18 @@ def _parse_package_meta(package_raw: dict[str, Any], *, path: str) -> PackageMet
         raise SemanticLayerError(
             "INVALID_CONFIG", f"{path}: duckdb packages must declare package.default_db"
         )
-    if connector.requires_seed and (not seed.kind or not seed.source):
+    if connector.requires_seed and seed.kind == SEED_KIND_EXTERNAL:
+        if seed.source or seed.post_sql:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: package.seed.kind 'external' takes no source or post_sql; "
+                "another tool builds the database at package.default_db",
+            )
+    elif connector.requires_seed and (not seed.kind or not seed.source):
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"{path}: duckdb packages must declare package.seed.kind and package.seed.source",
+            f"{path}: duckdb packages must declare package.seed.kind and package.seed.source "
+            "(or package.seed.kind: external when another tool builds the database)",
         )
     if connector.connection_kinds:
         if connection.kind not in connector.connection_kinds:

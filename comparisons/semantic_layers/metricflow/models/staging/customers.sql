@@ -1,4 +1,4 @@
 {{ config(materialized='view') }}
 
 select *
-from jaffle_customer
+from comparison_customers

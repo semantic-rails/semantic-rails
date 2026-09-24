@@ -152,6 +152,7 @@ from .sql_ast import (
     SqlWindow,
     SqlWithinGroup,
     build_filter_condition,
+    validate_single_value_filter_shape,
 )
 
 __all__ = [
@@ -944,16 +945,16 @@ _NUMERIC_DATA_TYPES = {"integer", "number"}
 
 
 def _validate_where_value_type(dim, item) -> None:
-    """Catch obvious type mismatches in `where` clauses at validate time
-    so users see a structured error instead of a raw warehouse conversion
-    error. Only the most common mismatches are checked: numeric value
-    against string dim, string value against numeric dim.
+    """Catch common where-value type mismatches before warehouse execution.
 
-    Per-dim `data_type` may be empty when the catalog hasn't classified
-    the column; in that case skip the check (nothing to enforce).
+    Skip dimensions without a classified catalog data type.
     """
-    op = str(item.op or "").upper()
-    values = list(item.value or []) if op in {"IN", "NOT IN"} else [item.value]
+    # Report an invalid scalar-op/list shape before any element type mismatch.
+    validate_single_value_filter_shape(item.op, item.value)
+    # NULL tests ignore value, including a supplied list, during lowering.
+    if " ".join(str(item.op or "").upper().split()) in {"IS NULL", "IS NOT NULL"}:
+        return
+    values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:
         return
@@ -2375,18 +2376,83 @@ def _resolve_conversion_source(
                     matching_mode="first_converted_after_base",
                 )
             )
-        return {
-            "measure": measure,
-            "bound_measure": bound,
-            "root_entity": measure.entity,
-            "time_role": bound.temporal_role or _default_temporal_role(measure),
-            "filters": [],
-        }
+        return _measure_conversion_source(measure, bound, config, side=side)
     raise SemanticLayerError(
         "CONVERSION_NOT_SUPPORTED",
         "Conversion execution currently requires base and converted inputs to resolve to event-count measures",
         details={"expression": expr_to_dict(expr)},
     )
+
+
+def _measure_conversion_source(
+    measure: MeasureConfig, bound: BoundMeasure, config: PackageConfig, *, side: str
+) -> dict[str, Any]:
+    """The conversion source for an operand measure, which must count its entity's rows.
+
+    Conversion lowering keys each event by its entity's key, reads the entity's table
+    and never reads the measure's expression or fact relation. A measure that counts an
+    expression (``CASE WHEN ... THEN key END``), another column or a fact model's rows
+    would silently lose its definition, so it is rejected.
+    """
+    entity = _entity_index(config).get(measure.entity)
+    problem = _conversion_operand_problem(measure, entity)
+    if problem is not None:
+        what, hint = problem
+        raise SemanticLayerError(
+            "CONVERSION_NOT_SUPPORTED",
+            (
+                f"Measure '{measure.id}' {what}, so it can't be the conversion {side} "
+                "operand: a conversion operand counts its entity's rows by the entity key, "
+                f"which would ignore the measure's definition. {hint}"
+            ),
+            details={
+                "side": side,
+                "measure": measure.id,
+                "entity": measure.entity,
+                "entity_key": list(entity.key) if entity is not None else [],
+                "measure_expr": expr_to_dict(measure.expr),
+            },
+        )
+    return {
+        "measure": measure,
+        "bound_measure": bound,
+        "root_entity": measure.entity,
+        "time_role": bound.temporal_role or _default_temporal_role(measure),
+        "filters": [],
+    }
+
+
+def _conversion_operand_problem(measure: MeasureConfig, entity: Any) -> tuple[str, str] | None:
+    """What an operand measure counts instead of its entity's rows, and the fix; None if fine."""
+    key = list(entity.key) if entity is not None else []
+    table = entity.table if entity is not None else ""
+    counted = measure.expr
+    # Named so a case difference shows: some warehouses (ClickHouse) are case-sensitive.
+    the_key = f"the key '{key[0]}'" if len(key) == 1 else "the key"
+    if not isinstance(counted, ColumnRefExpr):
+        return (
+            f"counts an expression, not {the_key} of '{measure.entity}'",
+            "Use a measure that counts the entity key and restrict the operand with "
+            "'filter', for example filter: {all: [{field: <dimension id>, op: '=', "
+            "value: ...}]}.",
+        )
+    events_hint = "Use a measure that counts the key of the entity whose rows are the events."
+    if not (
+        [counted.column] == key
+        and counted.entity in {"", measure.entity}
+        and counted.table in {"", table}
+    ):
+        qualifier = next((q for q in (counted.entity, counted.table) if q), "")
+        where = f" of '{qualifier}'" if qualifier not in {"", measure.entity, table} else ""
+        what = f"counts column '{counted.column}'{where}, not {the_key} of '{measure.entity}'"
+        return what, events_hint
+    if measure.source_relation not in {"", table}:
+        return (
+            f"counts rows of '{measure.source_relation}', not of the '{measure.entity}' "
+            f"table '{table}'",
+            events_hint,
+        )
+    return None
 
 
 def _conversion_dimension_paths(
@@ -3498,7 +3564,7 @@ def _plan_query(
 
     dedup_measures = {
         (
-            row.measure_id,
+            row.alias,
             row.aggregation,
             row.temporal_role,
             _freeze_payload(row.aggregation_params),

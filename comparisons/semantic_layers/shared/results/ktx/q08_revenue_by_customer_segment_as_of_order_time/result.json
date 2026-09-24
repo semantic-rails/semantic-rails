@@ -7,7 +7,7 @@
   {
     "ordered_month_month": "2016-09-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 17477.69999999999
+    "revenue_usd": 17477.700000000004
   },
   {
     "ordered_month_month": "2016-10-01 00:00:00",
@@ -27,7 +27,7 @@
   {
     "ordered_month_month": "2016-11-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 27428.180000000022
+    "revenue_usd": 27428.180000000037
   },
   {
     "ordered_month_month": "2016-12-01 00:00:00",
@@ -37,7 +37,7 @@
   {
     "ordered_month_month": "2016-12-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 34952.610000000066
+    "revenue_usd": 34952.61000000004
   },
   {
     "ordered_month_month": "2017-01-01 00:00:00",
@@ -52,7 +52,7 @@
   {
     "ordered_month_month": "2017-01-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 44504.92999999988
+    "revenue_usd": 44504.93000000001
   },
   {
     "ordered_month_month": "2017-02-01 00:00:00",
@@ -67,7 +67,7 @@
   {
     "ordered_month_month": "2017-02-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 42834.49999999985
+    "revenue_usd": 42834.49999999988
   },
   {
     "ordered_month_month": "2017-03-01 00:00:00",
@@ -82,7 +82,7 @@
   {
     "ordered_month_month": "2017-03-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 73321.77000000067
+    "revenue_usd": 73321.77000000008
   },
   {
     "ordered_month_month": "2017-04-01 00:00:00",
@@ -97,7 +97,7 @@
   {
     "ordered_month_month": "2017-04-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 82682.07000000148
+    "revenue_usd": 82682.07000000101
   },
   {
     "ordered_month_month": "2017-05-01 00:00:00",
@@ -112,7 +112,7 @@
   {
     "ordered_month_month": "2017-05-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 95395.1700000031
+    "revenue_usd": 95395.17000000286
   },
   {
     "ordered_month_month": "2017-06-01 00:00:00",
@@ -127,7 +127,7 @@
   {
     "ordered_month_month": "2017-06-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 97728.07000000274
+    "revenue_usd": 97728.07000000266
   },
   {
     "ordered_month_month": "2017-07-01 00:00:00",
@@ -142,7 +142,7 @@
   {
     "ordered_month_month": "2017-07-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 94105.69000000246
+    "revenue_usd": 94105.69000000243
   },
   {
     "ordered_month_month": "2017-08-01 00:00:00",
@@ -157,6 +157,6 @@
   {
     "ordered_month_month": "2017-08-01 00:00:00",
     "customer_segment": null,
-    "revenue_usd": 106851.15000000411
+    "revenue_usd": 106851.15000000386
   }
 ]

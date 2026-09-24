@@ -101,6 +101,12 @@ This writes `~/.semantic_rails/profiles.yml` (or
 developer machine, not checked into the package, not a secret store, and not
 hosted control-plane configuration.
 
+Without `--package` or `--path`, a command uses the package directory it runs in
+(or a parent), then this profile. With neither, `ask`, `ls`, `project`, `repl` and
+bare `semantic-rails` offer the bundled `jaffle_shop` sample package at an
+interactive terminal (default No); everything else stops and lists how to choose
+a package. Scripts that want the sample pass `--package jaffle_shop`.
+
 `validate-config` and `project validate` write a `.compiled/manifest.json` next
 to the package. The manifest holds `package_id`, a content `fingerprint` of the
 source, and pre-rendered catalog variants the runtime can serve without
@@ -349,6 +355,45 @@ defaults:
 
 `schema_strict: true` turns on strict v1 validation (see the
 [Validation profile](#validation-profile) section). Recommended for new packages.
+
+### DuckDB seeds and externally built databases
+
+`seed.kind` says who builds the file at `default_db`:
+
+- `sql_script` (a SQL file) or `csv_dir_duckdb` (a directory of CSVs plus
+  optional `post_sql`): the runtime builds the database only when the file is
+  missing. It records package provenance inside the new file. Publication is
+  atomic and never overwrites a file another process created in the meantime.
+  If the filesystem cannot publish without an overwrite (for example one
+  without hard links on POSIX), creation fails with `INVALID_CONFIG`; build the
+  database explicitly on a supported filesystem before starting the runtime.
+- `external`: another tool (for example `dbt build` with dbt-duckdb) builds and
+  owns the file. It takes no `source` or `post_sql`, and the runtime only reads
+  the file: a missing file is an `INVALID_CONFIG` error.
+
+```yaml
+package:
+  warehouse: duckdb
+  default_db: data/warehouse.duckdb   # the file dbt-duckdb writes
+  seed: { kind: external }
+```
+
+Relations may be schema-qualified (`relation: main_marts.fct_orders`). The
+validation probe checks the relations the package reads, including views and
+stored sources of relation pipelines. If an existing database lacks any of
+these relations, the runtime raises `INVALID_CONFIG` with
+`details.missing_relations` and leaves the file intact, regardless of its seed
+provenance. Have the owner (such as dbt) build the missing relations. For a
+disposable database generated from this package's seed, stop its users, back
+up any data you need, and explicitly remove the database file before
+restarting so bootstrap can create a fresh one. The former
+`SEMANTIC_RAILS_ALLOW_DB_RESEED` setting does not enable automatic replacement.
+
+The operator-invoked `seed_db` and CSV loader helpers still replace an existing
+file, but refuse to publish while its `.wal` recovery log exists. Close and
+checkpoint the database before invoking either helper. Keep other writers
+stopped through publication: the WAL check cannot prevent a writer from
+creating a new log immediately after it runs.
 
 ### `package.environments` and governance `meta:`
 
@@ -904,21 +949,24 @@ metrics:
       measure: measure.shop.order_count
       aggregation: count_distinct
       filter:
-        kind: metric_predicate
-        scope_mode: contextual
-        input:
-          kind: aggregate
-          measure: measure.shop.lifetime_order_count
-          aggregation: max
-        op: ">"
-        value: 1
+        all:
+          - expression:
+              kind: metric_predicate
+              entity: entity.shop_customer
+              scope_mode: entity_only
+              input:
+                measure: measure.shop.lifetime_order_count
+              op: ">"
+              value: 1
 ```
 
 The buried `expression:` form is the canonical surface for filtered
 aggregates. There is intentionally no top-level `filter:` direct field on
 `kind: aggregate` — once a filter is involved, the metric needs the AST's
-expressive power (multiple filter kinds: dimension, metric_predicate,
-boolean composition).
+filter expression. Each `all:` item is either a dimension
+condition with `field`, `op`, and `value`, or an `expression:` containing a
+`metric_predicate`. All items are combined with AND. Other filter combinators,
+including `any:`, are unsupported.
 
 ### Long-tail kind — `derived` (expression AST)
 

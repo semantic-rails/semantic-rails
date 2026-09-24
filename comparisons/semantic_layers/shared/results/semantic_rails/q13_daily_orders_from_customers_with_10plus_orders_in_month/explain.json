@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.919,
-      "compile_ms": 0.984,
+      "cache_lookup_ms": 0.816,
+      "compile_ms": 0.874,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -336,7 +336,7 @@
           "has_start": false,
           "has_time_filter": true,
           "pushed_to_scan": true,
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
             "calendar_id": "default",
@@ -352,7 +352,7 @@
           "has_start": false,
           "has_time_filter": true,
           "pushed_to_scan": true,
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
           "time_filter": {
             "calendar_id": "default",
@@ -377,7 +377,7 @@
               "measure_id": "measure.jaffle.order_count"
             }
           ],
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
@@ -395,7 +395,7 @@
               "measure_id": "measure.jaffle.order_count"
             }
           ],
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
@@ -453,8 +453,8 @@
             ],
             "omitted_semantic_root_entity": "",
             "physical_anchor_entity": "entity.jaffle_order",
-            "relation": "jaffle_order",
-            "selected_relation": "jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
             "semantic_equivalence": "",
             "source_entity": "entity.jaffle_order",
@@ -463,7 +463,7 @@
           "id": "leaf_1_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan jaffle_order"
+          "label": "Scan comparison_orders"
         },
         {
           "details": {
@@ -516,15 +516,15 @@
               "measure": "measure.jaffle.order_count",
               "temporal_role": ""
             },
-            "relation": "jaffle_order",
-            "selected_relation": "jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
             "source_entity": "entity.jaffle_order"
           },
           "id": "leaf_1_predicate_1_scan_1",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan predicate source jaffle_order"
+          "label": "Scan predicate source comparison_orders"
         },
         {
           "details": {
@@ -669,7 +669,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  jaffle_order.customer_id AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nGROUP BY\n  jaffle_order.customer_id,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON jaffle_order.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -754,12 +754,12 @@
                         "distinct": false,
                         "from_table": {
                           "alias": "",
-                          "name": "jaffle_order"
+                          "name": "comparison_orders"
                         },
                         "group_by": [
                           {
                             "parts": [
-                              "jaffle_order",
+                              "comparison_orders",
                               "customer_id"
                             ]
                           },
@@ -771,7 +771,7 @@
                               {
                                 "expr": {
                                   "parts": [
-                                    "jaffle_order",
+                                    "comparison_orders",
                                     "ordered_at"
                                   ]
                                 },
@@ -792,7 +792,7 @@
                             "alias": "g1",
                             "expression": {
                               "parts": [
-                                "jaffle_order",
+                                "comparison_orders",
                                 "customer_id"
                               ]
                             }
@@ -807,7 +807,7 @@
                                 {
                                   "expr": {
                                     "parts": [
-                                      "jaffle_order",
+                                      "comparison_orders",
                                       "ordered_at"
                                     ]
                                   },
@@ -824,7 +824,7 @@
                               "args": [
                                 {
                                   "parts": [
-                                    "jaffle_order",
+                                    "comparison_orders",
                                     "order_id"
                                   ]
                                 }
@@ -936,7 +936,7 @@
             "distinct": false,
             "from_table": {
               "alias": "",
-              "name": "jaffle_order"
+              "name": "comparison_orders"
             },
             "group_by": [
               {
@@ -947,7 +947,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -966,7 +966,7 @@
                   "left": {
                     "left": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "customer_id"
                       ]
                     },
@@ -988,7 +988,7 @@
                         {
                           "expr": {
                             "parts": [
-                              "jaffle_order",
+                              "comparison_orders",
                               "ordered_at"
                             ]
                           },
@@ -1027,7 +1027,7 @@
                     {
                       "expr": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       },
@@ -1044,7 +1044,7 @@
                   "args": [
                     {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "order_id"
                       ]
                     }
@@ -1438,10 +1438,10 @@
   },
   "query_ir_hints": [],
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  jaffle_order.customer_id AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nGROUP BY\n  jaffle_order.customer_id,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON jaffle_order.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
+  "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:b1bf4e16f2ed9474bfeec78030e8849024eb239aba911b80230bc3b59bfe6a52",
-  "source_fingerprint": "5b0665c39f43be823184d1e560de283866b44b6bf35f2a53f152a2bf4a7496fd",
+  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
+  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
   "sql_plan": {
     "ctes": [
       {
@@ -1459,12 +1459,12 @@
                       "distinct": false,
                       "from_table": {
                         "alias": "",
-                        "name": "jaffle_order"
+                        "name": "comparison_orders"
                       },
                       "group_by": [
                         {
                           "parts": [
-                            "jaffle_order",
+                            "comparison_orders",
                             "customer_id"
                           ]
                         },
@@ -1476,7 +1476,7 @@
                             {
                               "expr": {
                                 "parts": [
-                                  "jaffle_order",
+                                  "comparison_orders",
                                   "ordered_at"
                                 ]
                               },
@@ -1497,7 +1497,7 @@
                           "alias": "g1",
                           "expression": {
                             "parts": [
-                              "jaffle_order",
+                              "comparison_orders",
                               "customer_id"
                             ]
                           }
@@ -1512,7 +1512,7 @@
                               {
                                 "expr": {
                                   "parts": [
-                                    "jaffle_order",
+                                    "comparison_orders",
                                     "ordered_at"
                                   ]
                                 },
@@ -1529,7 +1529,7 @@
                             "args": [
                               {
                                 "parts": [
-                                  "jaffle_order",
+                                  "comparison_orders",
                                   "order_id"
                                 ]
                               }
@@ -1641,7 +1641,7 @@
           "distinct": false,
           "from_table": {
             "alias": "",
-            "name": "jaffle_order"
+            "name": "comparison_orders"
           },
           "group_by": [
             {
@@ -1652,7 +1652,7 @@
                 {
                   "expr": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "ordered_at"
                     ]
                   },
@@ -1671,7 +1671,7 @@
                 "left": {
                   "left": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "customer_id"
                     ]
                   },
@@ -1693,7 +1693,7 @@
                       {
                         "expr": {
                           "parts": [
-                            "jaffle_order",
+                            "comparison_orders",
                             "ordered_at"
                           ]
                         },
@@ -1732,7 +1732,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -1749,7 +1749,7 @@
                 "args": [
                   {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "order_id"
                     ]
                   }

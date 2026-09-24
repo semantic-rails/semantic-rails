@@ -179,21 +179,8 @@ def _compile_post_expr(
     table_alias: str = "base",
 ) -> Any:
     group_aliases = list(group_aliases or [])
-    if isinstance(expr, MeasureRefExpr):
+    if isinstance(expr, (MeasureRefExpr, AggregateExpr)):
         return _base_alias_ref(_expression_alias(expr, config), table_alias=table_alias)
-    if isinstance(expr, AggregateExpr):
-        return _base_alias_ref(
-            _expression_alias(
-                MeasureRefExpr(
-                    measure=expr.measure,
-                    aggregation=expr.aggregation,
-                    temporal_role=expr.temporal_role,
-                    parameters=dict(expr.parameters or {}),
-                ),
-                config,
-            ),
-            table_alias=table_alias,
-        )
     if isinstance(expr, ScopedAggregateExpr):
         return _base_alias_ref(_expression_alias(expr, config), table_alias=table_alias)
     if isinstance(expr, MetricRecipeRefExpr):

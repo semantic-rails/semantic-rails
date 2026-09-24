@@ -1,12 +1,12 @@
 WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (
 SELECT
-  jaffle_order.customer_id AS g1,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  COUNT(DISTINCT jaffle_order.order_id) AS m1
-FROM jaffle_order
+  comparison_orders.customer_id AS g1,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  COUNT(DISTINCT comparison_orders.order_id) AS m1
+FROM comparison_orders
 GROUP BY
-  jaffle_order.customer_id,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  comparison_orders.customer_id,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 ),
 leaf_1__order_count_customer_month_source_1 AS (
 SELECT
@@ -25,12 +25,12 @@ WHERE
 ),
 leaf_1 AS (
 SELECT
-  DATE_TRUNC('day', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  COUNT(DISTINCT jaffle_order.order_id) AS m1
-FROM jaffle_order
-INNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON jaffle_order.customer_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_customer_id" AND DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1."temporal_role.jaffle_order_time__month"
+  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  COUNT(DISTINCT comparison_orders.order_id) AS m1
+FROM comparison_orders
+INNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_customer_id" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1."temporal_role.jaffle_order_time__month"
 GROUP BY
-  DATE_TRUNC('day', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 )
 SELECT
   base.t AS "temporal_role.jaffle_order_time__day",

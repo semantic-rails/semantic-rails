@@ -1,0 +1,7 @@
+# The MetricFlow comparison harness. Regenerate requirements.lock after editing:
+#   uv pip compile --python-version 3.12 --prerelease=if-necessary-or-explicit \
+#     --generate-hashes requirements.in -o requirements.lock
+dbt-metricflow==0.11.0
+dbt-duckdb==1.10.1
+# dbt-metricflow 0.11.0 pins this pre-release; naming it keeps every other package on a release.
+dbt-semantic-interfaces==0.9.4.dev0

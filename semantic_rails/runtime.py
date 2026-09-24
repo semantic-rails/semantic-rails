@@ -36,6 +36,7 @@ from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
 from .compiler import BoundQuery, bind_query, compile_query
 from .config import (
+    SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
     get_package_config,
     get_package_path,
@@ -48,6 +49,7 @@ from .config import (
 from .db import (
     Database,
     WarehouseAdapter,
+    build_seed_database,
     create_warehouse_adapter,
     load_csv_dir_to_duckdb,
     seed_db,
@@ -71,6 +73,7 @@ from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects
 from .registry import Registry
+from .relation_pipelines import relation_source_tables
 from .request_context import context_from_policy_context, request_context_payload
 from .runtime_parts.responses import (
     apply_response_verbosity,
@@ -79,6 +82,7 @@ from .runtime_parts.responses import (
     resolve_verbosity,
 )
 from .scope import classify_question
+from .seed_provenance import missing_duckdb_relations, publish_seed_database
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
 from .sql_preparation import PreparedQuery
 
@@ -1378,33 +1382,78 @@ class Runtime:
         return repo_candidate
 
     def _expected_tables(self) -> set[str]:
-        return {str(row.table) for row in self._config.entities if str(row.table).strip()}
-
-    def _db_matches_package(self) -> bool:
-        if self.warehouse != "duckdb":
-            return True
-        if not os.path.exists(self.db_path):
-            return False
-        try:
-            db = Database.connect(self.db_path, read_only=True)
-            try:
-                rows = db.query(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-                )
-            finally:
-                db.close()
-        except Exception:
-            return False
-        existing = {str(row.get("table_name", "")) for row in rows}
-        expected = self._expected_tables()
-        return expected.issubset(existing)
+        # An entity over a relation pipeline reads a CTE the compiler builds;
+        # the stored tables it needs are the pipeline's own sources. Declared
+        # aggregate relations are stored tables the compiler may route to.
+        pipeline_outputs = {row.output_name for row in self._config.relations}
+        stored = {
+            str(row.table)
+            for row in self._config.entities
+            if str(row.table).strip() and not row.relation_id
+        }
+        stored |= {
+            str(row.relation)
+            for row in self._config.aggregate_relations
+            if str(row.relation).strip() and row.relation not in pipeline_outputs
+        }
+        pipelines = {row.relation_id for row in self._config.entities if row.relation_id}
+        return stored | relation_source_tables(self._config, pipelines)
 
     def _ensure_db(self) -> None:
+        """Create a missing seed database, but never replace an existing file.
+
+        Probe existing files in a fresh process. DuckDB can return an older
+        in-process catalog after another process replaces a path, and closing a
+        second connection here can release a serving connection's POSIX lock.
+        """
         if self.warehouse != "duckdb":
             return
         seed = self._config.package.seed
-        if self._db_matches_package():
+        for _attempt in range(2):
+            if os.path.islink(self.db_path) and not os.path.exists(self.db_path):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"package.default_db '{self.db_path}' is a symbolic link to a file that "
+                    "does not exist; Semantic Rails does not build a database through a "
+                    "broken link. Fix or remove the link.",
+                    details={"default_db": self.db_path, "reason": "default_db_broken_link"},
+                )
+            if not os.path.exists(self.db_path):
+                if seed.kind == SEED_KIND_EXTERNAL:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"package.default_db '{self.db_path}' does not exist. The package declares "
+                        "package.seed.kind: external, so Semantic Rails never creates this database; "
+                        "build it first (for example with `dbt build`).",
+                        details={
+                            "default_db": self.db_path,
+                            "reason": "external_default_db_missing",
+                        },
+                    )
+                try:
+                    self._publish_seed(self._seed_source())
+                except SemanticLayerError as exc:
+                    if exc.details.get("reason") != "default_db_created_concurrently":
+                        raise
+                # Whether this process or another one created the file, check
+                # its actual catalog before the runtime serves it.
+                continue
+            try:
+                missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+            except Exception as exc:  # noqa: BLE001 — any uncertain probe fails closed
+                raise self._unreadable_db_error() from exc
+            if missing:
+                raise self._missing_db_relations_error(missing)
             return
+        raise SemanticLayerError(
+            "CONFIG_CONFLICT",
+            f"package.default_db '{self.db_path}' kept changing while its seed was built; retry",
+            details={"default_db": self.db_path, "reason": "default_db_created_concurrently"},
+        )
+
+    def _seed_source(self) -> str:
+        """The seed source's resolved path; a missing one is a clear INVALID_CONFIG."""
+        seed = self._config.package.seed
         src = self._resolve_asset_path(seed.source, kind="seed_source")
         if not os.path.exists(src):
             # _resolve_asset_path falls back to the repo root when neither
@@ -1418,18 +1467,56 @@ class Runtime:
                 f"'{package_candidate}' (relative to the package) and "
                 f"'{src}'; create the file or fix package.seed.source",
             )
-        if seed.kind == "sql_script":
-            seed_db(self.db_path, src)
-            return
-        if seed.kind == "csv_dir_duckdb":
-            load_csv_dir_to_duckdb(
-                self.db_path,
-                src,
-                self._resolve_asset_path(seed.post_sql, kind="post_sql") if seed.post_sql else "",
-                null_strings=seed.null_strings,
-            )
-            return
-        raise SemanticLayerError("INVALID_CONFIG", f"Unsupported seed kind '{seed.kind}'")
+        return src
+
+    def _publish_seed(self, src: str) -> None:
+        seed = self._config.package.seed
+        tmp_path = build_seed_database(
+            self.db_path,
+            kind=seed.kind,
+            source=src,
+            post_sql=(
+                self._resolve_asset_path(seed.post_sql, kind="post_sql") if seed.post_sql else ""
+            ),
+            null_strings=seed.null_strings,
+            package_id=self._config.package.package_id,
+        )
+        try:
+            publish_seed_database(tmp_path, self.db_path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+
+    def _unreadable_db_error(self) -> SemanticLayerError:
+        return SemanticLayerError(
+            "INVALID_CONFIG",
+            f"package.default_db '{self.db_path}' exists but could not be opened as a DuckDB "
+            "database; another process (for example a running `dbt build`) may be writing it. "
+            "Semantic Rails never replaces a file it cannot read. If another tool builds this "
+            "database, declare package.seed.kind: external; otherwise stop the process holding "
+            "it, or delete the file to rebuild it from the seed.",
+            details={"default_db": self.db_path, "reason": "default_db_unreadable"},
+        )
+
+    def _missing_db_relations_error(self, missing: list[str]) -> SemanticLayerError:
+        shown = ", ".join(missing[:5])
+        if len(missing) > 5:
+            shown += f", and {len(missing) - 5} more"
+        return SemanticLayerError(
+            "INVALID_CONFIG",
+            f"package.default_db '{self.db_path}' lacks relations the package reads ({shown}). "
+            "Semantic Rails never replaces an existing database during runtime validation. "
+            "If another tool (such as dbt) owns it, declare package.seed.kind: external and "
+            "build the missing relations there. For a disposable database built from this "
+            "package's seed, stop its users, back up any data you need, then explicitly delete "
+            "the file so the next bootstrap can create it. The former "
+            "SEMANTIC_RAILS_ALLOW_DB_RESEED flag no longer enables automatic replacement.",
+            details={
+                "default_db": self.db_path,
+                "missing_relations": missing,
+                "reason": "default_db_missing_relations",
+            },
+        )
 
     def close(self) -> None:
         with self._state_gate.write(), self._query_lock:

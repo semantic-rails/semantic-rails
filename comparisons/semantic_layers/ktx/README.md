@@ -12,23 +12,26 @@ DuckDB data as the other local comparison layers.
 ## Scoring Boundary
 
 - `q01`-`q07` use ordinary KtX sources, measures, joins, filters, and aggregate
-  locality, so they are scored as `native`.
+  locality, so the rubric (`../shared/rubric.md`) labels them `native`.
 - `q08`-`q16` execute through KtX `sql:` sources or query-level filters. In
   this pack the temporal-validity, conversion-window, and aggregate-predicate
   semantics are authored as SQL/query workarounds rather than as reusable
-  governed primitives in the KtX semantic model.
-- Output check: KtX's rows match Semantic Rails on every question except q07
-  and q16. Those two read the 11-row `comparison_order_lifecycle` view. There
-  KtX agrees with Cube, Malloy and Snowflake Semantic Views, which read the same
-  view, and with MetricFlow's stale committed answers. The Semantic Rails pack
-  reads the full lifecycle table (see the pack README).
+  governed primitives in the KtX semantic model. The rubric labels q11 and
+  q12, which filter on the precomputed customer rollup columns, `precomputed`
+  and the other seven `workaround`.
+- Output check: KtX's rows match the independent answer key
+  (`../shared/oracle/`) on all 16 questions.
 
-Run from the repository root:
+Run from the repository root, with KtX checked out at the recorded commit:
 
 ```bash
+test -d /tmp/ktx-compare || git clone https://github.com/Kaelio/ktx /tmp/ktx-compare
+git -C /tmp/ktx-compare checkout a155c0b
 PYTHONPATH=/tmp/ktx-compare/python/ktx-sl \
-  uv run --with sqlglot --with pydantic --with pyyaml \
+  uv run --with sqlglot==30.19.0 --with pydantic==2.13.4 --with pyyaml==6.0.3 \
   python comparisons/semantic_layers/ktx/scripts/run_questions.py
 ```
+
+The runner records the KtX commit and the package versions in its `summary.json`.
 
 Set `KTX_SL_PATH=/path/to/ktx/python/ktx-sl` to use a different KtX checkout.

@@ -11,6 +11,7 @@ failures (CI posture).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,6 +22,16 @@ os.environ.setdefault("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
 
 from .fixture import JaffleFixture, build_jaffle_fixture
 from .harness import IntegrationTarget, build_runtime, discover_targets, load_battery
+
+_SUITE_ROOT = Path(__file__).resolve().parent
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Mark every test in this suite ``integration``, before ``-m`` selection runs."""
+    for item in items:
+        if item.path.resolve().is_relative_to(_SUITE_ROOT):
+            item.add_marker(pytest.mark.integration)
 
 
 def _strict() -> bool:

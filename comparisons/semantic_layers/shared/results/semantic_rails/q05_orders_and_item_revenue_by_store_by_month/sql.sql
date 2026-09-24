@@ -1,25 +1,25 @@
 WITH leaf_1 AS (
 SELECT
-  jaffle_store.store_name AS g1,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  COUNT(DISTINCT jaffle_order.order_id) AS m1
-FROM jaffle_order
-INNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id
+  comparison_stores.store_name AS g1,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  COUNT(DISTINCT comparison_orders.order_id) AS m1
+FROM comparison_orders
+INNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
 GROUP BY
-  jaffle_store.store_name,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  comparison_stores.store_name,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 ),
 leaf_2 AS (
 SELECT
-  jaffle_store.store_name AS g1,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  SUM(jaffle_item.item_revenue_cents / 100.0) AS m2
-FROM jaffle_item
-INNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id
-INNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id
+  comparison_stores.store_name AS g1,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m2
+FROM comparison_order_items
+INNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id
+INNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
 GROUP BY
-  jaffle_store.store_name,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  comparison_stores.store_name,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 ),
 combined_2 AS (
 SELECT

@@ -9,11 +9,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from bootstrap_shared_duckdb import dataset_fingerprint
+from run_oracle import answer_key_fingerprint
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SHARED_ROOT = REPO_ROOT / "comparisons" / "semantic_layers" / "shared"
 RESULTS_ROOT = SHARED_ROOT / "results"
 QUESTIONS_PATH = SHARED_ROOT / "questions.yml"
+ORACLE_DIR = SHARED_ROOT / "oracle"
 OUTPUT_DIR = RESULTS_ROOT / "validation"
 
 RUNNABLE_LAYERS = [
@@ -24,7 +27,15 @@ RUNNABLE_LAYERS = [
     "snowflake_semantic_views",
     "ktx",
 ]
-REFERENCE_LAYER = "semantic_rails"
+# The reference is the independent answer key (shared/oracle/), not one of the layers.
+ANSWER_KEY = "answer_key"
+COLUMN_MAPS_PATH = SHARED_ROOT / "column_maps.yml"
+# Cube can't be re-run until its dependency advisories are resolved; its captured SQL is
+# re-executed on the current dataset instead (cube/scripts/replay_sql.py).
+RESULT_DIRS = {layer: layer for layer in RUNNABLE_LAYERS} | {
+    "cube": "cube_sql_replay",
+    ANSWER_KEY: "oracle",
+}
 DECIMAL_TOLERANCE = Decimal("0.000001")
 NUMERIC_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 # Published scoring keeps the 7 shared questions apart from the 9 that were chosen to
@@ -92,7 +103,7 @@ def _load_questions() -> dict[str, dict[str, Any]]:
 
 
 def _load_summary(layer: str) -> dict[str, Any]:
-    return _read_json(RESULTS_ROOT / layer / "summary.json")
+    return _read_json(RESULTS_ROOT / RESULT_DIRS[layer] / "summary.json")
 
 
 def _rows_for(layer: str, result_path: str) -> list[dict[str, Any]]:
@@ -101,6 +112,8 @@ def _rows_for(layer: str, result_path: str) -> list[dict[str, Any]]:
         with path.open(newline="", encoding="utf-8") as handle:
             return list(csv.DictReader(handle))
     payload = _read_json(path)
+    if layer == ANSWER_KEY:
+        return payload
     if layer == "semantic_rails":
         return payload.get("rows", [])
     if layer == "cube":
@@ -110,81 +123,17 @@ def _rows_for(layer: str, result_path: str) -> list[dict[str, Any]]:
     raise ValueError(f"Unsupported layer: {layer}")
 
 
-def _find_key(row: dict[str, Any], canonical_field: str) -> str | None:
-    keys = list(row)
-
-    def first(predicate) -> str | None:
-        for key in keys:
-            if predicate(key.lower()):
-                return key
-        return None
-
-    if canonical_field == "month":
-        return first(lambda key: key == "metric_time__month") or first(
-            lambda key: key.endswith(".month") or key.endswith("__month") or key.endswith("_month")
-        )
-    if canonical_field == "day":
-        return first(lambda key: key == "metric_time__day") or first(
-            lambda key: key.endswith(".day") or key.endswith("__day") or key.endswith("_day")
-        )
-    if canonical_field == "store_name":
-        return first(lambda key: "store_name" in key)
-    if canonical_field == "product_type":
-        return first(lambda key: "product_type" in key)
-    if canonical_field == "customer_segment":
-        return first(lambda key: "customer_segment" in key or key.endswith("_segment"))
-    if canonical_field == "orders":
-        return first(
-            lambda key: (
-                (key == "orders" or key.endswith(".orders"))
-                and "new_customer" not in key
-                and "qualifying" not in key
-                and "orders_from_customers_with_10plus_orders" not in key
-            )
-        )
-    if canonical_field == "new_customer_orders":
-        return first(lambda key: "new_customer_orders" in key)
-    if canonical_field == "revenue_usd":
-        return first(
-            lambda key: (
-                "revenue" in key and "item_revenue" not in key and "delivered_revenue" not in key
-            )
-        )
-    if canonical_field == "item_revenue_usd":
-        return first(lambda key: "item_revenue" in key)
-    if canonical_field == "aov_usd":
-        return first(lambda key: "aov" in key)
-    if canonical_field == "delivered_revenue":
-        return first(lambda key: "delivered_revenue" in key)
-    if canonical_field == "session_to_order_conversion_rate_7d":
-        return first(
-            lambda key: "conversion_rate" in key or "session_to_order_conversion_rate" in key
-        )
-    if canonical_field == "qualifying_orders":
-        return first(
-            lambda key: (
-                "qualifying_orders" in key or "orders_from_customers_with_10plus_orders" in key
-            )
-        )
-    if canonical_field == "repeat_customer_orders":
-        return first(lambda key: "repeat_customer_orders" in key) or first(
-            lambda key: (key == "orders" or key.endswith(".orders")) and "new_customer" not in key
-        )
-    if canonical_field == "filtered_orders":
-        return (
-            first(lambda key: "filtered_orders" in key)
-            or first(lambda key: "lifetime_spend_500" in key)
-            or first(lambda key: key == "orders" or key.endswith(".orders"))
-        )
-    if canonical_field == "qualifying_revenue_usd":
-        return first(lambda key: "qualifying_revenue" in key) or first(
-            lambda key: key.endswith(".revenue_usd") or key == "revenue_usd"
-        )
-    if canonical_field == "same_store_conversion_rate_7d":
-        return first(lambda key: "same_store" in key and "conversion_rate" in key) or first(
-            lambda key: "same_store_session_to_order_conversion_rate" in key
-        )
-    raise ValueError(f"Unsupported canonical field: {canonical_field}")
+def _load_column_maps() -> dict[str, dict[str, dict[str, str]]]:
+    """Which result column holds each field, per layer and question (no name guessing)."""
+    maps = yaml.safe_load(COLUMN_MAPS_PATH.read_text(encoding="utf-8"))
+    for layer in RUNNABLE_LAYERS:
+        for question_id, fields in QUESTION_FIELDS.items():
+            mapped = sorted(maps.get(layer, {}).get(question_id, {}))
+            if mapped != sorted(fields):
+                raise SystemExit(
+                    f"column_maps.yml: {layer} {question_id} maps {mapped}, expected {sorted(fields)}"
+                )
+    return maps
 
 
 def _normalize_month(value: Any) -> str | None:
@@ -248,14 +197,21 @@ def _normalize_scalar(field: str, value: Any) -> Any:
     return value
 
 
-def _normalize_rows(question_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _normalize_rows(
+    question_id: str, rows: list[dict[str, Any]], columns: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """Read each field from its mapped column; the answer key uses the field names directly."""
     canonical_fields = QUESTION_FIELDS[question_id]
     normalized: list[dict[str, Any]] = []
     for row in rows:
         canonical_row: dict[str, Any] = {}
         for field in canonical_fields:
-            key = _find_key(row, field)
-            canonical_row[field] = _normalize_scalar(field, row.get(key) if key else None)
+            key = columns[field] if columns else field
+            if key not in row:
+                raise SystemExit(
+                    f"{question_id}: column {key!r} for {field!r} is missing; the row has {sorted(row)}"
+                )
+            canonical_row[field] = _normalize_scalar(field, row[key])
         normalized.append(canonical_row)
     return sorted(normalized, key=lambda item: json.dumps(_json_safe(item), sort_keys=True))
 
@@ -317,7 +273,27 @@ def _json_safe(value: Any) -> Any:
 
 def main() -> None:
     questions = _load_questions()
-    summaries = {layer: _load_summary(layer) for layer in RUNNABLE_LAYERS}
+    column_maps = _load_column_maps()
+    summaries = {layer: _load_summary(layer) for layer in [*RUNNABLE_LAYERS, ANSWER_KEY]}
+    # A capture made on other data can't be compared like for like: report it separately.
+    current_dataset = dataset_fingerprint()
+    if summaries[ANSWER_KEY].get("dataset_fingerprint") != current_dataset:
+        raise SystemExit("The answer key predates the current dataset; run run_oracle.py first.")
+    if summaries[ANSWER_KEY].get("answer_key_fingerprint") != answer_key_fingerprint(
+        ORACLE_DIR, QUESTIONS_PATH
+    ):
+        raise SystemExit(
+            "The answer key's queries or the questions changed since it last ran; "
+            "run run_oracle.py first."
+        )
+    stale_layers = [
+        layer
+        for layer in RUNNABLE_LAYERS
+        if summaries[layer].get("dataset_fingerprint") != current_dataset
+    ]
+    stale_checks: dict[str, dict[str, list[str]]] = {
+        layer: {"matched": [], "mismatched": []} for layer in stale_layers
+    }
 
     results: list[dict[str, Any]] = []
     summary_counts = {"matched": 0, "mismatched": 0, "not_comparable": 0}
@@ -325,19 +301,29 @@ def main() -> None:
     for question_id, metadata in questions.items():
         comparable_layers: list[str] = []
         layer_statuses: dict[str, str] = {}
-        normalized_rows_by_layer: dict[str, list[dict[str, Any]]] = {}
+        key_entry = next(
+            item
+            for item in summaries[ANSWER_KEY]["questions"]
+            if item["question_id"] == question_id
+        )
+        key_rows = _normalize_rows(question_id, _rows_for(ANSWER_KEY, key_entry["result_path"]))
+        normalized_rows_by_layer: dict[str, list[dict[str, Any]]] = {ANSWER_KEY: key_rows}
 
         for layer in RUNNABLE_LAYERS:
             entry = next(
                 item for item in summaries[layer]["questions"] if item["question_id"] == question_id
             )
-            status = entry["status"]
+            # Only whether it ran: support labels come from the rubric, and a pinned capture's
+            # summary may still carry old hand labels.
+            status = "unsupported" if entry["status"] == "unsupported" else "executed"
             layer_statuses[layer] = status
             if status == "unsupported":
                 continue
             comparable_layers.append(layer)
             normalized_rows_by_layer[layer] = _normalize_rows(
-                question_id, _rows_for(layer, entry["result_path"])
+                question_id,
+                _rows_for(layer, entry["result_path"]),
+                column_maps[layer][question_id],
             )
 
         question_result: dict[str, Any] = {
@@ -348,34 +334,32 @@ def main() -> None:
             "comparable_layers": comparable_layers,
         }
 
-        if len(comparable_layers) < 2 or REFERENCE_LAYER not in comparable_layers:
+        current_layers = [layer for layer in comparable_layers if layer not in stale_layers]
+        question_result["current_layers"] = current_layers
+        mismatches: list[dict[str, Any]] = []
+        for layer in comparable_layers:
+            equal, detail = _rows_equal(key_rows, normalized_rows_by_layer[layer])
+            if layer in stale_layers:
+                stale_checks[layer]["matched" if equal else "mismatched"].append(question_id)
+                question_result.setdefault("stale_captures", {})[layer] = (
+                    "matched" if equal else "mismatched"
+                )
+            elif not equal:
+                mismatches.append({"layer": layer, "detail": detail})
+        if not current_layers:
             question_result["comparison_status"] = "not_comparable"
-            question_result["reason"] = (
-                f"Fewer than two layers, or not {REFERENCE_LAYER}, executed this question."
-            )
+            question_result["reason"] = "No layer executed this question on the current dataset."
             summary_counts["not_comparable"] += 1
+        elif mismatches:
+            question_result["comparison_status"] = "mismatched"
+            question_result["mismatches"] = mismatches
+            question_result["agreement_groups"] = _agreement_groups(
+                {layer: normalized_rows_by_layer[layer] for layer in [ANSWER_KEY, *current_layers]}
+            )
+            summary_counts["mismatched"] += 1
         else:
-            reference_rows = normalized_rows_by_layer[REFERENCE_LAYER]
-            mismatches: list[dict[str, Any]] = []
-            for layer in comparable_layers:
-                if layer == REFERENCE_LAYER:
-                    continue
-                equal, detail = _rows_equal(reference_rows, normalized_rows_by_layer[layer])
-                if not equal:
-                    mismatches.append(
-                        {
-                            "layer": layer,
-                            "detail": detail,
-                        }
-                    )
-            if mismatches:
-                question_result["comparison_status"] = "mismatched"
-                question_result["mismatches"] = mismatches
-                question_result["agreement_groups"] = _agreement_groups(normalized_rows_by_layer)
-                summary_counts["mismatched"] += 1
-            else:
-                question_result["comparison_status"] = "matched"
-                summary_counts["matched"] += 1
+            question_result["comparison_status"] = "matched"
+            summary_counts["matched"] += 1
 
         question_result["normalized_rows"] = {
             layer: _json_safe(rows) for layer, rows in normalized_rows_by_layer.items()
@@ -399,8 +383,13 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report = {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "reference_layer": REFERENCE_LAYER,
+        "reference_layer": ANSWER_KEY,
+        "dataset_fingerprint": current_dataset,
         "summary": summary_counts,
+        "stale_layers": {
+            layer: {"captured": summaries[layer].get("generated_at"), **checks}
+            for layer, checks in stale_checks.items()
+        },
         "summary_by_slice": summary_by_slice,
         "questions": results,
     }
@@ -411,7 +400,8 @@ def main() -> None:
     markdown_lines = [
         "# Output Consistency",
         "",
-        f"Generated at `{report['generated_at']}` using `{REFERENCE_LAYER}` as the reference layer.",
+        f"Generated at `{report['generated_at']}` on dataset `{current_dataset[:12]}`. Every "
+        "layer is compared with the independent answer key in `shared/oracle/`.",
         "",
         f"- Matched: `{summary_counts['matched']}`",
         f"- Mismatched: `{summary_counts['mismatched']}`",
@@ -423,6 +413,14 @@ def main() -> None:
         markdown_lines.append(
             f"- `{slice_name}`: {counts['matched']} of {counts['questions']} matched; "
             f"mismatched: {mismatched}"
+        )
+    markdown_lines.append("")
+    for layer, checks in report["stale_layers"].items():
+        mismatched = ", ".join(f"`{qid}`" for qid in checks["mismatched"]) or "none"
+        markdown_lines.append(
+            f"- Stale capture, excluded from the counts above: `{layer}` "
+            f"(captured {checks['captured'] or 'on an earlier dataset'}) matches "
+            f"{len(checks['matched'])} questions; mismatched: {mismatched}"
         )
     markdown_lines.append("")
 
@@ -437,14 +435,16 @@ def main() -> None:
         if item["comparison_status"] == "mismatched":
             for mismatch in item["mismatches"]:
                 markdown_lines.append(
-                    f"- Mismatch vs {REFERENCE_LAYER} on `{mismatch['layer']}`: `{json.dumps(mismatch['detail'], sort_keys=True)}`"
+                    f"- `{mismatch['layer']}` differs from the answer key: `{json.dumps(mismatch['detail'], sort_keys=True)}`"
                 )
             groups = " | ".join(", ".join(group) for group in item["agreement_groups"])
-            markdown_lines.append(f"- Groups of layers with identical outputs: `{groups}`")
+            markdown_lines.append(f"- Groups of layers whose outputs match within 1e-6: `{groups}`")
         elif item["comparison_status"] == "not_comparable":
             markdown_lines.append(f"- Reason: {item['reason']}")
         else:
-            markdown_lines.append(f"- Comparable layers: `{', '.join(item['comparable_layers'])}`")
+            markdown_lines.append(f"- Layers compared: `{', '.join(item['current_layers'])}`")
+        for layer, status in item.get("stale_captures", {}).items():
+            markdown_lines.append(f"- Stale capture, not counted: `{layer}` {status}")
         markdown_lines.append("")
 
     (OUTPUT_DIR / "output_consistency.md").write_text("\n".join(markdown_lines), encoding="utf-8")

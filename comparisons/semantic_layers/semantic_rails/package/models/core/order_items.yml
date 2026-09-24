@@ -1,6 +1,6 @@
 model:
   id: order_items
-  relation: jaffle_item
+  relation: comparison_order_items
   description: One row per line item within an order.
   entities:
     item: {}

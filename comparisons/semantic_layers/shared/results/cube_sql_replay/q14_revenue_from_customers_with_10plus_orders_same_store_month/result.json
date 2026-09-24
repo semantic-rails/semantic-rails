@@ -1,0 +1,94 @@
+{
+  "data": [
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2016-09-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 6080.0599999999695
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2016-10-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 10002.65999999997
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2016-11-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 14757.670000000004
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2016-12-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 19451.919999999976
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2017-01-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 24923.47999999997
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2017-02-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 20033.919999999936
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "high_frequency_store_orders.ordered_at.month": "2017-03-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 7047.029999999898
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2017-03-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 27524.64000000003
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "high_frequency_store_orders.ordered_at.month": "2017-04-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 19418.83000000013
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2017-04-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 22774.04999999999
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "high_frequency_store_orders.ordered_at.month": "2017-05-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 24180.96000000031
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2017-05-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 29219.309999999947
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "high_frequency_store_orders.ordered_at.month": "2017-06-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 19267.01000000025
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2017-06-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 19678.329999999984
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "high_frequency_store_orders.ordered_at.month": "2017-07-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 22613.710000000196
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2017-07-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 20318.680000000008
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "high_frequency_store_orders.ordered_at.month": "2017-08-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 35339.08000000055
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "high_frequency_store_orders.ordered_at.month": "2017-08-01 00:00:00",
+      "high_frequency_store_orders.qualifying_revenue_usd": 24424.960000000006
+    }
+  ]
+}

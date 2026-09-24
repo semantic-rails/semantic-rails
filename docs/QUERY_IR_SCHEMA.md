@@ -172,6 +172,8 @@ Supported `op` values (all compile end-to-end):
 `value` rules:
 
 - Comparison and LIKE ops take a scalar (`string`, `number`, `boolean`).
+  A list is rejected with `INVALID_QUERY` and a `USE_IN_FOR_LIST_VALUE`
+  recovery hint: use `IN` / `NOT IN` to match several values.
 - `IN` / `NOT IN` take a list of scalars. A bare scalar is accepted and
   treated as a one-element list (strings are never character-split). An
   empty list compiles to constant `FALSE` (`IN`) / `TRUE` (`NOT IN`)

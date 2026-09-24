@@ -73,7 +73,7 @@ Start here when changing real runnable demo data.
 - Post-load shaping SQL: `data/seed_jaffle.sql`
 - Package seed configuration: `configs/semantic_rails/jaffle_shop/package.yml`
 
-The active runtime reseeds the DuckDB file when the expected tables are missing.
+The runtime creates a missing DuckDB file from its seed, but never automatically replaces an existing file. If an existing file lacks configured relations, build them with its owner (for example dbt), or back up and explicitly remove a disposable seed database before restarting.
 
 ## Expectations
 
@@ -86,7 +86,7 @@ The active runtime reseeds the DuckDB file when the expected tables are missing.
 
 ## Validation
 
-Run these before opening a PR:
+Run these before opening a PR (`make install lint typecheck test-backend contracts-check release-check changelog-check` runs the same commands):
 
 ```bash
 uv sync --group dev --locked
@@ -112,6 +112,12 @@ uv run semantic-rails check --package jaffle_shop --artifact dist/jaffle_shop.se
 # Wheel smoke test (verifies the installable distribution from an isolated venv):
 uv build --wheel
 uv run python scripts/verify_package_distribution.py
+
+# Refactors: complexity report (never fails), then golden SQL before and after
+# (see scripts/dev/README.md):
+make complexity
+uv run python scripts/dev/capture_sql_baseline.py /tmp/sql_baseline_golden.json
+uv run python scripts/dev/capture_dialect_sql.py /tmp/dialect_sql_golden.json
 ```
 
 For the Snowflake showcase package, see

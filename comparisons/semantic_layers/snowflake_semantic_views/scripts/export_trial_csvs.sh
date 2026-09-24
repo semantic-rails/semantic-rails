@@ -28,6 +28,7 @@ tables=(
   comparison_customer_history
   comparison_order_lifecycle
   comparison_storefront_sessions
+  comparison_dataset
 )
 
 for table in "${tables[@]}"; do

@@ -1,0 +1,92 @@
+[
+  {
+    "month": "2016-09-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 1367
+  },
+  {
+    "month": "2016-10-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 1685
+  },
+  {
+    "month": "2016-11-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 2280
+  },
+  {
+    "month": "2016-12-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 2862
+  },
+  {
+    "month": "2017-01-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 3410
+  },
+  {
+    "month": "2017-02-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 3357
+  },
+  {
+    "month": "2017-03-01",
+    "store_name": "Brooklyn",
+    "repeat_customer_orders": 2092
+  },
+  {
+    "month": "2017-03-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 3986
+  },
+  {
+    "month": "2017-04-01",
+    "store_name": "Brooklyn",
+    "repeat_customer_orders": 2850
+  },
+  {
+    "month": "2017-04-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 3746
+  },
+  {
+    "month": "2017-05-01",
+    "store_name": "Brooklyn",
+    "repeat_customer_orders": 3565
+  },
+  {
+    "month": "2017-05-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 4391
+  },
+  {
+    "month": "2017-06-01",
+    "store_name": "Brooklyn",
+    "repeat_customer_orders": 3963
+  },
+  {
+    "month": "2017-06-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 3916
+  },
+  {
+    "month": "2017-07-01",
+    "store_name": "Brooklyn",
+    "repeat_customer_orders": 4053
+  },
+  {
+    "month": "2017-07-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 3385
+  },
+  {
+    "month": "2017-08-01",
+    "store_name": "Brooklyn",
+    "repeat_customer_orders": 4937
+  },
+  {
+    "month": "2017-08-01",
+    "store_name": "Philadelphia",
+    "repeat_customer_orders": 3801
+  }
+]

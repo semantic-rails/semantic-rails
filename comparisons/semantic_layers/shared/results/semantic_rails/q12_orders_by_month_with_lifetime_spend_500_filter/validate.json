@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 2.946,
-      "compile_ms": 1.723,
+      "cache_lookup_ms": 1.413,
+      "compile_ms": 0.983,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -320,7 +320,7 @@
           "has_start": false,
           "has_time_filter": true,
           "pushed_to_scan": true,
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
             "calendar_id": "default",
@@ -336,7 +336,7 @@
           "has_start": false,
           "has_time_filter": false,
           "pushed_to_scan": false,
-          "relation": "jaffle_customer",
+          "relation": "comparison_customers",
           "scan_id": "leaf_1_predicate_1_scan_1",
           "time_filter": {}
         }
@@ -354,7 +354,7 @@
               "measure_id": "measure.jaffle.order_count"
             }
           ],
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
@@ -372,7 +372,7 @@
               "measure_id": "measure.jaffle.lifetime_spend_usd"
             }
           ],
-          "relation": "jaffle_customer",
+          "relation": "comparison_customers",
           "scan_id": "leaf_1_predicate_1_scan_1",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_customer",
@@ -430,8 +430,8 @@
             ],
             "omitted_semantic_root_entity": "",
             "physical_anchor_entity": "entity.jaffle_order",
-            "relation": "jaffle_order",
-            "selected_relation": "jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
             "semantic_equivalence": "",
             "source_entity": "entity.jaffle_order",
@@ -440,7 +440,7 @@
           "id": "leaf_1_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan jaffle_order"
+          "label": "Scan comparison_orders"
         },
         {
           "details": {
@@ -490,15 +490,15 @@
               "kind": "metric",
               "metric": "metric.jaffle.lifetime_spend"
             },
-            "relation": "jaffle_customer",
-            "selected_relation": "jaffle_customer",
+            "relation": "comparison_customers",
+            "selected_relation": "comparison_customers",
             "selected_relation_type": "raw",
             "source_entity": "entity.jaffle_customer"
           },
           "id": "leaf_1_predicate_1_scan_1",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan predicate source jaffle_customer"
+          "label": "Scan predicate source comparison_customers"
         },
         {
           "details": {
@@ -633,7 +633,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base AS (\nSELECT\n  jaffle_customer.customer_id AS g1,\n  jaffle_customer.customer_id AS __snapshot_key_1,\n  jaffle_customer.first_order_at AS __snapshot_order,\n  jaffle_customer.lifetime_spend_cents / 100.0 AS __snapshot_value\nFROM jaffle_customer\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 AS __snapshot_key_1,\n  MAX(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1 AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  SUM(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_value) AS m1\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nINNER JOIN leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete ON leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.g1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_key_1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order = leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_order\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1\n),\nleaf_1__lifetime_spend_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_spend_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_spend_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 500\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT jaffle_order.order_id) AS m1\nFROM jaffle_order\nINNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON jaffle_order.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS filtered_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  comparison_customers.customer_id AS __snapshot_key_1,\n  comparison_customers.first_order_at AS __snapshot_order,\n  comparison_customers.lifetime_spend_cents / 100.0 AS __snapshot_value\nFROM comparison_customers\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 AS __snapshot_key_1,\n  MAX(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1 AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  SUM(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_value) AS m1\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nINNER JOIN leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete ON leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.g1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_key_1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order = leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_order\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1\n),\nleaf_1__lifetime_spend_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_spend_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_spend_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 500\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS filtered_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -706,7 +706,7 @@
                               "distinct": false,
                               "from_table": {
                                 "alias": "",
-                                "name": "jaffle_customer"
+                                "name": "comparison_customers"
                               },
                               "group_by": [],
                               "having": [],
@@ -719,7 +719,7 @@
                                   "alias": "g1",
                                   "expression": {
                                     "parts": [
-                                      "jaffle_customer",
+                                      "comparison_customers",
                                       "customer_id"
                                     ]
                                   }
@@ -728,7 +728,7 @@
                                   "alias": "__snapshot_key_1",
                                   "expression": {
                                     "parts": [
-                                      "jaffle_customer",
+                                      "comparison_customers",
                                       "customer_id"
                                     ]
                                   }
@@ -737,7 +737,7 @@
                                   "alias": "__snapshot_order",
                                   "expression": {
                                     "parts": [
-                                      "jaffle_customer",
+                                      "comparison_customers",
                                       "first_order_at"
                                     ]
                                   }
@@ -747,7 +747,7 @@
                                   "expression": {
                                     "left": {
                                       "parts": [
-                                        "jaffle_customer",
+                                        "comparison_customers",
                                         "lifetime_spend_cents"
                                       ]
                                     },
@@ -1015,7 +1015,7 @@
             "distinct": false,
             "from_table": {
               "alias": "",
-              "name": "jaffle_order"
+              "name": "comparison_orders"
             },
             "group_by": [
               {
@@ -1026,7 +1026,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -1044,7 +1044,7 @@
                 "on": {
                   "left": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "customer_id"
                     ]
                   },
@@ -1076,7 +1076,7 @@
                     {
                       "expr": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       },
@@ -1093,7 +1093,7 @@
                   "args": [
                     {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "order_id"
                       ]
                     }
@@ -1482,7 +1482,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 5.407,
+  "timing_ms": 3.205,
   "trace": {
     "fallback": {
       "reason": "",
