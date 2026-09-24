@@ -894,12 +894,17 @@ def _time_window(text: str) -> _TimeWindow:
 
     # "today" and "this month" depend on the date, so it is part of the cache
     # key; each caller gets its own copy, so a draft can't edit the cache.
-    lowered = str(text or "")[:_MAX_TIME_TEXT].lower()
+    text = str(text or "")
+    if len(text) > _MAX_TIME_TEXT:
+        # A prefix is not the complete question: a suffix can restrict or
+        # contradict its window. The plan honesty gate reports this limit.
+        return _TimeWindow()
+    lowered = text.lower()
     return copy.deepcopy(_resolved_time_window(lowered, date.today()))
 
 
-# Only this much of a question is read for time phrases; the resolver's cost
-# grows with the square of the text.
+# Longer questions are left unresolved; the resolver's cost grows with the
+# square of the text. Never resolve only a prefix.
 _MAX_TIME_TEXT = 2000
 
 

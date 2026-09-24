@@ -1101,10 +1101,15 @@ def _unresolved_time_why(
     message, details, recovery_hints}).
     """
 
-    from ._base import _SUPPORTED_WINDOW_FORMS, _unresolved_time_phrases  # noqa: WPS433
+    from ._base import (  # noqa: WPS433
+        _MAX_TIME_TEXT,
+        _SUPPORTED_WINDOW_FORMS,
+        _unresolved_time_phrases,
+    )
 
     phrases = _unresolved_time_phrases(intent)
-    if not phrases:
+    too_long = len(intent) > _MAX_TIME_TEXT
+    if not phrases and not too_long:
         return None
     caller_time = (partial_query or {}).get("time")
     if isinstance(caller_time, dict) and any(
@@ -1114,19 +1119,25 @@ def _unresolved_time_why(
     return {
         "code": "TIME_WINDOW_UNRESOLVED",
         "message": (
-            "The intent names a time window the planner could not resolve; "
+            f"The question exceeds the {_MAX_TIME_TEXT}-character time-resolution limit; "
+            "its complete time scope could not be checked."
+            if too_long
+            else "The intent names a time window the planner could not resolve; "
             "best.query_ir does not carry that window and would answer a "
             "different question if executed as-is."
         ),
         "details": {
             "path": "time",
             "unresolved_phrases": list(phrases),
+            **({"max_intent_chars": _MAX_TIME_TEXT} if too_long else {}),
         },
         "recovery_hints": [
             {
                 "kind": "rephrase_time_window",
                 "message": (
-                    "Rephrase the window using a supported form: "
+                    f"Shorten the question to at most {_MAX_TIME_TEXT} characters."
+                    if too_long
+                    else "Rephrase the window using a supported form: "
                     + "; ".join(_SUPPORTED_WINDOW_FORMS)
                     + "."
                 ),

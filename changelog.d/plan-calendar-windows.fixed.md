@@ -7,6 +7,8 @@
   makes a range), or two windows at once is reported as `TIME_WINDOW_UNRESOLVED`, even when the
   draft carries another window, instead of being narrowed or widened to the nearest form that
   parses. An explicit grain ("monthly revenue in Q2 2017") wins over the window's own bucket.
+  Questions longer than 2,000 characters require a shorter question or explicit time bounds;
+  the planner reports unresolved time scope instead of silently reading only a prefix.
 - When a draft can't take the window's start, because the metric looks back over earlier periods
   (month-over-month growth, rolling or cumulative totals) or the question compares with an
   earlier period, `plan` keeps the window's end and reports `TIME_WINDOW_START_DROPPED` with the

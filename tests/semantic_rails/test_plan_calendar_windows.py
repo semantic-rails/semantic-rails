@@ -296,12 +296,66 @@ def test_a_draft_cannot_edit_the_cached_window() -> None:
     assert _time_bounds_from_text("revenue in the last 3 months")["range"]["last"]["value"] == 3
 
 
-def test_a_long_question_is_read_only_so_far() -> None:
+def test_a_long_question_is_not_partially_resolved() -> None:
     import time
 
     started = time.perf_counter()
     assert _time_bounds_from_text("revenue " * 20000 + "in 2017") == {}
+    assert _time_bounds_from_text("revenue in 2017 " + "please " * 300 + "but not March") == {}
     assert time.perf_counter() - started < 2
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "revenue " + "please " * 300 + "in 2017",
+        "revenue in 2017 " + "please " * 300 + "and 2019",
+    ],
+    ids=["trailing-window", "trailing-conflict"],
+)
+def test_plan_reports_an_incomplete_long_question(runtime_factory: Any, intent: str) -> None:
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = SemanticLayerMCPAdapter(runtime).call_tool(
+            "plan", {"intent": intent, "detail": "best"}
+        )
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+        assert payload["why"]["details"]["max_intent_chars"] == 2000
+        assert "shorten" in payload["why"]["recovery_hints"][0]["message"].lower()
+        assert "execute" not in payload["next"].get("ready_for", [])
+        assert not {"start", "end"} & set(_best(payload).get("time") or {})
+    finally:
+        runtime.close()
+
+
+def test_time_resolution_accepts_a_question_at_the_length_limit() -> None:
+    intent = "revenue in 2017".ljust(2000)
+    assert _time_bounds_from_text(intent) == YEAR_2017
+    assert _unresolved_time_phrases(intent) == []
+
+
+def test_explicit_bounds_settle_a_long_questions_time_scope(runtime_factory: Any) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime,
+            intent="revenue " + "please " * 300 + "in 2017",
+            partial_query={
+                "time": {
+                    "temporal_role": "temporal_role.jaffle_order_time",
+                    "grain": "year",
+                    **YEAR_2017,
+                }
+            },
+            detail="query",
+        )
+        assert payload["status"] == "ok"
+        assert {key: _best(payload)["time"][key] for key in ("start", "end")} == YEAR_2017
+    finally:
+        runtime.close()
 
 
 def test_a_period_comparison_that_drops_the_start_says_so(runtime_factory: Any) -> None:
