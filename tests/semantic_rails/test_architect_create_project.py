@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 import yaml
 from mcp.client.session import ClientSession
@@ -16,6 +17,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import ElicitRequestParams, ElicitResult
 
 import semantic_rails.architect_service as architect_service
+import semantic_rails.architect_transactions as architect_transactions
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_scaffold import project_scaffold_files
 from semantic_rails.architect_service import (
@@ -57,6 +59,14 @@ def _examples_pass(project: Path) -> dict[str, Any]:
     return run_examples_report(PackageReference(source_path=str(project)))
 
 
+def _project_bytes(project: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(project).as_posix(): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+
+
 # -- the service ----------------------------------------------------------------
 
 
@@ -90,6 +100,56 @@ def test_external_duckdb_project_reads_the_dbt_marts(tmp_path: Path) -> None:
     build_dbt_warehouse(project / "data" / "shop.duckdb")
     report = _examples_pass(project)
     assert report["ok"] is True, report
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+@pytest.mark.parametrize(
+    "relation", ["sales-data.fct_orders", "main_marts.fct-orders", 'main_marts.fct"orders']
+)
+def test_external_relation_with_quoted_component_runs(
+    tmp_path: Path, through_mcp: bool, relation: str
+) -> None:
+    project = tmp_path / "shop"
+    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
+    with duckdb.connect(str(db)) as conn:
+        if relation.startswith("sales-data"):
+            conn.execute('CREATE SCHEMA "sales-data"')
+        quoted = ".".join('"' + part.replace('"', '""') + '"' for part in relation.split("."))
+        conn.execute(f"CREATE TABLE {quoted} AS SELECT * FROM main_marts.fct_orders")
+    spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, relation=relation))
+    if through_mcp:
+        server = create_architect_mcp_server(workspace_root=tmp_path)
+        (created,) = _session_call(
+            server,
+            [
+                (
+                    "create_project",
+                    {
+                        "package_id": "shop",
+                        "project_path": "shop",
+                        "expected_revision": "absent",
+                        "idempotency_key": "quoted-relation",
+                        "warehouse": "duckdb",
+                        "data": "external",
+                        "first_entity": "order",
+                        "relation": relation,
+                        "primary_key": "order_id",
+                        "time_column": "ordered_at",
+                        "amount_column": "order_total",
+                        "dimension_column": "status",
+                    },
+                )
+            ],
+        )
+        assert created["ok"] is True, created
+        (runtime,) = _session_call(
+            server, [("validate_project", {"project_path": "shop", "mode": "runtime"})]
+        )
+        assert runtime["ok"] is True, runtime
+    else:
+        assert create_project("shop", spec, workspace_root=tmp_path).report["ok"] is True
+        assert _examples_pass(project)["ok"] is True
+    assert _yaml(project / "models" / "core" / "orders.yml")["model"]["relation"] == relation
 
 
 def test_other_warehouses_get_a_connection_block(tmp_path: Path) -> None:
@@ -258,6 +318,22 @@ def test_mcp_create_rejects_invalid_options_without_echo_or_receipt(
             ProjectSpec(
                 package_id="x",
                 warehouse=ProjectWarehouse(data="external"),
+                first_model=FirstModel(relation="main_marts..fct_orders"),
+            ),
+            "relation must be",
+        ),
+        (
+            ProjectSpec(
+                package_id="x",
+                warehouse=ProjectWarehouse(data="external"),
+                first_model=FirstModel(relation="main_marts.fct_orders\nDROP TABLE x"),
+            ),
+            "relation must be",
+        ),
+        (
+            ProjectSpec(
+                package_id="x",
+                warehouse=ProjectWarehouse(data="external"),
                 first_model=FirstModel(time_column="ordered at"),
             ),
             "time_column must be",
@@ -269,6 +345,8 @@ def test_mcp_create_rejects_invalid_options_without_echo_or_receipt(
         "missing-connection-kind",
         "duckdb-connection",
         "relation-path",
+        "relation-empty-component",
+        "relation-control",
         "column-with-space",
     ],
 )
@@ -441,6 +519,81 @@ def test_same_path_entity_overwrite_replaces_unchanged_scaffold_model(tmp_path: 
     )
     assert mutation.report["ok"] is True, mutation.report
     assert "orders_count" in _yaml(project / "models" / "core" / "orders.yml")["model"]["measures"]
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+@pytest.mark.parametrize("overwrite", [False, True], ids=["fresh", "overwrite"])
+def test_create_project_parse_failure_restores_every_file_and_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, through_mcp: bool, overwrite: bool
+) -> None:
+    project = tmp_path / "shop"
+    if overwrite:
+        create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
+        (project / "notes.md").write_text("authored notes stay intact\n", encoding="utf-8")
+    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="customer"))
+    monkeypatch.setattr(
+        architect_transactions,
+        "parse_config_report",
+        lambda *_args, **_kwargs: (
+            {
+                "ok": False,
+                "errors": [{"code": "INVALID_CONFIG", "message": "synthetic parse failure"}],
+            },
+            None,
+        ),
+    )
+    if through_mcp:
+        server = create_architect_mcp_server(workspace_root=tmp_path)
+        (report,) = _session_call(
+            server,
+            [
+                (
+                    "create_project",
+                    {
+                        "package_id": "shop",
+                        "project_path": "shop",
+                        "expected_revision": revision,
+                        "idempotency_key": "parse-failure",
+                        "warehouse": "duckdb",
+                        "data": "external",
+                        "first_entity": "customer",
+                        "relation": "main_marts.fct_orders",
+                        "primary_key": "order_id",
+                        "time_column": "ordered_at",
+                        "amount_column": "order_total",
+                        "dimension_column": "status",
+                        "overwrite": overwrite,
+                    },
+                )
+            ],
+        )
+    else:
+        report = create_project(
+            "shop",
+            spec,
+            workspace_root=tmp_path,
+            expected_revision=revision,
+            overwrite=overwrite,
+        ).report
+    assert report["ok"] is False
+    assert report["status"] == "rolled_back_after_parse_error"
+    assert report["rolled_back"] is True
+    assert report["revision"] == revision
+    changes = {change["path"]: change["operation"] for change in report["changes"]}
+    assert changes["models/core/customers.yml"] == "create"
+    if overwrite:
+        assert changes["models/core/orders.yml"] == "delete"
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+    assert db.read_bytes() == before["data/shop.duckdb"]
+    assert not (project / "models" / "core" / "customers.yml").exists()
+    if overwrite:
+        assert (project / "models" / "core" / "orders.yml").read_bytes() == before[
+            "models/core/orders.yml"
+        ]
 
 
 def test_starter_overwrite_retires_old_model_but_keeps_seed(tmp_path: Path) -> None:

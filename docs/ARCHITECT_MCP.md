@@ -82,8 +82,10 @@ its count and amount metrics, an example, a package test and a `.gitignore` for 
   Starter names are made safe (`Raw Events` becomes `raw_events`).
 - DuckDB with `data: external` reads a database another tool builds, such as dbt
   (`seed.kind: external`, `default_db` defaulting to `data/<package_id>.duckdb`). Names must match
-  the warehouse: `relation` may be schema-qualified (`main_marts.fct_orders`) and is never renamed,
-  and the model gets only the columns you name (no starter dimension or amount). The database may
+  the warehouse: `relation` may be schema-qualified (`main_marts.fct_orders`) and is never renamed.
+  Pass each component as its raw name (for example `sales-data.fct_orders`); SQL rendering quotes
+  components that need it. The name must not contain a path separator or control character.
+  The model gets only the columns you name (no starter dimension or amount). The database may
   already sit in the project directory: a directory with no authored files still has revision
   `absent`. Keep the database inside the package (for example, point the dbt profile's `path` at
   `<package>/data/<package_id>.duckdb`); a path outside it needs

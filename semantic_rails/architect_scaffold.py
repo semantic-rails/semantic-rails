@@ -93,7 +93,15 @@ def _title(value: str) -> str:
 def _identifier(value: str, *, field_name: str, dotted: bool = False) -> str:
     text = str(value or "").strip()
     parts = text.split(".") if dotted else [text]
-    if not text or len(parts) > 3 or not all(_IDENTIFIER.fullmatch(part) for part in parts):
+    # A relation is a dotted sequence of names, not a SQL fragment or path.
+    # The SQL renderer quotes each component (including names with hyphens)
+    # rather than requiring the warehouse's unquoted-identifier spelling.
+    valid_parts = (
+        all(part and part.isprintable() and not any(ch in "/\\" for ch in part) for part in parts)
+        if dotted
+        else all(_IDENTIFIER.fullmatch(part) for part in parts)
+    )
+    if not text or len(parts) > 3 or not valid_parts:
         shape = "a SQL identifier, optionally schema-qualified" if dotted else "a SQL identifier"
         raise SemanticLayerError(
             "INVALID_CONFIG",
