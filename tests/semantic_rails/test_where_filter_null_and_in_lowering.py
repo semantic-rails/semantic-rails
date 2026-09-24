@@ -378,6 +378,31 @@ def test_numeric_membership_lists_and_scalar_type_diagnostics_stay_intact(runtim
         runtime.close()
 
 
+@pytest.mark.parametrize("op", ["IS NULL", "IS NOT NULL"])
+def test_null_test_ignores_list_value_on_public_paths(runtime_factory, op):
+    runtime = runtime_factory("jaffle_shop")
+    query = {
+        "version": 1,
+        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "group_by": ["dimension.jaffle_store_name"],
+        "where": [{"field": "dimension.jaffle_store_name", "op": op, "value": [1, 2]}],
+    }
+    without_value = {
+        **query,
+        "where": [{"field": "dimension.jaffle_store_name", "op": op}],
+    }
+    try:
+        assert runtime.validate(query)["ok"] is True
+        assert runtime.compile(query)["sql_plan"] == runtime.compile(without_value)["sql_plan"]
+        rows = runtime.query(query)["rows"]
+        baseline_rows = runtime.query(without_value)["rows"]
+        assert sorted(rows, key=lambda row: str(row["dimension.jaffle_store_name"])) == sorted(
+            baseline_rows, key=lambda row: str(row["dimension.jaffle_store_name"])
+        )
+    finally:
+        runtime.close()
+
+
 def test_validate_rejects_a_list_in_a_metric_filter_comparison(runtime_factory):
     # Used to validate, then fail in the warehouse on the stringified list.
     runtime = runtime_factory("jaffle_shop")
