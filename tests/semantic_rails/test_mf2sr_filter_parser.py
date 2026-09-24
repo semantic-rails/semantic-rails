@@ -9,7 +9,9 @@ the existing arms.
 
 from __future__ import annotations
 
-from mf2sr.filter_parser import parse_filter
+import pytest
+
+from mf2sr.filter_parser import filter_clauses, parse_filter
 
 
 def test_parse_between_numeric_bounds():
@@ -110,3 +112,122 @@ def test_unrecognized_filter_returns_none():
     assert parse_filter("some random SQL that we don't parse") is None
     assert parse_filter("") is None
     assert parse_filter("   ") is None
+
+
+DIMENSIONS: dict[str, str | None] = {
+    "order__status": "dimension.shop_order_status",
+    "order__is_first_order": "dimension.shop_order_is_first_order",
+    "order__ordered_at": None,  # a time dimension
+    "customer__country": "dimension.shop_customer_country",
+}
+
+
+def test_filter_clauses_name_dimensions_by_id():
+    status = "dimension.shop_order_status"
+    assert filter_clauses("{{ Dimension('order__status') }} IN ('a', 'b')", DIMENSIONS) == (
+        [{"field": status, "op": "in", "value": ["a", "b"]}],
+        "",
+    )
+    assert filter_clauses("NOT {{ Dimension('order__is_first_order') }}", DIMENSIONS) == (
+        [{"field": "dimension.shop_order_is_first_order", "op": "=", "value": False}],
+        "",
+    )
+    assert filter_clauses("{{ Dimension('order__status') }} BETWEEN 'a' AND 'm'", DIMENSIONS) == (
+        [
+            {"field": status, "op": ">=", "value": "a"},
+            {"field": status, "op": "<=", "value": "m"},
+        ],
+        "",
+    )
+
+
+def test_filter_clauses_compare_and_exclude():
+    status = "dimension.shop_order_status"
+    assert filter_clauses("{{ Dimension('order__status') }} = 'it''s'", DIMENSIONS) == (
+        [{"field": status, "op": "=", "value": "it's"}],
+        "",
+    )
+    assert filter_clauses("{{ Dimension('order__status') }} <> 3", DIMENSIONS) == (
+        [{"field": status, "op": "!=", "value": 3}],
+        "",
+    )
+    assert filter_clauses("{{ Dimension('order__status') }} NOT IN ('a', 'b')", DIMENSIONS) == (
+        [{"field": status, "op": "not in", "value": ["a", "b"]}],
+        "",
+    )
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        '= "expected_status"',
+        'IN ("expected_status")',
+        "NOT IN ('delivered', \"expected_status\")",
+        "BETWEEN \"first_status\" AND 'last'",
+        "NOT BETWEEN 'first' AND \"last_status\"",
+    ],
+)
+def test_double_quoted_identifier_operands_are_not_string_literals(condition):
+    source = "{{ Dimension('order__status') }} " + condition
+    assert parse_filter(source) is None
+    assert filter_clauses(source, DIMENSIONS)[0] == []
+
+
+def test_single_quoted_escaped_strings_still_parse():
+    assert filter_clauses("{{ Dimension('order__status') }} = 'it''s'", DIMENSIONS) == (
+        [{"field": "dimension.shop_order_status", "op": "=", "value": "it's"}],
+        "",
+    )
+    assert filter_clauses(
+        "{{ Dimension('order__status') }} BETWEEN 'it''s' AND 'later'", DIMENSIONS
+    ) == (
+        [
+            {"field": "dimension.shop_order_status", "op": ">=", "value": "it's"},
+            {"field": "dimension.shop_order_status", "op": "<=", "value": "later"},
+        ],
+        "",
+    )
+
+
+def test_in_lists_keep_quoted_commas_and_reject_anything_else():
+    assert filter_clauses(
+        "{{ Dimension('customer__country') }} IN ('Washington, D.C.', 'NL')", DIMENSIONS
+    ) == (
+        [
+            {
+                "field": "dimension.shop_customer_country",
+                "op": "in",
+                "value": ["Washington, D.C.", "NL"],
+            }
+        ],
+        "",
+    )
+    assert parse_filter("{{ Dimension('order__status') }} IN ('a') OR (status IN ('b'))") is None
+    assert parse_filter("{{ Dimension('order__status') }} IN ()") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("{{ Dimension('order__status') }} NOT BETWEEN 'a' AND 'm'", "NOT BETWEEN"),
+        ("{{ Metric('orders', group_by=['order']) }} > 2", "metric predicate"),
+        ("{{ Entity('order') }} IS NOT NULL", "tests an entity"),
+        ("{{ Dimension('order__nope') }} IN ('x')", "`order__nope` is not a dimension"),
+        ("{{ Dimension('status') }} IN ('x')", "`status` is not a dimension"),
+        # MetricFlow names a dimension with one entity; a join path is entity_path=[...].
+        ("{{ Dimension('order__customer__country') }} IN ('NL')", "is not a dimension"),
+        (
+            "{{ Dimension('customer__country', entity_path=['order']) }} IN ('NL')",
+            "entity_path",
+        ),
+        (
+            "{{ Dimension('order__ordered_at') }} BETWEEN '2024-01-01' AND '2024-02-01'",
+            "time dimension `order__ordered_at`",
+        ),
+        ("{{ Dimension('order__status') }} LIKE 'x%'", "could not parse"),
+    ],
+)
+def test_filter_clauses_say_why_a_filter_cannot_be_written(text, reason):
+    clauses, problem = filter_clauses(text, DIMENSIONS)
+    assert clauses == []
+    assert reason in problem

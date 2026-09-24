@@ -200,15 +200,18 @@ def cmd_import(args: argparse.Namespace) -> None:
     if args.source_format == "metricflow":
         from mf2sr import translate
 
-        report = translate(
-            Path(args.source),
-            Path(args.output),
-            package_id=args.package_id,
-            namespace=args.namespace,
-            warehouse=args.warehouse,
-            default_db=args.default_db,
-            description=args.description,
-        )
+        try:
+            report = translate(
+                Path(args.source),
+                Path(args.output),
+                package_id=args.package_id,
+                namespace=args.namespace,
+                warehouse=args.warehouse,
+                default_db=args.default_db,
+                description=args.description,
+            )
+        except FileExistsError as exc:
+            raise SemanticLayerError("CONFIG_CONFLICT", str(exc)) from exc
         _print(
             {
                 "ok": True,

@@ -33,6 +33,9 @@ python -m mf2sr \
 
 The CLI prints emitted model / metric counts and a list of warnings.
 Pass `--strict` to exit non-zero when any warning fires.
+The package destination must be new or empty. mf2sr refuses a nonempty
+destination before writing because it cannot distinguish earlier generated
+files from authored files; choose a fresh output path for each translation.
 
 ## What gets translated
 
@@ -52,9 +55,9 @@ Pass `--strict` to exit non-zero when any warning fires.
 | `measures[*].agg: sum_boolean` | `default_agg: sum` over a `kind: case` AST that returns 1/0 |
 | `measures[*].expr: "1"` | `kind: entity_count` over the model's primary entity |
 | `metric.type: simple` | `kind: aggregate` over the named measure |
-| `metric.type: simple` + `filter:` | `kind: aggregate` with `expression: {kind: aggregate, measure, aggregation, filter}` AST |
-| `metric.type: ratio` | `kind: ratio` (or `kind: derived` when either side has a filter) |
-| `metric.type: cumulative` | `kind: cumulative` with `window:` / `grain_to_date:` propagated |
+| `metric.type: simple` + `filter:` | `kind: aggregate` with `expression: {kind: aggregate, measure, aggregation, filter: {all: [{field, op, value}]}}`. The metric's filter and its measure input's filter are ANDed, and each `entity__dimension` reference becomes that dimension's id |
+| `metric.type: ratio` | `kind: ratio`, or `kind: derived` when a side is filtered. The metric's filter applies to both sides; a ratio whose filters can't be kept is skipped. An unfiltered side retains its explicit source metric definition. |
+| `metric.type: cumulative` | `kind: cumulative` (a running total), `kind: rolling` with `window: {unit, value}` for a `window:`, or `kind: period_to_date` with `period:` for a `grain_to_date:`. A filter stays on the aggregate input. The engine adds up each period's value, so the measure must be a sum or a count of the model's own rows |
 | `metric.type: derived` | `kind: derived` with Python-AST-parsed arithmetic expression |
 | `metric.type: conversion` | Stub `kind: conversion`; author must adapt |
 
@@ -65,7 +68,14 @@ Pass `--strict` to exit non-zero when any warning fires.
 | Entities that appear only as `type: foreign` | Semantic Rails requires every entity to have an owning model. The entity is dropped from the graph; references are stripped from `model.entities` blocks. |
 | `semantic_models` whose primary entity is already owned by an earlier model | The model has nothing to claim. Move its measures into the canonical owning model or rename its primary. |
 | Measures whose SQL `expr:` contains `CASE`, `LIKE`, `COALESCE`, `NULLIF`, etc. | Semantic Rails' expression parser is a Python AST, not a SQL parser. Rewrite the expression as a `kind: case` AST or push the SQL down into the warehouse model. |
-| Filter strings that don't match a recognized Jinja shape | Five common shapes are supported (boolean dimension, dimension `IN (...)`, `NOT Dimension(...)`, `Entity('x') IS NOT NULL`, `Metric('m') > N`). Anything else fires a warning and emits the metric unfiltered. |
+| Filters mf2sr can't translate | A metric keeps its filter when every condition is on one dimension: a boolean dimension, `NOT Dimension(...)`, `IN (...)`, `NOT IN (...)`, `BETWEEN`, or a comparison with a single-quoted string or numeric literal (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`). Any other condition warns and skips the metric rather than changing its value. This includes double-quoted SQL identifiers, `NOT BETWEEN`, `Metric(...)` predicates, `Entity(...) IS NOT NULL`, `entity_path=`, references to dimensions the project doesn't define, and time dimensions, which MetricFlow compares truncated to their grain. |
+| Cumulative metrics the engine can't compute | Skipped with a warning when they set both `window` and `grain_to_date`, a window finer than a day, a `grain_to_date` other than week, month, quarter or year, or a measure that doesn't add up across periods: an average, minimum, maximum, median, percentile or distinct count (other than of the model's own key), or a semi-additive measure. |
+| Where cumulative values can differ | A warning per metric. Queried at its time dimension's grain, a translated cumulative metric matches MetricFlow. At coarser grains Semantic Rails reports each period's value at its end, which MetricFlow does only with `period_agg: last` (its default is `first`). Period-to-date counts a week toward the month, quarter or year it starts in. Rolling month, quarter and year windows cover whole calendar periods, while MetricFlow's reach back from each day. The engine queries a rolling window only at grains that divide it: day windows at day grain, week windows at day or week grain, month windows at month grain, quarter windows at month or quarter grain, and year windows at month, quarter or year grain. |
+| A package calendar | `kind: rolling` metrics are computed over the package calendar, a `kind: time` entity whose table has `date_day`, `week_start`, `month_start`, `quarter_start` and `year_start`. mf2sr doesn't write one, and warns. |
+| `derived` inputs with `offset_window` or `offset_to_grain` | Skipped with a warning. Emitting them would compute the input over the same period, so `revenue - revenue_last_month` would be zero. |
+| Filters on a `derived` metric or its inputs | The derived metric is skipped with a warning, since its filter or its input's filter would otherwise be dropped. |
+| Ratios that filter an explicit source metric they can't reproduce | Skipped with a warning. A source metric that is filtered, non-simple, or named differently from its underlying measure cannot safely be flattened to a filtered measure aggregate. |
+| Metrics that use a skipped metric | Skipped too, with a warning. Explicit source metrics take precedence over same-named measures, including in ratios and transitive dependents. |
 | `derived` expressions that aren't parseable as Python arithmetic | The metric is emitted as a fallback aggregate over the first input metric with the original formula in the description. |
 
 ## Where the output goes
