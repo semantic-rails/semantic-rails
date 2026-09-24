@@ -172,12 +172,18 @@ filters, or time scope, `plan` returns `low_confidence` with
 unambiguously: a year after "in", "for" or "during", consecutive years, a quarter or half with a
 year, a month or month range with a year, days with a year, an ISO date, or a relative window
 ("last 7 days"). "and" joins a range only after "between": "between March and May 2017" is a
-range, while "March and May 2017" names two months. Anything else, such as a bound ("before
-2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs 2016", "2017 over
-2016"), a numeric date (4/3/2017), two periods joined by "and", or two windows at once (such as
-"last month and this month"), returns
-`low_confidence` with `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases it couldn't resolve,
-never a window narrowed or widened to the nearest form that parses. A total over a window gets
+range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
+bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs
+2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
+windows at once (such as "last month and this month"), return `low_confidence` with
+`why.code="TIME_WINDOW_UNRESOLVED"` and the phrases they couldn't resolve, rather than the
+nearest parsed window. **Qualified relative periods remain a limitation:** for phrases such as
+"before today", "after last month", or "until this week", `plan` may return `status="ok"`
+with the embedded period's bounds but without the qualifier, rather than
+`TIME_WINDOW_UNRESOLVED`. A `PLAN_UNMATCHED_TERMS` warning may appear, but "until" is treated as
+a framing word, so "until this week" can have no qualifier warning. Regardless of warnings,
+compare `best.query_ir.time` with the intended bounds or provide explicit `query.time` before
+executing such a draft. A total over a window gets
 one bucket when one calendar grain holds the window; an explicit grain ("monthly") wins. When a
 draft can't take the window's start, because the metric looks back over earlier periods or the
 question compares with an earlier period, `plan` keeps the end and returns
