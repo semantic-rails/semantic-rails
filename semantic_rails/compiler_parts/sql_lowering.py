@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..ast import normalize_query
 from ..dialects import dialect_for_warehouse
@@ -3796,19 +3797,36 @@ def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, 
     return day.column
 
 
-def _whole_day_window(day: Any, time: dict[str, Any]) -> list[Any]:
+def _calendar_bound(value: Any, zone: tzinfo) -> datetime | None:
+    """Interpret an offset bound in the role's calendar zone; keep naive wall time."""
+    try:
+        moment = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment.astimezone(zone) if moment.tzinfo is not None else moment
+
+
+def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> list[Any]:
     """``day`` within the days that ``[start, end)`` touches.
 
-    A date-only bound is used as is. A bound with a time of day becomes its date, and an
-    ``end`` after midnight rounds up to the next day, so the last partial day stays in.
+    Offset bounds use the temporal role's calendar zone. Naive bounds remain wall time.
+    An empty interval has no spine, even if outward day rounding would make one.
     """
+    role = _temporal_role_index(config).get(str(time.get("temporal_role") or ""))
+    zone_name = str(getattr(role, "timezone", "UTC") or "UTC")
+    zone = UTC if zone_name == "UTC" else ZoneInfo(zone_name)
+    moments = {key: _calendar_bound(time[key], zone) for key in ("start", "end")}
+    start, end = moments["start"], moments["end"]
+    if start is not None and end is not None:
+        if start.tzinfo is not None or end.tzinfo is not None:
+            start = start if start.tzinfo is not None else start.replace(tzinfo=zone)
+            end = end if end.tzinfo is not None else end.replace(tzinfo=zone)
+        if start >= end:
+            return [SqlBinary(SqlLiteral(1), "=", SqlLiteral(0))]
     bounds = []
     for key, operator in (("start", ">="), ("end", "<")):
         value = time[key]
-        try:
-            moment = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
-        except ValueError:
-            moment = None
+        moment = moments[key]
         if moment is not None and len(str(value).strip()) > 10:
             day_value = moment.date()
             if key == "end" and moment.time() != datetime.min.time():
@@ -3984,7 +4002,9 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         dense_time_where: list[Any] = []
         dense_time_joins: list[SqlJoin] = []
         if plan.time.get("start") is not None and plan.time.get("end") is not None:
-            dense_time_where = _whole_day_window(_column_ref(calendar_table, day), plan.time)
+            dense_time_where = _whole_day_window(
+                _column_ref(calendar_table, day), plan.time, config
+            )
         else:
             ctes.append(
                 SqlCte(

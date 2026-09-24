@@ -436,9 +436,9 @@ size — and it is engaged automatically by features that depend on
 dense rows (for example, the inline `prior_period` LAG window in the
 "Period shifts" section above).
 
-With an explicit `start` and `end`, the spine holds every bucket that
-contains a day of the window, the same buckets the unfilled query
-returns. So the first bucket's label can come before `start`: a week
+With an explicit `start` and `end`, the spine holds every calendar bucket that
+contains a day of the window, including buckets without source rows.
+So the first bucket's label can come before `start`: a week
 that begins on the Monday before a mid-week `start`, or the month of a
 mid-month `start`. Only rows inside `[start, end)` count toward any
 bucket. The days come from the calendar's `date_day` column. A calendar

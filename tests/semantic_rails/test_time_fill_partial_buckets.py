@@ -233,6 +233,114 @@ def test_fill_with_a_timestamp_date_day_keeps_an_intraday_start(tmp_path):
     } == unfilled
 
 
+@pytest.mark.parametrize(
+    ("zone", "start", "end", "first", "second", "days"),
+    [
+        (
+            "UTC",
+            "2017-07-03T00:00:00Z",
+            "2017-07-04T00:00:00-02:00",
+            "2017-07-03 15:00:00+00",
+            "2017-07-04 01:00:00+00",
+            (date(2017, 7, 3), date(2017, 7, 4)),
+        ),
+        (
+            "America/New_York",
+            "2017-07-04T00:00:00-04:00",
+            "2017-07-04T23:00:00-07:00",
+            "2017-07-04 15:00:00+00",
+            "2017-07-05 05:00:00+00",
+            (date(2017, 7, 4), date(2017, 7, 5)),
+        ),
+    ],
+    ids=["utc-calendar", "new-york-calendar"],
+)
+def test_fill_preserves_offset_window_days_with_timestamptz_data(
+    tmp_path, zone, start, end, first, second, days
+):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
+        connection.execute(f"SET TimeZone='{zone}'")
+        connection.execute(
+            "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMPTZ"
+        )
+        connection.execute(
+            "ALTER TABLE jaffle_order ALTER COLUMN ordered_at SET DATA TYPE TIMESTAMPTZ"
+        )
+        connection.execute("DELETE FROM jaffle_order")
+        connection.execute(
+            "INSERT INTO jaffle_order (order_id, ordered_at) VALUES "
+            f"('first', TIMESTAMPTZ '{first}'), "
+            f"('second', TIMESTAMPTZ '{second}')"
+        )
+
+        from semantic_rails.config import load_package_config
+
+        config = load_package_config(str(package_dir))
+        config = dataclasses.replace(
+            config,
+            dimensions=[
+                dataclasses.replace(row, data_type="timestamp")
+                if row.entity == "entity.jaffle_time" and row.column == "date_day"
+                else row
+                for row in config.dimensions
+            ],
+            temporal_roles=[
+                dataclasses.replace(row, timezone=zone)
+                if row.id == "temporal_role.jaffle_order_time"
+                else row
+                for row in config.temporal_roles
+            ],
+        )
+        query = {
+            **_JULY_BY_WEEK,
+            "time": {
+                **_JULY_BY_WEEK["time"],
+                "grain": "day",
+                "start": start,
+                "end": end,
+            },
+        }
+
+        def rows(fill):
+            shape = {**query, "time": {**query["time"], "fill": fill}}
+            sql = compile_query(config, Registry(config), shape)["sql"]
+            return connection.execute(
+                'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
+                f"FROM ({sql}) AS filled_result"
+            ).fetchall()
+
+        filled = rows(True)
+        unfilled = rows(False)
+
+    expected = {day: 1 for day in days}
+    assert len(unfilled) == len(filled) == len(expected)
+    assert dict(unfilled) == expected
+    assert dict(filled) == expected
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        ("2017-07-03T12:00:00", "2017-07-03T12:00:00"),
+        ("2017-07-03T18:00:00", "2017-07-03T08:00:00"),
+    ],
+    ids=["equal", "reversed"],
+)
+def test_fill_has_no_rows_for_an_empty_interval(runtime_factory, start, end):
+    runtime = runtime_factory("jaffle_shop")
+    query = {
+        **_JULY_BY_WEEK,
+        "time": {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end},
+    }
+    try:
+        filled = runtime.query(query)["rows"]
+        unfilled = runtime.query({**query, "time": {**query["time"], "fill": False}})["rows"]
+    finally:
+        runtime.close()
+    assert filled == unfilled == []
+
+
 def test_a_windowed_fill_binds_the_calendar_day_it_reads():
     # The fill window reads the calendar's date_day, so it is a bound object, checked
     # like the grain column. Without fill the query never reads it.

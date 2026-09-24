@@ -5,5 +5,7 @@
   a time of day could drop its day. On `jaffle_shop`, orders for July 2017 by
   week lost the week of June 26, which holds July 1–2 (7,268 instead of 7,438
   orders), and a monthly query from July 15 lost the rest of July. The filled
-  series now has every bucket that holds a day of the window, like the unfilled
-  one, when the calendar has a date or timestamp `date_day` column.
+  series now has every bucket that holds a day of the window, including empty
+  buckets, when the calendar has a date or timestamp `date_day` column. Offset
+  bounds use the temporal role's calendar zone; an empty interval produces no
+  filled buckets.
