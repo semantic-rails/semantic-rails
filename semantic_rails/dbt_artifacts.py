@@ -412,6 +412,7 @@ def suggest_models_from_dbt(
 
 
 def _suggest(project: DbtProject, relation: DbtRelation) -> dict[str, Any]:
+    ephemeral = relation.materialized.lower() == "ephemeral"
     entity = entity_name(relation.alias or relation.name)
     key_columns = list(relation.primary_key)
     key = (
@@ -504,6 +505,12 @@ def _suggest(project: DbtProject, relation: DbtRelation) -> dict[str, Any]:
         "relation": relation.relation,
         "dbt_unique_id": relation.unique_id,
         "materialized": relation.materialized,
+        "physical_relation": not ephemeral,
+        **(
+            {"nonphysical_reason": "dbt ephemeral models are CTEs without a warehouse relation"}
+            if ephemeral
+            else {}
+        ),
         "entity": entity,
         "description": relation.description,
         "primary_key": key,
@@ -512,14 +519,18 @@ def _suggest(project: DbtProject, relation: DbtRelation) -> dict[str, Any]:
         "measures": measures,
         "foreign_keys": links,
         "untyped_columns": untyped,
-        "upsert_model": upsert_model_draft(
-            entity=entity,
-            relation=relation.relation,
-            key_columns=key_columns,
-            times=times,
-            dimensions=dimensions,
-            measures=measures,
-            description=relation.description,
+        "upsert_model": (
+            None
+            if ephemeral
+            else upsert_model_draft(
+                entity=entity,
+                relation=relation.relation,
+                key_columns=key_columns,
+                times=times,
+                dimensions=dimensions,
+                measures=measures,
+                description=relation.description,
+            )
         ),
     }
 
@@ -543,6 +554,15 @@ def dbt_import_models(
     items: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for suggestion in suggest_models_from_dbt(project, select):
+        if not suggestion["physical_relation"]:
+            skipped.append(
+                {
+                    "dbt_model": suggestion["dbt_unique_id"],
+                    "relation": suggestion["relation"],
+                    "reason": suggestion["nonphysical_reason"],
+                }
+            )
+            continue
         draft = dict(suggestion["upsert_model"])
         if not draft["primary_key"]:
             skipped.append(

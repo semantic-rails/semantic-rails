@@ -141,13 +141,16 @@ never create, seed or change it.
   evidence, not arguments in the draft `upsert_model` call.
   Target relations above one million rows are checked for a declared key but their values are not
   matched. Candidate key columns with incompatible scalar types are excluded before comparison;
-  `foreign_key_diagnostics` identifies excluded or uncheckable candidates. An uncheckable candidate
+  `foreign_key_diagnostics` identifies excluded or uncheckable candidates, including undeclared
+  targets too large for a bounded uniqueness check. An uncheckable candidate
   lowers the confidence of an otherwise matching link because the destination is not fully known.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
   Declared warehouse keys and foreign keys retain their declared evidence. All
   suggestions return draft `upsert_model` arguments to review before calling `upsert_model`.
+  Draft measure expressions use structured column references, so a physical column named like an
+  arithmetic expression is read as that column.
 
 Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
 Tables and views backed by data stored in the DuckDB file work normally. A view that needs an
@@ -190,6 +193,10 @@ dbt:
 - `accepted_values` tests become dimension value sets (`domain`);
 - descriptions carry into the draft; times, dimensions and measures come from column types and
   names.
+
+An ephemeral dbt model is a CTE without a physical warehouse relation. Its suggestion reports
+`physical_relation: false` and `nonphysical_reason`, with no `upsert_model` draft;
+`import_dbt_project` lists it in `skipped_models` even when dbt tests establish a key.
 
 Both dbt tools return `dbt_warnings` for tests whose attachment or relationship target cannot be
 identified uniquely from the manifest. Such tests do not create a foreign key. With no

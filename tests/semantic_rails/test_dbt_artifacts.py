@@ -437,6 +437,26 @@ def test_by_default_every_model_and_no_seed_is_suggested(target: Path) -> None:
     assert all(row["dbt_unique_id"].startswith("model.") for row in suggestions)
 
 
+def test_ephemeral_model_is_described_but_has_no_physical_import_draft(target: Path) -> None:
+    path = target / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["nodes"]["model.shop_dbt.fct_orders"]["config"]["materialized"] = "ephemeral"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
+    items, skipped = dbt_import_models(project, ["dim_customers", "fct_orders"])
+
+    assert suggestion["primary_key"]["columns"] == ["order_id"]
+    assert suggestion["materialized"] == "ephemeral"
+    assert suggestion["physical_relation"] is False
+    assert "CTEs without a warehouse relation" in suggestion["nonphysical_reason"]
+    assert suggestion["upsert_model"] is None
+    assert [item["model_id"] for item in items] == ["customers"]
+    assert [row["dbt_model"] for row in skipped] == ["model.shop_dbt.fct_orders"]
+    assert "ephemeral" in skipped[0]["reason"]
+
+
 def test_a_manifest_without_a_catalog_still_loads(target: Path) -> None:
     (target / "catalog.json").unlink()
 

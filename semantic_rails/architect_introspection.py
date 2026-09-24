@@ -555,7 +555,7 @@ def upsert_model_draft(
                 if item["kind"] == "entity_count"
                 else {
                     "kind": "aggregate",
-                    "expr": item["key"],
+                    "expr": {"kind": "column", "column": item["key"]},
                     "default_agg": item["aggregation"],
                     "accumulation": {"kind": "flow"},
                     "value_type": "number",
@@ -788,6 +788,14 @@ def _foreign_keys(
                 if target_large and not target["declared_key"]:
                     # A bounded prefix cannot establish uniqueness for an
                     # undeclared target key.
+                    incomplete = True
+                    diagnostics.append(
+                        {
+                            "column": column,
+                            "relation": target["relation"],
+                            "reason": "undeclared target exceeds the bounded uniqueness probe",
+                        }
+                    )
                     continue
                 if not target["declared_key"]:
                     rows, present, distinct = warehouse.execute(

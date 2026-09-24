@@ -103,6 +103,69 @@ def test_mcp_session_imports_the_marts_as_a_joined_star(workspace: Path) -> None
     ]
 
 
+@pytest.mark.parametrize(
+    ("physical", "competitor", "measure_id", "expected"),
+    [
+        ("net-amount", "net", "net_amount", 100),
+        ("gross total", "gross", "gross_total", 200),
+        ("fee.amount", "fee", "fee_amount", 300),
+        ("1+2", "one", "1_2", 400),
+    ],
+)
+def test_dbt_imported_special_measure_names_query_the_physical_column(
+    workspace: Path, physical: str, competitor: str, measure_id: str, expected: int
+) -> None:
+    db_path = workspace / "shop" / "data" / "warehouse.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(f'ALTER TABLE main_marts.fct_orders ADD COLUMN "{physical}" INTEGER')
+        conn.execute(f"ALTER TABLE main_marts.fct_orders ADD COLUMN {competitor} INTEGER")
+        conn.execute(
+            f'UPDATE main_marts.fct_orders SET "{physical}" = {expected}, {competitor} = 7'
+        )
+    catalog_path = workspace / "dbt" / "target" / "catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    columns = catalog["nodes"]["model.shop_dbt.fct_orders"]["columns"]
+    columns[physical] = {"name": physical, "type": "INTEGER", "index": 100}
+    columns[competitor] = {"name": competitor, "type": "INTEGER", "index": 101}
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    server = create_architect_mcp_server(workspace_root=workspace)
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["fct_orders"],
+        "expected_revision": project_revision(workspace / "shop"),
+        "idempotency_key": f"physical-{measure_id}",
+    }
+    suggested, applied = _calls(
+        server,
+        [
+            ("suggest_models_from_dbt", {"target_dir": "dbt/target", "select": ["fct_orders"]}),
+            ("import_dbt_project", request),
+        ],
+    )
+    assert suggested["ok"] is True and applied["ok"] is True, (suggested, applied)
+    assert suggested["models"][0]["upsert_model"]["measures"][physical]["expr"] == {
+        "kind": "column",
+        "column": physical,
+    }
+    authored = _model(workspace / "shop" / "models" / "orders.yml")
+    assert authored["measures"][physical]["expr"] == {"kind": "column", "column": physical}
+    runtime = Runtime.from_path(str(workspace / "shop"))
+    try:
+        rows = runtime.query(
+            {
+                "version": 1,
+                "select": [
+                    {"expression": {"measure": f"measure.shop.{measure_id}"}, "as": "actual"}
+                ],
+                "limit": 5,
+            }
+        )["rows"]
+    finally:
+        runtime.close()
+    assert rows == [{"actual": expected * 8}]
+
+
 @pytest.mark.parametrize("reverse", [False, True])
 def test_unattached_relationship_suggests_and_imports_the_child_reference(
     workspace: Path, reverse: bool
@@ -393,6 +456,47 @@ def test_models_without_a_dbt_key_are_reported_not_imported(workspace: Path) -> 
     assert result["ok"] is True, result
     assert [row["relation"] for row in result["skipped_models"]] == ["main_staging.stg_orders"]
     assert "no key in dbt" in result["skipped_models"][0]["reason"]
+
+
+def test_ephemeral_model_does_not_overwrite_existing_model_in_mixed_import(
+    workspace: Path,
+) -> None:
+    path = workspace / "dbt" / "target" / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["nodes"]["model.shop_dbt.fct_orders"]["config"]["materialized"] = "ephemeral"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    orders_file = workspace / "shop" / "models" / "orders.yml"
+    original = orders_file.read_bytes()
+    server = create_architect_mcp_server(workspace_root=workspace)
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["dim_customers", "fct_orders"],
+        "expected_revision": project_revision(workspace / "shop"),
+        "idempotency_key": "ephemeral-mixed",
+    }
+    suggested, preview, applied = _calls(
+        server,
+        [
+            ("suggest_models_from_dbt", {"target_dir": "dbt/target", "select": ["fct_orders"]}),
+            ("import_dbt_project", {**request, "dry_run": True}),
+            ("import_dbt_project", request),
+        ],
+    )
+
+    assert suggested["ok"] is True
+    assert suggested["models"][0]["physical_relation"] is False
+    assert suggested["models"][0]["upsert_model"] is None
+    for receipt in (preview, applied):
+        assert receipt["ok"] is True, receipt
+        assert [row["dbt_model"] for row in receipt["skipped_models"]] == [
+            "model.shop_dbt.fct_orders"
+        ]
+        assert "ephemeral" in receipt["skipped_models"][0]["reason"]
+        assert not any(change["path"].endswith("orders.yml") for change in receipt["changes"])
+    assert preview["dry_run"] is True
+    assert orders_file.read_bytes() == original
+    assert (workspace / "shop" / "models" / "dbt" / "customers.yml").exists()
 
 
 def _customers(**extra: Any) -> dict[str, Any]:

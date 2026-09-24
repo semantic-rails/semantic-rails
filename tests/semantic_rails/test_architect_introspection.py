@@ -848,6 +848,51 @@ def test_a_drafted_model_validates_against_the_warehouse(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize(
+    ("physical", "competitors", "measure_id", "expected"),
+    [
+        ("net-amount", "net INTEGER, amount INTEGER", "net_amount", 100),
+        ("gross total", "gross INTEGER, total INTEGER", "gross_total", 200),
+        ("fee.amount", "fee INTEGER, amount INTEGER", "fee_amount", 300),
+        ("1+2", "one INTEGER, two INTEGER", "1_2", 400),
+    ],
+)
+def test_special_physical_measure_names_execute_as_literal_columns(
+    tmp_path: Path, physical: str, competitors: str, measure_id: str, expected: int
+) -> None:
+    project = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
+    db_path = build_dbt_warehouse(project / "data" / "warehouse.duckdb")
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            f'CREATE TABLE specials (id INTEGER PRIMARY KEY, "{physical}" INTEGER, {competitors})'
+        )
+        conn.execute(f"INSERT INTO specials VALUES (1, {expected}, 7, 2)")
+
+    with open_duckdb(db_path) as warehouse:
+        suggestion = suggest_model(warehouse, "specials")
+    draft = suggestion["upsert_model"]
+    assert draft["measures"][physical]["expr"] == {"kind": "column", "column": physical}
+    mutation = ArchitectProject(project, workspace_root=tmp_path).upsert_model(**draft)
+    assert mutation.report["ok"] is True, mutation.report
+    runtime = Runtime.from_path(str(project))
+    try:
+        rows = runtime.query(
+            {
+                "version": 1,
+                "select": [
+                    {
+                        "expression": {"measure": f"measure.shop.{measure_id}"},
+                        "as": "actual",
+                    }
+                ],
+                "limit": 5,
+            }
+        )["rows"]
+    finally:
+        runtime.close()
+    assert rows == [{"actual": expected}]
+
+
+@pytest.mark.parametrize(
     ("name", "data_type", "expected"),
     [
         ("amount", "INTEGER", "measure"),
@@ -951,6 +996,66 @@ def test_failed_individual_fk_probe_leaves_valid_link_with_incomplete_evidence(
                 "reason": "candidate probe is unsupported",
             }
         ]
+
+
+@pytest.mark.parametrize("target_kind", ["undeclared_large", "declared_large", "checked_unique"])
+def test_oversized_undeclared_fk_target_keeps_search_uncertainty(
+    tmp_path: Path, target_kind: str
+) -> None:
+    db_path = tmp_path / "target-bound.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE a_customers (customer_id BIGINT PRIMARY KEY)")
+        conn.execute("INSERT INTO a_customers VALUES (1), (2)")
+        conn.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id BIGINT)")
+        conn.execute("INSERT INTO orders VALUES (10, 1), (20, 2)")
+        if target_kind == "declared_large":
+            conn.execute("CREATE TABLE b_customers (customer_id BIGINT PRIMARY KEY)")
+            conn.execute(f"INSERT INTO b_customers SELECT range FROM range({MAX_PROFILE_ROWS + 1})")
+        elif target_kind == "undeclared_large":
+            conn.execute(
+                "CREATE VIEW b_customers AS SELECT range AS customer_id "
+                f"FROM range({MAX_PROFILE_ROWS + 1})"
+            )
+        else:
+            conn.execute("CREATE VIEW b_customers AS SELECT range AS customer_id FROM range(1, 3)")
+
+    with open_duckdb(db_path) as warehouse:
+        direct = suggest_model(warehouse, "orders")
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (mcp,) = _session(
+        server,
+        [("suggest_model", {"duckdb_path": "target-bound.duckdb", "relation": "orders"})],
+    )
+
+    for result in (direct, mcp):
+        assert result.get("ok", True) is True
+        links = (
+            _by(result["foreign_keys"], "column")
+            if target_kind == "undeclared_large"
+            else result["foreign_keys"]
+        )
+        if target_kind == "undeclared_large":
+            assert links["customer_id"]["references"]["relation"] == "a_customers"
+            assert links["customer_id"]["confidence"] == "low"
+            assert "another candidate could not be checked" in links["customer_id"]["reason"]
+            assert result["foreign_key_diagnostics"] == [
+                {
+                    "column": "customer_id",
+                    "relation": "b_customers",
+                    "reason": "undeclared target exceeds the bounded uniqueness probe",
+                }
+            ]
+        else:
+            assert {link["references"]["relation"] for link in links} == {
+                "a_customers",
+                "b_customers",
+            }
+            assert all(link["confidence"] == "low" for link in links)
+            assert "foreign_key_diagnostics" not in result
+            if target_kind == "declared_large":
+                assert any("values were not checked" in link["reason"] for link in links)
+            else:
+                assert all("every value here matches" in link["reason"] for link in links)
 
 
 def test_container_columns_are_diagnosed_and_scalar_draft_executes(tmp_path: Path) -> None:
