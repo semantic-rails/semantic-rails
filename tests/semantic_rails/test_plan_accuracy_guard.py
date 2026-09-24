@@ -186,6 +186,29 @@ def test_rank_by_must_sort_by_the_measure(adapter: SemanticLayerMCPAdapter) -> N
     assert _gap_kinds(adapter, "the top store by revenue", {**top_five, "limit": 1}) == []
 
 
+def test_ranking_uses_the_named_measure_when_two_are_selected(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    ranked = _query(
+        group_by=[STORE], limit=5, order_by=[{"field": "order_count", "direction": "DESC"}]
+    )
+    ranked["select"].append(ORDERS)
+    assert _gap_kinds(adapter, "top 5 stores by revenue", ranked) == ["ranking_unrealized"]
+    correct = {**ranked, "order_by": [{"field": "revenue_usd", "direction": "DESC"}]}
+    assert _gap_kinds(adapter, "top 5 stores by revenue", correct) == []
+    disguised = {
+        **correct,
+        "select": [
+            {"as": "revenue_usd", "expression": ORDERS["expression"]},
+            {"as": "actual_revenue", "expression": REVENUE["expression"]},
+        ],
+    }
+    assert _gap_kinds(adapter, "top 5 stores by revenue", disguised) == ["ranking_unrealized"]
+    uncertain = _gaps(adapter, "top 5 stores", ranked)
+    assert [gap["kind"] for gap in uncertain] == ["ranking_unrealized"]
+    assert "ranked_measure_uncertain" in uncertain[0]["message"]
+
+
 # --- time windows -------------------------------------------------------------
 
 
@@ -258,6 +281,33 @@ def test_every_named_value_must_reach_a_filter(adapter: SemanticLayerMCPAdapter)
     # Grouping by store doesn't bring back a store the filter drops.
     one = {**both, "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}]}
     assert _gap_kinds(adapter, text, one) == ["filter_values_unrealized"]
+
+
+@pytest.mark.parametrize("op", ["!=", "NOT IN"])
+def test_positive_requested_value_cannot_be_excluded(
+    adapter: SemanticLayerMCPAdapter, op: str
+) -> None:
+    value = ["Brooklyn"] if op == "NOT IN" else "Brooklyn"
+    excluded = _query(where=[{"field": STORE, "op": op, "value": value}])
+    assert _gap_kinds(adapter, "revenue for Brooklyn", excluded) == ["filter_values_unrealized"]
+    assert (
+        _gap_kinds(
+            adapter,
+            "revenue for Brooklyn",
+            _query(where=[{"field": STORE, "op": "=", "value": "Brooklyn"}]),
+        )
+        == []
+    )
+    both = {**excluded, "group_by": [STORE]}
+    assert _gap_kinds(adapter, "revenue by store for Philadelphia and Brooklyn", both) == [
+        "filter_values_unrealized"
+    ]
+    assert _gap_kinds(adapter, "revenue excluding Brooklyn", excluded) == []
+
+
+def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapter) -> None:
+    wrong = _query(where=[{"field": STORE, "op": "!=", "value": "Philadelphia"}])
+    assert _gap_kinds(adapter, "revenue excluding Brooklyn", wrong) == ["filter_values_unrealized"]
 
 
 @pytest.mark.parametrize(
@@ -496,6 +546,75 @@ def test_mcp_plan_reports_what_it_could_not_honor(
     assert ranked["best"]["validation_ok"] is True
     assert ranked["status"] == "low_confidence"
     assert ranked["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+
+
+@pytest.mark.parametrize(
+    ("text", "draft", "expected_gap"),
+    [
+        (
+            "revenue for Brooklyn",
+            _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}]),
+            "filter_values_unrealized",
+        ),
+        (
+            "top 5 stores by revenue",
+            {
+                "version": 2,
+                "select": [REVENUE, ORDERS],
+                "group_by": [STORE],
+                "order_by": [{"field": "order_count", "direction": "DESC"}],
+                "limit": 5,
+            },
+            "ranking_unrealized",
+        ),
+    ],
+)
+def test_mcp_plan_downgrades_reversed_value_or_ranked_measure(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    draft: dict[str, Any],
+    expected_gap: str,
+) -> None:
+    _draft_plan(monkeypatch, draft)
+    payload = adapter.call_tool("plan", {"intent": text})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert expected_gap in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+
+
+@pytest.mark.parametrize(
+    ("text", "draft"),
+    [
+        ("revenue for Brooklyn", _query(where=[{"field": STORE, "op": "=", "value": "Brooklyn"}])),
+        (
+            "revenue excluding Brooklyn",
+            _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}]),
+        ),
+        (
+            "top 5 stores by revenue",
+            {
+                "version": 2,
+                "select": [REVENUE, ORDERS],
+                "group_by": [STORE],
+                "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
+                "limit": 5,
+            },
+        ),
+    ],
+)
+def test_mcp_plan_keeps_correct_value_and_ranking_drafts(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    draft: dict[str, Any],
+) -> None:
+    _draft_plan(monkeypatch, draft)
+    payload = adapter.call_tool("plan", {"intent": text})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == "ok"
+    assert payload.get("why") is None
 
 
 def test_mcp_plan_defaults_to_the_query_detail(adapter: SemanticLayerMCPAdapter) -> None:

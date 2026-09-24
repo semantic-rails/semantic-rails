@@ -761,6 +761,21 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
             or (request["direction"] and direction != request["direction"])
         ):
             problems.append("order")
+        ranked_ids = _ranking_measure_ids(config, text, request)
+        selected = [row for row in list(query.get("select") or []) if isinstance(row, dict)]
+        ordered = next((row for row in selected if row.get("as") == first.get("field")), {})
+        expression = ordered.get("expression")
+        ordered_id = (
+            expression.get("measure") or expression.get("metric")
+            if isinstance(expression, dict)
+            else None
+        )
+        if first and not ordered and "order" not in problems:
+            problems.append("order")
+        if len(ranked_ids) == 1 and ordered_id not in ranked_ids:
+            problems.append("ranked_measure")
+        elif len(ranked_ids) > 1 or (not ranked_ids and len(selected) > 1):
+            problems.append("ranked_measure_uncertain")
     noun = _singular(request["noun"])
     time = _time_block(query)
     if noun in _TIME_UNITS:
@@ -818,6 +833,62 @@ def _orders_by_a_value(order: dict[str, Any], query: dict[str, Any]) -> bool:
     return name != "time" and name not in grouped and not name.startswith("dimension.")
 
 
+def _ranking_measure_ids(config: Any, text: str, request: dict[str, Any]) -> set[str]:
+    """Resolve an explicitly named ranking measure without guessing among catalog names."""
+
+    normalized = re.sub(r"\b(top|bottom|best|worst)-(\d+)\b", r"\1 \2", text.lower())
+    words = _WORD_RE.findall(normalized)
+    clause = request["clause"].split()
+    start = next(
+        (
+            index + len(clause)
+            for index in range(len(words))
+            if words[index : index + len(clause)] == clause
+        ),
+        len(words),
+    )
+    tail = words[start:]
+    if not clause or clause[-1] != "by":
+        anchor = next(
+            (
+                index
+                for index, word in enumerate(tail)
+                if word in {"by", "most", "least", "highest", "lowest", "fewest"}
+            ),
+            None,
+        )
+        if anchor is None:
+            return set()
+        tail = tail[anchor + 1 :]
+    while tail and tail[0] in {"the", "total"}:
+        tail = tail[1:]
+    phrase: list[str] = []
+    for word in tail:
+        if word in _PHRASE_BREAKS | {"among", "except", "excluding", "vs", "versus", "but"}:
+            break
+        phrase.append(word)
+    sought = tuple(_singular(word) for word in _plain(" ".join(phrase)).split())
+    if not sought:
+        return set()
+    matched: set[str] = set()
+    for row in [*getattr(config, "measures", []), *getattr(config, "metric_recipes", [])]:
+        object_id = str(getattr(row, "id", "") or "")
+        fields = [
+            object_id.rsplit(".", 1)[-1],
+            str(getattr(row, "name", "") or "").rsplit(".", 1)[-1],
+            str(getattr(row, "label", "") or ""),
+            *[str(alias) for alias in getattr(row, "aliases", []) or []],
+        ]
+        for candidate in fields:
+            tokens = [_singular(word) for word in _plain(candidate).split()]
+            while tokens and tokens[-1] in {"usd"}:
+                tokens.pop()
+            if tuple(tokens) == sought:
+                matched.add(object_id)
+                break
+    return matched
+
+
 def _dimension_nouns(config: Any) -> frozenset[str]:
     return frozenset(
         _singular(token)
@@ -829,7 +900,7 @@ def _dimension_nouns(config: Any) -> frozenset[str]:
 def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
     """Every governed value the question names must reach the draft.
 
-    A value is honored by a filter that names it (either polarity), by
+    A value is honored by a filter with the requested polarity, by
     grouping on its dimension when no filter drops it, or by a chosen object
     whose name carries the question's word for it ("new customer orders"
     answered by a new-customer measure). Longer values mask the words inside
@@ -845,6 +916,11 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     if not matches:
         return []
     predicates = _field_predicates(query)
+    excluded_spans = [
+        match.span("value")
+        for pattern in (_NEGATION_RE, _ALL_BUT_RE)
+        for match in pattern.finditer(plain)
+    ]
     grouped = {str(item) for item in list(query.get("group_by") or [])}
     referenced = set(_referenced_ids(query))
     carried = {
@@ -857,11 +933,26 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     missing: list[dict[str, Any]] = []
     for span, phrase in matches:
         rows = phrases[phrase]
+        negative = any(start <= span[0] and span[1] <= end for start, end in excluded_spans)
         if phrase in _EVERYDAY_WORDS and not _tied_to_dimension(config, plain, span, rows):
             continue
-        if any(_value_honored(domain, value, predicates, grouped) for domain, value in rows):
+        if any(
+            _value_honored(domain, value, predicates, grouped, negative) for domain, value in rows
+        ):
             continue
-        if set(_tokens(phrase)) <= carried:
+        # The dedicated negation check already reports a missing negative
+        # predicate or a positive predicate on this excluded value.
+        if negative and (
+            not _query_has_negative_semantics(query) or _positive_filter_evidence(query, phrase)
+        ):
+            continue
+        explicitly_dropped = any(
+            {_plain(name) for name in _value_names(value)}
+            & predicates.get(str(dimension), {}).get("drops", set())
+            for domain, value in rows
+            for dimension in domain.dimensions
+        )
+        if not negative and not explicitly_dropped and set(_tokens(phrase)) <= carried:
             continue
         said.append(phrase)
         for domain, value in rows:
@@ -878,7 +969,7 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
         CoverageGap(
             kind="filter_values_unrealized",
             clause=", ".join(said),
-            message="The question names values that no filter or grouping in the draft uses.",
+            message="The draft does not preserve the requested inclusion or exclusion of named values.",
             expected={"values": missing},
             actual={
                 "where": list(query.get("where") or []),
@@ -887,8 +978,8 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
             recovery_hint={
                 "kind": "provide_filter_values",
                 "message": (
-                    "Filter on every named value (op 'in' with a list for several values of one "
-                    "dimension), then validate."
+                    "Use a filter with the requested polarity for every named value "
+                    "(op 'in' for several included values of one dimension), then validate."
                 ),
             },
         )
@@ -1003,19 +1094,27 @@ def _field_predicates(query: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _value_honored(
-    domain: Any, value: Any, predicates: dict[str, dict[str, Any]], grouped: set[str]
+    domain: Any,
+    value: Any,
+    predicates: dict[str, dict[str, Any]],
+    grouped: set[str],
+    negative: bool,
 ) -> bool:
-    """A filter names the value, or its dimension is grouped and no filter drops it."""
+    """A filter has the requested polarity, or grouping keeps a positive value."""
 
     names = {_plain(item) for item in (value.value, value.label, *(value.aliases or []))} - {""}
     for dimension in (str(item) for item in domain.dimensions):
         entry = predicates.get(dimension)
         if entry is not None:
-            if names & (entry["keeps"] | entry["drops"]) or entry["other"]:
+            if negative and names & entry["drops"] and not names & entry["keeps"]:
+                return True
+            if names & entry["drops"]:
+                continue
+            if not negative and (names & entry["keeps"] or entry["other"]):
                 return True
             if entry["keeps"]:
                 continue  # the filter keeps other values only
-        if dimension in grouped:
+        if not negative and dimension in grouped:
             return True
     return False
 
