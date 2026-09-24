@@ -803,21 +803,11 @@ def test_mcp_plan_keeps_correct_value_and_ranking_drafts(
     [
         (
             "revenue for Brooklyn and Philadelphia",
-            [{"field": STORE, "op": "=", "value": ["Brooklyn", "Philadelphia"]}],
-            False,
-        ),
-        (
-            "revenue for Brooklyn and Philadelphia",
             [{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
             True,
         ),
         ("revenue for Brooklyn", [{"field": STORE, "op": "=", "value": "Brooklyn"}], True),
         ("revenue for Brooklyn", [{"field": STORE, "op": "IN", "value": "Brooklyn"}], True),
-        (
-            "revenue excluding Brooklyn, Philadelphia",
-            [{"field": STORE, "op": "!=", "value": ["Brooklyn", "Philadelphia"]}],
-            False,
-        ),
         (
             "revenue excluding Brooklyn, Philadelphia",
             [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}],
@@ -833,14 +823,6 @@ def test_mcp_plan_keeps_correct_value_and_ranking_drafts(
         (
             "revenue excluding Brooklyn",
             [{"field": STORE, "op": "NOT LIKE", "value": "Brook%"}],
-            False,
-        ),
-        (
-            "revenue excluding Brooklyn, including Philadelphia",
-            [
-                {"field": STORE, "op": "!=", "value": ["Brooklyn"]},
-                {"field": STORE, "op": "=", "value": "Philadelphia"},
-            ],
             False,
         ),
         (
@@ -868,6 +850,51 @@ def test_mcp_plan_checks_named_value_predicate_shapes(
         assert payload.get("why") is None
     else:
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+
+
+@pytest.mark.parametrize(
+    ("text", "where", "op"),
+    [
+        (
+            "revenue for Brooklyn and Philadelphia",
+            [{"field": STORE, "op": "=", "value": ["Brooklyn", "Philadelphia"]}],
+            "=",
+        ),
+        (
+            "revenue excluding Brooklyn, Philadelphia",
+            [{"field": STORE, "op": "!=", "value": ["Brooklyn", "Philadelphia"]}],
+            "!=",
+        ),
+        (
+            "revenue excluding Brooklyn, including Philadelphia",
+            [
+                {"field": STORE, "op": "!=", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "=", "value": "Philadelphia"},
+            ],
+            "!=",
+        ),
+    ],
+)
+def test_mcp_plan_rejects_list_values_for_scalar_filter_ops(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    where: list[dict[str, Any]],
+    op: str,
+) -> None:
+    # Current Query IR validation rejects this shape before the C1 guard.
+    # Direct guard controls above separately assert its classification.
+    _draft_plan(monkeypatch, _query(where=where))
+    payload = adapter.call_tool("plan", {"intent": text})
+    assert payload["best"]["validation_ok"] is False
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "VALIDATION_FAILED"
+    assert any(
+        error["code"] == "INVALID_QUERY"
+        and f"op '{op}'" in error["message"]
+        and "list" in error["message"]
+        for error in payload["why"]["errors"]
+    )
 
 
 @pytest.mark.parametrize(
