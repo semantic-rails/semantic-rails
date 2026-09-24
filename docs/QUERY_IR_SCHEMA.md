@@ -438,6 +438,26 @@ size — and it is engaged automatically by features that depend on
 dense rows (for example, the inline `prior_period` LAG window in the
 "Period shifts" section above).
 
+With an explicit `start` and `end` and a calendar `date_day` declared and stored
+as `date`, the spine holds every bucket that contains a day of the window,
+including buckets without source rows.
+So the first bucket's label can come before `start`: a week
+that begins on the Monday before a mid-week `start`, or the month of a
+mid-month `start`. Only rows inside `[start, end)` count toward any
+bucket. When `date_day` is declared as `timestamp` or absent, the calendar
+retains its original bucket-start bounds; a bucket that starts before `start`
+can therefore be absent even when it contains source rows. Timestamp metadata
+does not distinguish timezone-aware from timezone-naive storage, so changing
+its bounds without a storage-type contract could shift empty calendar days.
+For the `date` expansion, offset-bearing bounds use the temporal role's zone.
+The series also keeps any populated bucket selected by the source
+filter, since packages do not distinguish physical `TIMESTAMP` from
+`TIMESTAMPTZ` columns; an extra empty calendar bucket may appear when those
+two interpretations cross midnight.
+For `date` calendars, fractional-second bounds keep their full precision when
+deciding whether the window is empty and whether an exclusive end just after
+midnight includes that day.
+
 ### Worked example — monthly query against a sparse table
 
 The jaffle source has orders in some months but not others. A

@@ -3709,7 +3709,7 @@ def _plan_query(
 
 def _calendar_fill_binding(
     plan: LogicalPlan, config: PackageConfig, *, force: bool = False
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str | None] | None:
     from .compiler_parts.sql_lowering import _calendar_fill_binding as bind_calendar
 
     return bind_calendar(plan, config, force=force)

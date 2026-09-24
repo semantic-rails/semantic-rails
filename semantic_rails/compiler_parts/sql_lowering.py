@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, tzinfo
+from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..ast import normalize_query
 from ..dialects import dialect_for_warehouse
@@ -42,7 +45,7 @@ from ..ir import (
     PhysicalPlan,
     PhysicalPlanNode,
 )
-from ..schema import AggregateRelationConfig, PackageConfig
+from ..schema import AggregateRelationConfig, DimensionConfig, PackageConfig
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
@@ -3710,7 +3713,7 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
 
 def _calendar_fill_binding(
     plan: LogicalPlan, config: PackageConfig, *, force: bool = False
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str | None] | None:
     if not plan.time or (not plan.time.get("fill") and not force):
         return None
     grain = str(plan.time.get("grain", "") or "").lower()
@@ -3768,7 +3771,201 @@ def _calendar_fill_binding(
         )
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(dimension.id)
-    return calendar_entity.table, dimension.column
+    return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)
+
+
+def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, Any]) -> str | None:
+    """Return a DATE day column eligible for bounded day expansion.
+
+    A timestamp day column may be zoned or unzoned; metadata cannot distinguish
+    the two, so its calendar predicate retains the original bucket bounds.
+    """
+    if time.get("start") is None or time.get("end") is None:
+        return None
+    day = next(
+        (
+            row
+            for row in config.dimensions
+            if row.entity == bucket.entity and row.column == "date_day" and row.data_type == "date"
+        ),
+        None,
+    )
+    if day is None:
+        return None
+    # The fill window reads this column, so it is bound like the grain dimension.
+    _dimension_index(config).get(day.id)
+    return day.column
+
+
+def _calendar_bound(value: Any) -> datetime | None:
+    """Parse a bound without projecting it through the finite datetime range."""
+    try:
+        return datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _fractional_second(value: Any) -> Decimal:
+    """Keep digits beyond ``datetime``'s microsecond limit for bound decisions."""
+    match = re.match(r"^\d{4}(?:-?\d{2}){2}.\d{2}:?\d{2}:?\d{2}[.,](\d+)", str(value).strip())
+    return Decimal(f"0.{match[1]}") if match else Decimal(0)
+
+
+def _offset_microseconds(offset: timedelta) -> int:
+    return ((offset.days * 86400 + offset.seconds) * 1_000_000) + offset.microseconds
+
+
+def _instant_tick(moment: datetime, value: Any) -> tuple[int, Decimal]:
+    """Represent an instant without constructing an out-of-range UTC datetime."""
+    offset = moment.utcoffset() or timedelta()
+    micros = (
+        (moment.toordinal() * 86400 + moment.hour * 3600 + moment.minute * 60 + moment.second)
+        * 1_000_000
+        + moment.microsecond
+        - _offset_microseconds(offset)
+    )
+    return micros, _fractional_second(value) - Decimal(moment.microsecond) / 1_000_000
+
+
+def _calendar_day(moment: datetime, value: Any, zone: tzinfo) -> tuple[int, bool]:
+    """Return the role-zone day and whether the bound is after its midnight."""
+    if moment.tzinfo is None:
+        local = moment
+    else:
+        try:
+            local = moment.astimezone(zone)
+        except OverflowError:
+            # UTC may be outside years 1..9999 even when the role-zone day is in range.
+            # ZoneInfo's edge offset projects that instant without a UTC datetime.
+            edge = datetime.min if moment.year == 1 else datetime.max
+            role_offset = zone.utcoffset(edge.replace(tzinfo=zone)) or timedelta()
+            instant_us, tail = _instant_tick(moment, value)
+            local_us = instant_us + _offset_microseconds(role_offset)
+            ordinal, day_us = divmod(local_us, 86_400_000_000)
+            if 1 <= ordinal <= datetime.max.toordinal():
+                seconds, micros = divmod(day_us, 1_000_000)
+                hours, seconds = divmod(seconds, 3600)
+                minutes, seconds = divmod(seconds, 60)
+                local = datetime.fromordinal(ordinal).replace(
+                    hour=hours, minute=minutes, second=seconds, microsecond=micros, tzinfo=zone
+                )
+                checked_offset = local.utcoffset() or timedelta()
+                if checked_offset != role_offset:
+                    local_us = instant_us + _offset_microseconds(checked_offset)
+                    ordinal, day_us = divmod(local_us, 86_400_000_000)
+            return ordinal, bool(day_us or tail)
+    return local.toordinal(), bool(local.time() != datetime.min.time() or _fractional_second(value))
+
+
+def _has_offset_bound(time: dict[str, Any]) -> bool:
+    if time.get("start") is None or time.get("end") is None:
+        return False
+    return any(
+        (moment := _calendar_bound(time.get(key))) is not None and moment.tzinfo is not None
+        for key in ("start", "end")
+    )
+
+
+def _nonpositive_window(
+    start: datetime, end: datetime, zone: tzinfo, start_value: Any, end_value: Any
+) -> bool:
+    if start.tzinfo is not None or end.tzinfo is not None:
+        return _instant_tick(
+            start if start.tzinfo is not None else start.replace(tzinfo=zone), start_value
+        ) >= _instant_tick(end if end.tzinfo is not None else end.replace(tzinfo=zone), end_value)
+    return (start, _fractional_second(start_value)) >= (end, _fractional_second(end_value))
+
+
+def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> list[Any]:
+    """``day`` within the days that ``[start, end)`` touches.
+
+    Offset bounds use the temporal role's calendar zone. Naive bounds remain wall time.
+    An empty interval has no spine, even if outward day rounding would make one.
+    """
+    role = _temporal_role_index(config).get(str(time.get("temporal_role") or ""))
+    zone_name = str(getattr(role, "timezone", "UTC") or "UTC")
+    zone = UTC if zone_name == "UTC" else ZoneInfo(zone_name)
+    moments = {key: _calendar_bound(time[key]) for key in ("start", "end")}
+    start, end = moments["start"], moments["end"]
+    if (
+        start is not None
+        and end is not None
+        and _nonpositive_window(start, end, zone, time["start"], time["end"])
+    ):
+        return [SqlBinary(SqlLiteral(1), "=", SqlLiteral(0))]
+    bounds = []
+    for key, operator in (("start", ">="), ("end", "<")):
+        value = time[key]
+        moment = moments[key]
+        if moment is not None and len(str(value).strip()) > 10:
+            ordinal, after_midnight = _calendar_day(moment, value, zone)
+            if (key == "start" and ordinal > datetime.max.toordinal()) or (
+                key == "end" and ordinal < 1
+            ):
+                return [SqlBinary(SqlLiteral(1), "=", SqlLiteral(0))]
+            day_value = datetime.fromordinal(min(max(ordinal, 1), datetime.max.toordinal()))
+            if key == "end" and (after_midnight or ordinal > datetime.max.toordinal()):
+                operator = "<="
+            value = day_value.date().isoformat()
+        bounds.append(SqlBinary(day, operator, SqlLiteral(value)))
+    return bounds
+
+
+def _bounded_calendar_window(
+    bucket: Any, day: Any | None, time: dict[str, Any], config: PackageConfig
+) -> list[Any]:
+    if day is not None:
+        return _whole_day_window(day, time, config)
+    return [
+        SqlBinary(bucket, ">=", SqlLiteral(time["start"])),
+        SqlBinary(bucket, "<", SqlLiteral(time["end"])),
+    ]
+
+
+def _source_bucket_recovery_ctes(time_alias: str) -> list[SqlCte]:
+    """Keep buckets selected by the source when offset typing is unspecified."""
+    calendar_bucket = SqlIdentifier(parts=["calendar_time", time_alias])
+    leaf_bucket = SqlIdentifier(parts=["leaf_time_keys", time_alias])
+    # An unmatched ClickHouse outer-join field defaults to zero rather than NULL.
+    # A constant marker identifies real source rows on both join behaviors.
+    time_bucket = SqlCase(
+        whens=[
+            SqlCaseWhen(
+                condition=SqlBinary(
+                    SqlIdentifier(parts=["leaf_time_keys", "source_present"]), "=", SqlLiteral(1)
+                ),
+                result=leaf_bucket,
+            )
+        ],
+        else_expr=calendar_bucket,
+    )
+    keys = SqlCte(
+        name="leaf_time_keys",
+        query=SqlSelect(
+            select=[
+                SqlField(SqlIdentifier(parts=["leaf_base", time_alias]), time_alias),
+                SqlField(SqlLiteral(1), "source_present"),
+            ],
+            from_table=SqlTableRef(name="leaf_base"),
+            group_by=[SqlIdentifier(parts=["leaf_base", time_alias])],
+        ),
+    )
+    dense = SqlCte(
+        name="dense_time",
+        query=SqlSelect(
+            select=[SqlField(time_bucket, time_alias)],
+            from_table=SqlTableRef(name="calendar_time"),
+            joins=[
+                SqlJoin(
+                    join_type="FULL OUTER",
+                    table=SqlTableRef(name="leaf_time_keys"),
+                    on=SqlBinary(calendar_bucket, "=", leaf_bucket),
+                )
+            ],
+            group_by=[time_bucket],
+        ),
+    )
+    return [keys, dense]
 
 
 def _tier_internal_aliases(
@@ -3932,15 +4129,14 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         base_name = "leaf_base"
 
     if fill_binding is not None:
-        calendar_table, calendar_column = fill_binding
+        calendar_table, calendar_column, day = fill_binding
         calendar_expr = _column_ref(calendar_table, calendar_column)
         dense_time_where: list[Any] = []
         dense_time_joins: list[SqlJoin] = []
         if plan.time.get("start") is not None and plan.time.get("end") is not None:
-            dense_time_where = [
-                SqlBinary(calendar_expr, ">=", SqlLiteral(plan.time["start"])),
-                SqlBinary(calendar_expr, "<", SqlLiteral(plan.time["end"])),
-            ]
+            dense_time_where = _bounded_calendar_window(
+                calendar_expr, _column_ref(calendar_table, day) if day else None, plan.time, config
+            )
         else:
             ctes.append(
                 SqlCte(
@@ -3971,12 +4167,10 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
                 ),
                 SqlBinary(calendar_expr, "<=", SqlIdentifier(parts=["dense_bounds", "range_end"])),
             ]
-        # Inner ORDER BY in a CTE without LIMIT is ignored by Snowflake/DuckDB
-        # (relations have no inherent ordering). The final SELECT carries its
-        # own ORDER BY, so an extra one inside the CTE is just noise.
+        spine_name = "calendar_time" if day and _has_offset_bound(plan.time) else "dense_time"
         ctes.append(
             SqlCte(
-                name="dense_time",
+                name=spine_name,
                 query=SqlSelect(
                     select=[SqlField(calendar_expr, time_alias)],
                     from_table=SqlTableRef(name=calendar_table),
@@ -3986,6 +4180,8 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
                 ),
             )
         )
+        if spine_name != "dense_time":
+            ctes.extend(_source_bucket_recovery_ctes(time_alias))
 
         joins: list[SqlJoin] = []
         filled_fields: list[SqlField] = []
