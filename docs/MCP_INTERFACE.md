@@ -125,6 +125,28 @@ genuinely need descriptions or the alias index.
 
 `alias_index` and `aliases` ship only at `verbosity=full` — agents who need typo-resolution opt in explicitly.
 
+`discover(verbosity="minimal", limit=5)` returns slim cards: `id`, `kind`, `label`, `score`, a
+`description` trimmed to 120 characters, `default_temporal_role` and `available`, plus
+`blocked_reason` for a candidate that isn't available. Omitted options keep the v1 default of
+10 full cards per kind, with match reasons, starter patches and comparison metadata. When the
+question uses an object's whole name ("revenue by store"), that object ranks above near-duplicates
+that add a qualifier the question doesn't use ("Delivered revenue").
+Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
+`available` flag, including when a value is blocked.
+
+`inspect(verbosity="minimal")` states each fact once. It leaves out fields that
+repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
+the label, empty structural fields, and every starter patch after the first. Declared sample values
+and query literals remain exact, including blank and null values. Omitted verbosity and explicit
+`"compact"` or `"full"` keep the whole v1 card.
+
+The segment tools offer an explicit `verbosity="minimal"` response.
+`segment-validate` returns validity, the segment's definition and its derived query;
+`segment-explain` adds the rendered SQL; `segment-preview` returns member rows, the preview and
+member counts, and the derived query. Omitted verbosity and `"full"` keep the v1 whole response
+with compiler plans. Minimal responses still include query and segment policy effects, warnings,
+errors, and actionable recovery hints when present.
+
 `validate`, `compile`, and `execute` accept either `{"query": {...}}` or a Query IR
 object directly. Metadata tools accept the same request fields documented in
 [QUERY_API.md](QUERY_API.md), including optional `policy_context`.

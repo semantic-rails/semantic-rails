@@ -401,6 +401,14 @@ SELECT_EXPRESSION_SHAPES_HELP = (
 )
 
 
+# Omitted segment verbosity preserves the v1 whole response. "compact" is
+# accepted by the adapter as an alias for "full".
+SEGMENT_VERBOSITY_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "enum": ["minimal", "full"],
+    "default": "full",
+}
+
 TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="capabilities",
@@ -457,14 +465,11 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         description=(
             "Rank semantic objects against business terms (e.g. 'revenue', "
             "'aov by store'). Returns measures, metrics, dimensions, and "
-            "entities scored with 'match_reasons'. Recommended loop "
-            "position: 1 (after the user's question). Pick best id, then "
-            "'inspect'. Verbosity: 'minimal' trims each row to "
-            "{id,kind,score,default_temporal_role,available,match_reasons} "
-            "(cheap orientation); 'compact' (default) ships full cards. "
-            "Gotcha: nonsense or out-of-scope terms return an "
-            "'out_of_scope' or 'low_relevance' block with empty buckets — "
-            "branch on those before assuming a candidate."
+            "entities, up to 'limit' per kind. Pick an id, then inspect it. "
+            "Default: full cards; verbosity='minimal': slim cards without "
+            "match_reasons or starter patches. Gotcha: nonsense terms return "
+            "'out_of_scope' or 'low_relevance' with empty buckets; branch "
+            "before using a candidate."
         ),
         input_schema=_schema(
             {
@@ -474,7 +479,11 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 },
                 "query": QUERY_SCHEMA_SLIM,
                 "stage": {"type": "string"},
-                "verbosity": {"type": "string", "default": "compact"},
+                "verbosity": {
+                    "type": "string",
+                    "enum": ["minimal", "compact", "full"],
+                    "default": "compact",
+                },
                 "limit": {"type": "integer", "default": 10, "minimum": 1},
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
@@ -485,10 +494,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="inspect",
         description=(
-            "Return the stable object card for one id — label, description, "
-            "search terms, related dimensions, valid temporal roles, "
-            "policy/validity windows. Recommended loop position: 2 (after "
-            "'discover', before composing Query IR). Gotcha: 'object_id' "
+            "Return one object's card: label, description, aggregations or "
+            "values, temporal roles, related objects, policy. Default: full "
+            "card; verbosity='minimal' drops duplicates. Gotcha: 'object_id' "
             "must be a full id like 'measure.jaffle.revenue_usd', not a "
             "label — use 'discover' first if you only have a phrase."
         ),
@@ -496,7 +504,11 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             {
                 "object_id": {"type": "string"},
                 "query": QUERY_SCHEMA_SLIM,
-                "verbosity": {"type": "string", "default": "compact"},
+                "verbosity": {
+                    "type": "string",
+                    "enum": ["minimal", "compact", "full"],
+                    "default": "compact",
+                },
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
             },
@@ -683,6 +695,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         input_schema=_schema(
             {
                 "segment_id": {"type": "string"},
+                "verbosity": SEGMENT_VERBOSITY_SCHEMA,
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
             },
@@ -702,6 +715,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         input_schema=_schema(
             {
                 "segment_id": {"type": "string"},
+                "verbosity": SEGMENT_VERBOSITY_SCHEMA,
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
             },
@@ -722,6 +736,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             {
                 "segment_id": {"type": "string"},
                 "limit": {"type": "integer", "default": 50, "minimum": 1},
+                "verbosity": SEGMENT_VERBOSITY_SCHEMA,
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
             },
@@ -1182,6 +1197,66 @@ def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dic
     if str(query.get("verbosity", "") or "").strip() == "":
         query["verbosity"] = MCP_DEFAULT_QUERY_VERBOSITY
     return query
+
+
+# Explicit minimal verbosity returns the answer without compiler plans
+# (logical, SQL, physical, performance) and their copies. An omitted level,
+# "compact", and "full" return the v1 whole response.
+_SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
+    "segment-validate": frozenset({"segment", "normalized_segment", "derived_query"}),
+    "segment-explain": frozenset(
+        {
+            "segment",
+            "normalized_segment",
+            "derived_query",
+            "rendered_sql",
+        }
+    ),
+    "segment-preview": frozenset(
+        {
+            "segment",
+            "member_key_dimensions",
+            "preview_dimensions",
+            "rows",
+            "preview_row_count",
+            "member_count",
+            "derived_query",
+        }
+    ),
+}
+# The outcome, all policy effects on the segment and its derived query, and
+# actionable recovery guidance stay on every response. These fields come from
+# different Runtime paths (validate, compile, preview, and soft failure), so
+# keep them together rather than relying on a tool-specific success allowlist.
+_SEGMENT_OUTCOME_KEYS = frozenset(
+    {
+        "ok",
+        "status",
+        "errors",
+        "warnings",
+        "recovery_hints",
+        "authoring_hints",
+        "query_ir_hints",
+        "assumptions",
+        "methodology_hints",
+        "disabled_options",
+        "policy_effects",
+        "segment_policy_effects",
+    }
+)
+
+
+def _segment_response(tool: str, payload: Mapping[str, Any], verbosity: Any) -> dict[str, Any]:
+    out = dict(payload or {})
+    if str(verbosity or "full").strip().lower() != "minimal":
+        return out
+    keep = _SEGMENT_MINIMAL_KEYS[tool] | _SEGMENT_OUTCOME_KEYS
+    return {
+        key: value
+        for key, value in out.items()
+        if key in keep
+        and (key in {"ok", "status", "errors", "warnings"} or value not in ("", [], {}))
+    }
 
 
 def _row_format_arg(arguments: Mapping[str, Any]) -> str:
@@ -2057,7 +2132,7 @@ class SemanticLayerMCPAdapter:
                 if args.get("query") or args.get("policy_context")
                 else None,
                 stage=str(args.get("stage", "")),
-                verbosity=str(args.get("verbosity", "compact")),
+                verbosity=str(args.get("verbosity", "compact") or "compact"),
                 limit=effective_limit,
                 enforce_scope=True,
             )
@@ -2109,7 +2184,7 @@ class SemanticLayerMCPAdapter:
                 partial_query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
-                verbosity=str(args.get("verbosity", "compact")),
+                verbosity=str(args.get("verbosity", "compact") or "compact"),
             ),
         )
 
@@ -2269,28 +2344,40 @@ class SemanticLayerMCPAdapter:
     def _handle_segment_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(
             arguments,
-            lambda args: self.runtime.segment_validate(
-                str(args.get("segment_id", "")),
-                policy_context=_policy_context_payload(args),
+            lambda args: _segment_response(
+                "segment-validate",
+                self.runtime.segment_validate(
+                    str(args.get("segment_id", "")),
+                    policy_context=_policy_context_payload(args),
+                ),
+                args.get("verbosity"),
             ),
         )
 
     def _handle_segment_explain(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(
             arguments,
-            lambda args: self.runtime.segment_explain(
-                str(args.get("segment_id", "")),
-                policy_context=_policy_context_payload(args),
+            lambda args: _segment_response(
+                "segment-explain",
+                self.runtime.segment_explain(
+                    str(args.get("segment_id", "")),
+                    policy_context=_policy_context_payload(args),
+                ),
+                args.get("verbosity"),
             ),
         )
 
     def _handle_segment_preview(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(
             arguments,
-            lambda args: self.runtime.segment_preview(
-                str(args.get("segment_id", "")),
-                limit=_coerce_int(args.get("limit"), 50, field="limit", minimum=1),
-                policy_context=_policy_context_payload(args),
+            lambda args: _segment_response(
+                "segment-preview",
+                self.runtime.segment_preview(
+                    str(args.get("segment_id", "")),
+                    limit=_coerce_int(args.get("limit"), 50, field="limit", minimum=1),
+                    policy_context=_policy_context_payload(args),
+                ),
+                args.get("verbosity"),
             ),
         )
 

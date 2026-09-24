@@ -351,7 +351,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities scored with 'match_reasons'. Recommended loop position: 1 (after the user's question). Pick best id, then 'inspect'. Verbosity: 'minimal' trims each row to {id,kind,score,default_temporal_role,available,match_reasons} (cheap orientation); 'compact' (default) ships full cards. Gotcha: nonsense or out-of-scope terms return an 'out_of_scope' or 'low_relevance' block with empty buckets — branch on those before assuming a candidate.",
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind. Pick an id, then inspect it. Default: full cards; verbosity='minimal': slim cards without match_reasons or starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -402,6 +402,11 @@
           },
           "verbosity": {
             "default": "compact",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
             "type": "string"
           }
         },
@@ -450,7 +455,7 @@
         "readOnlyHint": true,
         "title": "Inspect"
       },
-      "description": "Return the stable object card for one id — label, description, search terms, related dimensions, valid temporal roles, policy/validity windows. Recommended loop position: 2 (after 'discover', before composing Query IR). Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
+      "description": "Return one object's card: label, description, aggregations or values, temporal roles, related objects, policy. Default: full card; verbosity='minimal' drops duplicates. Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -480,6 +485,11 @@
           },
           "verbosity": {
             "default": "compact",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
             "type": "string"
           }
         },
@@ -1218,6 +1228,14 @@
           },
           "segment_id": {
             "type": "string"
+          },
+          "verbosity": {
+            "default": "full",
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -1289,6 +1307,14 @@
             "type": "string"
           },
           "segment_id": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "full",
+            "enum": [
+              "minimal",
+              "full"
+            ],
             "type": "string"
           }
         },
@@ -1366,6 +1392,14 @@
             "type": "string"
           },
           "segment_id": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "full",
+            "enum": [
+              "minimal",
+              "full"
+            ],
             "type": "string"
           }
         },

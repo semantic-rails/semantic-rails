@@ -331,13 +331,14 @@ SESSIONS: dict[str, list[Step]] = {
     ],
 }
 
-# One call per tool, explicitly requesting compact plans and bounded results. Claude Code warns
-# about tool results over 10K tokens and spills results over 25K to a file.
+# One call per tool, explicitly opting into slim metadata/segment responses,
+# compact plans, and bounded results. The scripted by-the-book session below
+# keeps the accepted v1 omitted-argument behavior.
 COMPACT_PROBES: list[Step] = [
     ("capabilities", "capabilities", {}),
     ("catalog", "catalog", {}),
-    ("discover", "discover", {"terms": "revenue by store"}),
-    ("inspect", "inspect", {"object_id": REVENUE["measure"]}),
+    ("discover", "discover", {"terms": "revenue by store", "verbosity": "minimal", "limit": 5}),
+    ("inspect", "inspect", {"object_id": REVENUE["measure"], "verbosity": "minimal"}),
     ("build_options", "build-options", {"query": {"version": 2, "select": Q1["select"]}}),
     ("valid_values", "valid-values", {"dimension_id": STORE}),
     ("plan", "plan", {"intent": QUESTIONS[0], "detail": "query"}),
@@ -345,9 +346,9 @@ COMPACT_PROBES: list[Step] = [
     ("compile", "compile", {"query": Q1}),
     ("execute", "execute", {"query": Q1, "max_rows": 200}),
     ("execute_no_grain_window", "execute", {"query": NO_GRAIN_WINDOW, "max_rows": 200}),
-    ("segment_validate", "segment-validate", {"segment_id": SEGMENT}),
-    ("segment_explain", "segment-explain", {"segment_id": SEGMENT}),
-    ("segment_preview", "segment-preview", {"segment_id": SEGMENT}),
+    ("segment_validate", "segment-validate", {"segment_id": SEGMENT, "verbosity": "minimal"}),
+    ("segment_explain", "segment-explain", {"segment_id": SEGMENT, "verbosity": "minimal"}),
+    ("segment_preview", "segment-preview", {"segment_id": SEGMENT, "verbosity": "minimal"}),
 ]
 
 # Metadata calls behind an authenticated transport, which supplies a policy
