@@ -145,7 +145,8 @@ never create, seed or change it.
   lowers the confidence of an otherwise matching link because the destination is not fully known.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
-  expression. Declared warehouse keys and foreign keys retain their declared evidence. All
+  expression. Enum labels containing container names or brackets remain scalar dimensions.
+  Declared warehouse keys and foreign keys retain their declared evidence. All
   suggestions return draft `upsert_model` arguments to review before calling `upsert_model`.
 
 Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.

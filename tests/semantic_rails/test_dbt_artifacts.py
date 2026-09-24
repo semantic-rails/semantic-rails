@@ -388,6 +388,48 @@ def test_dbt_catalog_container_types_stay_unmodeled_in_suggestion_and_import(
     assert {"weights", "attrs", "lookup"} <= set(result["models"][0]["untyped_columns"])
 
 
+def test_dbt_catalog_enum_labels_with_container_words_remain_dimensions(target: Path) -> None:
+    catalog_path = target / "catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    columns = catalog["nodes"]["model.shop_dbt.fct_orders"]["columns"]
+    columns["category"] = {
+        "name": "category",
+        "type": "ENUM('MAP', 'ARRAY', 'ok')",
+        "index": 100,
+    }
+    columns["label"] = {
+        "name": "label",
+        "type": "ENUM('x[]', 'it''s MAP[] DATE INTEGER', 'ok')",
+        "index": 101,
+    }
+    columns["labels"] = {
+        "name": "labels",
+        "type": "ENUM('MAP', 'ok')[]",
+        "index": 102,
+    }
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
+    items, skipped = dbt_import_models(project, ["fct_orders"])
+    server = create_architect_mcp_server(workspace_root=target.parent)
+    mcp = _call(
+        server,
+        "suggest_models_from_dbt",
+        {"target_dir": "target", "select": ["fct_orders"]},
+    )
+
+    for result in (suggestion, mcp["models"][0]):
+        assert {"category", "label"} <= {row["column"] for row in result["dimensions"]}
+        assert {"category", "label"} <= set(result["upsert_model"]["dimensions"])
+        assert "labels" in result["untyped_columns"]
+        assert "labels" not in result["upsert_model"]["dimensions"]
+    assert mcp["ok"] is True and skipped == []
+    assert len(items) == 1
+    assert {"category", "label"} <= set(items[0]["dimensions"])
+    assert "labels" not in items[0]["dimensions"]
+
+
 def test_by_default_every_model_and_no_seed_is_suggested(target: Path) -> None:
     suggestions = suggest_models_from_dbt(load_dbt_artifacts(target))
 

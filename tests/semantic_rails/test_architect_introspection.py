@@ -870,6 +870,10 @@ def test_a_drafted_model_validates_against_the_warehouse(tmp_path: Path) -> None
         ("payload", "VARIANT", "unknown"),
         ("position", "POINT", "unknown"),
         ("duration", "INTERVAL", "unknown"),
+        ("category", "ENUM('MAP', 'ARRAY', 'ok')", "dimension"),
+        ("label", "ENUM('x[]', 'it''s MAP[] DATE INTEGER', 'ok')", "dimension"),
+        ("label", "ENUM('TIMESTAMP', 'DECIMAL(10,2)', 'ok')", "dimension"),
+        ("labels", "ENUM('MAP', 'ok')[]", "unknown"),
     ],
 )
 def test_scalar_classifier_does_not_promote_nested_type_words(
@@ -1024,6 +1028,43 @@ def test_key_named_container_is_diagnosed_without_inferred_entity_key(tmp_path: 
             "reason": "container type requires an explicit extraction expression",
         }
     ]
+
+
+def test_enum_labels_with_container_words_and_brackets_stay_scalar_in_service_and_mcp(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "enum-types.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE enum_events (id INTEGER PRIMARY KEY, "
+            "category ENUM('MAP', 'ARRAY', 'ok'), "
+            "label ENUM('x[]', 'it''s MAP[] DATE INTEGER', 'ok'), "
+            "amount DECIMAL(10,2), weights INTEGER[])"
+        )
+        conn.execute(
+            "INSERT INTO enum_events VALUES "
+            "(1, 'MAP', 'x[]', 10.5, [1,2]), "
+            "(2, 'ARRAY', 'it''s MAP[] DATE INTEGER', 2.0, [3])"
+        )
+
+    with open_duckdb(db_path) as warehouse:
+        described = describe_table(warehouse, "enum_events")
+        direct = suggest_model(warehouse, "enum_events")
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (mcp,) = _session(
+        server,
+        [("suggest_model", {"duckdb_path": "enum-types.duckdb", "relation": "enum_events"})],
+    )
+
+    types = _by(described["columns"], "name")
+    assert types["category"]["type"] == "ENUM('MAP', 'ARRAY', 'ok')"
+    assert types["label"]["type"] == "ENUM('x[]', 'it''s MAP[] DATE INTEGER', 'ok')"
+    for result in (direct, mcp):
+        assert result.get("ok", True) is True
+        assert {row["column"] for row in result["dimensions"]} == {"category", "label"}
+        assert set(result["upsert_model"]["dimensions"]) == {"category", "label"}
+        assert {row["key"] for row in result["measures"]} == {"enum_event_count", "amount"}
+        assert [row["column"] for row in result["unsupported_columns"]] == ["weights"]
 
 
 def _session(server: Any, calls: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:

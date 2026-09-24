@@ -413,14 +413,19 @@ def _base_type(data_type: str) -> str:
     return data_type.split("(")[0].upper()
 
 
-_CONTAINER_TYPE = re.compile(
-    r"(?:^|[^A-Z0-9_])(?:ARRAY|LIST|STRUCT|MAP|ROW|RECORD|OBJECT|VARIANT|JSON)(?:$|[^A-Z0-9_])"
+_CONTAINER_CONSTRUCTORS = frozenset(
+    {"ARRAY", "LIST", "STRUCT", "MAP", "ROW", "RECORD", "OBJECT", "VARIANT", "JSON"}
 )
+_ARRAY_SUFFIX = re.compile(r"(?:\[[0-9]*\]|\bARRAY)\s*$")
 
 
 def _is_container_type(data_type: str) -> bool:
     upper = str(data_type or "").strip().upper()
-    return bool(re.search(r"\[[^]]*\]", upper) or _CONTAINER_TYPE.search(upper))
+    constructor = re.match(r"[A-Z_][A-Z0-9_]*", upper)
+    return bool(
+        (constructor and constructor.group() in _CONTAINER_CONSTRUCTORS)
+        or _ARRAY_SUFFIX.search(upper)
+    )
 
 
 def _scalar_family(data_type: str) -> str:
