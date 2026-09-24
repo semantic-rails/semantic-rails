@@ -18,7 +18,7 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -438,8 +438,15 @@ class ProjectTransaction:
         success_status: str = "committed",
         metadata: Mapping[str, Any] | None = None,
         scaffold_files: Mapping[str, bytes] | None = None,
+        prepare_updates: (
+            Callable[[str], tuple[Iterable[ProjectFileUpdate], Mapping[str, bytes] | None]] | None
+        ) = None,
     ) -> ProjectTransactionOutcome:
-        """Apply a parse-gated optimistic transaction or return its preview."""
+        """Apply a parse-gated optimistic transaction or return its preview.
+
+        Preparation, when supplied, runs under this transaction's lock after
+        receipt replay and the expected-revision check, before any file write.
+        """
 
         expected = str(expected_revision or "").strip()
         key = str(idempotency_key or "").strip()
@@ -455,17 +462,13 @@ class ProjectTransaction:
                 "idempotency_key is required for every Architect mutation",
                 details={"argument": "idempotency_key"},
             )
-        normalized_updates = self._normalize_updates(
-            updates,
-            allow_internal_paths=allow_internal_paths,
+        if prepare_updates is not None and scaffold_files is not None:
+            raise ValueError("Prepared updates must supply their own scaffold provenance")
+        normalized_updates = (
+            self._normalize_updates(updates, allow_internal_paths=allow_internal_paths)
+            if prepare_updates is None
+            else ()
         )
-        if scaffold_files is not None:
-            proposed = {update.relative_path: update.content for update in normalized_updates}
-            if any(proposed.get(path) != content for path, content in scaffold_files.items()):
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    "Scaffold provenance must match the proposed transaction files",
-                )
         intent_hash = _canonical_json_digest(dict(intent))
         with self._exclusive_lock():
             receipt = self._load_receipt(key)
@@ -506,6 +509,19 @@ class ProjectTransaction:
                         "retry": "Read project_status, review intervening changes, and retry with a new idempotency_key.",
                     },
                 )
+            if prepare_updates is not None:
+                prepared, scaffold_files = prepare_updates(current)
+                normalized_updates = self._normalize_updates(
+                    [*updates, *prepared],
+                    allow_internal_paths=allow_internal_paths,
+                )
+            if scaffold_files is not None:
+                proposed = {update.relative_path: update.content for update in normalized_updates}
+                if any(proposed.get(path) != content for path, content in scaffold_files.items()):
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        "Scaffold provenance must match the proposed transaction files",
+                    )
 
             snapshots = tuple(self._snapshot(update.relative_path) for update in normalized_updates)
             effective = tuple(

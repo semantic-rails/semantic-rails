@@ -264,35 +264,40 @@ def create_project(
             "For schema_version: 1 packages, package_id must match the project directory name",
             details={"package_id": package_id, "project_directory": project.name},
         )
-    current = project_revision(project)
-    if not overwrite and current != ABSENT_PROJECT_REVISION and current == expected_revision:
-        # A directory may already hold files that are not a project (the
-        # warehouse dbt built, say); replacing an existing package needs
-        # overwrite. A stale expected_revision is the transaction's conflict.
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            "Project directory already holds a package; pass overwrite=true to replace "
-            "its starter files",
-            details={"project_path": str(project)},
-        )
     files = project_scaffold_files(spec)
-    updates = [
-        ProjectFileUpdate(
-            relative_path,
-            content,
-            ((project / relative_path).stat().st_mode & 0o777)
-            if (project / relative_path).exists()
-            else None,
-        )
-        for relative_path, content in files.items()
-    ]
-    trusted_scaffold = True
-    if overwrite:
-        retire, trusted_scaffold = _guard_and_retire_scaffold_model(project, root, files, current)
-        updates.extend(retire)
+    transaction = ProjectTransaction(project, workspace_root=root)
+
+    def prepare(current: str) -> tuple[list[ProjectFileUpdate], dict[str, bytes] | None]:
+        if not overwrite and current != ABSENT_PROJECT_REVISION:
+            # A directory containing only generated warehouse data still has
+            # the absent revision. An existing package requires overwrite.
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "Project directory already holds a package; pass overwrite=true to replace "
+                "its starter files",
+                details={"project_path": str(project)},
+            )
+        retire: list[ProjectFileUpdate] = []
+        trusted_scaffold = True
+        if overwrite:
+            retire, trusted_scaffold = _guard_and_retire_scaffold_model(
+                project, root, files, current
+            )
+        updates = [
+            ProjectFileUpdate(
+                relative_path,
+                content,
+                ((project / relative_path).stat().st_mode & 0o777)
+                if (project / relative_path).exists()
+                else None,
+            )
+            for relative_path, content in files.items()
+        ]
+        return [*updates, *retire], files if trusted_scaffold else None
+
     key = f"internal-{uuid.uuid4()}" if idempotency_key is None else str(idempotency_key)
-    outcome = ProjectTransaction(project, workspace_root=root).apply(
-        updates,
+    outcome = transaction.apply(
+        (),
         expected_revision=expected_revision,
         idempotency_key=key,
         intent={
@@ -312,7 +317,7 @@ def create_project(
             "data": spec.warehouse.data,
             "next_actions": _create_next_actions(spec),
         },
-        scaffold_files=files if trusted_scaffold else None,
+        prepare_updates=prepare,
     )
     return ArchitectMutation(
         report=outcome.report,

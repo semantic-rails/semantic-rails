@@ -155,7 +155,9 @@ archive) use one engine-owned transaction layer:
   overwrites an intervening edit.
 - `idempotency_key` is required and persisted as a hashed, workspace-local
   receipt. Retrying the identical mutation replays its result. Reusing the key
-  for a different intent fails closed.
+  for a different intent fails closed. For `create_project`, the transaction checks that receipt
+  and the expected revision before preparing a new scaffold overwrite; a completed retry does
+  not re-evaluate later edits as a new mutation.
 - A per-project OS file lock serializes cooperating processes. Multi-file
   replacements occur under that lock, parse as one package, and restore every
   prior byte if any write or parse step fails.

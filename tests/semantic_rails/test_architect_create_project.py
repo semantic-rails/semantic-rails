@@ -392,6 +392,167 @@ def test_create_is_idempotent_and_guarded_by_revision(tmp_path: Path) -> None:
     assert excinfo.value.code == "CONFIG_CONFLICT"
 
 
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+def test_completed_overwrite_replays_before_provenance_guard(
+    tmp_path: Path, through_mcp: bool
+) -> None:
+    project = tmp_path / "shop"
+    assert _create_via_route(
+        tmp_path,
+        EXTERNAL_SHOP,
+        through_mcp=through_mcp,
+        key="create",
+        expected_revision="absent",
+    )["ok"]
+    initial_revision = project_revision(project)
+    second = replace(
+        EXTERNAL_SHOP,
+        description="Description B",
+        first_model=replace(ORDERS, relation="main_marts.orders_v2"),
+    )
+    preview = _create_via_route(
+        tmp_path,
+        second,
+        through_mcp=through_mcp,
+        key="preview-second",
+        expected_revision=initial_revision,
+        overwrite=True,
+        dry_run=True,
+    )
+    assert preview["ok"] is True and preview["status"] == "preview", preview
+    assert not _receipt_path(tmp_path, "preview-second").exists()
+    applied = _create_via_route(
+        tmp_path,
+        second,
+        through_mcp=through_mcp,
+        key="second",
+        expected_revision=initial_revision,
+        overwrite=True,
+    )
+    assert applied["ok"] is True and applied["status"] == "created", applied
+    model = project / "models" / "core" / "orders.yml"
+    model.write_bytes(model.read_bytes() + b"# authored edit after success\n")
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    receipts = {
+        path.name: path.read_bytes()
+        for path in _receipt_path(tmp_path, "second").parent.glob("*.json")
+    }
+
+    for dry_run in (False, True):
+        replay = _create_via_route(
+            tmp_path,
+            second,
+            through_mcp=through_mcp,
+            key="second",
+            expected_revision=initial_revision,
+            overwrite=True,
+            dry_run=dry_run,
+        )
+        assert replay["ok"] is True and replay["status"] == "replayed", replay
+        assert replay["original_status"] == "created"
+        assert replay["idempotent_replay"] is True
+        assert replay["current_revision"] == revision
+
+    third = replace(second, description="Different intent")
+    if through_mcp:
+        conflict = _create_via_route(
+            tmp_path,
+            third,
+            through_mcp=True,
+            key="second",
+            expected_revision=initial_revision,
+            overwrite=True,
+        )
+        assert conflict["ok"] is False, conflict
+        assert conflict["error"]["details"]["conflict_kind"] == "idempotency_key_reuse"
+    else:
+        with pytest.raises(SemanticLayerError) as exc:
+            _create_via_route(
+                tmp_path,
+                third,
+                through_mcp=False,
+                key="second",
+                expected_revision=initial_revision,
+                overwrite=True,
+            )
+        assert exc.value.code == "CONFIG_CONFLICT"
+        assert exc.value.details["conflict_kind"] == "idempotency_key_reuse"
+
+    for dry_run in (True, False):
+        if through_mcp:
+            refused = _create_via_route(
+                tmp_path,
+                third,
+                through_mcp=True,
+                key=f"fresh-{dry_run}",
+                expected_revision=revision,
+                overwrite=True,
+                dry_run=dry_run,
+            )
+            assert refused["ok"] is False, refused
+        else:
+            with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+                _create_via_route(
+                    tmp_path,
+                    third,
+                    through_mcp=False,
+                    key=f"fresh-{dry_run}",
+                    expected_revision=revision,
+                    overwrite=True,
+                    dry_run=dry_run,
+                )
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+    assert {
+        path.name: path.read_bytes()
+        for path in _receipt_path(tmp_path, "second").parent.glob("*.json")
+    } == receipts
+
+
+def test_stale_new_create_does_not_run_scaffold_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path, idempotency_key="create")
+
+    def forbidden(*_args: Any) -> Any:
+        raise AssertionError("stale mutation reached scaffold preparation")
+
+    monkeypatch.setattr(architect_service, "_guard_and_retire_scaffold_model", forbidden)
+    with pytest.raises(SemanticLayerError) as exc:
+        create_project(
+            "shop",
+            replace(EXTERNAL_SHOP, description="Description B"),
+            workspace_root=tmp_path,
+            expected_revision="absent",
+            idempotency_key="fresh-stale",
+            overwrite=True,
+        )
+    assert exc.value.code == "CONFIG_CONFLICT"
+    assert exc.value.details["conflict_kind"] == "stale_revision"
+    assert not _receipt_path(tmp_path, "fresh-stale").exists()
+
+
+def test_prepared_create_updates_use_transaction_path_validation(tmp_path: Path) -> None:
+    transaction = architect_transactions.ProjectTransaction(
+        tmp_path / "shop", workspace_root=tmp_path
+    )
+    with pytest.raises(SemanticLayerError, match="stay inside the project"):
+        transaction.apply(
+            (),
+            expected_revision="absent",
+            idempotency_key="bad-preparation",
+            intent={"operation": "create_project"},
+            validate_after=False,
+            prepare_updates=lambda _current: (
+                [architect_transactions.ProjectFileUpdate("../outside.yml", b"unsafe")],
+                None,
+            ),
+        )
+    assert not (tmp_path / "outside.yml").exists()
+    assert not list((tmp_path / ".semantic-rails" / "architect-transactions").glob("*/*.json"))
+
+
 def test_overwrite_needs_the_current_revision_and_the_flag(tmp_path: Path) -> None:
     create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
     current = project_revision(tmp_path / "shop")
