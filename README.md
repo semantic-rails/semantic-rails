@@ -174,16 +174,18 @@ Microsoft Fabric, MySQL and Trino. dbt, Cube and Looker also connect to far more
 tools and offer caching or pre-aggregation. Semantic Rails is narrower: an engine
 built around the agent loop above, which you can run locally or embed.
 
-The [comparison pack](comparisons/semantic_layers/) runs the same 16 questions
-through six layers: Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views
-and KtX. It compares capability, not performance, and its support labels are
-provisional. Read its methodology disclosure first: 9 of the 16 questions were chosen
-to exercise primitives Semantic Rails ships, and Semantic Rails is also the reference
-its answers are checked against. Its
+The [comparison pack](comparisons/semantic_layers/) asks the same 16 questions of
+six modeled layers: Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views
+and KtX. It compares capability, not performance; its support labels describe the
+authored models, not each layer's limits. Nine questions were chosen to exercise
+primitives Semantic Rails ships. The
 [output consistency check](comparisons/semantic_layers/shared/results/validation/output_consistency.md)
-currently reports 14 of the 16 answers matching across all six layers. On the other
-two, the other five layers agree with each other and Semantic Rails differs, because
-the layers didn't answer them from the same data.
+compares five layers on the current shared dataset, including Semantic Rails,
+against an independent SQL answer key: all 16 match. Cube's captured SQL was
+replayed on current data, but Cube itself was not rerun. Snowflake Semantic Views
+is a stale capture on an older dataset and is excluded from that count; it matches
+14 questions and differs on q07 and q16. The authored models and shared data leave
+some intended semantics weakly tested, so matching outputs are not a ranking.
 
 Coming from MetricFlow? Translate a MetricFlow YAML directory or a dbt
 `semantic_manifest.json` into a new package. The importer is partial: models it can't
@@ -265,8 +267,8 @@ Work in progress, without dates:
 - One-step agent setup: Claude Code and Codex plugins, a Claude Desktop bundle and
   Cursor install links.
 - A flagship example: a dbt project on an open dataset, modeled end to end.
-- A fairer comparison pack, with an independent answer key and a published scoring
-  rubric.
+- Broader native-model coverage in the comparison pack and a refreshed Snowflake
+  capture on the current dataset.
 - Import and export for Apache Ossie, the incubating Open Semantic Interchange
   specification.
 
