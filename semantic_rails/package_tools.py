@@ -1445,10 +1445,13 @@ def _extract_package_from_git(
             "INVALID_CONFIG", f"base_ref {str(base_ref)[:80]!r} is not a git revision"
         )
     try:
-        repo = Path(os.fsdecode(_git(package_root, "rev-parse", "--show-toplevel").strip()))
+        repo = Path(
+            os.fsdecode(_git(package_root, "rev-parse", "--show-toplevel").removesuffix(b"\n"))
+        )
         # Where git sees the package, which a case-insensitive file system can
         # spell differently from package_root.
-        prefix = os.fsdecode(_git(package_root, "rev-parse", "--show-prefix").strip()).rstrip("/")
+        prefix = os.fsdecode(_git(package_root, "rev-parse", "--show-prefix").removesuffix(b"\n"))
+        prefix = prefix.removesuffix("/")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise SemanticLayerError(
             "INVALID_CONFIG",

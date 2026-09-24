@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -90,19 +92,46 @@ def test_mcp_session_compares_against_the_previous_commit(repo: Path) -> None:
     async def run() -> list[dict[str, Any]]:
         async with create_connected_server_and_client_session(server) as session:
             results = []
-            for name in ("diff_project", "impact_project"):
-                result = await session.call_tool(
-                    name, {"project_path": "semantic/shop", "base_ref": "HEAD~1"}
-                )
+            for name in ("diff_project", "impact_project", "promotion_check"):
+                arguments = {"project_path": "semantic/shop", "base_ref": "HEAD~1"}
+                if name == "promotion_check":
+                    arguments["environment"] = "staging"
+                result = await session.call_tool(name, arguments)
                 results.append(dict(result.structuredContent or {}))
             return results
 
-    diff, impact = asyncio.run(run())
+    diff, impact, promotion = asyncio.run(run())
 
     assert diff["ok"] is True, diff
     assert [row["object_id"] for row in diff["changes"]] == ["metric.shop.average_order"]
     assert impact["ok"] is True, impact
     assert impact["impact"]["risk"] == "high"
+    assert promotion["ok"] is True, promotion
+    assert promotion["artifacts"]["impact"]["summary"]["changes_total"] == 1
+
+
+def test_cli_diff_impact_and_promotion_use_the_packages_repository(repo: Path) -> None:
+    package = repo / "semantic" / "shop"
+    _add_metric(package)
+    for command in ("diff-package", "impact-report", "promote-package"):
+        arguments = [
+            sys.executable,
+            "-m",
+            "semantic_rails",
+            command,
+            "--path",
+            str(package),
+            "--base-ref",
+            "HEAD",
+        ]
+        if command == "promote-package":
+            arguments.extend(("--environment", "staging"))
+        result = subprocess.run(arguments, capture_output=True, text=True, check=True)
+        report = json.loads(result.stdout)
+        assert report["ok"] is True, report
+        compared = report["artifacts"]["impact"] if command == "promote-package" else report
+        assert compared["comparison"]["source_path"].endswith(":semantic/shop")
+        assert compared["summary"]["changes_total"] == 1
 
 
 def test_a_package_at_the_repository_root(tmp_path: Path) -> None:
@@ -225,6 +254,20 @@ def test_a_package_directory_named_like_pathspec_magic(tmp_path: Path) -> None:
     report = diff_package_report(PackageReference(source_path=str(package)), base_ref="HEAD")
 
     assert [row["object_id"] for row in report["changes"]] == ["metric.shop.average_order"]
+
+
+def test_repository_and_package_paths_keep_trailing_whitespace(tmp_path: Path) -> None:
+    root = tmp_path / "analytics\n"
+    package = write_orders_package(root / "semantic ")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "Package")
+    _add_metric(package)
+
+    report = diff_package_report(PackageReference(source_path=str(package)), base_ref="HEAD")
+
+    assert [row["object_id"] for row in report["changes"]] == ["metric.shop.average_order"]
+    assert report["comparison"]["source_path"].endswith(":semantic /shop")
 
 
 def test_a_package_path_spelled_in_another_case(repo: Path) -> None:
