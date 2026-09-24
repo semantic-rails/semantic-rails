@@ -3806,6 +3806,22 @@ def _calendar_bound(value: Any, zone: tzinfo) -> datetime | None:
     return moment.astimezone(zone) if moment.tzinfo is not None else moment
 
 
+def _has_offset_bound(time: dict[str, Any]) -> bool:
+    if time.get("start") is None or time.get("end") is None:
+        return False
+    return any(
+        (moment := _calendar_bound(time.get(key), UTC)) is not None and moment.tzinfo is not None
+        for key in ("start", "end")
+    )
+
+
+def _nonpositive_window(start: datetime, end: datetime, zone: tzinfo) -> bool:
+    if start.tzinfo is not None or end.tzinfo is not None:
+        start = (start if start.tzinfo is not None else start.replace(tzinfo=zone)).astimezone(UTC)
+        end = (end if end.tzinfo is not None else end.replace(tzinfo=zone)).astimezone(UTC)
+    return start >= end
+
+
 def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> list[Any]:
     """``day`` within the days that ``[start, end)`` touches.
 
@@ -3817,12 +3833,8 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
     zone = UTC if zone_name == "UTC" else ZoneInfo(zone_name)
     moments = {key: _calendar_bound(time[key], zone) for key in ("start", "end")}
     start, end = moments["start"], moments["end"]
-    if start is not None and end is not None:
-        if start.tzinfo is not None or end.tzinfo is not None:
-            start = start if start.tzinfo is not None else start.replace(tzinfo=zone)
-            end = end if end.tzinfo is not None else end.replace(tzinfo=zone)
-        if start >= end:
-            return [SqlBinary(SqlLiteral(1), "=", SqlLiteral(0))]
+    if start is not None and end is not None and _nonpositive_window(start, end, zone):
+        return [SqlBinary(SqlLiteral(1), "=", SqlLiteral(0))]
     bounds = []
     for key, operator in (("start", ">="), ("end", "<")):
         value = time[key]
@@ -3834,6 +3846,28 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
             value = day_value.isoformat()
         bounds.append(SqlBinary(day, operator, SqlLiteral(value)))
     return bounds
+
+
+def _source_bucket_recovery_cte(time_alias: str) -> SqlCte:
+    """Keep buckets selected by the source when offset typing is unspecified."""
+    calendar_bucket = SqlIdentifier(parts=["calendar_time", time_alias])
+    leaf_bucket = SqlIdentifier(parts=["leaf_base", time_alias])
+    time_bucket = SqlCall("COALESCE", [calendar_bucket, leaf_bucket])
+    return SqlCte(
+        name="dense_time",
+        query=SqlSelect(
+            select=[SqlField(time_bucket, time_alias)],
+            from_table=SqlTableRef(name="calendar_time"),
+            joins=[
+                SqlJoin(
+                    join_type="FULL OUTER",
+                    table=SqlTableRef(name="leaf_base"),
+                    on=SqlBinary(calendar_bucket, "=", leaf_bucket),
+                )
+            ],
+            group_by=[time_bucket],
+        ),
+    )
 
 
 def _tier_internal_aliases(
@@ -4035,12 +4069,10 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
                 ),
                 SqlBinary(calendar_expr, "<=", SqlIdentifier(parts=["dense_bounds", "range_end"])),
             ]
-        # Inner ORDER BY in a CTE without LIMIT is ignored by Snowflake/DuckDB
-        # (relations have no inherent ordering). The final SELECT carries its
-        # own ORDER BY, so an extra one inside the CTE is just noise.
+        calendar_time_name = "calendar_time" if _has_offset_bound(plan.time) else "dense_time"
         ctes.append(
             SqlCte(
-                name="dense_time",
+                name=calendar_time_name,
                 query=SqlSelect(
                     select=[SqlField(calendar_expr, time_alias)],
                     from_table=SqlTableRef(name=calendar_table),
@@ -4050,6 +4082,8 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
                 ),
             )
         )
+        if calendar_time_name != "dense_time":
+            ctes.append(_source_bucket_recovery_cte(time_alias))
 
         joins: list[SqlJoin] = []
         filled_fields: list[SqlField] = []

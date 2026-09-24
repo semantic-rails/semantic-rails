@@ -445,6 +445,11 @@ bucket. The days come from the calendar's `date_day` column. A calendar
 without a date- or timestamp-typed `date_day` bounds the spine by the
 bucket-start column instead, which leaves out a bucket that starts
 before `start`.
+For offset-bearing bounds, the calendar days use the temporal role's zone.
+The filled series also keeps any populated bucket selected by the source
+filter, since packages do not distinguish physical `TIMESTAMP` from
+`TIMESTAMPTZ` columns; an extra empty calendar bucket may appear when those
+two interpretations cross midnight.
 
 ### Worked example — monthly query against a sparse table
 

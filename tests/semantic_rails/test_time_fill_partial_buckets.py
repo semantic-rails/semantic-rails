@@ -320,6 +320,91 @@ def test_fill_preserves_offset_window_days_with_timestamptz_data(
 
 
 @pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        (
+            "2017-11-05T01:30:00-04:00",
+            "2017-11-05T01:30:00-05:00",
+            {date(2017, 11, 5): 1},
+        ),
+        ("2017-11-05T01:30:00-05:00", "2017-11-05T01:45:00-04:00", {}),
+    ],
+    ids=["positive-repeated-hour", "reversed-repeated-hour"],
+)
+def test_fill_respects_instant_order_during_dst_fold(tmp_path, start, end, expected):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
+        connection.execute("SET TimeZone='America/New_York'")
+        connection.execute(
+            "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMPTZ"
+        )
+        connection.execute(
+            "ALTER TABLE jaffle_order ALTER COLUMN ordered_at SET DATA TYPE TIMESTAMPTZ"
+        )
+        connection.execute("DELETE FROM jaffle_order")
+        connection.execute(
+            "INSERT INTO jaffle_order (order_id, ordered_at) "
+            "VALUES ('fold', TIMESTAMPTZ '2017-11-05 01:45:00-04:00')"
+        )
+        from semantic_rails.config import load_package_config
+
+        config = load_package_config(str(package_dir))
+        config = dataclasses.replace(
+            config,
+            temporal_roles=[
+                dataclasses.replace(row, timezone="America/New_York")
+                if row.id == "temporal_role.jaffle_order_time"
+                else row
+                for row in config.temporal_roles
+            ],
+        )
+        time = {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end}
+        results = {}
+        for fill in (False, True):
+            shape = {**_JULY_BY_WEEK, "time": {**time, "fill": fill}}
+            sql = compile_query(config, Registry(config), shape)["sql"]
+            rows = connection.execute(
+                'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
+                f"FROM ({sql}) AS fold_result"
+            ).fetchall()
+            results[fill] = dict(rows)
+
+    assert results[False] == expected
+    assert results[True] == expected
+
+
+def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
+        connection.execute("DELETE FROM jaffle_order")
+        connection.execute(
+            "INSERT INTO jaffle_order (order_id, ordered_at) "
+            "VALUES ('wall', TIMESTAMP '2017-07-03 23:30:00')"
+        )
+        from semantic_rails.config import load_package_config
+
+        config = load_package_config(str(package_dir))
+        time = {
+            **_JULY_BY_WEEK["time"],
+            "grain": "day",
+            "start": "2017-07-03T23:00:00-02:00",
+            "end": "2017-07-04T01:00:00-02:00",
+        }
+        results = {}
+        for fill in (False, True):
+            shape = {**_JULY_BY_WEEK, "time": {**time, "fill": fill}}
+            sql = compile_query(config, Registry(config), shape)["sql"]
+            rows = connection.execute(
+                'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
+                f"FROM ({sql}) AS wall_result"
+            ).fetchall()
+            results[fill] = {day: count for day, count in rows if count}
+
+    assert results[False] == {date(2017, 7, 3): 1}
+    assert results[True] == results[False]
+
+
+@pytest.mark.parametrize(
     ("start", "end"),
     [
         ("2017-07-03T12:00:00", "2017-07-03T12:00:00"),
