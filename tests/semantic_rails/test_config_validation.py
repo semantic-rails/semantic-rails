@@ -2465,3 +2465,54 @@ def test_validation_accepts_a_mixed_clock_metric_however_it_is_grouped(
     _write_yaml(path, doc)
 
     assert validate_runtime_package(Path(package_dir)) == []
+
+
+@pytest.mark.parametrize("mutual", [False, True], ids=["self-cycle", "mutual-cycle"])
+def test_parse_report_rejects_cyclic_metric_references(package_config_factory, mutual):
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / "core" / "core_metrics.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    aov = doc["metrics"]["sales.aov_usd"]
+    aov["kind"] = "derived"
+    aov.pop("numerator", None)
+    aov.pop("denominator", None)
+    aov.pop("null_behavior", None)
+    aov["expression"] = {
+        "kind": "metric",
+        "metric": "metric.sales.cycle_peer" if mutual else "metric.sales.aov_usd",
+    }
+    if mutual:
+        doc["metrics"]["sales.cycle_peer"] = {
+            "as": "metric.sales.cycle_peer",
+            "kind": "derived",
+            "description": "The other side of an invalid cycle.",
+            "value_type": "currency",
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "expression": {"kind": "metric", "metric": "metric.sales.aov_usd"},
+        }
+    _write_yaml(path, doc)
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    assert report["ok"] is False
+    assert any("cyclic metric recipe reference" in error["message"] for error in report["errors"])
+
+
+def test_validation_accepts_shared_acyclic_metric_references(package_config_factory):
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / "core" / "core_metrics.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["metrics"]["sales.aov_twice"] = {
+        "as": "metric.sales.aov_twice",
+        "kind": "derived",
+        "description": "Average order value reached twice through one recipe.",
+        "value_type": "currency",
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "expression": _add(
+            {"kind": "metric", "metric": "metric.sales.aov_usd"},
+            {"kind": "metric", "metric": "metric.sales.aov_usd"},
+        ),
+    }
+    _write_yaml(path, doc)
+
+    assert validate_runtime_package(Path(package_dir)) == []

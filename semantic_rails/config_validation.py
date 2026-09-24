@@ -1988,8 +1988,10 @@ def _metric_time_role_errors(config, source_path: Path) -> list[str]:
             expression = expression.base
         try:
             leaves = _expr_leaf_temporal_role_sets(expression, config, query)
-        except SemanticLayerError:
-            continue  # An expression that doesn't resolve fails the compile probes.
+        except SemanticLayerError as exc:
+            if exc.details.get("metric_recipe_cycle"):
+                add_error(errors, f"{source_path}: metric {recipe.id}: {exc}")
+            continue  # Other unresolved expressions fail the compile probes.
         clocks = set().union(*leaves)
         if clocks and role not in clocks:
             add_error(
