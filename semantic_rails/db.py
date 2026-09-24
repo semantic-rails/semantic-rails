@@ -6,8 +6,9 @@ Snowflake native instance based on package config), :class:`Database`
 (the local DuckDB convenience wrapper), and :func:`seed_db` /
 :func:`load_csv_dir_to_duckdb` for the local quickstart's seed pipeline.
 :func:`build_seed_database` builds a seed beside its target and records its
-provenance (see :mod:`semantic_rails.seed_provenance`), so the runtime can
-tell its own seeded database apart from one another tool built. Adapters are
+provenance (see :mod:`semantic_rails.seed_provenance`) for operator inspection.
+Runtime bootstrap never uses provenance to authorize replacing an existing
+file. Adapters are
 the only place that touches a real warehouse driver — the rest of the
 runtime talks to the abstract interface.
 
@@ -54,7 +55,7 @@ from .dialects import (
 )
 from .errors import SemanticLayerError, query_execution_error
 from .schema import PackageMeta
-from .seed_provenance import publish_seed_database, record_seed_provenance
+from .seed_provenance import record_seed_provenance
 from .sql_preparation import PreparedQuery
 
 __all__ = [
@@ -310,7 +311,9 @@ def build_seed_database(
     ``kind`` is ``sql_script`` (``source`` is a SQL file) or ``csv_dir_duckdb``
     (``source`` is a directory of CSVs, plus optional ``post_sql``). With
     ``package_id`` the file records that this package's seed built it. The
-    caller publishes it with :func:`semantic_rails.seed_provenance.publish_seed_database`.
+    runtime callers publish it without replacing an existing target via
+    :func:`semantic_rails.seed_provenance.publish_seed_database`; explicit
+    seeding helpers retain their operator-invoked replace behavior.
     """
     if kind not in {"sql_script", "csv_dir_duckdb"}:
         raise SemanticLayerError("INVALID_CONFIG", f"Unsupported seed kind '{kind}'")
@@ -339,7 +342,11 @@ def build_seed_database(
 def _build_and_replace(db_path: str, **build: Any) -> None:
     tmp_path = build_seed_database(db_path, **build)
     try:
-        publish_seed_database(tmp_path, db_path, replace_existing=True)
+        # Explicit seeding helpers keep their existing replace semantics; runtime
+        # bootstrap uses publish_seed_database directly, which never overwrites.
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(f"{db_path}.wal")
+        os.replace(tmp_path, db_path)
     finally:
         _remove_quietly(tmp_path)
 

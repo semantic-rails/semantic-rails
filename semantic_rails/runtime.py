@@ -82,16 +82,7 @@ from .runtime_parts.responses import (
     resolve_verbosity,
 )
 from .scope import classify_question
-from .seed_provenance import (
-    DB_RESEED_ENV,
-    db_reseed_allowed,
-    hold_database,
-    missing_duckdb_relations,
-    probe_lock,
-    publish_seed_database,
-    rebuild_lock,
-    seeded_database_unchanged,
-)
+from .seed_provenance import missing_duckdb_relations, publish_seed_database
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
 from .sql_preparation import PreparedQuery
 
@@ -1211,11 +1202,6 @@ def _methodology_hints(config, payload: dict[str, Any], compiled) -> list[dict[s
     return hints
 
 
-# Windows cannot replace a file a connection holds open, so there the lock that
-# keeps writers out of a judged database cannot last through the publish.
-_PUBLISH_KEEPS_WRITERS_OUT = os.name != "nt"
-
-
 def _is_repo_managed_source(path: str) -> bool:
     try:
         return os.path.commonpath([os.path.abspath(path), repo_root()]) == repo_root()
@@ -1414,30 +1400,15 @@ class Runtime:
         return stored | relation_source_tables(self._config, pipelines)
 
     def _ensure_db(self) -> None:
-        """Make the DuckDB file readable, building it from the seed only when that is safe.
+        """Create a missing seed database, but never replace an existing file.
 
-        An ``external`` seed means another tool owns the file: it is never
-        created or replaced. Otherwise a missing file is built, and an existing
-        file that lacks relations the package reads is rebuilt only if this
-        package's seed built it and nothing has changed it since, or the
-        operator opted in. The file is held (a shared lock) from that judgement
-        until the rebuild is published, and a file that appears while a seed
-        builds is never overwritten.
+        Probe existing files in a fresh process. DuckDB can return an older
+        in-process catalog after another process replaces a path, and closing a
+        second connection here can release a serving connection's POSIX lock.
         """
         if self.warehouse != "duckdb":
             return
         seed = self._config.package.seed
-        if seed.kind == SEED_KIND_EXTERNAL:
-            if not os.path.exists(self.db_path):
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"package.default_db '{self.db_path}' does not exist. The package declares "
-                    "package.seed.kind: external, so Semantic Rails never creates this database; "
-                    "build it first (for example with `dbt build`).",
-                    details={"default_db": self.db_path, "reason": "external_default_db_missing"},
-                )
-            return
-        package_id = self._config.package.package_id
         for _attempt in range(2):
             if os.path.islink(self.db_path) and not os.path.exists(self.db_path):
                 raise SemanticLayerError(
@@ -1448,57 +1419,31 @@ class Runtime:
                     details={"default_db": self.db_path, "reason": "default_db_broken_link"},
                 )
             if not os.path.exists(self.db_path):
-                try:
-                    self._publish_seed(
-                        self._seed_source(),
-                        replace_existing=False,
-                        allow_overwrite=db_reseed_allowed(),
+                if seed.kind == SEED_KIND_EXTERNAL:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"package.default_db '{self.db_path}' does not exist. The package declares "
+                        "package.seed.kind: external, so Semantic Rails never creates this database; "
+                        "build it first (for example with `dbt build`).",
+                        details={
+                            "default_db": self.db_path,
+                            "reason": "external_default_db_missing",
+                        },
                     )
+                try:
+                    self._publish_seed(self._seed_source())
                 except SemanticLayerError as exc:
                     if exc.details.get("reason") != "default_db_created_concurrently":
                         raise
-                    continue  # judge the file another process just published
-                return
-            # The common case, once per runtime: nothing is missing. The probe
-            # waits for a rebuild this process is running, and shares a file this
-            # process already has open, so it never releases a lock held here.
+                # Whether this process or another one created the file, check
+                # its actual catalog before the runtime serves it.
+                continue
             try:
-                with (
-                    probe_lock(self.db_path),
-                    hold_database(self.db_path, share=True) as (view, _identity),
-                ):
-                    missing = missing_duckdb_relations(view, self._expected_tables())
-            except SemanticLayerError:
-                raise
-            except Exception as exc:
+                missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+            except Exception as exc:  # noqa: BLE001 — any uncertain probe fails closed
                 raise self._unreadable_db_error() from exc
-            if not missing:
-                return
-            # One rebuilder at a time; each holds the file it judges (a shared
-            # lock) until its rebuild is published, so no writer can start in
-            # between, and re-checks it: another rebuilder may have finished.
-            with rebuild_lock(self.db_path), contextlib.ExitStack() as held:
-                try:
-                    view, judged = held.enter_context(hold_database(self.db_path))
-                except Exception as exc:
-                    raise self._unreadable_db_error() from exc
-                missing = missing_duckdb_relations(view, self._expected_tables())
-                if not missing:
-                    return
-                opted_in = db_reseed_allowed()
-                source = self._seed_source()  # before the costly judgement
-                if not opted_in and not seeded_database_unchanged(
-                    self.db_path, package_id, conn=view
-                ):
-                    raise self._foreign_db_error(missing)
-                if not _PUBLISH_KEEPS_WRITERS_OUT and not opted_in:
-                    raise self._foreign_db_error(missing, windows=True)
-                self._publish_seed(
-                    source,
-                    replace_existing=True,
-                    judged=judged,
-                    release=None if _PUBLISH_KEEPS_WRITERS_OUT else held.close,
-                )
+            if missing:
+                raise self._missing_db_relations_error(missing)
             return
         raise SemanticLayerError(
             "CONFIG_CONFLICT",
@@ -1524,15 +1469,7 @@ class Runtime:
             )
         return src
 
-    def _publish_seed(
-        self,
-        src: str,
-        *,
-        replace_existing: bool,
-        judged: tuple[int, int] | None = None,
-        release: Callable[[], None] | None = None,
-        allow_overwrite: bool = False,
-    ) -> None:
+    def _publish_seed(self, src: str) -> None:
         seed = self._config.package.seed
         tmp_path = build_seed_database(
             self.db_path,
@@ -1545,15 +1482,7 @@ class Runtime:
             package_id=self._config.package.package_id,
         )
         try:
-            if release is not None:
-                release()
-            publish_seed_database(
-                tmp_path,
-                self.db_path,
-                replace_existing=replace_existing,
-                judged=judged,
-                allow_overwrite=allow_overwrite,
-            )
+            publish_seed_database(tmp_path, self.db_path)
         finally:
             with contextlib.suppress(OSError):
                 os.remove(tmp_path)
@@ -1569,29 +1498,23 @@ class Runtime:
             details={"default_db": self.db_path, "reason": "default_db_unreadable"},
         )
 
-    def _foreign_db_error(self, missing: list[str], *, windows: bool = False) -> SemanticLayerError:
+    def _missing_db_relations_error(self, missing: list[str]) -> SemanticLayerError:
         shown = ", ".join(missing[:5])
         if len(missing) > 5:
             shown += f", and {len(missing) - 5} more"
-        why = (
-            "Semantic Rails does not rebuild an existing database automatically on Windows"
-            if windows
-            else "this package's seed did not build it (or it changed since), so Semantic Rails "
-            "will not rebuild it"
-        )
         return SemanticLayerError(
             "INVALID_CONFIG",
-            f"package.default_db '{self.db_path}' lacks relations the package reads ({shown}), "
-            f"and {why}. If another tool (such as dbt) builds this database, declare "
-            "package.seed.kind: external and build the missing relations there. Otherwise "
-            "delete the file to rebuild it from the seed (a database built before seed "
-            f"provenance was recorded needs this once), or set {DB_RESEED_ENV}=1 to replace it.",
+            f"package.default_db '{self.db_path}' lacks relations the package reads ({shown}). "
+            "Semantic Rails never replaces an existing database during runtime validation. "
+            "If another tool (such as dbt) owns it, declare package.seed.kind: external and "
+            "build the missing relations there. For a disposable database built from this "
+            "package's seed, stop its users, back up any data you need, then explicitly delete "
+            "the file so the next bootstrap can create it. The former "
+            "SEMANTIC_RAILS_ALLOW_DB_RESEED flag no longer enables automatic replacement.",
             details={
                 "default_db": self.db_path,
                 "missing_relations": missing,
-                "reason": "rebuild_unsupported_on_windows"
-                if windows
-                else "default_db_not_built_by_seed",
+                "reason": "default_db_missing_relations",
             },
         )
 

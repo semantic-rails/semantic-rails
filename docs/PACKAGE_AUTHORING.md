@@ -355,20 +355,15 @@ defaults:
 `seed.kind` says who builds the file at `default_db`:
 
 - `sql_script` (a SQL file) or `csv_dir_duckdb` (a directory of CSVs plus
-  optional `post_sql`): the runtime builds the database from the seed when the
-  file is missing. The build records its provenance inside the file. If a
-  later package version reads relations the file lacks, the runtime rebuilds
-  it, but only when this package's seed built it and nothing has changed it
-  since. It errs on the side of keeping the file: a database holding macros or
-  user-defined types (which it cannot fingerprint completely), and on Windows
-  any existing database, are reported rather than rebuilt. On a filesystem
-  without hard links (FAT and exFAT drives, many network, FUSE and cloud-sync
-  folders) the runtime cannot publish a new database without risking an
-  overwrite, so it does not create one there: keep the database on a local
-  disk, or set `SEMANTIC_RAILS_ALLOW_DB_RESEED=1`.
+  optional `post_sql`): the runtime builds the database only when the file is
+  missing. It records package provenance inside the new file. Publication is
+  atomic and never overwrites a file another process created in the meantime.
+  If the filesystem cannot publish without an overwrite (for example one
+  without hard links on POSIX), creation fails with `INVALID_CONFIG`; build the
+  database explicitly on a supported filesystem before starting the runtime.
 - `external`: another tool (for example `dbt build` with dbt-duckdb) builds and
   owns the file. It takes no `source` or `post_sql`, and the runtime only reads
-  the file: a missing file is an `INVALID_CONFIG` error, never a rebuild.
+  the file: a missing file is an `INVALID_CONFIG` error.
 
 ```yaml
 package:
@@ -377,15 +372,16 @@ package:
   seed: { kind: external }
 ```
 
-Relations may be schema-qualified (`relation: main_marts.fct_orders`), and the
-existence check resolves them exactly as compiled SQL does; views and the stored
-sources of relation pipelines count as existing relations. When a seeded package finds a database it
-did not build that lacks relations it reads, the runtime raises `INVALID_CONFIG`
-(with `details.missing_relations`) and leaves the file alone. If another tool
-builds it, declare `seed.kind: external`; otherwise delete the file to rebuild it
-from the seed, or set `SEMANTIC_RAILS_ALLOW_DB_RESEED=1` to replace it. A
-database built by an earlier release records no provenance, so it needs that
-one-time delete the first time it lacks a relation.
+Relations may be schema-qualified (`relation: main_marts.fct_orders`). The
+validation probe checks the relations the package reads, including views and
+stored sources of relation pipelines. If an existing database lacks any of
+these relations, the runtime raises `INVALID_CONFIG` with
+`details.missing_relations` and leaves the file intact, regardless of its seed
+provenance. Have the owner (such as dbt) build the missing relations. For a
+disposable database generated from this package's seed, stop its users, back
+up any data you need, and explicitly remove the database file before
+restarting so bootstrap can create a fresh one. The former
+`SEMANTIC_RAILS_ALLOW_DB_RESEED` setting does not enable automatic replacement.
 
 ### `package.environments` and governance `meta:`
 

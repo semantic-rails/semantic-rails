@@ -1,58 +1,28 @@
-"""Who built a DuckDB warehouse file, and may the runtime replace it?
+"""DuckDB seed provenance and safe runtime bootstrap publication.
 
-The runtime builds a DuckDB package's ``default_db`` from ``package.seed`` when
-it is missing. It must never replace a file its package's seed did not build:
-a dbt project, a loader or a person may own it. This module keeps that promise:
-
-- :func:`record_seed_provenance` writes, inside a freshly built seed file, the
-  package id and a canonical inventory of everything the file holds.
-- :func:`seeded_database_unchanged` proves a file is that package's seed output
-  and that nothing has changed it since. Anything it cannot prove is False.
-- :func:`missing_duckdb_relations` resolves relation names the way compiled SQL
-  does, so schema-qualified relations and views count.
-- :func:`hold_database` opens a file as it is now on disk (not a copy this
-  process opened before it was replaced) and keeps a shared lock on it, so a
-  writer that starts meanwhile fails instead of losing its work;
-  :func:`rebuild_lock` serializes rebuilds of one file across threads and
-  processes, :func:`probe_lock` keeps this process's probes from releasing a
-  rebuild's hold, and
-  :func:`publish_seed_database` replaces only the file that was judged and never
-  overwrites a file that appeared while a seed was being built.
+Runtime bootstrap only publishes a complete seed when the target does not yet
+exist. Existing files are probed in a separate process so DuckDB's in-process
+catalog cache cannot certify an older inode, and closing the probe cannot drop
+a healthy serving connection's process-wide POSIX lock.
 """
 
 from __future__ import annotations
 
 import contextlib
 import errno
-import hashlib
 import json
 import os
-import stat
-import tempfile
-import threading
-import time
-import uuid
-from collections.abc import Iterable, Iterator
+import subprocess
+import sys
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 
 import duckdb
 
 from .errors import SemanticLayerError
 
-DB_RESEED_ENV = "SEMANTIC_RAILS_ALLOW_DB_RESEED"
-_PROVENANCE_SCHEMA = "_semantic_rails"
-_PROVENANCE_TABLE_NAME = "seed_provenance"
-_PROVENANCE_TABLE = f"{_PROVENANCE_SCHEMA}.{_PROVENANCE_TABLE_NAME}"
-# Bump when the inventory changes: a file recorded under another format never
-# counts as unchanged, so the runtime refuses rather than guesses.
-_INVENTORY_FORMAT = 2
-# Catalog sections the inventory cannot fingerprint completely (DuckDB does not
-# report macro default arguments or the definition of a user-defined type). A
-# file holding any of them never counts as unchanged.
-_UNFINGERPRINTED_SECTIONS = ("macros", "types")
-REBUILD_LOCK_TIMEOUT_SECONDS = 120.0
-# os.link errors meaning "this filesystem has no hard links" (FAT, some network
-# and FUSE filesystems), as opposed to a real failure.
+_PROVENANCE_TABLE = "_semantic_rails.seed_provenance"
 _NO_HARD_LINK_ERRNOS = frozenset(
     code
     for code in (
@@ -63,419 +33,98 @@ _NO_HARD_LINK_ERRNOS = frozenset(
 )
 
 
-def db_reseed_allowed() -> bool:
-    """Whether the operator opted in to replacing a database the package's seed did not build."""
-    return os.environ.get(DB_RESEED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _quote_identifier(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-
 def _quote_relation(relation: str) -> str:
-    # Split on dots like the SQL renderer; DuckDB matches quoted names
-    # case-insensitively, so this resolves exactly what compiled SQL reads.
-    return ".".join(_quote_identifier(part) for part in relation.split("."))
+    # Split as the SQL renderer does; quoted DuckDB names are case-insensitive.
+    return ".".join('"' + part.replace('"', '""') + '"' for part in relation.split("."))
 
 
-def _rows(conn: Any, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-    cursor = conn.execute(sql, list(params))
-    names = [column[0] for column in cursor.description]
-    return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
-
-
-def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
-    """Return the relations a DuckDB file cannot resolve, probed as compiled SQL reads them.
-
-    ``db`` is a connection from :func:`hold_database`, or a path, which is opened
-    that way. Raises if the file cannot be opened read-only.
-    """
-    if isinstance(db, (str, os.PathLike)):
-        with hold_database(os.fspath(db)) as (conn, _identity):
-            return missing_duckdb_relations(conn, relations)
+def _missing_on_connection(conn: Any, relations: Iterable[str]) -> list[str]:
     missing: list[str] = []
     for relation in sorted(set(relations)):
         try:
-            db.execute(f"SELECT 1 FROM {_quote_relation(relation)} LIMIT 0")
-        except Exception:  # noqa: BLE001 — any binder/catalog error means "not resolvable"
+            conn.execute(f"SELECT 1 FROM {_quote_relation(relation)} LIMIT 0")
+        except Exception:  # noqa: BLE001 — a binder/catalog failure is not a usable relation
             missing.append(relation)
     return missing
 
 
-# Every persisted catalog object of the open file except the provenance table
-# itself. Only stable columns: no OIDs, no database name (a seed is built under
-# a temporary file name) and no size estimates.
-_IN_FILE = "database_name = current_database()"
-_NOT_PROVENANCE = (
-    f"NOT (schema_name = '{_PROVENANCE_SCHEMA}' AND table_name = '{_PROVENANCE_TABLE_NAME}')"
-)
-_CATALOG_QUERIES = {
-    "schemas": "SELECT schema_name, comment, sql FROM duckdb_schemas() "
-    f"WHERE {_IN_FILE} AND NOT internal AND schema_name <> '{_PROVENANCE_SCHEMA}'",
-    "tables": "SELECT schema_name, table_name, comment, sql FROM duckdb_tables() "
-    f"WHERE {_IN_FILE} AND NOT internal AND NOT temporary AND {_NOT_PROVENANCE}",
-    "views": "SELECT schema_name, view_name, comment, sql FROM duckdb_views() "
-    f"WHERE {_IN_FILE} AND NOT internal AND NOT temporary",
-    "columns": "SELECT schema_name, table_name, column_index, column_name, data_type, "
-    "is_nullable, column_default, comment FROM duckdb_columns() "
-    f"WHERE {_IN_FILE} AND NOT internal AND {_NOT_PROVENANCE}",
-    "constraints": "SELECT schema_name, table_name, constraint_index, constraint_type, "
-    f"constraint_text FROM duckdb_constraints() WHERE {_IN_FILE} AND {_NOT_PROVENANCE}",
-    "indexes": "SELECT schema_name, table_name, index_name, is_unique, is_primary, "
-    f"expressions, comment, sql FROM duckdb_indexes() WHERE {_IN_FILE}",
-    "sequences": "SELECT schema_name, sequence_name, start_value, min_value, max_value, "
-    "increment_by, cycle, last_value, comment, sql FROM duckdb_sequences() "
-    f"WHERE {_IN_FILE} AND NOT temporary",
-    "macros": "SELECT schema_name, function_name, function_type, parameters, "
-    "macro_definition, comment FROM duckdb_functions() "
-    f"WHERE {_IN_FILE} AND NOT internal AND function_type IN ('macro', 'table_macro')",
-    "types": "SELECT schema_name, type_name, logical_type, labels, comment FROM duckdb_types() "
-    f"WHERE {_IN_FILE} AND NOT internal",
-}
+def _identity(db_path: str) -> tuple[int, int, int, int]:
+    info = os.stat(db_path)
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
-def _catalog(conn: Any) -> dict[str, list[dict[str, Any]]]:
-    """Every catalog object (schemas, tables, views, columns with defaults and
-    nullability, constraints, indexes, sequences with their positions, macros,
-    types, comments), canonically ordered and JSON-normalized."""
-    catalog = {
-        section: _rows(conn, f"{sql} ORDER BY ALL") for section, sql in _CATALOG_QUERIES.items()
-    }
-    normalized: dict[str, list[dict[str, Any]]] = json.loads(
-        json.dumps(catalog, sort_keys=True, default=str)
-    )
-    return normalized
+def _probe_cli() -> None:
+    """Isolated child entrypoint. The parent communicates only through JSON."""
+    request = json.load(sys.stdin)
+    path, relations = request["path"], request["relations"]
+    try:
+        before = _identity(path)
+        conn = duckdb.connect(path, read_only=True)
+        try:
+            missing = _missing_on_connection(conn, relations)
+        finally:
+            conn.close()
+        after = _identity(path)
+        if before != after:
+            raise OSError(errno.EAGAIN, "database changed during catalog probe", path)
+        result: dict[str, Any] = {"identity": before, "missing": missing}
+    except Exception as exc:  # noqa: BLE001 — only a bounded diagnostic crosses process
+        result = {"error": type(exc).__name__}
+    print(json.dumps(result))
 
 
-def _contents(
-    conn: Any, catalog: dict[str, list[dict[str, Any]]], *, hashed: bool
-) -> list[list[Any]]:
-    """Each table's row count and, when ``hashed``, an order-independent sum of row hashes.
+def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
+    """Return configured relations that the current DuckDB file cannot resolve.
 
-    Rows are hashed from their explicit column list, so no column name can
-    shadow the row being hashed.
+    An existing path is opened in a new process, which cannot reuse a stale
+    in-process DuckDB catalog or release this process's serving locks. A caller
+    that already owns a connection may pass it directly. A changing or unreadable
+    file raises so runtime bootstrap can fail closed.
     """
-    columns: dict[tuple[str, str], list[str]] = {}
-    for column in catalog["columns"]:
-        key = (str(column["schema_name"]), str(column["table_name"]))
-        columns.setdefault(key, []).append(_quote_identifier(str(column["column_name"])))
-    contents: list[list[Any]] = []
-    for table in catalog["tables"]:
-        schema, name = str(table["schema_name"]), str(table["table_name"])
-        relation = f"{_quote_identifier(schema)}.{_quote_identifier(name)}"
-        if hashed:
-            row_hash = f"sum(hash(row({', '.join(columns[(schema, name)])})))"
-            count, content_hash = conn.execute(
-                f"SELECT count(*), {row_hash} FROM {relation}"
-            ).fetchone()
-            contents.append([schema, name, int(count), str(content_hash)])
-        else:
-            (count,) = conn.execute(f"SELECT count(*) FROM {relation}").fetchone()
-            contents.append([schema, name, int(count)])
-    return contents
+    if not isinstance(db, (str, os.PathLike)):
+        return _missing_on_connection(db, relations)
+    path = os.fspath(db)
+    before = _identity(path)
+    import_root = os.path.dirname(os.path.dirname(__file__))
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (import_root, env.get("PYTHONPATH", ""))))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from semantic_rails.seed_provenance import _probe_cli; _probe_cli()",
+        ],
+        input=json.dumps({"path": path, "relations": sorted(set(relations))}),
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+        env=env,
+    )
+    if result.returncode:
+        raise OSError(errno.EIO, "database catalog probe failed", path)
+    try:
+        payload = json.loads(result.stdout)
+        if "error" in payload or tuple(payload["identity"]) != before or _identity(path) != before:
+            raise OSError(errno.EAGAIN, "database could not be judged consistently", path)
+        return list(payload["missing"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise OSError(errno.EIO, "database catalog probe returned invalid data", path) from exc
 
 
 def record_seed_provenance(db_path: str, package_id: str) -> None:
-    """Record, in the closed seed file at ``db_path``, that ``package_id``'s seed built it.
-
-    The inventory is read over a fresh read-only connection, the way
-    :func:`seeded_database_unchanged` reads it later: DuckDB reports some state
-    (sequence positions) differently inside the session that wrote it. When it
-    cannot be read, the record stores none and the file never counts as unchanged.
-    """
-    inventory: str | None
-    try:
-        with hold_database(db_path) as (reader, _identity):
-            catalog = _catalog(reader)
-            inventory = json.dumps(
-                {"catalog": catalog, "contents": _contents(reader, catalog, hashed=True)},
-                sort_keys=True,
-            )
-    except Exception:  # noqa: BLE001 — fail closed: no inventory, never "unchanged"
-        inventory = None
+    """Record which package built a new seed, without authorizing replacement."""
     conn = duckdb.connect(db_path)
     try:
-        conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_PROVENANCE_SCHEMA}")
+        conn.execute("CREATE SCHEMA IF NOT EXISTS _semantic_rails")
         conn.execute(
             f"CREATE OR REPLACE TABLE {_PROVENANCE_TABLE} "
-            "(format INTEGER, package_id VARCHAR, duckdb_version VARCHAR, inventory VARCHAR)"
+            "(package_id VARCHAR, built_at_utc VARCHAR, duckdb_version VARCHAR)"
         )
         conn.execute(
-            f"INSERT INTO {_PROVENANCE_TABLE} VALUES (?, ?, ?, ?)",
-            [_INVENTORY_FORMAT, package_id, duckdb.__version__, inventory],
+            f"INSERT INTO {_PROVENANCE_TABLE} VALUES (?, ?, ?)",
+            [package_id, datetime.now(UTC).isoformat(), duckdb.__version__],
         )
-    finally:
-        conn.close()
-
-
-_REFUSED: set[tuple[Any, ...]] = set()
-_MAX_REFUSED = 256
-
-
-def _file_identity(db_path: str) -> tuple[Any, ...] | None:
-    try:
-        stat = os.stat(db_path)
-    except OSError:
-        return None
-    try:
-        wal = os.stat(f"{db_path}.wal")
-        wal_identity: tuple[int, int] | None = (wal.st_mtime_ns, wal.st_size)
-    except OSError:
-        wal_identity = None
-    return (
-        os.path.realpath(db_path),
-        stat.st_ino,
-        stat.st_mtime_ns,
-        stat.st_size,
-        wal_identity,
-    )
-
-
-def seeded_database_unchanged(db_path: str, package_id: str, *, conn: Any = None) -> bool:
-    """True only when ``package_id``'s seed built this file and nothing has changed it since.
-
-    ``conn`` is the :func:`hold_database` connection to judge through; without
-    one the file is opened that way. Anything that prevents proving it (an
-    unreadable file, a missing or foreign provenance record, another inventory
-    format, a failing catalog query) is False. The cheap catalog and row counts
-    are compared before any row is hashed, and a False verdict is cached per file
-    identity so a refused file is not rescanned on every request. A True verdict
-    is never cached: a stale one could allow a rebuild over a change the
-    identity missed.
-    """
-    identity = _file_identity(db_path)
-    key = (identity, package_id)
-    if identity is not None and key in _REFUSED:
-        return False
-    if conn is not None:
-        verdict = _judge(conn, package_id)
-    else:
-        try:
-            with hold_database(db_path) as (opened, _identity):
-                verdict = _judge(opened, package_id)
-        except Exception:  # noqa: BLE001 — an unreadable file is never provably ours
-            verdict = False
-    if not verdict and identity is not None:
-        if len(_REFUSED) >= _MAX_REFUSED:
-            _REFUSED.clear()
-        _REFUSED.add(key)
-    return verdict
-
-
-def _judge(conn: Any, package_id: str) -> bool:
-    try:
-        records = _rows(conn, f"SELECT format, package_id, inventory FROM {_PROVENANCE_TABLE}")
-        if len(records) != 1:
-            return False
-        record = records[0]
-        if record["format"] != _INVENTORY_FORMAT or str(record["package_id"]) != package_id:
-            return False
-        if record["inventory"] is None:
-            return False
-        recorded = json.loads(str(record["inventory"]))
-        catalog = _catalog(conn)
-        if any(catalog[section] for section in _UNFINGERPRINTED_SECTIONS):
-            return False
-        if catalog != recorded["catalog"]:
-            return False
-        counts = [entry[:3] for entry in recorded["contents"]]
-        if _contents(conn, catalog, hashed=False) != counts:
-            return False
-        return bool(_contents(conn, catalog, hashed=True) == recorded["contents"])
-    except Exception:  # noqa: BLE001 — no provenance table: another tool built the file
-        return False
-
-
-_LOCAL_LOCKS: dict[str, threading.Lock] = {}
-_LOCAL_LOCKS_GUARD = threading.Lock()
-
-
-def _rebuild_busy(db_path: str) -> SemanticLayerError:
-    return SemanticLayerError(
-        "CONFIG_CONFLICT",
-        f"another process is rebuilding package.default_db '{db_path}'; retry",
-        details={"default_db": db_path, "reason": "default_db_rebuild_in_progress"},
-    )
-
-
-def _lock_unavailable(db_path: str, exc: OSError) -> SemanticLayerError:
-    return SemanticLayerError(
-        "INVALID_CONFIG",
-        f"cannot take the rebuild lock for package.default_db '{db_path}': "
-        f"{exc.strerror or type(exc).__name__} ({exc.filename or 'lock directory'})",
-        details={"default_db": db_path, "reason": "rebuild_lock_unavailable"},
-    )
-
-
-def _lock_directory() -> str:
-    """This user's private directory for rebuild locks.
-
-    It is per user, mode 0700, and must be a real directory the user owns that no
-    one else can write, so no other user can hold or remove a lock in it. If
-    another user created that path first, rebuilds fail closed with a clear
-    error; queries of a database that lacks nothing never take the lock.
-    """
-    uid = os.getuid() if hasattr(os, "getuid") else None
-    name = "semantic-rails-db-locks" if uid is None else f"semantic-rails-db-locks-{uid}"
-    path = os.path.join(tempfile.gettempdir(), name)
-    with contextlib.suppress(FileExistsError):
-        os.mkdir(path, 0o700)
-    info = os.lstat(path)
-    if not stat.S_ISDIR(info.st_mode) or (
-        uid is not None and (info.st_uid != uid or info.st_mode & 0o077)
-    ):
-        raise PermissionError(errno.EPERM, "not a private directory of this user", path)
-    return path
-
-
-def _lock_key(db_path: str) -> str:
-    return hashlib.sha256(os.path.realpath(db_path).encode("utf-8")).hexdigest()
-
-
-def _local_lock(key: str) -> threading.Lock:
-    with _LOCAL_LOCKS_GUARD:
-        return _LOCAL_LOCKS.setdefault(key, threading.Lock())
-
-
-@contextlib.contextmanager
-def probe_lock(db_path: str, *, timeout: float = REBUILD_LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
-    """Keep this process's probes of ``db_path`` waiting while it rebuilds the file.
-
-    A rebuild holds the file it judged until it publishes. DuckDB locks files
-    with POSIX record locks, which belong to the process: a probe that opened
-    and closed its own descriptor for the file would release the rebuild's hold.
-    """
-    local = _local_lock(_lock_key(db_path))
-    if not local.acquire(timeout=timeout):
-        raise _rebuild_busy(db_path)
-    try:
-        yield
-    finally:
-        local.release()
-
-
-@contextlib.contextmanager
-def rebuild_lock(db_path: str, *, timeout: float = REBUILD_LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
-    """Serialize judging and rebuilding one database file across threads and processes.
-
-    The lock file lives in this user's private lock directory, keyed by the
-    file's real path, so it never lands in (or changes the revision of) a
-    package. Rebuilders under different users are not serialized; the judged
-    file check at publish still keeps either from replacing a file it did not
-    judge.
-    """
-    # Imported here: architect_transactions imports config validation, which
-    # imports this module's importers.
-    from .architect_transactions import _release_file_lock, _try_file_lock
-
-    key = _lock_key(db_path)
-    local = _local_lock(key)
-    if not local.acquire(timeout=timeout):
-        raise _rebuild_busy(db_path)
-    descriptor: int | None = None
-    try:
-        try:
-            descriptor = os.open(
-                os.path.join(_lock_directory(), f"{key}.lock"), os.O_CREAT | os.O_RDWR, 0o600
-            )
-            deadline = time.monotonic() + timeout
-            while not _try_file_lock(descriptor):
-                if time.monotonic() >= deadline:
-                    raise _rebuild_busy(db_path)
-                time.sleep(0.05)
-        except OSError as exc:
-            raise _lock_unavailable(db_path, exc) from exc
-        yield
-    finally:
-        if descriptor is not None:
-            with contextlib.suppress(OSError):
-                _release_file_lock(descriptor)
-            os.close(descriptor)
-        local.release()
-
-
-def file_identity(db_path: str) -> tuple[int, int]:
-    """The (device, inode) naming the file at ``db_path`` now."""
-    stat = os.stat(db_path)
-    return (stat.st_dev, stat.st_ino)
-
-
-def _attach(db_path: str) -> Any:
-    """A private connection with the file at ``db_path`` attached read-only, in use.
-
-    DuckDB names the attachment as it names the file for ``duckdb.connect``
-    (``main.duckdb`` is ``main_db``, ``Main.duckdb`` is ``Main``), so three-part
-    names resolve as they do in compiled SQL. The connection's own in-memory
-    catalog is dropped first, so even a file named ``memory.*`` keeps its name.
-    """
-    conn = duckdb.connect(":memory:")
-    try:
-        scratch = _quote_identifier(f"semantic_rails_probe_{uuid.uuid4().hex}")
-        conn.execute(f"ATTACH ':memory:' AS {scratch}")
-        conn.execute(f"USE {scratch}")
-        conn.execute("DETACH memory")
-        names = "SELECT database_name FROM duckdb_databases()"
-        before = {row[0] for row in conn.execute(names).fetchall()}
-        conn.execute(f"ATTACH '{db_path.replace(chr(39), chr(39) * 2)}' (READ_ONLY)")
-        (name,) = {row[0] for row in conn.execute(names).fetchall()} - before
-        conn.execute(f"USE {_quote_identifier(name)}.main")
-    except BaseException:
-        conn.close()
-        raise
-    return conn
-
-
-def _open_in_this_process(identity: tuple[int, int]) -> bool:
-    """Whether this process already has the file with ``identity`` (device, inode) open."""
-    try:
-        descriptors = os.listdir("/dev/fd")
-    except OSError:  # no /dev/fd (Windows): locks there belong to handles, not processes
-        return False
-    for descriptor in descriptors:
-        try:
-            info = os.fstat(int(descriptor))
-        except (OSError, ValueError):
-            continue
-        if (info.st_dev, info.st_ino) == identity:
-            return True
-    return False
-
-
-@contextlib.contextmanager
-def hold_database(db_path: str, *, share: bool = False) -> Iterator[tuple[Any, tuple[int, int]]]:
-    """Open the file at ``db_path`` read-only, as it is now, and hold it.
-
-    Yields the connection and the file's (device, inode), which must be the same
-    before and after it is opened. The file is attached to a private in-memory
-    connection (:func:`_attach`) rather than opened with ``duckdb.connect``,
-    which reuses one open database per path in a process: a runtime that opened
-    this path before the file was replaced would hand back the old file.
-
-    DuckDB locks files with POSIX record locks, and a process loses its locks on
-    a file when it closes any descriptor for it. With ``share``, when this
-    process already has the current file open (a runtime serving it), the
-    connection goes through that open database instead, so closing it cannot
-    release the serving runtime's lock. Judgements that may lead to a rebuild
-    never share: they need a view of the file that cannot be a stale copy. The
-    runtime judges only a file that lacks relations, and closing that fresh
-    attachment releases this process's locks on the file: a rebuild replaces the
-    file anyway, and a refusal leaves any runtime still serving it unlocked until
-    it reopens the file.
-
-    While the connection is held, a writer in another process (such as ``dbt
-    build``) cannot open the file, so a rebuild judged safe cannot drop a write
-    that started after the judgement. Raises if the file cannot be opened,
-    including while a writer in this process holds it.
-    """
-    before = file_identity(db_path)
-    if share and _open_in_this_process(before):
-        conn = duckdb.connect(db_path, read_only=True)
-    else:
-        conn = _attach(db_path)
-    try:
-        if file_identity(db_path) != before:
-            raise OSError(errno.EAGAIN, "the file was replaced while it was opened", db_path)
-        yield conn, before
     finally:
         conn.close()
 
@@ -483,38 +132,13 @@ def hold_database(db_path: str, *, share: bool = False) -> Iterator[tuple[Any, t
 def _appeared(db_path: str) -> SemanticLayerError:
     return SemanticLayerError(
         "CONFIG_CONFLICT",
-        f"package.default_db '{db_path}' appeared or changed while the seed was being built",
+        f"package.default_db '{db_path}' appeared while its seed was being built",
         details={"default_db": db_path, "reason": "default_db_created_concurrently"},
     )
 
 
-def publish_seed_database(
-    tmp_path: str,
-    db_path: str,
-    *,
-    replace_existing: bool,
-    judged: tuple[int, int] | None = None,
-    allow_overwrite: bool = False,
-) -> None:
-    """Move a finished seed build at ``tmp_path`` into place at ``db_path``.
-
-    With ``replace_existing`` it replaces the file at ``db_path``, but only if
-    that is still the ``judged`` file (when given), and first removes a stale
-    write-ahead log so it cannot replay into the new file. Without it, the build
-    is published only if no file exists, atomically: a hard link (or, on
-    Windows, a rename, which never replaces) fails when another process created
-    the file meanwhile, and a ``CONFIG_CONFLICT`` tells the caller to judge
-    that file. Where neither is possible (a filesystem without hard links) the
-    publish fails closed, unless ``allow_overwrite`` (the operator's opt-in)
-    accepts that a file created meanwhile is replaced.
-    """
-    if replace_existing:
-        if judged is not None and file_identity(db_path) != judged:
-            raise _appeared(db_path)
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(f"{db_path}.wal")
-        os.replace(tmp_path, db_path)
-        return
+def publish_seed_database(tmp_path: str, db_path: str) -> None:
+    """Publish a complete seed without replacing a file another process made."""
     try:
         os.link(tmp_path, db_path)
     except FileExistsError:
@@ -523,19 +147,15 @@ def publish_seed_database(
         if exc.errno not in _NO_HARD_LINK_ERRNOS:
             raise
         if os.name != "nt":
-            if allow_overwrite:
-                os.replace(tmp_path, db_path)
-                return
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"cannot build package.default_db '{db_path}' safely: its filesystem does not "
-                "support hard links, so a file created meanwhile could be overwritten. Keep "
-                f"the database on a local filesystem, or set {DB_RESEED_ENV}=1 to build it "
-                "anyway.",
+                f"cannot safely create package.default_db '{db_path}': this filesystem does "
+                "not support atomic no-clobber publication. Use a local filesystem or build "
+                "the database explicitly before starting Semantic Rails.",
                 details={"default_db": db_path, "reason": "atomic_publish_unavailable"},
             ) from exc
         try:
-            os.rename(tmp_path, db_path)  # never replaces an existing file on Windows
+            os.rename(tmp_path, db_path)  # Windows rename refuses an existing target.
         except FileExistsError:
             raise _appeared(db_path) from None
         return
