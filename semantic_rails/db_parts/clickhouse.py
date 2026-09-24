@@ -54,6 +54,7 @@ class ClickHouseAdapter(WarehouseAdapter):
             label="ClickHouse",
         )
         self._client: Any = None
+        self._pool: Any = None
 
     def _connect_kwargs(self) -> dict[str, Any]:
         missing: list[str] = []
@@ -103,7 +104,17 @@ class ClickHouseAdapter(WarehouseAdapter):
                 engine=self.engine,
                 connection_kind=self.connection_kind,
             )
-            self._client = driver.get_client(**self._connect_kwargs())
+            from clickhouse_connect.driver import _parse_connection_params, httputil
+
+            kwargs = self._connect_kwargs()
+            self._pool = _no_redirect_pool(httputil, _parse_connection_params, kwargs)
+            try:
+                # get_client sends autoconnect requests before it returns. Give it
+                # the guarded pool up front, including for those first requests.
+                self._client = driver.get_client(**kwargs, pool_mgr=self._pool)
+            except Exception:
+                self._close_pool(httputil)
+                raise
         return self._client
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -121,12 +132,53 @@ class ClickHouseAdapter(WarehouseAdapter):
             ) from exc
 
     def close(self) -> None:
-        if self._client is not None:
-            try:
+        if self._client is None and self._pool is None:
+            return
+        from clickhouse_connect.driver import httputil
+
+        try:
+            if self._client is not None:
                 self._client.close()
+        finally:
+            self._client = None
+            self._close_pool(httputil)
+
+    def _close_pool(self, httputil: Any) -> None:
+        if self._pool is not None:
+            try:
+                self._pool.clear()
             finally:
-                self._client = None
+                httputil.all_managers.pop(self._pool, None)
+                self._pool = None
 
 
 def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:
     return ClickHouseAdapter(dict(getattr(package.connection, "options", {}) or {}))
+
+
+def _no_redirect_pool(httputil: Any, parse_connection_params: Any, kwargs: dict[str, Any]) -> Any:
+    """Use the driver's TLS/proxy pool options with redirects off from request one."""
+    host, _, _, port, _, interface = parse_connection_params(
+        host=kwargs.get("host"),
+        username=kwargs.get("username"),
+        password=kwargs.get("password", ""),
+        port=kwargs.get("port", 0),
+        database=kwargs.get("database", "__default__"),
+        interface=kwargs.get("interface"),
+        secure=kwargs.get("secure", False),
+        dsn=kwargs.get("dsn"),
+        kwargs={},
+    )
+    proxy = httputil.check_env_proxy(interface, host, port)
+    proxy_arg = {f"{interface}_proxy": proxy} if proxy else {}
+    pool = httputil.get_pool_manager(**proxy_arg)
+    request = pool.request
+
+    def without_redirects(*args: Any, **request_kwargs: Any) -> Any:
+        request_kwargs["redirect"] = False
+        return request(*args, **request_kwargs)
+
+    # Keep the original manager identity: the driver keys expiration and
+    # cleanup bookkeeping by the manager object itself.
+    pool.request = without_redirects
+    return pool
