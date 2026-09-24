@@ -333,7 +333,8 @@ def test_filters_the_engine_cannot_apply_are_reported(
         ],
     )
 
-    assert "expression" not in _metrics(report)["odd"]  # emitted unfiltered, as documented
+    assert "odd" not in report.metrics_emitted
+    assert "odd" not in _metrics(report)
     assert any(w.startswith("metric `odd`:") and reason in w for w in report.warnings), (
         report.warnings
     )
@@ -359,21 +360,57 @@ def test_strict_cli_rejects_an_unsupported_filter(tmp_path: Path, capsys: Any) -
         )
     )
 
-    assert (
-        cli_main(
-            [
-                "--source",
-                str(source),
-                "--output",
-                str(tmp_path / "out"),
-                "--package-id",
-                "shop",
-                "--strict",
-            ]
-        )
-        == 2
+    args = ["--source", str(source), "--output", str(tmp_path / "out"), "--package-id", "shop"]
+    assert cli_main([*args, "--strict"]) == 2
+    output = capsys.readouterr().out
+    assert "could not parse filter" in output
+    assert "Metrics: 0" in output
+    assert cli_main(args) == 0
+    output = capsys.readouterr().out
+    assert "could not parse filter" in output
+    assert "Metrics: 0" in output
+
+
+def test_metrics_depending_on_skipped_filtered_metrics_are_skipped(tmp_path: Path) -> None:
+    unsupported = "{{ Dimension('order__status') }} LIKE 'd%'"
+    report = _translate(
+        tmp_path,
+        [
+            {
+                "name": "blocked_simple",
+                "type": "simple",
+                "type_params": {"measure": "orders"},
+                "filter": unsupported,
+            },
+            {**_cumulative("blocked_cumulative", period_agg="last"), "filter": unsupported},
+            {
+                "name": "simple_doubled",
+                "type": "derived",
+                "type_params": {
+                    "expr": "blocked_simple * 2",
+                    "metrics": [{"name": "blocked_simple"}],
+                },
+            },
+            {
+                "name": "cumulative_doubled",
+                "type": "derived",
+                "type_params": {
+                    "expr": "blocked_cumulative * 2",
+                    "metrics": [{"name": "blocked_cumulative"}],
+                },
+            },
+        ],
     )
-    assert "could not parse filter" in capsys.readouterr().out
+
+    assert not report.metrics_emitted
+    assert not _metrics(report)
+    for name in ("blocked_simple", "blocked_cumulative"):
+        assert any(w.startswith(f"metric `{name}`:") and "skipped" in w for w in report.warnings)
+    for name in ("simple_doubled", "cumulative_doubled"):
+        assert any(
+            w.startswith(f"metric `{name}`:") and "skipped too" in w for w in report.warnings
+        )
+    _assert_valid(report)
 
 
 def test_between_becomes_two_bounds(tmp_path: Path) -> None:
@@ -678,11 +715,9 @@ def test_derived_inputs_mf2sr_cannot_express_are_reported(tmp_path: Path) -> Non
         w.startswith("metric `delivered_twice`:") and "filters on its inputs" in w
         for w in report.warnings
     )
-    # The metric's own filter is dropped with a warning, as for a simple metric.
-    assert "first_twice" in report.metrics_emitted
-    assert any(
-        w.startswith("metric `first_twice`:") and "without its filter" in w for w in report.warnings
-    )
+    # A derived metric's own filter cannot be carried into its expression.
+    assert "first_twice" not in report.metrics_emitted
+    assert any(w.startswith("metric `first_twice`:") and "skipped" in w for w in report.warnings)
     # A metric built on a skipped one would fail at query time: skipped as well.
     assert "growth_doubled" not in report.metrics_emitted
     assert any(

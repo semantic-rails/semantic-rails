@@ -849,7 +849,8 @@ def _build_metric(
             [*metric_filters, *_filter_strings(measure_ref.get("filter"))], dimension_ids
         )
         if problem:
-            report.warnings.append(f"metric `{name}`: {problem}; emitted without its filter")
+            report.warnings.append(f"metric `{name}`: {problem}; skipped")
+            return None
         if spec is None:
             doc = _aggregate_metric_doc(label, description, measure, vt)
         else:
@@ -942,7 +943,8 @@ def _build_metric(
             [*metric_filters, *_filter_strings(measure_ref.get("filter"))], dimension_ids
         )
         if problem:
-            report.warnings.append(f"metric `{name}`: {problem}; emitted without its filter")
+            report.warnings.append(f"metric `{name}`: {problem}; skipped")
+            return None
         doc = {"label": label, "description": description, "kind": shape["kind"]}
         if spec is None:
             doc.update({"measure": measure, **{k: v for k, v in shape.items() if k != "kind"}})
@@ -988,8 +990,9 @@ def _build_metric(
         if metric_filters:
             report.warnings.append(
                 f"metric `{name}`: mf2sr doesn't carry a filter into a derived metric; "
-                "emitted without its filter"
+                "skipped rather than computed unfiltered"
             )
+            return None
         alias_map = {}
         for im in input_metrics:
             base = im.get("name")
@@ -1092,8 +1095,8 @@ def _metric_filter(
     """MetricFlow filter conditions, ANDed, as the filter the engine applies, or why not.
 
     That filter is ``{all: [{field, op, value}]}``. When one condition can't
-    be written that way the metric keeps no filter at all (README, "What gets
-    dropped"), so the caller warns with the reason returned.
+    be written that way, the caller skips the metric and warns with the
+    reason returned.
     """
     clauses: list[dict[str, Any]] = []
     for text in filters:

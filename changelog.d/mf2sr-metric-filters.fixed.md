@@ -6,5 +6,5 @@
   translated, and an `IN` list keeps commas inside its quoted values. A filter on a time
   dimension, which MetricFlow compares truncated to its grain, is reported instead of
   applied to the raw column.
-- `mf2sr` skips a ratio whose filters it can't keep, which could divide a measure by
-  itself, and any metric that uses a skipped metric.
+- `mf2sr` skips any metric whose filters it can't keep, and any metric that uses
+  a skipped metric, rather than emitting a metric with changed values.

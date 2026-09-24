@@ -7,5 +7,5 @@
   a cumulative metric is kept. Where the translated values can differ from MetricFlow's at
   coarser grains, a warning says how.
 - `mf2sr` skips a derived metric whose inputs use `offset_window`, `offset_to_grain` or a
-  filter, which it would have computed over the same period or unfiltered, and warns when
-  it drops a filter on the derived metric itself.
+  filter, which it would have computed over the same period or unfiltered, and also skips
+  a derived metric with its own filter rather than dropping that filter.

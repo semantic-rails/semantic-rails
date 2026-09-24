@@ -17,8 +17,7 @@ with SQL fragments, for example::
 We don't run a real Jinja parser. Instead we recognize the common
 shapes by regex and emit the equivalent Semantic Rails filter dict.
 Anything we cannot match is returned as ``None`` and the caller is
-expected to log a warning and skip the filter (the metric is still
-emitted, just without the unsupported filter).
+expected to log a warning and skip the metric when the filter is unsupported.
 
 ``parse_filter`` returns one expression AST per recognized shape::
 
