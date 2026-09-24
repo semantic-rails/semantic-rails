@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -630,6 +631,180 @@ def test_mcp_dialog_requires_databricks_connection_options(
         package["package"]["connection"]["options"]
         == ready["draft_arguments"]["connection_options"]
     )
+
+
+@pytest.mark.parametrize(
+    ("warehouse", "kind", "expected_missing"),
+    [
+        ("motherduck", "motherduck_native", "database"),
+        ("Databricks", "databricks_native", "host or host_env"),
+    ],
+)
+def test_mcp_dialog_rejects_unsupported_named_connection(
+    tmp_path: Path, warehouse: str, kind: str, expected_missing: str
+) -> None:
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    async def answer(
+        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
+    ) -> ElicitResult:
+        return ElicitResult(
+            action="accept",
+            content={
+                "package_id": "profile_shop",
+                "warehouse": warehouse,
+                "connection_kind": kind,
+                "connection_name": "my_profile",
+                "connection_options": "{}",
+            },
+        )
+
+    (dialog,) = _session_call(
+        server,
+        [("setup_project_dialog", {"package_id": "profile_shop", "interactive": True})],
+        elicitation_callback=answer,
+    )
+    assert dialog["ok"] is False
+    assert dialog["status"] == "needs_connection_details"
+    assert expected_missing in dialog["required_answers"]
+
+
+@pytest.mark.parametrize(
+    ("warehouse", "kind", "valid_options", "name", "invalid_options", "invalid_kind", "missing"),
+    [
+        ("DuckDB", "", {}, "", {}, "postgres_native", "remove connection details for DuckDB"),
+        ("Snowflake", "snowflake_cli", {}, "snow_profile", {}, "snowflake_cli", "connection_name"),
+        (
+            "Snowflake",
+            "snowflake_native",
+            {"account_env": "SF_ACCOUNT", "user_env": "SF_USER", "password_env": "SF_PASSWORD"},
+            "",
+            {"account_env": "SF_ACCOUNT", "user_env": "SF_USER"},
+            "snowflake_native",
+            "connection_name or direct connection_options",
+        ),
+        (
+            "Postgres",
+            "postgres_native",
+            {"host_env": "PGHOST"},
+            "",
+            {"not_an_option": "x"},
+            "postgres_native",
+            "valid connection_options",
+        ),
+        (
+            "BigQuery",
+            "bigquery_native",
+            {},
+            "",
+            {},
+            "bigquery_native",
+            "remove unsupported connection_name",
+        ),
+        (
+            "Databricks",
+            "databricks_native",
+            {"host_env": "DB_HOST", "http_path_env": "DB_PATH", "token_env": "DB_TOKEN"},
+            "",
+            {"host_env": "DB_HOST"},
+            "databricks_native",
+            "http_path or http_path_env",
+        ),
+        (
+            "MotherDuck",
+            "motherduck_native",
+            {"database": "analytics", "token_env": "MD_TOKEN"},
+            "",
+            {"database": "analytics"},
+            "motherduck_native",
+            "token_env or token_file",
+        ),
+        (
+            "DuckLake",
+            "ducklake_native",
+            {"catalog_path": "data/catalog.duckdb"},
+            "",
+            {},
+            "ducklake_native",
+            "catalog_path or catalog_path_env",
+        ),
+        (
+            "Athena",
+            "athena_native",
+            {"region": "us-east-1", "s3_staging_dir": "s3://bucket/staging/"},
+            "",
+            {"region": "us-east-1"},
+            "athena_native",
+            "s3_staging_dir or s3_staging_dir_env",
+        ),
+        (
+            "ClickHouse",
+            "clickhouse_native",
+            {},
+            "",
+            {},
+            "clickhouse_native",
+            "remove unsupported connection_name",
+        ),
+    ],
+)
+def test_mcp_dialog_readiness_matches_supported_warehouse_adapters(
+    tmp_path: Path,
+    warehouse: str,
+    kind: str,
+    valid_options: dict[str, str],
+    name: str,
+    invalid_options: dict[str, str],
+    invalid_kind: str,
+    missing: str,
+) -> None:
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    package_id = "adapter_shop"
+
+    def dialog_for(options: dict[str, str], connection_kind: str, connection_name: str) -> dict:
+        async def answer(
+            context: RequestContext[ClientSession, Any], params: ElicitRequestParams
+        ) -> ElicitResult:
+            return ElicitResult(
+                action="accept",
+                content={
+                    "package_id": package_id,
+                    "warehouse": warehouse,
+                    "connection_kind": connection_kind,
+                    "connection_name": connection_name,
+                    "connection_options": json.dumps(options),
+                },
+            )
+
+        (dialog,) = _session_call(
+            server,
+            [("setup_project_dialog", {"package_id": package_id, "interactive": True})],
+            elicitation_callback=answer,
+        )
+        return dialog
+
+    ready = dialog_for(valid_options, kind.upper(), name)
+    assert ready["ok"] is True, ready
+    assert ready["draft_arguments"]["warehouse"] == warehouse.lower()
+    assert ready["draft_arguments"]["connection_kind"] == kind
+    (created,) = _session_call(
+        server,
+        [
+            (
+                "create_project",
+                {**ready["draft_arguments"], "idempotency_key": "adapter-create", "dry_run": False},
+            )
+        ],
+    )
+    assert created["ok"] is True, created
+    assert created["parse"]["ok"] is True
+
+    incomplete = dialog_for(
+        invalid_options, invalid_kind, "" if warehouse == "Snowflake" else "my_profile"
+    )
+    assert incomplete["ok"] is False, incomplete
+    assert incomplete["status"] == "needs_connection_details"
+    assert missing in incomplete["required_answers"]
 
 
 def test_create_project_where_dbt_already_built_the_warehouse(tmp_path: Path) -> None:

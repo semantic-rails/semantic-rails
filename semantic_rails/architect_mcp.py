@@ -38,7 +38,12 @@ from .architect_transactions import (
 )
 from .config import repo_root
 from .config_validation import PackageReference, parse_config_report, validate_config_report
-from .dialects import snowflake_native_direct_connect_errors
+from .dialects import (
+    connection_option_errors,
+    normalize_connection_option_name,
+    snowflake_native_direct_connect_errors,
+    warehouse_connector,
+)
 from .errors import SemanticLayerError
 from .package_tools import (
     diff_package_report,
@@ -77,7 +82,7 @@ class ProjectSetupAnswers(BaseModel):
     )
     default_db: str = Field(default="", description="DuckDB database path inside the package.")
     connection_kind: str = Field(default="", description="Connection kind for other warehouses.")
-    connection_name: str = Field(default="", description="Named connection or profile.")
+    connection_name: str = Field(default="", description="Named Snowflake connection or profile.")
     connection_options: str = Field(
         default="{}", description="JSON object of connection options; use *_env names for secrets."
     )
@@ -379,6 +384,20 @@ _DIALOG_ARGUMENTS = (
     "dimension_column",
 )
 
+# These are the option groups each adapter requires before it can attempt a
+# connection. BigQuery/ADC and ClickHouse have usable ambient or local
+# defaults; Snowflake's named/direct modes are checked separately.
+_REQUIRED_CONNECTION_OPTION_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "databricks": (
+        ("host", "host_env"),
+        ("http_path", "http_path_env"),
+        ("token_env", "token_file"),
+    ),
+    "motherduck": (("database",), ("token_env", "token_file")),
+    "ducklake": (("catalog_path", "catalog_path_env"),),
+    "athena": (("region", "region_env"), ("s3_staging_dir", "s3_staging_dir_env")),
+}
+
 
 def _setup_dialog(package_id: str = "", project_path: str = "", goal: str = "") -> dict[str, Any]:
     package_slug = _slug(package_id, fallback="my_semantic_package")
@@ -421,35 +440,49 @@ def _draft_arguments(
             "INVALID_MCP_ARGUMENTS", "connection_options must be a JSON object"
         )
     draft["connection_options"] = options
-    if str(draft["warehouse"] or "duckdb").strip().lower() != "duckdb":
+    draft["warehouse"] = str(draft["warehouse"] or "duckdb").strip().lower()
+    draft["connection_kind"] = str(draft["connection_kind"] or "").strip().lower()
+    draft["connection_name"] = str(draft["connection_name"] or "").strip()
+    if draft["warehouse"] != "duckdb":
         draft["data"] = "external"
         draft["default_db"] = ""
     return draft
 
 
 def _missing_setup_answers(draft: dict[str, Any]) -> list[str]:
-    if str(draft["warehouse"] or "duckdb").strip().lower() == "duckdb":
-        return []
-    missing = []
-    if not draft["connection_kind"]:
+    warehouse = draft["warehouse"]
+    kind = draft["connection_kind"]
+    connector = warehouse_connector(warehouse)
+    if connector is None or not connector.adapter:
+        return ["supported warehouse"]
+    if warehouse == "duckdb":
+        return (
+            ["remove connection details for DuckDB"]
+            if kind or draft["connection_options"] or draft["connection_name"]
+            else []
+        )
+    missing: list[str] = []
+    if kind not in connector.connection_kinds:
         missing.append("connection_kind")
-    if not draft["connection_options"] and not draft["connection_name"]:
-        missing.append("connection_options or connection_name")
-    if draft["warehouse"] == "databricks" and draft["connection_kind"] == "databricks_native":
-        options = draft["connection_options"]
-        for keys in (
-            ("host", "host_env"),
-            ("http_path", "http_path_env"),
-            ("token_env", "token_file"),
-        ):
-            if not any(isinstance(options.get(key), str) and options[key].strip() for key in keys):
-                missing.append(" or ".join(keys))
-    if draft["warehouse"] == "snowflake" and not draft["connection_name"]:
-        if draft["connection_kind"] == "snowflake_cli":
+    if warehouse != "snowflake" and draft["connection_name"]:
+        missing.append("remove unsupported connection_name")
+    if connection_option_errors(warehouse, kind, draft["connection_options"]):
+        missing.append("valid connection_options")
+    options = {
+        normalize_connection_option_name(key): value
+        for key, value in draft["connection_options"].items()
+    }
+    # libpq can inherit environment defaults, but the guided Postgres setup
+    # requires an explicit option so an empty, ignored profile is not ready.
+    if warehouse == "postgres" and not options:
+        missing.append("connection_options")
+    for keys in _REQUIRED_CONNECTION_OPTION_GROUPS.get(warehouse, ()):
+        if not any(isinstance(options.get(key), str) and options[key].strip() for key in keys):
+            missing.append(" or ".join(keys))
+    if warehouse == "snowflake" and not draft["connection_name"]:
+        if kind == "snowflake_cli":
             missing.append("connection_name")
-        elif draft["connection_kind"] == "snowflake_native" and (
-            snowflake_native_direct_connect_errors(draft["connection_options"])
-        ):
+        elif kind == "snowflake_native" and snowflake_native_direct_connect_errors(options):
             missing.append("connection_name or direct connection_options")
     return missing
 

@@ -61,8 +61,14 @@ From a source checkout, prefix the same commands with `uv run`.
    `create_project` draft. For a non-DuckDB warehouse the dialog sets `data: external` and
    clears `default_db`. Missing connection details return `ok: false` with
    `status: needs_connection_details` and `required_answers` instead of a ready draft.
-   Databricks requires host, HTTP path, and token option groups; a connection name alone is
-   insufficient for its native adapter.
+   The dialog normalizes warehouse names and checks each adapter's required input groups:
+   Databricks needs host, HTTP path and token; MotherDuck needs database and token; DuckLake
+   needs a catalog path; and Athena needs region and an S3 staging directory. Snowflake accepts
+   a named connection or valid native direct options. Named profiles are not offered for the
+   other adapters. This checks whether setup answers are complete, not whether referenced
+   environment variables, files, or warehouse services are available at runtime. Guided
+   Postgres setup asks for an explicit connection option even though libpq can use ambient
+   defaults; BigQuery and ClickHouse can use their documented ambient/local defaults.
 4. Preview `create_project` with `expected_revision: absent`, `dry_run: true`,
    and a caller-generated `idempotency_key`; then repeat with `dry_run: false`
    after reviewing its exact file changes.
@@ -82,9 +88,9 @@ its count and amount metrics, an example, a package test and a `.gitignore` for 
   `<package>/data/<package_id>.duckdb`); a path outside it needs
   `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
 - Other warehouses take `connection_kind` and their adapter's required connection inputs.
-  Named connections apply where supported (for example Snowflake CLI); Databricks requires
-  `connection_options`. Name secrets by environment variable only; a literal secret fails the
-  parse gate and nothing is written.
+  Named connections apply only to Snowflake; other adapters use `connection_options` or their
+  documented ambient defaults. Name secrets by environment variable only; a literal secret
+  fails the parse gate and nothing is written.
 5. Use `upsert_model`, `upsert_metric`, `upsert_segment`, or scoped file tools
    with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.

@@ -174,9 +174,9 @@ def project_setup_questions(spec: ProjectSpec | None = None) -> list[dict[str, A
         },
         {
             "id": "connection_name",
-            "prompt": "Named connection or profile (for example a Snow CLI connection)?",
+            "prompt": "Named Snowflake connection or profile?",
             "default": spec.warehouse.connection_name,
-            "when": {"warehouse": [kind for kind in warehouses if kind != "duckdb"]},
+            "when": {"warehouse": ["snowflake"]},
         },
         {
             "id": "connection_options",
