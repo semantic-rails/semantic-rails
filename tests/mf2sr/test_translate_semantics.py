@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from mf2sr import translate
+from mf2sr.cli import main as cli_main
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.runtime import Runtime
 
@@ -339,6 +340,42 @@ def test_filters_the_engine_cannot_apply_are_reported(
     _assert_valid(report)
 
 
+def test_strict_cli_rejects_an_unsupported_filter(tmp_path: Path, capsys: Any) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "semantic.yml").write_text(
+        yaml.safe_dump(
+            {
+                "semantic_models": [ORDERS],
+                "metrics": [
+                    {
+                        "name": "odd",
+                        "type": "simple",
+                        "type_params": {"measure": "orders"},
+                        "filter": "{{ Dimension('order__status') }} LIKE 'd%'",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert (
+        cli_main(
+            [
+                "--source",
+                str(source),
+                "--output",
+                str(tmp_path / "out"),
+                "--package-id",
+                "shop",
+                "--strict",
+            ]
+        )
+        == 2
+    )
+    assert "could not parse filter" in capsys.readouterr().out
+
+
 def test_between_becomes_two_bounds(tmp_path: Path) -> None:
     report = _translate(
         tmp_path,
@@ -470,18 +507,27 @@ def test_cumulative_metrics_keep_their_filters(tmp_path: Path) -> None:
     report = _translate(
         tmp_path,
         [
+            {**_cumulative("delivered_running", period_agg="last"), "filter": DELIVERED},
             {
                 **_cumulative("delivered_mtd", grain_to_date="month", period_agg="last"),
                 "filter": DELIVERED,
-            }
+            },
+            {
+                **_cumulative("delivered_2m", window="2 months", period_agg="last"),
+                "filter": DELIVERED,
+            },
         ],
     )
 
-    metric = _metrics(report)["delivered_mtd"]
-    assert metric["expression"]["input"]["filter"] == {
-        "all": [{"field": "dimension.shop_order_status", "op": "in", "value": ["delivered"]}]
-    }
-    assert _by_month(report, "delivered_mtd")["delivered_mtd"] == [2, 2, 1]
+    for name in ("delivered_running", "delivered_mtd", "delivered_2m"):
+        assert _metrics(report)[name]["expression"]["input"]["filter"] == {
+            "all": [{"field": "dimension.shop_order_status", "op": "in", "value": ["delivered"]}]
+        }
+    _add_calendar(report)
+    values = _by_month(report, "delivered_running", "delivered_mtd", "delivered_2m")
+    assert values["delivered_running"] == [2, 4, 5]
+    assert values["delivered_mtd"] == [2, 2, 1]
+    assert values["delivered_2m"] == [2, 4, 3]
 
 
 @pytest.mark.parametrize(
