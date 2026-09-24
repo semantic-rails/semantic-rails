@@ -738,6 +738,33 @@ def _check_metric_shape(
         )
 
 
+def _check_metric(
+    metric_key: str,
+    spec: dict[str, Any],
+    strict: bool,
+    *,
+    path_label: str,
+    errors: list[str],
+) -> None:
+    """Shape checks, then the schema_strict rule that every metric declares value_type.
+
+    The loader defaults a missing or empty value_type to "number", so the loaded config
+    can't tell an authored "number" from the default; only the authored spec can. This
+    runs on the specs of every layout the loader reads, single-file included.
+    """
+    _check_metric_shape(metric_key, spec, path_label=path_label, errors=errors)
+    if not strict:
+        return
+    value_type = spec.get("value_type")
+    if not (isinstance(value_type, str) and value_type.strip()):
+        add_error(
+            errors,
+            f"{path_label}: metric {metric_key!r}: missing 'value_type:'. Under schema_strict, "
+            f"declare value_type explicitly (common values: number, percent, currency, count, "
+            f"ratio).",
+        )
+
+
 def _check_segment_shape(
     segment_key: str, spec: dict[str, Any], *, path_label: str, errors: list[str]
 ) -> None:
@@ -827,11 +854,30 @@ def _check_package_shapes(
                     graph_entities=graph_entities,
                 )
 
+    try:
+        strict = bool(dict(package or {}).get("schema_strict", False))
+    except (TypeError, ValueError):
+        strict = False  # The loader reports an invalid package block.
     metrics = raw.get("metrics")
+    if strict and not isinstance(metrics, dict):
+        try:
+            metrics = dict(metrics or {})
+        except (TypeError, ValueError):
+            add_error(errors, f"{path_label}: metrics block must be a mapping or key/value pairs")
+            metrics = {}
     if isinstance(metrics, dict):
         for metric_key, spec in metrics.items():
+            if strict and not isinstance(spec, dict):
+                try:
+                    spec = dict(spec or {})
+                except (TypeError, ValueError):
+                    add_error(
+                        errors,
+                        f"{path_label}: metric {metric_key!r} must be a mapping or key/value pairs",
+                    )
+                    continue
             if isinstance(spec, dict):
-                _check_metric_shape(str(metric_key), spec, path_label=path_label, errors=errors)
+                _check_metric(str(metric_key), spec, strict, path_label=path_label, errors=errors)
 
     segments = raw.get("segments")
     if isinstance(segments, dict):
@@ -1133,6 +1179,14 @@ def _validate_runtime_package_file(source_path: Path) -> list[str]:
     return errors
 
 
+def _schema_version(package_root: dict[str, Any]) -> Any:
+    """schema_version as the loader reads it, which also accepts "1"."""
+    try:
+        return int(package_root.get("schema_version", 0))
+    except (TypeError, ValueError, OverflowError):
+        return package_root.get("schema_version")
+
+
 def _validate_runtime_package_dir(path: Path) -> list[str]:
     errors: list[str] = []
     package_yml = path / "package.yml"
@@ -1145,7 +1199,7 @@ def _validate_runtime_package_dir(path: Path) -> list[str]:
     )
     if package_root is None:
         return errors
-    schema_version = package_root.get("schema_version")
+    schema_version = _schema_version(package_root)
     if schema_version == 1:
         graph_yml = path / "graph.yml"
         models_dir = path / "models"
@@ -1183,7 +1237,7 @@ def _validate_split_package(
     path: Path, package_root: dict[str, Any], graph_yml: Path, models_dir: Path
 ) -> list[str]:
     errors: list[str] = []
-    if package_root.get("schema_version") != 1:
+    if _schema_version(package_root) != 1:
         add_error(errors, f"{path / 'package.yml'}: schema_version must be 1")
     package = expect_mapping(package_root.get("package"), f"{path / 'package.yml'}.package", errors)
     if package is None:
@@ -1732,17 +1786,6 @@ def _check_strict_raw_yaml(
                     errors,
                     f"{metric_path}: metric {metric_key!r}: {message}.",
                 )
-        # Docs PACKAGE_AUTHORING.md L641 lists "Metric without `value_type:`"
-        # as a strict rejection. The loader currently defaults missing
-        # value_type to "number" — under schema_strict, that default must
-        # be authored explicitly so the choice is intentional.
-        if "value_type" not in metric_raw:
-            add_error(
-                errors,
-                f"{metric_path}: metric {metric_key!r}: missing 'value_type:'. "
-                f"Under schema_strict, declare value_type explicitly "
-                f"(common values: number, percent, currency, count, ratio).",
-            )
 
     # 7. Segment strict checks — the same legacy fields, where _SEGMENT_KEYS allows them.
     for segment_key, (segment_path, segment_raw) in (segments or {}).items():
@@ -1844,8 +1887,8 @@ def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> Non
 
     Each rejection includes a clear migration pointer. Gated behind
     package.schema_strict: true. Raw-YAML checks (e.g., authored `id:`
-    on objects, `kind: id` dimensions, top-level `relations:` block) live
-    in _validate_split_package_strict; the compiled-side checks here run
+    on objects, the top-level `relations:` block) live in
+    _check_strict_raw_yaml; the compiled-side checks here run
     against the loaded PackageConfig and catch shape concerns the loader
     already normalized away.
     """
@@ -1861,29 +1904,7 @@ def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> Non
                 f"Use one of those values or remove the accumulation block.",
             )
 
-    # 2. metric value_type required (no falling back to `number` silently)
-    # We can't tell from the compiled schema whether the author wrote
-    # `value_type:` or it defaulted; the loader currently defaults to "number".
-    # The strict path requires the author to write it; we surface the
-    # warning when the metric kind is one where defaulting is ambiguous
-    # (ratio, derived). For aggregate/cumulative, inheritance from the
-    # measure is fine.
-    for metric in config.metric_recipes:
-        kind = str(metric.kind or "").strip().lower()
-        if kind in {"ratio", "derived"} and (
-            not metric.value_type or metric.value_type == "number"
-        ):
-            # Heuristic: if the metric output should be currency or percent
-            # but value_type is unset/default, that's likely an authoring gap.
-            # The strict-mode warning lets the author make the call.
-            add_error(
-                errors,
-                f"{source_path}: metric {metric.id} (kind={kind}) has implicit "
-                f"value_type=number; under schema_strict every metric must "
-                f"explicitly declare value_type:.",
-            )
-
-    # 3. policy.kind: plan_constraint is a runtime no-op; reject in strict mode.
+    # 2. policy.kind: plan_constraint is a runtime no-op; reject in strict mode.
     for policy in config.semantic_policies:
         if str(policy.kind or "").strip().lower() == "plan_constraint":
             add_error(
