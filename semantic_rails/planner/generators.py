@@ -474,11 +474,8 @@ def _choose_group_dimension(
 def _apply_time_from_text(
     runtime: Any, query: dict[str, Any], text: str, chosen_ids: list[str]
 ) -> dict[str, Any]:
-    from ..metadata import (  # noqa: WPS433 - shared metadata helpers
-        _infer_time_grain_from_text,
-        _object_card,
-        _time_bounds_from_text,
-    )
+    from ..metadata import _object_card  # noqa: WPS433 - shared metadata helper
+    from ._base import _time_bounds_from_text, _time_spec
 
     time_bounds = _time_bounds_from_text(text)
     wants_time = any(
@@ -518,8 +515,7 @@ def _apply_time_from_text(
             break
     if not role:
         return query
-    grain = _infer_time_grain_from_text(text, default="month")
-    query["time"] = {"temporal_role": role, "grain": grain, **time_bounds}
+    query["time"] = _time_spec(role, text)
     return query
 
 

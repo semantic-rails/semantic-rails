@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -24,7 +25,7 @@ from typing import Any
 
 from .ast import QUERY_INPUT_KEYS
 from .catalog_service import resolve_catalog
-from .diagnostics import enrich_object_not_found, exception_issue
+from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
 from .errors import SemanticLayerError
 from .metadata import (
     build_options_payload,
@@ -94,6 +95,17 @@ MCP_INTERFACE_VERSION = "v1"
 # compile adds rendered_sql, execute adds rows+row_count. An explicit
 # 'verbosity' argument (outer envelope or inside `query`) always wins.
 MCP_DEFAULT_QUERY_VERBOSITY = "minimal"
+
+# Recommended opt-in row cap for MCP execute. The v1 default remains uncapped.
+# Hosts warn about tool results over 10K tokens; 200 rows keeps a typical
+# answer well under that. A larger result comes back with a truncation hint.
+MCP_DEFAULT_MAX_ROWS = 200
+# Execute asks the warehouse for up to this many rows (never past a
+# limits.max_rows the query sets itself), so a truncated result can still
+# report its total. Some adapters fetch the full result and clip it.
+MCP_ROW_COUNT_CEILING = 10_000
+# The largest max_rows an MCP caller may request.
+MCP_MAX_ROWS_LIMIT = 100_000
 
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
     "semantic_rails_mcp_tool_request_context", default=None
@@ -550,15 +562,15 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         name="plan",
         description=(
             "Single public intent-planning surface: natural-language intent "
-            "→ one best Query IR plus optional alternatives. Use "
-            "detail='query' for the tight QA loop before execute(row_format="
-            "'columns'). Returns "
-            "'status' ('ok' | 'low_confidence' | 'unrealizable' | "
-            "'out_of_scope') and 'best.query_ir'. 'status=ok' has already "
-            "paid validation cost, so agents may proceed to 'compile' or "
-            "'execute' with 'best.query_ir'. Use detail='full' for alternatives/blocked "
-            "drafts, or detail='debug' for compose_hints. Gotcha: branch on "
-            "'status' before reading 'best'."
+            "→ one best Query IR. Returns 'status' ('ok' | 'low_confidence' | "
+            "'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or "
+            "'warnings' naming any part of the question the draft doesn't "
+            "honor. 'status=ok' has already paid validation cost, so agents "
+            "may pass 'best.query_ir' to 'execute'. By default the v1 response "
+            "includes intent_ir, trace and next steps; detail='query' opts "
+            "into a compact response. 'full' adds alternatives and "
+            "blocked drafts; 'debug' adds compose_hints. Gotcha: read "
+            "'status' and 'warnings' before running 'best.query_ir'."
         ),
         input_schema=_schema(
             {
@@ -634,7 +646,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "side-effecting. Use 'compile' for SQL only. Defaults to "
             "verbosity='minimal' (rows + row_count) — pass verbosity="
             "compact|full for SQL/plans/explain. Use row_format='columns' "
-            "for compact answers. IR shape: see the "
+            "for compact answers, and max_rows=200 to bound row output. "
+            "IR shape: see the "
             "'validate' tool or 'build-options'."
         ),
         input_schema=_schema(
@@ -643,6 +656,15 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "verbosity": VERBOSITY_SCHEMA,
                 "sql_profile": SQL_PROFILE_SCHEMA,
                 "row_format": ROW_FORMAT_SCHEMA,
+                "max_rows": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MCP_MAX_ROWS_LIMIT,
+                    "description": (
+                        "Optional row cap; omitted v1 calls keep the caller's query limit. "
+                        "A larger result sets truncated=true and total_row_count."
+                    ),
+                },
                 "policy_context": POLICY_CONTEXT_SCHEMA,
                 "request_id": {"type": "string"},
             },
@@ -1133,6 +1155,16 @@ def _query_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def _partial_query_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the partial Query IR a metadata or plan tool received.
+
+    These tools take an argument envelope, so only ``query`` holds Query IR;
+    the tool's other arguments are never read as query fields. An absent seed
+    still carries the resolved policy context.
+    """
+    return _query_payload({**payload, "query": payload.get("query")})
+
+
 def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Build the query payload for validate/compile/execute with the
     MCP-adapter default verbosity applied.
@@ -1168,7 +1200,199 @@ def _row_format_arg(arguments: Mapping[str, Any]) -> str:
 def _strip_execute_transport_args(arguments: Mapping[str, Any]) -> dict[str, Any]:
     cleaned = dict(arguments or {})
     cleaned.pop("row_format", None)
+    cleaned.pop("max_rows", None)
     return cleaned
+
+
+def _plan_detail(value: Any) -> str:
+    """MCP plan's detail level; anything unknown gets the v1 default, 'best'."""
+
+    detail = str(value or "").strip().lower()
+    return detail if detail in {"query", "best", "full", "debug"} else "best"
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number > 0 else None
+
+
+def _max_rows_arg(value: Any) -> int | None:
+    """The ``max_rows`` argument as a whole number, or None when absent."""
+
+    if value is None or value == "":
+        return None
+    whole = isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(value, float) and value.is_integer():
+        whole = True
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        whole = True
+    if not whole or not 1 <= int(value) <= MCP_MAX_ROWS_LIMIT:
+        raise _argument_error(
+            f"MCP argument 'max_rows' for 'execute' must be a whole number from 1 to "
+            f"{MCP_MAX_ROWS_LIMIT:,}.",
+            field="max_rows",
+            value=value,
+        )
+    return int(value)
+
+
+def _execute_row_limits(query: Mapping[str, Any], requested: int) -> tuple[int, int, bool]:
+    """Return (rows to return, rows to fetch, whether the query's limit binds).
+
+    An explicit ``max_rows`` argument sets the response cap. A ``limits.max_rows``
+    inside the query is an operator's fetch ceiling: it can only lower the
+    cap and bounds what is fetched, but never becomes the response size.
+    Without it, execute fetches up to ``MCP_ROW_COUNT_CEILING`` rows so a
+    truncated result can report its total.
+    """
+
+    limits = query.get("limits")
+    fence = _positive_int(limits.get("max_rows")) if isinstance(limits, Mapping) else None
+    cap = requested
+    if fence is not None and fence <= cap:
+        return fence, fence, True
+    if fence is not None:
+        return cap, fence, False
+    return cap, max(cap, MCP_ROW_COUNT_CEILING), False
+
+
+def _ungrained_time(query: Mapping[str, Any]) -> bool:
+    """A time block with a role and no grain: rows group by the raw timestamp."""
+
+    time = query.get("time")
+    return isinstance(time, Mapping) and bool(time.get("temporal_role")) and not time.get("grain")
+
+
+# Expression kinds that aggregate over their own clock, so a grouped query
+# using them doesn't project the raw timestamp. Running totals (cumulative,
+# period_to_date) are not among them: their buckets come from time.grain.
+_OWN_CLOCK_KINDS = frozenset({"prior_period", "rolling", "conversion", "offset_window"})
+
+
+def _uses_own_clock(expression: Any) -> bool:
+    if not isinstance(expression, Mapping):
+        return False
+    if str(expression.get("kind", "") or "") in _OWN_CLOCK_KINDS:
+        return True
+    for value in expression.values():
+        items = value if isinstance(value, list) else [value]
+        if any(_uses_own_clock(item) for item in items):
+            return True
+    return False
+
+
+def _truncate_rows(
+    result: dict[str, Any], *, cap: int, query: Mapping[str, Any], fence_binds: bool = False
+) -> dict[str, Any]:
+    """Return at most ``cap`` rows, and say so loudly.
+
+    A truncated result carries ``truncated: true``, ``total_row_count``
+    (``None`` when more rows exist than were fetched) and an
+    ``EXECUTE_ROWS_TRUNCATED`` warning that says how to narrow the query.
+    """
+
+    rows = list(result.get("rows") or [])
+    beyond_fetch = bool(result.get("truncated"))
+    if len(rows) <= cap and not beyond_fetch:
+        return result
+    kept = rows[:cap]
+    total = None if beyond_fetch else len(rows)
+    counted = f"{total:,}" if total is not None else f"more than {len(rows):,}"
+    if _ungrained_time(query):
+        advice = (
+            "set time.grain (for example 'month' or 'year'); without a grain, rows group by the "
+            "raw timestamp"
+        )
+    elif isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
+        advice = "use a coarser time.grain, filter, or group by fewer dimensions"
+    else:
+        advice = "filter, or group by fewer dimensions"
+    raise_hint = (
+        " The query's limits.max_rows caps the rows fetched."
+        if fence_binds
+        else " Or raise max_rows."
+    )
+    warning = {
+        "code": "EXECUTE_ROWS_TRUNCATED",
+        "severity": "warning",
+        "message": f"Returned {len(kept):,} of {counted} rows. To narrow the result, {advice}."
+        + raise_hint,
+        "details": {"returned_rows": len(kept), "total_row_count": total, "max_rows": cap},
+    }
+    return {
+        **result,
+        "rows": kept,
+        "row_count": len(kept),
+        "truncated": True,
+        "total_row_count": total,
+        "warnings": [*list(result.get("warnings") or []), warning],
+    }
+
+
+def _grouped_ungrained_time_warning(query: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Warn about a temporal role with no grain in a grouped query.
+
+    The runtime's ``UNGRAINED_TIME_PROJECTION`` covers ungrouped queries
+    only. A grouped one hits the same trap, each group returning one row per
+    distinct timestamp, so MCP adds its own code with the same shape.
+    """
+
+    if not query.get("group_by") or not _ungrained_time(query):
+        return None
+    if any(
+        _uses_own_clock(item.get("expression"))
+        for item in query.get("select") or []
+        if isinstance(item, Mapping)
+    ):
+        return None
+    temporal_role = str((query.get("time") or {}).get("temporal_role", ""))
+    return semantic_issue(
+        code="UNGRAINED_GROUPED_TIME_PROJECTION",
+        message=(
+            "query.time.temporal_role is set without time.grain in a grouped query, so each "
+            "group returns one row per distinct timestamp. Set time.grain (for example "
+            "'month' or 'year') to bucket the result."
+        ),
+        severity="warning",
+        stage="mcp",
+        details={
+            "temporal_role": temporal_role,
+            "recovery_hints": [
+                {
+                    "code": "SET_TIME_GRAIN",
+                    "message": "Add time.grain to bucket each group's rows.",
+                    "suggested_patches": [{"add": {"time.grain": "month"}}],
+                }
+            ],
+        },
+    )
+
+
+def _echo_caller_limits(result: dict[str, Any], limits: Any) -> dict[str, Any]:
+    """Echo the caller's own ``limits``, not the fetch ceiling execute added.
+
+    Re-running an echoed query must not raise the default cap.
+    """
+
+    echoed = result.get("query")
+    if not isinstance(echoed, Mapping) or "limits" not in echoed:
+        return result
+    query = {key: value for key, value in echoed.items() if key != "limits"}
+    if isinstance(limits, Mapping):
+        query["limits"] = dict(limits)
+    return {**result, "query": query}
+
+
+def _with_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> dict[str, Any]:
+    if warning is None or not bool(result.get("ok", True)):
+        return result
+    existing = list(result.get("warnings") or [])
+    if any(isinstance(item, Mapping) and item.get("code") == warning["code"] for item in existing):
+        return result
+    return {**result, "warnings": [*existing, warning]}
 
 
 def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -1829,7 +2053,7 @@ class SemanticLayerMCPAdapter:
                 self.runtime,
                 terms=terms_str,
                 kinds=_coerce_kinds(args.get("kinds", [])),
-                partial_query=_query_payload(args)
+                partial_query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
                 stage=str(args.get("stage", "")),
@@ -1882,7 +2106,7 @@ class SemanticLayerMCPAdapter:
             lambda args: inspect_payload(
                 self.runtime,
                 object_id=str(args.get("object_id", "")),
-                partial_query=_query_payload(args)
+                partial_query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
                 verbosity=str(args.get("verbosity", "compact")),
@@ -1918,7 +2142,7 @@ class SemanticLayerMCPAdapter:
                     )
             payload = build_options_payload(
                 self.runtime,
-                partial_query=_query_payload(args),
+                partial_query=_partial_query_payload(args),
                 focus_terms=str(args.get("focus_terms", "")),
                 focus_object_id=str(args.get("focus_object_id", "")),
                 step=str(args.get("step", "")),
@@ -1939,7 +2163,7 @@ class SemanticLayerMCPAdapter:
             lambda args: valid_values_payload(
                 self.runtime,
                 dimension_id=str(args.get("dimension_id", "")),
-                query=_query_payload(args)
+                query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
                 search=str(args.get("search", "")),
@@ -1956,33 +2180,53 @@ class SemanticLayerMCPAdapter:
             lambda args: plan_payload(
                 self.runtime,
                 intent=str(args.get("intent", "")),
-                # Plan arguments are an envelope, not a flat Query IR.
-                # An absent seed must still carry the resolved policy context.
-                partial_query=_query_payload({**args, "query": args.get("query")}),
-                detail=str(args.get("detail", "best") or "best"),
+                partial_query=_partial_query_payload(args),
+                detail=_plan_detail(args.get("detail")),
                 limit=_coerce_int(args.get("limit"), 3, field="limit", minimum=1),
             ),
         )
 
     def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: self.runtime.validate(_query_payload_with_mcp_default_verbosity(args)),
-        )
+        def _run(args: dict[str, Any]) -> dict[str, Any]:
+            query = _query_payload_with_mcp_default_verbosity(args)
+            return _with_warning(
+                self.runtime.validate(query), _grouped_ungrained_time_warning(query)
+            )
+
+        return self._guarded(arguments, _run)
 
     def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: self.runtime.compile(_query_payload_with_mcp_default_verbosity(args)),
-        )
+        def _run(args: dict[str, Any]) -> dict[str, Any]:
+            query = _query_payload_with_mcp_default_verbosity(args)
+            return _with_warning(
+                self.runtime.compile(query), _grouped_ungrained_time_warning(query)
+            )
+
+        return self._guarded(arguments, _run)
 
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             row_format = _row_format_arg(args)
+            requested_cap = _max_rows_arg(args.get("max_rows"))
             query_payload = _query_payload_with_mcp_default_verbosity(
                 _strip_execute_transport_args(args)
             )
-            result = self.runtime.query(query_payload)
+            if requested_cap is None:
+                result = self.runtime.query(query_payload)
+            else:
+                cap, fetch, fence_binds = _execute_row_limits(query_payload, requested_cap)
+                limits = query_payload.get("limits")
+                query_payload["limits"] = {
+                    **(dict(limits) if isinstance(limits, Mapping) else {}),
+                    "max_rows": fetch,
+                }
+                result = _echo_caller_limits(self.runtime.query(query_payload), limits)
+            if bool(result.get("ok", True)):
+                if requested_cap is not None:
+                    result = _truncate_rows(
+                        result, cap=cap, query=query_payload, fence_binds=fence_binds
+                    )
+                result = _with_warning(result, _grouped_ungrained_time_warning(query_payload))
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
             # execute returns 0 rows and the user authored no filters —
             # the most common "successful but wrong" outcome from a

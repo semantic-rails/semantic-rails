@@ -25,7 +25,7 @@ from typing import Any
 
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
-from .faithfulness import intent_faithfulness_why
+from .faithfulness import intent_faithfulness_why, unmatched_intent_terms
 from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
@@ -227,6 +227,7 @@ def plan_payload(
             question=intent_str,
             intent_ir=intent_ir,
             query=best_draft.query,
+            partial_query=partial_query,
         )
         if best_ok
         else None
@@ -235,7 +236,15 @@ def plan_payload(
     # detected but could not resolve (and nothing else bounded the
     # query), the draft answers a *different* question than the user
     # asked. Downgrade instead of marking it ready to execute.
-    time_why = _unresolved_time_why(intent_str, best_draft.query) if best_ok else None
+    time_why = (
+        _unresolved_time_why(intent_str, partial_query)
+        or _start_dropped_why(
+            best.get("start_dropped")
+            or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
+        )
+        if best_ok
+        else None
+    )
     # Same honesty principle for intent shape: a conversion/funnel ask
     # answered with a non-conversion metric (e.g. AOV) is a confidently
     # wrong answer, not a best effort. Downgrade and point at the
@@ -263,7 +272,8 @@ def plan_payload(
     if fallback_drift_why is not None:
         payload["why"] = fallback_drift_why
     elif faithfulness_why is not None:
-        payload["why"] = faithfulness_why
+        # One why, but an unresolved or shortened window stays visible.
+        payload["why"] = _with_time_gap(faithfulness_why, time_why)
     elif time_why is not None:
         payload["why"] = time_why
     elif conversion_why is not None:
@@ -274,6 +284,20 @@ def plan_payload(
         payload["tie_break_hints"] = _slim_recovery_hints(
             list(best_validation.get("recovery_hints") or [])
         )
+    unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
+    if unmatched:
+        payload["warnings"] = [
+            {
+                "code": "PLAN_UNMATCHED_TERMS",
+                "severity": "warning",
+                "message": (
+                    "The draft doesn't use these words from the question: "
+                    f"{', '.join(unmatched)}. Check that best.query_ir answers what was "
+                    "asked before executing it."
+                ),
+                "details": {"terms": unmatched},
+            }
+        ]
     if detail_level in {"full", "debug"}:
         payload["alternatives"] = [
             _slim_best(
@@ -377,12 +401,125 @@ def _planned_row(
             "blocked": True,
         }
     validation = _validate_query(runtime, merged_draft.query, partial_query)
+    start_dropped = ""
+    time_spec = merged_draft.query.get("time")
+    caller_time = (partial_query or {}).get("time")
+    if (
+        not validation["ok"]
+        and _codes(validation) & _LOOKBACK_TIME_CODES
+        and isinstance(time_spec, dict)
+        and time_spec.get("start")
+        and not (isinstance(caller_time, dict) and caller_time.get("start"))
+    ):
+        # The metric looks back over earlier periods, so the engine can't
+        # bound time.start. Keep the end: the draft runs, returns every
+        # period up to it, and plan says so.
+        unbounded = {**time_spec}
+        start_dropped = str(unbounded.pop("start"))
+        retry = replace(merged_draft, query={**merged_draft.query, "time": unbounded})
+        retry_validation = _validate_query(runtime, retry.query, partial_query)
+        if retry_validation["ok"]:
+            merged_draft, validation = retry, retry_validation
+        else:
+            start_dropped = ""
     return {
         "status": "ok" if validation["ok"] else "low_confidence",
         "draft": merged_draft,
         "pattern": pattern,
         "validation": validation,
         "blocked": False,
+        "start_dropped": start_dropped,
+    }
+
+
+# Validation codes for a bounded time.start that a lookback metric can't take.
+_LOOKBACK_TIME_CODES = frozenset(
+    {"WINDOWED_TIME_FILTER_UNSUPPORTED", "CUMULATIVE_TIME_FILTER_UNSUPPORTED"}
+)
+
+
+def _codes(validation: dict[str, Any]) -> set[str]:
+    return {
+        str(issue.get("code", ""))
+        for issue in list(validation.get("errors") or [])
+        if isinstance(issue, dict)
+    }
+
+
+def _pattern_dropped_start(
+    intent: str, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> str:
+    """The question's window start a draft left out while keeping its end.
+
+    The lookback retry records the start it drops; a pattern that bounds a
+    period comparison drops it itself. Either way plan says so.
+    """
+
+    from ._base import _time_bounds_from_text  # noqa: WPS433
+
+    caller_time = (partial_query or {}).get("time")
+    if isinstance(caller_time, dict) and any(
+        caller_time.get(key) for key in ("start", "end", "range")
+    ):
+        return ""
+    expected = _time_bounds_from_text(intent)
+    raw_time = query.get("time")
+    time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
+    if expected.get("start") and not time.get("start") and time.get("end") == expected.get("end"):
+        return str(expected["start"])
+    return ""
+
+
+def _with_time_gap(why: dict[str, Any], time_why: dict[str, Any] | None) -> dict[str, Any]:
+    """Add a time why (unresolved window, dropped start) to a coverage-gap why."""
+
+    if time_why is None:
+        return why
+    details = dict(time_why.get("details") or {})
+    clause = ", ".join(details.get("unresolved_phrases") or []) or str(
+        details.get("requested_start", "")
+    )
+    gaps = [
+        *list((why.get("details") or {}).get("gaps") or []),
+        {
+            "kind": str(time_why.get("code", "")).lower(),
+            "clause": clause,
+            "message": str(time_why.get("message", "")),
+        },
+    ]
+    hints = list(why.get("recovery_hints") or [])
+    kinds = {str(hint.get("kind", "")) for hint in hints if isinstance(hint, dict)}
+    hints += [
+        hint
+        for hint in list(time_why.get("recovery_hints") or [])
+        if isinstance(hint, dict) and str(hint.get("kind", "")) not in kinds
+    ]
+    return {
+        **why,
+        "details": {**dict(why.get("details") or {}), "gap_count": len(gaps), "gaps": gaps},
+        "recovery_hints": hints,
+    }
+
+
+def _start_dropped_why(start: Any) -> dict[str, Any] | None:
+    """Explain a window whose start a lookback metric couldn't take."""
+
+    if not start:
+        return None
+    return {
+        "code": "TIME_WINDOW_START_DROPPED",
+        "message": (
+            f"The question's window starts {start}, but this metric looks back over earlier "
+            "periods, so the query can't bound time.start. best.query_ir returns every period "
+            f"up to time.end; keep only the rows from {start} on."
+        ),
+        "details": {"path": "time.start", "requested_start": start},
+        "recovery_hints": [
+            {
+                "kind": "filter_rows_after_execution",
+                "message": f"Execute best.query_ir and keep the rows dated {start} or later.",
+            }
+        ],
     }
 
 
@@ -495,7 +632,16 @@ def _query_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
 
     out: dict[str, Any] = {}
-    for key in ("plan_version", "intent", "status", "why", "tie_break_hints"):
+    # compose_hints is present only when no draft exists; its why points at it.
+    for key in (
+        "plan_version",
+        "intent",
+        "status",
+        "why",
+        "tie_break_hints",
+        "warnings",
+        "compose_hints",
+    ):
         if key in payload:
             out[key] = payload[key]
     out["best"] = _query_detail_best(payload.get("best"))
@@ -943,40 +1089,57 @@ def _structural_precheck(query: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _unresolved_time_why(intent: str, query: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a ``why`` envelope when the intent's time scope got dropped.
+def _unresolved_time_why(
+    intent: str, partial_query: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Return a ``why`` envelope when the intent's time scope wasn't resolved.
 
-    Triggers only when (a) the intent contains a temporal phrase the
-    window resolver could not turn into bounds, and (b) the realized IR
-    carries no time window from anywhere else (resolved phrase, caller's
-    ``partial_query``). The shape mirrors the pattern ``blocked_reason``
-    envelope ({code, message, details, recovery_hints}).
+    Triggers when the intent contains a time phrase the window resolver
+    didn't turn into bounds, whatever window the draft happens to carry:
+    only an explicit window in the caller's ``partial_query`` settles it.
+    The shape mirrors the pattern ``blocked_reason`` envelope ({code,
+    message, details, recovery_hints}).
     """
 
-    from ._base import _SUPPORTED_WINDOW_FORMS, _unresolved_time_phrases  # noqa: WPS433
+    from ._base import (  # noqa: WPS433
+        _MAX_TIME_TEXT,
+        _SUPPORTED_WINDOW_FORMS,
+        _unresolved_time_phrases,
+    )
 
     phrases = _unresolved_time_phrases(intent)
-    if not phrases:
+    too_long = len(intent) > _MAX_TIME_TEXT
+    if not phrases and not too_long:
         return None
-    time_spec = query.get("time") if isinstance(query, dict) else None
-    if isinstance(time_spec, dict) and any(time_spec.get(key) for key in ("start", "end", "range")):
-        return None
+    caller_time = (partial_query or {}).get("time")
+    if isinstance(caller_time, dict):
+        # An unread suffix may supply either missing endpoint. Only a
+        # complete caller window can settle an overlong question's scope.
+        complete = caller_time.get("range") or (caller_time.get("start") and caller_time.get("end"))
+        if complete or (not too_long and any(caller_time.get(key) for key in ("start", "end"))):
+            return None
     return {
         "code": "TIME_WINDOW_UNRESOLVED",
         "message": (
-            "The intent names a time window the planner could not resolve; "
-            "best.query_ir is NOT time-bounded and would answer a different "
-            "(unbounded) question if executed as-is."
+            f"The question exceeds the {_MAX_TIME_TEXT}-character time-resolution limit; "
+            "its complete time scope could not be checked."
+            if too_long
+            else "The intent names a time window the planner could not resolve; "
+            "best.query_ir does not carry that window and would answer a "
+            "different question if executed as-is."
         ),
         "details": {
             "path": "time",
             "unresolved_phrases": list(phrases),
+            **({"max_intent_chars": _MAX_TIME_TEXT} if too_long else {}),
         },
         "recovery_hints": [
             {
                 "kind": "rephrase_time_window",
                 "message": (
-                    "Rephrase the window using a supported form: "
+                    f"Shorten the question to at most {_MAX_TIME_TEXT} characters."
+                    if too_long
+                    else "Rephrase the window using a supported form: "
                     + "; ".join(_SUPPORTED_WINDOW_FORMS)
                     + "."
                 ),
@@ -984,10 +1147,10 @@ def _unresolved_time_why(intent: str, query: dict[str, Any]) -> dict[str, Any] |
             {
                 "kind": "provide_explicit_bounds",
                 "message": (
-                    "Or pass explicit bounds via partial_query, e.g. "
-                    '{"time": {"start": "2025-01-01", "end": "2025-02-01"}} '
-                    "(end-exclusive), or the relative form "
-                    '{"time": {"range": {"last": {"unit": "month", "value": 1}}}}.'
+                    "Or pass a complete window in the plan tool's query argument: "
+                    "set query.time.start and query.time.end (end-exclusive), or "
+                    "query.time.range.last with unit and value. Include the selected "
+                    "temporal_role and grain in query.time; use build-options to choose them."
                 ),
             },
         ],

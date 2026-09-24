@@ -16,16 +16,16 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict
-from datetime import date, timedelta
+from dataclasses import asdict, fields
 from typing import Any
 
-from .ast import normalize_partial_query, normalize_query
+from .ast import NormalizedQuery, normalize_partial_query, normalize_query
 from .catalog_search import CatalogSearchDocument, SearchTerms
 from .compiler import (
     _conversion_supported,
     _predicate_context_entity_candidates,
     _reduced_context_entities,
+    _requires_query_time,
     _time_bound_relationship_ids,
 )
 from .diagnostics import relationship_contract_payload
@@ -96,24 +96,19 @@ from .schema import PackageConfig
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
 
+# Query IR fields: the fields of a normalized query. Query patches and
+# query_state carry only these: never the request's policy context, response
+# options or the tool's own arguments.
+_QUERY_IR_KEYS = tuple(field.name for field in fields(NormalizedQuery))
+
+
+def _query_ir(query: dict[str, Any] | None) -> dict[str, Any]:
+    source = query or {}
+    return {key: source[key] for key in _QUERY_IR_KEYS if key in source}
+
 
 def _query_state(query: dict[str, Any]) -> dict[str, Any]:
-    keys = [
-        "version",
-        "select",
-        "group_by",
-        "where",
-        "metric_filters",
-        "time",
-        "temporal_role_overrides",
-        "path_policy",
-        "order_by",
-        "limit",
-        "debug",
-        "explain",
-        "export",
-    ]
-    state = {key: query[key] for key in keys if key in query}
+    state = _query_ir(query)
     with contextlib.suppress(SemanticLayerError):
         state["normalized_query"] = normalize_query(dict(query)).to_dict()
     return state
@@ -2785,7 +2780,9 @@ def build_options_payload(
     base = _valid_next_base(runtime, partial_query)
     config = runtime._config
     maps = _config_maps(config)
-    raw_query = dict(partial_query or {})
+    # Patches build on the caller's Query IR only; the policy context in
+    # partial_query decides visibility, never a patch's contents.
+    raw_query = _query_ir(partial_query)
 
     def _infer_builder_step() -> str:
         if step:
@@ -2946,12 +2943,11 @@ def build_options_payload(
         for agg in guidance["allowed_aggregations"]:
             patch = dict(raw_query or {})
             patch.setdefault("version", 1)
-            patch["select"] = [
-                {
-                    "expression": {"measure": focus_measure.id, "aggregation": agg},
-                    "as": focus_measure.label,
-                }
-            ]
+            expression: dict[str, Any] = {"measure": focus_measure.id, "aggregation": agg}
+            if agg == "percentile":
+                # A percentile needs its p; the median is the neutral starting point.
+                expression["parameters"] = {"p": 0.5}
+            patch["select"] = [{"expression": expression, "as": focus_measure.label}]
             rank = 20.0 - (float(suggested_rank[agg]) / 10.0) if agg in suggested_rank else 10.0
             row = {
                 "id": agg,
@@ -3074,7 +3070,7 @@ def build_options_payload(
                 patch.setdefault("where", [])
                 patch["where"] = [
                     *list(patch.get("where", []) or []),
-                    {"dimension": target_dimension, "op": "=", "value": value_row["value"]},
+                    {"field": target_dimension, "op": "=", "value": value_row["value"]},
                 ]
                 option = {
                     "id": f"{target_dimension}={value_row['value']}",
@@ -3248,14 +3244,36 @@ def _select_expr_for_choice(runtime: Runtime, chosen: dict[str, Any]) -> dict[st
 def _query_patch_with_selection(
     runtime: Runtime, partial_query: dict[str, Any], chosen: dict[str, Any]
 ) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["select"] = [_select_expr_for_choice(runtime, chosen)]
+    if chosen.get("kind") == "metric" and not query.get("time"):
+        time = _metric_patch_time(runtime, str(chosen.get("id", "")))
+        if time:
+            query["time"] = time
     return query
 
 
+def _metric_patch_time(runtime: Runtime, metric_id: str) -> dict[str, Any]:
+    """The default time block for a metric that can't run without one.
+
+    Windowed metrics (cumulative, rolling and the like) require query.time,
+    so a patch selecting one carries the metric's default window.
+    """
+
+    from .config_validation import _default_time_spec_for_metric
+
+    recipe = _config_maps(runtime._config)["metric_recipes"].get(metric_id)
+    if recipe is None:
+        return {}
+    with contextlib.suppress(SemanticLayerError):
+        if _requires_query_time(recipe.expression, runtime._config):
+            return dict(_default_time_spec_for_metric(recipe, runtime))
+    return {}
+
+
 def _query_patch_with_group_by(partial_query: dict[str, Any], dimension_id: str) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["group_by"] = list(dict.fromkeys([*list(query.get("group_by", []) or []), dimension_id]))
     return query
@@ -3264,7 +3282,7 @@ def _query_patch_with_group_by(partial_query: dict[str, Any], dimension_id: str)
 def _query_patch_with_where(
     partial_query: dict[str, Any], dimension_id: str, value: Any, op: str = "="
 ) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["where"] = [
         *list(query.get("where", []) or []),
@@ -3274,7 +3292,7 @@ def _query_patch_with_where(
 
 
 def _query_patch_with_order_by_time(partial_query: dict[str, Any]) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["order_by"] = [
         *list(query.get("order_by", []) or []),
@@ -3286,7 +3304,7 @@ def _query_patch_with_order_by_time(partial_query: dict[str, Any]) -> dict[str, 
 def _query_patch_with_metric_filter(
     partial_query: dict[str, Any], metric_id: str, op: str = ">", value: Any = 0
 ) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     # Use the MetricRefExpr shape (`{kind: "metric", metric: "..."}`) +
     # top-level op/value on the filter. This validates against
@@ -3310,48 +3328,10 @@ def _query_patch_with_metric_filter(
 def _query_patch_with_time(
     partial_query: dict[str, Any], temporal_role: str, grain: str = ""
 ) -> dict[str, Any]:
-    query = dict(partial_query or {})
+    query = _query_ir(partial_query)
     query.setdefault("version", 1)
     query["time"] = {"temporal_role": temporal_role, "grain": grain or "month"}
     return query
-
-
-def _first_day_of_next_month(value: date) -> date:
-    return (value.replace(day=28) + timedelta(days=4)).replace(day=1)
-
-
-def _time_bounds_from_text(text: str) -> dict[str, Any]:
-    lowered = str(text or "").lower()
-    relative_match = re.search(r"\blast\s+(\d+)\s+(day|week|month|quarter|year)s?\b", lowered)
-    if relative_match:
-        return {
-            "range": {
-                "last": {
-                    "unit": relative_match.group(2),
-                    "value": int(relative_match.group(1)),
-                }
-            }
-        }
-    if re.search(r"\blast\s+(day|week|month|quarter|year)\b", lowered):
-        unit = re.search(r"\blast\s+(day|week|month|quarter|year)\b", lowered)
-        return {"range": {"last": {"unit": unit.group(1), "value": 1}}} if unit else {}
-    q_match = re.search(r"\bq([1-4])\s*['-]?\s*(20\d{2})\b", lowered)
-    if q_match:
-        quarter = int(q_match.group(1))
-        year = int(q_match.group(2))
-        start_month = ((quarter - 1) * 3) + 1
-        end_year = year + (1 if quarter == 4 else 0)
-        end_month = 1 if quarter == 4 else start_month + 3
-        return {
-            "start": f"{year:04d}-{start_month:02d}-01",
-            "end": f"{end_year:04d}-{end_month:02d}-01",
-        }
-    if re.search(r"\b(?:current|this)\s+month\b", lowered):
-        today = date.today()
-        start = today.replace(day=1)
-        end = _first_day_of_next_month(today)
-        return {"start": start.isoformat(), "end": end.isoformat()}
-    return {}
 
 
 def _infer_time_grain_from_text(text: str, default: str = "month") -> str:
@@ -3654,49 +3634,3 @@ def _choose_group_dimension(
 ) -> str:
     dims = _choose_group_dimensions(runtime, query, text, chosen_group_dim)
     return dims[0] if dims else ""
-
-
-def _apply_time_from_text(
-    runtime: Runtime, query: dict[str, Any], text: str, chosen_ids: list[str]
-) -> dict[str, Any]:
-    time_bounds = _time_bounds_from_text(text)
-    wants_time = any(
-        phrase in text
-        for phrase in (
-            "over time",
-            "historical",
-            "history",
-            "trend",
-            "trending",
-            "end-of-month",
-            "end of month",
-            "by day",
-            "by week",
-            "by month",
-            "by quarter",
-            "by year",
-            "daily ",
-            "weekly ",
-            "monthly ",
-            "quarterly ",
-            "yearly ",
-            " each day",
-            " each week",
-            " each month",
-            " each quarter",
-            " each year",
-        )
-    ) or bool(time_bounds)
-    if not wants_time:
-        return query
-    role = ""
-    for object_id in chosen_ids:
-        card = _object_card(runtime, object_id)
-        role = str(card.get("default_temporal_role", "") or "")
-        if role:
-            break
-    if not role:
-        return query
-    grain = _infer_time_grain_from_text(text, default="month")
-    query["time"] = {"temporal_role": role, "grain": grain, **time_bounds}
-    return query

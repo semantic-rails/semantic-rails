@@ -725,7 +725,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Single public intent-planning surface: natural-language intent → one best Query IR plus optional alternatives. Use detail='query' for the tight QA loop before execute(row_format='columns'). Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope') and 'best.query_ir'. 'status=ok' has already paid validation cost, so agents may proceed to 'compile' or 'execute' with 'best.query_ir'. Use detail='full' for alternatives/blocked drafts, or detail='debug' for compose_hints. Gotcha: branch on 'status' before reading 'best'.",
+      "description": "Single public intent-planning surface: natural-language intent → one best Query IR. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. 'status=ok' has already paid validation cost, so agents may pass 'best.query_ir' to 'execute'. By default the v1 response includes intent_ir, trace and next steps; detail='query' opts into a compact response. 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: read 'status' and 'warnings' before running 'best.query_ir'.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -1089,10 +1089,16 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Execute Query IR against the warehouse and return rows (compiles + runs in one call). Loop position: 7 (final — only after validate + compile succeed). Gotcha: only tool that costs warehouse credits + round-trip latency; side-effecting. Use 'compile' for SQL only. Defaults to verbosity='minimal' (rows + row_count) — pass verbosity=compact|full for SQL/plans/explain. Use row_format='columns' for compact answers. IR shape: see the 'validate' tool or 'build-options'.",
+      "description": "Execute Query IR against the warehouse and return rows (compiles + runs in one call). Loop position: 7 (final — only after validate + compile succeed). Gotcha: only tool that costs warehouse credits + round-trip latency; side-effecting. Use 'compile' for SQL only. Defaults to verbosity='minimal' (rows + row_count) — pass verbosity=compact|full for SQL/plans/explain. Use row_format='columns' for compact answers, and max_rows=200 to bound row output. IR shape: see the 'validate' tool or 'build-options'.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
+          "max_rows": {
+            "description": "Optional row cap; omitted v1 calls keep the caller's query limit. A larger result sets truncated=true and total_row_count.",
+            "maximum": 100000,
+            "minimum": 1,
+            "type": "integer"
+          },
           "policy_context": {
             "additionalProperties": true,
             "description": "Optional visibility/access policy context.",

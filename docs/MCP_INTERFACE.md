@@ -129,15 +129,64 @@ genuinely need descriptions or the alias index.
 object directly. Metadata tools accept the same request fields documented in
 [QUERY_API.md](QUERY_API.md), including optional `policy_context`.
 
-`plan` is the only public natural-language intent tool. By default it returns
-`status`, `intent_ir`, `best.query_ir`, `best.trace`, and a `next` block. For the
-lowest-token QA loop, request `detail="query"` and forward `best.query_ir` to
-`execute` with `row_format="columns"`. When `status="ok"`, the draft has already
+`plan` is the only public natural-language intent tool. Stable v1 MCP calls without a
+`detail` argument keep `detail="best"`: `status`, `best.query_ir`, `intent_ir`, `best.trace`,
+`next`, and a `why` or `warnings` entry for any part of the question the draft doesn't honor.
+For the lowest-token QA loop, pass `detail="query"` to return `status`, `best.query_ir` and
+any `why` or `warnings`, then forward `best.query_ir` to `execute` with
+`row_format="columns"` and an explicit `max_rows`. When `status="ok"`, the draft has already
 paid validation cost, so call `validate` again only when you are editing the IR or
-need full diagnostics. If a
+need full diagnostics.
+
+A draft that validates can still leave out part of the question. `plan` returns
+`low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
+
+- carries no time window, or a different one, where the question names one
+  (`time_window_unrealized`);
+- loses a ranking's stated limit, sort direction or selected measure, cannot identify the
+  ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
+  including count-free requests such as "top stores by revenue";
+- excludes a value requested positively, or cannot prove that its filter keeps or drops
+  each named value with the requested polarity (`filter_values_unrealized`). Scalar `=`/`!=`
+  and scalar or list `IN`/`NOT IN` can prove it; list-valued `=`/`!=`, empty membership
+  lists and pattern filters cannot. The guard intersects top-level filters on the same
+  field, accounts for exclusions, and compares draft literals to stored values exactly;
+  catalog labels and aliases only identify values named in the question. Nested filter
+  scopes do not prove an outer filter's result. Grouping does not cure an uncertain filter;
+- combines top-level filters on one field so no value can survive, which returns no rows
+  (`contradictory_filters`);
+- misses a negation, a prior-period comparison or one of several named subjects.
+
+When a question has several exclusion clauses, `plan` checks each clause. A
+negative filter for one value does not make a later excluded value safe if the
+draft includes it.
+
+`why.details.gaps` names each clause. Question words the draft uses nowhere, other than
+framing words, time phrases the planner read, and counts, come back as a
+`PLAN_UNMATCHED_TERMS` warning with up to eight of them in `details.terms`; check them
+before executing. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
+`plan` resolves a time window only when the question names exactly one, in a form it reads
+unambiguously: a year after "in", "for" or "during", consecutive years, a quarter or half with a
+year, a month or month range with a year, days with a year, an ISO date, or a relative window
+("last 7 days"). "and" joins a range only after "between": "between March and May 2017" is a
+range, while "March and May 2017" names two months. Anything else, such as a bound ("before
+2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs 2016", "2017 over
+2016"), a numeric date (4/3/2017), two periods joined by "and", or two windows at once (such as
+"last month and this month"), returns
+`low_confidence` with `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases it couldn't resolve,
+never a window narrowed or widened to the nearest form that parses. A total over a window gets
+one bucket when one calendar grain holds the window; an explicit grain ("monthly") wins. When a
+draft can't take the window's start, because the metric looks back over earlier periods or the
+question compares with an earlier period, `plan` keeps the end and returns
+`why.code="TIME_WINDOW_START_DROPPED"` with the start to filter by.
+Questions longer than 2,000 characters are not partially parsed for time: unless the caller
+provides a complete window in `query.time` (both `start` and `end`, or a relative `range`),
+they return `TIME_WINDOW_UNRESOLVED` with a request to shorten the question or supply those
+bounds. Include the selected `temporal_role` and `grain` in that time block. A date or
+qualifier beyond the limit therefore cannot silently disappear from an otherwise ready draft.
 Use `detail="full"` only when you need alternatives or blocked drafts.
 
 Use `compile` and read its `explain` payload to review relationship paths before executing a
@@ -171,6 +220,29 @@ keeps `rows` as objects (`[{...}]`). The opt-in columnar form returns
 `columns: [...]`, `rows: [[...]]`, `row_format: "columns"`, and the same
 `row_count`, warnings, and errors while avoiding repeated field names.
 
+Stable v1 MCP `execute` calls without `max_rows` keep the caller's existing Query IR row limit;
+they do not add a response cap. Pass `max_rows=200` (or another value up to 100,000) to bound
+the response. A larger result comes back with `truncated: true`, `total_row_count` and an
+`EXECUTE_ROWS_TRUNCATED` warning that says how to narrow the query. With an explicit cap,
+execute asks the warehouse for up to 10,000 rows to count them, so
+`total_row_count` is `null` when more rows exist than were fetched. Some warehouse adapters fetch
+the whole result and then clip it; the cap bounds the response, not the warehouse work. Pass a
+larger `max_rows` to see more.
+
+A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower an explicit
+`max_rows` cap (and then `total_row_count` is `null` once it is reached), but it never raises it.
+The `query` that execute echoes back carries the caller's own `limits`; a transport-level
+`max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint also leaves
+the response uncapped unless the query itself sets a limit.
+
+Query patches returned by `discover`, `inspect` and `build-options` (at every builder step) contain
+only Query IR fields and validate as returned, except that a temporal role offered at the
+`time` step may not be one the selected measure uses. They never carry the caller's `policy_context` or
+the tool's own arguments, so pass the policy context again on the call that uses a patch. A patch
+that selects a metric needing a time window carries the metric's default one, and a `percentile`
+aggregation option carries `p: 0.5`. These tools read Query IR only from their `query` argument,
+not from Query IR fields passed at the top level.
+
 ### Semantic Trace
 
 `plan.best.trace` and `compile`/`execute` with `verbosity="compact"` or
@@ -199,6 +271,10 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_UNKNOWN_ARG` | `execute` | Unknown argument received; the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing |
+| `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
+| `UNGRAINED_TIME_PROJECTION` | `validate`, `compile`, `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
+| `UNGRAINED_GROUPED_TIME_PROJECTION` | `validate`, `compile`, `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
 | `SEMANTIC_CAVEAT_APPLIED` | `validate`, `compile`, `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `validate`, `compile`, `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
 
@@ -503,6 +579,86 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
                        "message": "...file a bug at .../issues..."}]
 }
 ```
+
+## Measuring Context Cost
+
+`scripts/mcp_context.py` measures how much context the query MCP costs an agent, and how often
+`plan` drafts the right query. It drives the packaged server in process, through the same JSON-RPC
+dispatcher as `semantic-rails mcp stdio`, against a throwaway copy of `jaffle_shop` whose DuckDB file
+it builds from the seed data. Token counts are `round(chars / 4)` of the JSON a model sees: the
+compact `structuredContent` (what Claude Code forwards) and the `content[0].text` channel (what
+text-forwarding hosts forward). The proxy needs no tokenizer. Compare runs with each other, not with
+provider bills.
+
+```bash
+uv run python scripts/mcp_context.py                  # report, then fail on any gate
+uv run python scripts/mcp_context.py --markdown       # tables for a PR description
+uv run python scripts/mcp_context.py --write-baseline # after an intended change
+uv run python scripts/mcp_context.py --eval-file PATH # score a copy of a frozen split
+```
+
+`tests/semantic_rails/test_mcp_context.py` runs the same gates in CI. Their data lives in
+`tests/semantic_rails/mcp_context/`:
+
+| Gate | Fails when |
+|---|---|
+| Context budgets (`budgets.json`) | A measured size exceeds its budget by more than 2% (and at least 8 tokens), a count such as the number of tools exceeds its budget at all, a size has no budget, or a budgeted size is no longer measured. |
+| Planner accuracy (`plan_accuracy_baseline.json`) | A gold case's `plan(detail="query")` outcome gets worse, or a wrong case gets a slot wrong that it used to get right. |
+| Gold answers | A gold query fails, its rows no longer match the frozen answer, or a listed alternative answers differently. |
+| Frozen eval set | `eval_jaffle.jsonl` no longer matches `DEV_SET_SHA256` in the script. |
+
+The budgets cover `tools/list`, the `initialize` instructions, the resource and prompt lists, every
+resource read, one compact opt-in call per tool (`plan(detail="query")` and
+`execute(max_rows=200)`, including a time window without a grain), three metadata calls behind
+an authenticated transport, four common mistakes, and two
+scripted three-question sessions. Three of the mistakes fail with a specific error code; the fourth,
+a misspelled `discover` argument, succeeds with a warning. A scripted call that fails when it should
+succeed (or the reverse), or that reports a different code, stops the measurement rather than
+counting as a smaller response. A scripted session's queries may only use ids that an earlier call
+in the same session returned, so its size measures a path an agent could follow. Architect MCP
+tool-list sizes are recorded under `tracked` and are not gated.
+
+A draft is correct when it matches the gold query, or a listed alternative, in every slot that can
+change its rows: measures and metrics, grouping, time role, grain, window, `fill`, calendar,
+filters, metric filters, temporal role overrides, path policy and limit, plus the sort for
+rankings. Its rows must also match the frozen answer. An unanswerable question is answered
+correctly when `plan` refuses it as `out_of_scope` or `unrealizable`. Each outcome is one of:
+
+- `pass`: correct, and the response reports `ok` with no warnings.
+- `pass_flagged`: correct, but the response still reports a non-`ok` status or a warning: a false
+  alarm, which costs the agent a needless repair.
+- `wrong_flagged`: wrong, and the status isn't `ok`.
+- `wrong_warned`: wrong, with status `ok` but a warning that signals doubt.
+- `wrong_silent`: wrong, and the response reports `ok` with no warnings.
+
+A `plan` call that fails outright stops the run instead of being graded. The baseline records
+each case's outcome and the slots it gets wrong (`answer` when every slot matches but the rows
+don't), so a case that is already wrong can't quietly get worse.
+
+When a change is intended, such as a smaller response or a planner fix, run `--write-baseline` and
+commit the updated budgets or outcomes with it. The report lists sizes under budget and cases that
+improved, so savings get locked in. A budget moves only when its size moves beyond the tolerance,
+and `--write-baseline` refuses to run while a gold answer fails or the eval set has changed.
+
+The release workflows also run `scripts/benchmark_plan.py --gate` over the blind-agent corpus.
+That gate checks that plans are actionable, carry the expected IDs and Query IR fields, stay
+smaller than `detail="full"`, and hit the compile cache. This one checks drafted queries against
+gold answers and tells flagged mistakes from silent ones.
+
+### Eval Set
+
+`eval_jaffle.jsonl` is the frozen development split: 38 questions covering trends, calendar
+windows, rankings, multi-value filters, near-duplicate metrics, ratios, time expressions, a segment
+metric, out-of-scope questions and misspellings. Each answerable case has a hand-written gold query,
+any equivalent alternatives, and its frozen answer. Answers compare as sets of rows whose columns
+are named by what they hold (a measure or metric, a dimension, or the time bucket), so aliases and
+column order don't matter but a value in the wrong column does. A dimension pinned to one value by
+a filter is left out, as it adds only a constant column. Numbers match within a relative tolerance
+of 1e-8, row order counts only for rankings, and time buckets count only for trends.
+
+A held-out split of 12 more questions is kept outside the repository so the planner can't be tuned
+against it. `HELDOUT_SET_SHA256` in the script commits to its content. `--eval-file` scores a file
+only when it matches the dev or held-out digest, unless `--allow-unfrozen` is passed.
 
 ## Production Readiness
 

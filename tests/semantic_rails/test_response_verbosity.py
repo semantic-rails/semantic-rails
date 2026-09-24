@@ -510,6 +510,7 @@ def test_mcp_plan_tool_schema_advertises_query_detail():
     detail = plan["inputSchema"]["properties"].get("detail") or {}
 
     assert detail.get("enum") == ["query", "best", "full", "debug"]
+    # Stable v1 keeps its detailed default; compact query is an explicit opt-in.
     assert detail.get("default") == "best"
 
 

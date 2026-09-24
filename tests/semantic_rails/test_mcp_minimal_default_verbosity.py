@@ -193,7 +193,7 @@ def test_plan_next_block_inherits_minimal_default(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
-        plan = adapter.call_tool("plan", {"intent": "orders by store"})
+        plan = adapter.call_tool("plan", {"intent": "orders by store", "detail": "best"})
         next_block = plan.get("next") or {}
         validate_args = next_block.get("validate") or {}
         assert "query" in validate_args, "plan.next.validate must pre-bake the query"
