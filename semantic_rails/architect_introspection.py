@@ -37,6 +37,8 @@ MAX_SAMPLE_VALUES = 20
 MAX_SAMPLE_CHARS = 200
 DEFAULT_PROFILE_ROWS = 1_000_000
 MAX_PROFILE_ROWS = 1_000_000
+MAX_SUGGESTION_KEY_COLUMNS = 8
+MAX_FK_TARGETS_PER_COLUMN = 8
 
 _IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_$" -]*')
 _TIME_TYPES = ("DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP_S", "TIMESTAMP_MS")
@@ -305,8 +307,9 @@ def profile_columns(
         quoted = _quote(column)
         data_type = str(available[column]["type"])
         extremes = f", min({quoted}), max({quoted})" if _orderable(data_type) else ", NULL, NULL"
-        distinct, nulls, low, high = warehouse.connection.execute(
-            f"SELECT count(DISTINCT {quoted}), count(*) - count({quoted}){extremes} FROM {scan} AS t"
+        counted, distinct, nulls, low, high = warehouse.connection.execute(
+            f"SELECT count(*), count(DISTINCT {quoted}), count(*) - count({quoted})"
+            f"{extremes} FROM {scan} AS t"
         ).fetchone()
         samples = (
             [
@@ -323,6 +326,7 @@ def profile_columns(
             {
                 "name": column,
                 "type": data_type,
+                "rows_profiled": int(counted),
                 "distinct_count": int(distinct),
                 "null_count": int(nulls),
                 "min": _sample_text(low),
@@ -481,12 +485,14 @@ def _suggest_key(
             "confidence": "high",
             "reason": "declared PRIMARY KEY",
         }
-    rows = profile["row_count"]
-    exact = not profile["sampled"]
+    rows = int(profile["row_count"])
+    sampled = bool(profile["sampled"])
     unique = [
         column["name"]
         for column in profile["columns"]
-        if rows and column["null_count"] == 0 and column["distinct_count"] == rows
+        if column["rows_profiled"]
+        and column["null_count"] == 0
+        and column["distinct_count"] == column["rows_profiled"]
     ]
     preferred = [
         column
@@ -497,10 +503,15 @@ def _suggest_key(
         column = (preferred or [column for column in unique if _key_like(column)])[0]
         return {
             "columns": [column],
-            "confidence": "high" if preferred and exact else "medium",
+            "confidence": "low" if sampled else "high" if preferred else "medium",
             "reason": (
                 f"{column} is unique and never null in "
-                + ("every row" if exact else "a sample of rows")
+                + (
+                    f"a sample of at most {profile['rows_profiled']} of {rows} rows; "
+                    "full-relation uniqueness must be confirmed before applying"
+                    if sampled
+                    else "every row"
+                )
                 + (f" and is named for the {entity}" if preferred else "")
             ),
         }
@@ -509,22 +520,43 @@ def _suggest_key(
         for column in profile["columns"]
         if _key_like(column["name"]) or _has_word(column["name"], _LINE_WORDS)
     ]
+    # A bounded prefix is enough for a tentative composite candidate, but it
+    # cannot establish uniqueness outside that prefix.
+    id_like = id_like[:MAX_SUGGESTION_KEY_COLUMNS]
+    probe = f"(SELECT * FROM {source} LIMIT {MAX_PROFILE_ROWS})" if sampled else source
     for index, first in enumerate(id_like):
         for second in id_like[index + 1 :]:
-            (pairs,) = warehouse.connection.execute(
-                f"SELECT count(DISTINCT ({_quote(first)}, {_quote(second)})) FROM {source}"
+            checked, present_first, present_second, pairs = warehouse.connection.execute(
+                f"SELECT count(*), count({_quote(first)}), count({_quote(second)}), "
+                f"count(DISTINCT ({_quote(first)}, {_quote(second)})) FROM {probe}"
             ).fetchone()
-            if rows and int(pairs) == rows:
+            if checked and checked == present_first == present_second == pairs:
                 return {
                     "columns": [first, second],
-                    "confidence": "medium",
-                    "reason": f"({first}, {second}) is unique in every row; no single column is",
+                    "confidence": "low" if sampled else "medium",
+                    "reason": (
+                        f"({first}, {second}) is unique and non-null in "
+                        + (
+                            f"the first {checked} of {rows} rows; full-relation uniqueness "
+                            "must be confirmed before applying"
+                            if sampled
+                            else "every row; no single column is"
+                        )
+                    ),
                 }
     if unique:
         return {
             "columns": [unique[0]],
             "confidence": "low",
-            "reason": f"{unique[0]} happens to be unique, but is not named like a key",
+            "reason": (
+                f"{unique[0]} appears unique and non-null "
+                + (
+                    f"in a sample of at most {profile['rows_profiled']} of {rows} rows; "
+                    "full-relation uniqueness must be confirmed before applying"
+                    if sampled
+                    else "in every row, but is not named like a key"
+                )
+            ),
         }
     return None
 
@@ -562,6 +594,7 @@ def _foreign_keys(
     described: dict[str, Any],
     key: list[str],
     source: str,
+    profile: dict[str, Any],
 ) -> list[dict[str, Any]]:
     links: list[dict[str, Any]] = [
         {
@@ -583,8 +616,10 @@ def _foreign_keys(
         if _key_like(str(column["name"]))
         and column["name"] not in own_key
         and column["name"] not in declared
-    ]
+    ][:MAX_SUGGESTION_KEY_COLUMNS]
     catalog = _key_catalog(warehouse) if candidates else {}
+    child_sampled = bool(profile["sampled"])
+    child_probe = f"(SELECT * FROM {source} LIMIT {MAX_PROFILE_ROWS})" if child_sampled else source
     for column in candidates:
         # Declared keys first, then relations without a declared key (a view,
         # a dbt model without a contract) where the column is unique.
@@ -597,21 +632,52 @@ def _foreign_keys(
             ),
             key=lambda target: not target["declared_key"],
         )
-        for target in targets:
+        for target in targets[:MAX_FK_TARGETS_PER_COLUMN]:
             quoted = _quote(target["column"])
-            if not target["declared_key"]:
-                rows, distinct = warehouse.connection.execute(
-                    f"SELECT count(*), count(DISTINCT {quoted}) FROM {target['source']}"
-                ).fetchone()
-                if not rows or distinct != rows:
-                    continue
-            (orphans,) = warehouse.connection.execute(
-                f"SELECT count(*) FROM {source} AS child WHERE child.{_quote(column)} IS NOT NULL "
-                f"AND NOT EXISTS (SELECT 1 FROM {target['source']} AS parent "
-                f"WHERE parent.{quoted} = child.{_quote(column)})"
+            (target_rows,) = warehouse.connection.execute(
+                f"SELECT count(*) FROM (SELECT 1 FROM {target['source']} "
+                f"LIMIT {MAX_PROFILE_ROWS + 1})"
             ).fetchone()
-            matched_confidence = "high" if target["declared_key"] else "medium"
-            confidence = matched_confidence if orphans == 0 else "low"
+            target_large = int(target_rows) > MAX_PROFILE_ROWS
+            if target_large and not target["declared_key"]:
+                # A bounded prefix cannot establish uniqueness for an
+                # undeclared target key.
+                continue
+            if not target["declared_key"]:
+                rows, present, distinct = warehouse.connection.execute(
+                    f"SELECT count(*), count({quoted}), count(DISTINCT {quoted}) "
+                    f"FROM {target['source']}"
+                ).fetchone()
+                if not rows or present != rows or distinct != rows:
+                    continue
+            orphans = None
+            if not target_large:
+                (orphans,) = warehouse.connection.execute(
+                    f"SELECT count(*) FROM {child_probe} AS child "
+                    f"WHERE child.{_quote(column)} IS NOT NULL "
+                    f"AND NOT EXISTS (SELECT 1 FROM {target['source']} AS parent "
+                    f"WHERE parent.{quoted} = child.{_quote(column)})"
+                ).fetchone()
+            confidence = (
+                "low"
+                if target_large or orphans or child_sampled
+                else "medium"
+                if not target["declared_key"]
+                else "high"
+            )
+            evidence = (
+                f"; target has more than {MAX_PROFILE_ROWS} rows, so values were not checked"
+                if target_large
+                else f"; {orphans} rows in the bounded prefix have no match"
+                if orphans and child_sampled
+                else f"; {orphans} rows here have no match"
+                if orphans
+                else "; every value in the bounded prefix matches"
+                if child_sampled
+                else "; every value here matches a row there"
+            )
+            if (target_large or child_sampled) and not orphans:
+                evidence += "; full-relation referential integrity must be confirmed"
             links.append(
                 {
                     "column": column,
@@ -620,11 +686,7 @@ def _foreign_keys(
                     "reason": (
                         f"{target['relation']}.{target['column']} is "
                         + ("its declared key" if target["declared_key"] else "unique there")
-                        + (
-                            " and every value here matches a row there"
-                            if orphans == 0
-                            else f"; {orphans} rows here have no match there"
-                        )
+                        + evidence
                     ),
                 }
             )
@@ -645,7 +707,7 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     entity = entity_name(name)
     key = _suggest_key(warehouse, described, profile, entity, source)
     key_columns = list(key["columns"]) if key else []
-    links = _foreign_keys(warehouse, described, key_columns, source)
+    links = _foreign_keys(warehouse, described, key_columns, source, profile)
     linked = {link["column"] for link in links}
     rows = profile["row_count"]
     by_name = {column["name"]: column for column in profile["columns"]}

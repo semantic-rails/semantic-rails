@@ -111,6 +111,12 @@ def _mapping(value: Any, *, label: str) -> dict[str, Any]:
     return value
 
 
+def _names(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    return [str(name) for name in value] if isinstance(value, list) else []
+
+
 def load_dbt_artifacts(
     target_dir: str | os.PathLike[str] | None = None,
     *,
@@ -153,6 +159,7 @@ def load_dbt_artifacts(
         for key, entry in entries.items()
     }
     _apply_tests(relations, nodes)
+    _resolve_contract_foreign_keys(relations)
     return DbtProject(
         project_name=str(metadata.get("project_name") or ""),
         adapter_type=str(metadata.get("adapter_type") or ""),
@@ -191,22 +198,33 @@ def _relation(
         column.description = str(spec.get("description") or column.description)
         column.data_type = column.data_type or str(spec.get("data_type") or "")
         for constraint in list(spec.get("constraints", []) or []):
-            kind = str(dict(constraint).get("type") or "")
+            constraint = dict(constraint)
+            kind = str(constraint.get("type") or "")
             if kind == "not_null":
                 column.not_null = True
             elif kind == "unique":
                 column.unique = True
             elif kind == "primary_key":
                 primary_key = [column.name]
+            elif kind == "foreign_key":
+                foreign_keys.append(
+                    {
+                        "columns": [column.name],
+                        "to": str(constraint.get("to") or constraint.get("expression") or ""),
+                        "to_columns": _names(constraint.get("to_columns")),
+                        "source": "contract",
+                    }
+                )
     for constraint in list(entry.get("constraints", []) or []):
         constraint = dict(constraint)
         if constraint.get("type") == "primary_key" and constraint.get("columns"):
             primary_key = [str(name) for name in constraint["columns"]]
-        if constraint.get("type") == "foreign_key" and constraint.get("columns"):
+        if constraint.get("type") == "foreign_key" and _names(constraint.get("columns")):
             foreign_keys.append(
                 {
-                    "columns": [str(name) for name in constraint["columns"]],
+                    "columns": _names(constraint["columns"]),
                     "to": str(constraint.get("to") or constraint.get("expression") or ""),
+                    "to_columns": _names(constraint.get("to_columns")),
                     "source": "contract",
                 }
             )
@@ -230,9 +248,13 @@ def _relation(
 def _target_of(to: str, relations: dict[str, DbtRelation]) -> DbtRelation | None:
     ref = _REF.search(to)
     if ref:
-        name = ref.group(2) or ref.group(1)
+        package, name = (ref.group(1), ref.group(2)) if ref.group(2) else ("", ref.group(1))
         found = [
-            row for row in relations.values() if row.name == name and row.resource_type != "source"
+            row
+            for row in relations.values()
+            if row.name == name
+            and row.resource_type != "source"
+            and (not package or row.unique_id.startswith(f"{row.resource_type}.{package}."))
         ]
         return found[0] if len(found) == 1 else None
     source = _SOURCE.search(to)
@@ -244,7 +266,29 @@ def _target_of(to: str, relations: dict[str, DbtRelation]) -> DbtRelation | None
             and row.unique_id.endswith(f".{source.group(1)}.{source.group(2)}")
         ]
         return found[0] if len(found) == 1 else None
-    return None
+    found = [
+        row
+        for row in relations.values()
+        if to
+        in (
+            row.unique_id,
+            row.relation,
+            row.alias,
+            f"{row.database}.{row.relation}" if row.database else "",
+        )
+    ]
+    return found[0] if len(found) == 1 else None
+
+
+def _resolve_contract_foreign_keys(relations: dict[str, DbtRelation]) -> None:
+    for relation in relations.values():
+        for foreign_key in relation.foreign_keys:
+            if foreign_key["source"] != "contract":
+                continue
+            target = _target_of(str(foreign_key["to"]), relations)
+            if target is not None:
+                foreign_key["to"] = target.unique_id
+                foreign_key["to_relation"] = target.relation
 
 
 def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> None:
@@ -334,7 +378,8 @@ def _suggest(project: DbtProject, relation: DbtRelation) -> dict[str, Any]:
     )
     links = [
         {
-            "column": fk["columns"][0],
+            "columns": list(fk["columns"]),
+            **({"column": fk["columns"][0]} if len(fk["columns"]) == 1 else {}),
             "references": {
                 "relation": fk.get("to_relation") or fk["to"],
                 "columns": list(fk.get("to_columns") or []),
@@ -344,9 +389,9 @@ def _suggest(project: DbtProject, relation: DbtRelation) -> dict[str, Any]:
             "reason": f"dbt {fk['source']}",
         }
         for fk in relation.foreign_keys
-        if len(fk["columns"]) == 1
+        if fk["columns"]
     ]
-    linked = {link["column"] for link in links}
+    linked = {column for link in links for column in link["columns"]}
     times: list[dict[str, Any]] = []
     dimensions: list[dict[str, Any]] = []
     measures: list[dict[str, Any]] = (
@@ -464,7 +509,7 @@ def dbt_import_models(
         draft["references"] = [
             {
                 "relation": link["references"]["relation"],
-                "columns": [link["column"]],
+                "columns": list(link["columns"]),
                 "to_columns": list(link["references"].get("columns") or []),
             }
             for link in suggestion["foreign_keys"]

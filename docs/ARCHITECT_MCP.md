@@ -122,11 +122,19 @@ package: its `default_db`). They open the file read-only and never create, seed 
 - `profile_columns`: row, distinct and null counts, min/max and up to 20 sample values per column
   (`sample_limit`, default 5; `0` returns none). At most one million rows are profiled;
   `max_rows` can lower that cap. Larger tables use a uniform sample, reported as `sampled`.
+  The full row count and the sample's row count are reported separately; counting the full relation
+  may inspect all its rows.
 - `suggest_model`: a key, time roles, dimensions, measures with an aggregation and foreign-key
   links, each with a `confidence` (`high`, `medium`, `low`) and a `reason`. Declared keys come first,
-  then uniqueness in the data, then names; foreign keys are checked for rows with no match. It also
-  returns draft `upsert_model` arguments (low-confidence choices left out) to review before
-  calling `upsert_model`.
+  then uniqueness in the data, then names. For tables above the profile cap, a key that appears
+  unique and non-null in the sample is a low-confidence candidate; the draft includes it for
+  review, and its reason requires full-relation confirmation before applying. Composite-key probes
+  check at most the first one million rows and eight key-like columns. Inferred foreign-key probes
+  consider at most eight child columns and eight target relations per column; a bounded child
+  prefix can miss an unmatched row, so such links are low-confidence and call for confirmation.
+  Target relations above one million rows are checked for a declared key but their values are not
+  matched. Declared warehouse keys and foreign keys retain their declared evidence. All suggestions
+  return draft `upsert_model` arguments to review before calling `upsert_model`.
 
 Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
 Relation components with hyphens, spaces or double quotes use their raw names, as in
@@ -148,14 +156,16 @@ dbt:
   default), so a model in a custom schema keeps it (`main_marts.fct_orders`);
 - the key comes from an enforced contract's `primary_key` constraint, a
   `dbt_utils.unique_combination_of_columns` test, or `unique` + `not_null` tests on one column;
-- foreign keys come from `relationships` tests and contract `foreign_key` constraints;
+- foreign keys come from `relationships` tests and model- or column-level contract `foreign_key`
+  constraints. Targets resolve against manifest identities for `ref()`, package-qualified `ref()`,
+  `source()`, and relation names including alias, schema and database; target columns are preserved;
 - `accepted_values` tests become dimension value sets (`domain`);
 - descriptions carry into the draft; times, dimensions and measures come from column types and
   names.
 
 `import_dbt_project` applies them: `select` names the dbt models, and one parse-gated transaction
 creates or updates a model per dbt model (in `models/<group>/`, `group` defaulting to `dbt`), with
-each `relationships` test written as an entity reference in the model's `entities:` block (`expr:`
+each resolved foreign key written as an entity reference in the model's `entities:` block (`expr:`
 when the foreign-key column is named differently from the target's key), which the engine reads as
 a many-to-one relationship. It follows the usual mutation contract (`expected_revision`,
 `idempotency_key`, `dry_run`). A model whose target is imported in the same call, or already in the

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -258,3 +259,137 @@ def test_import_revision_and_idempotency_are_enforced_at_the_mcp_boundary(
     assert stale["ok"] is False and stale["error"]["details"]["conflict_kind"] == "stale_revision"
     assert reused["ok"] is False
     assert reused["error"]["details"]["conflict_kind"] == "idempotency_key_reuse"
+
+
+def _contract_manifest(
+    workspace: Path, *, column_level: bool, to: str = "ref('dim_customers')"
+) -> None:
+    path = workspace / "dbt" / "target" / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    nodes = manifest["nodes"]
+    for unique_id, node in list(nodes.items()):
+        if (
+            node.get("resource_type") == "test"
+            and node.get("attached_node") == "model.shop_dbt.fct_orders"
+            and node.get("column_name") == "customer_id"
+            and node.get("test_metadata", {}).get("name") == "relationships"
+        ):
+            del nodes[unique_id]
+    constraint = {"type": "foreign_key", "to": to, "to_columns": ["customer_id"]}
+    orders = nodes["model.shop_dbt.fct_orders"]
+    if column_level:
+        orders.setdefault("columns", {}).setdefault(
+            "customer_id", {"name": "customer_id"}
+        ).setdefault("constraints", []).append(constraint)
+    else:
+        orders.setdefault("constraints", []).append({**constraint, "columns": ["customer_id"]})
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+@pytest.mark.parametrize("column_level", [False, True], ids=["model", "column"])
+def test_mcp_import_applies_a_resolved_contract_foreign_key(
+    workspace: Path, column_level: bool
+) -> None:
+    _contract_manifest(workspace, column_level=column_level)
+    server = create_architect_mcp_server(workspace_root=workspace)
+    (imported,) = _calls(
+        server,
+        [
+            (
+                "import_dbt_project",
+                {
+                    "project_path": "shop",
+                    "target_dir": "dbt/target",
+                    "select": ["dim_customers", "fct_orders"],
+                    "expected_revision": project_revision(workspace / "shop"),
+                    "idempotency_key": "contract-fk",
+                },
+            )
+        ],
+    )
+
+    assert imported["ok"] is True, imported
+    assert {"model": "orders", "entity": "customer", "columns": ["customer_id"]} in imported[
+        "references"
+    ]
+    assert not any(
+        row.get("relation") == "ref('dim_customers')" for row in imported["skipped_references"]
+    )
+    assert "customer" in _model(workspace / "shop" / "models" / "orders.yml")["entities"]
+
+
+def test_unresolved_contract_reference_is_reported_instead_of_dropped(workspace: Path) -> None:
+    _contract_manifest(workspace, column_level=False, to="ref('missing_customers')")
+    server = create_architect_mcp_server(workspace_root=workspace)
+    (preview,) = _calls(
+        server,
+        [
+            (
+                "import_dbt_project",
+                {
+                    "project_path": "shop",
+                    "target_dir": "dbt/target",
+                    "select": ["fct_orders"],
+                    "expected_revision": project_revision(workspace / "shop"),
+                    "idempotency_key": "unknown-fk",
+                    "dry_run": True,
+                },
+            )
+        ],
+    )
+
+    assert preview["ok"] is True, preview
+    missing = [
+        row
+        for row in preview["skipped_references"]
+        if row.get("relation") == "ref('missing_customers')"
+    ]
+    assert len(missing) == 1
+    assert "not a model in this package" in missing[0]["reason"]
+
+
+def test_contract_composite_width_and_target_column_mismatches_are_reported(
+    workspace: Path,
+) -> None:
+    _contract_manifest(workspace, column_level=False)
+    path = workspace / "dbt" / "target" / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    orders_constraint = manifest["nodes"]["model.shop_dbt.fct_orders"]["constraints"][-1]
+    orders_constraint["to_columns"] = ["wrong_key"]
+    manifest["nodes"]["model.shop_dbt.fct_order_lines"].setdefault("constraints", []).append(
+        {
+            "type": "foreign_key",
+            "columns": ["order_id", "line_number"],
+            "to": "ref('fct_orders')",
+            "to_columns": ["order_id"],
+        }
+    )
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    server = create_architect_mcp_server(workspace_root=workspace)
+    (preview,) = _calls(
+        server,
+        [
+            (
+                "import_dbt_project",
+                {
+                    "project_path": "shop",
+                    "target_dir": "dbt/target",
+                    "select": ["dim_customers", "fct_orders", "fct_order_lines"],
+                    "expected_revision": project_revision(workspace / "shop"),
+                    "idempotency_key": "composite-mismatch",
+                    "dry_run": True,
+                },
+            )
+        ],
+    )
+
+    assert preview["ok"] is True, preview
+    skipped = preview["skipped_references"]
+    assert any(
+        row.get("columns") == ["order_id", "line_number"] and "width" in row["reason"]
+        for row in skipped
+    )
+    assert any(
+        row.get("to_columns") == ["wrong_key"] and "not customer's key" in row["reason"]
+        for row in skipped
+    )
