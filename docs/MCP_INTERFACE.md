@@ -370,12 +370,17 @@ The warn-and-ignore tools cannot reject all unknown keys because callers legitim
 
 Declarative resources:
 
-- `semantic-rails://capabilities`: the interface version and the names and titles of the tools,
-  resources and prompts. `tools/list` has the tool schemas.
-- `semantic-rails://catalog/summary`: counts and ids per object kind, the same as the `catalog`
-  tool's default `summary` view.
+- `semantic-rails://capabilities`: the v1 interface version and complete tool definitions,
+  resources and prompts. Existing consumers can read `tools[].inputSchema` and `outputSchema`.
+  This is a large resource; `tools/list` also has the tool definitions.
+- `semantic-rails://capabilities/summary`: a small opt-in index of tool names and titles,
+  resources and prompts.
+- `semantic-rails://catalog/summary`: the v1 catalog's descriptive rows and `counts_total`.
+  Existing consumers can read fields such as `catalog.measures[].id`. This is a large resource.
+- `semantic-rails://catalog/index`: a small opt-in index of counts and ids per object kind,
+  the same as the `catalog` tool's default `summary` view.
 - `semantic-rails://catalog/full`: every object's full card and the alias index. It grows with the
-  package (about 200K tokens for `jaffle_shop`), so read the summary first. `resources/read` has
+  package (about 200K tokens for `jaffle_shop`), so read the index first. `resources/read` has
   no paging arguments; paging this resource needs resource templates, planned with the
   `2026-07-28` work below.
 

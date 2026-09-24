@@ -146,6 +146,7 @@ MCP_SERVER_INSTRUCTIONS = (
     "Other tools: catalog lists every id; valid-values lists a dimension's values; "
     "build-options suggests the next choice for a guided builder; segment-validate, "
     "segment-explain and segment-preview work with package-authored segments.\n"
+    "For small resource reads, use capabilities/summary and catalog/index.\n"
     "\n"
     'MCP validate, compile and execute default to minimal; pass verbosity "compact" or "full" '
     'for more. plan defaults to detail "best"; detail "query" is shorter. Errors carry '
@@ -783,24 +784,36 @@ RESOURCE_DEFINITIONS: tuple[ResourceDefinition, ...] = (
         uri="semantic-rails://capabilities",
         name="capabilities",
         description=(
-            "The MCP interface version and the names of this server's tools, resources and "
-            "prompts. tools/list has the tool schemas."
+            "V1 capabilities with complete tool definitions, resources and prompts. Large; "
+            "use capabilities/summary for names and titles."
+        ),
+    ),
+    ResourceDefinition(
+        uri="semantic-rails://capabilities/summary",
+        name="capabilities-summary",
+        description=(
+            "Small capabilities index: tool names and titles, plus resources and prompts."
         ),
     ),
     ResourceDefinition(
         uri="semantic-rails://catalog/summary",
         name="catalog-summary",
         description=(
-            "Counts and ids per object kind for the active package, as the catalog tool "
-            "returns by default."
+            "V1 catalog summary with descriptive rows and counts. Large; use catalog/index "
+            "for counts and ids."
         ),
+    ),
+    ResourceDefinition(
+        uri="semantic-rails://catalog/index",
+        name="catalog-index",
+        description=("Small catalog index: counts and ids per object kind for the active package."),
     ),
     ResourceDefinition(
         uri="semantic-rails://catalog/full",
         name="catalog-full",
         description=(
             "Every object's full card and the alias index for the active package. Large: "
-            "start with catalog-summary."
+            "start with catalog-index."
         ),
     ),
 )
@@ -1765,28 +1778,30 @@ class SemanticLayerMCPAdapter:
             request_context.to_policy_context() if request_context is not None else None
         )
         request_id = request_context.request_id if request_context is not None else ""
-        if uri == "semantic-rails://capabilities":
-            # An index, not a second copy of tools/list: names and titles only.
-            payload: dict[str, Any] = {
-                "interface_version": MCP_INTERFACE_VERSION,
-                "package_id": self.package_id,
-                "tools": [
+        if uri in {"semantic-rails://capabilities", "semantic-rails://capabilities/summary"}:
+            tools = self.list_tools()
+            if uri.endswith("/summary"):
+                tools = [
                     {
                         "name": tool["name"],
                         "title": (tool.get("annotations") or {}).get("title", tool["name"]),
                     }
-                    for tool in self.list_tools()
-                ],
+                    for tool in tools
+                ]
+            payload: dict[str, Any] = {
+                "interface_version": MCP_INTERFACE_VERSION,
+                "package_id": self.package_id,
+                "tools": tools,
                 "resources": self.list_resources(),
                 "prompts": self.list_prompts(),
             }
-        elif uri == "semantic-rails://catalog/summary":
+        elif uri in {"semantic-rails://catalog/summary", "semantic-rails://catalog/index"}:
             payload = self._envelope(
                 {
                     "catalog": resolve_catalog(
                         self.runtime,
                         view="summary",
-                        verbosity="summary",
+                        verbosity="compact" if uri.endswith("/summary") else "summary",
                         policy_context=policy_context,
                     )
                 },
