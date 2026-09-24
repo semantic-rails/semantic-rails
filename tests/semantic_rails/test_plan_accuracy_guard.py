@@ -317,6 +317,7 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
         "revenue excluding Brooklyn including Philadelphia",
         "revenue excluding Brooklyn, and including Philadelphia",
         "revenue excluding Brooklyn but include Philadelphia",
+        "revenue not including Brooklyn, including Philadelphia",
     ],
 )
 def test_explicit_inclusion_ends_exclusion_scope(
@@ -336,6 +337,14 @@ def test_explicit_inclusion_ends_exclusion_scope(
 def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAdapter) -> None:
     draft = _query(where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}])
     assert _gap_kinds(adapter, "revenue excluding Brooklyn, Philadelphia", draft) == []
+
+
+@pytest.mark.parametrize("text", ["revenue not including Brooklyn", "revenue not include Brooklyn"])
+def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, text: str) -> None:
+    excluded = _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}])
+    included = _query(where=[{"field": STORE, "op": "=", "value": "Brooklyn"}])
+    assert _gap_kinds(adapter, text, excluded) == []
+    assert _gap_kinds(adapter, text, included) == ["negation_reversed"]
 
 
 @pytest.mark.parametrize(
@@ -663,8 +672,14 @@ def test_mcp_plan_keeps_correct_value_and_ranking_drafts(
             ["Brooklyn", "Philadelphia"],
             "low_confidence",
         ),
+        (
+            "revenue not including Brooklyn, including Philadelphia",
+            ["Brooklyn", "Philadelphia"],
+            "low_confidence",
+        ),
         ("revenue excluding Brooklyn, Philadelphia", ["Brooklyn", "Philadelphia"], "ok"),
         ("revenue excluding Brooklyn, including Philadelphia", ["Brooklyn"], "ok"),
+        ("revenue not including Brooklyn, including Philadelphia", ["Brooklyn"], "ok"),
     ],
 )
 def test_mcp_plan_keeps_mixed_value_polarity(
@@ -688,6 +703,25 @@ def test_mcp_plan_keeps_mixed_value_polarity(
         ]
     else:
         assert payload.get("why") is None
+
+
+@pytest.mark.parametrize("text", ["revenue not including Brooklyn", "revenue not include Brooklyn"])
+@pytest.mark.parametrize("op", ["!=", "="])
+def test_mcp_plan_keeps_negated_include_negative(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    op: str,
+) -> None:
+    _draft_plan(monkeypatch, _query(where=[{"field": STORE, "op": op, "value": "Brooklyn"}]))
+    payload = adapter.call_tool("plan", {"intent": text})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == ("ok" if op == "!=" else "low_confidence")
+    if op == "!=":
+        assert payload.get("why") is None
+    else:
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert "negation_reversed" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
 
 
 def test_mcp_plan_defaults_to_the_query_detail(adapter: SemanticLayerMCPAdapter) -> None:

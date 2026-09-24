@@ -1006,8 +1006,12 @@ def _excluded_value_spans(text: str) -> list[tuple[int, int]]:
         for match in pattern.finditer(text):
             start = match.start("value")
             tail = text[start:]
-            stop = re.search(r"[.;!?]|\b(?:including|include)\b", tail, re.IGNORECASE)
-            spans.append((start, start + stop.start() if stop else len(text)))
+            # In "not including Brooklyn", the first "including" completes
+            # the exclusion; only a later one opens a positive clause.
+            initial = re.match(r"(?:including|include)\b", tail, re.IGNORECASE)
+            scan_from = initial.end() if initial else 0
+            stop = re.search(r"[.;!?]|\b(?:including|include)\b", tail[scan_from:], re.IGNORECASE)
+            spans.append((start, start + scan_from + stop.start() if stop else len(text)))
     return spans
 
 
