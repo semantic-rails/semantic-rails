@@ -30,7 +30,7 @@ from semantic_rails.architect_service import (
 )
 from semantic_rails.architect_transactions import project_revision
 from semantic_rails.config import load_package_config
-from semantic_rails.config_validation import PackageReference
+from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.package_tools import run_examples_report
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse
@@ -729,6 +729,203 @@ def test_create_same_entity_refuses_to_replace_authored_relation(
             )
     assert _project_bytes(project) == before
     assert project_revision(project) == revision
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
+@pytest.mark.parametrize("same_path", [False, True], ids=["different-path", "same-path"])
+@pytest.mark.parametrize("graph_case", ["multi_entity", "missing", "unrecognized"])
+def test_create_overwrite_refuses_ambiguous_graph_before_model_replacement(
+    tmp_path: Path, through_mcp: bool, dry_run: bool, same_path: bool, graph_case: str
+) -> None:
+    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
+    project = tmp_path / "shop"
+    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
+    graph_path = project / "graph.yml"
+    model_path = project / "models" / "core" / "orders.yml"
+    if graph_case == "multi_entity":
+        graph = _yaml(graph_path)
+        graph["graph"]["entities"]["customer"] = {
+            "label": "Customer",
+            "key": ["customer_id"],
+            "model": "orders",
+            "allowed_as_root": True,
+        }
+        graph_path.write_text(yaml.safe_dump(graph, sort_keys=False), encoding="utf-8")
+        model = _yaml(model_path)
+        model["model"]["entities"]["customer"] = {}
+        model["model"]["relation"] = "main_marts.authored_orders_view"
+        model_path.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
+        parse, _ = parse_config_report(PackageReference(source_path=str(project)))
+        assert parse["ok"] is True, parse
+    elif graph_case == "missing":
+        graph_path.unlink()
+        model_path.write_bytes(
+            model_path.read_bytes().replace(
+                b"main_marts.fct_orders", b"main_marts.authored_orders_view"
+            )
+        )
+    else:
+        graph = _yaml(graph_path)
+        graph["graph"]["entities"]["order"]["model"] = "legacy_orders"
+        graph_path.write_text(yaml.safe_dump(graph, sort_keys=False), encoding="utf-8")
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    new_entity = "orders" if same_path else "customer"
+    if through_mcp:
+        server = create_architect_mcp_server(workspace_root=tmp_path)
+        (report,) = _session_call(
+            server,
+            [
+                (
+                    "create_project",
+                    {
+                        "package_id": "shop",
+                        "project_path": "shop",
+                        "expected_revision": revision,
+                        "idempotency_key": f"ambiguous-{graph_case}-{same_path}-{dry_run}",
+                        "description": EXTERNAL_SHOP.description,
+                        "warehouse": "duckdb",
+                        "data": "external",
+                        "first_entity": new_entity,
+                        "relation": "main_marts.fct_orders",
+                        "primary_key": "order_id",
+                        "time_column": "ordered_at",
+                        "amount_column": "order_total",
+                        "dimension_column": "status",
+                        "overwrite": True,
+                        "dry_run": dry_run,
+                    },
+                )
+            ],
+        )
+        assert report["ok"] is False, report
+        assert report["error"]["details"]["reason"].startswith("scaffold_")
+    else:
+        spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity=new_entity))
+        with pytest.raises(SemanticLayerError, match="modified|receipt|provenance|missing") as exc:
+            create_project(
+                "shop",
+                spec,
+                workspace_root=tmp_path,
+                expected_revision=revision,
+                overwrite=True,
+                dry_run=dry_run,
+            )
+        assert str(exc.value.details["reason"]).startswith("scaffold_")
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+    assert db.read_bytes() == before["data/shop.duckdb"]
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
+def test_create_overwrite_refuses_modified_shared_scaffold_file(
+    tmp_path: Path, through_mcp: bool, dry_run: bool
+) -> None:
+    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
+    project = tmp_path / "shop"
+    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
+    metrics = project / "metrics" / "core.yml"
+    metrics.write_bytes(metrics.read_bytes() + b"# authored metric note\n")
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    if through_mcp:
+        server = create_architect_mcp_server(workspace_root=tmp_path)
+        (report,) = _session_call(
+            server,
+            [
+                (
+                    "create_project",
+                    {
+                        "package_id": "shop",
+                        "project_path": "shop",
+                        "expected_revision": revision,
+                        "idempotency_key": f"shared-{dry_run}",
+                        "warehouse": "duckdb",
+                        "data": "external",
+                        "description": EXTERNAL_SHOP.description,
+                        "first_entity": "order",
+                        "relation": "main_marts.fct_orders",
+                        "primary_key": "order_id",
+                        "time_column": "ordered_at",
+                        "amount_column": "order_total",
+                        "dimension_column": "status",
+                        "overwrite": True,
+                        "dry_run": dry_run,
+                    },
+                )
+            ],
+        )
+        assert report["ok"] is False, report
+    else:
+        with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+            create_project(
+                "shop",
+                EXTERNAL_SHOP,
+                workspace_root=tmp_path,
+                expected_revision=revision,
+                overwrite=True,
+                dry_run=dry_run,
+            )
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+    assert db.read_bytes() == before["data/shop.duckdb"]
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
+def test_create_overwrite_byte_identical_noop_needs_no_receipt(
+    tmp_path: Path, through_mcp: bool, dry_run: bool
+) -> None:
+    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
+    project = tmp_path / "shop"
+    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
+    for receipt in (tmp_path / ".semantic-rails" / "architect-transactions").glob("*/*.json"):
+        receipt.unlink()
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    if through_mcp:
+        server = create_architect_mcp_server(workspace_root=tmp_path)
+        (report,) = _session_call(
+            server,
+            [
+                (
+                    "create_project",
+                    {
+                        "package_id": "shop",
+                        "project_path": "shop",
+                        "expected_revision": revision,
+                        "idempotency_key": f"noop-{dry_run}",
+                        "warehouse": "duckdb",
+                        "data": "external",
+                        "description": EXTERNAL_SHOP.description,
+                        "first_entity": "order",
+                        "relation": "main_marts.fct_orders",
+                        "primary_key": "order_id",
+                        "time_column": "ordered_at",
+                        "amount_column": "order_total",
+                        "dimension_column": "status",
+                        "overwrite": True,
+                        "dry_run": dry_run,
+                    },
+                )
+            ],
+        )
+    else:
+        report = create_project(
+            "shop",
+            EXTERNAL_SHOP,
+            workspace_root=tmp_path,
+            expected_revision=revision,
+            overwrite=True,
+            dry_run=dry_run,
+        ).report
+    assert report["ok"] is True, report
+    assert report["changes"] == []
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+    assert db.read_bytes() == before["data/shop.duckdb"]
 
 
 @pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
