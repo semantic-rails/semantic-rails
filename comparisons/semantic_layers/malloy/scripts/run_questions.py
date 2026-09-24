@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -24,24 +25,24 @@ ENV = {
 }
 
 
-QUESTION_STATUSES = {
-    "q01_orders_by_month": "native",
-    "q02_revenue_by_store_by_month": "native",
-    "q03_item_revenue_by_product_type_by_month": "native",
-    "q04_aov_by_store": "native",
-    "q05_orders_and_item_revenue_by_store_by_month": "native",
-    "q06_new_customer_orders_by_month": "native",
-    "q07_delivered_revenue_by_month": "native",
-    "q08_revenue_by_customer_segment_as_of_order_time": "workaround",
-    "q09_session_to_order_conversion_7d": "workaround",
-    "q10_orders_from_customers_with_10plus_orders_in_month": "workaround",
-    "q11_repeat_customer_orders_by_store_by_month": "workaround",
-    "q12_orders_by_month_with_lifetime_spend_500_filter": "workaround",
-    "q13_daily_orders_from_customers_with_10plus_orders_in_month": "workaround",
-    "q14_revenue_from_customers_with_10plus_orders_same_store_month": "workaround",
-    "q15_same_store_session_to_order_conversion_7d": "workaround",
-    "q16_revenue_by_customer_segment_as_of_delivered_time": "workaround",
-}
+QUESTION_IDS = [
+    "q01_orders_by_month",
+    "q02_revenue_by_store_by_month",
+    "q03_item_revenue_by_product_type_by_month",
+    "q04_aov_by_store",
+    "q05_orders_and_item_revenue_by_store_by_month",
+    "q06_new_customer_orders_by_month",
+    "q07_delivered_revenue_by_month",
+    "q08_revenue_by_customer_segment_as_of_order_time",
+    "q09_session_to_order_conversion_7d",
+    "q10_orders_from_customers_with_10plus_orders_in_month",
+    "q11_repeat_customer_orders_by_store_by_month",
+    "q12_orders_by_month_with_lifetime_spend_500_filter",
+    "q13_daily_orders_from_customers_with_10plus_orders_in_month",
+    "q14_revenue_from_customers_with_10plus_orders_same_store_month",
+    "q15_same_store_session_to_order_conversion_7d",
+    "q16_revenue_by_customer_segment_as_of_delivered_time",
+]
 
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -56,7 +57,7 @@ def _write(path: Path, text: str) -> None:
 def _ensure_cli() -> None:
     if MALLOY_BIN.exists():
         return
-    install = _run(["npm", "install"])
+    install = _run(["npm", "ci"])
     _write(RESULTS_DIR / "npm_install.stdout.txt", install.stdout)
     _write(RESULTS_DIR / "npm_install.stderr.txt", install.stderr)
     if install.returncode != 0 or not MALLOY_BIN.exists():
@@ -83,6 +84,10 @@ def main() -> None:
         shutil.rmtree(RESULTS_DIR)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_cli()
+    cli_package = PROJECT_DIR / "node_modules" / "@malloydata" / "cli" / "package.json"
+    cli_version = json.loads(cli_package.read_text(encoding="utf-8"))["version"]
+    with duckdb.connect(str(DB_PATH), read_only=True) as con:
+        (fingerprint,) = con.execute("SELECT fingerprint FROM comparison_dataset").fetchone()
 
     validate = _run(
         [
@@ -101,7 +106,7 @@ def main() -> None:
         raise SystemExit("Malloy validation failed; see shared/results/malloy/validate.stderr.txt")
 
     summary: list[dict[str, object]] = []
-    for question_id, status in QUESTION_STATUSES.items():
+    for question_id in QUESTION_IDS:
         target_dir = RESULTS_DIR / question_id
         compile_cmd = [
             str(MALLOY_BIN),
@@ -139,7 +144,7 @@ def main() -> None:
         summary.append(
             {
                 "question_id": question_id,
-                "status": status if execution_status else "unsupported",
+                "status": "executed" if execution_status else "unsupported",
                 "query_path": str(query_file.relative_to(REPO_ROOT)),
                 "result_path": str((target_dir / "result.json").relative_to(REPO_ROOT)),
                 "sql_path": str((target_dir / "sql.sql").relative_to(REPO_ROOT)),
@@ -151,7 +156,17 @@ def main() -> None:
         )
 
     (RESULTS_DIR / "summary.json").write_text(
-        json.dumps({"layer": "malloy", "questions": summary}, indent=2, sort_keys=True),
+        json.dumps(
+            {
+                "layer": "malloy",
+                "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "dataset_fingerprint": fingerprint,
+                "environment": {"@malloydata/cli": cli_version, "duckdb": duckdb.__version__},
+                "questions": summary,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
 

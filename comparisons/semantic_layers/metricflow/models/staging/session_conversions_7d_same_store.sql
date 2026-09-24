@@ -7,8 +7,8 @@ with matched as (
         s.store_id,
         s.started_at,
         min(o.ordered_at) as first_ordered_at
-    from jaffle_storefront_session as s
-    left join jaffle_order as o
+    from comparison_storefront_sessions as s
+    left join comparison_orders as o
         on s.customer_id = o.customer_id
        and s.store_id = o.store_id
        and o.ordered_at >= s.started_at

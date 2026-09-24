@@ -11,11 +11,15 @@ these nodes; the compiler consumes them.
 from __future__ import annotations
 
 import ast as pyast
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from functools import cache
+from typing import TYPE_CHECKING, Any
 
 from .errors import SemanticLayerError
+
+if TYPE_CHECKING:
+    from .schema import MeasureConfig, PackageConfig
 
 
 @dataclass(frozen=True)
@@ -270,6 +274,157 @@ SemanticExpr = (
 )
 
 
+# Tags carried as data inside expression payloads (inline metric_predicate
+# thresholds and value-filter rows). They are never parsed as expressions.
+_EXPRESSION_DATA_TAGS = frozenset({"percentile", "value_filter"})
+
+
+@cache
+def _reference_expression_kinds() -> frozenset[str]:
+    """Every tag the expression parser dispatches, plus expression data tags.
+
+    ``_VALID_KEYS_BY_KIND`` gates :func:`parse_semantic_expression` for query,
+    segment and config expressions alike, so shape checks accept exactly the
+    kinds and aliases (``nullif``, ``not_in``, ...) that normalization accepts.
+    """
+    return frozenset(_VALID_KEYS_BY_KIND) | _EXPRESSION_DATA_TAGS
+
+
+def resolve_filter_dimension(field: str, config: PackageConfig) -> str:
+    """Use the same canonical field identity for authorization and binding."""
+    field = field.strip()
+    if any(row.id == field for row in config.dimensions):
+        return field
+    matches = [
+        row.id for row in config.dimensions if field in {row.id, row.name, row.label, *row.aliases}
+    ]
+    if not matches:
+        raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown filter field '{field}'")
+    if len(matches) > 1:
+        raise SemanticLayerError(
+            "AMBIGUOUS_ALIAS",
+            f"Filter field '{field}' is ambiguous",
+            details={"field": field, "candidates": matches},
+        )
+    return matches[0]
+
+
+def resolve_table_entity(config: PackageConfig, table: str, *, owner: str = "") -> str | None:
+    """Resolve table-qualified columns consistently in policy and compiler paths."""
+    candidates = sorted({row.id for row in config.entities if row.table == table})
+    if owner in candidates:
+        return owner
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Table reference '{table}' maps to multiple entities; specify an explicit entity.",
+            details={"table": table, "entity_ids": candidates},
+        )
+    return None
+
+
+def resolve_measure_temporal_role(
+    measure: MeasureConfig,
+    explicit_role: str = "",
+    overrides: Mapping[str, str] | None = None,
+    query_role: str = "",
+) -> str:
+    """Effective role shared by binding and dependency discovery."""
+    role = explicit_role or (overrides or {}).get(measure.id, "")
+    if not role and query_role in measure.compatible_temporal_roles:
+        role = query_role
+    if not role:
+        role = measure.compatible_temporal_roles[0] if measure.compatible_temporal_roles else ""
+    return role
+
+
+def _opaque_expression_data(node: Mapping[str, Any], key: str) -> bool:
+    if key == "parameters":
+        return True
+    return key == "value" and (
+        str(node.get("kind", "")).strip() in {"literal", "value_filter"}
+        or "field" in node
+        or "dimension" in node
+    )
+
+
+def validate_expression_shapes(value: Any) -> None:
+    """Fail closed on unknown expression tags, without interpreting literal data."""
+    if isinstance(value, Mapping):
+        raw_kind = value.get("kind")
+        kind = raw_kind.strip() if isinstance(raw_kind, str) else raw_kind
+        if "kind" in value and (
+            not isinstance(kind, str)
+            or (kind.strip() and kind.strip() not in _reference_expression_kinds())
+        ):
+            raise SemanticLayerError("INVALID_EXPRESSION_AST", "Unsupported expression kind.")
+        for key, child in value.items():
+            if _opaque_expression_data(value, key):
+                continue
+            validate_expression_shapes(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            validate_expression_shapes(child)
+
+
+def collect_object_references(
+    value: Any, config: PackageConfig | None = None, *, owner: str = ""
+) -> list[str]:
+    """Declared expression references for lineage, caveats and metric constraints.
+
+    This describes reference positions, not a bound dependency closure. Object
+    access gates consume compiler BoundQuery identities. Literal/filter values
+    and scalar parameters remain data, including reference-shaped strings.
+    """
+    validate_expression_shapes(value)
+    references: dict[str, None] = {}
+    reference_keys = {
+        "measure",
+        "metric",
+        "metric_recipe",
+        "field",
+        "dimension",
+        "entity",
+        "basis_metric",
+        "temporal_role",
+    }
+    reference_lists = {"partition_by", "constant_properties", "group_by", "preview_dimensions"}
+
+    def visit(node: Any) -> None:
+        if isinstance(node, Mapping):
+            if config is not None and "column" in node and not str(node.get("entity", "")).strip():
+                table = str(node.get("table", "")).strip()
+                if table and (entity := resolve_table_entity(config, table, owner=owner)):
+                    references[entity] = None
+            for key, child in node.items():
+                if _opaque_expression_data(node, key):
+                    continue
+                if key in reference_keys and (reference := str(child).strip()):
+                    if key in {"field", "dimension"} and config is not None:
+                        reference = resolve_filter_dimension(reference, config)
+                    references[reference] = None
+                if key in reference_lists and isinstance(child, (list, tuple)):
+                    for reference in child:
+                        if isinstance(reference, str) and reference.strip():
+                            references[reference.strip()] = None
+                if key in {"dimension_bindings", "temporal_role_overrides"} and isinstance(
+                    child, Mapping
+                ):
+                    for reference, role in child.items():
+                        references[str(reference).strip()] = None
+                        if key == "temporal_role_overrides" and isinstance(role, str):
+                            references[role.strip()] = None
+                visit(child)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return list(references)
+
+
 def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
     if isinstance(expr, MeasureRefExpr):
         out: dict[str, Any] = {
@@ -454,6 +609,10 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             out["predicates"] = [dict(item) for item in expr.predicates]
         if expr.null_behavior:
             out["null_behavior"] = expr.null_behavior
+        if expr.anchor:
+            out["anchor"] = dict(expr.anchor)
+        if expr.window:
+            out["window"] = dict(expr.window)
         return out
     if isinstance(expr, RatioExpr):
         return {
@@ -699,6 +858,59 @@ def _closest_key_matches(name: str, candidates: Iterable[str], *, limit: int = 3
     return get_close_matches(str(name), [str(c) for c in candidates], n=limit, cutoff=0.5)
 
 
+def _aggregate_filter_entries(raw: Any) -> tuple[list[dict[str, Any]] | None, list[str] | str]:
+    if not isinstance(raw, dict) or set(raw) != {"all"} or not isinstance(raw["all"], list):
+        return None, sorted(raw) if isinstance(raw, dict) else type(raw).__name__
+    clauses: list[dict[str, Any]] = []
+    for index, item in enumerate(raw["all"]):
+        if not isinstance(item, dict):
+            return None, f"all[{index}]"
+        is_predicate = (
+            set(item) == {"expression"}
+            and isinstance(item["expression"], dict)
+            and item["expression"].get("kind") == "metric_predicate"
+        )
+        is_field = (
+            "field" in item
+            and set(item) <= {"field", "op", "value"}
+            and not (isinstance(item["field"], str) and not item["field"].strip())
+        )
+        if is_predicate or is_field:
+            clauses.append(item)
+        elif (
+            "dimension" in item
+            and set(item) <= {"dimension", "op", "value"}
+            and not (isinstance(item["dimension"], str) and not item["dimension"].strip())
+        ):
+            clauses.append(
+                {
+                    "field": str(item["dimension"]),
+                    **{k: v for k, v in item.items() if k != "dimension"},
+                }
+            )
+        else:
+            return None, f"all[{index}]"
+    return clauses, ""
+
+
+def _aggregate_filter(raw: Any) -> dict[str, Any]:
+    """Reject filter shapes binding would ignore; accept ``{all: [...]}`` or nothing."""
+    if raw is None or (isinstance(raw, dict) and not raw):
+        return {}
+    clauses, shape = _aggregate_filter_entries(raw)
+    if clauses is not None:
+        return {"all": clauses}
+    raise SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        (
+            "An aggregate filter must be {all: [...]}, a list of {field, op, value} "
+            "conditions or {expression: <metric_predicate>} entries; got "
+            f"{shape}. Wrap a single condition in all: [...]."
+        ),
+        details={"received": shape},
+    )
+
+
 def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context: str) -> None:
     """Raise ``INVALID_EXPRESSION_KEY`` when an expression dict carries a
     top-level key that the kind's dispatch arm does not recognise. This
@@ -780,6 +992,9 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         )
     expr = dict(raw)
     kind = str(expr.get("kind", "")).strip()
+    if kind and kind not in _VALID_KEYS_BY_KIND:
+        # Reject before shorthand dispatch can discard the tag and its children.
+        raise SemanticLayerError("INVALID_EXPRESSION_AST", "Unsupported expression kind.")
     # Infer the "effective kind" for unknown-key checking when the
     # caller used a kindless shorthand (``{"measure": ...}`` or
     # ``{"metric": ...}``). The actual dispatch below still owns
@@ -803,7 +1018,7 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             aggregation=str(expr.get("aggregation", "")).strip(),
             temporal_role=str(expr.get("temporal_role", "")).strip(),
             parameters=dict(expr.get("parameters", {}) or {}),
-            filter=dict(expr.get("filter", {}) or {}),
+            filter=_aggregate_filter(expr.get("filter")),
             window=dict(expr.get("window", {}) or {}),
         )
     if kind == "aggregate_if":

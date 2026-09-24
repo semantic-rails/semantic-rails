@@ -6,6 +6,8 @@ on:
       - main
       - master
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -13,12 +15,15 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Pushes to main arrive in bursts from the merge queue; each commit keeps its own run.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
   changes:
     name: Detect changes
+    # Merge groups always run every job, so there's nothing to filter.
+    if: ${{ github.event_name != 'merge_group' }}
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
@@ -58,7 +63,7 @@ jobs:
     name: Backend (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true') }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -91,7 +96,7 @@ jobs:
     name: Lint & type-check
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -115,7 +120,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -151,7 +156,7 @@ jobs:
     name: Docs
     runs-on: ubuntu-latest
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.docs == 'true' }}
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.docs == 'true') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -178,6 +183,8 @@ jobs:
         # succeed for the gate to pass. The `lint` job runs ruff +
         # mypy and IS required — they were continue-on-error during
         # the round-six cleanup but are now load-bearing.
+        # A merge-queue group has no path filter, so there every suite
+        # job must have run and succeeded; a skip there means it never ran.
         run: |
           results='${{ toJSON(needs) }}'
           echo "$results"
@@ -186,6 +193,11 @@ jobs:
           needs = json.loads(os.environ["RESULTS"])
           bad = {n: r["result"] for n, r in needs.items()
                  if r["result"] in ("failure", "cancelled")}
+          if os.environ["EVENT"] == "merge_group":
+              for name in ("backend", "lint", "security", "docs"):
+                  result = needs.get(name, {}).get("result", "missing")
+                  if result != "success":
+                      bad[name] = result
           if bad:
               print(f"Failed jobs: {bad}", file=sys.stderr)
               sys.exit(1)
@@ -193,3 +205,4 @@ jobs:
           EOF
         env:
           RESULTS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}

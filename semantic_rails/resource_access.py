@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 from .ast import normalize_query
+from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
-from .expressions import MetricRecipeRefExpr
+from .expressions import MetricRecipeRefExpr, collect_object_references
 from .policies import enforce_query_policies
 from .request_context import RequestContext, context_from_policy_context
 from .schema import PackageConfig
@@ -80,21 +81,8 @@ def _capabilities(access: ResourceAccess) -> dict[str, Any]:
     }
 
 
-def _references(value: Any) -> set[str]:
-    """Traverse all expression/spec children, including new shapes and bindings."""
-    refs: set[str] = set()
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            refs.update(_references(key))
-            refs.update(_references(child))
-    elif isinstance(value, (list, tuple)):
-        for child in value:
-            refs.update(_references(child))
-    elif isinstance(value, str) and value.startswith(
-        ("metric.", "measure.", "dimension.", "entity.", "temporal_role.", "segment.")
-    ):
-        refs.add(value)
-    return refs - {""}
+def _references(value: Any, config: PackageConfig | None = None, *, owner: str = "") -> set[str]:
+    return set(collect_object_references(value, config, owner=owner))
 
 
 @dataclass(frozen=True)
@@ -113,38 +101,15 @@ class ResourceAccess:
         return self.context.metric_allowlist is not None
 
     def _check_policies(self, object_ids: set[str], query: dict[str, Any] | None = None) -> None:
-        recipes = {row.id: row for row in self.config.metric_recipes}
-        measures = {row.id: row for row in self.config.measures}
-        dimensions = {row.id: row for row in self.config.dimensions}
-        temporal_roles = {row.id: row for row in self.config.temporal_roles}
-        pending = list(object_ids)
-        seen: set[str] = set()
-        while pending:
-            object_id = pending.pop()
-            if object_id in seen:
-                continue
-            seen.add(object_id)
-            recipe = recipes.get(object_id)
-            if recipe is not None:
-                pending.extend(_references(asdict(recipe.expression)))
-                pending.extend(_references(recipe.filter_spec))
-                pending.extend(_references(recipe.window_spec))
-                if recipe.temporal_role:
-                    pending.append(recipe.temporal_role)
-            measure = measures.get(object_id)
-            if measure is not None:
-                pending.extend(_references(asdict(measure.expr)))
-                pending.extend([measure.entity, measure.subject_entity, measure.aggregation_entity])
-            dimension = dimensions.get(object_id)
-            if dimension is not None:
-                pending.append(dimension.entity)
-            role = temporal_roles.get(object_id)
-            if role is not None:
-                pending.append(role.dimension)
         try:
+            references = set(object_ids)
+            if query is not None:
+                references = set(bind_query(self.config, None, query).object_ids)
+            else:
+                references.update(bind_metadata_objects(self.config, object_ids))
             enforce_query_policies(
                 self.config,
-                seen,
+                references,
                 environment=self.context.environment,
                 audience=self.context.audience,
                 roles=self.context.roles,

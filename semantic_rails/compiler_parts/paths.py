@@ -32,6 +32,7 @@ from ..expressions import (
 from ..ir import BoundMeasure, PathSelection
 from ..schema import PackageConfig, RelationshipConfig
 from ..sql_ast import SqlBinary, SqlIdentifier, SqlIsNull, SqlJoin, SqlLiteral, SqlTableRef
+from .dependencies import record_bound_object
 from .indexes import (
     _default_temporal_role,
     _dimension_index,
@@ -87,12 +88,14 @@ def _direct_entity_key_source_expr(
             target_columns = list(rel.target_columns or [rel.target_column])
             for source_col, target_col in zip(source_columns, target_columns, strict=True):
                 if target_col == target_key_col:
+                    record_bound_object(rel, config)
                     return _column_ref(source_table, source_col)
         if rel.target_entity == source_entity and rel.source_entity == target_entity:
             source_columns = list(rel.target_columns or [rel.target_column])
             target_columns = list(rel.source_columns or [rel.source_column])
             for source_col, target_col in zip(source_columns, target_columns, strict=True):
                 if target_col == target_key_col:
+                    record_bound_object(rel, config)
                     return _column_ref(source_table, source_col)
     return None
 
@@ -142,6 +145,8 @@ def _entity_key_dimension_ids(entity_id: str, config: PackageConfig) -> list[str
                 "INVALID_METRIC_PREDICATE",
                 f"Entity '{entity_id}' is missing a dimension for key column '{key_col}'",
             )
+        # This dimension was selected by column identity rather than an ID lookup.
+        _dimension_index(config).get(dim.id)
         key_dims.append(dim.id)
     return key_dims
 

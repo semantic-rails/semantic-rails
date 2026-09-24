@@ -100,3 +100,9 @@ CREATE OR REPLACE TABLE COMPARISON_STOREFRONT_SESSIONS (
   CONVERTED_ORDER_ID VARCHAR,
   CONVERTED_AT TIMESTAMP_NTZ
 );
+
+-- The shared dataset's fingerprint, exported with the tables, so a Snowflake run records which
+-- data it answered (see shared/scripts/bootstrap_shared_duckdb.py).
+CREATE OR REPLACE TABLE COMPARISON_DATASET (
+  FINGERPRINT VARCHAR
+);

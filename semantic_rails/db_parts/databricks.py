@@ -121,7 +121,7 @@ class DatabricksNativeAdapter(DbApiAdapter):
             engine=self.engine,
             connection_kind=self.connection_kind,
         )
-        return driver.connect(**self._connect_kwargs())
+        return driver.connect(**self._connect_kwargs(), use_cloud_fetch=False)
 
     def _apply_statement_timeout(self, cursor: Any, timeout_seconds: int) -> None:
         cursor.execute(f"SET STATEMENT_TIMEOUT = {int(timeout_seconds)}")

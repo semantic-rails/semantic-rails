@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from .diagnostics import semantic_issue
-from .expressions import expr_to_dict
+from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
 from .schema import PackageConfig, SemanticCaveatConfig
 
@@ -222,16 +222,7 @@ def _where_values(row: dict[str, Any]) -> set[str]:
 
 
 def _collect_expr_object_ids(expr: dict[str, Any]) -> set[str]:
-    ids: set[str] = set()
-    if not isinstance(expr, dict):
-        return ids
-    if expr.get("measure"):
-        ids.add(str(expr["measure"]))
-    if expr.get("metric"):
-        ids.add(str(expr["metric"]))
-    for child in _expr_children(expr):
-        ids.update(_collect_expr_object_ids(child))
-    return ids
+    return set(collect_object_references(expr))
 
 
 def _contains_kind(expr: dict[str, Any], kind: str) -> bool:

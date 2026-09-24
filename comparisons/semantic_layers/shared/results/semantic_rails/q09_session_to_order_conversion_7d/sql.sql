@@ -1,19 +1,19 @@
 WITH conversion_leaf_1__conversion_base_1 AS (
 SELECT
-  DATE_TRUNC('month', CAST(jaffle_storefront_session.started_at AS TIMESTAMP)) AS t,
-  jaffle_storefront_session.started_at AS __base_event_time,
-  jaffle_storefront_session.session_id AS __base_event_key,
-  jaffle_customer.customer_id AS __match_key_1
-FROM jaffle_storefront_session
-INNER JOIN jaffle_customer ON jaffle_storefront_session.customer_id = jaffle_customer.customer_id
+  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,
+  comparison_storefront_sessions.started_at AS __base_event_time,
+  comparison_storefront_sessions.session_id AS __base_event_key,
+  comparison_customers.customer_id AS __match_key_1
+FROM comparison_storefront_sessions
+INNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id
 ),
 conversion_leaf_1__conversion_converted_1 AS (
 SELECT
-  jaffle_order.ordered_at AS __converted_event_time,
-  jaffle_order.order_id AS __converted_event_key,
-  jaffle_customer.customer_id AS __match_key_1
-FROM jaffle_order
-INNER JOIN jaffle_customer ON jaffle_order.customer_id = jaffle_customer.customer_id
+  comparison_orders.ordered_at AS __converted_event_time,
+  comparison_orders.order_id AS __converted_event_key,
+  comparison_customers.customer_id AS __match_key_1
+FROM comparison_orders
+INNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id
 ),
 conversion_leaf_1__conversion_matches_1 AS (
 SELECT

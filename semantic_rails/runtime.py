@@ -34,8 +34,9 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .compiler import compile_query
+from .compiler import BoundQuery, bind_query, compile_query
 from .config import (
+    SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
     get_package_config,
     get_package_path,
@@ -48,6 +49,7 @@ from .config import (
 from .db import (
     Database,
     WarehouseAdapter,
+    build_seed_database,
     create_warehouse_adapter,
     load_csv_dir_to_duckdb,
     seed_db,
@@ -65,12 +67,13 @@ from .diagnostics import (
 )
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
-from .expressions import expr_to_dict
+from .expressions import collect_object_references, expr_to_dict
 from .fanout import build_hop_profile
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects
 from .registry import Registry
+from .relation_pipelines import relation_source_tables
 from .request_context import context_from_policy_context, request_context_payload
 from .runtime_parts.responses import (
     apply_response_verbosity,
@@ -79,6 +82,7 @@ from .runtime_parts.responses import (
     resolve_verbosity,
 )
 from .scope import classify_question
+from .seed_provenance import missing_duckdb_relations, publish_seed_database
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
 from .sql_preparation import PreparedQuery
 
@@ -360,114 +364,20 @@ def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
     return [history_warning_payload(paths=history_paths)]
 
 
-def _collect_expr_object_ids(expr_payload: dict[str, Any]) -> list[str]:
-    object_ids: list[str] = []
-    kind = str(expr_payload.get("kind", "") or "")
-    if "measure" in expr_payload:
-        object_ids.append(str(expr_payload.get("measure", "")))
-    if "metric" in expr_payload:
-        object_ids.append(str(expr_payload.get("metric", "")))
-    for key in ("left", "right", "input", "base", "converted", "value", "null_value"):
-        child = expr_payload.get(key)
-        if isinstance(child, dict):
-            object_ids.extend(_collect_expr_object_ids(child))
-    for key in ("args",):
-        for child in list(expr_payload.get(key, []) or []):
-            if isinstance(child, dict):
-                object_ids.extend(_collect_expr_object_ids(child))
-    for item in list(expr_payload.get("whens", []) or []):
-        if isinstance(item, dict):
-            if isinstance(item.get("when"), dict):
-                object_ids.extend(_collect_expr_object_ids(dict(item["when"])))
-            if isinstance(item.get("then"), dict):
-                object_ids.extend(_collect_expr_object_ids(dict(item["then"])))
-    if kind == "metric_predicate":
-        object_ids.append(str(expr_payload.get("entity", "")))
-    return [item for item in object_ids if item]
+def _collect_expr_object_ids(expr_payload: dict[str, Any], config: Any = None) -> list[str]:
+    return collect_object_references(expr_payload, config)
 
 
-_OBJECT_REF_KEYS = ("measure", "metric", "field", "entity", "basis_metric")
-
-
-def _collect_spec_object_ids(spec: Any) -> list[str]:
-    """Object ids referenced anywhere inside a recipe's filter/window spec.
-
-    These specs are free-form nested mappings (``where`` entries, nested
-    ``metric_filters``, partition keys), so this walks them generically
-    rather than enumerating shapes — an unrecognized shape should
-    over-collect and deny, never under-collect and allow.
-    """
-    object_ids: list[str] = []
-    if isinstance(spec, dict):
-        for key, value in spec.items():
-            if key in _OBJECT_REF_KEYS and isinstance(value, str) and value:
-                object_ids.append(value)
-            else:
-                object_ids.extend(_collect_spec_object_ids(value))
-    elif isinstance(spec, (list, tuple)):
-        for item in spec:
-            object_ids.extend(_collect_spec_object_ids(item))
-    return object_ids
-
-
-def _expand_object_id_closure(config: Any, object_ids: list[str]) -> list[str]:
-    """Follow metric recipes so a metric cannot launder a governed measure.
-
-    Policies are declared against the objects an author governs — usually
-    measures. A query that names a *metric* touches those measures just as
-    surely, but names none of them, so matching on the query's syntactic
-    ids alone lets any curated metric walk straight through ``deny``,
-    ``redact`` and ``metric_constraint``. Enforcement therefore runs over
-    the transitive closure: every measure, metric and entity the named
-    objects actually resolve to.
-    """
-    recipes = {row.id: row for row in config.metric_recipes}
-    seen: set[str] = set()
-    ordered: list[str] = []
-    pending = list(object_ids)
-    while pending:
-        object_id = pending.pop(0)
-        if not object_id or object_id in seen:
-            continue
-        seen.add(object_id)
-        ordered.append(object_id)
-        recipe = recipes.get(object_id)
-        if recipe is None:
-            continue
-        # Recipes can reference other recipes; the `seen` guard makes a
-        # cyclic or diamond-shaped definition terminate.
-        pending.extend(_collect_expr_object_ids(expr_to_dict(recipe.expression)))
-        pending.extend(_collect_spec_object_ids(recipe.filter_spec))
-        pending.extend(_collect_spec_object_ids(recipe.window_spec))
-        if recipe.temporal_role:
-            pending.append(recipe.temporal_role)
-    return ordered
+def _collect_spec_object_ids(spec: Any, config: Any = None) -> list[str]:
+    return collect_object_references(spec, config)
 
 
 def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
-    """Object ids a query touches, for policy matching.
-
-    Pass ``config`` wherever the result gates access — without it the
-    result is only the ids the caller spelled out, which is not what the
-    query reads. See :func:`_expand_object_id_closure`.
-    """
+    """Authorization identities come from actual compiler binding, never strings."""
+    if config is not None:
+        return sorted(bind_query(config, None, payload).object_ids)
     query = normalize_query(payload)
-    object_ids: list[str] = []
-    for select_item in query.select:
-        if select_item.expression is not None:
-            object_ids.extend(_collect_expr_object_ids(expr_to_dict(select_item.expression)))
-    for metric_filter in query.metric_filters:
-        if metric_filter.expression is not None:
-            object_ids.extend(_collect_expr_object_ids(expr_to_dict(metric_filter.expression)))
-    object_ids.extend(list(query.group_by))
-    object_ids.extend(item.field for item in query.where)
-    if query.time is not None and query.time.temporal_role:
-        object_ids.append(query.time.temporal_role)
-    object_ids.extend(list(dict(query.temporal_role_overrides).values()))
-    deduped = list(dict.fromkeys(item for item in object_ids if item))
-    if config is None:
-        return deduped
-    return _expand_object_id_closure(config, deduped)
+    return collect_object_references(query.to_dict())
 
 
 def _policy_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1472,33 +1382,78 @@ class Runtime:
         return repo_candidate
 
     def _expected_tables(self) -> set[str]:
-        return {str(row.table) for row in self._config.entities if str(row.table).strip()}
-
-    def _db_matches_package(self) -> bool:
-        if self.warehouse != "duckdb":
-            return True
-        if not os.path.exists(self.db_path):
-            return False
-        try:
-            db = Database.connect(self.db_path, read_only=True)
-            try:
-                rows = db.query(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-                )
-            finally:
-                db.close()
-        except Exception:
-            return False
-        existing = {str(row.get("table_name", "")) for row in rows}
-        expected = self._expected_tables()
-        return expected.issubset(existing)
+        # An entity over a relation pipeline reads a CTE the compiler builds;
+        # the stored tables it needs are the pipeline's own sources. Declared
+        # aggregate relations are stored tables the compiler may route to.
+        pipeline_outputs = {row.output_name for row in self._config.relations}
+        stored = {
+            str(row.table)
+            for row in self._config.entities
+            if str(row.table).strip() and not row.relation_id
+        }
+        stored |= {
+            str(row.relation)
+            for row in self._config.aggregate_relations
+            if str(row.relation).strip() and row.relation not in pipeline_outputs
+        }
+        pipelines = {row.relation_id for row in self._config.entities if row.relation_id}
+        return stored | relation_source_tables(self._config, pipelines)
 
     def _ensure_db(self) -> None:
+        """Create a missing seed database, but never replace an existing file.
+
+        Probe existing files in a fresh process. DuckDB can return an older
+        in-process catalog after another process replaces a path, and closing a
+        second connection here can release a serving connection's POSIX lock.
+        """
         if self.warehouse != "duckdb":
             return
         seed = self._config.package.seed
-        if self._db_matches_package():
+        for _attempt in range(2):
+            if os.path.islink(self.db_path) and not os.path.exists(self.db_path):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"package.default_db '{self.db_path}' is a symbolic link to a file that "
+                    "does not exist; Semantic Rails does not build a database through a "
+                    "broken link. Fix or remove the link.",
+                    details={"default_db": self.db_path, "reason": "default_db_broken_link"},
+                )
+            if not os.path.exists(self.db_path):
+                if seed.kind == SEED_KIND_EXTERNAL:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"package.default_db '{self.db_path}' does not exist. The package declares "
+                        "package.seed.kind: external, so Semantic Rails never creates this database; "
+                        "build it first (for example with `dbt build`).",
+                        details={
+                            "default_db": self.db_path,
+                            "reason": "external_default_db_missing",
+                        },
+                    )
+                try:
+                    self._publish_seed(self._seed_source())
+                except SemanticLayerError as exc:
+                    if exc.details.get("reason") != "default_db_created_concurrently":
+                        raise
+                # Whether this process or another one created the file, check
+                # its actual catalog before the runtime serves it.
+                continue
+            try:
+                missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+            except Exception as exc:  # noqa: BLE001 — any uncertain probe fails closed
+                raise self._unreadable_db_error() from exc
+            if missing:
+                raise self._missing_db_relations_error(missing)
             return
+        raise SemanticLayerError(
+            "CONFIG_CONFLICT",
+            f"package.default_db '{self.db_path}' kept changing while its seed was built; retry",
+            details={"default_db": self.db_path, "reason": "default_db_created_concurrently"},
+        )
+
+    def _seed_source(self) -> str:
+        """The seed source's resolved path; a missing one is a clear INVALID_CONFIG."""
+        seed = self._config.package.seed
         src = self._resolve_asset_path(seed.source, kind="seed_source")
         if not os.path.exists(src):
             # _resolve_asset_path falls back to the repo root when neither
@@ -1512,18 +1467,56 @@ class Runtime:
                 f"'{package_candidate}' (relative to the package) and "
                 f"'{src}'; create the file or fix package.seed.source",
             )
-        if seed.kind == "sql_script":
-            seed_db(self.db_path, src)
-            return
-        if seed.kind == "csv_dir_duckdb":
-            load_csv_dir_to_duckdb(
-                self.db_path,
-                src,
-                self._resolve_asset_path(seed.post_sql, kind="post_sql") if seed.post_sql else "",
-                null_strings=seed.null_strings,
-            )
-            return
-        raise SemanticLayerError("INVALID_CONFIG", f"Unsupported seed kind '{seed.kind}'")
+        return src
+
+    def _publish_seed(self, src: str) -> None:
+        seed = self._config.package.seed
+        tmp_path = build_seed_database(
+            self.db_path,
+            kind=seed.kind,
+            source=src,
+            post_sql=(
+                self._resolve_asset_path(seed.post_sql, kind="post_sql") if seed.post_sql else ""
+            ),
+            null_strings=seed.null_strings,
+            package_id=self._config.package.package_id,
+        )
+        try:
+            publish_seed_database(tmp_path, self.db_path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+
+    def _unreadable_db_error(self) -> SemanticLayerError:
+        return SemanticLayerError(
+            "INVALID_CONFIG",
+            f"package.default_db '{self.db_path}' exists but could not be opened as a DuckDB "
+            "database; another process (for example a running `dbt build`) may be writing it. "
+            "Semantic Rails never replaces a file it cannot read. If another tool builds this "
+            "database, declare package.seed.kind: external; otherwise stop the process holding "
+            "it, or delete the file to rebuild it from the seed.",
+            details={"default_db": self.db_path, "reason": "default_db_unreadable"},
+        )
+
+    def _missing_db_relations_error(self, missing: list[str]) -> SemanticLayerError:
+        shown = ", ".join(missing[:5])
+        if len(missing) > 5:
+            shown += f", and {len(missing) - 5} more"
+        return SemanticLayerError(
+            "INVALID_CONFIG",
+            f"package.default_db '{self.db_path}' lacks relations the package reads ({shown}). "
+            "Semantic Rails never replaces an existing database during runtime validation. "
+            "If another tool (such as dbt) owns it, declare package.seed.kind: external and "
+            "build the missing relations there. For a disposable database built from this "
+            "package's seed, stop its users, back up any data you need, then explicitly delete "
+            "the file so the next bootstrap can create it. The former "
+            "SEMANTIC_RAILS_ALLOW_DB_RESEED flag no longer enables automatic replacement.",
+            details={
+                "default_db": self.db_path,
+                "missing_relations": missing,
+                "reason": "default_db_missing_relations",
+            },
+        )
 
     def close(self) -> None:
         with self._state_gate.write(), self._query_lock:
@@ -1739,7 +1732,11 @@ class Runtime:
         return json.dumps(payload, sort_keys=True, default=str)
 
     def _compile(
-        self, payload: dict[str, Any], *, policy_context: dict[str, str]
+        self,
+        payload: dict[str, Any],
+        *,
+        policy_context: dict[str, str],
+        binding: BoundQuery | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         normalized = normalize_query(payload).to_dict()
@@ -1775,7 +1772,7 @@ class Runtime:
                 "compile_stats": stats,
                 "explain": replace(cached.compiled["explain"], compile_stats=stats),
             }
-        compiled = compile_query(self._config, self.registry, payload)
+        compiled = compile_query(self._config, self.registry, payload, binding=binding)
         stats = {
             **dict(compiled.get("compile_stats", {}) or {}),
             "cache_hit": False,
@@ -1800,7 +1797,8 @@ class Runtime:
             refusal = _scope_refusal(payload)
             if refusal is not None:
                 raise refusal
-            object_ids = _query_object_ids(payload, self._config)
+            binding = bind_query(self._config, self.registry, payload)
+            object_ids = binding.object_ids
             policy_effects = enforce_query_policies(
                 self._config,
                 object_ids,
@@ -1809,7 +1807,7 @@ class Runtime:
                 roles=policy_context.get("roles", []),
                 query=payload,
             )
-            compiled = self._compile(payload, policy_context=policy_context)
+            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
             report = ValidationReport(
                 version=2,
                 ok=True,
@@ -1900,17 +1898,18 @@ class Runtime:
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
-        object_ids = _query_object_ids(payload, self._config)
-        policy_effects = enforce_query_policies(
-            self._config,
-            object_ids,
-            environment=str(policy_context.get("environment", "")),
-            audience=str(policy_context.get("audience", "")),
-            roles=policy_context.get("roles", []),
-            query=payload,
-        )
         try:
-            compiled = self._compile(payload, policy_context=policy_context)
+            binding = bind_query(self._config, self.registry, payload)
+            object_ids = binding.object_ids
+            policy_effects = enforce_query_policies(
+                self._config,
+                object_ids,
+                environment=str(policy_context.get("environment", "")),
+                audience=str(policy_context.get("audience", "")),
+                roles=policy_context.get("roles", []),
+                query=payload,
+            )
+            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
@@ -1956,17 +1955,18 @@ class Runtime:
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
-        object_ids = _query_object_ids(payload, self._config)
-        policy_effects = enforce_query_policies(
-            self._config,
-            object_ids,
-            environment=str(policy_context.get("environment", "")),
-            audience=str(policy_context.get("audience", "")),
-            roles=policy_context.get("roles", []),
-            query=payload,
-        )
         try:
-            compiled = self._compile(payload, policy_context=policy_context)
+            binding = bind_query(self._config, self.registry, payload)
+            object_ids = binding.object_ids
+            policy_effects = enforce_query_policies(
+                self._config,
+                object_ids,
+                environment=str(policy_context.get("environment", "")),
+                audience=str(policy_context.get("audience", "")),
+                roles=policy_context.get("roles", []),
+                query=payload,
+            )
+            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)

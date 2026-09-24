@@ -1,0 +1,50 @@
+[
+  {
+    "month": "2016-09-01",
+    "delivered_revenue": 18053.28
+  },
+  {
+    "month": "2016-10-01",
+    "delivered_revenue": 21923.95
+  },
+  {
+    "month": "2016-11-01",
+    "delivered_revenue": 27916.82
+  },
+  {
+    "month": "2016-12-01",
+    "delivered_revenue": 35677.6
+  },
+  {
+    "month": "2017-01-01",
+    "delivered_revenue": 45017.95
+  },
+  {
+    "month": "2017-02-01",
+    "delivered_revenue": 43358.12
+  },
+  {
+    "month": "2017-03-01",
+    "delivered_revenue": 73950.32
+  },
+  {
+    "month": "2017-04-01",
+    "delivered_revenue": 83316.99
+  },
+  {
+    "month": "2017-05-01",
+    "delivered_revenue": 96070.35
+  },
+  {
+    "month": "2017-06-01",
+    "delivered_revenue": 98378.87
+  },
+  {
+    "month": "2017-07-01",
+    "delivered_revenue": 94857.19
+  },
+  {
+    "month": "2017-08-01",
+    "delivered_revenue": 107371.59
+  }
+]

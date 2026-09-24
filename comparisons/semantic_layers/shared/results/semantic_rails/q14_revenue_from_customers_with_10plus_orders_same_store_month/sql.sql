@@ -1,14 +1,14 @@
 WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (
 SELECT
-  jaffle_order.customer_id AS g1,
-  jaffle_order.store_id AS g2,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  COUNT(DISTINCT jaffle_order.order_id) AS m1
-FROM jaffle_order
+  comparison_orders.customer_id AS g1,
+  comparison_orders.store_id AS g2,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  COUNT(DISTINCT comparison_orders.order_id) AS m1
+FROM comparison_orders
 GROUP BY
-  jaffle_order.customer_id,
-  jaffle_order.store_id,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  comparison_orders.customer_id,
+  comparison_orders.store_id,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 ),
 leaf_1__order_count_customer_month_source_1 AS (
 SELECT
@@ -29,15 +29,15 @@ WHERE
 ),
 leaf_1 AS (
 SELECT
-  jaffle_store.store_name AS g1,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  SUM(jaffle_order.order_total_cents / 100.0) AS m1
-FROM jaffle_order
-INNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id
-INNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON jaffle_order.customer_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_customer_id" AND jaffle_store.store_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id" AND DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.t
+  comparison_stores.store_name AS g1,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  SUM(comparison_orders.order_total_cents / 100.0) AS m1
+FROM comparison_orders
+INNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
+INNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_customer_id" AND comparison_stores.store_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.t
 GROUP BY
-  jaffle_store.store_name,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  comparison_stores.store_name,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 )
 SELECT
   base.g1 AS "dimension.jaffle_store_name",

@@ -1,10 +1,10 @@
 WITH leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base AS (
 SELECT
-  jaffle_customer.customer_id AS g1,
-  jaffle_customer.customer_id AS __snapshot_key_1,
-  jaffle_customer.first_order_at AS __snapshot_order,
-  jaffle_customer.lifetime_spend_cents / 100.0 AS __snapshot_value
-FROM jaffle_customer
+  comparison_customers.customer_id AS g1,
+  comparison_customers.customer_id AS __snapshot_key_1,
+  comparison_customers.first_order_at AS __snapshot_order,
+  comparison_customers.lifetime_spend_cents / 100.0 AS __snapshot_value
+FROM comparison_customers
 ),
 leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete AS (
 SELECT
@@ -40,12 +40,12 @@ WHERE
 ),
 leaf_1 AS (
 SELECT
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  COUNT(DISTINCT jaffle_order.order_id) AS m1
-FROM jaffle_order
-INNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON jaffle_order.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1."dimension.jaffle_customer_id"
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  COUNT(DISTINCT comparison_orders.order_id) AS m1
+FROM comparison_orders
+INNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1."dimension.jaffle_customer_id"
 GROUP BY
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 )
 SELECT
   base.t AS "temporal_role.jaffle_order_time__month",

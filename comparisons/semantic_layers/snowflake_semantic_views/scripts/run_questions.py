@@ -5,7 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,25 +27,6 @@ CONNECTION_NAME = "semantic_views_trial"
 SEMANTIC_VIEW_FQN = "ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
 
 QUESTION_MARKER = re.compile(r"^--\s*(q\d{2}_[a-z0-9_]+)\s*$")
-QUESTION_STATUS = {
-    "q01_orders_by_month": "native",
-    "q02_revenue_by_store_by_month": "native",
-    "q03_item_revenue_by_product_type_by_month": "native",
-    "q04_aov_by_store": "native",
-    "q05_orders_and_item_revenue_by_store_by_month": "native",
-    "q06_new_customer_orders_by_month": "native",
-    "q07_delivered_revenue_by_month": "native",
-    "q08_revenue_by_customer_segment_as_of_order_time": "workaround",
-    "q09_session_to_order_conversion_7d": "workaround",
-    "q10_orders_from_customers_with_10plus_orders_in_month": "workaround",
-    "q11_repeat_customer_orders_by_store_by_month": "workaround",
-    "q12_orders_by_month_with_lifetime_spend_500_filter": "workaround",
-    "q13_daily_orders_from_customers_with_10plus_orders_in_month": "workaround",
-    "q14_revenue_from_customers_with_10plus_orders_same_store_month": "workaround",
-    "q15_same_store_session_to_order_conversion_7d": "workaround",
-    "q16_revenue_by_customer_segment_as_of_delivered_time": "workaround",
-}
-
 SMOKE_TEST_SQL = f"""
 SELECT *
 FROM SEMANTIC_VIEW(
@@ -142,6 +123,15 @@ def ensure_success(result: subprocess.CompletedProcess[str], *, context: str) ->
     return parse_json_stdout(result.stdout)
 
 
+DATASET_SQL = "SELECT FINGERPRINT FROM ANALYTICS.SEMANTIC_COMPARISON.COMPARISON_DATASET;"
+
+
+def loaded_fingerprint(rows: list[dict[str, Any]]) -> str | None:
+    """The one dataset fingerprint loaded with the tables, or None (the run is then stale)."""
+    values = {str(row.get("FINGERPRINT") or "") for row in rows}
+    return values.pop() if len(values) == 1 and "" not in values else None
+
+
 def main() -> None:
     if SHARED_RESULTS_ROOT.exists():
         shutil.rmtree(SHARED_RESULTS_ROOT)
@@ -158,6 +148,13 @@ def main() -> None:
     write_json(
         SHARED_RESULTS_ROOT / "verify_trial_load.json",
         ensure_success(verify, context="verify_trial_load.sql"),
+    )
+
+    dataset = run_snow_sql(query=DATASET_SQL)
+    fingerprint = (
+        loaded_fingerprint(extract_rows(parse_json_stdout(dataset.stdout)))
+        if dataset.returncode == 0
+        else None
     )
 
     create = run_snow_sql(file_path=CREATE_SQL_PATH)
@@ -194,10 +191,19 @@ def main() -> None:
 
         if result.returncode != 0:
             write_text(question_dir / "stdout.txt", result.stdout)
-            unsupported_entries[question_id] = {
-                "status": "unsupported",
-                "reason": (result.stderr or result.stdout or "Snowflake execution failed").strip(),
-            }
+            reason = (result.stderr or result.stdout or "Snowflake execution failed").strip()
+            unsupported_entries[question_id] = {"status": "unsupported", "reason": reason}
+            # Listed in the summary too, so every reader sees all questions, executed or not.
+            summary_entries.append(
+                {
+                    "query_path": rel(QUERY_EXAMPLES_PATH),
+                    "question_id": question_id,
+                    "reason": reason,
+                    "sql_path": rel(question_dir / "sql.sql"),
+                    "status": "unsupported",
+                    "stderr_path": rel(question_dir / "stderr.txt"),
+                }
+            )
             continue
 
         payload = parse_json_stdout(result.stdout)
@@ -212,7 +218,7 @@ def main() -> None:
                 "result_path": rel(question_dir / "result.json"),
                 "row_count": len(rows),
                 "sql_path": rel(question_dir / "sql.sql"),
-                "status": QUESTION_STATUS[question_id],
+                "status": "executed",
                 "stderr_path": rel(question_dir / "stderr.txt"),
                 "stdout_path": rel(question_dir / "stdout.json"),
             }
@@ -222,7 +228,8 @@ def main() -> None:
     write_json(
         SHARED_RESULTS_ROOT / "summary.json",
         {
-            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "dataset_fingerprint": fingerprint,
             "layer": "snowflake_semantic_views",
             "connection": CONNECTION_NAME,
             "semantic_view": SEMANTIC_VIEW_FQN,

@@ -2,14 +2,30 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
+
+import duckdb
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 PROJECT_DIR = REPO_ROOT / "comparisons" / "semantic_layers" / "metricflow"
 RESULTS_DIR = REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "results" / "metricflow"
+DB_PATH = (
+    REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "data" / "jaffle_comparison.duckdb"
+)
+VENV_PYTHON = PROJECT_DIR / ".venv" / "bin" / "python"
 MF_BIN = PROJECT_DIR / ".venv" / "bin" / "mf"
 DBT_BIN = PROJECT_DIR / ".venv" / "bin" / "dbt"
+RECORDED_PACKAGES = [
+    "dbt-metricflow",
+    "metricflow",
+    "dbt-semantic-interfaces",
+    "dbt-core",
+    "dbt-duckdb",
+    "duckdb",
+]
 ENV = {
     **os.environ,
     "DBT_PROFILES_DIR": str(PROJECT_DIR),
@@ -163,25 +179,6 @@ QUESTION_COMMANDS = {
     ],
 }
 
-QUESTION_STATUSES = {
-    "q01_orders_by_month": "native",
-    "q02_revenue_by_store_by_month": "native",
-    "q03_item_revenue_by_product_type_by_month": "native",
-    "q04_aov_by_store": "native",
-    "q05_orders_and_item_revenue_by_store_by_month": "native",
-    "q06_new_customer_orders_by_month": "native",
-    "q07_delivered_revenue_by_month": "native",
-    "q08_revenue_by_customer_segment_as_of_order_time": "native",
-    "q09_session_to_order_conversion_7d": "precomputed",
-    "q10_orders_from_customers_with_10plus_orders_in_month": "precomputed",
-    "q11_repeat_customer_orders_by_store_by_month": "precomputed",
-    "q12_orders_by_month_with_lifetime_spend_500_filter": "precomputed",
-    "q13_daily_orders_from_customers_with_10plus_orders_in_month": "precomputed",
-    "q14_revenue_from_customers_with_10plus_orders_same_store_month": "precomputed",
-    "q15_same_store_session_to_order_conversion_7d": "precomputed",
-    "q16_revenue_by_customer_segment_as_of_delivered_time": "native",
-}
-
 
 def _run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, env=ENV, text=True, capture_output=True)
@@ -192,40 +189,45 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _ensure_environment() -> None:
-    if MF_BIN.exists() and DBT_BIN.exists():
-        return
-
-    venv = subprocess.run(["uv", "venv", ".venv"], cwd=PROJECT_DIR, text=True, capture_output=True)
-    _write(RESULTS_DIR / "bootstrap_venv.stdout.txt", venv.stdout)
-    _write(RESULTS_DIR / "bootstrap_venv.stderr.txt", venv.stderr)
-    if venv.returncode != 0:
-        raise SystemExit("MetricFlow venv bootstrap failed.")
-
-    install = subprocess.run(
-        [
-            "uv",
-            "pip",
+def _ensure_environment() -> dict[str, str]:
+    """Sync .venv to requirements.lock and return the installed versions that matter."""
+    steps = []
+    if not VENV_PYTHON.exists():
+        steps.append(("venv", ["uv", "venv", "--python", "3.12", ".venv"]))
+    steps.append(
+        (
             "install",
-            "--python",
-            str(PROJECT_DIR / ".venv" / "bin" / "python"),
-            "--prerelease=allow",
-            "dbt-metricflow==0.11.0",
-            "dbt-duckdb==1.10.1",
+            ["uv", "pip", "sync", "--python", str(VENV_PYTHON), "requirements.lock"],
+        )
+    )
+    for name, command in steps:
+        completed = subprocess.run(command, cwd=PROJECT_DIR, text=True, capture_output=True)
+        _write(RESULTS_DIR / f"bootstrap_{name}.stdout.txt", completed.stdout)
+        _write(RESULTS_DIR / f"bootstrap_{name}.stderr.txt", completed.stderr)
+        if completed.returncode != 0:
+            raise SystemExit(f"MetricFlow {name} bootstrap failed.")
+    versions = subprocess.run(
+        [
+            str(VENV_PYTHON),
+            "-c",
+            "import importlib.metadata as m, json, sys; "
+            "print(json.dumps({p: m.version(p) for p in sys.argv[1:]}))",
+            *RECORDED_PACKAGES,
         ],
-        cwd=PROJECT_DIR,
         text=True,
         capture_output=True,
+        check=True,
     )
-    _write(RESULTS_DIR / "bootstrap_install.stdout.txt", install.stdout)
-    _write(RESULTS_DIR / "bootstrap_install.stderr.txt", install.stderr)
-    if install.returncode != 0:
-        raise SystemExit("MetricFlow dependency bootstrap failed.")
+    return json.loads(versions.stdout)
 
 
 def main() -> None:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    _ensure_environment()
+    if RESULTS_DIR.exists():
+        shutil.rmtree(RESULTS_DIR)
+    RESULTS_DIR.mkdir(parents=True)
+    environment = _ensure_environment()
+    with duckdb.connect(str(DB_PATH), read_only=True) as con:
+        (fingerprint,) = con.execute("SELECT fingerprint FROM comparison_dataset").fetchone()
 
     build = _run([str(DBT_BIN), "build"], cwd=PROJECT_DIR)
     _write(RESULTS_DIR / "dbt_build.stdout.txt", build.stdout)
@@ -262,7 +264,7 @@ def main() -> None:
         summary.append(
             {
                 "question_id": question_id,
-                "status": QUESTION_STATUSES[question_id]
+                "status": "executed"
                 if explained.returncode == 0 and executed.returncode == 0
                 else "unsupported",
                 "query_path": str(query_file.relative_to(REPO_ROOT)),
@@ -276,7 +278,17 @@ def main() -> None:
         )
 
     (RESULTS_DIR / "summary.json").write_text(
-        json.dumps({"layer": "metricflow", "questions": summary}, indent=2, sort_keys=True),
+        json.dumps(
+            {
+                "layer": "metricflow",
+                "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "dataset_fingerprint": fingerprint,
+                "environment": environment,
+                "questions": summary,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
 

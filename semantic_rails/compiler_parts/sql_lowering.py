@@ -878,7 +878,7 @@ def _branch_context_query(
 def _distribution_select(
     expr: DistributionExpr, *, alias: str, plan: LogicalPlan, config: PackageConfig
 ) -> SqlSelect:
-    from ..compiler import compile_query
+    from ..compiler import _compile_query_sql_ast
 
     entity_key_dims = _entity_key_dimension_ids(expr.over.entity, config)
     value_alias = "__entity_value"
@@ -888,7 +888,7 @@ def _distribution_select(
         value_alias,
         extra_group_by=entity_key_dims,
     )
-    compiled = compile_query(config, None, entity_value_query)
+    sql_ast = _compile_query_sql_ast(config, entity_value_query)
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
     value_ref = SqlIdentifier(parts=[source_name, value_alias])
@@ -918,7 +918,7 @@ def _distribution_select(
         ctes=[
             SqlCte(
                 name=source_name,
-                query=_namespace_sql_select(compiled["sql_ast"], f"{source_name}__"),
+                query=_namespace_sql_select(sql_ast, f"{source_name}__"),
             )
         ],
         select=[
@@ -938,10 +938,9 @@ def _distribution_select(
 def _single_expression_branch_select(
     expr: SemanticExpr, *, alias: str, plan: LogicalPlan, config: PackageConfig
 ) -> SqlSelect:
-    from ..compiler import compile_query
+    from ..compiler import _compile_query_sql_ast
 
-    compiled = compile_query(config, None, _branch_context_query(plan, expr_to_dict(expr), alias))
-    return compiled["sql_ast"]
+    return _compile_query_sql_ast(config, _branch_context_query(plan, expr_to_dict(expr), alias))
 
 
 def _lower_agent_dag_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
@@ -3704,6 +3703,8 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
     )
     if grain_dim is None:
         return None
+    _entity_index(config).get(calendar_entity.id)
+    _dimension_index(config).get(grain_dim.id)
     return calendar_entity.table, grain_dim.column, "date_day"
 
 
@@ -3765,6 +3766,8 @@ def _calendar_fill_binding(
             "REWRITE_NOT_SUPPORTED",
             f"time.fill requires calendar dimension '{calendar_column}' on '{calendar_entity.id}'",
         )
+    _entity_index(config).get(calendar_entity.id)
+    _dimension_index(config).get(dimension.id)
     return calendar_entity.table, dimension.column
 
 

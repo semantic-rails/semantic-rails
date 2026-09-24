@@ -27,6 +27,6 @@ If `node_modules` is absent, the runner will install the pinned CLI automaticall
 ## Comparison Notes
 
 - Baseline and portable questions are modeled directly in Malloy using sources, joins, dimensions, and measures.
-- Historical-segment, session-conversion, and aggregate-on-aggregate questions use explicit DuckDB SQL sources and are therefore treated as `workaround` coverage in this pack.
+- Historical-segment, session-conversion, and aggregate-on-aggregate questions (q08-q10, q13-q16) use explicit DuckDB SQL sources, so the rubric (`../shared/rubric.md`) labels them `workaround`. q11 and q12 filter on the precomputed customer rollup columns, so they are labeled `precomputed`.
 - Result snapshots are produced by compiling each named Malloy query to SQL and executing that SQL against the shared DuckDB database, because the CLI's direct `run` preview truncates output rows.
 - Generated artifacts are written to `../shared/results/malloy/`.

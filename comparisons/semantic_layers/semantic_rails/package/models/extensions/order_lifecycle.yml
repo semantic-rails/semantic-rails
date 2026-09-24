@@ -1,6 +1,6 @@
 model:
   id: order_lifecycle
-  relation: jaffle_order_lifecycle
+  relation: comparison_order_lifecycle
   description: Lifecycle timestamps per order — ordered, prepared, delivered.
   entities:
     order_lifecycle: {}

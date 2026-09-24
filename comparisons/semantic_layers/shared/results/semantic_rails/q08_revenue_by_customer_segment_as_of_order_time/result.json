@@ -102,8 +102,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.449,
-      "compile_ms": 1.65,
+      "cache_lookup_ms": 0.892,
+      "compile_ms": 0.532,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -150,8 +150,8 @@
                   "target_key_role": "primary",
                   "target_key_type": "primary",
                   "temporal_validity": {
-                    "valid_from": "jaffle_customer_history.valid_from",
-                    "valid_to": "jaffle_customer_history.valid_to"
+                    "valid_from": "comparison_customer_history.valid_from",
+                    "valid_to": "comparison_customer_history.valid_to"
                   },
                   "traversal": "forward"
                 }
@@ -264,8 +264,8 @@
               "target_key_role": "primary",
               "target_key_type": "primary",
               "temporal_validity": {
-                "valid_from": "jaffle_customer_history.valid_from",
-                "valid_to": "jaffle_customer_history.valid_to"
+                "valid_from": "comparison_customer_history.valid_from",
+                "valid_to": "comparison_customer_history.valid_to"
               },
               "traversal": "forward"
             }
@@ -414,8 +414,8 @@
                     "target_key_role": "primary",
                     "target_key_type": "primary",
                     "temporal_validity": {
-                      "valid_from": "jaffle_customer_history.valid_from",
-                      "valid_to": "jaffle_customer_history.valid_to"
+                      "valid_from": "comparison_customer_history.valid_from",
+                      "valid_to": "comparison_customer_history.valid_to"
                     },
                     "traversal": "forward"
                   }
@@ -528,8 +528,8 @@
                 "target_key_role": "primary",
                 "target_key_type": "primary",
                 "temporal_validity": {
-                  "valid_from": "jaffle_customer_history.valid_from",
-                  "valid_to": "jaffle_customer_history.valid_to"
+                  "valid_from": "comparison_customer_history.valid_from",
+                  "valid_to": "comparison_customer_history.valid_to"
                 },
                 "traversal": "forward"
               }
@@ -624,8 +624,8 @@
                     "target_key_role": "primary",
                     "target_key_type": "primary",
                     "temporal_validity": {
-                      "valid_from": "jaffle_customer_history.valid_from",
-                      "valid_to": "jaffle_customer_history.valid_to"
+                      "valid_from": "comparison_customer_history.valid_from",
+                      "valid_to": "comparison_customer_history.valid_to"
                     },
                     "traversal": "forward"
                   }
@@ -883,7 +883,7 @@
           "has_start": false,
           "has_time_filter": true,
           "pushed_to_scan": true,
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
             "calendar_id": "default",
@@ -908,7 +908,7 @@
               "measure_id": "measure.jaffle.revenue_usd"
             }
           ],
-          "relation": "jaffle_order",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
@@ -973,8 +973,8 @@
                     "target_key_role": "primary",
                     "target_key_type": "primary",
                     "temporal_validity": {
-                      "valid_from": "jaffle_customer_history.valid_from",
-                      "valid_to": "jaffle_customer_history.valid_to"
+                      "valid_from": "comparison_customer_history.valid_from",
+                      "valid_to": "comparison_customer_history.valid_to"
                     },
                     "traversal": "forward"
                   }
@@ -1087,8 +1087,8 @@
             ],
             "omitted_semantic_root_entity": "",
             "physical_anchor_entity": "entity.jaffle_order",
-            "relation": "jaffle_order",
-            "selected_relation": "jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
             "semantic_equivalence": "",
             "source_entity": "entity.jaffle_order",
@@ -1097,7 +1097,7 @@
           "id": "leaf_1_scan",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan jaffle_order"
+          "label": "Scan comparison_orders"
         },
         {
           "details": {
@@ -1173,8 +1173,8 @@
                       "target_key_role": "primary",
                       "target_key_type": "primary",
                       "temporal_validity": {
-                        "valid_from": "jaffle_customer_history.valid_from",
-                        "valid_to": "jaffle_customer_history.valid_to"
+                        "valid_from": "comparison_customer_history.valid_from",
+                        "valid_to": "comparison_customer_history.valid_to"
                       },
                       "traversal": "forward"
                     }
@@ -1321,7 +1321,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  jaffle_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1\nFROM jaffle_order\nLEFT JOIN jaffle_customer_history ON jaffle_order.customer_id = jaffle_customer_history.customer_id AND jaffle_customer_history.valid_from <= jaffle_order.ordered_at AND (jaffle_customer_history.valid_to > jaffle_order.ordered_at OR (jaffle_customer_history.valid_to IS NULL))\nGROUP BY\n  jaffle_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  revenue_usd DESC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_customer_history ON comparison_orders.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_orders.ordered_at AND (comparison_customer_history.valid_to > comparison_orders.ordered_at OR (comparison_customer_history.valid_to IS NULL))\nGROUP BY\n  comparison_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  revenue_usd DESC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1382,12 +1382,12 @@
             "distinct": false,
             "from_table": {
               "alias": "",
-              "name": "jaffle_order"
+              "name": "comparison_orders"
             },
             "group_by": [
               {
                 "parts": [
-                  "jaffle_customer_history",
+                  "comparison_customer_history",
                   "customer_segment"
                 ]
               },
@@ -1399,7 +1399,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -1419,14 +1419,14 @@
                     "left": {
                       "left": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "customer_id"
                         ]
                       },
                       "op": "=",
                       "right": {
                         "parts": [
-                          "jaffle_customer_history",
+                          "comparison_customer_history",
                           "customer_id"
                         ]
                       }
@@ -1435,14 +1435,14 @@
                     "right": {
                       "left": {
                         "parts": [
-                          "jaffle_customer_history",
+                          "comparison_customer_history",
                           "valid_from"
                         ]
                       },
                       "op": "<=",
                       "right": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       }
@@ -1453,14 +1453,14 @@
                     "left": {
                       "left": {
                         "parts": [
-                          "jaffle_customer_history",
+                          "comparison_customer_history",
                           "valid_to"
                         ]
                       },
                       "op": ">",
                       "right": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       }
@@ -1469,7 +1469,7 @@
                     "right": {
                       "expr": {
                         "parts": [
-                          "jaffle_customer_history",
+                          "comparison_customer_history",
                           "valid_to"
                         ]
                       }
@@ -1478,7 +1478,7 @@
                 },
                 "table": {
                   "alias": "",
-                  "name": "jaffle_customer_history"
+                  "name": "comparison_customer_history"
                 }
               }
             ],
@@ -1490,7 +1490,7 @@
                 "alias": "g1",
                 "expression": {
                   "parts": [
-                    "jaffle_customer_history",
+                    "comparison_customer_history",
                     "customer_segment"
                   ]
                 }
@@ -1505,7 +1505,7 @@
                     {
                       "expr": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "ordered_at"
                         ]
                       },
@@ -1523,7 +1523,7 @@
                     {
                       "left": {
                         "parts": [
-                          "jaffle_order",
+                          "comparison_orders",
                           "order_total_cents"
                         ]
                       },
@@ -1737,8 +1737,8 @@
                   "target_key_role": "primary",
                   "target_key_type": "primary",
                   "temporal_validity": {
-                    "valid_from": "jaffle_customer_history.valid_from",
-                    "valid_to": "jaffle_customer_history.valid_to"
+                    "valid_from": "comparison_customer_history.valid_from",
+                    "valid_to": "comparison_customer_history.valid_to"
                   },
                   "traversal": "forward"
                 }
@@ -1851,8 +1851,8 @@
               "target_key_role": "primary",
               "target_key_type": "primary",
               "temporal_validity": {
-                "valid_from": "jaffle_customer_history.valid_from",
-                "valid_to": "jaffle_customer_history.valid_to"
+                "valid_from": "comparison_customer_history.valid_from",
+                "valid_to": "comparison_customer_history.valid_to"
               },
               "traversal": "forward"
             }
@@ -1947,8 +1947,8 @@
                   "target_key_role": "primary",
                   "target_key_type": "primary",
                   "temporal_validity": {
-                    "valid_from": "jaffle_customer_history.valid_from",
-                    "valid_to": "jaffle_customer_history.valid_to"
+                    "valid_from": "comparison_customer_history.valid_from",
+                    "valid_to": "comparison_customer_history.valid_to"
                   },
                   "traversal": "forward"
                 }
@@ -2284,48 +2284,48 @@
     "version": 1
   },
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  jaffle_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1\nFROM jaffle_order\nLEFT JOIN jaffle_customer_history ON jaffle_order.customer_id = jaffle_customer_history.customer_id AND jaffle_customer_history.valid_from <= jaffle_order.ordered_at AND (jaffle_customer_history.valid_to > jaffle_order.ordered_at OR (jaffle_customer_history.valid_to IS NULL))\nGROUP BY\n  jaffle_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  revenue_usd DESC",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_customer_history ON comparison_orders.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_orders.ordered_at AND (comparison_customer_history.valid_to > comparison_orders.ordered_at OR (comparison_customer_history.valid_to IS NULL))\nGROUP BY\n  comparison_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  revenue_usd DESC",
   "request_context": {},
   "row_count": 32,
   "rows": [
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 106851.15000000417,
+      "revenue_usd": 106851.15000000382,
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 97728.07000000286,
+      "revenue_usd": 97728.07000000284,
       "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 95395.17000000295,
+      "revenue_usd": 95395.17000000308,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 94105.69000000256,
+      "revenue_usd": 94105.6900000026,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 82682.07000000139,
+      "revenue_usd": 82682.07000000095,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 73321.77000000012,
+      "revenue_usd": 73321.77000000015,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 44504.92999999983,
+      "revenue_usd": 44504.9299999998,
       "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 42834.49999999987,
+      "revenue_usd": 42834.49999999979,
       "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
     },
     {
@@ -2335,27 +2335,27 @@
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 27428.179999999993,
+      "revenue_usd": 27428.18000000003,
       "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 21277.360000000015,
+      "revenue_usd": 21277.36000000004,
       "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 17477.700000000008,
+      "revenue_usd": 17477.70000000001,
       "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 724.9900000000001,
+      "revenue_usd": 724.9900000000002,
       "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 646.59,
+      "revenue_usd": 646.5900000000003,
       "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
     },
     {
@@ -2365,17 +2365,17 @@
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 488.64000000000004,
+      "revenue_usd": 488.64000000000027,
       "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 414.43000000000006,
+      "revenue_usd": 414.4300000000003,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 396.40000000000003,
+      "revenue_usd": 396.4000000000004,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
@@ -2385,27 +2385,27 @@
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 376.29,
+      "revenue_usd": 376.29000000000025,
       "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 374.15000000000003,
+      "revenue_usd": 374.1500000000003,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 362.5000000000001,
+      "revenue_usd": 362.5000000000003,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 348.7300000000001,
+      "revenue_usd": 348.7300000000003,
       "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 348.7200000000001,
+      "revenue_usd": 348.72000000000025,
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     },
     {
@@ -2415,7 +2415,7 @@
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 294.67,
+      "revenue_usd": 294.6700000000002,
       "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
     },
     {
@@ -2449,8 +2449,8 @@
       "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:b1bf4e16f2ed9474bfeec78030e8849024eb239aba911b80230bc3b59bfe6a52",
-  "source_fingerprint": "5b0665c39f43be823184d1e560de283866b44b6bf35f2a53f152a2bf4a7496fd",
+  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
+  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
   "sql_plan": {
     "ctes": [
       {
@@ -2460,12 +2460,12 @@
           "distinct": false,
           "from_table": {
             "alias": "",
-            "name": "jaffle_order"
+            "name": "comparison_orders"
           },
           "group_by": [
             {
               "parts": [
-                "jaffle_customer_history",
+                "comparison_customer_history",
                 "customer_segment"
               ]
             },
@@ -2477,7 +2477,7 @@
                 {
                   "expr": {
                     "parts": [
-                      "jaffle_order",
+                      "comparison_orders",
                       "ordered_at"
                     ]
                   },
@@ -2497,14 +2497,14 @@
                   "left": {
                     "left": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "customer_id"
                       ]
                     },
                     "op": "=",
                     "right": {
                       "parts": [
-                        "jaffle_customer_history",
+                        "comparison_customer_history",
                         "customer_id"
                       ]
                     }
@@ -2513,14 +2513,14 @@
                   "right": {
                     "left": {
                       "parts": [
-                        "jaffle_customer_history",
+                        "comparison_customer_history",
                         "valid_from"
                       ]
                     },
                     "op": "<=",
                     "right": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     }
@@ -2531,14 +2531,14 @@
                   "left": {
                     "left": {
                       "parts": [
-                        "jaffle_customer_history",
+                        "comparison_customer_history",
                         "valid_to"
                       ]
                     },
                     "op": ">",
                     "right": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     }
@@ -2547,7 +2547,7 @@
                   "right": {
                     "expr": {
                       "parts": [
-                        "jaffle_customer_history",
+                        "comparison_customer_history",
                         "valid_to"
                       ]
                     }
@@ -2556,7 +2556,7 @@
               },
               "table": {
                 "alias": "",
-                "name": "jaffle_customer_history"
+                "name": "comparison_customer_history"
               }
             }
           ],
@@ -2568,7 +2568,7 @@
               "alias": "g1",
               "expression": {
                 "parts": [
-                  "jaffle_customer_history",
+                  "comparison_customer_history",
                   "customer_segment"
                 ]
               }
@@ -2583,7 +2583,7 @@
                   {
                     "expr": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "ordered_at"
                       ]
                     },
@@ -2601,7 +2601,7 @@
                   {
                     "left": {
                       "parts": [
-                        "jaffle_order",
+                        "comparison_orders",
                         "order_total_cents"
                       ]
                     },

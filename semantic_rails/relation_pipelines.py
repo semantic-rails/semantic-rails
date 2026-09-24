@@ -993,6 +993,8 @@ def relation_ctes_for_config(config: PackageConfig) -> list[SqlCte]:
 
 
 def _table_ref_name(table: Any) -> str:
+    if isinstance(table, SqlTableFunction):  # UNNEST(...) and friends read no relation
+        return ""
     return str(getattr(table, "name", "") or "").strip()
 
 
@@ -1087,6 +1089,28 @@ def _lower_relations_for_config(config: PackageConfig) -> dict[str, _LoweredRela
             dependencies=dependencies,
         )
     return lowered
+
+
+def relation_source_tables(config: PackageConfig, relation_ids: Iterable[str]) -> set[str]:
+    """Return the stored tables the given relation pipelines read.
+
+    Follows each pipeline's dependencies on other pipelines and drops every
+    compiler-generated CTE name, so only warehouse relations remain.
+    """
+    lowered = _lower_relations_for_config(config)
+    generated = {name for row in lowered.values() for name in row.cte_names}
+    tables: set[str] = set()
+    pending = [relation_id for relation_id in relation_ids if relation_id in lowered]
+    seen: set[str] = set()
+    while pending:
+        relation_id = pending.pop()
+        if relation_id in seen:
+            continue
+        seen.add(relation_id)
+        pending.extend(lowered[relation_id].dependencies)
+        for cte in lowered[relation_id].ctes:
+            tables.update(ref for ref in _collect_table_refs(cte.query) if ref not in generated)
+    return tables
 
 
 def _required_relation_ctes(config: PackageConfig, query: SqlSelect) -> list[SqlCte]:

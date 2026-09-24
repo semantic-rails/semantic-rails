@@ -4,7 +4,7 @@ import weakref
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..errors import SemanticLayerError
+from ..expressions import resolve_table_entity
 from ..schema import (
     DimensionConfig,
     EntityConfig,
@@ -14,6 +14,7 @@ from ..schema import (
     RelationshipConfig,
     TemporalRoleConfig,
 )
+from .dependencies import binding_index
 
 GraphIndex = dict[str, list[tuple[str, str]]]
 
@@ -94,42 +95,31 @@ def get_package_analysis(config: PackageConfig) -> PackageAnalysis:
 
 
 def _entity_index(config: PackageConfig) -> dict[str, Any]:
-    return get_package_analysis(config).entities
+    return binding_index(get_package_analysis(config).entities, config)
 
 
 def _dimension_index(config: PackageConfig) -> dict[str, DimensionConfig]:
-    return get_package_analysis(config).dimensions
+    return binding_index(get_package_analysis(config).dimensions, config)
 
 
 def _measure_index(config: PackageConfig) -> dict[str, MeasureConfig]:
-    return get_package_analysis(config).measures
+    return binding_index(get_package_analysis(config).measures, config)
 
 
 def _recipe_index(config: PackageConfig) -> dict[str, MetricConfig]:
-    return get_package_analysis(config).recipes
+    return binding_index(get_package_analysis(config).recipes, config)
 
 
 def _temporal_role_index(config: PackageConfig) -> dict[str, TemporalRoleConfig]:
-    return get_package_analysis(config).temporal_roles
+    return binding_index(get_package_analysis(config).temporal_roles, config)
 
 
 def _relationship_index(config: PackageConfig) -> dict[str, RelationshipConfig]:
-    return get_package_analysis(config).relationships
+    return binding_index(get_package_analysis(config).relationships, config)
 
 
 def _resolve_table_entity(config: PackageConfig, table: str, *, owner: str = "") -> str | None:
-    candidates = get_package_analysis(config).table_to_entities.get(table, ())
-    if owner in candidates:
-        return owner
-    if len(candidates) == 1:
-        return candidates[0]
-    if candidates:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"Table reference '{table}' maps to multiple entities; specify an explicit entity.",
-            details={"table": table, "entity_ids": list(candidates)},
-        )
-    return None
+    return resolve_table_entity(config, table, owner=owner)
 
 
 def _default_temporal_role(measure: MeasureConfig) -> str:

@@ -1,0 +1,162 @@
+[
+  {
+    "month": "2016-09-01",
+    "customer_segment": "new",
+    "delivered_revenue": 575.58
+  },
+  {
+    "month": "2016-09-01",
+    "customer_segment": null,
+    "delivered_revenue": 17477.7
+  },
+  {
+    "month": "2016-10-01",
+    "customer_segment": "new",
+    "delivered_revenue": 646.59
+  },
+  {
+    "month": "2016-10-01",
+    "customer_segment": null,
+    "delivered_revenue": 21277.36
+  },
+  {
+    "month": "2016-11-01",
+    "customer_segment": "new",
+    "delivered_revenue": 488.64
+  },
+  {
+    "month": "2016-11-01",
+    "customer_segment": null,
+    "delivered_revenue": 27428.18
+  },
+  {
+    "month": "2016-12-01",
+    "customer_segment": "new",
+    "delivered_revenue": 724.99
+  },
+  {
+    "month": "2016-12-01",
+    "customer_segment": null,
+    "delivered_revenue": 34952.61
+  },
+  {
+    "month": "2017-01-01",
+    "customer_segment": "new",
+    "delivered_revenue": 294.67
+  },
+  {
+    "month": "2017-01-01",
+    "customer_segment": "repeat",
+    "delivered_revenue": 218.35
+  },
+  {
+    "month": "2017-01-01",
+    "customer_segment": null,
+    "delivered_revenue": 44504.93
+  },
+  {
+    "month": "2017-02-01",
+    "customer_segment": "new",
+    "delivered_revenue": 376.29
+  },
+  {
+    "month": "2017-02-01",
+    "customer_segment": "repeat",
+    "delivered_revenue": 147.33
+  },
+  {
+    "month": "2017-02-01",
+    "customer_segment": null,
+    "delivered_revenue": 42834.5
+  },
+  {
+    "month": "2017-03-01",
+    "customer_segment": "new",
+    "delivered_revenue": 414.43
+  },
+  {
+    "month": "2017-03-01",
+    "customer_segment": "repeat",
+    "delivered_revenue": 214.12
+  },
+  {
+    "month": "2017-03-01",
+    "customer_segment": null,
+    "delivered_revenue": 73321.77
+  },
+  {
+    "month": "2017-04-01",
+    "customer_segment": "new",
+    "delivered_revenue": 362.5
+  },
+  {
+    "month": "2017-04-01",
+    "customer_segment": "repeat",
+    "delivered_revenue": 272.42
+  },
+  {
+    "month": "2017-04-01",
+    "customer_segment": null,
+    "delivered_revenue": 82682.07
+  },
+  {
+    "month": "2017-05-01",
+    "customer_segment": "new",
+    "delivered_revenue": 396.4
+  },
+  {
+    "month": "2017-05-01",
+    "customer_segment": "repeat",
+    "delivered_revenue": 278.78
+  },
+  {
+    "month": "2017-05-01",
+    "customer_segment": null,
+    "delivered_revenue": 95395.17
+  },
+  {
+    "month": "2017-06-01",
+    "customer_segment": "new",
+    "delivered_revenue": 348.73
+  },
+  {
+    "month": "2017-06-01",
+    "customer_segment": "repeat",
+    "delivered_revenue": 302.07
+  },
+  {
+    "month": "2017-06-01",
+    "customer_segment": null,
+    "delivered_revenue": 97728.07
+  },
+  {
+    "month": "2017-07-01",
+    "customer_segment": "new",
+    "delivered_revenue": 374.15
+  },
+  {
+    "month": "2017-07-01",
+    "customer_segment": "repeat",
+    "delivered_revenue": 377.35
+  },
+  {
+    "month": "2017-07-01",
+    "customer_segment": null,
+    "delivered_revenue": 94105.69
+  },
+  {
+    "month": "2017-08-01",
+    "customer_segment": "new",
+    "delivered_revenue": 348.72
+  },
+  {
+    "month": "2017-08-01",
+    "customer_segment": "repeat",
+    "delivered_revenue": 171.72
+  },
+  {
+    "month": "2017-08-01",
+    "customer_segment": null,
+    "delivered_revenue": 106851.15
+  }
+]

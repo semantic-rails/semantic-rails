@@ -1,4 +1,4 @@
 {{ config(materialized='view') }}
 
 select *
-from jaffle_order
+from comparison_orders

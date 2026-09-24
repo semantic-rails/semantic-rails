@@ -276,6 +276,43 @@ Core query rules:
 
 ## Expression Surface
 
+Authorization uses the compiler's immutable `BoundQuery`, prepared before SQL
+rendering or adapter access. Planning selects the paths; binding constructs the
+SQL AST for all selected branches, including conversions and nested predicates.
+Recursive distribution and sibling branches use SQL-AST-only preparation in the
+same recording scope; they never invoke full compilation. Compiler indexes record
+resolved measures, recipes, dimensions, temporal roles,
+entities and relationships in a request-local context. The selected plan contributes
+its effective time roles and entity/path dependencies. Dimension/role/measure
+ownership follows the resolved config objects, rather than request spellings.
+Candidate planning is excluded from recording, including recursive plans, so an
+unused alternative path does not become an authorization dependency. Calendar and
+entity-key bindings selected by column identity record their chosen objects too.
+Foreign-key projections record the selected relationship even when lowering
+avoids a physical join; rejected relationship candidates remain outside the set.
+
+Runtime validate/compile/query and restricted resource grants enforce the same
+bound object set. Supporting metadata uses the same compiler ownership records
+for dimensions and roles. Temporal recipe metadata binds a valid default time
+invocation using the compiler-selected role and a supported grain; a missing
+caller time axis does not hide an otherwise valid granted metric. Actual queries
+always bind and authorize their own time context. Rendering reuses the authorized plan and SQL AST. Every request
+is authorized before consulting the compiled-result cache; policy contexts remain
+in cache keys. Segment preview and membership/count query preparations use the
+same binding gate. Live values delegate to the governed query path.
+
+The expression visitor checks request shape against the expression parser's own
+kind vocabulary (every Query IR kind, config-only leaf and parser alias such as
+`nullif` or `not_in`, plus inline-threshold and value-filter data tags) and rejects
+unknown explicit kinds before lossy normalization. Caller `policy_context` metadata
+is not an expression position. Literal/filter values and scalar parameters are
+data: neither nested keys nor reference-shaped strings become expressions or
+semantic references.
+Lineage and caveat helpers retain the common reference collector. Metric constraints
+use its declared reference positions to enforce allowed filter cuts; it never
+supplies the object-access dependency set. Column binding and
+caveat temporal-shape inspection retain their specialized views.
+
 ### Query-Time
 
 Supported query-time families:
@@ -429,5 +466,5 @@ Representative semantic errors:
 ## Active Remaining Limits
 
 - DuckDB is the zero-setup local backend; Snowflake execution depends on a configured `snowflake_cli` or `snowflake_native` connection.
-- The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner.
+- The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner. Each operand counts the rows of its entity's table by the entity key, so an operand measure must count exactly that key, spelled as the entity declares it: a measure that counts an expression (such as `CASE WHEN ... THEN key END`), another column or a fact model's rows is rejected with `CONVERSION_NOT_SUPPORTED`. Write a `CASE` condition as the operand's `filter` instead, and for another column use a measure on the entity whose rows are the events.
 - `metric_predicate` is implemented for the supported contextual and entity-only cases used by the active package, but it is not yet a fully general arbitrary nested predicate planner.

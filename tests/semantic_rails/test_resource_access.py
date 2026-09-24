@@ -333,6 +333,104 @@ def test_package_policy_follows_nested_internal_recipe_dependencies(
     assert not runtime.adapter.statements
 
 
+@pytest.mark.parametrize("kind", ["dimension", "temporal_role"])
+@pytest.mark.parametrize("scope", ["roles", "audiences"])
+@pytest.mark.parametrize("action", ["deny", "redact"])
+def test_restricted_metadata_ownership_policies(granted_runtime, request, kind, scope, action):
+    config = granted_runtime.config
+    dimension = next(row for row in config.dimensions if row.id == DIMENSION)
+    role = next(
+        row for row in config.temporal_roles if row.id == "temporal_role.jaffle_session_started_at"
+    )
+    object_id = dimension.id if kind == "dimension" else role.id
+    protected = dimension.entity if kind == "dimension" else role.dimension
+    config.semantic_policies[:] = [
+        SemanticPolicyConfig(
+            id="policy.test",
+            kind="object_access",
+            object_ids=[protected],
+            action=action,
+            **{scope: ["analyst" if scope == "roles" else "finance"]},
+        )
+    ]
+    engine = _replace_test_config(granted_runtime, config, request)
+    policy = context(AOV, (object_id,)).to_policy_context()
+    partial = {"policy_context": policy}
+    for output in (
+        resolve_catalog(engine, policy_context=policy),
+        discover_payload(engine, terms="", partial_query=partial),
+        build_options_payload(engine, partial_query=partial),
+    ):
+        assert object_id not in json.dumps(output)
+    with pytest.raises(SemanticLayerError) as exc:
+        inspect_payload(engine, object_id=object_id, partial_query=partial)
+    assert exc.value.code == "RESOURCE_ACCESS_DENIED"
+    assert not engine.adapter.statements
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "metric.sales.cumulative_revenue",
+        "metric.sales.rolling_7d_revenue_direct",
+        "metric.sales.prior_week_revenue_direct",
+        "metric.sales.revenue_mtd_direct",
+    ],
+)
+def test_granted_temporal_metadata_remains_discoverable(granted_runtime, request, metric):
+    config = granted_runtime.config
+    config.semantic_policies[:] = []
+    engine = _replace_test_config(granted_runtime, config, request)
+    role_id = "temporal_role.jaffle_order_time"
+    policy = context(metric, (role_id,)).to_policy_context()
+    partial = {"policy_context": policy}
+    for output in (
+        resolve_catalog(engine, policy_context=policy),
+        discover_payload(engine, terms="", partial_query=partial),
+        inspect_payload(engine, object_id=metric, partial_query=partial),
+        build_options_payload(engine, partial_query=partial),
+    ):
+        assert metric in json.dumps(output)
+    assert engine.compile(
+        query(
+            metric, ctx=context(metric, (role_id,)), time={"temporal_role": role_id, "grain": "day"}
+        )
+    )["rendered_sql"]
+
+
+@pytest.mark.parametrize("object_id", [DIMENSION, "temporal_role.jaffle_session_started_at"])
+def test_supporting_metadata_without_denial_is_available(granted_runtime, request, object_id):
+    config = granted_runtime.config
+    config.semantic_policies[:] = []
+    engine = _replace_test_config(granted_runtime, config, request)
+    policy = context(AOV, (object_id,)).to_policy_context()
+    partial = {"policy_context": policy}
+    for output in (
+        resolve_catalog(engine, policy_context=policy),
+        discover_payload(engine, terms="", partial_query=partial),
+        inspect_payload(engine, object_id=object_id, partial_query=partial),
+    ):
+        assert object_id in json.dumps(output)
+
+
+@pytest.mark.parametrize("action", ["deny", "redact"])
+def test_granted_temporal_metadata_honors_real_dependencies(granted_runtime, request, action):
+    config = granted_runtime.config
+    role_id = "temporal_role.jaffle_order_time"
+    role = next(row for row in config.temporal_roles if row.id == role_id)
+    config.semantic_policies[:] = [
+        SemanticPolicyConfig(
+            id="policy.test", kind="object_access", object_ids=[role.dimension], action=action
+        )
+    ]
+    engine = _replace_test_config(granted_runtime, config, request)
+    metric = "metric.sales.cumulative_revenue"
+    policy = context(metric, (role_id,)).to_policy_context()
+    assert resolve_catalog(engine, policy_context=policy)["metrics"] == []
+    with pytest.raises(SemanticLayerError):
+        inspect_payload(engine, object_id=metric, partial_query={"policy_context": policy})
+
+
 @pytest.mark.parametrize("transport", ["rest", "mcp"])
 def test_authenticated_asgi_grants_roundtrip_and_revoke(
     package_config_factory, monkeypatch, transport

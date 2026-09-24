@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -39,6 +39,7 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     lift_conditional_aggregates,
 )
+from .compiler_parts.dependencies import binding_dependencies, candidate_planning
 from .compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from .compiler_parts.indexes import (
     _default_temporal_role,
@@ -106,6 +107,7 @@ from .expressions import (
     SemanticExpr,
     expr_kind,
     expr_to_dict,
+    validate_expression_shapes,
 )
 from .fanout import analyze_fanout, choose_path, package_hop_limit
 from .ir import (
@@ -150,6 +152,7 @@ from .sql_ast import (
     SqlWindow,
     SqlWithinGroup,
     build_filter_condition,
+    validate_single_value_filter_shape,
 )
 
 __all__ = [
@@ -942,16 +945,16 @@ _NUMERIC_DATA_TYPES = {"integer", "number"}
 
 
 def _validate_where_value_type(dim, item) -> None:
-    """Catch obvious type mismatches in `where` clauses at validate time
-    so users see a structured error instead of a raw warehouse conversion
-    error. Only the most common mismatches are checked: numeric value
-    against string dim, string value against numeric dim.
+    """Catch common where-value type mismatches before warehouse execution.
 
-    Per-dim `data_type` may be empty when the catalog hasn't classified
-    the column; in that case skip the check (nothing to enforce).
+    Skip dimensions without a classified catalog data type.
     """
-    op = str(item.op or "").upper()
-    values = list(item.value or []) if op in {"IN", "NOT IN"} else [item.value]
+    # Report an invalid scalar-op/list shape before any element type mismatch.
+    validate_single_value_filter_shape(item.op, item.value)
+    # NULL tests ignore value, including a supplied list, during lowering.
+    if " ".join(str(item.op or "").upper().split()) in {"IS NULL", "IS NOT NULL"}:
+        return
+    values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:
         return
@@ -2373,18 +2376,83 @@ def _resolve_conversion_source(
                     matching_mode="first_converted_after_base",
                 )
             )
-        return {
-            "measure": measure,
-            "bound_measure": bound,
-            "root_entity": measure.entity,
-            "time_role": bound.temporal_role or _default_temporal_role(measure),
-            "filters": [],
-        }
+        return _measure_conversion_source(measure, bound, config, side=side)
     raise SemanticLayerError(
         "CONVERSION_NOT_SUPPORTED",
         "Conversion execution currently requires base and converted inputs to resolve to event-count measures",
         details={"expression": expr_to_dict(expr)},
     )
+
+
+def _measure_conversion_source(
+    measure: MeasureConfig, bound: BoundMeasure, config: PackageConfig, *, side: str
+) -> dict[str, Any]:
+    """The conversion source for an operand measure, which must count its entity's rows.
+
+    Conversion lowering keys each event by its entity's key, reads the entity's table
+    and never reads the measure's expression or fact relation. A measure that counts an
+    expression (``CASE WHEN ... THEN key END``), another column or a fact model's rows
+    would silently lose its definition, so it is rejected.
+    """
+    entity = _entity_index(config).get(measure.entity)
+    problem = _conversion_operand_problem(measure, entity)
+    if problem is not None:
+        what, hint = problem
+        raise SemanticLayerError(
+            "CONVERSION_NOT_SUPPORTED",
+            (
+                f"Measure '{measure.id}' {what}, so it can't be the conversion {side} "
+                "operand: a conversion operand counts its entity's rows by the entity key, "
+                f"which would ignore the measure's definition. {hint}"
+            ),
+            details={
+                "side": side,
+                "measure": measure.id,
+                "entity": measure.entity,
+                "entity_key": list(entity.key) if entity is not None else [],
+                "measure_expr": expr_to_dict(measure.expr),
+            },
+        )
+    return {
+        "measure": measure,
+        "bound_measure": bound,
+        "root_entity": measure.entity,
+        "time_role": bound.temporal_role or _default_temporal_role(measure),
+        "filters": [],
+    }
+
+
+def _conversion_operand_problem(measure: MeasureConfig, entity: Any) -> tuple[str, str] | None:
+    """What an operand measure counts instead of its entity's rows, and the fix; None if fine."""
+    key = list(entity.key) if entity is not None else []
+    table = entity.table if entity is not None else ""
+    counted = measure.expr
+    # Named so a case difference shows: some warehouses (ClickHouse) are case-sensitive.
+    the_key = f"the key '{key[0]}'" if len(key) == 1 else "the key"
+    if not isinstance(counted, ColumnRefExpr):
+        return (
+            f"counts an expression, not {the_key} of '{measure.entity}'",
+            "Use a measure that counts the entity key and restrict the operand with "
+            "'filter', for example filter: {all: [{field: <dimension id>, op: '=', "
+            "value: ...}]}.",
+        )
+    events_hint = "Use a measure that counts the key of the entity whose rows are the events."
+    if not (
+        [counted.column] == key
+        and counted.entity in {"", measure.entity}
+        and counted.table in {"", table}
+    ):
+        qualifier = next((q for q in (counted.entity, counted.table) if q), "")
+        where = f" of '{qualifier}'" if qualifier not in {"", measure.entity, table} else ""
+        what = f"counts column '{counted.column}'{where}, not {the_key} of '{measure.entity}'"
+        return what, events_hint
+    if measure.source_relation not in {"", table}:
+        return (
+            f"counts rows of '{measure.source_relation}', not of the '{measure.entity}' "
+            f"table '{table}'",
+            events_hint,
+        )
+    return None
 
 
 def _conversion_dimension_paths(
@@ -3447,6 +3515,13 @@ def _select_aggregate_relation(
 def plan_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
 ) -> LogicalPlan:
+    with candidate_planning():
+        return _plan_query(config, registry, payload)
+
+
+def _plan_query(
+    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+) -> LogicalPlan:
     raw_query = normalize_query(payload)
 
     # Lift inline ``aggregate_if`` shorthand into synthetic measures. The
@@ -3489,7 +3564,7 @@ def plan_query(
 
     dedup_measures = {
         (
-            row.measure_id,
+            row.alias,
             row.aggregation,
             row.temporal_role,
             _freeze_payload(row.aggregation_params),
@@ -3649,16 +3724,119 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
 def _compile_query_sql_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
     plan = plan_query(config, None, payload)
     config = resolve_compile_config(plan, config)
+    _record_bound_plan(plan, config)
     return attach_relation_ctes(config, lower_to_sql(plan, config))
 
 
-def compile_query(
+def _record_bound_plan(plan: LogicalPlan, config: PackageConfig) -> None:
+    _entity_index(config).get(plan.root_entity)
+    dimensions = _dimension_index(config)
+    for dimension in plan.group_by:
+        dimensions.get(dimension)
+    for clause in plan.query.get("where", []):
+        dimensions.get(str(clause.get("field", "")))
+    _temporal_role_index(config).get(str(plan.time.get("temporal_role", "")))
+    for bound in plan.bound_measures:
+        _measure_index(config).get(bound.measure_id)
+        _temporal_role_index(config).get(bound.temporal_role)
+    for measure_plan in plan.measure_plans:
+        for entity in measure_plan.required_entities:
+            _entity_index(config).get(entity)
+        for selection in measure_plan.path_selections:
+            for relationship in selection.chosen_path:
+                _relationship_index(config).get(relationship)
+
+
+@dataclass(frozen=True)
+class BoundQuery:
+    plan: LogicalPlan
+    config: PackageConfig
+    sql_ast: SqlSelect
+    object_ids: frozenset[str]
+
+
+def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> frozenset[str]:
+    """Resolve metadata ownership and a valid default invocation for recipes."""
+    references: set[str] = set()
+    for object_id in object_ids:
+        recipe = _recipe_index(config).get(object_id)
+        if recipe is None:
+            with binding_dependencies() as dependencies:
+                for index in (
+                    _dimension_index,
+                    _temporal_role_index,
+                    _entity_index,
+                    _measure_index,
+                ):
+                    index(config).get(object_id)
+            references.update(dependencies.object_ids)
+            continue
+        query: dict[str, Any] = {"select": [{"expression": {"metric": object_id}, "as": "value"}]}
+        if not _requires_query_time(recipe.expression, config):
+            references.update(bind_query(config, None, query).object_ids)
+            continue
+        role_id = _object_default_query_temporal_role(config, object_id)
+        role = _temporal_role_index(config).get(role_id)
+        grains = list(role.supported_grains) if role is not None else []
+        # Window contracts need different grains. Metadata has no caller time
+        # axis, so use a supported invocation rather than treating missing
+        # context as a policy refusal. Execution binds the actual query again.
+        last_error = SemanticLayerError(
+            "INVALID_QUERY", "No default temporal invocation is available."
+        )
+        for grain in grains:
+            query["time"] = {"temporal_role": role_id, "grain": grain}
+            try:
+                references.update(bind_query(config, None, query).object_ids)
+                break
+            except SemanticLayerError as exc:
+                last_error = exc
+        else:
+            raise last_error
+    return frozenset(references)
+
+
+def bind_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
-) -> dict[str, Any]:
-    started = time.perf_counter()
+) -> BoundQuery:
+    """Prepare all bound branches without rendering SQL or accessing an adapter."""
+    try:
+        return _bind_query(config, registry, payload)
+    except RecursionError as exc:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", "Expression dependencies are cyclic or too deep."
+        ) from exc
+
+
+def _bind_query(
+    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+) -> BoundQuery:
+    # policy_context carries caller metadata and is never read as expressions;
+    # every other request key, including unrecognized ones, is shape-checked.
+    validate_expression_shapes(
+        {key: value for key, value in payload.items() if key != "policy_context"}
+    )
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)
-    sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
+    with binding_dependencies() as dependencies:
+        # These are selected plan objects, not candidate paths considered by
+        # planning. Nested conversions/predicates resolve through these same
+        # indexes when their SQL AST branches are constructed below.
+        _record_bound_plan(plan, config)
+        sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
+    return BoundQuery(plan, config, sql_ast, frozenset(dependencies.object_ids))
+
+
+def compile_query(
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    *,
+    binding: BoundQuery | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    bound = binding if binding is not None else bind_query(config, registry, payload)
+    plan, config, sql_ast = bound.plan, bound.config, bound.sql_ast
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,

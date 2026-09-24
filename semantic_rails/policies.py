@@ -15,7 +15,7 @@ from typing import Any
 
 from .ast import normalize_query
 from .errors import SemanticLayerError
-from .expressions import expr_to_dict
+from .expressions import collect_object_references, expr_to_dict
 from .schema import PackageConfig, SemanticPolicyConfig
 
 
@@ -446,15 +446,4 @@ def _metric_filter_refs(query: Any) -> dict[str, list[str]]:
 
 
 def _collect_expr_refs(value: Any) -> list[str]:
-    refs: list[str] = []
-    if isinstance(value, Mapping):
-        for key in ("entity", "measure", "metric"):
-            text = str(value.get(key, "") or "").strip()
-            if text:
-                refs.append(text)
-        for child in value.values():
-            refs.extend(_collect_expr_refs(child))
-    elif isinstance(value, list):
-        for item in value:
-            refs.extend(_collect_expr_refs(item))
-    return list(dict.fromkeys(refs))
+    return collect_object_references(value)

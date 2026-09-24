@@ -972,7 +972,7 @@ def recovery_hints_for_error(
                     }
                 )
             return grain_hints
-        return []
+        return list(details.get("recovery_hints", []) or [])
     if code == "UNKNOWN_MCP_RESOURCE":
         return [
             {

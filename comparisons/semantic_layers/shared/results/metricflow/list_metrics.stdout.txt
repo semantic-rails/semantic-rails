@@ -1,8 +1,14 @@
+‼️ Warning: A new version of the MetricFlow CLI is available.
+💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
+	$ pip install --upgrade dbt-metricflow
+
 
 
 ⠋ 🔍 Looking for all available metrics...
 
 ⠙ 🔍 Looking for all available metrics...
+
+⠹ 🔍 Looking for all available metrics...
 ✔ 🌱 We've found 15 metrics.
 The list below shows metrics in the format of "metric_name: list of available dimensions"
 • aov_usd: customer__customer_name, customer__customer_segment, customer__first_order_at, customer__valid_from, customer__valid_to and 15 more

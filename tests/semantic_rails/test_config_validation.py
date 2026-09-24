@@ -12,6 +12,7 @@ import yaml
 
 from semantic_rails import cli as cli_module
 from semantic_rails import config as config_module
+from semantic_rails import config_validation as config_validation_module
 from semantic_rails.config import resolve_repo_path
 from semantic_rails.config_validation import (
     _run_probe,
@@ -2089,3 +2090,429 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
     )
     report, config = parse_config_report(resolve_package_reference(path=str(package_file)))
     assert (report["ok"], config) == (False, None)
+
+
+# Directory packages used to hand metric and segment specs to the shape check as
+# (path, spec) pairs, which it skipped, so unknown keys there passed validation.
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (
+            lambda segment: segment.update(
+                where=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+            ),
+            "has 'where' outside membership:",
+        ),
+        (
+            lambda segment: segment["membership"].update(
+                metric_filter=segment["membership"].pop("metric_filters")
+            ),
+            "membership has unknown key 'metric_filter' — the loader reads "
+            "membership.metric_filters only",
+        ),
+        (
+            lambda segment: segment["membership"].update(
+                filter=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+            ),
+            "membership has unknown key 'filter' — the loader reads membership.where only",
+        ),
+        (
+            lambda segment: segment.update(meta={"owner_team": "growth"}),
+            "has unknown key 'meta' — segments don't read meta:",
+        ),
+        (
+            lambda segment: segment["membership"].update(
+                dimension_filters=[
+                    {"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}
+                ]
+            ),
+            "write it under membership.where as {field, op, value} rows",
+        ),
+        (
+            lambda segment: segment.update(
+                filters=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+            ),
+            "has 'filters' outside membership: — the loader reads membership.where only",
+        ),
+    ],
+    ids=[
+        "where-outside-membership",
+        "membership-typo",
+        "membership-filter",
+        "segment-meta",
+        "dimension-filters",
+        "top-level-filters",
+    ],
+)
+def test_directory_validation_rejects_unknown_segment_keys(
+    package_config_factory, mutate, expected
+):
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert expected in errors[0]
+
+
+def test_directory_validation_rejects_unknown_metric_keys(package_config_factory):
+    _, package_dir = package_config_factory("jaffle_shop")
+    metric_file = Path(package_dir) / "metrics" / "core" / "core_metrics.yml"
+    raw = yaml.safe_load(metric_file.read_text(encoding="utf-8"))
+    metric_key = next(iter(raw["metrics"]))
+    raw["metrics"][metric_key]["valeu_type"] = "number"
+    _write_yaml(metric_file, raw)
+
+    errors = validate_runtime_package(Path(package_dir))
+
+    assert len(errors) == 1, errors
+    assert f"metric '{metric_key}' has unknown key 'valeu_type'" in errors[0]
+    assert "did you mean 'value_type'?" in errors[0]
+
+
+def test_single_file_validation_rejects_unknown_membership_keys(tmp_path: Path):
+    package_file = tmp_path / "monolithic.yml"
+    _write_monolithic_package(package_file, "monolithic_demo")
+    payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
+    payload["segments"] = {
+        "big_orders": {
+            "id": "segment.demo.big_orders",
+            "entity": "order",
+            "basis_metric": "metric.sales.orders",
+            "membership": {
+                "filters": [{"field": "dimension.demo_order_id", "op": ">", "value": 1}]
+            },
+        }
+    }
+    _write_yaml(package_file, payload)
+
+    errors = validate_runtime_package(package_file)
+
+    assert len(errors) == 1, errors
+    assert "segment 'big_orders' membership has unknown key 'filters'" in errors[0]
+    assert "write it under membership.where" in errors[0]
+
+
+def test_directory_validation_accepts_every_membership_key_the_loader_reads(
+    package_config_factory,
+):
+    def add_every_key(segment):
+        for key in ("where", "metric_filters"):
+            segment["membership"].setdefault(key, [])
+        for key in ("time", "temporal_role_overrides", "path_policy"):
+            segment["membership"].setdefault(key, {})
+
+    errors = validate_runtime_package(_jaffle_with_segment(package_config_factory, add_every_key))
+
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "key", "expected"),
+    [
+        ("metric", "preferred_filter_ops", "has unknown key 'preferred_filter_ops'"),
+        ("metric", "clock_variants", "clock_variants is metadata-only and dropped"),
+        ("segment", "clock_variants", "has unknown key 'clock_variants'"),
+    ],
+)
+def test_strict_legacy_key_is_reported_once(package_config_factory, kind, key, expected):
+    _, package_dir = package_config_factory("jaffle_shop")
+    source = Path(package_dir) / (
+        "segments/core.yml" if kind == "segment" else "metrics/core/core_metrics.yml"
+    )
+    doc = yaml.safe_load(source.read_text(encoding="utf-8"))
+    next(iter(doc[f"{kind}s"].values()))[key] = ["legacy"]
+    _write_yaml(source, doc)
+
+    errors = validate_runtime_package(Path(package_dir))
+
+    assert len(errors) == 1, errors
+    assert expected in errors[0]
+
+
+def _jaffle_with_relocated_spec(
+    package_config_factory, kind: str, layout: str, extra_key: str | None
+) -> Path:
+    """Move one jaffle metric or segment into another layout the loader reads."""
+    _, package_dir = package_config_factory("jaffle_shop")
+    package_dir = Path(package_dir)
+    if kind == "segment":
+        source, key = package_dir / "segments" / "core.yml", "customer.high_value"
+    else:
+        source, key = package_dir / "metrics" / "core" / "core_metrics.yml", "sales.aov_usd"
+    doc = yaml.safe_load(source.read_text(encoding="utf-8"))
+    spec = doc[f"{kind}s"].pop(key)
+    _write_yaml(source, doc)
+    if extra_key:
+        target = spec["membership"] if kind == "segment" else spec
+        target[extra_key] = [] if kind == "segment" else "number"
+    if layout == "bare":
+        _write_yaml(package_dir / f"{kind}s" / "relocated.yml", {**spec, "name": key})
+    elif layout == "singular":
+        _write_yaml(package_dir / f"{kind}s" / "relocated.yml", {kind: {**spec, "name": key}})
+    elif layout == "root_file":
+        _write_yaml(package_dir / f"{kind}s.yml", {f"{kind}s": {key: spec}})
+    else:
+        package_yml = package_dir / "package.yml"
+        root = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
+        root[f"{kind}s"] = {key: spec}
+        _write_yaml(package_yml, root)
+    return package_dir
+
+
+@pytest.mark.parametrize("layout", ["bare", "singular", "root_file", "package_yml"])
+@pytest.mark.parametrize(
+    ("kind", "extra_key"),
+    [("segment", None), ("segment", "filters"), ("metric", None), ("metric", "valeu_type")],
+    ids=["valid-segment", "segment-unknown-key", "valid-metric", "metric-unknown-key"],
+)
+def test_key_checks_cover_every_layout_the_loader_reads(
+    package_config_factory, kind, extra_key, layout
+):
+    package_dir = _jaffle_with_relocated_spec(package_config_factory, kind, layout, extra_key)
+
+    errors = validate_runtime_package(package_dir)
+
+    if extra_key is None:
+        assert errors == []
+    else:
+        assert len(errors) == 1, errors
+        assert f"unknown key '{extra_key}'" in errors[0]
+
+
+def _jaffle_with_duplicate_metric(package_config_factory, *, typo_in: str) -> Path:
+    """Define sales.aov_usd again in metrics/zz_extra.yml, with a typo in one copy.
+
+    The loader merges files in sorted path order, so metrics/zz_extra.yml wins
+    over metrics/core/core_metrics.yml.
+    """
+    _, package_dir = package_config_factory("jaffle_shop")
+    package_dir = Path(package_dir)
+    core = package_dir / "metrics" / "core" / "core_metrics.yml"
+    doc = yaml.safe_load(core.read_text(encoding="utf-8"))
+    extra = {"metrics": {"sales.aov_usd": dict(doc["metrics"]["sales.aov_usd"])}}
+    target = extra if typo_in == "kept" else doc
+    target["metrics"]["sales.aov_usd"]["valeu_type"] = "number"
+    _write_yaml(core, doc)
+    _write_yaml(package_dir / "metrics" / "zz_extra.yml", extra)
+    return package_dir
+
+
+@pytest.mark.parametrize(("typo_in", "expected_errors"), [("kept", 1), ("discarded", 0)])
+def test_key_checks_follow_the_copy_the_loader_keeps(
+    package_config_factory, typo_in, expected_errors
+):
+    package_dir = _jaffle_with_duplicate_metric(package_config_factory, typo_in=typo_in)
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == expected_errors, errors
+
+
+def test_key_checks_skip_the_directories_the_loader_skips(package_config_factory):
+    package_dir = _jaffle_with_segment(
+        package_config_factory,
+        lambda segment: segment.update(
+            where=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+        ),
+    )
+    stale = {"segments": {"stale": {"entity": "customer", "membership": {"filters": []}}}}
+    for skipped in ("__pycache__", ".compiled"):
+        _write_yaml(package_dir / "segments" / skipped / "stale.yml", stale)
+    (package_dir / "segments" / ".compiled" / "broken.yml").write_text(
+        "segments: [unclosed", encoding="utf-8"
+    )
+
+    errors = validate_runtime_package(package_dir)
+
+    # The loader never reads the skipped directories: a stale spec there adds no key
+    # error, and a broken file there doesn't turn the key checks off. (The per-file
+    # YAML readers still report the broken file, as they did before.)
+    assert not any("'stale'" in error for error in errors), errors
+    assert any(
+        "segment 'customer.high_value' has 'where' outside membership:" in error for error in errors
+    ), errors
+
+
+def test_key_checks_accept_a_relative_package_path(package_config_factory, monkeypatch):
+    package_dir = _jaffle_with_segment(
+        package_config_factory,
+        lambda segment: segment.update(
+            where=[{"field": "dimension.jaffle_customer_type", "op": "=", "value": "new"}]
+        ),
+    )
+    monkeypatch.chdir(package_dir.parent)
+
+    errors = validate_runtime_package(Path(package_dir.name))
+
+    assert len(errors) == 1, errors
+    assert "has 'where' outside membership:" in errors[0]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("read failed"),
+        SemanticLayerError(
+            "INVALID_CONFIG", "Package sources changed during loading; retry after writes complete."
+        ),
+    ],
+    ids=["os-error", "sources-changed"],
+)
+def test_key_checks_fail_closed_when_their_merge_fails(
+    package_config_factory, monkeypatch, failure
+):
+    # Only the key checks' merge fails; the package itself still loads. The checks must
+    # not be skipped silently.
+    _, package_dir = package_config_factory("jaffle_shop")
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(config_validation_module, "_merge_package_dir", fail)
+
+    errors = validate_runtime_package(Path(package_dir))
+    assert len(errors) == 1, errors
+    assert "can't read the metric and segment specs to check their keys" in errors[0]
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+    assert report["ok"] is False
+
+
+# A metric's temporal_role must be a clock its measures can be timed by. Otherwise each
+# leaf falls back to its own clock and the answer is labeled with the declared one.
+
+
+def _jaffle_with_metric_role(package_config_factory, metric_file: str, key: str, role: str):
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / metric_file
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["metrics"][key]["temporal_role"] = role
+    _write_yaml(path, doc)
+    return Path(package_dir)
+
+
+def test_validation_rejects_a_metric_timed_by_a_clock_its_measures_lack(package_config_factory):
+    # AOV over order measures, labeled with the sessions table's clock.
+    package_dir = _jaffle_with_metric_role(
+        package_config_factory,
+        "core/core_metrics.yml",
+        "sales.aov_usd",
+        "temporal_role.jaffle_session_started_at",
+    )
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert (
+        "metric metric.sales.aov_usd has temporal_role "
+        "'temporal_role.jaffle_session_started_at', but its measures are timed by "
+        "temporal_role.jaffle_order_time"
+    ) in errors[0]
+
+
+def test_validation_times_a_conversion_metric_by_its_base_operand(package_config_factory):
+    # Sessions to orders: the sessions clock is right, the orders clock is not.
+    package_dir = _jaffle_with_metric_role(
+        package_config_factory,
+        "extensions/advanced_metrics.yml",
+        "sales.session_to_order_conversion_rate_7d",
+        "temporal_role.jaffle_order_time",
+    )
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert "sales.session_to_order_conversion_rate_7d has temporal_role" in errors[0]
+    assert "timed by temporal_role.jaffle_session_started_at" in errors[0]
+
+
+def _add(left: dict, right: dict) -> dict:
+    return {"kind": "binary", "op": "add", "left": left, "right": right}
+
+
+_SESSIONS = {"kind": "aggregate", "measure": "measure.jaffle.session_starts"}
+_ORDERS = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        _add(_SESSIONS, _ORDERS),
+        _add(_add(_SESSIONS, _ORDERS), _ORDERS),
+        _add(_SESSIONS, _add(_ORDERS, _ORDERS)),
+    ],
+    ids=["a+b", "(a+b)+b", "a+(b+b)"],
+)
+def test_validation_accepts_a_mixed_clock_metric_however_it_is_grouped(
+    package_config_factory, expression
+):
+    # Sessions plus orders on the sessions clock: the planner aligns the orders to their
+    # own clock on purpose, and the label is right for the sessions.
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / "extensions" / "derived_metrics.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["metrics"]["sales.sessions_plus_orders"] = {
+        "as": "metric.sales.sessions_plus_orders",
+        "label": "Sessions plus orders",
+        "description": "Two clocks in one expression.",
+        "kind": "derived",
+        "value_type": "count",
+        "temporal_role": "temporal_role.jaffle_session_started_at",
+        "expression": expression,
+    }
+    _write_yaml(path, doc)
+
+    assert validate_runtime_package(Path(package_dir)) == []
+
+
+@pytest.mark.parametrize("mutual", [False, True], ids=["self-cycle", "mutual-cycle"])
+def test_parse_report_rejects_cyclic_metric_references(package_config_factory, mutual):
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / "core" / "core_metrics.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    aov = doc["metrics"]["sales.aov_usd"]
+    aov["kind"] = "derived"
+    aov.pop("numerator", None)
+    aov.pop("denominator", None)
+    aov.pop("null_behavior", None)
+    aov["expression"] = {
+        "kind": "metric",
+        "metric": "metric.sales.cycle_peer" if mutual else "metric.sales.aov_usd",
+    }
+    if mutual:
+        doc["metrics"]["sales.cycle_peer"] = {
+            "as": "metric.sales.cycle_peer",
+            "kind": "derived",
+            "description": "The other side of an invalid cycle.",
+            "value_type": "currency",
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "expression": {"kind": "metric", "metric": "metric.sales.aov_usd"},
+        }
+    _write_yaml(path, doc)
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    assert report["ok"] is False
+    assert any("cyclic metric recipe reference" in error["message"] for error in report["errors"])
+
+
+def test_validation_accepts_shared_acyclic_metric_references(package_config_factory):
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / "core" / "core_metrics.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["metrics"]["sales.aov_twice"] = {
+        "as": "metric.sales.aov_twice",
+        "kind": "derived",
+        "description": "Average order value reached twice through one recipe.",
+        "value_type": "currency",
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "expression": _add(
+            {"kind": "metric", "metric": "metric.sales.aov_usd"},
+            {"kind": "metric", "metric": "metric.sales.aov_usd"},
+        ),
+    }
+    _write_yaml(path, doc)
+
+    assert validate_runtime_package(Path(package_dir)) == []

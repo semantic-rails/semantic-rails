@@ -1,4 +1,14 @@
 {
+  "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
+  "environment": {
+    "dbt-core": "1.10.23",
+    "dbt-duckdb": "1.10.1",
+    "dbt-metricflow": "0.11.0",
+    "dbt-semantic-interfaces": "0.9.4.dev0",
+    "duckdb": "1.5.5",
+    "metricflow": "0.209.0"
+  },
+  "generated_at": "2026-09-23T02:35:54+00:00",
   "layer": "metricflow",
   "questions": [
     {
@@ -7,7 +17,7 @@
       "question_id": "q01_orders_by_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q01_orders_by_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q01_orders_by_month/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q01_orders_by_month/stderr.txt"
     },
     {
@@ -16,7 +26,7 @@
       "question_id": "q02_revenue_by_store_by_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q02_revenue_by_store_by_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q02_revenue_by_store_by_month/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q02_revenue_by_store_by_month/stderr.txt"
     },
     {
@@ -25,7 +35,7 @@
       "question_id": "q03_item_revenue_by_product_type_by_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q03_item_revenue_by_product_type_by_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q03_item_revenue_by_product_type_by_month/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q03_item_revenue_by_product_type_by_month/stderr.txt"
     },
     {
@@ -34,7 +44,7 @@
       "question_id": "q04_aov_by_store",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q04_aov_by_store/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q04_aov_by_store/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q04_aov_by_store/stderr.txt"
     },
     {
@@ -43,7 +53,7 @@
       "question_id": "q05_orders_and_item_revenue_by_store_by_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q05_orders_and_item_revenue_by_store_by_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q05_orders_and_item_revenue_by_store_by_month/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q05_orders_and_item_revenue_by_store_by_month/stderr.txt"
     },
     {
@@ -52,7 +62,7 @@
       "question_id": "q06_new_customer_orders_by_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q06_new_customer_orders_by_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q06_new_customer_orders_by_month/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q06_new_customer_orders_by_month/stderr.txt"
     },
     {
@@ -61,7 +71,7 @@
       "question_id": "q07_delivered_revenue_by_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q07_delivered_revenue_by_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q07_delivered_revenue_by_month/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q07_delivered_revenue_by_month/stderr.txt"
     },
     {
@@ -70,7 +80,7 @@
       "question_id": "q08_revenue_by_customer_segment_as_of_order_time",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q08_revenue_by_customer_segment_as_of_order_time/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q08_revenue_by_customer_segment_as_of_order_time/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q08_revenue_by_customer_segment_as_of_order_time/stderr.txt"
     },
     {
@@ -79,7 +89,7 @@
       "question_id": "q09_session_to_order_conversion_7d",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/sql.txt",
-      "status": "precomputed",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q09_session_to_order_conversion_7d/stderr.txt"
     },
     {
@@ -88,7 +98,7 @@
       "question_id": "q10_orders_from_customers_with_10plus_orders_in_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q10_orders_from_customers_with_10plus_orders_in_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q10_orders_from_customers_with_10plus_orders_in_month/sql.txt",
-      "status": "precomputed",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q10_orders_from_customers_with_10plus_orders_in_month/stderr.txt"
     },
     {
@@ -97,7 +107,7 @@
       "question_id": "q11_repeat_customer_orders_by_store_by_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/sql.txt",
-      "status": "precomputed",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q11_repeat_customer_orders_by_store_by_month/stderr.txt"
     },
     {
@@ -106,7 +116,7 @@
       "question_id": "q12_orders_by_month_with_lifetime_spend_500_filter",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/sql.txt",
-      "status": "precomputed",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q12_orders_by_month_with_lifetime_spend_500_filter/stderr.txt"
     },
     {
@@ -115,7 +125,7 @@
       "question_id": "q13_daily_orders_from_customers_with_10plus_orders_in_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q13_daily_orders_from_customers_with_10plus_orders_in_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.txt",
-      "status": "precomputed",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q13_daily_orders_from_customers_with_10plus_orders_in_month/stderr.txt"
     },
     {
@@ -124,7 +134,7 @@
       "question_id": "q14_revenue_from_customers_with_10plus_orders_same_store_month",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q14_revenue_from_customers_with_10plus_orders_same_store_month/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q14_revenue_from_customers_with_10plus_orders_same_store_month/sql.txt",
-      "status": "precomputed",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q14_revenue_from_customers_with_10plus_orders_same_store_month/stderr.txt"
     },
     {
@@ -133,7 +143,7 @@
       "question_id": "q15_same_store_session_to_order_conversion_7d",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/sql.txt",
-      "status": "precomputed",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q15_same_store_session_to_order_conversion_7d/stderr.txt"
     },
     {
@@ -142,7 +152,7 @@
       "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
       "result_path": "comparisons/semantic_layers/shared/results/metricflow/q16_revenue_by_customer_segment_as_of_delivered_time/result.csv",
       "sql_path": "comparisons/semantic_layers/shared/results/metricflow/q16_revenue_by_customer_segment_as_of_delivered_time/sql.txt",
-      "status": "native",
+      "status": "executed",
       "stderr_path": "comparisons/semantic_layers/shared/results/metricflow/q16_revenue_by_customer_segment_as_of_delivered_time/stderr.txt"
     }
   ]
