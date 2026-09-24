@@ -413,28 +413,81 @@ def _base_type(data_type: str) -> str:
     return data_type.split("(")[0].upper()
 
 
-_TIME_WORDS = ("DATE", "TIMESTAMP", "DATETIME")
-_NUMERIC_WORDS = ("INT", "NUMBER", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL", "BIGNUMERIC")
-_TEXT_WORDS = ("CHAR", "TEXT", "STRING", "VARCHAR", "BOOL", "ENUM")
+_CONTAINER_TYPE = re.compile(
+    r"(?:^|[^A-Z0-9_])(?:ARRAY|LIST|STRUCT|MAP|ROW|RECORD|OBJECT|VARIANT|JSON)(?:$|[^A-Z0-9_])"
+)
+
+
+def _is_container_type(data_type: str) -> bool:
+    upper = str(data_type or "").strip().upper()
+    return bool(re.search(r"\[[^]]*\]", upper) or _CONTAINER_TYPE.search(upper))
+
+
+def _scalar_family(data_type: str) -> str:
+    """Conservative families for role inference and safe FK equality probes."""
+    upper = str(data_type or "").strip().upper()
+    if not upper or _is_container_type(upper):
+        return ""
+    head = re.split(r"[\s(<]", upper, maxsplit=1)[0]
+    if head == "INTERVAL":
+        return ""
+    if head in {"DATE", "DATETIME"} or head.startswith("TIMESTAMP"):
+        return "time"
+    if head in {"BOOLEAN", "BOOL"}:
+        return "boolean"
+    if head in {"VARCHAR", "NVARCHAR", "CHAR", "NCHAR", "CHARACTER", "TEXT", "STRING", "ENUM"}:
+        return "text"
+    if head == "UUID":
+        return "uuid"
+    if head in {"NUMBER", "NUMERIC", "DECIMAL", "BIGNUMERIC", "DOUBLE", "REAL"} or head.startswith(
+        (
+            "INT",
+            "UINT",
+            "UINTEGER",
+            "TINYINT",
+            "SMALLINT",
+            "BIGINT",
+            "HUGEINT",
+            "UTINYINT",
+            "USMALLINT",
+            "UBIGINT",
+            "UHUGEINT",
+            "FLOAT",
+            "BYTEINT",
+        )
+    ):
+        return "numeric"
+    return ""
+
+
+def _fk_types_compatible(child_type: str, target_type: str) -> bool:
+    if _is_container_type(child_type) or _is_container_type(target_type):
+        return False
+    child_family, target_family = _scalar_family(child_type), _scalar_family(target_type)
+    if child_family and target_family:
+        return child_family == target_family
+    return bool(child_type and target_type and child_type.upper() == target_type.upper())
 
 
 def classify_column(name: str, data_type: str) -> str:
     """``time``, ``measure``, ``dimension``, ``key`` or ``unknown`` for one column.
 
-    Type names are matched by keyword, so DuckDB, Postgres, Snowflake and
-    BigQuery spellings (``TIMESTAMP_NTZ``, ``character varying``, ``INT64``)
-    classify alike. Key-like names (``*_id``, ``*_key``) are never measures.
+    Scalar type families cover common DuckDB, Postgres, Snowflake and BigQuery
+    spellings (``TIMESTAMP_NTZ``, ``character varying``, ``INT64``).
+    Container types are left unmodeled; key-like names are never measures.
     """
-    upper = str(data_type or "").upper()
-    if not upper:
+    if not str(data_type or "").strip():
         return "unknown"
-    if "INTERVAL" not in upper and any(word in upper for word in _TIME_WORDS):
+    family = _scalar_family(data_type)
+    if not family and _is_container_type(data_type):
+        return "unknown"
+    if family == "time":
         return "time"
     if _key_like(name):
         return "key"
-    if any(word in upper for word in _NUMERIC_WORDS):
+    if family == "numeric":
         return "measure"
-    if any(word in upper for word in _TEXT_WORDS):
+    if family in {"text", "boolean"}:
         return "dimension"
     return "unknown"
 
@@ -559,6 +612,7 @@ def _suggest_key(
         if column["rows_profiled"]
         and column["null_count"] == 0
         and column["distinct_count"] == column["rows_profiled"]
+        and not _is_container_type(str(column["type"]))
     ]
     preferred = [
         column
@@ -585,6 +639,7 @@ def _suggest_key(
         column["name"]
         for column in profile["columns"]
         if _key_like(column["name"]) or _has_word(column["name"], _LINE_WORDS)
+        if not _is_container_type(str(column["type"]))
     ]
     # A bounded prefix is enough for a tentative composite candidate, but it
     # cannot establish uniqueness outside that prefix.
@@ -638,7 +693,7 @@ def _key_catalog(warehouse: DuckDBWarehouse) -> dict[str, list[dict[str, Any]]]:
     }
     catalog: dict[str, list[dict[str, Any]]] = {}
     for row in warehouse.rows(
-        "SELECT schema_name, table_name, column_name FROM duckdb_columns() "
+        "SELECT schema_name, table_name, column_name, data_type FROM duckdb_columns() "
         "WHERE database_name = current_database() AND NOT internal "
         "AND schema_name <> '_semantic_rails' ORDER BY schema_name, table_name"
     ):
@@ -648,6 +703,7 @@ def _key_catalog(warehouse: DuckDBWarehouse) -> dict[str, list[dict[str, Any]]]:
                 "relation": _relation_name(schema, table),
                 "source": f"{_quote(schema)}.{_quote(table)}",
                 "column": str(column),
+                "type": str(row["data_type"]),
                 "declared_key": keys.get((schema, table)) == [str(column)],
                 "has_declared_key": (schema, table) in keys,
             }
@@ -661,7 +717,7 @@ def _foreign_keys(
     key: list[str],
     source: str,
     profile: dict[str, Any],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     links: list[dict[str, Any]] = [
         {
             ("column" if len(fk["columns"]) == 1 else "columns"): (
@@ -683,14 +739,17 @@ def _foreign_keys(
         if _key_like(str(column["name"]))
         and column["name"] not in own_key
         and column["name"] not in declared
+        and not _is_container_type(str(column["type"]))
     ][:MAX_SUGGESTION_KEY_COLUMNS]
     catalog = _key_catalog(warehouse) if candidates else {}
+    child_types = {str(column["name"]): str(column["type"]) for column in described["columns"]}
+    diagnostics: list[dict[str, str]] = []
     child_sampled = bool(profile["sampled"])
     child_probe = f"(SELECT * FROM {source} LIMIT {MAX_PROFILE_ROWS})" if child_sampled else source
     for column in candidates:
         # Declared keys first, then relations without a declared key (a view,
         # a dbt model without a contract) where the column is unique.
-        targets = sorted(
+        discovered = sorted(
             (
                 target
                 for target in catalog.get(column.lower(), [])
@@ -699,33 +758,69 @@ def _foreign_keys(
             ),
             key=lambda target: not target["declared_key"],
         )
+        targets = []
+        for target in discovered:
+            if _fk_types_compatible(child_types[column], target["type"]):
+                targets.append(target)
+            else:
+                diagnostics.append(
+                    {
+                        "column": column,
+                        "relation": target["relation"],
+                        "reason": f"incompatible key types: {child_types[column]} versus {target['type']}",
+                    }
+                )
         proposed: list[tuple[dict[str, Any], int | None]] = []
+        incomplete = False
         for target in targets[:MAX_FK_TARGETS_PER_COLUMN]:
-            quoted = _quote(target["column"])
-            (target_rows,) = warehouse.execute(
-                f"SELECT count(*) FROM (SELECT 1 FROM {target['source']} "
-                f"LIMIT {MAX_PROFILE_ROWS + 1})"
-            ).fetchone()
-            target_large = int(target_rows) > MAX_PROFILE_ROWS
-            if target_large and not target["declared_key"]:
-                # A bounded prefix cannot establish uniqueness for an
-                # undeclared target key.
-                continue
-            if not target["declared_key"]:
-                rows, present, distinct = warehouse.execute(
-                    f"SELECT count(*), count({quoted}), count(DISTINCT {quoted}) "
-                    f"FROM {target['source']}"
+            try:
+                quoted = _quote(target["column"])
+                (target_rows,) = warehouse.execute(
+                    f"SELECT count(*) FROM (SELECT 1 FROM {target['source']} "
+                    f"LIMIT {MAX_PROFILE_ROWS + 1})"
                 ).fetchone()
-                if not rows or present != rows or distinct != rows:
+                target_large = int(target_rows) > MAX_PROFILE_ROWS
+                if target_large and not target["declared_key"]:
+                    # A bounded prefix cannot establish uniqueness for an
+                    # undeclared target key.
                     continue
-            orphans = None
-            if not target_large:
-                (orphans,) = warehouse.execute(
-                    f"SELECT count(*) FROM {child_probe} AS child "
-                    f"WHERE child.{_quote(column)} IS NOT NULL "
-                    f"AND NOT EXISTS (SELECT 1 FROM {target['source']} AS parent "
-                    f"WHERE parent.{quoted} = child.{_quote(column)})"
-                ).fetchone()
+                if not target["declared_key"]:
+                    rows, present, distinct = warehouse.execute(
+                        f"SELECT count(*), count({quoted}), count(DISTINCT {quoted}) "
+                        f"FROM {target['source']}"
+                    ).fetchone()
+                    if not rows or present != rows or distinct != rows:
+                        continue
+                orphans = None
+                if not target_large:
+                    (orphans,) = warehouse.execute(
+                        f"SELECT count(*) FROM {child_probe} AS child "
+                        f"WHERE child.{_quote(column)} IS NOT NULL "
+                        f"AND NOT EXISTS (SELECT 1 FROM {target['source']} AS parent "
+                        f"WHERE parent.{quoted} = child.{_quote(column)})"
+                    ).fetchone()
+            except SemanticLayerError as exc:
+                if exc.code != "UNSUPPORTED_PLATFORM":
+                    raise
+                incomplete = True
+                diagnostics.append(
+                    {
+                        "column": column,
+                        "relation": target["relation"],
+                        "reason": "candidate could not be checked safely",
+                    }
+                )
+                continue
+            except duckdb.Error:
+                incomplete = True
+                diagnostics.append(
+                    {
+                        "column": column,
+                        "relation": target["relation"],
+                        "reason": "candidate probe is unsupported",
+                    }
+                )
+                continue
             confidence = (
                 "low"
                 if target_large or orphans or child_sampled
@@ -772,15 +867,17 @@ def _foreign_keys(
         ambiguous = len(selected) > 1
         truncated = len(targets) > MAX_FK_TARGETS_PER_COLUMN
         for link, _ in selected:
-            if ambiguous or truncated:
+            if ambiguous or truncated or incomplete:
                 link["confidence"] = "low"
                 if ambiguous:
                     link["reason"] += "; multiple possible target relations match"
                 if truncated:
                     link["reason"] += "; additional target relations were not checked"
+                if incomplete:
+                    link["reason"] += "; another candidate could not be checked"
                 link["reason"] += "; confirm the intended relationship"
             links.append(link)
-    return links
+    return links, diagnostics
 
 
 def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
@@ -796,7 +893,9 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     entity = entity_name(name)
     key = _suggest_key(warehouse, described, profile, entity, source)
     key_columns = list(key["columns"]) if key else []
-    links = _foreign_keys(warehouse, described, key_columns, source, profile)
+    links, foreign_key_diagnostics = _foreign_keys(
+        warehouse, described, key_columns, source, profile
+    )
     linked = {column for link in links for column in (link.get("columns") or [link["column"]])}
     rows = profile["row_count"]
     by_name = {column["name"]: column for column in profile["columns"]}
@@ -816,9 +915,19 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         if len(key_columns) == 1
         else []
     )
+    unsupported_columns: list[dict[str, str]] = []
     for column in described["columns"]:
         column_name = str(column["name"])
         stats = by_name[column_name]
+        if _is_container_type(str(column["type"])):
+            unsupported_columns.append(
+                {
+                    "column": column_name,
+                    "type": str(column["type"]),
+                    "reason": "container type requires an explicit extraction expression",
+                }
+            )
+            continue
         if column_name in key_columns or column_name in linked:
             continue
         role = classify_column(column_name, str(column["type"]))
@@ -880,6 +989,8 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         "dimensions": dimensions,
         "measures": measures,
         "foreign_keys": links,
+        **({"foreign_key_diagnostics": foreign_key_diagnostics} if foreign_key_diagnostics else {}),
+        **({"unsupported_columns": unsupported_columns} if unsupported_columns else {}),
         "upsert_model": draft,
         **(
             {

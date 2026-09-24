@@ -17,6 +17,7 @@ from semantic_rails.architect_introspection import (
     MAX_SAMPLE_VALUES,
     _relation_name,
     _split_relation,
+    classify_column,
     describe_table,
     list_tables,
     open_duckdb,
@@ -844,6 +845,185 @@ def test_a_drafted_model_validates_against_the_warehouse(tmp_path: Path) -> None
     finally:
         runtime.close()
     assert rows == [{"customers": 5}]
+
+
+@pytest.mark.parametrize(
+    ("name", "data_type", "expected"),
+    [
+        ("amount", "INTEGER", "measure"),
+        ("amount", "DECIMAL(10,2)", "measure"),
+        ("amount", "INT64", "measure"),
+        ("amount", "DOUBLE PRECISION", "measure"),
+        ("occurred_at", "TIMESTAMP_NTZ", "time"),
+        ("occurred_on", "DATE", "time"),
+        ("status", "VARCHAR(100)", "dimension"),
+        ("status", "CHARACTER VARYING", "dimension"),
+        ("customer_id", "INTEGER", "key"),
+        ("weights", "INTEGER[]", "unknown"),
+        ("weights", "INTEGER[3]", "unknown"),
+        ("weights", "LIST(INTEGER)", "unknown"),
+        ("weights", "ARRAY<INT64>", "unknown"),
+        ("attrs", "STRUCT(score INTEGER)", "unknown"),
+        ("lookup", "MAP(VARCHAR,INTEGER)", "unknown"),
+        ("attrs", "ROW(score INT)", "unknown"),
+        ("payload", "JSON", "unknown"),
+        ("payload", "VARIANT", "unknown"),
+        ("position", "POINT", "unknown"),
+        ("duration", "INTERVAL", "unknown"),
+    ],
+)
+def test_scalar_classifier_does_not_promote_nested_type_words(
+    name: str, data_type: str, expected: str
+) -> None:
+    assert classify_column(name, data_type) == expected
+
+
+@pytest.mark.parametrize("incompatible_count", [1, 9])
+def test_incompatible_foreign_key_targets_do_not_erase_valid_suggestion(
+    tmp_path: Path, incompatible_count: int
+) -> None:
+    db_path = tmp_path / "types.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE customers (customer_id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO customers VALUES (1), (2)")
+        conn.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)")
+        conn.execute("INSERT INTO orders VALUES (10, 1), (20, 2)")
+        for index in range(incompatible_count):
+            conn.execute(f"CREATE TABLE unrelated_{index} (customer_id VARCHAR PRIMARY KEY)")
+            conn.execute(f"INSERT INTO unrelated_{index} VALUES ('not-a-number')")
+
+    with open_duckdb(db_path) as warehouse:
+        direct = suggest_model(warehouse, "orders")
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (mcp,) = _session(
+        server,
+        [("suggest_model", {"duckdb_path": "types.duckdb", "relation": "orders"})],
+    )
+
+    for result in (direct, mcp):
+        assert result.get("ok", True) is True
+        assert [
+            (link["references"]["relation"], link["confidence"]) for link in result["foreign_keys"]
+        ] == [("customers", "high")]
+        assert len(result["foreign_key_diagnostics"]) == incompatible_count
+        assert all(
+            "INTEGER versus VARCHAR" in diagnostic["reason"]
+            for diagnostic in result["foreign_key_diagnostics"]
+        )
+        assert result["upsert_model"]["primary_key"] == ["order_id"]
+
+
+def test_failed_individual_fk_probe_leaves_valid_link_with_incomplete_evidence(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "probe.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE customers (customer_id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO customers VALUES (1)")
+        conn.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)")
+        conn.execute("INSERT INTO orders VALUES (10, 1)")
+        conn.execute(
+            "CREATE VIEW broken_customers AS SELECT CAST(value AS INTEGER) AS customer_id "
+            "FROM (VALUES ('not-a-number')) AS source(value)"
+        )
+
+    with open_duckdb(db_path) as warehouse:
+        direct = suggest_model(warehouse, "orders")
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (mcp,) = _session(
+        server,
+        [("suggest_model", {"duckdb_path": "probe.duckdb", "relation": "orders"})],
+    )
+
+    for result in (direct, mcp):
+        assert result.get("ok", True) is True
+        assert [link["references"]["relation"] for link in result["foreign_keys"]] == ["customers"]
+        assert result["foreign_keys"][0]["confidence"] == "low"
+        assert "another candidate could not be checked" in result["foreign_keys"][0]["reason"]
+        assert result["foreign_key_diagnostics"] == [
+            {
+                "column": "customer_id",
+                "relation": "broken_customers",
+                "reason": "candidate probe is unsupported",
+            }
+        ]
+
+
+def test_container_columns_are_diagnosed_and_scalar_draft_executes(tmp_path: Path) -> None:
+    project = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
+    db_path = build_dbt_warehouse(project / "data" / "warehouse.duckdb")
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE features (id INTEGER PRIMARY KEY, amount DECIMAL(10,2), "
+            "weights INTEGER[], attrs STRUCT(score INTEGER), lookup MAP(VARCHAR, INTEGER), "
+            "tags VARCHAR[], recorded_at TIMESTAMP)"
+        )
+        conn.execute(
+            "INSERT INTO features VALUES "
+            "(1, 10.50, [1,2], {'score': 3}, MAP(['a'], [1]), ['x'], TIMESTAMP '2024-01-01'), "
+            "(2, 2.00, [4], {'score': 5}, MAP(['b'], [2]), ['y'], TIMESTAMP '2024-01-02')"
+        )
+
+    with open_duckdb(db_path) as warehouse:
+        direct = suggest_model(warehouse, "features")
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    (mcp,) = _session(
+        server,
+        [("suggest_model", {"duckdb_path": "shop/data/warehouse.duckdb", "relation": "features"})],
+    )
+
+    for result in (direct, mcp):
+        assert result.get("ok", True) is True
+        assert {row["column"] for row in result["unsupported_columns"]} == {
+            "weights",
+            "attrs",
+            "lookup",
+            "tags",
+        }
+        assert all("explicit extraction" in row["reason"] for row in result["unsupported_columns"])
+        assert set(result["upsert_model"]["measures"]) == {"feature_count", "amount"}
+        assert "recorded_at" in result["upsert_model"]["times"]
+        assert not {"weights", "attrs", "lookup", "tags"} & set(
+            result["upsert_model"]["dimensions"]
+        )
+
+    mutation = ArchitectProject(project, workspace_root=tmp_path).upsert_model(
+        **direct["upsert_model"]
+    )
+    assert mutation.report["ok"] is True, mutation.report
+    runtime = Runtime.from_path(str(project))
+    try:
+        rows = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": "measure.shop.amount"}, "as": "amount"}],
+                "limit": 5,
+            }
+        )["rows"]
+    finally:
+        runtime.close()
+    assert len(rows) == 1 and float(rows[0]["amount"]) == 12.5
+
+
+def test_key_named_container_is_diagnosed_without_inferred_entity_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "container-key.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE events AS SELECT [1] AS event_id, 5 AS amount UNION ALL SELECT [2], 5"
+        )
+
+    with open_duckdb(db_path) as warehouse:
+        suggested = suggest_model(warehouse, "events")
+
+    assert suggested["primary_key"] is None
+    assert suggested["upsert_model"]["primary_key"] == []
+    assert suggested["unsupported_columns"] == [
+        {
+            "column": "event_id",
+            "type": "INTEGER[]",
+            "reason": "container type requires an explicit extraction expression",
+        }
+    ]
 
 
 def _session(server: Any, calls: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
