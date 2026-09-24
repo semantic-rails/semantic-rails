@@ -1,7 +1,7 @@
 """Query patches returned by the MCP metadata tools are pure Query IR.
 
-discover, inspect and build-options return starter patches an agent can pass
-straight to validate or execute. A patch must carry only Query IR fields: never
+discover (with full cards, verbosity="compact"), inspect and build-options
+return starter patches an agent can pass straight to validate or execute. A patch must carry only Query IR fields: never
 the caller's policy context, response options, or the tool's own arguments.
 """
 
@@ -98,7 +98,9 @@ def test_patches_keep_the_callers_partial_query(adapter: SemanticLayerMCPAdapter
         "select": [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
         "policy_context": POLICY_CONTEXT,
     }
-    response = adapter.call_tool("discover", {"terms": "store", "query": partial})
+    response = adapter.call_tool(
+        "discover", {"terms": "store", "query": partial, "verbosity": "compact"}
+    )
     dimension_patches = [row["starter_query_patch"] for row in response["dimensions"]]
     assert dimension_patches
     for patch in dimension_patches:

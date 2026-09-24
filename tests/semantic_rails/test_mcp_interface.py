@@ -229,7 +229,7 @@ def test_mcp_adapter_metadata_tools_match_public_v1_payloads(runtime_factory):
         assert discovered["stage"] == "initial"
         assert discovered["measures"]
         assert inspected["card"]["id"] == "measure.jaffle.order_count"
-        assert inspected["card"]["usage_summary"]["default_aggregation"] == "count_distinct"
+        assert inspected["card"]["default_aggregation"] == "count_distinct"
         assert build_options["recommended"][0]["id"] == "dimension.jaffle_store_name"
         assert valid_values["values"][0]["value"] == "beverage"
         assert valid_values["source"] == "value_domain"
