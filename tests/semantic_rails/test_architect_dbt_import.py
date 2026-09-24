@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 import yaml
 from mcp.shared.memory import create_connected_server_and_client_session
@@ -198,6 +199,90 @@ def test_unattached_ambiguous_relationship_reports_warning_through_mcp_without_f
             for row in receipt["references"]
         )
     assert "customer" not in _model(workspace / "shop" / "models" / "orders.yml")["entities"]
+
+
+def test_scoped_dbt_tests_do_not_import_a_key_or_subset_facts(workspace: Path) -> None:
+    warehouse = workspace / "shop" / "data" / "warehouse.duckdb"
+    with duckdb.connect(str(warehouse)) as conn:
+        conn.execute("ALTER TABLE main_marts.fct_orders ADD COLUMN is_current BOOLEAN DEFAULT true")
+        existing_key = conn.execute("SELECT min(order_id) FROM main_marts.fct_orders").fetchone()[0]
+        conn.execute(
+            "INSERT INTO main_marts.fct_orders (order_id, customer_id, status, is_current) "
+            "VALUES (?, -1, 'outside_domain', false), (NULL, -1, 'outside_domain', false)",
+            [existing_key],
+        )
+        assert conn.execute(
+            "SELECT count(*) FROM main_marts.fct_orders "
+            "WHERE is_current = true AND order_id IS NULL"
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT count(*) = count(DISTINCT order_id) "
+            "FROM main_marts.fct_orders WHERE is_current = true"
+        ).fetchone() == (True,)
+        assert conn.execute(
+            "SELECT count(*) FROM main_marts.fct_orders WHERE is_current = false"
+        ).fetchone() == (2,)
+        assert conn.execute(
+            "SELECT count(*) FROM main_marts.fct_orders "
+            "WHERE is_current = false AND order_id IS NULL AND status = 'outside_domain' "
+            "AND customer_id = -1"
+        ).fetchone() == (1,)
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM main_marts.fct_orders WHERE order_id = ?",
+                [existing_key],
+            ).fetchone()[0]
+            > 1
+        )
+
+    manifest_path = workspace / "dbt" / "target" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    scoped_tests = [
+        "unique_fct_orders_order_id",
+        "not_null_fct_orders_order_id",
+        "relationships_fct_orders_customer_id",
+        "accepted_values_fct_orders_status",
+    ]
+    for name in scoped_tests:
+        manifest["nodes"][f"test.shop_dbt.{name}"]["config"] = {"where": "is_current = true"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    server = create_architect_mcp_server(workspace_root=workspace)
+    before = project_revision(workspace / "shop")
+    orders_file = workspace / "shop" / "models" / "orders.yml"
+    original_orders = orders_file.read_bytes()
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["dim_customers", "fct_orders"],
+        "expected_revision": before,
+        "idempotency_key": "scoped-tests",
+    }
+
+    suggested, preview, applied = _calls(
+        server,
+        [
+            ("suggest_models_from_dbt", {"target_dir": "dbt/target", "select": ["fct_orders"]}),
+            ("import_dbt_project", {**request, "dry_run": True}),
+            ("import_dbt_project", request),
+        ],
+    )
+
+    assert suggested["ok"] is True, suggested
+    orders = suggested["models"][0]
+    assert orders["primary_key"] is None
+    assert "customer_id" not in {row["column"] for row in orders["foreign_keys"]}
+    assert "values" not in next(row for row in orders["dimensions"] if row["column"] == "status")
+    warning_ids = {f"test.shop_dbt.{name}" for name in scoped_tests}
+    assert {row["test"] for row in suggested["dbt_warnings"]} == warning_ids
+    for receipt in (preview, applied):
+        assert receipt["ok"] is True, receipt
+        assert {row["test"] for row in receipt["dbt_warnings"]} == warning_ids
+        assert [row["relation"] for row in receipt["skipped_models"]] == ["main_marts.fct_orders"]
+        assert not any(change["path"].endswith("orders.yml") for change in receipt["changes"])
+    assert preview["dry_run"] is True
+    assert applied["revision"] != before
+    assert orders_file.read_bytes() == original_orders
+    assert (workspace / "shop" / "models" / "dbt" / "customers.yml").exists()
 
 
 def test_a_dry_run_import_writes_nothing(workspace: Path) -> None:

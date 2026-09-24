@@ -293,6 +293,12 @@ def _resolve_contract_foreign_keys(relations: dict[str, DbtRelation]) -> None:
                 foreign_key["to_relation"] = target.relation
 
 
+def _has_test_row_filter(node: dict[str, Any], kwargs: dict[str, Any]) -> bool:
+    """dbt may keep a generic test's row filter in rendered or raw config."""
+    configs = (node.get("config"), node.get("unrendered_config"), kwargs.get("config"), kwargs)
+    return any(isinstance(config, dict) and config.get("where") for config in configs)
+
+
 def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> list[dict[str, str]]:
     warnings: list[dict[str, str]] = []
     for test_id, node in nodes.items():
@@ -333,6 +339,20 @@ def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> li
             if column_name
             else None
         )
+        if test in {
+            "not_null",
+            "unique",
+            "accepted_values",
+            "unique_combination_of_columns",
+            "relationships",
+        } and _has_test_row_filter(node, kwargs):
+            warnings.append(
+                {
+                    "test": str(test_id),
+                    "reason": "dbt test has a row filter; its scoped result cannot describe the full relation",
+                }
+            )
+            continue
         if test == "not_null" and column is not None:
             column.not_null = True
         elif test == "unique" and column is not None:

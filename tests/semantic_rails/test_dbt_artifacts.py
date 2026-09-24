@@ -71,6 +71,76 @@ def test_tests_and_contracts_become_keys_links_and_value_sets(target: Path) -> N
     assert orders.columns["order_total"].data_type.startswith("DECIMAL")
 
 
+@pytest.mark.parametrize("location", ["config", "unrendered_config", "kwargs_config", "kwargs"])
+def test_scoped_key_tests_do_not_prove_a_full_relation_key(target: Path, location: str) -> None:
+    path = target / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    test_ids = [f"test.shop_dbt.{kind}_fct_orders_order_id" for kind in ("unique", "not_null")]
+    for test_id in test_ids:
+        node = manifest["nodes"][test_id]
+        if location == "kwargs_config":
+            node["test_metadata"]["kwargs"]["config"] = {"where": "is_current = true"}
+        elif location == "kwargs":
+            node["test_metadata"]["kwargs"]["where"] = "is_current = true"
+        else:
+            node[location] = {"where": "is_current = true"}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    orders = project.find("fct_orders")
+    (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
+    items, skipped = dbt_import_models(project, ["fct_orders"])
+
+    assert orders.primary_key == []
+    assert suggestion["primary_key"] is None
+    assert suggestion["upsert_model"]["primary_key"] == []
+    assert items == [] and len(skipped) == 1
+    assert {warning["test"] for warning in project.warnings} == set(test_ids)
+    assert all("row filter" in warning["reason"] for warning in project.warnings)
+    # Unfiltered tests on other models and a declared contract remain authoritative.
+    assert project.find("dim_products").primary_key == ["product_id"]
+    assert project.find("dim_customers").primary_key_source == "contract"
+
+
+@pytest.mark.parametrize(
+    ("test_id", "expected"),
+    [
+        ("test.shop_dbt.unique_combination_of_columns_fct_order_lines_rows", "composite_key"),
+        ("test.shop_dbt.relationships_fct_orders_customer_id", "relationship"),
+        ("test.shop_dbt.accepted_values_fct_orders_status", "domain"),
+        ("test.shop_dbt.not_null_fct_orders_ordered_at", "non_null_confidence"),
+    ],
+)
+def test_scoped_tests_do_not_promote_composite_keys_links_or_column_facts(
+    target: Path, test_id: str, expected: str
+) -> None:
+    path = target / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["nodes"][test_id]["config"] = {"where": "is_current = true"}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    project = load_dbt_artifacts(target)
+    (orders,) = suggest_models_from_dbt(project, ["fct_orders"])
+    (lines,) = suggest_models_from_dbt(project, ["fct_order_lines"])
+    assert project.warnings == [
+        {
+            "test": test_id,
+            "reason": "dbt test has a row filter; its scoped result cannot describe the full relation",
+        }
+    ]
+    if expected == "composite_key":
+        assert lines["primary_key"] is None
+    elif expected == "relationship":
+        assert "customer_id" not in _by(orders["foreign_keys"], "column")
+        assert "store_id" in _by(orders["foreign_keys"], "column")
+    elif expected == "domain":
+        assert "values" not in _by(orders["dimensions"], "column")["status"]
+        assert "domain" not in orders["upsert_model"]["dimensions"]["status"]
+    else:
+        assert _by(orders["times"], "column")["ordered_at"]["confidence"] == "medium"
+    assert orders["primary_key"]["columns"] == ["order_id"]
+
+
 def _relationship_manifest(target: Path) -> tuple[Path, dict[str, Any], str, dict[str, Any]]:
     path = target / "manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
