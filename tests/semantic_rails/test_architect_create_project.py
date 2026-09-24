@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -408,6 +409,355 @@ def test_overwrite_needs_the_current_revision_and_the_flag(tmp_path: Path) -> No
     assert _yaml(tmp_path / "shop" / "package.yml")["package"]["description"] == (
         "Orders, rewritten."
     )
+
+
+def _create_via_route(
+    tmp_path: Path,
+    spec: ProjectSpec,
+    *,
+    through_mcp: bool,
+    key: str,
+    expected_revision: str,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    if not through_mcp:
+        return create_project(
+            "shop",
+            spec,
+            workspace_root=tmp_path,
+            expected_revision=expected_revision,
+            idempotency_key=key,
+            overwrite=overwrite,
+            dry_run=dry_run,
+        ).report
+    model = spec.first_model
+    (report,) = _session_call(
+        create_architect_mcp_server(workspace_root=tmp_path),
+        [
+            (
+                "create_project",
+                {
+                    "package_id": "shop",
+                    "project_path": "shop",
+                    "description": spec.description,
+                    "expected_revision": expected_revision,
+                    "idempotency_key": key,
+                    "warehouse": "duckdb",
+                    "data": "external",
+                    "first_entity": model.entity,
+                    "relation": model.relation,
+                    "primary_key": model.primary_key,
+                    "time_column": model.time_column,
+                    "amount_column": model.amount_column,
+                    "dimension_column": model.dimension_column,
+                    "overwrite": overwrite,
+                    "dry_run": dry_run,
+                },
+            )
+        ],
+    )
+    return report
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+@pytest.mark.parametrize("transition", ["description", "same_graph_model", "moved_model"])
+def test_repeated_scaffold_overwrites_keep_complete_receipt(
+    tmp_path: Path, through_mcp: bool, transition: str
+) -> None:
+    project = tmp_path / "shop"
+    created = _create_via_route(
+        tmp_path,
+        EXTERNAL_SHOP,
+        through_mcp=through_mcp,
+        key="create",
+        expected_revision="absent",
+    )
+    assert created["ok"] is True, created
+    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
+    db_bytes = db.read_bytes()
+    (project / "notes.md").write_bytes(b"authored notes stay intact\n")
+    if transition == "description":
+        specs = [replace(EXTERNAL_SHOP, description=f"Description {index}") for index in (1, 2)]
+    elif transition == "same_graph_model":
+        specs = [
+            replace(
+                EXTERNAL_SHOP,
+                first_model=replace(ORDERS, relation=f"main_marts.orders_v{index}"),
+            )
+            for index in (1, 2)
+        ]
+    else:
+        specs = [
+            replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity=entity))
+            for entity in ("customer", "vendor")
+        ]
+    for index, spec in enumerate(specs, start=1):
+        revision = project_revision(project)
+        before = _project_bytes(project)
+        preview = _create_via_route(
+            tmp_path,
+            spec,
+            through_mcp=through_mcp,
+            key=f"preview-{index}",
+            expected_revision=revision,
+            overwrite=True,
+            dry_run=True,
+        )
+        assert preview["ok"] is True, preview
+        assert _project_bytes(project) == before
+        assert project_revision(project) == revision
+        applied = _create_via_route(
+            tmp_path,
+            spec,
+            through_mcp=through_mcp,
+            key=f"apply-{index}",
+            expected_revision=revision,
+            overwrite=True,
+        )
+        assert applied["ok"] is True, applied
+        assert applied["revision"] == project_revision(project)
+        assert "scaffold_files" not in applied
+        assert db.read_bytes() == db_bytes
+        assert (project / "notes.md").read_bytes() == b"authored notes stay intact\n"
+    receipt_root = next((tmp_path / ".semantic-rails" / "architect-transactions").glob("*"))
+    assert len(list(receipt_root.glob("*.json"))) == 3  # previews publish no receipt
+    receipt_path = receipt_root / f"{hashlib.sha256(b'apply-1').hexdigest()}.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["scaffold_files"] == {
+        path: f"sha256:{hashlib.sha256(content).hexdigest()}"
+        for path, content in project_scaffold_files(specs[0]).items()
+    }
+    if transition != "moved_model":
+        assert "graph.yml" not in receipt["report"]["changed_files"]
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+@pytest.mark.parametrize("edit", ["package", "graph", "model"])
+def test_repeated_overwrite_still_refuses_interleaved_authored_edit(
+    tmp_path: Path, through_mcp: bool, edit: str
+) -> None:
+    project = tmp_path / "shop"
+    assert _create_via_route(
+        tmp_path,
+        EXTERNAL_SHOP,
+        through_mcp=through_mcp,
+        key="create",
+        expected_revision="absent",
+    )["ok"]
+    second = replace(EXTERNAL_SHOP, description="Description B")
+    assert _create_via_route(
+        tmp_path,
+        second,
+        through_mcp=through_mcp,
+        key="second",
+        expected_revision=project_revision(project),
+        overwrite=True,
+    )["ok"]
+    path = (
+        project
+        / {"package": "package.yml", "graph": "graph.yml", "model": "models/core/orders.yml"}[edit]
+    )
+    path.write_bytes(path.read_bytes() + b"# authored edit\n")
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    third = replace(EXTERNAL_SHOP, description="Description C")
+    for dry_run in (True, False):
+        if through_mcp:
+            report = _create_via_route(
+                tmp_path,
+                third,
+                through_mcp=True,
+                key=f"third-{dry_run}",
+                expected_revision=revision,
+                overwrite=True,
+                dry_run=dry_run,
+            )
+            assert report["ok"] is False, report
+        else:
+            with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+                _create_via_route(
+                    tmp_path,
+                    third,
+                    through_mcp=False,
+                    key=f"third-{dry_run}",
+                    expected_revision=revision,
+                    overwrite=True,
+                    dry_run=dry_run,
+                )
+        assert _project_bytes(project) == before
+        assert project_revision(project) == revision
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+def test_unchanged_target_does_not_launder_authored_model_into_next_receipt(
+    tmp_path: Path, through_mcp: bool
+) -> None:
+    project = tmp_path / "shop"
+    assert _create_via_route(
+        tmp_path,
+        EXTERNAL_SHOP,
+        through_mcp=through_mcp,
+        key="create",
+        expected_revision="absent",
+    )["ok"]
+    second = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, relation="main_marts.orders_v1"))
+    assert _create_via_route(
+        tmp_path,
+        second,
+        through_mcp=through_mcp,
+        key="second",
+        expected_revision=project_revision(project),
+        overwrite=True,
+    )["ok"]
+    third = replace(
+        EXTERNAL_SHOP,
+        description="Description C",
+        first_model=replace(ORDERS, relation="main_marts.orders_v2"),
+    )
+    model_path = project / "models" / "core" / "orders.yml"
+    model_path.write_bytes(project_scaffold_files(third)["models/core/orders.yml"])
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    for dry_run in (True, False):
+        if through_mcp:
+            report = _create_via_route(
+                tmp_path,
+                third,
+                through_mcp=True,
+                key=f"third-{dry_run}",
+                expected_revision=revision,
+                overwrite=True,
+                dry_run=dry_run,
+            )
+            assert report["ok"] is False, report
+        else:
+            with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+                _create_via_route(
+                    tmp_path,
+                    third,
+                    through_mcp=False,
+                    key=f"third-{dry_run}",
+                    expected_revision=revision,
+                    overwrite=True,
+                    dry_run=dry_run,
+                )
+        assert _project_bytes(project) == before
+        assert project_revision(project) == revision
+
+
+@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
+def test_failed_repeated_overwrite_receipt_cannot_claim_scaffold_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, through_mcp: bool
+) -> None:
+    project = tmp_path / "shop"
+    assert _create_via_route(
+        tmp_path,
+        EXTERNAL_SHOP,
+        through_mcp=through_mcp,
+        key="create",
+        expected_revision="absent",
+    )["ok"]
+    second = replace(EXTERNAL_SHOP, description="Description B")
+    assert _create_via_route(
+        tmp_path,
+        second,
+        through_mcp=through_mcp,
+        key="second",
+        expected_revision=project_revision(project),
+        overwrite=True,
+    )["ok"]
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    third = replace(EXTERNAL_SHOP, description="Description C")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            architect_transactions,
+            "parse_config_report",
+            lambda *_args, **_kwargs: (
+                {
+                    "ok": False,
+                    "errors": [{"code": "INVALID_CONFIG", "message": "synthetic failure"}],
+                },
+                None,
+            ),
+        )
+        failed = _create_via_route(
+            tmp_path,
+            third,
+            through_mcp=through_mcp,
+            key="failed-third",
+            expected_revision=revision,
+            overwrite=True,
+        )
+    assert failed["status"] == "rolled_back_after_parse_error"
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+    receipt_root = next((tmp_path / ".semantic-rails" / "architect-transactions").glob("*"))
+    failed_receipt = json.loads(
+        (receipt_root / f"{hashlib.sha256(b'failed-third').hexdigest()}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert failed_receipt["report"]["status"] == "rolled_back_after_parse_error"
+    assert "scaffold_files" not in failed_receipt
+    preview = _create_via_route(
+        tmp_path,
+        third,
+        through_mcp=through_mcp,
+        key="preview-third",
+        expected_revision=revision,
+        overwrite=True,
+        dry_run=True,
+    )
+    assert preview["ok"] is True, preview
+    applied = _create_via_route(
+        tmp_path,
+        third,
+        through_mcp=through_mcp,
+        key="apply-third",
+        expected_revision=revision,
+        overwrite=True,
+    )
+    assert applied["ok"] is True, applied
+
+
+def test_failed_write_does_not_publish_scaffold_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "shop"
+    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path, idempotency_key="create")
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    original_apply = architect_transactions.ProjectTransaction._apply_updates
+
+    def fail_after_write(self: Any, updates: Any, snapshots: Any) -> None:
+        original_apply(self, updates, snapshots)
+        raise RuntimeError("synthetic write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(architect_transactions.ProjectTransaction, "_apply_updates", fail_after_write)
+        with pytest.raises(RuntimeError, match="synthetic write failure"):
+            create_project(
+                "shop",
+                replace(EXTERNAL_SHOP, description="Description B"),
+                workspace_root=tmp_path,
+                expected_revision=revision,
+                idempotency_key="failed-write",
+                overwrite=True,
+            )
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+    receipt_root = next((tmp_path / ".semantic-rails" / "architect-transactions").glob("*"))
+    assert not (receipt_root / f"{hashlib.sha256(b'failed-write').hexdigest()}.json").exists()
+    assert create_project(
+        "shop",
+        replace(EXTERNAL_SHOP, description="Description C"),
+        workspace_root=tmp_path,
+        expected_revision=revision,
+        idempotency_key="next-write",
+        overwrite=True,
+    ).report["ok"]
 
 
 def test_overwrite_retires_only_the_generated_first_model_and_undo_restores_it(

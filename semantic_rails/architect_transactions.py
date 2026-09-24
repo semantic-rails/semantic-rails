@@ -373,15 +373,42 @@ class ProjectTransaction:
                     or not report.get("ok")
                 ):
                     continue
-                changes = {row["path"]: row for row in report["changes"]}
-                if all(
-                    changes.get(name, {}).get("content_encoding") == "utf-8"
-                    and changes[name].get("proposed_content", "").encode("utf-8") == content
-                    and changes[name].get("after_sha256") == f"sha256:{_digest(content)}"
-                    for name, content in files.items()
-                ):
+                scaffold_files = payload.get("scaffold_files")
+                if scaffold_files is not None:
+                    matches = isinstance(scaffold_files, dict) and all(
+                        scaffold_files.get(name) == f"sha256:{_digest(content)}"
+                        for name, content in files.items()
+                    )
+                    if matches:
+                        for name, digest in scaffold_files.items():
+                            if not isinstance(name, str) or not isinstance(digest, str):
+                                matches = False
+                                break
+                            relative = Path(name)
+                            source = self.project_path / relative
+                            if (
+                                relative.is_absolute()
+                                or ".." in relative.parts
+                                or not _within(source.resolve(), self.project_path.resolve())
+                                or source.is_symlink()
+                                or not source.is_file()
+                                or f"sha256:{_digest(source.read_bytes())}" != digest
+                            ):
+                                matches = False
+                                break
+                else:
+                    # Older receipts only contain effective changes. They can
+                    # still prove a queried set when every file was changed.
+                    changes = {row["path"]: row for row in report["changes"]}
+                    matches = all(
+                        changes.get(name, {}).get("content_encoding") == "utf-8"
+                        and changes[name].get("proposed_content", "").encode("utf-8") == content
+                        and changes[name].get("after_sha256") == f"sha256:{_digest(content)}"
+                        for name, content in files.items()
+                    )
+                if matches:
                     return True
-            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
                 continue
         return False
 
@@ -397,6 +424,7 @@ class ProjectTransaction:
         allow_internal_paths: bool = False,
         success_status: str = "committed",
         metadata: Mapping[str, Any] | None = None,
+        scaffold_files: Mapping[str, bytes] | None = None,
     ) -> ProjectTransactionOutcome:
         """Apply a parse-gated optimistic transaction or return its preview."""
 
@@ -418,6 +446,13 @@ class ProjectTransaction:
             updates,
             allow_internal_paths=allow_internal_paths,
         )
+        if scaffold_files is not None:
+            proposed = {update.relative_path: update.content for update in normalized_updates}
+            if any(proposed.get(path) != content for path, content in scaffold_files.items()):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    "Scaffold provenance must match the proposed transaction files",
+                )
         intent_hash = _canonical_json_digest(dict(intent))
         with self._exclusive_lock():
             receipt = self._load_receipt(key)
@@ -554,7 +589,15 @@ class ProjectTransaction:
                     snapshot.with_after(_read_bytes(snapshot.path))
                     for snapshot in effective_snapshots
                 )
-                self._store_receipt(key, intent_hash, base_report)
+                if scaffold_files is not None and any(
+                    _read_bytes(self.project_path / path) != content
+                    for path, content in scaffold_files.items()
+                ):
+                    raise SemanticLayerError(
+                        "CONFIG_CONFLICT",
+                        "Committed scaffold differs from the proposed files",
+                    )
+                self._store_receipt(key, intent_hash, base_report, scaffold_files=scaffold_files)
                 return ProjectTransactionOutcome(
                     report=base_report,
                     snapshots=completed_snapshots,
@@ -772,6 +815,8 @@ class ProjectTransaction:
         idempotency_key: str,
         intent_hash: str,
         report: Mapping[str, Any],
+        *,
+        scaffold_files: Mapping[str, bytes] | None = None,
     ) -> None:
         path = self._receipt_path(idempotency_key)
         stored_report = dict(report)
@@ -782,6 +827,10 @@ class ProjectTransaction:
             "intent_hash": intent_hash,
             "report": stored_report,
         }
+        if scaffold_files is not None:
+            payload["scaffold_files"] = {
+                name: f"sha256:{_digest(content)}" for name, content in scaffold_files.items()
+            }
         content = (
             json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, default=str) + "\n"
         ).encode("utf-8")

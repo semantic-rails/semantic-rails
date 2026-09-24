@@ -310,6 +310,7 @@ def create_project(
             "data": spec.warehouse.data,
             "next_actions": _create_next_actions(spec),
         },
+        scaffold_files=files,
     )
     return ArchitectMutation(
         report=outcome.report,

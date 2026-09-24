@@ -163,10 +163,13 @@ archive) use one engine-owned transaction layer:
   proposed content, unified diffs, hashes, and the proposed revision without
   writing the project or consuming the idempotency key.
 - When `overwrite: true` would replace a scaffold file, its current bytes and graph must match
-  a completed creation receipt. Byte-identical files need no replacement. For a missing graph or
-  changed scaffold file, restore the recorded bytes or archive the authored project and create a
-  new one. Changing the first entity also retires its old model only when that model matches the
-  receipt. Other authored files and warehouse data stay in place.
+  a completed creation receipt. Successful creation receipts record hashes for the complete
+  generated scaffold, including files unchanged by an overwrite; an intervening edit to one of
+  those files cannot become the next scaffold's provenance. Byte-identical files need no
+  replacement. For a missing graph or changed scaffold file, restore the recorded bytes or
+  archive the authored project and create a new one. Changing the first entity also retires its
+  old model only when that model matches the receipt. Other authored files and warehouse data
+  stay in place.
 
 Exact existing keys are updated in their current source file instead of
 creating duplicate definitions elsewhere. Successful internal REPL mutations
