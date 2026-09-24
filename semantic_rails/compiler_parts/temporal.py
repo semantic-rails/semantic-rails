@@ -218,11 +218,39 @@ def _expr_compatible_temporal_roles(
     return set()
 
 
+def _metric_ref_leaf_temporal_role_sets(
+    expr: MetricRecipeRefExpr,
+    config: PackageConfig,
+    query: NormalizedQuery,
+    recipe_stack: tuple[str, ...],
+) -> list[set[str]]:
+    recipe = _recipe_index(config).get(expr.metric_recipe)
+    if recipe is None:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
+        )
+    if recipe.id in recipe_stack:
+        cycle = (*recipe_stack[recipe_stack.index(recipe.id) :], recipe.id)
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"cyclic metric recipe reference: {' -> '.join(cycle)}",
+            details={"metric_recipe_cycle": list(cycle)},
+        )
+    return _expr_leaf_temporal_role_sets(
+        recipe.expression, config, query, (*recipe_stack, recipe.id)
+    )
+
+
 def _expr_leaf_temporal_role_sets(
-    expr: SemanticExpr, config: PackageConfig, query: NormalizedQuery
+    expr: SemanticExpr,
+    config: PackageConfig,
+    query: NormalizedQuery,
+    recipe_stack: tuple[str, ...] = (),
 ) -> list[set[str]]:
     measures = _measure_index(config)
-    recipes = _recipe_index(config)
+
+    def visit(child: SemanticExpr) -> list[set[str]]:
+        return _expr_leaf_temporal_role_sets(child, config, query, recipe_stack)
 
     if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         measure = measures.get(expr.measure)
@@ -234,52 +262,47 @@ def _expr_leaf_temporal_role_sets(
             return [{query.temporal_role_overrides[expr.measure]}]
         return [set(measure.compatible_temporal_roles)]
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = recipes.get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
-        return _expr_leaf_temporal_role_sets(recipe.expression, config, query)
+        return _metric_ref_leaf_temporal_role_sets(expr, config, query, recipe_stack)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return [
-            *_expr_leaf_temporal_role_sets(expr.left, config, query),
-            *_expr_leaf_temporal_role_sets(expr.right, config, query),
+            *visit(expr.left),
+            *visit(expr.right),
         ]
     if isinstance(expr, RatioExpr):
         return [
-            *_expr_leaf_temporal_role_sets(expr.numerator, config, query),
-            *_expr_leaf_temporal_role_sets(expr.denominator, config, query),
+            *visit(expr.numerator),
+            *visit(expr.denominator),
         ]
     if isinstance(expr, EntityValueExpr):
-        return _expr_leaf_temporal_role_sets(expr.input, config, query)
+        return visit(expr.input)
     if isinstance(expr, DistributionExpr):
-        return _expr_leaf_temporal_role_sets(expr.over, config, query)
+        return visit(expr.over)
     if isinstance(expr, BooleanExpr):
         out: list[set[str]] = []
         for arg in expr.args:
-            out.extend(_expr_leaf_temporal_role_sets(arg, config, query))
+            out.extend(visit(arg))
         return out
     if isinstance(expr, CallExpr):
         call_out: list[set[str]] = []
         for arg in expr.args:
-            call_out.extend(_expr_leaf_temporal_role_sets(arg, config, query))
+            call_out.extend(visit(arg))
         return call_out
     if isinstance(expr, CaseExpr):
         case_out: list[set[str]] = []
         for item in expr.whens:
-            case_out.extend(_expr_leaf_temporal_role_sets(item.when, config, query))
-            case_out.extend(_expr_leaf_temporal_role_sets(item.then, config, query))
+            case_out.extend(visit(item.when))
+            case_out.extend(visit(item.then))
         if expr.else_expr is not None:
-            case_out.extend(_expr_leaf_temporal_role_sets(expr.else_expr, config, query))
+            case_out.extend(visit(expr.else_expr))
         return case_out
     if isinstance(
         expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
     ):
-        return _expr_leaf_temporal_role_sets(expr.input, config, query)
+        return visit(expr.input)
     if isinstance(expr, ConversionExpr):
         return [
-            *_expr_leaf_temporal_role_sets(expr.base, config, query),
-            *_expr_leaf_temporal_role_sets(expr.converted, config, query),
+            *visit(expr.base),
+            *visit(expr.converted),
         ]
     return []
 

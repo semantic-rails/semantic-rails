@@ -19,7 +19,8 @@ from typing import Any
 
 import yaml
 
-from .compiler import _requires_query_time, compile_query
+from .ast import NormalizedQuery
+from .compiler import _expr_leaf_temporal_role_sets, _requires_query_time, compile_query
 from .config import (
     SEED_KIND_EXTERNAL,
     _merge_package_dir,
@@ -34,7 +35,7 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
-from .expressions import MetricPredicateExpr, parse_semantic_expression
+from .expressions import ConversionExpr, MetricPredicateExpr, parse_semantic_expression
 from .meta_contract import validate_meta_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
 from .registry import Registry
@@ -1835,7 +1836,7 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
     if getattr(config.package, "schema_strict", False):
         _check_strict_authoring(config, source_path, errors)
 
-    return [*errors, *_segment_reference_errors(config, source_path)]
+    return [*errors, *_reference_errors(config, source_path)]
 
 
 def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> None:
@@ -1964,6 +1965,51 @@ def _check_disallowed_names(config, source_path: Path, errors: list[str]) -> Non
         if expr is not None and type(expr).__name__ == "ColumnRefExpr":
             column = str(getattr(expr, "column", "") or "")
         _check(measure.entity, measure.name, column, "measure", measure.id)
+
+
+def _reference_errors(config, source_path: Path) -> list[str]:
+    """References that resolve but can't be served as written: segments and metric clocks."""
+    return [
+        *_segment_reference_errors(config, source_path),
+        *_metric_time_role_errors(config, source_path),
+    ]
+
+
+def _metric_time_role_errors(config, source_path: Path) -> list[str]:
+    """Metrics whose temporal_role isn't the clock of any of their measures.
+
+    Such a metric still answers: every leaf falls back to its own clock
+    (``REWRITE_APPLIED``, ``metric_time_alignment``), but the result is labeled with
+    the declared role. A metric that mixes clocks is fine as long as one of its
+    measures has the declared one; the planner aligns the rest on purpose. A
+    conversion is timed by its base operand, as at query time.
+    """
+    errors: list[str] = []
+    # An unknown role is a different mistake: the probes reject it (INVALID_TEMPORAL_ROLE).
+    known = {row.id for row in config.temporal_roles}
+    query = NormalizedQuery(version=1, select=[])
+    for recipe in config.metric_recipes:
+        role = str(recipe.temporal_role or "")
+        if role not in known:
+            continue
+        expression = recipe.expression
+        if isinstance(expression, ConversionExpr):
+            expression = expression.base
+        try:
+            leaves = _expr_leaf_temporal_role_sets(expression, config, query)
+        except SemanticLayerError as exc:
+            if exc.details.get("metric_recipe_cycle"):
+                add_error(errors, f"{source_path}: metric {recipe.id}: {exc}")
+            continue  # Other unresolved expressions fail the compile probes.
+        clocks = set().union(*leaves)
+        if clocks and role not in clocks:
+            add_error(
+                errors,
+                f"{source_path}: metric {recipe.id} has temporal_role {role!r}, but its "
+                f"measures are timed by {', '.join(sorted(clocks))}: queries bucket them by that "
+                f"clock and label the result {role!r}. Set temporal_role to one of those.",
+            )
+    return errors
 
 
 def _segment_reference_errors(config, source_path: Path) -> list[str]:
