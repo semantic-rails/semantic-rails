@@ -41,7 +41,8 @@ MAX_PROFILE_ROWS = 1_000_000
 MAX_SUGGESTION_KEY_COLUMNS = 8
 MAX_FK_TARGETS_PER_COLUMN = 8
 
-_IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_$" -]*')
+_IDENTIFIER = re.compile(r'(?:[^\W\d]|_)[\w$" -]*')
+_PLAIN_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 _TIME_TYPES = ("DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP_S", "TIMESTAMP_MS")
 _NUMERIC_TYPES = (
     "TINYINT",
@@ -157,8 +158,48 @@ def _quote(name: str) -> str:
 
 def _split_relation(relation: str) -> tuple[str, str]:
     text = str(relation or "").strip()
-    parts = text.split(".")
-    if not text or len(parts) > 2 or not all(_IDENTIFIER.fullmatch(part) for part in parts):
+    parts: list[str] = []
+    index = 0
+    valid = True
+    while index < len(text) and len(parts) < 2:
+        if text[index] == '"':
+            index += 1
+            component = []
+            while index < len(text):
+                char = text[index]
+                if char == '"':
+                    if index + 1 < len(text) and text[index + 1] == '"':
+                        component.append('"')
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                component.append(char)
+                index += 1
+            else:
+                valid = False
+                break
+            part = "".join(component)
+            if not part or "\x00" in part or (index < len(text) and text[index] != "."):
+                valid = False
+                break
+        else:
+            end = text.find(".", index)
+            if end < 0:
+                end = len(text)
+            part = text[index:end]
+            if not _IDENTIFIER.fullmatch(part):
+                valid = False
+                break
+            index = end
+        parts.append(part)
+        if index == len(text):
+            break
+        if index + 1 == len(text):
+            valid = False
+            break
+        index += 1
+    if not valid or not text or index != len(text) or not parts or len(parts) > 2:
         raise SemanticLayerError(
             "INVALID_QUERY",
             f"relation must be a table or view name, optionally schema-qualified (got {text!r})",
@@ -168,7 +209,17 @@ def _split_relation(relation: str) -> tuple[str, str]:
 
 
 def _relation_name(schema: str, name: str) -> str:
-    return name if schema == "main" else f"{schema}.{name}"
+    def component(value: str) -> str:
+        return value if _PLAIN_IDENTIFIER.fullmatch(value) else _quote(value)
+
+    return component(name) if schema == "main" else f"{component(schema)}.{component(name)}"
+
+
+def _package_relation_name(schema: str, name: str) -> str:
+    """Use the package runtime's legacy raw form when no component has a dot."""
+    if "." not in schema and "." not in name:
+        return name if schema == "main" else f"{schema}.{name}"
+    return _relation_name(schema, name)
 
 
 def list_tables(warehouse: DuckDBWarehouse, *, schema: str = "") -> list[dict[str, Any]]:
@@ -813,7 +864,7 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     times.sort(key=lambda item: {"high": 0, "medium": 1, "low": 2}[item["confidence"]])
     draft = upsert_model_draft(
         entity=entity,
-        relation=described["relation"],
+        relation=_package_relation_name(schema, name),
         key_columns=key_columns,
         times=times,
         dimensions=dimensions,
@@ -830,4 +881,15 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         "measures": measures,
         "foreign_keys": links,
         "upsert_model": draft,
+        **(
+            {
+                "warnings": [
+                    "A dot inside this physical schema or table name can be inspected and drafted, "
+                    "but the current package runtime cannot execute that draft. Create a "
+                    "warehouse view with an undotted schema and table name and model the view instead."
+                ]
+            }
+            if "." in schema or "." in name
+            else {}
+        ),
     }

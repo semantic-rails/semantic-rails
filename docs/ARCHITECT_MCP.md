@@ -147,8 +147,18 @@ Profiles and samples show real values from the warehouse; use `sample_limit: 0` 
 Tables and views backed by data stored in the DuckDB file work normally. A view that needs an
 external file or resource can still appear in metadata-only list/describe results, but cannot be
 profiled or used for a model suggestion; materialize it in the DuckDB file before introspection.
-Relation components with hyphens, spaces or double quotes use their raw names, as in
-`create_project`; introspection quotes them in SQL.
+Warehouse tools return one canonical `relation` identity for each table or view. Ordinary names
+remain unquoted (`orders`, `sales.orders`); components with dots, spaces, hyphens or double quotes
+are double-quoted, with embedded quotes doubled. Thus `"sales.orders"` is a table named
+`sales.orders` in the default schema, distinct from `sales.orders` in schema `sales`; a dotted
+schema and table return as `"sales.v1"."orders.2026"`. Pass the listed identity to describe,
+profile or suggest. `list_tables.schema` and its returned `schema`/`name` fields are raw names.
+For components without dots, the suggested `upsert_model` draft uses the package runtime's raw
+relation spelling, preserving existing models over names such as `sales-data.fct"orders`. A draft
+for a physical schema or table name containing a dot keeps the canonical identity, but the current
+package runtime cannot execute it; `suggest_model.warnings` says to use an undotted warehouse view
+alias for that model. Architect mutation validation alone does not test runtime execution of the
+draft.
 The same functions are available to Python callers in `semantic_rails.architect_introspection`.
 
 ## dbt Projects

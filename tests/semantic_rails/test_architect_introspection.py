@@ -8,12 +8,15 @@ from typing import Any
 
 import duckdb
 import pytest
+import yaml
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from semantic_rails.architect_introspection import (
     MAX_PROFILE_ROWS,
     MAX_SAMPLE_CHARS,
     MAX_SAMPLE_VALUES,
+    _relation_name,
+    _split_relation,
     describe_table,
     list_tables,
     open_duckdb,
@@ -136,7 +139,7 @@ def test_declared_foreign_key_keeps_schema_and_quoted_composite_target(tmp_path:
         {
             "columns": ["tenant_id", "customer_id"],
             "references": {
-                "relation": 'sales-data.dim"customers',
+                "relation": '"sales-data"."dim""customers"',
                 "columns": ["tenant id", "customer-id"],
             },
         }
@@ -294,7 +297,18 @@ def test_profile_counts_and_caps_what_it_returns(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("relation", "error"),
-    [("missing_table", "OBJECT_NOT_FOUND"), ("main_marts.fct_orders; DROP", "INVALID_QUERY")],
+    [
+        ("missing_table", "OBJECT_NOT_FOUND"),
+        ("main_marts.fct_orders; DROP", "INVALID_QUERY"),
+        ('"unterminated', "INVALID_QUERY"),
+        ('main."unterminated', "INVALID_QUERY"),
+        ('main.""', "INVALID_QUERY"),
+        ('"valid"garbage', "INVALID_QUERY"),
+        ('main."valid"garbage', "INVALID_QUERY"),
+        ("main.orders.extra", "INVALID_QUERY"),
+        ("main..orders", "INVALID_QUERY"),
+        ("main.orders.", "INVALID_QUERY"),
+    ],
 )
 def test_unknown_or_unsafe_relations_are_refused(
     warehouse_path: Path, relation: str, error: str
@@ -302,6 +316,199 @@ def test_unknown_or_unsafe_relations_are_refused(
     with open_duckdb(warehouse_path) as warehouse, pytest.raises(SemanticLayerError) as excinfo:
         describe_table(warehouse, relation)
     assert excinfo.value.code == error
+
+
+RELATION_IDENTITY_CASES = [
+    ("main", "orders"),
+    ("sales", "orders"),
+    ("main", "sales.orders"),
+    ("sales.v1", "orders.2026"),
+    ("select", "from"),
+    ("sales data", 'order"lines'),
+    ("données", "注文"),
+    ("main", 'say "hello"'),
+    ("main", '"leading quote'),
+    ('sales"data', '"quote"inside'),
+]
+
+
+@pytest.mark.parametrize(("schema", "name"), RELATION_IDENTITY_CASES)
+def test_relation_identity_round_trips_distinct_components(schema: str, name: str) -> None:
+    assert _split_relation(_relation_name(schema, name)) == (schema, name)
+
+
+def test_relation_identity_distinguishes_colliding_raw_dots() -> None:
+    assert len({_relation_name(*pair) for pair in RELATION_IDENTITY_CASES}) == len(
+        RELATION_IDENTITY_CASES
+    )
+    assert _split_relation("main.orders") == ("main", "orders")
+    assert _split_relation('main."sales.orders"') == ("main", "sales.orders")
+    assert _split_relation('"sales.v1"."orders.2026"') == ("sales.v1", "orders.2026")
+
+
+def test_dotted_relation_identity_round_trips_service_and_mcp(tmp_path: Path) -> None:
+    db_path = tmp_path / "dotted.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE SCHEMA sales")
+        conn.execute('CREATE SCHEMA "sales.v1"')
+        conn.execute('CREATE TABLE main."sales.orders" (id INTEGER PRIMARY KEY, amount INTEGER)')
+        conn.execute('INSERT INTO main."sales.orders" VALUES (11, 110)')
+        conn.execute("CREATE TABLE sales.orders (id INTEGER PRIMARY KEY, note VARCHAR)")
+        conn.execute("INSERT INTO sales.orders VALUES (22, 'different relation')")
+        conn.execute('CREATE TABLE "sales.v1"."customers.2026" (customer_id INTEGER PRIMARY KEY)')
+        conn.execute('INSERT INTO "sales.v1"."customers.2026" VALUES (1)')
+        conn.execute(
+            'CREATE TABLE "sales.v1"."orders.2026" '
+            "(order_id INTEGER PRIMARY KEY, customer_id INTEGER "
+            'REFERENCES "sales.v1"."customers.2026"(customer_id))'
+        )
+        conn.execute('INSERT INTO "sales.v1"."orders.2026" VALUES (33, 1)')
+        conn.execute(
+            'CREATE TABLE "sales.v1"."shipments.2026" '
+            "(shipment_id INTEGER PRIMARY KEY, customer_id INTEGER)"
+        )
+        conn.execute('INSERT INTO "sales.v1"."shipments.2026" VALUES (44, 1)')
+
+    expected = {
+        '"sales.orders"': ("main", "sales.orders", 11),
+        "sales.orders": ("sales", "orders", 22),
+        '"sales.v1"."orders.2026"': ("sales.v1", "orders.2026", 33),
+        '"sales.v1"."customers.2026"': ("sales.v1", "customers.2026", 1),
+        '"sales.v1"."shipments.2026"': ("sales.v1", "shipments.2026", 44),
+    }
+    with open_duckdb(db_path) as warehouse:
+        listed = _by(list_tables(warehouse), "relation")
+        assert set(listed) == set(expected)
+        assert {row["relation"] for row in list_tables(warehouse, schema="sales.v1")} == {
+            relation for relation, (schema, _, _) in expected.items() if schema == "sales.v1"
+        }
+        for relation, (schema, name, value) in expected.items():
+            assert (listed[relation]["schema"], listed[relation]["name"]) == (schema, name)
+            assert describe_table(warehouse, relation)["relation"] == relation
+            profile = profile_columns(warehouse, relation, sample_limit=1)
+            assert profile["row_count"] == 1
+            assert profile["columns"][0]["samples"] == [value]
+            suggestion = suggest_model(warehouse, relation)
+            assert suggestion["relation"] == relation
+            assert suggestion["upsert_model"]["relation"] == relation
+            if "." in schema or "." in name:
+                assert "cannot execute that draft" in suggestion["warnings"][0]
+                assert "undotted" in suggestion["warnings"][0]
+            else:
+                assert "warnings" not in suggestion
+        assert {
+            column["name"] for column in describe_table(warehouse, '"sales.orders"')["columns"]
+        } == {"id", "amount"}
+        assert {
+            column["name"] for column in describe_table(warehouse, "sales.orders")["columns"]
+        } == {"id", "note"}
+        declared = describe_table(warehouse, '"sales.v1"."orders.2026"')
+        declared_suggestion = suggest_model(warehouse, '"sales.v1"."orders.2026"')
+        inferred_suggestion = suggest_model(warehouse, '"sales.v1"."shipments.2026"')
+    target = {"relation": '"sales.v1"."customers.2026"', "columns": ["customer_id"]}
+    assert declared["foreign_keys"] == [{"columns": ["customer_id"], "references": target}]
+    assert declared_suggestion["foreign_keys"][0]["references"] == target
+    assert inferred_suggestion["foreign_keys"][0]["references"] == target
+
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    path = {"duckdb_path": db_path.name}
+    calls = [("list_tables", path), ("list_tables", {**path, "schema": "sales.v1"})]
+    for relation in expected:
+        calls.extend(
+            (tool, {**path, "relation": relation})
+            for tool in ("describe_table", "profile_columns", "suggest_model")
+        )
+    results = _session(server, calls)
+    assert {row["relation"] for row in results[0]["tables"]} == set(expected)
+    assert {row["relation"] for row in results[1]["tables"]} == {
+        relation for relation, (schema, _, _) in expected.items() if schema == "sales.v1"
+    }
+    mcp_by_relation = {}
+    for index, relation in enumerate(expected):
+        described, profiled, suggested = results[2 + index * 3 : 5 + index * 3]
+        mcp_by_relation[relation] = (described, profiled, suggested)
+        assert described["relation"] == profiled["relation"] == suggested["relation"] == relation
+        assert profiled["columns"][0]["samples"] == [expected[relation][2]]
+        assert suggested["upsert_model"]["relation"] == relation
+        schema, name, _ = expected[relation]
+        if "." in schema or "." in name:
+            assert "cannot execute that draft" in suggested["warnings"][0]
+            assert "undotted" in suggested["warnings"][0]
+        else:
+            assert "warnings" not in suggested
+    assert {column["name"] for column in mcp_by_relation['"sales.orders"'][0]["columns"]} == {
+        "id",
+        "amount",
+    }
+    assert {column["name"] for column in mcp_by_relation["sales.orders"][0]["columns"]} == {
+        "id",
+        "note",
+    }
+    assert mcp_by_relation['"sales.v1"."orders.2026"'][0]["foreign_keys"][0]["references"] == target
+    assert mcp_by_relation['"sales.v1"."orders.2026"'][2]["foreign_keys"][0]["references"] == target
+    assert (
+        mcp_by_relation['"sales.v1"."shipments.2026"'][2]["foreign_keys"][0]["references"] == target
+    )
+
+
+def test_dotted_relation_suggestion_reaches_upsert_model_draft_consumer(tmp_path: Path) -> None:
+    project = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
+    db_path = build_dbt_warehouse(project / "data" / "warehouse.duckdb")
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute('CREATE TABLE main."sales.orders" (id INTEGER PRIMARY KEY, amount INTEGER)')
+        conn.execute('INSERT INTO main."sales.orders" VALUES (11, 110)')
+
+    with open_duckdb(db_path) as warehouse:
+        suggested = suggest_model(warehouse, '"sales.orders"')
+        draft = suggested["upsert_model"]
+    mutation = ArchitectProject(project, workspace_root=tmp_path).upsert_model(**draft)
+
+    assert mutation.report["ok"] is True, mutation.report
+    authored = yaml.safe_load((project / "models" / "core" / "sales_orders.yml").read_text())
+    assert authored["model"]["relation"] == draft["relation"] == '"sales.orders"'
+    assert "cannot execute that draft" in suggested["warnings"][0]
+
+
+@pytest.mark.parametrize(
+    ("schema", "table", "relation", "draft_relation"),
+    [
+        ("main", "sales orders", '"sales orders"', "sales orders"),
+        ("sales-data", 'sales"orders', '"sales-data"."sales""orders"', 'sales-data.sales"orders'),
+    ],
+)
+def test_legacy_raw_special_name_draft_remains_executable(
+    tmp_path: Path, schema: str, table: str, relation: str, draft_relation: str
+) -> None:
+    project = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
+    db_path = build_dbt_warehouse(project / "data" / "warehouse.duckdb")
+    with duckdb.connect(str(db_path)) as conn:
+        if schema != "main":
+            conn.execute(f'CREATE SCHEMA "{schema}"')
+        quoted_table = table.replace('"', '""')
+        source = f'"{schema}"."{quoted_table}"'
+        conn.execute(f"CREATE TABLE {source} (id INTEGER PRIMARY KEY, amount INTEGER)")
+        conn.execute(f"INSERT INTO {source} VALUES (11, 110)")
+
+    with open_duckdb(db_path) as warehouse:
+        suggested = suggest_model(warehouse, relation)
+        draft = suggested["upsert_model"]
+    mutation = ArchitectProject(project, workspace_root=tmp_path).upsert_model(**draft)
+    assert mutation.report["ok"] is True, mutation.report
+    assert suggested["relation"] == relation
+    assert draft["relation"] == draft_relation
+    assert "warnings" not in suggested
+    runtime = Runtime.from_path(str(project))
+    try:
+        rows = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": "measure.shop.amount"}, "as": "amount"}],
+                "limit": 5,
+            }
+        )["rows"]
+    finally:
+        runtime.close()
+    assert rows == [{"amount": 110}]
 
 
 def test_introspection_quotes_project_relation_components(tmp_path: Path) -> None:
@@ -315,21 +522,36 @@ def test_introspection_quotes_project_relation_components(tmp_path: Path) -> Non
     conn.execute('INSERT INTO "sales-data"."fct""orders" VALUES (1, 12.5)')
     conn.close()
 
-    relation = 'sales-data.fct"orders'
+    relation = '"sales-data"."fct""orders"'
     with open_duckdb(db_path) as warehouse:
+        listed = _by(list_tables(warehouse), "relation")
         described = describe_table(warehouse, relation)
         profiled = profile_columns(warehouse, relation, ["net amount"])
         suggested = suggest_model(warehouse, relation)
+        assert describe_table(warehouse, 'sales-data.fct"orders') == described
 
+    assert listed[relation]["schema"] == "sales-data"
+    assert listed[relation]["name"] == 'fct"orders'
     assert described["primary_key"] == ["order id"]
     assert profiled["row_count"] == 1
     assert profiled["columns"][0]["samples"] == ["12.50"]
     assert suggested["relation"] == relation
+    assert suggested["upsert_model"]["relation"] == 'sales-data.fct"orders'
     server = create_architect_mcp_server(workspace_root=tmp_path)
-    (mcp_described,) = _session(
-        server, [("describe_table", {"relation": relation, "duckdb_path": str(db_path)})]
+    mcp_listed, mcp_described, mcp_profiled, mcp_suggested = _session(
+        server,
+        [
+            ("list_tables", {"duckdb_path": str(db_path)}),
+            ("describe_table", {"relation": relation, "duckdb_path": str(db_path)}),
+            ("profile_columns", {"relation": relation, "duckdb_path": str(db_path)}),
+            ("suggest_model", {"relation": relation, "duckdb_path": str(db_path)}),
+        ],
     )
+    assert relation in _by(mcp_listed["tables"], "relation")
     assert mcp_described["ok"] is True and mcp_described["primary_key"] == ["order id"]
+    assert mcp_profiled["relation"] == relation and mcp_profiled["row_count"] == 1
+    assert mcp_suggested["relation"] == relation
+    assert mcp_suggested["upsert_model"]["relation"] == 'sales-data.fct"orders'
 
 
 def test_profile_row_cap_cannot_be_raised_by_the_caller(tmp_path: Path) -> None:
