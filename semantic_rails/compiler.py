@@ -152,6 +152,7 @@ from .sql_ast import (
     SqlWindow,
     SqlWithinGroup,
     build_filter_condition,
+    validate_single_value_filter_shape,
 )
 
 __all__ = [
@@ -944,16 +945,16 @@ _NUMERIC_DATA_TYPES = {"integer", "number"}
 
 
 def _validate_where_value_type(dim, item) -> None:
-    """Catch obvious type mismatches in `where` clauses at validate time
-    so users see a structured error instead of a raw warehouse conversion
-    error. Only the most common mismatches are checked: numeric value
-    against string dim, string value against numeric dim.
+    """Catch common where-value type mismatches before warehouse execution.
 
-    Per-dim `data_type` may be empty when the catalog hasn't classified
-    the column; in that case skip the check (nothing to enforce).
+    Skip dimensions without a classified catalog data type.
     """
-    op = str(item.op or "").upper()
-    values = list(item.value or []) if op in {"IN", "NOT IN"} else [item.value]
+    # Report an invalid scalar-op/list shape before any element type mismatch.
+    validate_single_value_filter_shape(item.op, item.value)
+    # NULL tests ignore value, including a supplied list, during lowering.
+    if " ".join(str(item.op or "").upper().split()) in {"IS NULL", "IS NOT NULL"}:
+        return
+    values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:
         return

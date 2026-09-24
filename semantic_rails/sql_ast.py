@@ -631,4 +631,45 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
                 ],
             },
         )
+    return _single_value_comparison(expr, op, value, path=path)
+
+
+def _single_value_comparison(expr: SqlExpr, op: Any, value: Any, *, path: str) -> SqlExpr:
+    """``expr <op> value`` for a comparison that takes one value.
+
+    A list would render as one string literal (``= '[''a'', ''b'']'``) and
+    silently match no rows, so it is rejected with a pointer to ``IN``.
+    """
+    validate_single_value_filter_shape(op, value, path=path)
     return SqlBinary(expr, str(op or "="), SqlLiteral(value))
+
+
+def validate_single_value_filter_shape(op: Any, value: Any, *, path: str = "where") -> None:
+    """Reject a list before dimension type checks for scalar comparisons."""
+    op_normalized = _compact_token(str(op or "=")).upper()
+    if op_normalized in {"IN", "NOT IN", "IS NULL", "IS NOT NULL"} or not isinstance(
+        value, (list, tuple)
+    ):
+        return
+    raise SemanticLayerError(
+        "INVALID_QUERY",
+        f"{path}: op '{op_normalized}' compares against one value, got a list",
+        details={
+            "path": path,
+            "op": op_normalized,
+            "received_value": list(value),
+            "why_invalid": (
+                f"'<expr> {op_normalized} <list>' would compare against the list as one "
+                "string and silently match no rows."
+            ),
+            "recovery_hints": [
+                {
+                    "code": "USE_IN_FOR_LIST_VALUE",
+                    "message": (
+                        "To match any of several values use op 'IN' (or 'NOT IN' to "
+                        f"exclude them); otherwise pass a single value for '{op_normalized}'."
+                    ),
+                }
+            ],
+        },
+    )
