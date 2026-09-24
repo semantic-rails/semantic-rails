@@ -1309,6 +1309,7 @@ def create_architect_mcp_server(
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
+                    skipped_dbt_targets=[row["dbt_model"] for row in skipped],
                 )
                 .report
             )

@@ -675,6 +675,7 @@ class ArchitectProject:
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
+        skipped_dbt_targets: list[str] | None = None,
     ) -> ArchitectMutation:
         """Create or update several models in one parse-gated transaction.
 
@@ -692,6 +693,8 @@ class ArchitectProject:
         A reference whose target is missing or ambiguous, or which points at a
         column other than the target's key, is reported under
         ``skipped_references``.
+        ``skipped_dbt_targets`` prevents a selected but unavailable dbt model
+        from resolving through a stale package relation with the same spelling.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         if not models:
@@ -736,6 +739,7 @@ class ArchitectProject:
             if relation and entity in entity_keys:
                 relation_entities.setdefault(relation, set()).add(entity)
         dbt_targets: dict[str, set[tuple[str, str]]] = {}
+        skipped_target_ids = set(skipped_dbt_targets or [])
         for item, fact in zip(models, staged, strict=True):
             relation = str(item.get("relation") or "")
             if relation:
@@ -761,6 +765,8 @@ class ArchitectProject:
                         target_relation, target = next(iter(identity_candidates))
                         if relation != target_relation:
                             reason = "the selected dbt target does not read the referenced relation"
+                elif not target and target_identity in skipped_target_ids:
+                    reason = "the selected dbt target was skipped from this import"
                 elif not target and len(candidates) == 1:
                     target = next(iter(candidates))
                 elif not target and len(candidates) > 1:
@@ -822,7 +828,12 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            intent={"operation": "upsert_models", "models": deepcopy(models), "group": group},
+            intent={
+                "operation": "upsert_models",
+                "models": deepcopy(models),
+                "group": group,
+                "skipped_dbt_targets": sorted(skipped_target_ids),
+            },
             extra={
                 "models": [
                     {

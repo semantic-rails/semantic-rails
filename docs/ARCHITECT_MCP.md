@@ -215,6 +215,9 @@ without a key in dbt in `skipped_models`. A dbt model whose derived id matches a
 An imported target's dbt manifest identity selects that staged model even when another package
 model reads the same relation. A relation-only reference resolves when exactly one eligible
 semantic entity reads it; ambiguous targets are listed in `skipped_references` for review.
+If a referenced dbt target was explicitly selected but skipped, its child reference is also
+reported in `skipped_references`; an older package model at the same relation cannot replace it.
+References to intentionally unselected targets may still use one eligible existing entity.
 If a model has different foreign-key columns pointing to the same semantic entity, both links
 are reported in `skipped_references` because one entity reference cannot represent both joins.
 Identical links are recorded once.

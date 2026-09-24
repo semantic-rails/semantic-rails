@@ -499,6 +499,89 @@ def test_ephemeral_model_does_not_overwrite_existing_model_in_mixed_import(
     assert (workspace / "shop" / "models" / "dbt" / "customers.yml").exists()
 
 
+@pytest.mark.parametrize("skip_kind", ["ephemeral", "no_key"])
+def test_selected_skipped_dbt_target_cannot_bind_stale_existing_relation(
+    workspace: Path, skip_kind: str
+) -> None:
+    path = workspace / "dbt" / "target" / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if skip_kind == "ephemeral":
+        manifest["nodes"]["model.shop_dbt.fct_orders"]["config"]["materialized"] = "ephemeral"
+    else:
+        for name in ("unique", "not_null"):
+            manifest["nodes"][f"test.shop_dbt.{name}_fct_orders_order_id"]["config"] = {
+                "where": "is_current = true"
+            }
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    orders_file = workspace / "shop" / "models" / "orders.yml"
+    original = orders_file.read_bytes()
+    before = project_revision(workspace / "shop")
+    server = create_architect_mcp_server(workspace_root=workspace)
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["fct_orders", "fct_order_lines"],
+        "expected_revision": before,
+        "idempotency_key": f"skipped-target-{skip_kind}",
+    }
+    preview, applied, replayed, stale = _calls(
+        server,
+        [
+            ("import_dbt_project", {**request, "dry_run": True}),
+            ("import_dbt_project", request),
+            ("import_dbt_project", request),
+            ("import_dbt_project", {**request, "idempotency_key": "fresh-stale"}),
+        ],
+    )
+    for receipt in (preview, applied):
+        assert receipt["ok"] is True, receipt
+        assert [row["dbt_model"] for row in receipt["skipped_models"]] == [
+            "model.shop_dbt.fct_orders"
+        ]
+        blocked = [
+            row
+            for row in receipt["skipped_references"]
+            if row.get("target_dbt_unique_id") == "model.shop_dbt.fct_orders"
+        ]
+        assert len(blocked) == 1
+        assert "selected dbt target was skipped" in blocked[0]["reason"]
+        assert not any(
+            row["model"] == "order_lines" and row["entity"] == "order"
+            for row in receipt["references"]
+        )
+    assert preview["dry_run"] is True
+    assert replayed["ok"] is True and replayed["idempotent_replay"] is True
+    assert replayed["revision"] == applied["revision"]
+    assert stale["ok"] is False
+    assert stale["error"]["details"]["conflict_kind"] == "stale_revision"
+    assert orders_file.read_bytes() == original
+    lines = _model(workspace / "shop" / "models" / "dbt" / "order_lines.yml")
+    assert "order" not in lines["entities"]
+
+
+def test_intentionally_unselected_dbt_target_can_use_existing_relation(workspace: Path) -> None:
+    server = create_architect_mcp_server(workspace_root=workspace)
+    (applied,) = _calls(
+        server,
+        [
+            (
+                "import_dbt_project",
+                {
+                    "project_path": "shop",
+                    "target_dir": "dbt/target",
+                    "select": ["fct_order_lines"],
+                    "expected_revision": project_revision(workspace / "shop"),
+                    "idempotency_key": "unselected-target-fallback",
+                },
+            )
+        ],
+    )
+    assert applied["ok"] is True, applied
+    assert {"model": "order_lines", "entity": "order", "columns": ["order_id"]} in applied[
+        "references"
+    ]
+
+
 def _customers(**extra: Any) -> dict[str, Any]:
     return {
         "model_id": "customers",
