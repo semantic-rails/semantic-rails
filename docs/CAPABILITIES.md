@@ -93,7 +93,7 @@ measure), jaffle ships both so authors can compare the trade-offs.
 ### Metadata APIs
 
 - catalog browsing with four verbosity tiers (`summary`, `minimal`, `compact`, `full`)
-- standalone compact `capabilities` MCP tool (loop position 0 orientation)
+- standalone compact `capabilities` MCP tool for orientation
 - guided discovery via `discover`, `inspect`, `build-options`, and `plan`
 - stage-aware discovery and builder ranking
 - resolution by canonical ID, `name`, `label`, and inline synonyms

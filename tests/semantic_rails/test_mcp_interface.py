@@ -47,8 +47,9 @@ def test_optional_fastmcp_facade_is_strictly_stdio_only(runtime_factory, monkeyp
     calls: list[tuple[tuple, dict]] = []
 
     class FakeFastMCP:
-        def __init__(self, _name):
+        def __init__(self, _name, instructions=None):
             self.tools = []
+            self.instructions = instructions
 
         def add_tool(self, tool, **kwargs):
             self.tools.append((tool, kwargs))
@@ -69,6 +70,8 @@ def test_optional_fastmcp_facade_is_strictly_stdio_only(runtime_factory, monkeyp
     monkeypatch.setitem(sys.modules, "mcp", mcp_module)
     monkeypatch.setitem(sys.modules, "mcp.server", server_module)
     monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
+    # On SDK 2.x the facade prefers mcp.server.mcpserver; keep this test on the fake.
+    monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", None)
 
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
@@ -140,7 +143,9 @@ def test_mcp_definitions_are_declarative_and_complete():
     assert tool_names == REQUIRED_TOOL_NAMES
     assert {definition["uri"] for definition in MCP_RESOURCE_DEFINITIONS} == {
         "semantic-rails://capabilities",
+        "semantic-rails://capabilities/summary",
         "semantic-rails://catalog/summary",
+        "semantic-rails://catalog/index",
         "semantic-rails://catalog/full",
     }
     assert {definition["name"] for definition in MCP_PROMPT_DEFINITIONS} == {
@@ -350,6 +355,7 @@ def test_mcp_adapter_resources_prompts_and_structured_errors(runtime_factory):
     try:
         capabilities = adapter.read_resource("semantic-rails://capabilities")
         catalog_summary = adapter.read_resource("semantic-rails://catalog/summary")
+        catalog_index = adapter.read_resource("semantic-rails://catalog/index")
         prompt = adapter.get_prompt("semantic-rails-query-builder", {"intent": "orders by store"})
         unknown = adapter.call_tool("missing-tool", {})
         invalid_arguments = adapter.call_tool("catalog", "not-a-json-object")  # type: ignore[arg-type]
@@ -361,6 +367,7 @@ def test_mcp_adapter_resources_prompts_and_structured_errors(runtime_factory):
         assert capabilities["mimeType"] == "application/json"
         assert json.loads(capabilities["text"])["package_id"] == "jaffle_shop"
         assert catalog_summary["payload"]["catalog"]["meta"]["verbosity"] == "compact"
+        assert catalog_index["payload"]["catalog"]["meta"]["verbosity"] == "summary"
         assert "discover" in prompt["messages"][0]["content"]["text"]
         assert unknown["ok"] is False
         assert unknown["errors"][0]["code"] == "UNKNOWN_MCP_TOOL"

@@ -59,6 +59,7 @@ __all__ = [
     "MCP_INTERFACE_VERSION",
     "MCP_PROMPT_DEFINITIONS",
     "MCP_RESOURCE_DEFINITIONS",
+    "MCP_SERVER_INSTRUCTIONS",
     "MCP_TOOL_DEFINITIONS",
     "POLICY_CONTEXT_SCHEMA",
     "PromptDefinition",
@@ -76,6 +77,7 @@ __all__ = [
     "enrich_object_not_found",
     "exception_issue",
     "inspect_payload",
+    "json_text",
     "list_prompt_definitions",
     "list_resource_definitions",
     "list_tool_definitions",
@@ -116,6 +118,42 @@ JSON_OBJECT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": True,
 }
+
+# Server-level guidance, sent once in ``initialize``: the workflow and the
+# conventions every tool shares. Tool descriptions say what each tool does,
+# when to use it and its one gotcha.
+MCP_SERVER_INSTRUCTIONS = (
+    "Semantic Rails answers analytics questions from a governed semantic layer. Refer to "
+    "objects by full id (measure.jaffle.revenue_usd, dimension.jaffle_store_name), never "
+    "by label.\n"
+    "\n"
+    "To answer a question:\n"
+    "1. discover(terms) ranks measures, metrics and dimensions for it. inspect(object_id)"
+    " shows one object's card when you need its aggregations, values or time roles.\n"
+    '2. plan(intent) drafts Query IR. Run best.query_ir only when status is "ok" and '
+    "there are no warnings; otherwise why and warnings name what the draft misses, so fix"
+    " the Query IR or ask the user. out_of_scope or unrealizable means the package can't "
+    "answer.\n"
+    "3. execute(query) validates, compiles and runs Query IR. Omitted max_rows keeps the "
+    "query's limit; set max_rows to cap rows and receive a truncation hint when needed. "
+    "validate and compile are optional dry runs.\n"
+    "\n"
+    'Query IR: select measures or metrics, group_by dimension ids, where filters (op "in"'
+    " for several values), and time {temporal_role, grain, start, end}. A window without "
+    "a grain groups by the raw timestamp. The validate tool lists expression shapes; "
+    "capabilities has examples.\n"
+    "\n"
+    "Other tools: catalog lists every id; valid-values lists a dimension's values; "
+    "build-options suggests the next choice for a guided builder; segment-validate, "
+    "segment-explain and segment-preview work with package-authored segments.\n"
+    "For small resource reads, use capabilities/summary and catalog/index.\n"
+    "\n"
+    'MCP validate, compile and execute default to minimal; pass verbosity "compact" or "full" '
+    'for more. plan defaults to detail "best"; detail "query" is shorter. Errors carry '
+    "recovery_hints and closest_matches; follow them "
+    "before retrying. For local testing, any tool accepts policy_context {environment, "
+    "audience, roles}; hosted servers set it for you."
+)
 
 POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -333,9 +371,14 @@ def _schema(
     required: list[str] | None = None,
     additional_properties: bool = False,
 ) -> dict[str, Any]:
+    # These optional fields are part of the published v1 tool schemas. Keep
+    # them advertised even though the workflow explains them only once.
+    schema_properties = copy.deepcopy(dict(properties))
+    schema_properties.setdefault("request_id", {"type": "string"})
+    schema_properties.setdefault("policy_context", copy.deepcopy(POLICY_CONTEXT_SCHEMA))
     schema: dict[str, Any] = {
         "type": "object",
-        "properties": copy.deepcopy(dict(properties)),
+        "properties": schema_properties,
         "additionalProperties": additional_properties,
     }
     if required:
@@ -413,36 +456,24 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="capabilities",
         description=(
-            "Semantic Rails MCP question-answering entrypoint. For "
-            "answering governed-data questions, use: discover, plan, "
-            "validate, compile, execute. Use catalog for orientation. "
-            "Return the package's supported and unsupported capability "
-            "surface — rolling windows, prior-period offsets, metric "
-            "predicates, scoped aggregates, conversion metrics, etc. "
-            "Recommended loop position: 0 (cold-start orientation). "
-            "This compact orientation response tells you which IR expression kinds the "
-            "runtime can compile and execute for this package. "
-            "Gotcha: capabilities are package-scoped — re-call after "
-            "switching packages."
+            "Semantic Rails MCP question-answering entrypoint: answer with "
+            "discover, plan and execute (validate and compile are optional dry "
+            "runs); use catalog to list ids. Returns what this package supports "
+            "and doesn't: rolling windows, prior-period offsets, metric "
+            "predicates, scoped aggregates, conversion metrics, with runnable "
+            "expression_shapes examples. Gotcha: capabilities are package-scoped;"
+            " call again after switching packages."
         ),
-        input_schema=_schema(
-            {
-                "request_id": {"type": "string"},
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-            }
-        ),
+        input_schema=_schema({}),
     ),
     ToolDefinition(
         name="catalog",
         description=(
-            "List every governed semantic object in the active package — "
-            "measures, metrics, dimensions, segments, entities. "
-            "Recommended loop position: 1 (after capabilities, before "
-            "discover). Prefer 'discover' for term-targeted lookups. "
-            "Gotcha: default verbosity is 'summary' — flat ID lists, "
-            "right for orientation. Bump to 'compact' for row "
-            "metadata (capped 200/kind) or 'full' for uncapped + "
-            "alias_index (large)."
+            "List the governed objects in the package: measures, metrics, "
+            "dimensions, segments and entities. Use it first to see what exists; "
+            "prefer 'discover' to look up terms. Gotcha: the default verbosity "
+            "'summary' returns flat id lists; 'compact' adds row metadata (capped"
+            " at 200 per kind) and 'full' is uncapped with alias_index (large)."
         ),
         input_schema=_schema(
             {
@@ -455,8 +486,6 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "kind": {"type": "string", "description": "Optional object kind filter."},
                 "search": {"type": "string", "description": "Optional substring filter."},
                 "entity": {"type": "string", "description": "Optional root entity context."},
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             }
         ),
     ),
@@ -465,7 +494,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         description=(
             "Rank semantic objects against business terms (e.g. 'revenue', "
             "'aov by store'). Returns measures, metrics, dimensions, and "
-            "entities, up to 'limit' per kind. Pick an id, then inspect it. "
+            "entities, up to 'limit' per kind. "
             "Default: full cards; verbosity='minimal': slim cards without "
             "match_reasons or starter patches. Gotcha: nonsense terms return "
             "'out_of_scope' or 'low_relevance' with empty buckets; branch "
@@ -475,18 +504,23 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             {
                 "terms": {"type": "string"},
                 "kinds": {
-                    "oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}]
+                    "oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
+                    "description": "Object kinds to rank, such as measure or metric. Default: all.",
                 },
                 "query": QUERY_SCHEMA_SLIM,
-                "stage": {"type": "string"},
+                "stage": {
+                    "type": "string",
+                    "description": (
+                        "Builder stage that tunes ranking: initial, post_measure, "
+                        "post_dimension or comparison. Inferred when omitted."
+                    ),
+                },
                 "verbosity": {
                     "type": "string",
                     "enum": ["minimal", "compact", "full"],
                     "default": "compact",
                 },
                 "limit": {"type": "integer", "default": 10, "minimum": 1},
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             additional_properties=True,
         ),
@@ -509,8 +543,6 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "enum": ["minimal", "compact", "full"],
                     "default": "compact",
                 },
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             required=["object_id"],
             additional_properties=True,
@@ -519,25 +551,41 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="build-options",
         description=(
-            "Return ranked next choices for a guided query builder — given "
-            "partial Query IR, what dimension/filter/time-range to add "
-            "next. Recommended loop position: 2.5 (between 'inspect' and "
-            "'plan' when composing step-by-step instead of from a single "
-            "intent). Gotcha: pass the partial 'query' you've assembled — "
-            "empty input returns initial-stage options."
+            "Return ranked next choices for a guided query builder: given partial"
+            " Query IR, which dimension, filter or time range to add next. Use it"
+            " to compose a query step by step instead of from one intent "
+            "('plan'). Gotcha: pass the partial 'query' you've assembled; empty "
+            "input returns initial-stage options."
         ),
         input_schema=_schema(
             {
                 "query": QUERY_SCHEMA_SLIM,
-                "focus_terms": {"type": "string"},
-                "focus_object_id": {"type": "string"},
-                "step": {"type": "string"},
-                "stage": {"type": "string"},
+                "focus_terms": {"type": "string", "description": "Terms to rank the options by."},
+                "focus_object_id": {
+                    "type": "string",
+                    "description": "An object id to rank the options around.",
+                },
+                "step": {
+                    "type": "string",
+                    "description": (
+                        "Step to rank options for: measure, group_by, filter_dimension, time "
+                        "or review. Inferred from 'query' when omitted."
+                    ),
+                },
+                "stage": {
+                    "type": "string",
+                    "description": (
+                        "Builder stage that tunes ranking: initial, post_measure, "
+                        "post_dimension or comparison. Inferred when omitted."
+                    ),
+                },
                 "verbosity": {"type": "string", "default": "compact"},
-                "include_blocked": {"type": "boolean", "default": True},
+                "include_blocked": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Also list options this query can't use, with the reason.",
+                },
                 "limit": {"type": "integer", "default": 10, "minimum": 1},
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             additional_properties=True,
         ),
@@ -545,14 +593,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="valid-values",
         description=(
-            "Return governed valid values for one dimension — from its "
-            "declared value_domain by default, or via a constrained "
-            "warehouse probe when 'allow_live_query: true'. Recommended "
-            "loop position: 3 (composing a 'where' filter on a "
-            "categorical dimension). Gotcha: 'dimension_id' must be a "
-            "full id like 'dimension.jaffle.store_name'. Set "
-            "allow_live_query: true only when no declared domain exists "
-            "— it costs a warehouse round-trip."
+            "Return a dimension's governed values: from its declared value "
+            "domain, or from a constrained warehouse probe with allow_live_query:"
+            " true. Use it before writing a 'where' filter on a categorical "
+            "dimension. Gotcha: 'dimension_id' must be a full id like "
+            "'dimension.jaffle_store_name'; allow_live_query costs a warehouse "
+            "round-trip, so use it only when no domain is declared."
         ),
         input_schema=_schema(
             {
@@ -561,10 +607,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "search": {"type": "string"},
                 "limit": {"type": "integer", "default": 100, "minimum": 1},
                 "offset": {"type": "integer", "default": 0, "minimum": 0},
-                "include_counts": {"type": "boolean", "default": False},
+                "include_counts": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "With allow_live_query, add each value's row count.",
+                },
                 "allow_live_query": {"type": "boolean", "default": False},
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             required=["dimension_id"],
             additional_properties=True,
@@ -593,9 +641,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "enum": ["query", "best", "full", "debug"],
                     "default": "best",
                 },
-                "limit": {"type": "integer", "default": 3, "minimum": 1},
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
+                "limit": {
+                    "type": "integer",
+                    "default": 3,
+                    "minimum": 1,
+                    "description": "Drafts to consider; detail='full' returns the runners-up.",
+                },
             },
             required=["intent"],
             additional_properties=True,
@@ -604,13 +655,17 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="validate",
         description=(
-            "Check Query IR before compiling — returns errors, warnings, "
-            "and repair hints. Loop position: 5 (before 'compile' or "
-            "'execute'). Gotcha: 'query' must be a JSON object, not a "
-            "stringified blob; wrap as {query: {...}}. Defaults to "
-            "verbosity='minimal' — pass verbosity=compact|full for "
-            "normalized query/policy effects/plans. "
-            f"{SELECT_EXPRESSION_SHAPES_HELP}"
+            "Check Query IR without running it: errors, warnings and repair "
+            "hints. Optional: 'execute' runs the same checks first. Gotcha: "
+            "'query' must be a JSON object, not a string; wrap it as {query: "
+            "{...}}. verbosity='compact' or 'full' adds the normalized query, "
+            "policy effects and plans. IR: select[]={expression,as}, "
+            "group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, "
+            "order_by[]={field,direction}. select.expression: {aggregation, "
+            "measure} | {metric} | "
+            "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}."
+            " Runnable examples per kind: "
+            "capabilities.expression_shapes[].example."
         ),
         input_schema=_schema(
             {
@@ -620,8 +675,6 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "query": QUERY_SCHEMA,
                 "verbosity": VERBOSITY_SCHEMA,
                 "sql_profile": SQL_PROFILE_SCHEMA,
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             additional_properties=True,
         ),
@@ -629,21 +682,18 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="compile",
         description=(
-            "Compile validated Query IR into rendered SQL — no warehouse "
-            "execution. Loop position: 6 (after 'validate', before "
-            "'execute'). Gotcha: do not call before validate — compile "
-            "raises on errors; validate returns structured repair hints. "
-            "Defaults to verbosity='minimal' (keeps rendered_sql) — pass "
-            "verbosity=compact|full for sql_plan/explain/logical plans. "
-            "IR shape: see the 'validate' tool or 'build-options'."
+            "Compile Query IR into SQL without running it. Use it before "
+            "'execute' when you want to show or review the SQL; 'execute' "
+            "compiles on its own. Gotcha: invalid Query IR fails here too, and "
+            "'validate' is the cheaper check. verbosity='compact' or 'full' adds "
+            "sql_plan, explain and logical plans. IR shape: see the 'validate' "
+            "tool."
         ),
         input_schema=_schema(
             {
                 "query": QUERY_SCHEMA_SLIM,
                 "verbosity": VERBOSITY_SCHEMA,
                 "sql_profile": SQL_PROFILE_SCHEMA,
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             additional_properties=True,
         ),
@@ -651,16 +701,13 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Execute Query IR against the warehouse and return rows "
-            "(compiles + runs in one call). Loop position: 7 (final — "
-            "only after validate + compile succeed). Gotcha: only tool "
-            "that costs warehouse credits + round-trip latency; "
-            "side-effecting. Use 'compile' for SQL only. Defaults to "
-            "verbosity='minimal' (rows + row_count) — pass verbosity="
-            "compact|full for SQL/plans/explain. Use row_format='columns' "
-            "for compact answers, and max_rows=200 to bound row output. "
-            "IR shape: see the "
-            "'validate' tool or 'build-options'."
+            "Validate, compile and run Query IR against the warehouse after "
+            "plan, or once Query IR is ready. Omitted "
+            "max_rows keeps the caller's query limit; set max_rows to cap output. "
+            "A capped result reports truncated and total_row_count. Gotcha: "
+            "this tool incurs warehouse cost and latency. row_format='columns' "
+            "is compact; verbosity='compact' or 'full' adds SQL and plans. "
+            "IR shape: see the 'validate' tool."
         ),
         input_schema=_schema(
             {
@@ -677,8 +724,6 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                         "A larger result sets truncated=true and total_row_count."
                     ),
                 },
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             additional_properties=True,
         ),
@@ -686,18 +731,15 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="segment-validate",
         description=(
-            "Validate a package-authored segment and the Query IR derived "
-            "from it. Recommended loop position: 5 (segment workflow "
-            "analogue of 'validate' for ad-hoc IR). Gotcha: 'segment_id' "
-            "must be a full id like 'segment.jaffle.high_value_customers' "
-            "— list known segments via 'catalog' if you only have a label."
+            "Validate a package-authored segment and the Query IR derived from "
+            "it. Use it first in the segment workflow, then 'segment-explain' and"
+            " 'segment-preview'. Gotcha: 'segment_id' must be a full id like "
+            "'segment.jaffle.high_value_customers'; 'catalog' lists segments."
         ),
         input_schema=_schema(
             {
                 "segment_id": {"type": "string"},
                 "verbosity": SEGMENT_VERBOSITY_SCHEMA,
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             required=["segment_id"],
         ),
@@ -705,19 +747,15 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="segment-explain",
         description=(
-            "Explain the derived query for a package-authored segment — "
-            "filters, joins, and time bounds it compiles to. Recommended "
-            "loop position: 6 (after 'segment-validate', before previewing "
-            "rows). Gotcha: governed segments only — for ad-hoc cohorts, "
-            "compose Query IR with a 'where' clause and call 'compile' to "
-            "read the explain payload on its response."
+            "Explain a package-authored segment: its definition, derived Query IR"
+            " and SQL. Use it after 'segment-validate', before previewing rows. "
+            "Gotcha: governed segments only; for an ad-hoc cohort, write Query IR"
+            " with a 'where' clause and call 'compile'."
         ),
         input_schema=_schema(
             {
                 "segment_id": {"type": "string"},
                 "verbosity": SEGMENT_VERBOSITY_SCHEMA,
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             required=["segment_id"],
         ),
@@ -725,20 +763,16 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="segment-preview",
         description=(
-            "Preview members of a package-authored segment — sample rows "
-            "plus total member count. Hits the warehouse. Recommended "
-            "loop position: 7 (segment analogue of 'execute' — final "
-            "step). Gotcha: only segment tool that costs warehouse "
-            "credits. Run segment-validate + segment-explain first; "
-            "preview is for showing rows to the user."
+            "Preview a package-authored segment's members: sample rows and the "
+            "total member count. Use it after 'segment-explain', to show rows "
+            "to the user. Gotcha: it queries the warehouse (cost and latency); "
+            "'limit' caps the sample rows."
         ),
         input_schema=_schema(
             {
                 "segment_id": {"type": "string"},
                 "limit": {"type": "integer", "default": 50, "minimum": 1},
                 "verbosity": SEGMENT_VERBOSITY_SCHEMA,
-                "policy_context": POLICY_CONTEXT_SCHEMA,
-                "request_id": {"type": "string"},
             },
             required=["segment_id"],
         ),
@@ -749,24 +783,48 @@ RESOURCE_DEFINITIONS: tuple[ResourceDefinition, ...] = (
     ResourceDefinition(
         uri="semantic-rails://capabilities",
         name="capabilities",
-        description="Dependency-free MCP interface capabilities, including tool, resource, and prompt definitions.",
+        description=(
+            "V1 capabilities with complete tool definitions, resources and prompts. Large; "
+            "use capabilities/summary for names and titles."
+        ),
+    ),
+    ResourceDefinition(
+        uri="semantic-rails://capabilities/summary",
+        name="capabilities-summary",
+        description=(
+            "Small capabilities index: tool names and titles, plus resources and prompts."
+        ),
     ),
     ResourceDefinition(
         uri="semantic-rails://catalog/summary",
         name="catalog-summary",
-        description="Compact summary catalog for the active package.",
+        description=(
+            "V1 catalog summary with descriptive rows and counts. Large; use catalog/index "
+            "for counts and ids."
+        ),
+    ),
+    ResourceDefinition(
+        uri="semantic-rails://catalog/index",
+        name="catalog-index",
+        description=("Small catalog index: counts and ids per object kind for the active package."),
     ),
     ResourceDefinition(
         uri="semantic-rails://catalog/full",
         name="catalog-full",
-        description="Full catalog cards and payloads for the active package.",
+        description=(
+            "Every object's full card and the alias index for the active package. Large: "
+            "start with catalog-index."
+        ),
     ),
 )
 
 PROMPT_DEFINITIONS: tuple[PromptDefinition, ...] = (
     PromptDefinition(
         name="semantic-rails-query-builder",
-        description="Guide an agent through discover, inspect, build-options, valid-values, validate, compile, and execute.",
+        description=(
+            "Guide an agent from a question to rows: discover, inspect, plan (or build-options "
+            "and valid-values), then execute."
+        ),
         arguments=(
             {
                 "name": "intent",
@@ -852,23 +910,18 @@ def _tool_required_properties(tool_name: str) -> tuple[list[str], list[str]]:
 def _tool_known_args(tool_name: str) -> frozenset[str]:
     """Source of truth for the legitimate argument keys per tool.
 
-    Combines the tool's ``input_schema.properties`` keys with:
-
-    * ``request_id`` — universal MCP convention threaded through every
-      tool's envelope.
-    * For tools that accept top-level Query-IR passthrough
-      (``validate``, ``compile``, ``execute``), the canonical IR keys
-      declared in :data:`semantic_rails.ast.QUERY_INPUT_KEYS` so callers can skip the
-      ``query`` wrapper without tripping the unknown-arg check. Query
-      IR's own additional-keys gate (in ``ast.py``) handles unknown IR
-      keys separately — no double-validation here.
+    Combines the tool's ``input_schema.properties`` keys with canonical
+    :data:`semantic_rails.ast.QUERY_INPUT_KEYS` for tools that accept top-level
+    Query-IR passthrough (``validate``, ``compile``, ``execute``). Callers can
+    skip the ``query`` wrapper without tripping the unknown-arg check. Query
+    IR's own additional-keys gate (in ``ast.py``) handles unknown IR keys
+    separately — no double-validation here.
     """
     for definition in TOOL_DEFINITIONS:
         if definition.name != tool_name:
             continue
         schema = dict(definition.input_schema or {})
         known = set((schema.get("properties") or {}).keys())
-        known.add("request_id")
         if tool_name in {"validate", "compile", "execute"}:
             known.update(QUERY_INPUT_KEYS)
         return frozenset(known)
@@ -1725,21 +1778,30 @@ class SemanticLayerMCPAdapter:
             request_context.to_policy_context() if request_context is not None else None
         )
         request_id = request_context.request_id if request_context is not None else ""
-        if uri == "semantic-rails://capabilities":
+        if uri in {"semantic-rails://capabilities", "semantic-rails://capabilities/summary"}:
+            tools = self.list_tools()
+            if uri.endswith("/summary"):
+                tools = [
+                    {
+                        "name": tool["name"],
+                        "title": (tool.get("annotations") or {}).get("title", tool["name"]),
+                    }
+                    for tool in tools
+                ]
             payload: dict[str, Any] = {
                 "interface_version": MCP_INTERFACE_VERSION,
                 "package_id": self.package_id,
-                "tools": self.list_tools(),
+                "tools": tools,
                 "resources": self.list_resources(),
                 "prompts": self.list_prompts(),
             }
-        elif uri == "semantic-rails://catalog/summary":
+        elif uri in {"semantic-rails://catalog/summary", "semantic-rails://catalog/index"}:
             payload = self._envelope(
                 {
                     "catalog": resolve_catalog(
                         self.runtime,
                         view="summary",
-                        verbosity="compact",
+                        verbosity="compact" if uri.endswith("/summary") else "summary",
                         policy_context=policy_context,
                     )
                 },
@@ -1784,7 +1846,7 @@ class SemanticLayerMCPAdapter:
             )
         if request_context is not None:
             payload["request_context"] = request_context_payload(request_context)
-        text = json.dumps(payload, indent=2, sort_keys=True, default=str)
+        text = json_text(payload)
         return {
             "uri": uri,
             "mimeType": "application/json",
@@ -1799,8 +1861,10 @@ class SemanticLayerMCPAdapter:
             package_id = str(args.get("package_id", self.package_id) or self.package_id)
             text = (
                 f"Use the Semantic Layer MCP tools against package '{package_id}' to answer: {intent}\n"
-                "Start with discover, inspect the best governed objects, use build-options and valid-values to assemble Query IR, "
-                "then validate and compile before execute. compile's response includes an `explain` payload — read it when the user needs methodology or SQL lineage."
+                "Start with discover and inspect the best governed objects. Draft Query IR with plan, or assemble it "
+                "with build-options and valid-values, then run it with execute, which validates and compiles first. "
+                "validate and compile are optional dry runs; compile's response includes an `explain` payload — read it "
+                "when the user needs methodology or SQL lineage."
             )
         elif name == "semantic-rails-query-review":
             text = (
@@ -2382,30 +2446,51 @@ class SemanticLayerMCPAdapter:
         )
 
 
+def json_text(payload: Any) -> str:
+    """Render a payload for an MCP text channel: compact, sorted, deterministic.
+
+    Hosts that forward ``content[].text`` to the model pay for every
+    character, and indentation added about half again to each response.
+    """
+
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
+
+
+def _mcp_server_class() -> Any:
+    """The MCP SDK's high-level server: ``MCPServer`` on SDK 2.x, ``FastMCP`` on 1.x."""
+
+    try:
+        from mcp.server.mcpserver import MCPServer
+    except ImportError:
+        pass
+    else:
+        return MCPServer
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError as exc:  # pragma: no cover - depends on optional package
+        raise RuntimeError(
+            "Install the MCP Python SDK (mcp>=1.27) to create the optional local stdio server."
+        ) from exc
+    return FastMCP
+
+
 def create_optional_fastmcp_server(
     adapter: SemanticLayerMCPAdapter,
     *,
     server_name: str = "semantic-rails",
 ) -> Any:
-    """Create a stdio-only FastMCP facade if the package is installed.
+    """Create a stdio-only MCP SDK facade if the SDK is installed.
 
-    The import is intentionally local so importing semantic_rails.mcp never
-    requires an external MCP runtime. This helper deliberately cannot start
+    Selects ``FastMCP`` on SDK 1.x or ``MCPServer`` when the SDK 2.x module
+    is present. The import is intentionally local so importing semantic_rails.mcp never requires an
+    external MCP runtime. This helper deliberately cannot start
     or expose FastMCP's SSE/Streamable-HTTP apps: those generic network
     runners do not pass Semantic Rails' transport-authenticated
     :class:`RequestContext` into tool calls. Remote callers must use the
     authenticated ASGI ``/mcp`` boundary or the legacy guarded HTTP server.
     """
 
-    try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError as exc:  # pragma: no cover - depends on optional package
-        raise RuntimeError(
-            "Install an MCP runtime that provides mcp.server.fastmcp.FastMCP "
-            "to create the optional local stdio server."
-        ) from exc
-
-    server = FastMCP(server_name)
+    server = _mcp_server_class()(server_name, instructions=MCP_SERVER_INSTRUCTIONS)
     for definition in adapter.list_tools():
         name = str(definition["name"])
         description = str(definition["description"])
@@ -2414,12 +2499,7 @@ def create_optional_fastmcp_server(
             tool_name: str, tool_description: str
         ) -> Callable[[dict[str, Any] | None], str]:
             def _tool(arguments: dict[str, Any] | None = None) -> str:
-                return json.dumps(
-                    adapter.call_tool(tool_name, arguments or {}),
-                    indent=2,
-                    sort_keys=True,
-                    default=str,
-                )
+                return json_text(adapter.call_tool(tool_name, arguments or {}))
 
             _tool.__name__ = f"semantic_rails_{tool_name.replace('-', '_')}"
             _tool.__doc__ = tool_description

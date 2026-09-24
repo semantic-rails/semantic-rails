@@ -39,9 +39,8 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 adapter = SemanticLayerMCPAdapter.from_package("jaffle_shop")
 try:
     tools = adapter.list_tools()       # Paid once at connect time.
-    # Loop position 0: compact orientation.
+    # Orientation: what the package supports, and every id per kind.
     capabilities = adapter.call_tool("capabilities", {})
-    # Loop position 1: counts + flat ID list per kind.
     catalog = adapter.call_tool("catalog", {"verbosity": "summary"})
     draft = adapter.call_tool("plan", {"intent": "orders by store", "detail": "query"})
     if draft["status"] == "ok":
@@ -76,8 +75,8 @@ the executable definitions so tool/schema drift cannot be merged silently.
 
 The tool names mirror the public API operations:
 
-- `capabilities` (loop position 0 — compact orientation)
-- `catalog` (loop position 1 — counts + IDs at `verbosity=summary`)
+- `capabilities` (compact orientation)
+- `catalog` (counts + IDs at `verbosity=summary`)
 - `discover`
 - `inspect`
 - `build-options`
@@ -89,6 +88,17 @@ The tool names mirror the public API operations:
 - `segment-validate`
 - `segment-explain`
 - `segment-preview`
+
+`initialize` returns the workflow as server `instructions` (under 2KB): find objects with
+`discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
+first, so `validate` and `compile` are optional dry runs. The instructions also carry the
+conventions every tool shares: full ids, response detail controls, recovery hints, and
+`policy_context`. Each tool description then says what the tool does, when to use it, and its
+one gotcha.
+
+Every v1 tool schema advertises and accepts optional `request_id` and `policy_context`.
+`policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
+transports supply the trusted context and ignore the argument.
 
 For first-time question-answering tests, make the session aware of the core loop before
 asking for rows: `capabilities`, `catalog`, `discover`, `plan`, `validate`, `compile`,
@@ -102,11 +112,34 @@ execute(row_format="columns") to answer the question; call validate when editing
 or when diagnostics are needed.
 ```
 
-`tools/list` is paid once at connect time, before loop position 0. To keep that
+`tools/list` is paid once at connect time, before the first call. To keep that
 cold-start payload bounded, the IR cheat-sheet and the full Query-IR time-block
 schema ship once on the `validate` tool description; `compile`, `execute`, and
 the other IR-accepting tools point at it instead of repeating it. Catalog payload
 size varies materially with package size and selected verbosity.
+
+### Writing Tool Descriptions
+
+The query MCP follows these rules, and other Semantic Rails MCP servers can reuse them:
+
+- **Workflow once.** State the order of calls and the conventions every tool shares in the
+  server `instructions`, not in each description. Keep instructions under 2KB; hosts load them
+  up front.
+- **One description, three parts.** Say what the tool returns, when to use it (relative to
+  other tools: "after `discover`", "before writing a `where` filter"), and its one gotcha,
+  introduced with "Gotcha:". Aim for 200–700 characters.
+- **No contradictions.** A description never tells the agent to call a tool that another
+  description calls optional. If a step is optional, say so everywhere.
+- **Real examples.** Example ids must exist in the bundled `jaffle_shop` package
+  (`dimension.jaffle_store_name`, not `dimension.jaffle.store_name`).
+- **Accurate cost claims.** Say which tools query the warehouse, and match the annotations
+  (`readOnlyHint`, `openWorldHint`).
+- **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
+  meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Keep
+  the v1 `request_id` and `policy_context` properties until a separately versioned interface
+  can remove them.
+- **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
+  and the instructions (see "Measuring Context Cost").
 
 ### Catalog Verbosity Tiers
 
@@ -138,7 +171,8 @@ Dimension-value cards keep the raw filter `value`, its business-facing `label`, 
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
 the label, empty structural fields, and every starter patch after the first. Declared sample values
 and query literals remain exact, including blank and null values. Omitted verbosity and explicit
-`"compact"` or `"full"` keep the whole v1 card.
+`"compact"` or `"full"` keep the whole v1 card on MCP and HTTP. Explicit HTTP
+`verbosity="minimal"` uses the same slim projection.
 
 The segment tools offer an explicit `verbosity="minimal"` response.
 `segment-validate` returns validity, the segment's definition and its derived query;
@@ -336,9 +370,19 @@ The warn-and-ignore tools cannot reject all unknown keys because callers legitim
 
 Declarative resources:
 
-- `semantic-rails://capabilities`
-- `semantic-rails://catalog/summary`
-- `semantic-rails://catalog/full`
+- `semantic-rails://capabilities`: the v1 interface version and complete tool definitions,
+  resources and prompts. Existing consumers can read `tools[].inputSchema` and `outputSchema`.
+  This is a large resource; `tools/list` also has the tool definitions.
+- `semantic-rails://capabilities/summary`: a small opt-in index of tool names and titles,
+  resources and prompts.
+- `semantic-rails://catalog/summary`: the v1 catalog's descriptive rows and `counts_total`.
+  Existing consumers can read fields such as `catalog.measures[].id`. This is a large resource.
+- `semantic-rails://catalog/index`: a small opt-in index of counts and ids per object kind,
+  the same as the `catalog` tool's default `summary` view.
+- `semantic-rails://catalog/full`: every object's full card and the alias index. It grows with the
+  package (about 200K tokens for `jaffle_shop`), so read the index first. `resources/read` has
+  no paging arguments; paging this resource needs resource templates, planned with the
+  `2026-07-28` work below.
 
 Declarative prompts:
 
@@ -484,14 +528,79 @@ convenience. MCP host configs should still pass an explicit `--path` or
 `--package` so the host is deterministic, and deployed services should use their
 own config/vault rather than reading a user's home directory.
 
-## Optional FastMCP stdio Runtime
+## Optional MCP SDK stdio Runtime
 
-Importing `semantic_rails.mcp` never imports an external MCP package. A trusted local host can wrap
-the adapter with `create_optional_fastmcp_server(adapter)` for stdio. The returned facade rejects
-FastMCP's SSE and Streamable HTTP runners because those generic runners cannot supply Semantic
-Rails' authenticated request context. Use the built-in ASGI `/mcp` endpoint or
-`semantic-rails mcp http` for network transport. The helper imports
-`mcp.server.fastmcp.FastMCP` locally and raises a clear error when it is unavailable.
+Importing `semantic_rails.mcp` never imports an external MCP package. A trusted local host that
+embeds the MCP Python SDK can wrap the adapter with `create_optional_fastmcp_server(adapter)` for
+stdio. The helper imports the SDK locally: `MCPServer` on SDK 2.x, `FastMCP` on 1.x. It raises a
+clear error when neither is installed. The returned facade rejects the SDK's SSE and Streamable
+HTTP runners because those generic runners cannot supply Semantic Rails' authenticated request
+context. Use the built-in ASGI `/mcp` endpoint or `semantic-rails mcp http` for network transport.
+
+The facade sends the server instructions, but the SDK advertises each tool as a single
+`arguments` object rather than its real input schema. Prefer `semantic-rails mcp stdio` when the
+host shows tool schemas to the model.
+
+## Transports and Protocol Versions
+
+Four entry points serve the same tools. The first three share one JSON-RPC dispatcher
+(`semantic_rails.mcp_server.handle_jsonrpc_message`), so they return identical results:
+
+| Entry point | Serves | Why it is kept |
+|---|---|---|
+| `semantic-rails mcp stdio` | stdio | Local agents such as Claude Code and Claude Desktop. The default. |
+| ASGI `/mcp` (`semantic_rails.mcp_streamable_http`) | Stateless Streamable HTTP | Network clients. Authenticated with the same API keys as `/api/v1/*`. |
+| `semantic-rails mcp http` | Legacy HTTP + SSE | Clients that predate Streamable HTTP. The MCP specification deprecated this transport in `2025-03-26`, and revision `2026-07-28` schedules it for removal after a twelve-month window. New integrations should use `/mcp`. |
+| `create_optional_fastmcp_server` | stdio through the MCP Python SDK | Hosts that embed the SDK. See the previous section. |
+
+Each tool result carries its payload twice: as `structuredContent`, and as compact JSON in
+`content[0].text` for hosts that forward only text. Resource reads return compact JSON text.
+
+The dispatcher negotiates `2025-11-25` (the default), `2025-03-26` or `2024-11-05` in
+`initialize`. It already matches several parts of the `2026-07-28` revision:
+
+- the Streamable HTTP endpoint keeps no sessions and sends no `Mcp-Session-Id`;
+- `tools/list` returns tools in a fixed order;
+- the workflow is in the server `instructions`;
+- tool schemas are plain JSON Schema.
+
+### Planned: the `2026-07-28` revision
+
+Supporting `2026-07-28` alongside `2025-11-25` means gating the following on the protocol version
+each request declares, so older clients see no change:
+
+1. **Stateless requests.** Read `io.modelcontextprotocol/protocolVersion` (and client
+   capabilities) from each request's `_meta` instead of requiring `initialize`, and answer an
+   unsupported version with `UnsupportedProtocolVersionError` (`-32022`). Identify the server in
+   each result's `_meta` (`io.modelcontextprotocol/serverInfo`).
+2. **`server/discover`**, which the revision requires: supported versions, capabilities and
+   server identity.
+3. **`resultType: "complete"`** on every result. The server never needs `"input_required"`
+   because no tool asks the client for more input.
+4. **Cache hints.** Add `ttlMs` and `cacheScope` to `tools/list`, `prompts/list`,
+   `resources/list`, `resources/read` and `resources/templates/list`. Resources depend on the
+   caller's grants, so they are `"private"` behind an authenticated transport.
+5. **Headers and errors.**
+   - Check the `Mcp-Method` and `Mcp-Name` request headers on Streamable HTTP POSTs.
+   - Decide whether an unknown resource keeps its structured error payload or becomes JSON-RPC
+     `-32602`.
+   - Stop answering `ping` and `logging/setLevel` for `2026-07-28` requests.
+
+### MCP Python SDK 2.x
+
+The engine pins `mcp<2`. The query MCP facade selects `MCPServer` when an SDK 2.x module is
+present and falls back to `FastMCP` on 1.x. The 2.x branch has a simulated module test; it has
+not been qualified against an installed SDK 2.x package. Before lifting the pin, qualify these
+known integration points on the chosen SDK version:
+
+- **The Architect MCP.** `semantic_rails.architect_mcp` imports `mcp.server.fastmcp` at import
+  time. Its tests also read `call_tool` results as a `(content, structured)` pair and read
+  `Tool.inputSchema`; SDK 2.x returns a `CallToolResult` and names the attribute `input_schema`.
+- **`httpx`.** Two engine tests import `httpx`, which only SDK 1.x brought in. It needs its own
+  entry in the `dev` dependency group.
+- **The lock file.** `pyproject.toml` and a regenerated `uv.lock` must change together.
+  Dependabot's `<3` update fails CI for this reason: `uv sync --locked` rejects a constraint
+  change without a matching lock.
 
 ## Structured Error Envelopes
 
