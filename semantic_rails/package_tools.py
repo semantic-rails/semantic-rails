@@ -17,6 +17,7 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import unicodedata
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -1428,8 +1429,9 @@ def _extract_package_from_git(
 
     The ref resolves in the git repository that holds the package, which need
     not be the engine's. Only regular files with plain relative names are
-    written, and only inside ``destination``: symlinks, submodules and
-    crafted names (absolute, ``..``, empty parts) are skipped. Returns the
+    written, and only inside ``destination``. Unsupported entries, ambiguous
+    names and read/write failures reject the entire comparison: skipping one
+    could make a removed metric appear unchanged. Returns the
     extracted package directory and a ``<ref>@<commit>:<path>`` description
     of its origin.
     """
@@ -1467,29 +1469,67 @@ def _extract_package_from_git(
         raise SemanticLayerError(
             "OBJECT_NOT_FOUND", f"git ref {ref!r} does not name a commit in '{repo}'"
         ) from exc
-    listing = _git(
-        repo, "ls-tree", "-r", "-z", "--full-tree", commit, *(["--", prefix] if prefix else [])
-    )
+    try:
+        listing = _git(
+            repo, "ls-tree", "-r", "-z", "--full-tree", commit, *(["--", prefix] if prefix else [])
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _baseline_error(ref, "could not list package files") from exc
     target_root = destination / package_root.name
-    written = 0
+    entries: list[tuple[str, tuple[str, ...], str]] = []
+    seen_names: dict[tuple[str, ...], tuple[str, ...]] = {}
+    file_names: set[tuple[str, ...]] = set()
     for entry in filter(None, listing.split(b"\0")):
-        meta, _, name = entry.partition(b"\t")
-        mode, kind, obj = meta.decode("ascii").split()
-        parts = _package_file_parts(os.fsdecode(name), prefix)
-        if kind != "blob" or mode not in {"100644", "100755"} or parts is None:
-            continue
-        target = target_root.joinpath(*parts)
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(_git(repo, "cat-file", "blob", obj))
-        except (OSError, UnicodeEncodeError):
-            continue  # a name this file system cannot hold
-        written += 1
-    if not written:
+            meta, separator, raw_name = entry.partition(b"\t")
+            mode, kind, obj = meta.decode("ascii").split()
+            if not separator:
+                raise ValueError("missing tree entry separator")
+            name = os.fsdecode(raw_name)
+        except (UnicodeError, ValueError) as exc:
+            raise _baseline_error(ref, "malformed package tree entry") from exc
+        parts = _package_file_parts(name, prefix)
+        if kind != "blob" or mode not in {"100644", "100755"} or parts is None:
+            raise _baseline_error(ref, f"unsupported package tree entry {name[:120]!r}")
+        for depth in range(1, len(parts) + 1):
+            canonical = tuple(
+                unicodedata.normalize("NFC", part).casefold() for part in parts[:depth]
+            )
+            original = parts[:depth]
+            prior = seen_names.setdefault(canonical, original)
+            if prior != original or canonical in file_names:
+                raise _baseline_error(ref, f"ambiguous package tree name {name[:120]!r}")
+        file_names.add(canonical)
+        entries.append((name, parts, obj))
+    if not entries:
         raise SemanticLayerError(
             "OBJECT_NOT_FOUND", f"No package files found for '{prefix or '.'}' at git ref '{ref}'"
         )
+    try:
+        if target_root.exists() or target_root.is_symlink():
+            raise _baseline_error(ref, "extraction destination is not empty")
+    except OSError as exc:
+        raise _baseline_error(ref, "could not inspect extraction destination") from exc
+    for name, parts, obj in entries:
+        target = target_root.joinpath(*parts)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() or target.is_symlink():
+                raise _baseline_error(ref, f"ambiguous package tree name {name[:120]!r}")
+            data = _git(repo, "cat-file", "blob", obj)
+            if target.write_bytes(data) != len(data) or target.read_bytes() != data:
+                raise _baseline_error(ref, f"could not verify package file {name[:120]!r}")
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+            raise _baseline_error(
+                ref, f"could not materialize package file {name[:120]!r}"
+            ) from exc
     return str(target_root), f"{ref}@{commit[:12]}:{prefix or '.'}"
+
+
+def _baseline_error(ref: str, reason: str) -> SemanticLayerError:
+    return SemanticLayerError(
+        "INVALID_CONFIG", f"Git baseline {ref!r} cannot be compared: {reason}"
+    )
 
 
 def _package_file_parts(name: str, prefix: str) -> tuple[str, ...] | None:

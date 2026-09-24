@@ -20,8 +20,10 @@ from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.package_tools import (
     _extract_package_from_git,
+    check_package_report,
     diff_package_report,
     impact_report,
+    promote_package_report,
 )
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse, write_orders_package
 
@@ -134,6 +136,56 @@ def test_cli_diff_impact_and_promotion_use_the_packages_repository(repo: Path) -
         assert compared["summary"]["changes_total"] == 1
 
 
+def test_cli_and_mcp_report_a_rejected_baseline_instead_of_low_risk(repo: Path) -> None:
+    package = repo / "semantic" / "shop"
+    shared = package / "shared" / "extra.yml"
+    shared.parent.mkdir()
+    shared.write_text(yaml.safe_dump({"metrics": {"average_order": MARGIN}}))
+    link = package / "metrics" / "extra.yml"
+    link.symlink_to("../shared/extra.yml")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Symlinked metric")
+    link.unlink()
+
+    for command in ("diff-package", "impact-report", "check", "promote-package"):
+        arguments = [
+            sys.executable,
+            "-m",
+            "semantic_rails",
+            command,
+            "--path",
+            str(package),
+            "--base-ref",
+            "HEAD",
+        ]
+        if command == "promote-package":
+            arguments.extend(("--environment", "staging"))
+        result = subprocess.run(arguments, capture_output=True, text=True)
+        assert result.returncode != 0
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "INVALID_CONFIG"
+        assert "cannot be compared" in payload["error"]["message"]
+
+    server = create_architect_mcp_server(workspace_root=repo)
+
+    async def run() -> list[dict[str, Any]]:
+        async with create_connected_server_and_client_session(server) as session:
+            results = []
+            for name in ("diff_project", "impact_project", "promotion_check"):
+                arguments = {"project_path": "semantic/shop", "base_ref": "HEAD"}
+                if name == "promotion_check":
+                    arguments["environment"] = "staging"
+                result = await session.call_tool(name, arguments)
+                results.append(dict(result.structuredContent or {}))
+            return results
+
+    for payload in asyncio.run(run()):
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "INVALID_CONFIG"
+        assert "cannot be compared" in payload["error"]["message"]
+
+
 def test_a_package_at_the_repository_root(tmp_path: Path) -> None:
     package = write_orders_package(tmp_path)
     _git(package, "init", "-q", "-b", "main")
@@ -188,7 +240,7 @@ def test_the_extracted_package_is_removed_afterwards(
     assert list(scratch.iterdir()) == []
 
 
-def test_only_regular_files_are_extracted(repo: Path, tmp_path: Path) -> None:
+def test_a_symlink_is_rejected_without_following_it(repo: Path, tmp_path: Path) -> None:
     package = repo / "semantic" / "shop"
     (package / "models" / "outside.yml").symlink_to(tmp_path / "elsewhere.yml")
     _git(repo, "add", "-A")
@@ -197,12 +249,81 @@ def test_only_regular_files_are_extracted(repo: Path, tmp_path: Path) -> None:
     destination = tmp_path / "extracted"
     destination.mkdir()
 
-    extracted, _ = _extract_package_from_git(str(package), "HEAD", destination)
+    with pytest.raises(SemanticLayerError, match="unsupported package tree entry") as refused:
+        _extract_package_from_git(str(package), "HEAD", destination)
+    assert refused.value.code == "INVALID_CONFIG"
+    assert not (Path(destination) / "shop" / "models" / "outside.yml").exists()
+    assert not (tmp_path / "elsewhere.yml").exists()
 
-    assert (Path(extracted) / "models" / "orders.yml").is_file()
-    assert not (Path(extracted) / "models" / "outside.yml").is_symlink()
-    assert not (Path(extracted) / "models" / "outside.yml").exists()
-    assert not (Path(extracted) / "data" / "warehouse.duckdb").exists()  # ignored in git
+
+@pytest.mark.parametrize("entry_kind", ["symlink", "colon"])
+@pytest.mark.parametrize("removed", [False, True])
+def test_incomplete_baselines_fail_all_reports(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry_kind: str, removed: bool
+) -> None:
+    package = repo / "semantic" / "shop"
+    if entry_kind == "symlink":
+        shared = package / "shared" / "extra.yml"
+        shared.parent.mkdir()
+        shared.write_text(yaml.safe_dump({"metrics": {"average_order": MARGIN}}))
+        suspect = package / "metrics" / "extra.yml"
+        suspect.symlink_to("../shared/extra.yml")
+    else:
+        suspect = package / "metrics" / "C:core.yml"
+        suspect.write_text(yaml.safe_dump({"metrics": {"average_order": MARGIN}}))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Baseline with unsupported package entry")
+    if removed:
+        suspect.unlink()
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    ref = PackageReference(source_path=str(package))
+    reports = (
+        lambda: diff_package_report(ref, base_ref="HEAD"),
+        lambda: impact_report(ref, base_ref="HEAD"),
+        lambda: check_package_report(ref, base_ref="HEAD"),
+        lambda: promote_package_report(ref, environment="staging", base_ref="HEAD"),
+    )
+    for report in reports:
+        with pytest.raises(SemanticLayerError, match="cannot be compared") as refused:
+            report()
+        assert refused.value.code == "INVALID_CONFIG"
+        assert list(scratch.iterdir()) == []
+
+
+def test_materialization_error_fails_all_reports_and_cleans_up(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = repo / "semantic" / "shop"
+    extra = package / "metrics" / "extra.yml"
+    extra.write_text(yaml.safe_dump({"metrics": {"average_order": MARGIN}}))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Metric to delete")
+    extra.unlink()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    original_write = Path.write_bytes
+
+    def fail_metric_write(path: Path, data: bytes) -> int:
+        if path.name == "extra.yml" and "semantic-rails-package-" in str(path):
+            raise OSError("simulated storage failure")
+        return original_write(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_metric_write)
+    ref = PackageReference(source_path=str(package))
+    for report in (
+        lambda: diff_package_report(ref, base_ref="HEAD"),
+        lambda: impact_report(ref, base_ref="HEAD"),
+        lambda: check_package_report(ref, base_ref="HEAD"),
+        lambda: promote_package_report(ref, environment="staging", base_ref="HEAD"),
+    ):
+        with pytest.raises(SemanticLayerError, match="could not materialize") as refused:
+            report()
+        assert refused.value.code == "INVALID_CONFIG"
+        assert list(scratch.iterdir()) == []
 
 
 def _crafted_commit(repo: Path, files: dict[bytes, bytes]) -> str:
@@ -215,7 +336,7 @@ def _crafted_commit(repo: Path, files: dict[bytes, bytes]) -> str:
     return _git(repo, "commit-tree", tree_id.strip(), "-m", "crafted").strip()
 
 
-def test_crafted_tree_names_stay_inside_the_extraction(tmp_path: Path) -> None:
+def test_crafted_tree_names_fail_before_extraction(tmp_path: Path) -> None:
     repo = tmp_path / "crafted"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
@@ -234,13 +355,85 @@ def test_crafted_tree_names_stay_inside_the_extraction(tmp_path: Path) -> None:
     destination = tmp_path / "extracted"
     destination.mkdir()
 
-    extracted, origin = _extract_package_from_git(str(repo), commit, destination)
-
-    assert (Path(extracted) / "package.yml").read_text() == "schema_version: 1\n"
+    with pytest.raises(SemanticLayerError, match="unsupported package tree entry") as refused:
+        _extract_package_from_git(str(repo), commit, destination)
+    assert refused.value.code == "INVALID_CONFIG"
     assert not outside.exists()
     assert not (tmp_path / "escape.txt").exists() and not (destination / "escape.txt").exists()
-    assert {path.name for path in Path(extracted).rglob("*")} <= {"package.yml", "caf\udce9.yml"}
-    assert origin.endswith(":.")
+    assert list(destination.iterdir()) == []
+
+
+def test_normalization_equivalent_names_cannot_overwrite(tmp_path: Path) -> None:
+    repo = tmp_path / "crafted"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    commit = _crafted_commit(
+        repo,
+        {
+            b"package.yml": b"schema_version: 1\n",
+            "metrics/é.yml".encode(): b"one",
+            "metrics/e\u0301.yml".encode(): b"two",
+        },
+    )
+    destination = tmp_path / "extracted"
+    destination.mkdir()
+
+    with pytest.raises(SemanticLayerError, match="ambiguous package tree name") as refused:
+        _extract_package_from_git(str(repo), commit, destination)
+    assert refused.value.code == "INVALID_CONFIG"
+    assert list(destination.iterdir()) == []
+
+
+def test_missing_blob_is_a_typed_comparison_error_with_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = write_orders_package(tmp_path / "crafted")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Package")
+    blob = _git(repo, "hash-object", "-w", "--stdin", stdin=b"schema_version: 1\n").strip()
+    tree = (
+        b"100644 package.yml\0" + bytes.fromhex(blob) + b"100644 metrics/core.yml\0" + b"\x11" * 20
+    )
+    tree_id = _git(repo, "hash-object", "-t", "tree", "-w", "--literally", "--stdin", stdin=tree)
+    commit = _git(repo, "commit-tree", tree_id.strip(), "-m", "missing blob").strip()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    with pytest.raises(SemanticLayerError, match="could not materialize") as refused:
+        diff_package_report(PackageReference(source_path=str(repo)), base_ref=commit)
+    assert refused.value.code == "INVALID_CONFIG"
+    assert list(scratch.iterdir()) == []
+
+
+def test_unchanged_ordinary_baseline_is_low_risk(repo: Path) -> None:
+    ref = PackageReference(source_path=str(repo / "semantic" / "shop"))
+
+    diff = diff_package_report(ref, base_ref="HEAD")
+    impact = impact_report(ref, base_ref="HEAD")
+
+    assert diff["changes"] == []
+    assert impact["changes"] == []
+    assert impact["impact"]["risk"] == "low"
+
+
+def test_removed_metric_in_an_ordinary_baseline_is_high_risk(repo: Path) -> None:
+    package = repo / "semantic" / "shop"
+    extra = package / "metrics" / "extra.yml"
+    extra.write_text(yaml.safe_dump({"metrics": {"average_order": MARGIN}}))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Additional metric")
+    extra.unlink()
+
+    ref = PackageReference(source_path=str(package))
+    diff = diff_package_report(ref, base_ref="HEAD")
+    impact = impact_report(ref, base_ref="HEAD")
+
+    assert {(row["object_id"], row["change_type"]) for row in diff["changes"]} == {
+        ("metric.shop.average_order", "removed")
+    }
+    assert impact["impact"]["risk"] == "high"
 
 
 def test_a_package_directory_named_like_pathspec_magic(tmp_path: Path) -> None:
