@@ -404,6 +404,80 @@ def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path
     assert results[True] == results[False]
 
 
+@pytest.mark.parametrize(
+    ("start", "end", "expected", "empty_interval"),
+    [
+        ("2017-07-03T00:00:00", "2017-07-04T00:00:00.000000002", {date(2017, 7, 4): 1}, False),
+        ("2017-07-04T00:00:00", "2017-07-04T00:00:00.000000002", {date(2017, 7, 4): 1}, False),
+        (
+            "2017-07-04T00:00:00.000000001",
+            "2017-07-04T00:00:00.000000002",
+            {date(2017, 7, 4): 1},
+            False,
+        ),
+        ("2017-07-03T00:00:00", "2017-07-04T00:00:00", {}, False),
+        ("2017-07-04T00:00:00.000000001", "2017-07-04T00:00:00.000000001", {}, True),
+        ("2017-07-04T00:00:00.000000002", "2017-07-04T00:00:00.000000001", {}, True),
+        (
+            "2017-07-04T00:00:00+00:00",
+            "2017-07-04T00:00:00.000000002+00:00",
+            {date(2017, 7, 4): 1},
+            False,
+        ),
+    ],
+    ids=[
+        "end-after-midnight",
+        "positive-submicrosecond",
+        "positive-within-one-microsecond",
+        "exact-midnight-end",
+        "equal-submicrosecond",
+        "reversed-submicrosecond",
+        "offset-positive-submicrosecond",
+    ],
+)
+def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected, empty_interval):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
+        connection.execute(
+            "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP_NS"
+        )
+        connection.execute(
+            "ALTER TABLE jaffle_order ALTER COLUMN ordered_at SET DATA TYPE TIMESTAMP_NS"
+        )
+        connection.execute("DELETE FROM jaffle_order")
+        connection.execute(
+            "INSERT INTO jaffle_order (order_id, ordered_at) "
+            "VALUES ('one-nanosecond', TIMESTAMP_NS '2017-07-04 00:00:00.000000001')"
+        )
+        from semantic_rails.config import load_package_config
+
+        config = load_package_config(str(package_dir))
+        config = dataclasses.replace(
+            config,
+            dimensions=[
+                dataclasses.replace(row, data_type="timestamp")
+                if row.entity == "entity.jaffle_time" and row.column == "date_day"
+                else row
+                for row in config.dimensions
+            ],
+        )
+        time = {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end}
+        results = {}
+        for fill in (False, True):
+            query = {**_JULY_BY_WEEK, "time": {**time, "fill": fill}}
+            sql = compile_query(config, Registry(config), query)["sql"]
+            rows = connection.execute(
+                'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
+                f"FROM ({sql}) AS nanosecond_result"
+            ).fetchall()
+            results[fill] = rows
+
+    assert {day: count for day, count in results[False] if count} == expected
+    assert {day: count for day, count in results[True] if count} == expected
+    if empty_interval:
+        assert results[True] == []
+
+
 def test_offset_fill_marks_source_bucket_presence_for_clickhouse():
     # ClickHouse defaults unmatched FULL OUTER JOIN fields to their type's zero
     # value, so the chosen bucket must not depend on an unmatched field being NULL.

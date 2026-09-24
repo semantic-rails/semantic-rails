@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -3806,6 +3808,12 @@ def _calendar_bound(value: Any, zone: tzinfo) -> datetime | None:
     return moment.astimezone(zone) if moment.tzinfo is not None else moment
 
 
+def _fractional_second(value: Any) -> Decimal:
+    """Keep digits beyond ``datetime``'s microsecond limit for bound decisions."""
+    match = re.match(r"^\d{4}(?:-?\d{2}){2}.\d{2}:?\d{2}:?\d{2}\.(\d+)", str(value).strip())
+    return Decimal(f"0.{match[1]}") if match else Decimal(0)
+
+
 def _has_offset_bound(time: dict[str, Any]) -> bool:
     if time.get("start") is None or time.get("end") is None:
         return False
@@ -3815,11 +3823,13 @@ def _has_offset_bound(time: dict[str, Any]) -> bool:
     )
 
 
-def _nonpositive_window(start: datetime, end: datetime, zone: tzinfo) -> bool:
+def _nonpositive_window(
+    start: datetime, end: datetime, zone: tzinfo, start_value: Any, end_value: Any
+) -> bool:
     if start.tzinfo is not None or end.tzinfo is not None:
         start = (start if start.tzinfo is not None else start.replace(tzinfo=zone)).astimezone(UTC)
         end = (end if end.tzinfo is not None else end.replace(tzinfo=zone)).astimezone(UTC)
-    return start >= end
+    return (start, _fractional_second(start_value)) >= (end, _fractional_second(end_value))
 
 
 def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> list[Any]:
@@ -3833,7 +3843,11 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
     zone = UTC if zone_name == "UTC" else ZoneInfo(zone_name)
     moments = {key: _calendar_bound(time[key], zone) for key in ("start", "end")}
     start, end = moments["start"], moments["end"]
-    if start is not None and end is not None and _nonpositive_window(start, end, zone):
+    if (
+        start is not None
+        and end is not None
+        and _nonpositive_window(start, end, zone, time["start"], time["end"])
+    ):
         return [SqlBinary(SqlLiteral(1), "=", SqlLiteral(0))]
     bounds = []
     for key, operator in (("start", ">="), ("end", "<")):
@@ -3841,7 +3855,7 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
         moment = moments[key]
         if moment is not None and len(str(value).strip()) > 10:
             day_value = moment.date()
-            if key == "end" and moment.time() != datetime.min.time():
+            if key == "end" and (moment.time() != datetime.min.time() or _fractional_second(value)):
                 day_value += timedelta(days=1)
             value = day_value.isoformat()
         bounds.append(SqlBinary(day, operator, SqlLiteral(value)))

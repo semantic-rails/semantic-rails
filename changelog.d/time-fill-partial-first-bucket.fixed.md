@@ -9,4 +9,5 @@
   buckets, when the calendar has a date or timestamp `date_day` column. Offset
   bounds use the temporal role's calendar zone, and the series retains any
   populated source bucket when timestamp offset comparisons differ. A reversed
-  interval with no selected source rows produces no filled buckets.
+  interval with no selected source rows produces no filled buckets. Submicrosecond
+  bounds retain their precision for interval ordering and midnight day inclusion.

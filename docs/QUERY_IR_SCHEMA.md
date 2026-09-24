@@ -450,6 +450,8 @@ The filled series also keeps any populated bucket selected by the source
 filter, since packages do not distinguish physical `TIMESTAMP` from
 `TIMESTAMPTZ` columns; an extra empty calendar bucket may appear when those
 two interpretations cross midnight.
+Fractional-second bounds keep their full precision when deciding whether the
+window is empty and whether an exclusive end just after midnight includes that day.
 
 ### Worked example — monthly query against a sparse table
 
