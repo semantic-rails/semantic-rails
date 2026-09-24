@@ -1774,6 +1774,127 @@ def test_strict_single_file_package_requires_an_authored_value_type(
         assert "metric 'orders_ratio': missing 'value_type:'" in errors[0]
 
 
+def _write_metric_shape_case(
+    tmp_path: Path, layout: str, strict: bool, shape: str, value_type
+) -> Path:
+    if layout == "single_file":
+        source = tmp_path / "monolithic.yml"
+        _write_monolithic_package(source, "monolithic_demo")
+    else:
+        source = tmp_path / "strict_shape"
+        _write_strict_minimal_package(source)
+    package_yml = source if source.is_file() else source / "package.yml"
+    package = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
+    package["package"]["schema_strict"] = strict
+    _write_yaml(package_yml, package)
+
+    spec = {
+        "label": "Orders ratio",
+        "description": "Orders over orders",
+        "kind": "ratio",
+        "numerator": "order_count",
+        "denominator": "order_count",
+    }
+    if value_type != "omitted":
+        spec["value_type"] = value_type
+    if shape == "spec_pairs":
+        spec = [[key, value] for key, value in spec.items()]
+    metrics = {"orders_ratio": spec}
+    if shape == "block_pairs":
+        metrics = [["orders_ratio", spec]]
+
+    if layout in {"single_file", "package_yml"}:
+        target = package_yml
+        raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+        raw["metrics"] = metrics
+    elif layout == "root_file":
+        target = source / "metrics.yml"
+        raw = {"metrics": metrics}
+    else:
+        target = source / "metrics" / "metrics.yml"
+        raw = {"metrics": metrics}
+    _write_yaml(target, raw)
+    return source
+
+
+@pytest.mark.parametrize("layout", ["single_file", "package_yml", "root_file", "metric_file"])
+@pytest.mark.parametrize("shape", ["mapping", "block_pairs", "spec_pairs"])
+@pytest.mark.parametrize(
+    "value_type", ["omitted", None, "", "number"], ids=["missing", "null", "empty", "number"]
+)
+@pytest.mark.parametrize("strict", [False, True], ids=["legacy", "strict"])
+def test_metric_value_type_shape_matrix(tmp_path, layout, shape, value_type, strict):
+    source = _write_metric_shape_case(tmp_path, layout, strict, shape, value_type)
+
+    errors = validate_runtime_package(source)
+    report, config = parse_config_report(resolve_package_reference(path=str(source)))
+
+    if strict and value_type != "number":
+        assert any("metric 'orders_ratio': missing 'value_type:'" in error for error in errors)
+        assert report["ok"] is False
+        assert any(
+            "metric 'orders_ratio': missing 'value_type:'" in error["message"]
+            for error in report["errors"]
+        )
+        assert config is None
+    else:
+        assert errors == []
+        assert report["ok"] is True
+        assert config is not None
+
+
+@pytest.mark.parametrize(
+    "value_type", ["omitted", None, "", "number"], ids=["missing", "null", "empty", "number"]
+)
+@pytest.mark.parametrize("strict", [False, True], ids=["legacy", "strict"])
+def test_pair_encoded_package_keeps_strict_metric_rule(tmp_path, value_type, strict):
+    source = _write_metric_shape_case(tmp_path, "single_file", strict, "mapping", value_type)
+    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    raw["package"] = [[key, value] for key, value in raw["package"].items()]
+    _write_yaml(source, raw)
+
+    errors = validate_runtime_package(source)
+    report, config = parse_config_report(resolve_package_reference(path=str(source)))
+
+    if strict and value_type != "number":
+        assert any("metric 'orders_ratio': missing 'value_type:'" in error for error in errors)
+        assert report["ok"] is False
+        assert any(
+            "metric 'orders_ratio': missing 'value_type:'" in error["message"]
+            for error in report["errors"]
+        )
+        assert config is None
+    else:
+        assert errors == []
+        assert report["ok"] is True
+        assert config is not None
+
+
+@pytest.mark.parametrize("layout", ["single_file", "package_yml", "root_file", "metric_file"])
+@pytest.mark.parametrize("shape", ["invalid_block", "invalid_spec"])
+@pytest.mark.parametrize("strict", [False, True], ids=["legacy", "strict"])
+def test_invalid_metric_shapes_return_errors(tmp_path, layout, shape, strict):
+    source = _write_metric_shape_case(tmp_path, layout, strict, "mapping", "number")
+    if layout == "single_file":
+        target = source
+    elif layout == "package_yml":
+        target = source / "package.yml"
+    elif layout == "root_file":
+        target = source / "metrics.yml"
+    else:
+        target = source / "metrics" / "metrics.yml"
+    raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+    raw["metrics"] = 7 if shape == "invalid_block" else {"orders_ratio": 7}
+    _write_yaml(target, raw)
+
+    errors = validate_runtime_package(source)
+    report, config = parse_config_report(resolve_package_reference(path=str(source)))
+
+    assert errors
+    assert report["ok"] is False
+    assert config is None
+
+
 def test_strict_accepts_measure_rollup_semantics(tmp_path: Path):
     """Model variants rely on measure rollup semantics in strict packages."""
     package_dir = tmp_path / "strict_measure_rollup"

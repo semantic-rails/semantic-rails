@@ -739,7 +739,7 @@ def _check_metric_shape(
 def _check_metric(
     metric_key: str,
     spec: dict[str, Any],
-    raw: dict[str, Any],
+    strict: bool,
     *,
     path_label: str,
     errors: list[str],
@@ -751,8 +751,7 @@ def _check_metric(
     runs on the specs of every layout the loader reads, single-file included.
     """
     _check_metric_shape(metric_key, spec, path_label=path_label, errors=errors)
-    package = raw.get("package")
-    if not (isinstance(package, dict) and bool(package.get("schema_strict", False))):
+    if not strict:
         return
     value_type = spec.get("value_type")
     if not (isinstance(value_type, str) and value_type.strip()):
@@ -853,11 +852,30 @@ def _check_package_shapes(
                     graph_entities=graph_entities,
                 )
 
+    try:
+        strict = bool(dict(package or {}).get("schema_strict", False))
+    except (TypeError, ValueError):
+        strict = False  # The loader reports an invalid package block.
     metrics = raw.get("metrics")
+    if strict and not isinstance(metrics, dict):
+        try:
+            metrics = dict(metrics or {})
+        except (TypeError, ValueError):
+            add_error(errors, f"{path_label}: metrics block must be a mapping or key/value pairs")
+            metrics = {}
     if isinstance(metrics, dict):
         for metric_key, spec in metrics.items():
+            if strict and not isinstance(spec, dict):
+                try:
+                    spec = dict(spec or {})
+                except (TypeError, ValueError):
+                    add_error(
+                        errors,
+                        f"{path_label}: metric {metric_key!r} must be a mapping or key/value pairs",
+                    )
+                    continue
             if isinstance(spec, dict):
-                _check_metric(str(metric_key), spec, raw, path_label=path_label, errors=errors)
+                _check_metric(str(metric_key), spec, strict, path_label=path_label, errors=errors)
 
     segments = raw.get("segments")
     if isinstance(segments, dict):
