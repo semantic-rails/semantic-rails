@@ -386,7 +386,15 @@ def intent_faithfulness_why(
 
     negation_match = _NEGATION_RE.search(text) or _ALL_BUT_RE.search(text)
     if negation_match:
-        excluded_text = negation_match.group("value").strip()
+        excluded_span = next(
+            (
+                span
+                for span in _excluded_value_spans(text)
+                if span[0] == negation_match.start("value")
+            ),
+            negation_match.span("value"),
+        )
+        excluded_text = text[excluded_span[0] : excluded_span[1]].strip()
         positive_filters = _positive_filter_evidence(query, excluded_text)
         reversed_clause = bool(positive_filters)
         negative_present = _query_has_negative_semantics(query)
@@ -916,11 +924,10 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     if not matches:
         return []
     predicates = _field_predicates(query)
-    excluded_spans = [
-        match.span("value")
-        for pattern in (_NEGATION_RE, _ALL_BUT_RE)
-        for match in pattern.finditer(plain)
-    ]
+    # Keep punctuation and explicit inclusion transitions when assigning
+    # polarity. _plain removes both, so its offsets cannot define a clause.
+    source_words = list(re.finditer(r"[^\W_]+", text.lower()))
+    excluded_spans = _excluded_value_spans(text)
     grouped = {str(item) for item in list(query.get("group_by") or [])}
     referenced = set(_referenced_ids(query))
     carried = {
@@ -933,7 +940,12 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     missing: list[dict[str, Any]] = []
     for span, phrase in matches:
         rows = phrases[phrase]
-        negative = any(start <= span[0] and span[1] <= end for start, end in excluded_spans)
+        first_word = plain.count(" ", 0, span[0])
+        last_word = first_word + plain[span[0] : span[1]].count(" ")
+        original_span = (source_words[first_word].start(), source_words[last_word].end())
+        negative = any(
+            start <= original_span[0] and original_span[1] <= end for start, end in excluded_spans
+        )
         if phrase in _EVERYDAY_WORDS and not _tied_to_dimension(config, plain, span, rows):
             continue
         if any(
@@ -984,6 +996,19 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
             },
         )
     ]
+
+
+def _excluded_value_spans(text: str) -> list[tuple[int, int]]:
+    """Negative clauses include comma lists, ending at an explicit inclusion."""
+
+    spans: list[tuple[int, int]] = []
+    for pattern in (_NEGATION_RE, _ALL_BUT_RE):
+        for match in pattern.finditer(text):
+            start = match.start("value")
+            tail = text[start:]
+            stop = re.search(r"[.;!?]|\b(?:including|include)\b", tail, re.IGNORECASE)
+            spans.append((start, start + stop.start() if stop else len(text)))
+    return spans
 
 
 def _plain(text: Any) -> str:

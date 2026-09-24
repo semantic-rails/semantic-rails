@@ -311,6 +311,34 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "revenue excluding Brooklyn, including Philadelphia",
+        "revenue excluding Brooklyn including Philadelphia",
+        "revenue excluding Brooklyn, and including Philadelphia",
+        "revenue excluding Brooklyn but include Philadelphia",
+    ],
+)
+def test_explicit_inclusion_ends_exclusion_scope(
+    adapter: SemanticLayerMCPAdapter, text: str
+) -> None:
+    wrong = _query(where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}])
+    correct = _query(
+        where=[
+            {"field": STORE, "op": "!=", "value": "Brooklyn"},
+            {"field": STORE, "op": "=", "value": "Philadelphia"},
+        ]
+    )
+    assert _gap_kinds(adapter, text, wrong) == ["filter_values_unrealized"]
+    assert _gap_kinds(adapter, text, correct) == []
+
+
+def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAdapter) -> None:
+    draft = _query(where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}])
+    assert _gap_kinds(adapter, "revenue excluding Brooklyn, Philadelphia", draft) == []
+
+
+@pytest.mark.parametrize(
     ("text", "query"),
     [
         # "New Orleans" masks the "new" inside it.
@@ -615,6 +643,51 @@ def test_mcp_plan_keeps_correct_value_and_ranking_drafts(
     assert payload["best"]["validation_ok"] is True
     assert payload["status"] == "ok"
     assert payload.get("why") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "excluded", "expected_status"),
+    [
+        (
+            "revenue excluding Brooklyn, including Philadelphia",
+            ["Brooklyn", "Philadelphia"],
+            "low_confidence",
+        ),
+        (
+            "revenue excluding Brooklyn including Philadelphia",
+            ["Brooklyn", "Philadelphia"],
+            "low_confidence",
+        ),
+        (
+            "revenue excluding Brooklyn but include Philadelphia",
+            ["Brooklyn", "Philadelphia"],
+            "low_confidence",
+        ),
+        ("revenue excluding Brooklyn, Philadelphia", ["Brooklyn", "Philadelphia"], "ok"),
+        ("revenue excluding Brooklyn, including Philadelphia", ["Brooklyn"], "ok"),
+    ],
+)
+def test_mcp_plan_keeps_mixed_value_polarity(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    excluded: list[str],
+    expected_status: str,
+) -> None:
+    where = [{"field": STORE, "op": "NOT IN", "value": excluded}]
+    if "including Philadelphia" in text and "Philadelphia" not in excluded:
+        where.append({"field": STORE, "op": "=", "value": "Philadelphia"})
+    _draft_plan(monkeypatch, _query(where=where))
+    payload = adapter.call_tool("plan", {"intent": text})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == expected_status
+    if expected_status == "low_confidence":
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert "filter_values_unrealized" in [
+            gap["kind"] for gap in payload["why"]["details"]["gaps"]
+        ]
+    else:
+        assert payload.get("why") is None
 
 
 def test_mcp_plan_defaults_to_the_query_detail(adapter: SemanticLayerMCPAdapter) -> None:
