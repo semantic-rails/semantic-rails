@@ -198,9 +198,9 @@ def test_fill_keeps_every_bucket_with_rows(runtime_factory, grain, start, end, g
     assert filled == unfilled
 
 
-def test_fill_with_a_timestamp_date_day_keeps_an_intraday_start(tmp_path):
-    # A calendar whose date_day is a midnight timestamp: an intraday start must still
-    # keep its own day.
+def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
+    # Timestamp calendar storage is ambiguous, so its bucket predicate remains
+    # the original raw-bound form.
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
@@ -221,7 +221,8 @@ def test_fill_with_a_timestamp_date_day_keeps_an_intraday_start(tmp_path):
             **_JULY_BY_WEEK,
             "time": {**_JULY_BY_WEEK["time"], "start": "2017-07-03T12:00:00", "end": "2017-07-04"},
         }
-        rows = runtime._get_adapter().query(compile_query(config, Registry(config), query)["sql"])
+        sql = compile_query(config, Registry(config), query)["sql"]
+        rows = runtime._get_adapter().query(sql)
         unfilled = _bucket_counts(runtime, "week", "2017-07-03T12:00:00", "2017-07-04", fill=False)
     finally:
         runtime.close()
@@ -231,6 +232,82 @@ def test_fill_with_a_timestamp_date_day_keeps_an_intraday_start(tmp_path):
     assert {
         (_as_date(row[alias]), None): row["orders"] for row in rows if row["orders"]
     } == unfilled
+    assert "jaffle_calendar.week_start >= '2017-07-03T12:00:00'" in sql
+
+
+def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
+        connection.execute(
+            "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP"
+        )
+        from semantic_rails.config import load_package_config
+
+        config = load_package_config(str(package_dir))
+        config = dataclasses.replace(
+            config,
+            dimensions=[
+                dataclasses.replace(row, data_type="timestamp")
+                if row.entity == "entity.jaffle_time" and row.column == "date_day"
+                else row
+                for row in config.dimensions
+            ],
+        )
+        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
+        rows = connection.execute(
+            'SELECT CAST("temporal_role.jaffle_order_time__week" AS DATE), orders '
+            f"FROM ({sql}) AS timestamp_result"
+        ).fetchall()
+
+    assert rows
+    assert min(day for day, _ in rows) == date(2017, 7, 3)
+    assert "jaffle_calendar.week_start >= '2017-07-01'" in sql
+
+
+def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
+        connection.execute("SET TimeZone='UTC'")
+        connection.execute(
+            "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMPTZ"
+        )
+        connection.execute("UPDATE jaffle_calendar SET date_day = date_day - INTERVAL '9 hours'")
+        connection.execute("DELETE FROM jaffle_order")
+        from semantic_rails.config import load_package_config
+
+        config = load_package_config(str(package_dir))
+        config = dataclasses.replace(
+            config,
+            dimensions=[
+                dataclasses.replace(row, data_type="timestamp")
+                if row.entity == "entity.jaffle_time" and row.column == "date_day"
+                else row
+                for row in config.dimensions
+            ],
+            temporal_roles=[
+                dataclasses.replace(row, timezone="Asia/Tokyo")
+                if row.id == "temporal_role.jaffle_order_time"
+                else row
+                for row in config.temporal_roles
+            ],
+        )
+        query = {
+            **_JULY_BY_WEEK,
+            "time": {
+                **_JULY_BY_WEEK["time"],
+                "grain": "day",
+                "start": "2017-07-04T00:00:00+09:00",
+                "end": "2017-07-05T00:00:00+09:00",
+            },
+        }
+        sql = compile_query(config, Registry(config), query)["sql"]
+        rows = connection.execute(
+            'SELECT CAST("temporal_role.jaffle_order_time__day" AS VARCHAR), orders '
+            f"FROM ({sql}) AS tokyo_result"
+        ).fetchall()
+
+    assert rows == [("2017-07-03 15:00:00+00", 0)]
+    assert "jaffle_calendar.date_day >= '2017-07-04T00:00:00+09:00'" in sql
 
 
 @pytest.mark.parametrize(
@@ -336,9 +413,6 @@ def test_fill_respects_instant_order_during_dst_fold(tmp_path, start, end, expec
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute("SET TimeZone='America/New_York'")
         connection.execute(
-            "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMPTZ"
-        )
-        connection.execute(
             "ALTER TABLE jaffle_order ALTER COLUMN ordered_at SET DATA TYPE TIMESTAMPTZ"
         )
         connection.execute("DELETE FROM jaffle_order")
@@ -439,9 +513,6 @@ def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected,
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
-            "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP_NS"
-        )
-        connection.execute(
             "ALTER TABLE jaffle_order ALTER COLUMN ordered_at SET DATA TYPE TIMESTAMP_NS"
         )
         connection.execute("DELETE FROM jaffle_order")
@@ -452,15 +523,6 @@ def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected,
         from semantic_rails.config import load_package_config
 
         config = load_package_config(str(package_dir))
-        config = dataclasses.replace(
-            config,
-            dimensions=[
-                dataclasses.replace(row, data_type="timestamp")
-                if row.entity == "entity.jaffle_time" and row.column == "date_day"
-                else row
-                for row in config.dimensions
-            ],
-        )
         time = {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end}
         results = {}
         for fill in (False, True):
@@ -556,7 +618,8 @@ def test_a_windowed_fill_binds_the_calendar_day_it_reads():
     ],
     ids=["unbounded", "start-only", "end-only", "both-bounds"],
 )
-def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads_day):
+@pytest.mark.parametrize("day_type", ["date", "timestamp"])
+def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads_day, day_type):
     from semantic_rails.compiler import bind_query
     from semantic_rails.config import load_package_config, resolve_repo_path
     from semantic_rails.errors import SemanticLayerError
@@ -564,6 +627,15 @@ def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads
     from semantic_rails.schema import SemanticPolicyConfig
 
     config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
+    config = dataclasses.replace(
+        config,
+        dimensions=[
+            dataclasses.replace(row, data_type=day_type)
+            if row.entity == "entity.jaffle_time" and row.column == "date_day"
+            else row
+            for row in config.dimensions
+        ],
+    )
     day_id = next(
         row.id
         for row in config.dimensions
@@ -574,6 +646,7 @@ def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads
     }
     query = {**_JULY_BY_WEEK, "time": {**time, **bounds}}
     bound = bind_query(config, None, query)
+    reads_day = reads_day and day_type == "date"
     assert (day_id in bound.object_ids) is reads_day
 
     denied_day = dataclasses.replace(

@@ -6,8 +6,10 @@
   week lost the week of June 26, which holds July 1–2 (7,268 instead of 7,438
   orders), and a monthly query from July 15 lost the rest of July. The filled
   series now has every bucket that holds a day of the window, including empty
-  buckets, when the calendar has a date or timestamp `date_day` column. Offset
-  bounds use the temporal role's calendar zone, and the series retains any
+  buckets, when the calendar declares a `date`-typed `date_day` dimension. A
+  timestamp-typed or missing `date_day` keeps the existing bucket-start bounds
+  and can still omit a partially covered bucket. For the `date` expansion,
+  offset bounds use the temporal role's calendar zone, and the series retains any
   populated source bucket when timestamp offset comparisons differ. A reversed
   interval with no selected source rows produces no filled buckets. Submicrosecond
   bounds retain their precision for interval ordering and midnight day inclusion.

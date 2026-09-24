@@ -77,7 +77,6 @@ from .bind import (
     _parse_public_expr,
 )
 from .conversion import _conversion_leaf_cte
-from .grain_recovery import _DATE_DATA_TYPES
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -3714,7 +3713,7 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
 
 def _calendar_fill_binding(
     plan: LogicalPlan, config: PackageConfig, *, force: bool = False
-) -> tuple[str, str, str] | None:
+) -> tuple[str, str, str | None] | None:
     if not plan.time or (not plan.time.get("fill") and not force):
         return None
     grain = str(plan.time.get("grain", "") or "").lower()
@@ -3775,25 +3774,24 @@ def _calendar_fill_binding(
     return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)
 
 
-def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, Any]) -> str:
-    """Use calendar ``date_day`` for two-bound fill windows, else the bucket column.
+def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, Any]) -> str | None:
+    """Return a DATE day column eligible for bounded day expansion.
 
-    The calendar key may be a surrogate, such as integer ``date_id``.
+    A timestamp day column may be zoned or unzoned; metadata cannot distinguish
+    the two, so its calendar predicate retains the original bucket bounds.
     """
     if time.get("start") is None or time.get("end") is None:
-        return bucket.column
+        return None
     day = next(
         (
             row
             for row in config.dimensions
-            if row.entity == bucket.entity
-            and row.column == "date_day"
-            and row.data_type in _DATE_DATA_TYPES
+            if row.entity == bucket.entity and row.column == "date_day" and row.data_type == "date"
         ),
         None,
     )
     if day is None:
-        return bucket.column
+        return None
     # The fill window reads this column, so it is bound like the grain dimension.
     _dimension_index(config).get(day.id)
     return day.column
@@ -3860,6 +3858,17 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
             value = day_value.isoformat()
         bounds.append(SqlBinary(day, operator, SqlLiteral(value)))
     return bounds
+
+
+def _bounded_calendar_window(
+    bucket: Any, day: Any | None, time: dict[str, Any], config: PackageConfig
+) -> list[Any]:
+    if day is not None:
+        return _whole_day_window(day, time, config)
+    return [
+        SqlBinary(bucket, ">=", SqlLiteral(time["start"])),
+        SqlBinary(bucket, "<", SqlLiteral(time["end"])),
+    ]
 
 
 def _source_bucket_recovery_ctes(time_alias: str) -> list[SqlCte]:
@@ -4074,8 +4083,8 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         dense_time_where: list[Any] = []
         dense_time_joins: list[SqlJoin] = []
         if plan.time.get("start") is not None and plan.time.get("end") is not None:
-            dense_time_where = _whole_day_window(
-                _column_ref(calendar_table, day), plan.time, config
+            dense_time_where = _bounded_calendar_window(
+                calendar_expr, _column_ref(calendar_table, day) if day else None, plan.time, config
             )
         else:
             ctes.append(
@@ -4107,10 +4116,10 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
                 ),
                 SqlBinary(calendar_expr, "<=", SqlIdentifier(parts=["dense_bounds", "range_end"])),
             ]
-        calendar_time_name = "calendar_time" if _has_offset_bound(plan.time) else "dense_time"
+        spine_name = "calendar_time" if day and _has_offset_bound(plan.time) else "dense_time"
         ctes.append(
             SqlCte(
-                name=calendar_time_name,
+                name=spine_name,
                 query=SqlSelect(
                     select=[SqlField(calendar_expr, time_alias)],
                     from_table=SqlTableRef(name=calendar_table),
@@ -4120,7 +4129,7 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
                 ),
             )
         )
-        if calendar_time_name != "dense_time":
+        if spine_name != "dense_time":
             ctes.extend(_source_bucket_recovery_ctes(time_alias))
 
         joins: list[SqlJoin] = []
