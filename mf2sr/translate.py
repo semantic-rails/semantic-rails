@@ -109,6 +109,16 @@ def translate(
     namespace = namespace or package_id
     src = Path(source)
     out_root = Path(output_dir) / package_id
+    # The package can contain authored files, and older runs have no file
+    # ownership record. Refuse reuse before writing so skipped or removed
+    # metrics cannot survive as apparently current output.
+    if out_root.is_symlink() or (
+        out_root.exists() and (not out_root.is_dir() or any(out_root.iterdir()))
+    ):
+        raise FileExistsError(
+            f"mf2sr cannot reuse nonempty package destination {out_root}; "
+            "choose a fresh output path or review and remove the old package first"
+        )
     out_root.mkdir(parents=True, exist_ok=True)
 
     raw = parsers.load(src)

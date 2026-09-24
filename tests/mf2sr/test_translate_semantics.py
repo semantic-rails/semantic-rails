@@ -360,15 +360,80 @@ def test_strict_cli_rejects_an_unsupported_filter(tmp_path: Path, capsys: Any) -
         )
     )
 
-    args = ["--source", str(source), "--output", str(tmp_path / "out"), "--package-id", "shop"]
-    assert cli_main([*args, "--strict"]) == 2
+    args = ["--source", str(source), "--package-id", "shop"]
+    assert cli_main([*args, "--output", str(tmp_path / "strict-out"), "--strict"]) == 2
     output = capsys.readouterr().out
     assert "could not parse filter" in output
     assert "Metrics: 0" in output
-    assert cli_main(args) == 0
+    assert cli_main([*args, "--output", str(tmp_path / "default-out")]) == 0
     output = capsys.readouterr().out
     assert "could not parse filter" in output
     assert "Metrics: 0" in output
+
+
+@pytest.mark.parametrize("replacement", ["unsupported_with_dependent", "removed"])
+def test_retranslation_refuses_nonempty_destination_without_changing_files(
+    tmp_path: Path, capsys: Any, replacement: str
+) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    source_file = source / "semantic.yml"
+    supported = {
+        "name": "filtered_orders",
+        "type": "simple",
+        "type_params": {"measure": "orders"},
+        "filter": DELIVERED,
+    }
+
+    def write_source(metrics: list[dict[str, Any]]) -> None:
+        source_file.write_text(yaml.safe_dump({"semantic_models": [ORDERS], "metrics": metrics}))
+
+    write_source([supported])
+    output = tmp_path / "out"
+    first = translate(source, output, package_id="shop")
+    assert first.metrics_emitted == ["filtered_orders"]
+    assert "filtered_orders" in _metrics(first)
+    authored = first.package_dir / "author-notes.txt"
+    authored.write_text("keep this authored file")
+    sibling = output / "unrelated.txt"
+    sibling.write_text("keep this sibling")
+
+    if replacement == "unsupported_with_dependent":
+        replacement_metrics = [
+            {**supported, "filter": "{{ Dimension('order__status') }} LIKE 'd%'"},
+            {
+                "name": "filtered_orders_twice",
+                "type": "derived",
+                "type_params": {
+                    "expr": "filtered_orders * 2",
+                    "metrics": [{"name": "filtered_orders"}],
+                },
+            },
+        ]
+    else:
+        replacement_metrics = []
+    write_source(replacement_metrics)
+
+    def snapshot() -> dict[Path, bytes]:
+        return {p.relative_to(output): p.read_bytes() for p in output.rglob("*") if p.is_file()}
+
+    before = snapshot()
+    with pytest.raises(FileExistsError, match="cannot reuse nonempty package destination"):
+        translate(source, output, package_id="shop")
+    assert snapshot() == before
+    for strict in (False, True):
+        args = ["--source", str(source), "--output", str(output), "--package-id", "shop"]
+        assert cli_main([*args, *(["--strict"] if strict else [])]) == 2
+        assert "cannot reuse nonempty package destination" in capsys.readouterr().err
+        assert snapshot() == before
+
+    fresh = translate(source, tmp_path / "fresh", package_id="shop")
+    assert fresh.metrics_emitted == []
+    assert _metrics(fresh) == {}
+    if replacement == "unsupported_with_dependent":
+        assert any("filtered_orders" in w and "skipped" in w for w in fresh.warnings)
+        assert any("filtered_orders_twice" in w and "skipped too" in w for w in fresh.warnings)
+    _assert_valid(fresh)
 
 
 def test_metrics_depending_on_skipped_filtered_metrics_are_skipped(tmp_path: Path) -> None:

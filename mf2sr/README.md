@@ -33,6 +33,9 @@ python -m mf2sr \
 
 The CLI prints emitted model / metric counts and a list of warnings.
 Pass `--strict` to exit non-zero when any warning fires.
+The package destination must be new or empty. mf2sr refuses a nonempty
+destination before writing because it cannot distinguish earlier generated
+files from authored files; choose a fresh output path for each translation.
 
 ## What gets translated
 
