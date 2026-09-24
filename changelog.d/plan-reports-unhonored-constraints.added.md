@@ -6,4 +6,6 @@
   `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"`. Named values are
   matched to executable filter literals exactly after resolving question labels and
   aliases to their stored values.
+  Every exclusion clause is checked, including later clauses after a correctly
+  excluded value; a later reversal downgrades a validating draft.
   Question words the draft uses nowhere come back as a `PLAN_UNMATCHED_TERMS` warning.

@@ -157,6 +157,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   (`contradictory_filters`);
 - misses a negation, a prior-period comparison or one of several named subjects.
 
+When a question has several exclusion clauses, `plan` checks each clause. A
+negative filter for one value does not make a later excluded value safe if the
+draft includes it.
+
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
 framing words, time phrases the planner read, and counts, come back as a
 `PLAN_UNMATCHED_TERMS` warning with up to eight of them in `details.terms`; check them

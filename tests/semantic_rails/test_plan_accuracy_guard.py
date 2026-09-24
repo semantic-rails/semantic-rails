@@ -708,6 +708,172 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
     assert _gap_kinds(adapter, "revenue excluding Brooklyn, Philadelphia", draft) == []
 
 
+@pytest.mark.parametrize(
+    ("text", "where", "sql_where", "expected_gaps", "second_survives"),
+    [
+        (
+            "revenue excluding Brooklyn; excluding New Orleans",
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
+            ],
+            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_reversed"],
+            True,
+        ),
+        (
+            "revenue excluding Brooklyn, excluding New Orleans",
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
+            ],
+            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_reversed"],
+            True,
+        ),
+        (
+            "revenue excluding Brooklyn and excluding New Orleans",
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
+            ],
+            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_reversed"],
+            True,
+        ),
+        (
+            "revenue excluding Brooklyn, excluding New Orleans, including Philadelphia",
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
+            ],
+            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_reversed"],
+            True,
+        ),
+        (
+            "revenue for all stores but Brooklyn; excluding New Orleans",
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
+            ],
+            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_reversed"],
+            True,
+        ),
+        (
+            "revenue excluding Brooklyn; except New Orleans",
+            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]}],
+            "v NOT IN ('Brooklyn')",
+            ["filter_values_unrealized"],
+            True,
+        ),
+        (
+            "revenue excluding Brooklyn; without New Orleans, including Philadelphia",
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]},
+                {"field": STORE, "op": "=", "value": "Philadelphia"},
+            ],
+            "v NOT IN ('Brooklyn', 'New Orleans') AND v = 'Philadelphia'",
+            [],
+            False,
+        ),
+        (
+            "revenue for all stores but Brooklyn; excluding New Orleans",
+            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]}],
+            "v NOT IN ('Brooklyn', 'New Orleans')",
+            [],
+            False,
+        ),
+        (
+            "revenue excluding Brooklyn and excluding New Orleans",
+            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]}],
+            "v NOT IN ('Brooklyn', 'New Orleans')",
+            [],
+            False,
+        ),
+        (
+            "revenue excluding Brooklyn and New Orleans",
+            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]}],
+            "v NOT IN ('Brooklyn', 'New Orleans')",
+            [],
+            False,
+        ),
+    ],
+)
+def test_each_exclusion_clause_is_checked_against_executable_predicates(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    where: list[dict[str, Any]],
+    sql_where: str,
+    expected_gaps: list[str],
+    second_survives: bool,
+) -> None:
+    draft = _query(where=where)
+    gaps = _gaps(adapter, text, draft)
+    assert [gap["kind"] for gap in gaps] == expected_gaps
+    if expected_gaps == ["negation_reversed"]:
+        assert gaps[0]["clause"] == "excluding New Orleans"
+    _draft_plan(monkeypatch, draft)
+    payload = adapter.call_tool("plan", {"intent": text, "detail": "query"})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == ("low_confidence" if expected_gaps else "ok")
+    if expected_gaps:
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert expected_gaps == [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+    else:
+        assert payload.get("why") is None
+    connection = duckdb.connect(":memory:")
+    try:
+        retained = {
+            row[0]
+            for row in connection.execute(
+                "SELECT v FROM (VALUES ('Brooklyn'), ('Philadelphia'), ('New Orleans')) "
+                f"AS stores(v) WHERE {sql_where}"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+    assert "Brooklyn" not in retained
+    assert ("New Orleans" in retained) is second_survives
+
+
+def test_disjunctive_or_nested_exclusion_evidence_is_not_credited(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    # The top-level evidence model intersects only known predicates. It must
+    # not combine an OR branch or a selected expression's private scope with it.
+    disjunction = _query(
+        where=[
+            {
+                "op": "OR",
+                "args": [
+                    {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                    {"field": STORE, "op": "IN", "value": ["New Orleans"]},
+                ],
+            }
+        ]
+    )
+    assert "filter_values_unrealized" in _gap_kinds(
+        adapter, "revenue excluding Brooklyn; excluding New Orleans", disjunction
+    )
+    nested = _query(
+        {
+            "as": "revenue_usd",
+            "expression": {
+                "kind": "scoped_aggregate",
+                "measure": "measure.jaffle.revenue_usd",
+                "where": [{"field": STORE, "op": "NOT IN", "value": ["New Orleans"]}],
+            },
+        },
+        where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]}],
+    )
+    assert "filter_values_unrealized" in _gap_kinds(
+        adapter, "revenue excluding Brooklyn; excluding New Orleans", nested
+    )
+
+
 @pytest.mark.parametrize("text", ["revenue not including Brooklyn", "revenue not include Brooklyn"])
 def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, text: str) -> None:
     excluded = _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}])

@@ -71,15 +71,18 @@ _PRIOR_PERIOD_RE = re.compile(
     r"(?:the\s+)?(?:last|prior|previous)\s+(?:day|week|month|quarter|year|period)\b",
     re.IGNORECASE,
 )
+_EXCLUSION_VALUE_RE = (
+    r"(?P<value>[^,.;]+?)(?=\s+(?:and\s+)?(?:excluding|except|without|but\s+not|not)\b|[,.;]|$)"
+)
 _NEGATION_RE = re.compile(
     r"\b(?P<marker>excluding|except|without|but\s+not|not)\s+"
-    r"(?!only\b)(?P<value>[^,.;]+)",
+    r"(?!only\b)" + _EXCLUSION_VALUE_RE,
     re.IGNORECASE,
 )
 # "for all stores but Brooklyn": "but" excludes after all/every/each/any.
 _ALL_BUT_RE = re.compile(
     r"\b(?:all|every|each|any)\s+(?:[a-z-]+\s+){0,3}?(?P<marker>but)\s+(?!not\b)"
-    r"(?P<value>[^,.;]+)",
+    + _EXCLUSION_VALUE_RE,
     re.IGNORECASE,
 )
 # Ranking requests: "top 5 products", "the 3 lowest-selling products", "the 5
@@ -384,14 +387,13 @@ def intent_faithfulness_why(
             )
         )
 
-    negation_match = _NEGATION_RE.search(text) or _ALL_BUT_RE.search(text)
-    if negation_match:
+    # Named-value coverage suppresses a reversal when this check reports it,
+    # so every exclusion clause must be inspected, not only the first one.
+    negation_matches = _exclusion_matches(text)
+    excluded_spans = _excluded_value_spans(text)
+    for negation_match in negation_matches:
         excluded_span = next(
-            (
-                span
-                for span in _excluded_value_spans(text)
-                if span[0] == negation_match.start("value")
-            ),
+            (span for span in excluded_spans if span[0] == negation_match.start("value")),
             negation_match.span("value"),
         )
         excluded_text = text[excluded_span[0] : excluded_span[1]].strip()
@@ -1005,20 +1007,30 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     ]
 
 
+def _exclusion_matches(text: str) -> list[re.Match[str]]:
+    return sorted(
+        (match for pattern in (_NEGATION_RE, _ALL_BUT_RE) for match in pattern.finditer(text)),
+        key=lambda match: match.start(),
+    )
+
+
 def _excluded_value_spans(text: str) -> list[tuple[int, int]]:
     """Negative clauses include comma lists, ending at an explicit inclusion."""
 
     spans: list[tuple[int, int]] = []
-    for pattern in (_NEGATION_RE, _ALL_BUT_RE):
-        for match in pattern.finditer(text):
-            start = match.start("value")
-            tail = text[start:]
-            # In "not including Brooklyn", the first "including" completes
-            # the exclusion; only a later one opens a positive clause.
-            initial = re.match(r"(?:including|include)\b", tail, re.IGNORECASE)
-            scan_from = initial.end() if initial else 0
-            stop = re.search(r"[.;!?]|\b(?:including|include)\b", tail[scan_from:], re.IGNORECASE)
-            spans.append((start, start + scan_from + stop.start() if stop else len(text)))
+    matches = _exclusion_matches(text)
+    for index, match in enumerate(matches):
+        start = match.start("value")
+        tail = text[start:]
+        # In "not including Brooklyn", the first "including" completes
+        # the exclusion; only a later one opens a positive clause.
+        initial = re.match(r"(?:including|include)\b", tail, re.IGNORECASE)
+        scan_from = initial.end() if initial else 0
+        stop = re.search(r"[.;!?]|\b(?:including|include)\b", tail[scan_from:], re.IGNORECASE)
+        end = start + scan_from + stop.start() if stop else len(text)
+        if index + 1 < len(matches):
+            end = min(end, matches[index + 1].start())
+        spans.append((start, end))
     return spans
 
 
