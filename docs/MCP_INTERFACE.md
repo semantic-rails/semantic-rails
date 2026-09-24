@@ -141,7 +141,8 @@ The segment tools offer an explicit `verbosity="minimal"` response.
 `segment-validate` returns validity, the segment's definition and its derived query;
 `segment-explain` adds the rendered SQL; `segment-preview` returns member rows, the preview and
 member counts, and the derived query. Omitted verbosity and `"full"` keep the v1 whole response
-with compiler plans.
+with compiler plans. Minimal responses still include query and segment policy effects, warnings,
+errors, and actionable recovery hints when present.
 
 `validate`, `compile`, and `execute` accept either `{"query": {...}}` or a Query IR
 object directly. Metadata tools accept the same request fields documented in

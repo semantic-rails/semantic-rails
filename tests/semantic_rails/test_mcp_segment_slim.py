@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.schema import SemanticPolicyConfig
 
 SEGMENT = "segment.jaffle.high_value_customers"
 ARGUMENTS = {
@@ -106,7 +107,107 @@ def test_preview_keeps_its_rows_and_counts(adapter: SemanticLayerMCPAdapter) -> 
     }
 
 
-def test_a_failed_segment_call_keeps_its_error(adapter: SemanticLayerMCPAdapter) -> None:
-    response = adapter.call_tool("segment-validate", {"segment_id": "segment.jaffle.nope"})
-    assert response["ok"] is False
-    assert response["errors"] and response["errors"][0]["code"]
+@pytest.mark.parametrize("tool", TOOLS)
+def test_minimal_retains_production_policy_effects_from_real_segment(
+    adapter: SemanticLayerMCPAdapter, tool: str
+) -> None:
+    arguments = {**ARGUMENTS[tool], "policy_context": {"environment": "production"}}
+    full = adapter.call_tool(tool, {**arguments, "verbosity": "full"})
+    minimal = adapter.call_tool(tool, {**arguments, "verbosity": "minimal"})
+    assert full["ok"] is minimal["ok"] is True
+    assert minimal["policy_effects"] == full["policy_effects"]
+    assert any(
+        effect["policy_id"] == "policy.jaffle.protect_customer_history_in_production"
+        and effect["action"] == "protected"
+        for effect in minimal["policy_effects"]
+    )
+    if tool != "segment-preview":
+        assert minimal["segment_policy_effects"] == full["segment_policy_effects"]
+    assert not PLANS & set(minimal)
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+def test_minimal_retains_real_missing_segment_diagnostics(
+    adapter: SemanticLayerMCPAdapter, tool: str
+) -> None:
+    arguments = {"segment_id": "segment.jaffle.nope", "verbosity": "full"}
+    full = adapter.call_tool(tool, arguments)
+    minimal = adapter.call_tool(tool, {**arguments, "verbosity": "minimal"})
+    assert full["ok"] is minimal["ok"] is False
+    assert minimal["errors"] == full["errors"]
+    assert minimal["recovery_hints"] == full["recovery_hints"]
+    assert minimal["errors"][0]["code"]
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+def test_minimal_retains_real_policy_denial(runtime_factory: Any, tool: str) -> None:
+    original = runtime_factory("jaffle_shop")
+    config = original.config
+    config.semantic_policies.append(
+        SemanticPolicyConfig(
+            id="policy.test.hide_customer_segment",
+            kind="object_visibility",
+            object_ids=[SEGMENT],
+            audiences=["external"],
+            action="hidden",
+        )
+    )
+    runtime = type(original).from_config(
+        config,
+        source_path=original.source_path,
+        package_id=original.package_id,
+        prefer_package_root_assets=original.prefer_package_root_assets,
+    )
+    original.close()
+    mcp = SemanticLayerMCPAdapter(runtime)
+    try:
+        arguments = {
+            **ARGUMENTS[tool],
+            "policy_context": {"audience": "external", "tenant": "tenant-a"},
+        }
+        full = mcp.call_tool(tool, {**arguments, "verbosity": "full"})
+        minimal = mcp.call_tool(tool, {**arguments, "verbosity": "minimal"})
+        assert full["ok"] is minimal["ok"] is False
+        assert minimal["errors"] == full["errors"]
+        assert minimal["errors"][0]["code"] == "POLICY_DENIED"
+        assert minimal["recovery_hints"] == full["recovery_hints"]
+    finally:
+        mcp.close()
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+def test_minimal_retains_soft_failure_policy_and_recovery_fields(
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    # Segment validate can return a soft failure after validating the derived
+    # query. Exercise the same response shaper for every segment entry point.
+    method_name = tool.replace("-", "_")
+    payload = {
+        "ok": False,
+        "status": "blocked",
+        "segment": {"id": SEGMENT},
+        "errors": [{"code": "POLICY_BLOCKED", "message": "Access denied"}],
+        "warnings": [{"code": "CHECK_CONTEXT", "message": "Inspect context"}],
+        "recovery_hints": ["Use an authorized context"],
+        "authoring_hints": ["Choose a permitted measure"],
+        "query_ir_hints": ["Revise the derived query"],
+        "policy_effects": [{"policy_id": "query.block", "action": "blocked"}],
+        "segment_policy_effects": [{"policy_id": "segment.block", "action": "blocked"}],
+        "logical_plan": {"root_entity": "customers"},
+    }
+    monkeypatch.setattr(adapter.runtime, method_name, lambda *args, **kwargs: payload)
+    full = adapter.call_tool(tool, {**ARGUMENTS[tool], "verbosity": "full"})
+    minimal = adapter.call_tool(tool, {**ARGUMENTS[tool], "verbosity": "minimal"})
+    for key in (
+        "ok",
+        "status",
+        "errors",
+        "warnings",
+        "recovery_hints",
+        "authoring_hints",
+        "query_ir_hints",
+        "policy_effects",
+        "segment_policy_effects",
+    ):
+        assert minimal[key] == full[key], key
+    assert "logical_plan" not in minimal

@@ -1203,16 +1203,13 @@ def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dic
 # (logical, SQL, physical, performance) and their copies. An omitted level,
 # "compact", and "full" return the v1 whole response.
 _SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
-    "segment-validate": frozenset(
-        {"segment", "normalized_segment", "derived_query", "segment_policy_effects"}
-    ),
+    "segment-validate": frozenset({"segment", "normalized_segment", "derived_query"}),
     "segment-explain": frozenset(
         {
             "segment",
             "normalized_segment",
             "derived_query",
             "rendered_sql",
-            "segment_policy_effects",
         }
     ),
     "segment-preview": frozenset(
@@ -1224,11 +1221,13 @@ _SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
             "preview_row_count",
             "member_count",
             "derived_query",
-            "policy_effects",
         }
     ),
 }
-# The outcome, and anything that explains it, stays on every response.
+# The outcome, all policy effects on the segment and its derived query, and
+# actionable recovery guidance stay on every response. These fields come from
+# different Runtime paths (validate, compile, preview, and soft failure), so
+# keep them together rather than relying on a tool-specific success allowlist.
 _SEGMENT_OUTCOME_KEYS = frozenset(
     {
         "ok",
@@ -1236,9 +1235,13 @@ _SEGMENT_OUTCOME_KEYS = frozenset(
         "errors",
         "warnings",
         "recovery_hints",
+        "authoring_hints",
+        "query_ir_hints",
         "assumptions",
         "methodology_hints",
         "disabled_options",
+        "policy_effects",
+        "segment_policy_effects",
     }
 )
 
