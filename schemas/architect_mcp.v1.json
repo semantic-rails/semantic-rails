@@ -100,17 +100,59 @@
         "readOnlyHint": false,
         "title": "Create Semantic Rails project"
       },
-      "description": "Preview or atomically create a runnable schema_version: 1 project.",
+      "description": "Preview or atomically create a strict schema_version: 1 project. DuckDB packages use a two-row starter CSV (data=starter) or read a database another tool builds, such as dbt (data=external); other warehouses need connection_kind, with secrets named by environment variable only.",
       "inputSchema": {
         "properties": {
           "amount_column": {
-            "default": "amount",
+            "default": "",
             "title": "Amount Column",
+            "type": "string"
+          },
+          "connection_kind": {
+            "default": "",
+            "title": "Connection Kind",
+            "type": "string"
+          },
+          "connection_name": {
+            "default": "",
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "connection_options": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Options"
+          },
+          "data": {
+            "default": "starter",
+            "enum": [
+              "starter",
+              "external"
+            ],
+            "title": "Data",
+            "type": "string"
+          },
+          "default_db": {
+            "default": "",
+            "title": "Default Db",
             "type": "string"
           },
           "description": {
             "default": "Semantic Rails package managed through Architect MCP.",
             "title": "Description",
+            "type": "string"
+          },
+          "dimension_column": {
+            "default": "",
+            "title": "Dimension Column",
             "type": "string"
           },
           "dry_run": {
@@ -158,6 +200,11 @@
           "time_column": {
             "default": "occurred_at",
             "title": "Time Column",
+            "type": "string"
+          },
+          "warehouse": {
+            "default": "duckdb",
+            "title": "Warehouse",
             "type": "string"
           }
         },

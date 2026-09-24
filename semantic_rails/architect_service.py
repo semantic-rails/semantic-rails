@@ -22,13 +22,25 @@ from typing import Any
 
 import yaml
 
+from .architect_scaffold import (
+    FirstModel,
+    ProjectSpec,
+    ProjectWarehouse,
+    normalized_package_id,
+    project_scaffold_files,
+    project_setup_questions,
+    project_warehouse_options,
+    slug,
+)
 from .architect_transactions import (
+    ABSENT_PROJECT_REVISION,
     ProjectFileSnapshot,
     ProjectFileUpdate,
     ProjectTransaction,
     project_revision,
 )
 from .config_validation import PackageReference, parse_config_report
+from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
 
 _INVENTORY_KINDS = {
@@ -188,11 +200,255 @@ class ArchitectMutation:
                 ],
             }
         self._active = False
-        parse, _ = parse_config_report(PackageReference(source_path=str(self.project_path)))
         report = dict(outcome.report)
+        if not (self.project_path / "package.yml").exists():
+            # Undoing create_project removes the package: nothing is left to parse.
+            report["ok"] = True
+            return report
+        parse, _ = parse_config_report(PackageReference(source_path=str(self.project_path)))
         report["parse"] = parse
         report["ok"] = bool(parse.get("ok"))
         return report
+
+
+__all__ = [
+    "ArchitectMutation",
+    "ArchitectProject",
+    "FirstModel",
+    "ProjectSpec",
+    "ProjectWarehouse",
+    "create_project",
+    "project_setup_questions",
+    "project_warehouse_options",
+]
+
+
+def create_project(
+    project_path: str | os.PathLike[str],
+    spec: ProjectSpec,
+    *,
+    workspace_root: str | os.PathLike[str] | None = None,
+    expected_revision: str = ABSENT_PROJECT_REVISION,
+    idempotency_key: str | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> ArchitectMutation:
+    """Create a new package from ``spec`` in one parse-gated transaction.
+
+    ``project_path`` is resolved against ``workspace_root`` (default: the
+    current directory) and must stay inside it and end with the package id.
+    A non-empty directory is replaced only with ``overwrite``; the transaction
+    still requires ``expected_revision`` to match it. The returned mutation
+    carries the transaction report and a one-step ``undo``.
+    """
+    _validate_project_connection_options(spec)
+    root = Path(workspace_root).expanduser().resolve() if workspace_root else Path.cwd().resolve()
+    raw = Path(project_path).expanduser()
+    if raw.is_symlink():
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Architect project paths may not be symlinks",
+            details={"project_path": str(raw)},
+        )
+    project = (raw if raw.is_absolute() else root / raw).resolve()
+    if not _within(project, root):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Architect authoring only writes inside its configured workspace root",
+            details={"workspace_root": str(root), "requested_path": str(project)},
+        )
+    package_id = normalized_package_id(spec)
+    if project.name != package_id:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "For schema_version: 1 packages, package_id must match the project directory name",
+            details={"package_id": package_id, "project_directory": project.name},
+        )
+    files = project_scaffold_files(spec)
+    transaction = ProjectTransaction(project, workspace_root=root)
+
+    def prepare(current: str) -> tuple[list[ProjectFileUpdate], dict[str, bytes] | None]:
+        if not overwrite and current != ABSENT_PROJECT_REVISION:
+            # A directory containing only generated warehouse data still has
+            # the absent revision. An existing package requires overwrite.
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "Project directory already holds a package; pass overwrite=true to replace "
+                "its starter files",
+                details={"project_path": str(project)},
+            )
+        retire: list[ProjectFileUpdate] = []
+        trusted_scaffold = True
+        if overwrite:
+            retire, trusted_scaffold = _guard_and_retire_scaffold_model(
+                project, root, files, current
+            )
+        updates = [
+            ProjectFileUpdate(
+                relative_path,
+                content,
+                ((project / relative_path).stat().st_mode & 0o777)
+                if (project / relative_path).exists()
+                else None,
+            )
+            for relative_path, content in files.items()
+        ]
+        return [*updates, *retire], files if trusted_scaffold else None
+
+    key = f"internal-{uuid.uuid4()}" if idempotency_key is None else str(idempotency_key)
+    outcome = transaction.apply(
+        (),
+        expected_revision=expected_revision,
+        idempotency_key=key,
+        intent={
+            "operation": "create_project",
+            "expected_revision": expected_revision,
+            "project_path": str(project),
+            "spec": _spec_intent(spec),
+            "overwrite": overwrite,
+        },
+        dry_run=dry_run,
+        validate_after=True,
+        success_status="created",
+        metadata={
+            "operation": "created",
+            "package_id": package_id,
+            "warehouse": spec.warehouse.kind,
+            "data": spec.warehouse.data,
+            "next_actions": _create_next_actions(spec),
+        },
+        prepare_updates=prepare,
+    )
+    return ArchitectMutation(
+        report=outcome.report,
+        project_path=project,
+        _snapshots=outcome.snapshots,
+        _active=bool(outcome.snapshots),
+    )
+
+
+def _validate_project_connection_options(spec: ProjectSpec) -> None:
+    """Reject invalid options before they become scaffold bytes or a receipt intent."""
+    warehouse = str(spec.warehouse.kind or "duckdb").strip().lower()
+    connector = warehouse_connector(warehouse)
+    options = spec.warehouse.connection_options
+    if not isinstance(options, dict) or (
+        connector is not None
+        and connector.connection_kinds
+        and connection_option_errors(warehouse, spec.warehouse.connection_kind, options)
+    ):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Connection options contain unsupported or malformed fields; use supported "
+            "option names and environment or file references",
+            details={"reason": "invalid_connection_options"},
+        )
+
+
+def _guard_and_retire_scaffold_model(
+    project: Path, workspace_root: Path, new_files: dict[str, bytes], current_revision: str
+) -> tuple[list[ProjectFileUpdate], bool]:
+    """Prove replaced scaffold bytes before interpreting the old graph or retiring a model."""
+    transaction = ProjectTransaction(project, workspace_root=workspace_root)
+    existing: dict[str, bytes] = {}
+    changed_targets: set[str] = set()
+    for name, content in new_files.items():
+        path = project / name
+        if path.is_symlink():
+            raise SemanticLayerError("INVALID_CONFIG", "Project scaffold files may not be symlinks")
+        if path.is_file():
+            before = path.read_bytes()
+            existing[name] = before
+            if before != content:
+                changed_targets.add(name)
+        else:
+            changed_targets.add(name)
+    graph_path = project / "graph.yml"
+    if current_revision != ABSENT_PROJECT_REVISION and not graph_path.is_file():
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "The prior scaffold graph is missing; restore it or remove the old project explicitly",
+            details={"reason": "scaffold_provenance_missing", "path": "graph.yml"},
+        )
+    trusted = (current_revision == ABSENT_PROJECT_REVISION and not existing) or (
+        bool(existing) and transaction.matches_creation_files(existing)
+    )
+    if changed_targets and not trusted:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "An existing scaffold file is modified or has no creation receipt; "
+            "archive or remove it explicitly before overwrite",
+            details={"reason": "scaffold_source_modified", "paths": sorted(changed_targets)},
+        )
+    if not graph_path.exists():
+        return [], trusted
+    if graph_path.is_symlink():
+        raise SemanticLayerError("INVALID_CONFIG", "Project graph may not be a symlink")
+    try:
+        graph = yaml.safe_load(graph_path.read_bytes())
+        entities = graph["graph"]["entities"]
+        if len(entities) != 1:
+            return [], trusted
+        entity, graph_row = next(iter(entities.items()))
+        entity = str(entity)
+        if slug(entity, fallback="") != entity:
+            return [], trusted
+        model_id = entity if entity.endswith("s") else f"{entity}s"
+        if graph_row["model"] != model_id:
+            return [], trusted
+    except (KeyError, TypeError, AttributeError, yaml.YAMLError):
+        return [], trusted
+    old_path = f"models/core/{model_id}.yml"
+    model_path = project / old_path
+    if not model_path.exists():
+        return [], trusted
+    if model_path.is_symlink():
+        raise SemanticLayerError("INVALID_CONFIG", "Project model may not be a symlink")
+    if (
+        old_path in new_files
+        and graph_path.read_bytes() == new_files["graph.yml"]
+        and model_path.read_bytes() == new_files[old_path]
+    ):
+        return [], trusted  # The model is already identical; no retirement is needed.
+    if not transaction.matches_creation_files({**existing, old_path: model_path.read_bytes()}):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "The prior scaffold first model is modified or has no creation receipt; "
+            "remove or archive it explicitly before overwrite",
+            details={"reason": "scaffold_model_modified", "path": old_path},
+        )
+    return (
+        ([], trusted) if old_path in new_files else ([ProjectFileUpdate(old_path, None)], trusted)
+    )
+
+
+def _spec_intent(spec: ProjectSpec) -> dict[str, Any]:
+    return {
+        "package_id": spec.package_id,
+        "description": spec.description,
+        "warehouse": vars(spec.warehouse)
+        | {"connection_options": dict(spec.warehouse.connection_options)},
+        "first_model": vars(spec.first_model),
+        "environments": list(spec.environments),
+    }
+
+
+def _create_next_actions(spec: ProjectSpec) -> list[str]:
+    actions = []
+    if spec.warehouse.kind == "duckdb" and spec.warehouse.data == "external":
+        actions.append(
+            "Build the database at default_db (for example with dbt build) before runtime "
+            "validation; Semantic Rails reads it and never rebuilds it."
+        )
+    actions.extend(
+        [
+            "Run validate_project with mode=runtime before trusting queries.",
+            "Use upsert_model to add dimensions, measures, joins, or additional entities.",
+            "When comparing changes, run impact_project with compare_path or base_ref before "
+            "opening a release review.",
+        ]
+    )
+    return actions
 
 
 @dataclass(frozen=True)

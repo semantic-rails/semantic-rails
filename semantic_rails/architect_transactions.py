@@ -18,7 +18,7 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -187,6 +187,10 @@ def _authored_project_files(project_path: Path) -> dict[str, bytes]:
 
 
 def _revision_from_files(files: Mapping[str, bytes]) -> str:
+    # No authored files (a directory holding only a warehouse dbt built, say)
+    # is no project yet: the same revision as a missing directory.
+    if not files:
+        return ABSENT_PROJECT_REVISION
     digest = hashlib.sha256()
     digest.update(f"semantic-rails-project-revision-v{PROJECT_REVISION_FORMAT}\0".encode())
     for relative_path in sorted(files):
@@ -349,6 +353,78 @@ class ProjectTransaction:
     def current_revision(self) -> str:
         return project_revision(self.project_path)
 
+    def _matches_receipt_file(self, name: str, digest: str | None) -> bool:
+        relative = Path(name)
+        source = self.project_path / relative
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or not _within(source.resolve(), self.project_path.resolve())
+            or source.is_symlink()
+        ):
+            return False
+        if digest is None:
+            return not source.exists()
+        return source.is_file() and f"sha256:{_digest(source.read_bytes())}" == digest
+
+    def matches_creation_files(self, files: Mapping[str, bytes]) -> bool:
+        """Whether a completed create_project receipt recorded these exact file bytes.
+
+        Receipts are the transaction's existing provenance. Missing or unreadable
+        receipts cannot prove a model is still the generated scaffold.
+        """
+        for path in self._receipt_root.glob("*.json"):
+            if path.is_symlink():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                report = payload["report"]
+                if (
+                    payload.get("format_version") != TRANSACTION_RECEIPT_FORMAT
+                    or payload.get("project_path") != str(self.project_path)
+                    or report.get("operation") != "created"
+                    or report.get("status") != "created"
+                    or not report.get("ok")
+                ):
+                    continue
+                scaffold_files = payload.get("scaffold_files")
+                if scaffold_files is not None:
+                    matches = (
+                        isinstance(scaffold_files, dict)
+                        and all(
+                            scaffold_files.get(name) == f"sha256:{_digest(content)}"
+                            for name, content in files.items()
+                        )
+                        and all(
+                            isinstance(name, str)
+                            and isinstance(digest, str)
+                            and self._matches_receipt_file(name, digest)
+                            for name, digest in scaffold_files.items()
+                        )
+                    )
+                else:
+                    # A legacy receipt can be promoted only when its effective
+                    # changes prove all queried files and still match disk.
+                    changes = {row["path"]: row for row in report["changes"]}
+                    matches = all(
+                        changes.get(name, {}).get("content_encoding") == "utf-8"
+                        and changes[name].get("proposed_content", "").encode("utf-8") == content
+                        and changes[name].get("after_sha256") == f"sha256:{_digest(content)}"
+                        for name, content in files.items()
+                    ) and all(
+                        isinstance(name, str)
+                        and (digest is None or isinstance(digest, str))
+                        and self._matches_receipt_file(name, digest)
+                        for name, digest in (
+                            (row["path"], row.get("after_sha256")) for row in report["changes"]
+                        )
+                    )
+                if matches:
+                    return True
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
+                continue
+        return False
+
     def apply(
         self,
         updates: Iterable[ProjectFileUpdate],
@@ -361,8 +437,16 @@ class ProjectTransaction:
         allow_internal_paths: bool = False,
         success_status: str = "committed",
         metadata: Mapping[str, Any] | None = None,
+        scaffold_files: Mapping[str, bytes] | None = None,
+        prepare_updates: (
+            Callable[[str], tuple[Iterable[ProjectFileUpdate], Mapping[str, bytes] | None]] | None
+        ) = None,
     ) -> ProjectTransactionOutcome:
-        """Apply a parse-gated optimistic transaction or return its preview."""
+        """Apply a parse-gated optimistic transaction or return its preview.
+
+        Preparation, when supplied, runs under this transaction's lock after
+        receipt replay and the expected-revision check, before any file write.
+        """
 
         expected = str(expected_revision or "").strip()
         key = str(idempotency_key or "").strip()
@@ -378,9 +462,12 @@ class ProjectTransaction:
                 "idempotency_key is required for every Architect mutation",
                 details={"argument": "idempotency_key"},
             )
-        normalized_updates = self._normalize_updates(
-            updates,
-            allow_internal_paths=allow_internal_paths,
+        if prepare_updates is not None and scaffold_files is not None:
+            raise ValueError("Prepared updates must supply their own scaffold provenance")
+        normalized_updates = (
+            self._normalize_updates(updates, allow_internal_paths=allow_internal_paths)
+            if prepare_updates is None
+            else ()
         )
         intent_hash = _canonical_json_digest(dict(intent))
         with self._exclusive_lock():
@@ -422,6 +509,19 @@ class ProjectTransaction:
                         "retry": "Read project_status, review intervening changes, and retry with a new idempotency_key.",
                     },
                 )
+            if prepare_updates is not None:
+                prepared, scaffold_files = prepare_updates(current)
+                normalized_updates = self._normalize_updates(
+                    [*updates, *prepared],
+                    allow_internal_paths=allow_internal_paths,
+                )
+            if scaffold_files is not None:
+                proposed = {update.relative_path: update.content for update in normalized_updates}
+                if any(proposed.get(path) != content for path, content in scaffold_files.items()):
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        "Scaffold provenance must match the proposed transaction files",
+                    )
 
             snapshots = tuple(self._snapshot(update.relative_path) for update in normalized_updates)
             effective = tuple(
@@ -518,7 +618,15 @@ class ProjectTransaction:
                     snapshot.with_after(_read_bytes(snapshot.path))
                     for snapshot in effective_snapshots
                 )
-                self._store_receipt(key, intent_hash, base_report)
+                if scaffold_files is not None and any(
+                    _read_bytes(self.project_path / path) != content
+                    for path, content in scaffold_files.items()
+                ):
+                    raise SemanticLayerError(
+                        "CONFIG_CONFLICT",
+                        "Committed scaffold differs from the proposed files",
+                    )
+                self._store_receipt(key, intent_hash, base_report, scaffold_files=scaffold_files)
                 return ProjectTransactionOutcome(
                     report=base_report,
                     snapshots=completed_snapshots,
@@ -736,6 +844,8 @@ class ProjectTransaction:
         idempotency_key: str,
         intent_hash: str,
         report: Mapping[str, Any],
+        *,
+        scaffold_files: Mapping[str, bytes] | None = None,
     ) -> None:
         path = self._receipt_path(idempotency_key)
         stored_report = dict(report)
@@ -746,6 +856,10 @@ class ProjectTransaction:
             "intent_hash": intent_hash,
             "report": stored_report,
         }
+        if scaffold_files is not None:
+            payload["scaffold_files"] = {
+                name: f"sha256:{_digest(content)}" for name, content in scaffold_files.items()
+            }
         content = (
             json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, default=str) + "\n"
         ).encode("utf-8")

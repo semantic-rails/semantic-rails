@@ -52,12 +52,49 @@ From a source checkout, prefix the same commands with `uv run`.
 1. Call `architect_guidance` to get the current workflow, safety notes, and validation order.
 2. Call `project_status` before editing an existing package and retain its
    `revision`.
-3. Call `setup_project_dialog` to collect starter project answers. Clients that support MCP
-   elicitation can run it interactively; other clients receive a structured dialog schema and draft
-   `create_project` arguments.
+3. Call `setup_project_dialog` to collect starter project answers, including the warehouse and
+   how to connect to it. Clients that support MCP elicitation can run it interactively; other
+   clients receive the questions (with `when` conditions and choices) and draft
+   `create_project` arguments. That schema-only draft is for DuckDB; select a warehouse and
+   complete its conditional connection answers before using it. The elicitation form accepts
+   `connection_options` as a JSON object string and returns it as a parsed object in the
+   `create_project` draft. For a non-DuckDB warehouse the dialog sets `data: external` and
+   clears `default_db`. Missing or invalid connection details return `ok: false` with
+   `status: needs_connection_details` and `required_answers`, without echoing the submitted
+   answers or a draft.
+   The dialog normalizes warehouse names and checks each adapter's required input groups:
+   Databricks needs host, HTTP path and token; MotherDuck needs database and token; DuckLake
+   needs a catalog path; and Athena needs region and an S3 staging directory. Snowflake accepts
+   a named connection or valid native direct options. Named profiles are not offered for the
+   other adapters. This checks whether setup answers are complete, not whether referenced
+   environment variables, files, or warehouse services are available at runtime. Guided
+   Postgres setup asks for an explicit connection option even though libpq can use ambient
+   defaults; BigQuery and ClickHouse can use their documented ambient/local defaults.
 4. Preview `create_project` with `expected_revision: absent`, `dry_run: true`,
    and a caller-generated `idempotency_key`; then repeat with `dry_run: false`
    after reviewing its exact file changes.
+
+`create_project` uses `architect_service.create_project` with a `ProjectSpec`. This service is
+available for later CLI/REPL integration. It writes a strict package (`schema_strict: true`) with one model,
+its count and amount metrics, an example, a package test and a `.gitignore` for build outputs.
+
+- DuckDB with `data: starter` (the default) adds a two-row CSV seed, so the package runs at once.
+  Starter names are made safe (`Raw Events` becomes `raw_events`).
+- DuckDB with `data: external` reads a database another tool builds, such as dbt
+  (`seed.kind: external`, `default_db` defaulting to `data/<package_id>.duckdb`). Names must match
+  the warehouse: `relation` may be schema-qualified (`main_marts.fct_orders`) and is never renamed.
+  Pass each component as its raw name (for example `sales-data.fct_orders`); SQL rendering quotes
+  components that need it. The name must not contain a path separator or control character.
+  The model gets only the columns you name (no starter dimension or amount). The database may
+  already sit in the project directory: a directory with no authored files still has revision
+  `absent`. Keep the database inside the package (for example, point the dbt profile's `path` at
+  `<package>/data/<package_id>.duckdb`); a path outside it needs
+  `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
+- Other warehouses take `connection_kind` and their adapter's required connection inputs.
+  Named connections apply only to Snowflake; other adapters use `connection_options` or their
+  documented ambient defaults. Name secrets by environment variable only; unsupported or
+  malformed connection options are rejected before scaffold files or transaction receipts are
+  created, without returning their values.
 5. Use `upsert_model`, `upsert_metric`, `upsert_segment`, or scoped file tools
    with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.
@@ -122,13 +159,25 @@ archive) use one engine-owned transaction layer:
   overwrites an intervening edit.
 - `idempotency_key` is required and persisted as a hashed, workspace-local
   receipt. Retrying the identical mutation replays its result. Reusing the key
-  for a different intent fails closed.
+  for a different intent fails closed. For `create_project`, the transaction checks that receipt
+  and the expected revision before preparing a new scaffold overwrite; a completed retry does
+  not re-evaluate later edits as a new mutation.
 - A per-project OS file lock serializes cooperating processes. Multi-file
   replacements occur under that lock, parse as one package, and restore every
   prior byte if any write or parse step fails.
 - `dry_run: true` validates a temporary virtual project and reports exact
   proposed content, unified diffs, hashes, and the proposed revision without
   writing the project or consuming the idempotency key.
+- When `overwrite: true` would replace a scaffold file, its current bytes and graph must match
+  a completed creation receipt. Successful creation receipts record hashes for the complete
+  generated scaffold, including files unchanged by an overwrite; an intervening edit to one of
+  those files cannot become the next scaffold's provenance. Byte-identical files need no
+  replacement, but a no-op without proof does not establish new provenance. Older change-only
+  receipts can authorize an overwrite only when one receipt proves the complete current generated
+  scaffold. For a missing graph or changed scaffold file without that proof, restore the recorded
+  bytes or archive the authored project and create a new one. Changing the first entity also
+  retires its old model only when that model matches the receipt. Other authored files and
+  warehouse data stay in place.
 
 Exact existing keys are updated in their current source file instead of
 creating duplicate definitions elsewhere. Successful internal REPL mutations
