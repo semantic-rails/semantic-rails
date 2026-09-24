@@ -308,6 +308,46 @@ def test_overwrite_refuses_to_delete_a_modified_first_model(tmp_path: Path) -> N
     assert not (project / "models" / "core" / "customers.yml").exists()
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_same_path_entity_overwrite_preserves_modified_model(tmp_path: Path, dry_run: bool) -> None:
+    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
+    project = tmp_path / "shop"
+    graph = project / "graph.yml"
+    original_graph = graph.read_bytes()
+    model = project / "models" / "core" / "orders.yml"
+    model.write_bytes(model.read_bytes() + b"# authored change\n")
+    authored_model = model.read_bytes()
+    renamed = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="orders"))
+
+    with pytest.raises(SemanticLayerError, match="modified"):
+        create_project(
+            "shop",
+            renamed,
+            workspace_root=tmp_path,
+            expected_revision=project_revision(project),
+            overwrite=True,
+            dry_run=dry_run,
+        )
+    assert graph.read_bytes() == original_graph
+    assert model.read_bytes() == authored_model
+
+
+def test_same_path_entity_overwrite_replaces_unchanged_scaffold_model(tmp_path: Path) -> None:
+    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
+    project = tmp_path / "shop"
+    renamed = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="orders"))
+
+    mutation = create_project(
+        "shop",
+        renamed,
+        workspace_root=tmp_path,
+        expected_revision=project_revision(project),
+        overwrite=True,
+    )
+    assert mutation.report["ok"] is True, mutation.report
+    assert "orders_count" in _yaml(project / "models" / "core" / "orders.yml")["model"]["measures"]
+
+
 def test_starter_overwrite_retires_old_model_but_keeps_seed(tmp_path: Path) -> None:
     original = ProjectSpec(package_id="growth")
     create_project("growth", original, workspace_root=tmp_path)
@@ -517,6 +557,79 @@ def test_mcp_dialog_requires_named_snowflake_cli_connection(tmp_path: Path) -> N
     assert dialog["ok"] is False
     assert dialog["status"] == "needs_connection_details"
     assert "connection_name" in dialog["required_answers"]
+
+
+@pytest.mark.parametrize("connection_options", ["{}", '{"host_env":"DATABRICKS_HOST"}'])
+def test_mcp_dialog_requires_databricks_connection_options(
+    tmp_path: Path, connection_options: str
+) -> None:
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    async def incomplete(
+        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
+    ) -> ElicitResult:
+        return ElicitResult(
+            action="accept",
+            content={
+                "package_id": "lake_shop",
+                "warehouse": "databricks",
+                "connection_kind": "databricks_native",
+                "connection_name": "my_profile",
+                "connection_options": connection_options,
+            },
+        )
+
+    (dialog,) = _session_call(
+        server,
+        [("setup_project_dialog", {"package_id": "lake_shop", "interactive": True})],
+        elicitation_callback=incomplete,
+    )
+    assert dialog["ok"] is False
+    assert dialog["status"] == "needs_connection_details"
+    if connection_options == "{}":
+        assert "host or host_env" in dialog["required_answers"]
+    assert "http_path or http_path_env" in dialog["required_answers"]
+    assert "token_env or token_file" in dialog["required_answers"]
+
+    async def complete(
+        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
+    ) -> ElicitResult:
+        return ElicitResult(
+            action="accept",
+            content={
+                "package_id": "lake_shop",
+                "warehouse": "databricks",
+                "connection_kind": "databricks_native",
+                "connection_options": (
+                    '{"host_env":"DATABRICKS_HOST",'
+                    '"http_path_env":"DATABRICKS_HTTP_PATH",'
+                    '"token_env":"DATABRICKS_TOKEN"}'
+                ),
+            },
+        )
+
+    (ready,) = _session_call(
+        server,
+        [("setup_project_dialog", {"package_id": "lake_shop", "interactive": True})],
+        elicitation_callback=complete,
+    )
+    assert ready["ok"] is True, ready
+    assert ready["draft_arguments"]["data"] == "external"
+    (created,) = _session_call(
+        server,
+        [
+            (
+                "create_project",
+                {**ready["draft_arguments"], "idempotency_key": "lake-create", "dry_run": False},
+            )
+        ],
+    )
+    assert created["ok"] is True, created
+    package = _yaml(tmp_path / "configs" / "semantic_rails" / "lake_shop" / "package.yml")
+    assert (
+        package["package"]["connection"]["options"]
+        == ready["draft_arguments"]["connection_options"]
+    )
 
 
 def test_create_project_where_dbt_already_built_the_warehouse(tmp_path: Path) -> None:

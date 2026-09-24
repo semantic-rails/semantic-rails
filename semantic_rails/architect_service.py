@@ -341,7 +341,7 @@ def _retired_scaffold_model(
     except (KeyError, TypeError, AttributeError, yaml.YAMLError):
         return []
     old_path = f"models/core/{model_id}.yml"
-    if old_path in new_files:
+    if old_path in new_files and graph_path.read_bytes() == new_files["graph.yml"]:
         return []
     model_path = project / old_path
     if not model_path.exists():
@@ -376,7 +376,7 @@ def _retired_scaffold_model(
             "The prior scaffold first model was modified; remove or archive it explicitly before overwrite",
             details={"reason": "scaffold_model_modified", "path": old_path},
         )
-    return [ProjectFileUpdate(old_path, None)]
+    return [] if old_path in new_files else [ProjectFileUpdate(old_path, None)]
 
 
 def _spec_intent(spec: ProjectSpec) -> dict[str, Any]:

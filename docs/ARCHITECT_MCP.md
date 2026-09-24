@@ -61,6 +61,8 @@ From a source checkout, prefix the same commands with `uv run`.
    `create_project` draft. For a non-DuckDB warehouse the dialog sets `data: external` and
    clears `default_db`. Missing connection details return `ok: false` with
    `status: needs_connection_details` and `required_answers` instead of a ready draft.
+   Databricks requires host, HTTP path, and token option groups; a connection name alone is
+   insufficient for its native adapter.
 4. Preview `create_project` with `expected_revision: absent`, `dry_run: true`,
    and a caller-generated `idempotency_key`; then repeat with `dry_run: false`
    after reviewing its exact file changes.
@@ -79,10 +81,10 @@ its count and amount metrics, an example, a package test and a `.gitignore` for 
   `absent`. Keep the database inside the package (for example, point the dbt profile's `path` at
   `<package>/data/<package_id>.duckdb`); a path outside it needs
   `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
-- Other warehouses take `connection_kind` and either `connection_name` or
-  `connection_options`, with
-  secrets named by environment variable only; a literal secret fails the parse gate and nothing is
-  written.
+- Other warehouses take `connection_kind` and their adapter's required connection inputs.
+  Named connections apply where supported (for example Snowflake CLI); Databricks requires
+  `connection_options`. Name secrets by environment variable only; a literal secret fails the
+  parse gate and nothing is written.
 5. Use `upsert_model`, `upsert_metric`, `upsert_segment`, or scoped file tools
    with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.
@@ -152,7 +154,8 @@ archive) use one engine-owned transaction layer:
   writing the project or consuming the idempotency key.
 - When `overwrite: true` changes the first entity, the same transaction retires the prior
   model only if its graph and model still match the generated scaffold. A modified first model
-  must be archived explicitly. Other authored files and warehouse data stay in place.
+  must be archived explicitly, even when the new entity uses the same model path. Other authored
+  files and warehouse data stay in place.
 
 Exact existing keys are updated in their current source file instead of
 creating duplicate definitions elsewhere. Successful internal REPL mutations

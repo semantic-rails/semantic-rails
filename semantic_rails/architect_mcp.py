@@ -435,6 +435,15 @@ def _missing_setup_answers(draft: dict[str, Any]) -> list[str]:
         missing.append("connection_kind")
     if not draft["connection_options"] and not draft["connection_name"]:
         missing.append("connection_options or connection_name")
+    if draft["warehouse"] == "databricks" and draft["connection_kind"] == "databricks_native":
+        options = draft["connection_options"]
+        for keys in (
+            ("host", "host_env"),
+            ("http_path", "http_path_env"),
+            ("token_env", "token_file"),
+        ):
+            if not any(isinstance(options.get(key), str) and options[key].strip() for key in keys):
+                missing.append(" or ".join(keys))
     if draft["warehouse"] == "snowflake" and not draft["connection_name"]:
         if draft["connection_kind"] == "snowflake_cli":
             missing.append("connection_name")
