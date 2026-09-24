@@ -70,9 +70,11 @@ Comparison paths for `diff_project`, `impact_project`, and release checks must a
 package directories inside the configured workspace root. Use `mcp_client_config` to get a launch
 configuration that includes both `cwd` and `--workspace-root`.
 
-Runtime validation is operational. DuckDB validation can create or refresh the package database, and
-Snowflake validation can issue live queries through the configured Snow CLI connection. Use
-`mode=parse` for a no-query authoring check.
+Runtime validation is operational. DuckDB validation can create a missing package database from
+its seed, but never replaces an existing file. If an existing file lacks configured relations,
+validation returns `INVALID_CONFIG` with the missing relation names. A database another tool builds
+(for example dbt) declares `seed: {kind: external}` and is never created by the runtime. Snowflake validation can issue live queries through the configured Snow CLI
+connection. Use `mode=parse` for a no-query authoring check.
 
 All six mutation tools (`create_project`, raw write, the three upserts, and
 archive) use one engine-owned transaction layer:

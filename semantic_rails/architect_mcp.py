@@ -275,7 +275,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             "Use setup_project_dialog for new-package discovery, then create_project when the required fields are known.",
             "Prefer upsert_model for entity, dimension, time, measure, and join changes so graph.yml stays aligned.",
             "Run validate_project with mode=parse after every structural edit; use mode=runtime before promoting.",
-            "Treat runtime validation as operational: DuckDB validation can create or refresh the package database, and Snowflake validation can issue live queries.",
+            "Treat runtime validation as operational: DuckDB validation can build a missing package database from its seed but never replaces an existing file; declare seed kind external for a database another tool builds. Snowflake validation can issue live queries.",
             "Use impact_project with compare_path or base_ref before release review; use promotion_check with compare_path or base_ref when an environment gate matters.",
         ],
         "workflow": [
