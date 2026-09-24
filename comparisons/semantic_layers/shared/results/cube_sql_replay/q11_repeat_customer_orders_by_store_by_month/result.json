@@ -1,0 +1,94 @@
+{
+  "data": [
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2016-09-01 00:00:00",
+      "orders.orders": 1367
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2016-10-01 00:00:00",
+      "orders.orders": 1685
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2016-11-01 00:00:00",
+      "orders.orders": 2280
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2016-12-01 00:00:00",
+      "orders.orders": 2862
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2017-01-01 00:00:00",
+      "orders.orders": 3410
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2017-02-01 00:00:00",
+      "orders.orders": 3357
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "orders.ordered_at.month": "2017-03-01 00:00:00",
+      "orders.orders": 2092
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2017-03-01 00:00:00",
+      "orders.orders": 3986
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "orders.ordered_at.month": "2017-04-01 00:00:00",
+      "orders.orders": 2850
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2017-04-01 00:00:00",
+      "orders.orders": 3746
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "orders.ordered_at.month": "2017-05-01 00:00:00",
+      "orders.orders": 3565
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2017-05-01 00:00:00",
+      "orders.orders": 4391
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "orders.ordered_at.month": "2017-06-01 00:00:00",
+      "orders.orders": 3963
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2017-06-01 00:00:00",
+      "orders.orders": 3916
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "orders.ordered_at.month": "2017-07-01 00:00:00",
+      "orders.orders": 4053
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2017-07-01 00:00:00",
+      "orders.orders": 3385
+    },
+    {
+      "stores.store_name": "Brooklyn",
+      "orders.ordered_at.month": "2017-08-01 00:00:00",
+      "orders.orders": 4937
+    },
+    {
+      "stores.store_name": "Philadelphia",
+      "orders.ordered_at.month": "2017-08-01 00:00:00",
+      "orders.orders": 3801
+    }
+  ]
+}

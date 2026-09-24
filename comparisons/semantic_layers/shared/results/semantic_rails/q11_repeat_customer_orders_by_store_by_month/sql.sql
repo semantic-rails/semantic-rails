@@ -1,10 +1,10 @@
 WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (
 SELECT
-  jaffle_customer.customer_id AS g1,
-  SUM(jaffle_customer.lifetime_order_count) AS m1
-FROM jaffle_customer
+  comparison_customers.customer_id AS g1,
+  SUM(comparison_customers.lifetime_order_count) AS m1
+FROM comparison_customers
 GROUP BY
-  jaffle_customer.customer_id
+  comparison_customers.customer_id
 ),
 leaf_1__lifetime_order_count_customer_source_1 AS (
 SELECT
@@ -21,15 +21,15 @@ WHERE
 ),
 leaf_1 AS (
 SELECT
-  jaffle_store.store_name AS g1,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  COUNT(DISTINCT jaffle_order.order_id) AS m1
-FROM jaffle_order
-INNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id
-INNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON jaffle_order.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1."dimension.jaffle_customer_id"
+  comparison_stores.store_name AS g1,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  COUNT(DISTINCT comparison_orders.order_id) AS m1
+FROM comparison_orders
+INNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
+INNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1."dimension.jaffle_customer_id"
 GROUP BY
-  jaffle_store.store_name,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  comparison_stores.store_name,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 )
 SELECT
   base.g1 AS "dimension.jaffle_store_name",

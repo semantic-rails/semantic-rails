@@ -1,6 +1,6 @@
 model:
   id: orders
-  relation: jaffle_order
+  relation: comparison_orders
   description: One row per completed customer order.
   entities:
     order: {}

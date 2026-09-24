@@ -6,19 +6,24 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
+import duckdb
 import yaml
 
 from semantic_rails import config as config_module
 from semantic_rails.runtime import Runtime
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-PACKAGE_DIR = REPO_ROOT / "comparisons" / "semantic_layers" / "semantic_rails" / "package"
+LAYER_DIR = REPO_ROOT / "comparisons" / "semantic_layers" / "semantic_rails"
+PACKAGE_DIR = LAYER_DIR / "package"
 QUESTIONS_PATH = REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "questions.yml"
 QUERY_DIR = REPO_ROOT / "comparisons" / "semantic_layers" / "semantic_rails" / "queries"
 RESULTS_DIR = (
     REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "results" / "semantic_rails"
 )
 PACKAGE_ID = "comparison_semantic_rails"
+DB_PATH = (
+    REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "data" / "jaffle_comparison.duckdb"
+)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -39,6 +44,8 @@ def _provenance() -> dict[str, object]:
     are null rather than guessed.
     """
     package = PACKAGE_DIR.relative_to(REPO_ROOT).as_posix()
+    layer = LAYER_DIR.relative_to(REPO_ROOT).as_posix()
+    questions = QUESTIONS_PATH.relative_to(REPO_ROOT).as_posix()
 
     def git(*args: str) -> str | None:
         try:
@@ -50,14 +57,33 @@ def _provenance() -> dict[str, object]:
         return completed.stdout.strip()
 
     status = git(
-        "status", "--porcelain", "--", "semantic_rails", "pyproject.toml", "uv.lock", package
+        "status",
+        "--porcelain",
+        "--",
+        "semantic_rails",
+        "pyproject.toml",
+        "uv.lock",
+        layer,
+        questions,
+    )
+    engine_tree = git("rev-parse", "HEAD:semantic_rails")
+    release = f"v{version('semantic-rails')}"
+    is_release = (
+        engine_tree is not None
+        and git("status", "--porcelain", "--", "semantic_rails") == ""
+        and engine_tree == git("rev-parse", f"{release}:semantic_rails")
     )
     return {
         "semantic_rails_commit": git("rev-parse", "HEAD"),
-        "semantic_rails_tree": git("rev-parse", "HEAD:semantic_rails"),
+        "semantic_rails_tree": engine_tree,
+        # The release tag whose engine this is exactly, or null for any other engine.
+        "engine_release": release if is_release else None,
         "package_tree": git("rev-parse", f"HEAD:{package}"),
-        # True if the engine or the comparison package differs from the recorded commit.
-        "engine_or_package_modified": None if status is None else bool(status),
+        # The package, its queries and this runner.
+        "layer_tree": git("rev-parse", f"HEAD:{layer}"),
+        "questions_blob": git("rev-parse", f"HEAD:{questions}"),
+        # True if any input above differs from the recorded commit.
+        "inputs_modified": None if status is None else bool(status),
     }
 
 
@@ -66,6 +92,8 @@ def main() -> None:
     config_module.list_package_paths = lambda: {PACKAGE_ID: str(PACKAGE_DIR)}  # type: ignore[assignment]
 
     provenance = _provenance()
+    with duckdb.connect(str(DB_PATH), read_only=True) as con:
+        (fingerprint,) = con.execute("SELECT fingerprint FROM comparison_dataset").fetchone()
     questions = list(
         (yaml.safe_load(QUESTIONS_PATH.read_text(encoding="utf-8")) or {}).get("questions", [])
         or []
@@ -93,7 +121,8 @@ def main() -> None:
             summary.append(
                 {
                     "question_id": question_id,
-                    "status": "native" if validated.get("ok") else "unsupported",
+                    # Labels come from the rubric (shared/rubric.md), not from the runner.
+                    "status": "executed" if validated.get("ok") else "unsupported",
                     "row_count": result.get("row_count", 0),
                     "query_path": str(query_path.relative_to(REPO_ROOT)),
                     "result_path": str((target_dir / "result.json").relative_to(REPO_ROOT)),
@@ -112,6 +141,7 @@ def main() -> None:
                 "semantic_rails_version": version("semantic-rails"),
                 **provenance,
                 "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "dataset_fingerprint": fingerprint,
                 "questions": summary,
             },
         )

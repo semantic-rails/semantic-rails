@@ -1,3 +1,8 @@
+# Shared definitions that every layer and the answer key (shared/oracle/) use.
+definitions:
+  revenue: Order total in US dollars, including tax (order_total_cents / 100).
+  item_revenue: Product price per item row in US dollars (item_revenue_cents / 100).
+
 questions:
   - id: q01_orders_by_month
     title: Orders By Month
@@ -75,6 +80,8 @@ questions:
     scope_level: stretch
     business_question: How many repeat customer orders did we have by store by month?
     expected_semantics: Count orders from customers whose lifetime order count is greater than one, while preserving outer store and month grouping.
+    # A rollup that already holds the aggregate this question asks the layer to compute.
+    bypass_columns: [lifetime_order_count]
 
   - id: q12_orders_by_month_with_lifetime_spend_500_filter
     title: Orders By Month With Lifetime Spend Filter
@@ -82,6 +89,7 @@ questions:
     scope_level: stretch
     business_question: How many orders did we have by month after applying a query-time filter for customers with lifetime spend of at least 500 USD?
     expected_semantics: Apply a query-time customer-scoped predicate over lifetime spend without requiring a separately authored published metric for the filtered result.
+    bypass_columns: [lifetime_spend_cents]
 
   - id: q13_daily_orders_from_customers_with_10plus_orders_in_month
     title: Daily Orders From Customers With 10 Plus Orders In Month

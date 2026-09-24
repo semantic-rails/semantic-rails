@@ -1,0 +1,345 @@
+# Which result column holds each field of the answer, per layer and question.
+# The output check reads only these columns; a missing column fails the check.
+# The answer key (shared/oracle/) uses the field names directly.
+semantic_rails:
+  q01_orders_by_month:
+    month: "temporal_role.jaffle_order_time__month"
+    orders: "orders"
+  q02_revenue_by_store_by_month:
+    month: "temporal_role.jaffle_order_time__month"
+    store_name: "dimension.jaffle_store_name"
+    revenue_usd: "revenue_usd"
+  q03_item_revenue_by_product_type_by_month:
+    month: "temporal_role.jaffle_order_time__month"
+    product_type: "dimension.jaffle_item_product_type"
+    item_revenue_usd: "item_revenue_usd"
+  q04_aov_by_store:
+    store_name: "dimension.jaffle_store_name"
+    aov_usd: "aov_usd"
+  q05_orders_and_item_revenue_by_store_by_month:
+    month: "temporal_role.jaffle_order_time__month"
+    store_name: "dimension.jaffle_store_name"
+    orders: "orders"
+    item_revenue_usd: "item_revenue_usd"
+  q06_new_customer_orders_by_month:
+    month: "temporal_role.jaffle_order_time__month"
+    new_customer_orders: "new_customer_orders"
+  q07_delivered_revenue_by_month:
+    month: "temporal_role.jaffle_lifecycle_delivered_at__month"
+    delivered_revenue: "delivered_revenue"
+  q08_revenue_by_customer_segment_as_of_order_time:
+    month: "temporal_role.jaffle_order_time__month"
+    customer_segment: "dimension.jaffle_customer_history_segment"
+    revenue_usd: "revenue_usd"
+  q09_session_to_order_conversion_7d:
+    month: "temporal_role.jaffle_session_started_at__month"
+    session_to_order_conversion_rate_7d: "session_to_order_conversion_rate_7d"
+  q10_orders_from_customers_with_10plus_orders_in_month:
+    month: "temporal_role.jaffle_order_time__month"
+    qualifying_orders: "orders_from_customers_with_10plus_orders_in_period"
+  q11_repeat_customer_orders_by_store_by_month:
+    month: "temporal_role.jaffle_order_time__month"
+    store_name: "dimension.jaffle_store_name"
+    repeat_customer_orders: "repeat_customer_orders"
+  q12_orders_by_month_with_lifetime_spend_500_filter:
+    month: "temporal_role.jaffle_order_time__month"
+    filtered_orders: "filtered_orders"
+  q13_daily_orders_from_customers_with_10plus_orders_in_month:
+    day: "temporal_role.jaffle_order_time__day"
+    qualifying_orders: "qualifying_orders"
+  q14_revenue_from_customers_with_10plus_orders_same_store_month:
+    month: "temporal_role.jaffle_order_time__month"
+    store_name: "dimension.jaffle_store_name"
+    qualifying_revenue_usd: "qualifying_revenue_usd"
+  q15_same_store_session_to_order_conversion_7d:
+    month: "temporal_role.jaffle_session_started_at__month"
+    same_store_conversion_rate_7d: "same_store_conversion_rate_7d"
+  q16_revenue_by_customer_segment_as_of_delivered_time:
+    month: "temporal_role.jaffle_lifecycle_delivered_at__month"
+    customer_segment: "dimension.jaffle_customer_history_segment"
+    delivered_revenue: "delivered_revenue"
+metricflow:
+  q01_orders_by_month:
+    month: "metric_time__month"
+    orders: "orders"
+  q02_revenue_by_store_by_month:
+    month: "metric_time__month"
+    store_name: "store__store_name"
+    revenue_usd: "revenue_usd"
+  q03_item_revenue_by_product_type_by_month:
+    month: "metric_time__month"
+    product_type: "item__product_type"
+    item_revenue_usd: "item_revenue_usd"
+  q04_aov_by_store:
+    store_name: "store__store_name"
+    aov_usd: "aov_usd"
+  q05_orders_and_item_revenue_by_store_by_month:
+    month: "metric_time__month"
+    store_name: "store__store_name"
+    orders: "orders"
+    item_revenue_usd: "item_revenue_usd"
+  q06_new_customer_orders_by_month:
+    month: "metric_time__month"
+    new_customer_orders: "new_customer_orders"
+  q07_delivered_revenue_by_month:
+    month: "metric_time__month"
+    delivered_revenue: "delivered_revenue"
+  q08_revenue_by_customer_segment_as_of_order_time:
+    month: "metric_time__month"
+    customer_segment: "customer__customer_segment"
+    revenue_usd: "revenue_usd"
+  q09_session_to_order_conversion_7d:
+    month: "metric_time__month"
+    session_to_order_conversion_rate_7d: "session_to_order_conversion_rate_7d"
+  q10_orders_from_customers_with_10plus_orders_in_month:
+    month: "metric_time__month"
+    qualifying_orders: "qualifying_orders"
+  q11_repeat_customer_orders_by_store_by_month:
+    month: "metric_time__month"
+    store_name: "store__store_name"
+    repeat_customer_orders: "repeat_customer_orders"
+  q12_orders_by_month_with_lifetime_spend_500_filter:
+    month: "metric_time__month"
+    filtered_orders: "filtered_orders_lifetime_spend_500"
+  q13_daily_orders_from_customers_with_10plus_orders_in_month:
+    day: "metric_time__day"
+    qualifying_orders: "qualifying_orders"
+  q14_revenue_from_customers_with_10plus_orders_same_store_month:
+    month: "metric_time__month"
+    store_name: "store__store_name"
+    qualifying_revenue_usd: "qualifying_revenue_usd_same_store"
+  q15_same_store_session_to_order_conversion_7d:
+    month: "metric_time__month"
+    same_store_conversion_rate_7d: "same_store_session_to_order_conversion_rate_7d"
+  q16_revenue_by_customer_segment_as_of_delivered_time:
+    month: "metric_time__month"
+    customer_segment: "customer__customer_segment"
+    delivered_revenue: "delivered_revenue"
+cube:
+  q01_orders_by_month:
+    month: "orders.ordered_at.month"
+    orders: "orders.orders"
+  q02_revenue_by_store_by_month:
+    month: "orders.ordered_at.month"
+    store_name: "stores.store_name"
+    revenue_usd: "orders.revenue_usd"
+  q03_item_revenue_by_product_type_by_month:
+    month: "order_items.ordered_at.month"
+    product_type: "order_items.product_type"
+    item_revenue_usd: "order_items.item_revenue_usd"
+  q04_aov_by_store:
+    store_name: "stores.store_name"
+    aov_usd: "orders.aov_usd"
+  q05_orders_and_item_revenue_by_store_by_month:
+    month: "order_metrics.ordered_at.month"
+    store_name: "stores.store_name"
+    orders: "order_metrics.orders"
+    item_revenue_usd: "order_metrics.item_revenue_usd"
+  q06_new_customer_orders_by_month:
+    month: "orders.ordered_at.month"
+    new_customer_orders: "orders.new_customer_orders"
+  q07_delivered_revenue_by_month:
+    month: "order_lifecycle.delivered_at.month"
+    delivered_revenue: "order_lifecycle.delivered_revenue"
+  q08_revenue_by_customer_segment_as_of_order_time:
+    month: "orders.ordered_at.month"
+    customer_segment: "customer_history.customer_segment"
+    revenue_usd: "orders.revenue_usd"
+  q09_session_to_order_conversion_7d:
+    month: "session_conversions_7d.started_at.month"
+    session_to_order_conversion_rate_7d: "session_conversions_7d.session_to_order_conversion_rate_7d"
+  q10_orders_from_customers_with_10plus_orders_in_month:
+    month: "qualified_orders.ordered_month.month"
+    qualifying_orders: "qualified_orders.qualifying_orders"
+  q11_repeat_customer_orders_by_store_by_month:
+    month: "orders.ordered_at.month"
+    store_name: "stores.store_name"
+    repeat_customer_orders: "orders.orders"
+  q12_orders_by_month_with_lifetime_spend_500_filter:
+    month: "orders.ordered_at.month"
+    filtered_orders: "orders.orders"
+  q13_daily_orders_from_customers_with_10plus_orders_in_month:
+    day: "qualified_orders.ordered_at.day"
+    qualifying_orders: "qualified_orders.qualifying_orders"
+  q14_revenue_from_customers_with_10plus_orders_same_store_month:
+    month: "high_frequency_store_orders.ordered_at.month"
+    store_name: "stores.store_name"
+    qualifying_revenue_usd: "high_frequency_store_orders.qualifying_revenue_usd"
+  q15_same_store_session_to_order_conversion_7d:
+    month: "session_conversions_7d_same_store.started_at.month"
+    same_store_conversion_rate_7d: "session_conversions_7d_same_store.same_store_session_to_order_conversion_rate_7d"
+  q16_revenue_by_customer_segment_as_of_delivered_time:
+    month: "delivered_orders_with_customer_segment.delivered_at.month"
+    customer_segment: "delivered_orders_with_customer_segment.customer_segment"
+    delivered_revenue: "delivered_orders_with_customer_segment.delivered_revenue"
+malloy:
+  q01_orders_by_month:
+    month: "ordered_month"
+    orders: "orders"
+  q02_revenue_by_store_by_month:
+    month: "ordered_month"
+    store_name: "store_name"
+    revenue_usd: "revenue_usd"
+  q03_item_revenue_by_product_type_by_month:
+    month: "ordered_month"
+    product_type: "product_type"
+    item_revenue_usd: "item_revenue_usd"
+  q04_aov_by_store:
+    store_name: "store_name"
+    aov_usd: "aov_usd"
+  q05_orders_and_item_revenue_by_store_by_month:
+    month: "ordered_month"
+    store_name: "store_name"
+    orders: "orders"
+    item_revenue_usd: "item_revenue_usd"
+  q06_new_customer_orders_by_month:
+    month: "ordered_month"
+    new_customer_orders: "new_customer_orders"
+  q07_delivered_revenue_by_month:
+    month: "delivered_month"
+    delivered_revenue: "delivered_revenue_usd"
+  q08_revenue_by_customer_segment_as_of_order_time:
+    month: "ordered_month"
+    customer_segment: "customer_segment"
+    revenue_usd: "revenue_total_usd"
+  q09_session_to_order_conversion_7d:
+    month: "session_month"
+    session_to_order_conversion_rate_7d: "conversion_rate_7d"
+  q10_orders_from_customers_with_10plus_orders_in_month:
+    month: "ordered_month"
+    qualifying_orders: "qualifying_orders"
+  q11_repeat_customer_orders_by_store_by_month:
+    month: "ordered_month"
+    store_name: "store_name"
+    repeat_customer_orders: "orders"
+  q12_orders_by_month_with_lifetime_spend_500_filter:
+    month: "ordered_month"
+    filtered_orders: "orders"
+  q13_daily_orders_from_customers_with_10plus_orders_in_month:
+    day: "ordered_day"
+    qualifying_orders: "qualifying_orders"
+  q14_revenue_from_customers_with_10plus_orders_same_store_month:
+    month: "ordered_month"
+    store_name: "store_name"
+    qualifying_revenue_usd: "qualifying_revenue_usd"
+  q15_same_store_session_to_order_conversion_7d:
+    month: "session_month"
+    same_store_conversion_rate_7d: "same_store_conversion_rate_7d"
+  q16_revenue_by_customer_segment_as_of_delivered_time:
+    month: "delivered_month"
+    customer_segment: "customer_segment"
+    delivered_revenue: "delivered_revenue_total_usd"
+snowflake_semantic_views:
+  q01_orders_by_month:
+    month: "ORDERED_MONTH"
+    orders: "ORDERS"
+  q02_revenue_by_store_by_month:
+    month: "ORDERED_MONTH"
+    store_name: "STORE_NAME"
+    revenue_usd: "REVENUE_USD"
+  q03_item_revenue_by_product_type_by_month:
+    month: "ORDERED_MONTH"
+    product_type: "PRODUCT_TYPE"
+    item_revenue_usd: "ITEM_REVENUE_USD"
+  q04_aov_by_store:
+    store_name: "STORE_NAME"
+    aov_usd: "AOV_USD"
+  q05_orders_and_item_revenue_by_store_by_month:
+    month: "ORDERED_MONTH"
+    store_name: "STORE_NAME"
+    orders: "ORDERS"
+    item_revenue_usd: "ITEM_REVENUE_USD"
+  q06_new_customer_orders_by_month:
+    month: "ORDERED_MONTH"
+    new_customer_orders: "NEW_CUSTOMER_ORDERS"
+  q07_delivered_revenue_by_month:
+    month: "DELIVERED_MONTH"
+    delivered_revenue: "DELIVERED_REVENUE"
+  q08_revenue_by_customer_segment_as_of_order_time:
+    month: "ORDERED_MONTH"
+    customer_segment: "CUSTOMER_SEGMENT"
+    revenue_usd: "REVENUE_USD"
+  q09_session_to_order_conversion_7d:
+    month: "SESSION_MONTH"
+    session_to_order_conversion_rate_7d: "CONVERSION_RATE_7D"
+  q10_orders_from_customers_with_10plus_orders_in_month:
+    month: "ORDERED_MONTH"
+    qualifying_orders: "QUALIFYING_ORDERS"
+  q11_repeat_customer_orders_by_store_by_month:
+    month: "ORDERED_MONTH"
+    store_name: "STORE_NAME"
+    repeat_customer_orders: "REPEAT_CUSTOMER_ORDERS"
+  q12_orders_by_month_with_lifetime_spend_500_filter:
+    month: "ORDERED_MONTH"
+    filtered_orders: "FILTERED_ORDERS"
+  q13_daily_orders_from_customers_with_10plus_orders_in_month:
+    day: "ORDERED_DAY"
+    qualifying_orders: "QUALIFYING_ORDERS"
+  q14_revenue_from_customers_with_10plus_orders_same_store_month:
+    month: "ORDERED_MONTH"
+    store_name: "STORE_NAME"
+    qualifying_revenue_usd: "QUALIFYING_REVENUE_USD"
+  q15_same_store_session_to_order_conversion_7d:
+    month: "SESSION_MONTH"
+    same_store_conversion_rate_7d: "SAME_STORE_CONVERSION_RATE_7D"
+  q16_revenue_by_customer_segment_as_of_delivered_time:
+    month: "DELIVERED_MONTH"
+    customer_segment: "CUSTOMER_SEGMENT"
+    delivered_revenue: "DELIVERED_REVENUE"
+ktx:
+  q01_orders_by_month:
+    month: "ordered_at_month"
+    orders: "orders"
+  q02_revenue_by_store_by_month:
+    month: "ordered_at_month"
+    store_name: "store_name"
+    revenue_usd: "revenue_usd"
+  q03_item_revenue_by_product_type_by_month:
+    month: "ordered_at_month"
+    product_type: "product_type"
+    item_revenue_usd: "item_revenue_usd"
+  q04_aov_by_store:
+    store_name: "store_name"
+    aov_usd: "aov_usd"
+  q05_orders_and_item_revenue_by_store_by_month:
+    month: "ordered_at_month"
+    store_name: "store_name"
+    orders: "orders"
+    item_revenue_usd: "item_revenue_usd"
+  q06_new_customer_orders_by_month:
+    month: "ordered_at_month"
+    new_customer_orders: "new_customer_orders"
+  q07_delivered_revenue_by_month:
+    month: "delivered_at_month"
+    delivered_revenue: "delivered_revenue"
+  q08_revenue_by_customer_segment_as_of_order_time:
+    month: "ordered_month_month"
+    customer_segment: "customer_segment"
+    revenue_usd: "revenue_usd"
+  q09_session_to_order_conversion_7d:
+    month: "session_month_month"
+    session_to_order_conversion_rate_7d: "session_to_order_conversion_rate_7d"
+  q10_orders_from_customers_with_10plus_orders_in_month:
+    month: "ordered_month_month"
+    qualifying_orders: "qualifying_orders"
+  q11_repeat_customer_orders_by_store_by_month:
+    month: "ordered_at_month"
+    store_name: "store_name"
+    repeat_customer_orders: "orders"
+  q12_orders_by_month_with_lifetime_spend_500_filter:
+    month: "ordered_at_month"
+    filtered_orders: "orders"
+  q13_daily_orders_from_customers_with_10plus_orders_in_month:
+    day: "ordered_day_day"
+    qualifying_orders: "qualifying_orders"
+  q14_revenue_from_customers_with_10plus_orders_same_store_month:
+    month: "ordered_month_month"
+    store_name: "store_name"
+    qualifying_revenue_usd: "qualifying_revenue_usd"
+  q15_same_store_session_to_order_conversion_7d:
+    month: "session_month_month"
+    same_store_conversion_rate_7d: "same_store_conversion_rate_7d"
+  q16_revenue_by_customer_segment_as_of_delivered_time:
+    month: "delivered_month_month"
+    customer_segment: "customer_segment"
+    delivered_revenue: "delivered_revenue"

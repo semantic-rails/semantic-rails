@@ -1,4 +1,4 @@
 {{ config(materialized='view') }}
 
 select *
-from jaffle_order_lifecycle
+from comparison_order_lifecycle

@@ -1,0 +1,50 @@
+[
+  {
+    "month": "2016-09-01",
+    "new_customer_orders": 163
+  },
+  {
+    "month": "2016-10-01",
+    "new_customer_orders": 9
+  },
+  {
+    "month": "2016-11-01",
+    "new_customer_orders": 56
+  },
+  {
+    "month": "2016-12-01",
+    "new_customer_orders": 49
+  },
+  {
+    "month": "2017-01-01",
+    "new_customer_orders": 35
+  },
+  {
+    "month": "2017-02-01",
+    "new_customer_orders": 28
+  },
+  {
+    "month": "2017-03-01",
+    "new_customer_orders": 278
+  },
+  {
+    "month": "2017-04-01",
+    "new_customer_orders": 22
+  },
+  {
+    "month": "2017-05-01",
+    "new_customer_orders": 98
+  },
+  {
+    "month": "2017-06-01",
+    "new_customer_orders": 86
+  },
+  {
+    "month": "2017-07-01",
+    "new_customer_orders": 57
+  },
+  {
+    "month": "2017-08-01",
+    "new_customer_orders": 58
+  }
+]

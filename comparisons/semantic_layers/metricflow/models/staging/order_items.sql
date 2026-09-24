@@ -1,10 +1,5 @@
 {{ config(materialized='view') }}
 
-select
-  i.*,
-  o.ordered_at,
-  o.store_id,
-  o.customer_id
-from jaffle_item as i
-inner join jaffle_order as o
-  on i.order_id = o.order_id
+-- comparison_order_items already carries each item's order time, store and customer.
+select *
+from comparison_order_items

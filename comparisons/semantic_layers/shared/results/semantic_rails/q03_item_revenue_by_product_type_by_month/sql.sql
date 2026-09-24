@@ -1,13 +1,13 @@
 WITH leaf_1 AS (
 SELECT
-  jaffle_item.product_type AS g1,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,
-  SUM(jaffle_item.item_revenue_cents / 100.0) AS m1
-FROM jaffle_item
-INNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id
+  comparison_order_items.product_type AS g1,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
+  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m1
+FROM comparison_order_items
+INNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id
 GROUP BY
-  jaffle_item.product_type,
-  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))
+  comparison_order_items.product_type,
+  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 )
 SELECT
   base.g1 AS "dimension.jaffle_item_product_type",

@@ -1,0 +1,52 @@
+{
+  "data": [
+    {
+      "orders.ordered_at.month": "2016-09-01 00:00:00",
+      "orders.orders": 1367
+    },
+    {
+      "orders.ordered_at.month": "2016-10-01 00:00:00",
+      "orders.orders": 1685
+    },
+    {
+      "orders.ordered_at.month": "2016-11-01 00:00:00",
+      "orders.orders": 2280
+    },
+    {
+      "orders.ordered_at.month": "2016-12-01 00:00:00",
+      "orders.orders": 2862
+    },
+    {
+      "orders.ordered_at.month": "2017-01-01 00:00:00",
+      "orders.orders": 3410
+    },
+    {
+      "orders.ordered_at.month": "2017-02-01 00:00:00",
+      "orders.orders": 3357
+    },
+    {
+      "orders.ordered_at.month": "2017-03-01 00:00:00",
+      "orders.orders": 6078
+    },
+    {
+      "orders.ordered_at.month": "2017-04-01 00:00:00",
+      "orders.orders": 6596
+    },
+    {
+      "orders.ordered_at.month": "2017-05-01 00:00:00",
+      "orders.orders": 7956
+    },
+    {
+      "orders.ordered_at.month": "2017-06-01 00:00:00",
+      "orders.orders": 7881
+    },
+    {
+      "orders.ordered_at.month": "2017-07-01 00:00:00",
+      "orders.orders": 7438
+    },
+    {
+      "orders.ordered_at.month": "2017-08-01 00:00:00",
+      "orders.orders": 8742
+    }
+  ]
+}
