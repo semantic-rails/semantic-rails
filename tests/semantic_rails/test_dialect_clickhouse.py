@@ -176,6 +176,22 @@ def _install_fake_driver(monkeypatch: pytest.MonkeyPatch, captured: dict, *, fai
     module.get_client = lambda **kwargs: FakeClient(**kwargs)
     driver = types.ModuleType("clickhouse_connect.driver")
     driver.httputil = httputil
+
+    def parse_connection_params(**kwargs):
+        port = kwargs["port"]
+        interface = kwargs["interface"] or (
+            "https" if kwargs["secure"] or port in (443, 8443) else "http"
+        )
+        return (
+            kwargs["host"],
+            kwargs["username"],
+            kwargs["password"],
+            port,
+            kwargs["database"],
+            interface,
+        )
+
+    driver._parse_connection_params = parse_connection_params
     module.driver = driver
     monkeypatch.setitem(sys.modules, "clickhouse_connect", module)
     monkeypatch.setitem(sys.modules, "clickhouse_connect.driver", driver)
@@ -415,6 +431,63 @@ def test_adapter_uses_driver_https_proxy_pool(monkeypatch: pytest.MonkeyPatch):
     assert captured["connect_kwargs"]["pool_mgr"] is captured["pool"]
 
 
+@pytest.mark.parametrize(
+    ("port", "secure_option", "expected_scheme"),
+    [
+        (443, None, "https"),
+        (8443, "false", "https"),
+        (9000, "true", "https"),
+        (9000, "false", "http"),
+    ],
+)
+def test_adapter_proxy_matches_driver_interface(
+    monkeypatch: pytest.MonkeyPatch, port: int, secure_option: str | None, expected_scheme: str
+):
+    driver = pytest.importorskip("clickhouse_connect")
+    from clickhouse_connect.driver import httputil
+
+    proxy_urls = {
+        "http": "http://127.0.0.1:11111",
+        "https": "http://127.0.0.1:22222",
+    }
+    captured: dict = {}
+
+    class FakePool:
+        def request(self, *args, **kwargs):
+            pytest.fail("pool construction must not make a network request")
+
+        def clear(self):
+            captured["cleared"] = True
+
+    def get_pool_manager(**kwargs):
+        captured["pool_kwargs"] = kwargs
+        pool = FakePool()
+        httputil.all_managers[pool] = 1
+        return pool
+
+    def get_client(**kwargs):
+        captured["connect_kwargs"] = kwargs
+        return types.SimpleNamespace(http=kwargs["pool_mgr"], close=lambda: None)
+
+    monkeypatch.setattr(httputil, "check_env_proxy", lambda scheme, host, port: proxy_urls[scheme])
+    monkeypatch.setattr(httputil, "get_pool_manager", get_pool_manager)
+    monkeypatch.setattr(driver, "get_client", get_client)
+    monkeypatch.setenv("SR_CH_TEST_HOST", "127.0.0.1")
+    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
+    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
+    options = {**_adapter_options(), "port": str(port)}
+    if secure_option is not None:
+        options["secure"] = secure_option
+
+    adapter = ClickHouseAdapter(options)
+    adapter._client_handle()
+    adapter.close()
+
+    assert captured["pool_kwargs"] == {f"{expected_scheme}_proxy": proxy_urls[expected_scheme]}
+    assert captured["connect_kwargs"]["pool_mgr"] is not None
+    assert captured["cleared"] is True
+
+
 def test_no_redirect_pool_returns_the_redirect_instead_of_following_it():
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -452,8 +525,14 @@ def test_no_redirect_pool_returns_the_redirect_instead_of_following_it():
             check_env_proxy=lambda scheme, host, port: None,
             get_pool_manager=lambda **kwargs: manager,
         )
+
+        def parse_connection_params(**kwargs):
+            return (kwargs["host"], None, "", kwargs["port"], "", "http")
+
         kept = _no_redirect_pool(
-            httputil, {"host": "127.0.0.1", "port": server.server_port, "secure": False}
+            httputil,
+            parse_connection_params,
+            {"host": "127.0.0.1", "port": server.server_port, "secure": False},
         ).request("GET", url)
     finally:
         server.shutdown()

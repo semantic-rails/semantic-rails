@@ -104,10 +104,10 @@ class ClickHouseAdapter(WarehouseAdapter):
                 engine=self.engine,
                 connection_kind=self.connection_kind,
             )
-            from clickhouse_connect.driver import httputil
+            from clickhouse_connect.driver import _parse_connection_params, httputil
 
             kwargs = self._connect_kwargs()
-            self._pool = _no_redirect_pool(httputil, kwargs)
+            self._pool = _no_redirect_pool(httputil, _parse_connection_params, kwargs)
             try:
                 # get_client sends autoconnect requests before it returns. Give it
                 # the guarded pool up front, including for those first requests.
@@ -156,12 +156,21 @@ def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:
     return ClickHouseAdapter(dict(getattr(package.connection, "options", {}) or {}))
 
 
-def _no_redirect_pool(httputil: Any, kwargs: dict[str, Any]) -> Any:
+def _no_redirect_pool(httputil: Any, parse_connection_params: Any, kwargs: dict[str, Any]) -> Any:
     """Use the driver's TLS/proxy pool options with redirects off from request one."""
-    host, port = kwargs["host"], kwargs["port"]
-    proxy_scheme = "https" if kwargs["secure"] else "http"
-    proxy = httputil.check_env_proxy(proxy_scheme, host, port)
-    proxy_arg = {f"{proxy_scheme}_proxy": proxy} if proxy else {}
+    host, _, _, port, _, interface = parse_connection_params(
+        host=kwargs.get("host"),
+        username=kwargs.get("username"),
+        password=kwargs.get("password", ""),
+        port=kwargs.get("port", 0),
+        database=kwargs.get("database", "__default__"),
+        interface=kwargs.get("interface"),
+        secure=kwargs.get("secure", False),
+        dsn=kwargs.get("dsn"),
+        kwargs={},
+    )
+    proxy = httputil.check_env_proxy(interface, host, port)
+    proxy_arg = {f"{interface}_proxy": proxy} if proxy else {}
     pool = httputil.get_pool_manager(**proxy_arg)
     request = pool.request
 
