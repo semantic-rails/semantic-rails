@@ -2117,6 +2117,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "tzdata" },
 ]
 
 [package.optional-dependencies]
@@ -2180,6 +2181,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "snowflake-connector-python", marker = "extra == 'all'", specifier = ">=4.6.0" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=4.6.0" },
+    { name = "tzdata", specifier = ">=2026.2" },
     { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.49.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.49.0" },
 ]
