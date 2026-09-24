@@ -13,11 +13,12 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails import db as db_module
 from semantic_rails import runtime as runtime_module
 from semantic_rails import seed_provenance
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import validate_runtime_package
-from semantic_rails.db import seed_db
+from semantic_rails.db import load_csv_dir_to_duckdb, seed_db
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.seed_provenance import missing_duckdb_relations
@@ -49,6 +50,91 @@ def _write_db(db_path: Path, sql: str) -> Path:
     finally:
         conn.close()
     return db_path
+
+
+def _explicit_seed(tmp_path: Path, db_path: Path, kind: str) -> None:
+    if kind == "sql":
+        source = tmp_path / "new_seed.sql"
+        source.write_text("CREATE TABLE replacement AS SELECT 2 AS marker", encoding="utf-8")
+        seed_db(str(db_path), str(source))
+    else:
+        source = tmp_path / "new_csv"
+        source.mkdir()
+        (source / "replacement.csv").write_text("marker\n2\n", encoding="utf-8")
+        load_csv_dir_to_duckdb(str(db_path), str(source))
+
+
+@pytest.mark.parametrize("kind", ["sql", "csv"])
+def test_explicit_seed_refuses_existing_wal_without_touching_database(
+    tmp_path: Path, monkeypatch, kind: str
+) -> None:
+    db_path = _write_db(
+        tmp_path / "warehouse.duckdb", "CREATE TABLE original AS SELECT 1 AS marker"
+    )
+    before, inode = file_digest(db_path), db_path.stat().st_ino
+    wal_path = Path(f"{db_path}.wal")
+    wal_path.write_bytes(b"pending committed changes")
+    monkeypatch.setattr(db_module.os, "replace", lambda *_: pytest.fail("must not replace"))
+
+    with pytest.raises(SemanticLayerError, match="close and checkpoint"):
+        _explicit_seed(tmp_path, db_path, kind)
+
+    assert file_digest(db_path) == before and db_path.stat().st_ino == inode
+    assert wal_path.read_bytes() == b"pending committed changes"
+    assert not list(tmp_path.glob("*.seed.*.tmp"))
+
+
+@pytest.mark.parametrize("kind", ["sql", "csv"])
+def test_explicit_seed_refuses_wal_created_during_build(
+    tmp_path: Path, monkeypatch, kind: str
+) -> None:
+    db_path = _write_db(
+        tmp_path / "warehouse.duckdb", "CREATE TABLE original AS SELECT 1 AS marker"
+    )
+    before = file_digest(db_path)
+    wal_path = Path(f"{db_path}.wal")
+    build = db_module.build_seed_database
+
+    def build_then_create_wal(*args: Any, **kwargs: Any) -> str:
+        temporary = build(*args, **kwargs)
+        wal_path.write_bytes(b"pending committed changes")
+        return temporary
+
+    monkeypatch.setattr(db_module, "build_seed_database", build_then_create_wal)
+    monkeypatch.setattr(db_module.os, "replace", lambda *_: pytest.fail("must not replace"))
+
+    with pytest.raises(SemanticLayerError, match="close and checkpoint"):
+        _explicit_seed(tmp_path, db_path, kind)
+
+    assert file_digest(db_path) == before
+    assert wal_path.read_bytes() == b"pending committed changes"
+    assert not list(tmp_path.glob("*.seed.*.tmp"))
+
+
+@pytest.mark.parametrize("kind", ["sql", "csv"])
+def test_explicit_seed_failed_publication_preserves_database_and_new_wal(
+    tmp_path: Path, monkeypatch, kind: str
+) -> None:
+    db_path = _write_db(
+        tmp_path / "warehouse.duckdb", "CREATE TABLE original AS SELECT 1 AS marker"
+    )
+    before, inode = file_digest(db_path), db_path.stat().st_ino
+    wal_path = Path(f"{db_path}.wal")
+    unrelated_seed = tmp_path / "warehouse.duckdb.seed.other.tmp"
+    unrelated_seed.write_bytes(b"another seed operation")
+
+    def fail_publication(_source: str, _target: str) -> None:
+        wal_path.write_bytes(b"concurrent recovery log")
+        raise OSError("injected publication failure")
+
+    monkeypatch.setattr(db_module.os, "replace", fail_publication)
+    with pytest.raises(OSError, match="injected publication failure"):
+        _explicit_seed(tmp_path, db_path, kind)
+
+    assert file_digest(db_path) == before and db_path.stat().st_ino == inode
+    assert wal_path.read_bytes() == b"concurrent recovery log"
+    assert list(tmp_path.glob("*.seed.*.tmp")) == [unrelated_seed]
+    assert unrelated_seed.read_bytes() == b"another seed operation"
 
 
 def _seeded_orders_only_package(tmp_path: Path) -> tuple[Path, Path]:

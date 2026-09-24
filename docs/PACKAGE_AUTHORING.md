@@ -383,6 +383,12 @@ up any data you need, and explicitly remove the database file before
 restarting so bootstrap can create a fresh one. The former
 `SEMANTIC_RAILS_ALLOW_DB_RESEED` setting does not enable automatic replacement.
 
+The operator-invoked `seed_db` and CSV loader helpers still replace an existing
+file, but refuse to publish while its `.wal` recovery log exists. Close and
+checkpoint the database before invoking either helper. Keep other writers
+stopped through publication: the WAL check cannot prevent a writer from
+creating a new log immediately after it runs.
+
 ### `package.environments` and governance `meta:`
 
 ```yaml

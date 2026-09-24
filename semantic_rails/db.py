@@ -344,15 +344,22 @@ def _build_and_replace(db_path: str, **build: Any) -> None:
     try:
         # Explicit seeding helpers keep their existing replace semantics; runtime
         # bootstrap uses publish_seed_database directly, which never overwrites.
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(f"{db_path}.wal")
+        # A destination WAL may contain committed changes absent from the main
+        # file. Only its owner can safely close/checkpoint it before replacement.
+        if os.path.lexists(f"{db_path}.wal"):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"Cannot replace '{db_path}' while its DuckDB WAL exists; "
+                "close and checkpoint the database first",
+                details={"reason": "seed_target_wal_present", "db_path": db_path},
+            )
         os.replace(tmp_path, db_path)
     finally:
         _remove_quietly(tmp_path)
 
 
 def seed_db(db_path: str, seed_sql_path: str, *, package_id: str = "") -> None:
-    """Build ``db_path`` from a SQL script and replace it atomically."""
+    """Build from SQL and replace ``db_path`` if no destination WAL exists."""
     _build_and_replace(db_path, kind="sql_script", source=seed_sql_path, package_id=package_id)
 
 
@@ -364,7 +371,7 @@ def load_csv_dir_to_duckdb(
     *,
     package_id: str = "",
 ) -> None:
-    """Build ``db_path`` from a directory of CSVs (plus optional SQL) and replace it atomically."""
+    """Build from CSVs (plus optional SQL) and replace if no destination WAL exists."""
     _build_and_replace(
         db_path,
         kind="csv_dir_duckdb",
