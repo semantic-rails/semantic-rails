@@ -9,18 +9,21 @@ build cruft (``.git``, ``__pycache__``, DuckDB files) by default.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import os
 import re
 import subprocess
 import tarfile
 import tempfile
-from collections.abc import Iterable
+import unicodedata
+from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .cache import package_fingerprint
-from .config import load_package_config, package_root_for_source, repo_root, resolve_repo_path
+from .config import load_package_config, package_root_for_source, resolve_repo_path
 from .config_validation import (
     PackageReference,
     parse_config_report,
@@ -928,18 +931,20 @@ def diff_package_report(
     snapshot = snapshot or load_package_snapshot(ref.source_path)
     current_config = snapshot.config
     current_snapshot = _package_snapshot(snapshot)
-    other_path, compare_label = _comparison_source(
-        ref.source_path, compare_path=compare_path, base_ref=base_ref
-    )
-    previous = load_package_snapshot(other_path)
-    previous_snapshot = _package_snapshot(previous)
+    with _comparison_source(ref.source_path, compare_path=compare_path, base_ref=base_ref) as (
+        other_path,
+        compare_label,
+        origin,
+    ):
+        previous = load_package_snapshot(other_path)
+        previous_snapshot = _package_snapshot(previous)
     diff = _diff_snapshots(previous_snapshot, current_snapshot)
     return {
         "ok": True,
         "package": {"id": current_config.package.package_id, "source_path": ref.source_path},
         "comparison": {
             "label": compare_label,
-            "source_path": other_path,
+            "source_path": origin,
             "semantic_fingerprint": previous.semantic_fingerprint,
         },
         "semantic_fingerprint": snapshot.semantic_fingerprint,
@@ -1374,43 +1379,170 @@ def _impact_markdown(
     return "\n".join(lines)
 
 
-def _comparison_source(source_path: str, *, compare_path: str, base_ref: str) -> tuple[str, str]:
+# Longer than any sane ref; bounds what reaches the git command line.
+_MAX_GIT_REF = 256
+_GIT_LOCATION_ENV = frozenset(
+    {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"}
+)
+
+
+@contextlib.contextmanager
+def _comparison_source(
+    source_path: str, *, compare_path: str, base_ref: str
+) -> Iterator[tuple[str, str, str]]:
+    """The package to compare against, as (path to load, label, where it came from).
+
+    A ``base_ref`` package is extracted to a temporary directory that is
+    removed when the comparison is done.
+    """
     if compare_path:
-        return str(Path(compare_path).resolve()), str(Path(compare_path).resolve())
+        resolved = str(Path(compare_path).resolve())
+        yield resolved, resolved, resolved
+        return
     if base_ref:
-        extracted_path = _extract_package_from_git(source_path, base_ref)
-        return extracted_path, base_ref
+        with tempfile.TemporaryDirectory(prefix="semantic-rails-package-") as temporary:
+            extracted, origin = _extract_package_from_git(source_path, base_ref, Path(temporary))
+            yield extracted, base_ref, origin
+        return
     raise SemanticLayerError(
         "INVALID_CONFIG", "Provide either compare_path or base_ref for diff and impact reports"
     )
 
 
-def _extract_package_from_git(source_path: str, base_ref: str) -> str:
+def _git(repo: Path, *args: str) -> bytes:
+    # GIT_DIR and friends would point git at another repository than -C, and
+    # a package directory named like pathspec magic must be taken literally.
+    env = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV}
+    return subprocess.run(
+        ["git", "--literal-pathspecs", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        env=env,
+        timeout=60,
+    ).stdout
+
+
+def _extract_package_from_git(
+    source_path: str, base_ref: str, destination: Path
+) -> tuple[str, str]:
+    """Write the package as it was at ``base_ref`` under ``destination``.
+
+    The ref resolves in the git repository that holds the package, which need
+    not be the engine's. Only regular files with plain relative names are
+    written, and only inside ``destination``. Unsupported entries, ambiguous
+    names and read/write failures reject the entire comparison: skipping one
+    could make a removed metric appear unchanged. Returns the
+    extracted package directory and a ``<ref>@<commit>:<path>`` description
+    of its origin.
+    """
     package_root = Path(package_root_for_source(source_path)).resolve()
-    repo = Path(repo_root()).resolve()
-    try:
-        rel_package_path = package_root.relative_to(repo).as_posix()
-    except ValueError as exc:
+    ref = str(base_ref or "").strip()
+    if (
+        not ref
+        or ref.startswith("-")
+        or len(ref) > _MAX_GIT_REF
+        or any(ord(character) < 32 or character == "\x7f" for character in ref)
+    ):
         raise SemanticLayerError(
-            "INVALID_CONFIG", f"Package path '{package_root}' is not inside the git repo"
-        ) from exc
-    files = subprocess.check_output(
-        ["git", "ls-tree", "-r", "--name-only", base_ref, "--", rel_package_path],
-        cwd=repo,
-        text=True,
-    ).splitlines()
-    if not files:
-        raise SemanticLayerError(
-            "OBJECT_NOT_FOUND",
-            f"No package files found for '{rel_package_path}' at git ref '{base_ref}'",
+            "INVALID_CONFIG", f"base_ref {str(base_ref)[:80]!r} is not a git revision"
         )
-    temp_root = Path(tempfile.mkdtemp(prefix="semantic-rails-package-"))
-    for relative_file in files:
-        target_path = temp_root / relative_file
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        content = subprocess.check_output(["git", "show", f"{base_ref}:{relative_file}"], cwd=repo)
-        target_path.write_bytes(content)
-    return str(temp_root / rel_package_path)
+    try:
+        repo = Path(
+            os.fsdecode(_git(package_root, "rev-parse", "--show-toplevel").removesuffix(b"\n"))
+        )
+        # Where git sees the package, which a case-insensitive file system can
+        # spell differently from package_root.
+        prefix = os.fsdecode(_git(package_root, "rev-parse", "--show-prefix").removesuffix(b"\n"))
+        prefix = prefix.removesuffix("/")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Package path '{package_root}' is not inside a git repository; use compare_path",
+        ) from exc
+    try:
+        commit = (
+            _git(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}")
+            .decode("ascii")
+            .strip()
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND", f"git ref {ref!r} does not name a commit in '{repo}'"
+        ) from exc
+    try:
+        listing = _git(
+            repo, "ls-tree", "-r", "-z", "--full-tree", commit, *(["--", prefix] if prefix else [])
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _baseline_error(ref, "could not list package files") from exc
+    target_root = destination / package_root.name
+    entries: list[tuple[str, tuple[str, ...], str]] = []
+    seen_names: dict[tuple[str, ...], tuple[str, ...]] = {}
+    file_names: set[tuple[str, ...]] = set()
+    for entry in filter(None, listing.split(b"\0")):
+        try:
+            meta, separator, raw_name = entry.partition(b"\t")
+            mode, kind, obj = meta.decode("ascii").split()
+            if not separator:
+                raise ValueError("missing tree entry separator")
+            name = os.fsdecode(raw_name)
+        except (UnicodeError, ValueError) as exc:
+            raise _baseline_error(ref, "malformed package tree entry") from exc
+        parts = _package_file_parts(name, prefix)
+        if kind != "blob" or mode not in {"100644", "100755"} or parts is None:
+            raise _baseline_error(ref, f"unsupported package tree entry {name[:120]!r}")
+        for depth in range(1, len(parts) + 1):
+            canonical = tuple(
+                unicodedata.normalize("NFC", part).casefold() for part in parts[:depth]
+            )
+            original = parts[:depth]
+            prior = seen_names.setdefault(canonical, original)
+            if prior != original or canonical in file_names:
+                raise _baseline_error(ref, f"ambiguous package tree name {name[:120]!r}")
+        file_names.add(canonical)
+        entries.append((name, parts, obj))
+    if not entries:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND", f"No package files found for '{prefix or '.'}' at git ref '{ref}'"
+        )
+    try:
+        if target_root.exists() or target_root.is_symlink():
+            raise _baseline_error(ref, "extraction destination is not empty")
+    except OSError as exc:
+        raise _baseline_error(ref, "could not inspect extraction destination") from exc
+    for name, parts, obj in entries:
+        target = target_root.joinpath(*parts)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() or target.is_symlink():
+                raise _baseline_error(ref, f"ambiguous package tree name {name[:120]!r}")
+            data = _git(repo, "cat-file", "blob", obj)
+            if target.write_bytes(data) != len(data) or target.read_bytes() != data:
+                raise _baseline_error(ref, f"could not verify package file {name[:120]!r}")
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+            raise _baseline_error(
+                ref, f"could not materialize package file {name[:120]!r}"
+            ) from exc
+    return str(target_root), f"{ref}@{commit[:12]}:{prefix or '.'}"
+
+
+def _baseline_error(ref: str, reason: str) -> SemanticLayerError:
+    return SemanticLayerError(
+        "INVALID_CONFIG", f"Git baseline {ref!r} cannot be compared: {reason}"
+    )
+
+
+def _package_file_parts(name: str, prefix: str) -> tuple[str, ...] | None:
+    """A tree entry's path inside the package, or None when it is not a plain one."""
+    parts = name.split("/")
+    leading = prefix.split("/") if prefix else []
+    if any(part in {"", ".", ".."} for part in parts) or parts[: len(leading)] != leading:
+        return None
+    inside = tuple(parts[len(leading) :])
+    # A drive or a backslash would let a Windows path leave the destination.
+    if not inside or any("\\" in part or ":" in part for part in inside):
+        return None
+    return inside
 
 
 def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
