@@ -162,10 +162,10 @@ archive) use one engine-owned transaction layer:
 - `dry_run: true` validates a temporary virtual project and reports exact
   proposed content, unified diffs, hashes, and the proposed revision without
   writing the project or consuming the idempotency key.
-- When `overwrite: true` changes the first entity, the same transaction retires the prior
-  model only if its graph and model still match the generated scaffold. A modified first model
-  must be archived explicitly, even when the new entity uses the same model path. Other authored
-  files and warehouse data stay in place.
+- When `overwrite: true` would replace or retire the first model, it proceeds only if its graph
+  and model bytes match a completed creation receipt. A modified first model, or one without
+  that receipt, must be archived explicitly, even when the new entity uses the same model path.
+  Other authored files and warehouse data stay in place.
 
 Exact existing keys are updated in their current source file instead of
 creating duplicate definitions elsewhere. Successful internal REPL mutations

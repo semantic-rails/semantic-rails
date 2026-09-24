@@ -353,6 +353,38 @@ class ProjectTransaction:
     def current_revision(self) -> str:
         return project_revision(self.project_path)
 
+    def matches_creation_files(self, files: Mapping[str, bytes]) -> bool:
+        """Whether a completed create_project receipt recorded these exact file bytes.
+
+        Receipts are the transaction's existing provenance. Missing or unreadable
+        receipts cannot prove a model is still the generated scaffold.
+        """
+        for path in self._receipt_root.glob("*.json"):
+            if path.is_symlink():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                report = payload["report"]
+                if (
+                    payload.get("format_version") != TRANSACTION_RECEIPT_FORMAT
+                    or payload.get("project_path") != str(self.project_path)
+                    or report.get("operation") != "created"
+                    or report.get("status") != "created"
+                    or not report.get("ok")
+                ):
+                    continue
+                changes = {row["path"]: row for row in report["changes"]}
+                if all(
+                    changes.get(name, {}).get("content_encoding") == "utf-8"
+                    and changes[name].get("proposed_content", "").encode("utf-8") == content
+                    and changes[name].get("after_sha256") == f"sha256:{_digest(content)}"
+                    for name, content in files.items()
+                ):
+                    return True
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
+        return False
+
     def apply(
         self,
         updates: Iterable[ProjectFileUpdate],
