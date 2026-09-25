@@ -144,6 +144,10 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   stdin and stdout aren't a terminal, the REPL keeps its plain line prompts;
   `SEMANTIC_RAILS_UI=plain` forces them (for example with a screen reader) and
   `SEMANTIC_RAILS_UI=pickers` insists on pickers.
+- Add `semantic-rails://catalog/index` for counts and ids per kind and
+  `semantic-rails://capabilities/summary` for tool names and titles. These compact resources are
+  opt-in. Existing v1 `catalog/summary` keeps its descriptive rows and `counts_total`, and
+  `capabilities` keeps complete tool definitions for existing consumers.
 
 ### Changed
 
@@ -218,6 +222,10 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   now fails, including during client initialization, instead of following it.
   Databricks results are fetched inline
   (`use_cloud_fetch=False`) instead of being downloaded from result links.
+- `create_optional_fastmcp_server` selects `MCPServer` when the MCP Python SDK 2.x module is
+  present, or `FastMCP` on the installed 1.x SDK. The 2.x branch is covered by a simulated
+  module test; an SDK 2.x install has not been qualified for the full package.
+- Package metadata names Semantic Rails, Inc. as the author.
 
 ### Removed
 
@@ -387,13 +395,6 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   patch for a windowed metric carries its default time window, and a `percentile` option carries
   `p`. (A temporal role offered at the `time` step may still be one the selected measure doesn't
   use.) These tools read Query IR only from their `query` argument, not from top-level fields.
-- Add `semantic-rails://catalog/index` for counts and ids per kind and
-  `semantic-rails://capabilities/summary` for tool names and titles. These compact resources are
-  opt-in. Existing v1 `catalog/summary` keeps its descriptive rows and `counts_total`, and
-  `capabilities` keeps complete tool definitions for existing consumers.
-- `create_optional_fastmcp_server` selects `MCPServer` when the MCP Python SDK 2.x module is
-  present, or `FastMCP` on the installed 1.x SDK. The 2.x branch is covered by a simulated
-  module test; an SDK 2.x install has not been qualified for the full package.
 - `mcp setup` and `mcp client-config` run through `uvx` now write client configs that
   start the server with `uv tool run --from <the same install>`. They used to name the
   Python inside uv's cache, so the client stopped starting the server after
