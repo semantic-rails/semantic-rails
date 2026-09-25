@@ -443,6 +443,7 @@ def _compact_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "validation_ok": best.get("validation_ok", False),
         "resolved": resolved,
         "rationale": list(best.get("rationale", []) or []),
+        "warnings": list(plan.get("warnings", []) or []),
     }
 
 

@@ -106,7 +106,7 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         print("Resolved:")
         for row in resolved:
             print(f"  {row.get('kind')}: {row.get('id')} ({row.get('label')})")
-    warnings: list[Any] = []
+    warnings: list[Any] = list(plan.get("warnings", []) or [])
     result = report.get("result")
     if isinstance(result, dict):
         rows = list(result.get("rows", []) or [])

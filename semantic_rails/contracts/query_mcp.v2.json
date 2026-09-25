@@ -595,7 +595,7 @@
         "properties": {
           "max_rows": {
             "default": 200,
-            "description": "Rows to return in mode 'run'. A larger result sets truncated=true and total_row_count.",
+            "description": "Rows to return in mode 'run'. A larger result sets truncated=true and total_row_count (null past 10,000 rows).",
             "maximum": 100000,
             "minimum": 1,
             "type": "integer"

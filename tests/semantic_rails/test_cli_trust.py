@@ -425,12 +425,14 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     runtime = _StubRuntime()
+    unmatched = {"code": "PLAN_UNMATCHED_TERMS", "message": "The draft doesn't use: rolling."}
     plan = {
         "ok": True,
         "best": {
             "query_ir": {"select": [{"expression": {"measure": "measure.orders"}}]},
             "resolved": [{"id": "measure.orders", "label": "Orders"}],
         },
+        "warnings": [unmatched],
     }
     monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: runtime)
     monkeypatch.setattr(reports, "plan_payload", lambda *_a, **_k: plan)
@@ -448,7 +450,12 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
         "To lift the 5-row cap, run: semantic-rails ask --path /nowhere orders --run --limit 0\n"
         in output
     )
-    assert "Warnings:\n  EMPTY_RESULT_WINDOW: No data in window.\n" in output
+    # The plan's own warnings come first: they say the draft may answer something else.
+    assert report["plan"]["warnings"] == [unmatched]
+    assert (
+        "Warnings:\n  PLAN_UNMATCHED_TERMS: The draft doesn't use: rolling.\n"
+        "  EMPTY_RESULT_WINDOW: No data in window.\n" in output
+    )
     assert "  Treated a blank grain as month.\n" in output
 
 

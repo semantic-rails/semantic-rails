@@ -242,7 +242,10 @@ _SUBJECT_FILLER = frozenset(
         "daily",
         "give",
         "historical",
+        "how",
+        "is",
         "list",
+        "many",
         "me",
         "monthly",
         "of",
@@ -252,7 +255,9 @@ _SUBJECT_FILLER = frozenset(
         "sum",
         "the",
         "total",
+        "was",
         "weekly",
+        "what",
         "yearly",
     }
 )
@@ -1531,7 +1536,7 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
     ]
     matches: list[dict[str, Any]] = []
     for piece in pieces:
-        piece_tokens = tuple(token for token in _tokens(piece) if token not in _SUBJECT_FILLER)
+        piece_tokens = _subject_tokens(piece)
         if not piece_tokens:
             return []
         candidate_ids: list[str] = []
@@ -1556,7 +1561,12 @@ def _matches_exact_subject_field(row: Any, piece_tokens: tuple[str, ...]) -> boo
         str(getattr(row, "label", "") or ""),
         *[str(value) for value in list(getattr(row, "aliases", []) or [])],
     )
-    return any(tuple(_tokens(value)) == piece_tokens for value in fields if value)
+    # Filler goes on both sides: "order count" names the "Order count" measure.
+    return any(_subject_tokens(value) == piece_tokens for value in fields if value)
+
+
+def _subject_tokens(text: str) -> tuple[str, ...]:
+    return tuple(token for token in _tokens(text) if token not in _SUBJECT_FILLER)
 
 
 def _unique_hints(gaps: list[CoverageGap]) -> list[dict[str, Any]]:

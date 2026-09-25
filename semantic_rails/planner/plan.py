@@ -311,6 +311,12 @@ def plan_payload(
             if row is not best
         ][: max(0, int(limit or 1) - 1)]
         payload["blocked"] = blocked
+    if time_why is not None and time_why["code"] == "TIME_WINDOW_UNRESOLVED":
+        # Offer no runnable draft, as ask and the REPL refuse to run one: without
+        # the question's window it answers a different question.
+        for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
+            row.pop("query_ir")
+        payload["next"].pop("validate")
     if detail_level == "debug":
         payload["compose_hints"] = compose_hints(intent_ir)
     return _query_detail_payload(payload) if detail_level == "query" else payload
@@ -1124,9 +1130,9 @@ def _unresolved_time_why(
             f"The question exceeds the {_MAX_TIME_TEXT}-character time-resolution limit; "
             "its complete time scope could not be checked."
             if too_long
-            else "The intent names a time window the planner could not resolve; "
-            "best.query_ir does not carry that window and would answer a "
-            "different question if executed as-is."
+            else "The intent names a time window the planner could not resolve, so "
+            "plan returns no query: one without that window would answer a "
+            "different question."
         ),
         "details": {
             "path": "time",

@@ -5,7 +5,7 @@ B7 — A query with ``time.temporal_role`` set but no ``time.grain``,
      return one row per distinct timestamp. The agent expected a
      scalar; the blind-agent benchmark saw 5,480 rows for a single
      revenue number. Now we emit ``UNGRAINED_TIME_PROJECTION`` so the
-     agent knows to set grain or drop temporal_role.
+     agent knows to set a grain.
 """
 
 from __future__ import annotations
@@ -17,35 +17,37 @@ def test_ungrained_time_projection_fires_for_scalar_revenue_with_temporal_role(r
     The planner groups by raw timestamp and returns thousands of rows."""
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.compile(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                        },
-                        "as": "revenue",
-                    }
-                ],
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "start": "2017-01-01",
-                    "end": "2017-02-01",
-                },
-            }
-        )
+        query = {
+            "version": 1,
+            "select": [
+                {
+                    "expression": {
+                        "kind": "measure",
+                        "measure": "measure.jaffle.revenue_usd",
+                        "aggregation": "sum",
+                    },
+                    "as": "revenue",
+                }
+            ],
+            "time": {
+                "temporal_role": "temporal_role.jaffle_order_time",
+                "start": "2017-01-01",
+                "end": "2017-02-01",
+            },
+        }
+        result = runtime.compile(query)
         warnings = result.get("warnings") or []
         codes = [w.get("code") for w in warnings]
         assert "UNGRAINED_TIME_PROJECTION" in codes, (
             f"expected UNGRAINED_TIME_PROJECTION warning; got codes={codes!r}"
         )
         warning = next(w for w in warnings if w.get("code") == "UNGRAINED_TIME_PROJECTION")
-        # Hints must include both ways out: set a grain OR drop temporal_role.
         hints = warning.get("details", {}).get("recovery_hints") or []
         assert hints, "expected recovery hints on UNGRAINED_TIME_PROJECTION"
+        # The only suggested patch is one the engine accepts: dropping temporal_role isn't.
+        assert hints[0]["suggested_patches"] == [{"add": {"time.grain": "month"}}]
+        patched = {**query, "time": {**query["time"], "grain": "month"}}
+        assert runtime.validate(patched)["ok"] is True
     finally:
         runtime.close()
 
