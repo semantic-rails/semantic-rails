@@ -405,7 +405,7 @@ generated contract is `semantic_rails/contracts/query_mcp.v2.json`.
 
 | v2 tool | Replaces in v1 | Difference from v1 |
 |---|---|---|
-| `discover` | `discover`, `catalog` | `verbosity` defaults to `minimal`, slim cards (v1: `compact`, full cards). Empty `terms` returns the catalog index (counts and ids per kind), limited to `kinds` when given. |
+| `discover` | `discover`, `catalog` | `verbosity` defaults to `minimal`, slim cards (v1: `compact`, full cards). Empty `terms` returns the catalog index: counts, and ids per kind 100 at a time (`limit` and `offset` page them; `DISCOVER_IDS_TRUNCATED` says when more remain), limited to `kinds` when given. |
 | `inspect` | `inspect` | `verbosity` defaults to `minimal`, the card without duplicate fields (v1: `compact`). |
 | `valid-values` | `valid-values` | None. |
 | `plan` | `plan` | `detail` defaults to `query` (v1: `best`). |

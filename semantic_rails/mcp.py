@@ -944,6 +944,18 @@ def _v2_input(name: str, **defaults: Any) -> dict[str, Any]:
     return schema
 
 
+# Empty-terms discover lists this many ids per kind at a time: under 10K tokens for all kinds.
+_DISCOVER_ID_PAGE = 100
+_V2_DISCOVER_SCHEMA = _v2_input("discover", verbosity="minimal")
+_V2_DISCOVER_SCHEMA["properties"]["limit"]["description"] = (
+    f"Per kind; with empty terms, ids per kind (default {_DISCOVER_ID_PAGE})."
+)
+_V2_DISCOVER_SCHEMA["properties"]["offset"] = {
+    "type": "integer",
+    "default": 0,
+    "minimum": 0,
+    "description": "With empty terms, ids to skip per kind.",
+}
 _V2_QUERY_SCHEMA = copy.deepcopy(QUERY_SCHEMA)
 _V2_QUERY_SCHEMA["properties"]["time"]["properties"]["end"]["description"] = (
     "ISO-8601, exclusive: March 2017 is start 2017-03-01, end 2017-04-01."
@@ -955,13 +967,14 @@ V2_TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         description=(
             "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). "
             "Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; "
-            "empty terms list every id per kind instead. Default: slim cards (id, label, "
+            f"empty terms list ids per kind instead, {_DISCOVER_ID_PAGE} at a time "
+            "(limit, offset). Default: slim cards (id, label, "
             "description, score); verbosity='compact' adds match_reasons and starter patches. "
             "Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty "
             "buckets; branch before using a candidate."
         ),
         # v2 defaults every tool to its smallest response.
-        input_schema=_v2_input("discover", verbosity="minimal"),
+        input_schema=_V2_DISCOVER_SCHEMA,
     ),
     _v2_tool(
         _V1_TOOLS["inspect"],
@@ -2570,20 +2583,40 @@ class SemanticLayerMCPAdapter:
             # carries the real signal.
             effective_limit = _coerce_int(args.get("limit"), 10, field="limit", minimum=1)
             if not terms_str.strip() and self.interface == "v2":
-                # v2 has no catalog tool: empty terms list every id instead.
+                # v2 has no catalog tool: empty terms list the ids, a page per kind.
                 catalog = resolve_catalog(
                     self.runtime,
                     view="summary",
                     verbosity="summary",
                     policy_context=_policy_context_payload(args),
                 )
-                if kinds := set(requested_kinds) & _CATALOG_KIND_FILTERS:
-                    catalog = {
-                        key: value
-                        for key, value in catalog.items()
-                        if not key.endswith("_ids") or key.removesuffix("_ids") in kinds
-                    }
-                return {"catalog": catalog, "warnings": terms_warnings}
+                kinds = set(requested_kinds) & _CATALOG_KIND_FILTERS
+                size = _coerce_int(args.get("limit"), _DISCOVER_ID_PAGE, field="limit", minimum=1)
+                start = _coerce_int(args.get("offset"), 0, field="offset", minimum=0)
+                page: dict[str, Any] = {}
+                more: dict[str, int] = {}
+                for key, value in catalog.items():
+                    kind = key.removesuffix("_ids")
+                    if key == kind:
+                        page[key] = value
+                    elif not kinds or kind in kinds:
+                        page[key] = list(value)[start : start + size]
+                        if len(value) > start + size:
+                            more[kind] = len(value) - start - size
+                if more:
+                    terms_warnings.append(
+                        {
+                            "code": "DISCOVER_IDS_TRUNCATED",
+                            "severity": "warning",
+                            "message": (
+                                f"Listed {size} ids per kind from offset {start}; more remain "
+                                f"for {sorted(more)}. Pass offset={start + size} for the next "
+                                "page, kinds to list fewer kinds, or terms to rank candidates."
+                            ),
+                            "details": {"remaining": more, "next_offset": start + size},
+                        }
+                    )
+                return {"catalog": page, "warnings": terms_warnings}
             if not terms_str.strip():
                 effective_limit = min(effective_limit, 3)
             payload = discover_payload(

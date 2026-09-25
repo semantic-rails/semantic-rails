@@ -137,8 +137,9 @@ def test_v2_contract_differs_from_v1_only_as_designed() -> None:
     # Their Query IR points at v2's execute instead of v1's validate.
     query = f"{execute_input}query/description"
     slim_cards = {"/description", f"{execute_input}verbosity/default", query, *envelope}
+    paging = {f"{execute_input}limit/description", f"{execute_input}offset"}
     expected = {
-        "discover": slim_cards,
+        "discover": {*slim_cards, *paging},
         "inspect": slim_cards,
         "valid-values": {query, *envelope},
         "plan": {"/description", f"{execute_input}detail/default", query, *envelope},
@@ -290,7 +291,8 @@ def test_discover_and_inspect_return_slim_cards_by_default_in_v2(
 def test_discover_with_empty_terms_lists_ids_in_v2(
     v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
 ) -> None:
-    listed = v2.call_tool("discover", {"terms": ""})
+    # A page large enough for every kind, whatever the fixture's size.
+    listed = v2.call_tool("discover", {"terms": "", "limit": 10_000})
     assert listed["ok"] is True and listed["warnings"] == []
     assert listed["catalog"] == v1.call_tool("catalog", {})["catalog"]
     segments = v2.call_tool("discover", {"terms": " ", "kinds": ["segment"]})["catalog"]
@@ -301,6 +303,33 @@ def test_discover_with_empty_terms_lists_ids_in_v2(
     assert "DISCOVER_NO_TERMS" in {
         warning["code"] for warning in v1.call_tool("discover", {"terms": ""})["warnings"]
     }
+
+
+def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) -> None:
+    whole = v2.call_tool("discover", {"terms": "", "limit": 10_000})["catalog"]
+    first = v2.call_tool("discover", {"terms": "", "limit": 5})
+    warning = first["warnings"][0]
+    assert warning["code"] == "DISCOVER_IDS_TRUNCATED"
+    assert warning["details"]["next_offset"] == 5
+    assert warning["details"]["remaining"]["dimension"] == len(whole["dimension_ids"]) - 5
+    assert first["catalog"]["counts"] == whole["counts"]
+    assert first["catalog"]["dimension_ids"] == whole["dimension_ids"][:5]
+    second = v2.call_tool("discover", {"terms": "", "limit": 5, "offset": 5})["catalog"]
+    assert second["dimension_ids"] == whole["dimension_ids"][5:10]
+    # The last page of one kind lists what's left and warns about nothing.
+    rest = {"terms": "", "kinds": ["dimension"], "limit": 60, "offset": 60}
+    last = v2.call_tool("discover", rest)
+    assert last["catalog"]["dimension_ids"] == whole["dimension_ids"][60:]
+    assert last["warnings"] == [] and "measure_ids" not in last["catalog"]
+
+
+def test_unknown_tool_hint_names_only_tools_the_interface_has(
+    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
+) -> None:
+    hint = v2.call_tool("forecast", {})["errors"][0]["recovery_hints"][0]["message"]
+    assert hint.endswith("common entry points are 'discover', 'inspect', 'plan'.")
+    hint = v1.call_tool("forecast", {})["errors"][0]["recovery_hints"][0]["message"]
+    assert hint.endswith("'discover', 'inspect', 'plan', 'validate', 'compile'.")
 
 
 @pytest.mark.parametrize("tool", sorted(V1_ONLY_TOOLS))
