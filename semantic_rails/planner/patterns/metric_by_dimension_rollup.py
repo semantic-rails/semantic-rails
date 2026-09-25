@@ -114,13 +114,13 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     target = named[0] if named is not None else None
     if target is None and target_terms:
         if metric_first:
-            target = _preferred_metric(config, target_terms)
+            target = _preferred_metric(config, target_terms, target_focus_terms)
             if target is None:
-                target = _preferred_measure(config, target_terms)
+                target = _preferred_measure(config, target_terms, target_focus_terms)
         else:
-            target = _preferred_measure(config, target_terms)
+            target = _preferred_measure(config, target_terms, target_focus_terms)
             if target is None:
-                target = _preferred_metric(config, target_terms)
+                target = _preferred_metric(config, target_terms, target_focus_terms)
     if target is None:
         if metric_first:
             target = _preferred_metric(config, terms)

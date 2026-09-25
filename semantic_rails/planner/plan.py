@@ -25,7 +25,7 @@ from typing import Any
 
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
-from .faithfulness import intent_faithfulness_why, unmatched_intent_terms
+from .faithfulness import intent_faithfulness_why, intent_subject_why, unmatched_intent_terms
 from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
@@ -254,7 +254,18 @@ def plan_payload(
         if best_ok and time_why is None
         else None
     )
-    ready = best_ok and faithfulness_why is None and time_why is None and conversion_why is None
+    subject_why = (
+        intent_subject_why(
+            runtime,
+            question=intent_str,
+            intent_ir=intent_ir,
+            query=best_draft.query,
+            partial_query=partial_query,
+        )
+        if best_ok and not (faithfulness_why or time_why or conversion_why)
+        else None
+    )
+    ready = best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
     payload = {
         "plan_version": _VERSION,
         "intent": intent,
@@ -278,6 +289,8 @@ def plan_payload(
         payload["why"] = time_why
     elif conversion_why is not None:
         payload["why"] = conversion_why
+    elif subject_why is not None:
+        payload["why"] = subject_why
     elif not best_ok:
         errors = list(best_validation.get("errors") or [])
         payload["why"] = _trim_why_errors(errors)

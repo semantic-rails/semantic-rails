@@ -500,10 +500,10 @@ def parse_intent(runtime: Any, intent: str) -> IntentIR:
     # their metric clock instead of falling back to a weaker measure match.
     time_spec: dict[str, Any] | None = None
     if target_terms:
-        metric = _preferred_metric(config, target_terms)
+        metric = _preferred_metric(config, target_terms, target_focus_terms)
         role = str(getattr(metric, "temporal_role", "") or "") if metric else ""
         if not role:
-            measure = _preferred_measure(config, target_terms)
+            measure = _preferred_measure(config, target_terms, target_focus_terms)
             role = str(getattr(measure, "default_temporal_role", "") or "") if measure else ""
         if role:
             time_spec = _time_spec(role, text)

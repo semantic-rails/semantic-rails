@@ -226,7 +226,12 @@ A draft that validates can still leave out part of the question. `plan` returns
   only values the question names, with or without grouping;
 - combines top-level filters on one field so no value can survive, which returns no rows
   (`contradictory_filters`);
-- misses a negation, a prior-period comparison or one of several named subjects.
+- misses a negation, a prior-period comparison or one of several named subjects;
+- picked its subject from several that match the question equally well, when neither the
+  question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
+  candidates in `expected.candidates` and their number in `expected.candidate_count`).
+  "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
+  Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first.
 
 When a question has several exclusion clauses, `plan` checks each clause. A
 negative filter for one value does not make a later excluded value safe if the

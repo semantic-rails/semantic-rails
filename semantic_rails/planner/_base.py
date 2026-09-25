@@ -253,8 +253,55 @@ def _semantic_token(value: str, *, fallback: str = "value") -> str:
     return _slug(token, fallback=fallback)
 
 
-def _preferred_measure(config: Any, terms: Iterable[str]) -> Any | None:
+def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[list[Any], Any]:
+    """The rows sharing the ranking's top score, and the one the question names, if any.
+
+    Rows rank by ``_score`` less the specificity penalty. The question's
+    ``words`` name a tied row over another when its names (label, key and
+    aliases) match every word the other's do and one more, or the same words
+    and one of its names whole: "revenue" names Revenue over Item Revenue
+    Cents, "item revenue" the reverse. "revenue before tax" names neither
+    Revenue nor Tax paid, so the first by label stays a guess.
+    """
+
+    matched = [(_score(row, terms), row) for row in rows]
+    scored = [
+        (score - _specificity_penalty(row, terms), row) for score, row in matched if score > 0
+    ]
+    top = max((score for score, _row in scored), default=0)
+    tied = sorted(
+        (row for score, row in scored if score == top > 0),
+        key=lambda row: (row.label, row.id),
+    )
+    fit = {}
+    for row in tied:
+        names = [row.label, _last_token(row.id), *(getattr(row, "aliases", None) or [])]
+        sets = [set(_tokens(name)) for name in names if _tokens(name)]
+        fit[row.id] = (set().union(*sets) & words, any(name <= words for name in sets))
+
+    def beats(row: Any, other: Any) -> bool:
+        (said, whole), (other_said, other_whole) = fit[row.id], fit[other.id]
+        return other_said < said or (other_said == said and whole and not other_whole)
+
+    named = [row for row in tied if all(beats(row, other) for other in tied if other is not row)]
+    return tied, next(iter(named), None)
+
+
+def _top(rows: Iterable[Any], terms: set[str], words: Iterable[str]) -> Any | None:
+    tied, named = _tied_top(rows, terms, set(words) or terms)
+    return named or next(iter(tied), None)
+
+
+def _preferred_measure(config: Any, terms: Iterable[str], words: Iterable[str] = ()) -> Any | None:
+    """The canonical measure for ``terms``, else the top-ranked one the question
+    names, else the first of those. ``words`` are the question's own words for
+    the measure, when ``terms`` keep only some of them."""
+
     term_set = set(terms)
+    return _canonical_measure(config, term_set) or _top(config.measures, term_set, words)
+
+
+def _canonical_measure(config: Any, term_set: set[str]) -> Any | None:
     preferred_ids: list[str] = []
     if {"new", "customer", "order"} <= term_set:
         preferred_ids.append("measure.jaffle.new_customer_order_count")
@@ -267,19 +314,17 @@ def _preferred_measure(config: Any, terms: Iterable[str]) -> Any | None:
         match = next((row for row in config.measures if row.id == measure_id), None)
         if match is not None:
             return match
-    ranked = []
-    for row in config.measures:
-        score = _score(row, term_set)
-        if score <= 0:
-            continue
-        score -= _specificity_penalty(row, term_set)
-        ranked.append((score, getattr(row, "label", ""), getattr(row, "id", ""), row))
-    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return ranked[0][3] if ranked and ranked[0][0] > 0 else None
+    return None
 
 
-def _preferred_metric(config: Any, terms: Iterable[str]) -> Any | None:
+def _preferred_metric(config: Any, terms: Iterable[str], words: Iterable[str] = ()) -> Any | None:
+    """``_preferred_measure`` for metrics."""
+
     term_set = set(terms)
+    return _canonical_metric(config, term_set) or _top(config.metric_recipes, term_set, words)
+
+
+def _canonical_metric(config: Any, term_set: set[str]) -> Any | None:
     preferred_ids: list[str] = []
     if "aov" in term_set or {"average", "order", "value"} <= term_set:
         preferred_ids.append("metric.sales.aov_usd")
@@ -301,15 +346,7 @@ def _preferred_metric(config: Any, terms: Iterable[str]) -> Any | None:
         match = next((row for row in config.metric_recipes if row.id == metric_id), None)
         if match is not None:
             return match
-    ranked = []
-    for row in config.metric_recipes:
-        score = _score(row, term_set)
-        if score <= 0:
-            continue
-        score -= _specificity_penalty(row, term_set)
-        ranked.append((score, getattr(row, "label", ""), getattr(row, "id", ""), row))
-    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return ranked[0][3] if ranked and ranked[0][0] > 0 else None
+    return None
 
 
 def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
