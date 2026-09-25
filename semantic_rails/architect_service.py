@@ -112,28 +112,70 @@ class ArchitectMutation:
     def undo(self) -> dict[str, Any]:
         """Restore the pre-mutation files unless a later edit changed them."""
 
-        if not self._active:
+        return self.undo_together([self])
+
+    @staticmethod
+    def undo_together(parts: list[ArchitectMutation]) -> dict[str, Any]:
+        """Restore consecutive mutations in one project transaction or none at all.
+
+        The earliest snapshot supplies each file's original bytes; the latest
+        snapshot supplies the digest that must still be present. This also
+        handles two changes to the same file without a second undo journal.
+        """
+
+        if not parts:
+            raise ValueError("Undo needs at least one authoring mutation")
+        project_path = parts[0].project_path
+        if any(part.project_path != project_path for part in parts):
+            raise ValueError("Cannot undo mutations from different projects together")
+        # A successful no-op has no snapshots and is inactive from creation;
+        # only a prior undo of a real change can conflict with another active part.
+        changed_parts = [part for part in parts if part._snapshots]
+        first: dict[str, ProjectFileSnapshot] = {}
+        last: dict[str, ProjectFileSnapshot] = {}
+        chain_conflicts: set[str] = set()
+        empty_digest = hashlib.sha256(b"").hexdigest()
+        for part in changed_parts:
+            for snapshot in part._snapshots:
+                previous = last.get(snapshot.relative_path)
+                if previous is not None and (
+                    previous.after_digest == empty_digest
+                    or previous.after_digest != hashlib.sha256(snapshot.content or b"").hexdigest()
+                ):
+                    # A snapshot records resulting bytes but not resulting
+                    # existence. An empty digest is ambiguous, so fail closed.
+                    chain_conflicts.add(snapshot.relative_path)
+                first.setdefault(snapshot.relative_path, snapshot)
+                last[snapshot.relative_path] = snapshot
+        changed_files = sorted(first)
+        if all(not part._active for part in changed_parts):
             return {
                 "ok": True,
                 "status": "already_undone",
-                "project_path": str(self.project_path),
-                "changed_files": self.changed_files,
+                "project_path": str(project_path),
+                "changed_files": changed_files,
             }
 
+        # Capture the revision before probing digests: a concurrent edit after
+        # this point also makes ProjectTransaction reject the whole restore.
+        current = project_revision(project_path)
         conflicts = [
             snapshot.relative_path
-            for snapshot in self._snapshots
+            for snapshot in last.values()
             if hashlib.sha256(
                 snapshot.path.read_bytes() if snapshot.path.exists() else b""
             ).hexdigest()
             != snapshot.after_digest
         ]
+        conflicts = sorted(set(conflicts) | chain_conflicts)
+        if any(not part._active for part in changed_parts):
+            conflicts = sorted(set([*conflicts, *changed_files]))
         if conflicts:
             return {
                 "ok": False,
                 "status": "undo_conflict",
-                "project_path": str(self.project_path),
-                "changed_files": self.changed_files,
+                "project_path": str(project_path),
+                "changed_files": changed_files,
                 "conflicting_files": conflicts,
                 "errors": [
                     {
@@ -148,13 +190,12 @@ class ArchitectMutation:
             }
 
         workspace_root = Path(
-            str(self.report.get("workspace_root") or self.project_path.parent)
+            str(parts[-1].report.get("workspace_root") or project_path.parent)
         ).resolve()
         transaction = ProjectTransaction(
-            self.project_path,
+            project_path,
             workspace_root=workspace_root,
         )
-        current = project_revision(self.project_path)
         try:
             outcome = transaction.apply(
                 [
@@ -163,24 +204,24 @@ class ArchitectMutation:
                         snapshot.content if snapshot.existed else None,
                         snapshot.mode,
                     )
-                    for snapshot in self._snapshots
+                    for snapshot in first.values()
                 ],
                 expected_revision=current,
                 idempotency_key=f"internal-undo-{uuid.uuid4()}",
                 intent={
                     "operation": "undo",
-                    "changed_files": self.changed_files,
-                    "source_revision": self.report.get("revision", ""),
+                    "changed_files": changed_files,
+                    "source_revision": parts[-1].report.get("revision", ""),
                 },
                 validate_after=False,
                 allow_internal_paths=any(
                     snapshot.relative_path.startswith(".architect/archive/")
-                    for snapshot in self._snapshots
+                    for snapshot in first.values()
                 ),
                 success_status="undone",
                 metadata={
                     "operation": "undo",
-                    "changed_files": self.changed_files,
+                    "changed_files": changed_files,
                 },
             )
         except SemanticLayerError as exc:
@@ -189,9 +230,9 @@ class ArchitectMutation:
             return {
                 "ok": False,
                 "status": "undo_conflict",
-                "project_path": str(self.project_path),
-                "changed_files": self.changed_files,
-                "conflicting_files": self.changed_files,
+                "project_path": str(project_path),
+                "changed_files": changed_files,
+                "conflicting_files": changed_files,
                 "errors": [
                     {
                         "code": exc.code,
@@ -200,13 +241,14 @@ class ArchitectMutation:
                     }
                 ],
             }
-        self._active = False
+        for part in parts:
+            part._active = False
         report = dict(outcome.report)
-        if not (self.project_path / "package.yml").exists():
+        if not (project_path / "package.yml").exists():
             # Undoing create_project removes the package: nothing is left to parse.
             report["ok"] = True
             return report
-        parse, _ = parse_config_report(PackageReference(source_path=str(self.project_path)))
+        parse, _ = parse_config_report(PackageReference(source_path=str(project_path)))
         report["parse"] = parse
         report["ok"] = bool(parse.get("ok"))
         return report

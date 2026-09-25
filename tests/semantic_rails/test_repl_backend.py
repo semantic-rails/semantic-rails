@@ -163,6 +163,65 @@ def test_plain_prompts_keep_their_text_defaults_and_cancel_words(
     assert "  [ ] 1. Alpha\n  [ ] 2. Bravo\n  [x] 3. Charlie\n" in output
 
 
+@pytest.mark.parametrize(
+    ("answers", "default", "expected"),
+    [
+        (("",), "IN", "IN"),
+        (("",), "NOT IN", "NOT IN"),
+        (("in",), "NOT IN", "IN"),
+        (("nOt In",), "IN", "NOT IN"),
+        (("invalid", "2"), "IN", "NOT IN"),
+    ],
+)
+def test_plain_choice_returns_canonical_values_for_defaults_typed_case_and_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    answers: tuple[str, ...],
+    default: str,
+    expected: str,
+) -> None:
+    prompts = _answers(monkeypatch, *answers)
+    options = [("IN", "is one of"), ("NOT IN", "is not one of")]
+
+    assert PlainBackend().choose("Keep the rows where it", options, default=default) == expected
+    assert prompts == [f"Choose [{default}]: "] * len(answers)
+    if "invalid" in answers:
+        assert "Choose a number or one of: IN, NOT IN" in capsys.readouterr().out
+
+
+def test_plain_choice_requires_unique_case_folded_match_and_keeps_exact_default(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    choices = [("IN", "Upper"), ("in", "Lower")]
+    _answers(monkeypatch, "")
+    assert PlainBackend().choose("Case collision", choices, default="IN") == "IN"
+
+    prompts = _answers(monkeypatch, "iN", "2")
+    assert PlainBackend().choose("Case collision", choices, default="IN") == "in"
+    assert prompts == ["Choose [IN]: ", "Choose [IN]: "]
+    assert "Ambiguous choice; use an exact value or a menu number" in capsys.readouterr().out
+
+    _answers(monkeypatch, "in")
+    assert PlainBackend().choose("Case collision", choices, default="IN") == "in"
+
+
+def test_plain_choice_offers_no_missing_default_and_preserves_numeric_menu_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts = _answers(monkeypatch, "", "2")
+    assert PlainBackend().choose("Pick", OPTIONS, default="missing") == "b"
+    assert prompts == ["Choose: ", "Choose: "]
+
+    choices = [("2", "Numeric key at position one"), ("other", "Second choice")]
+    _answers(monkeypatch, "")
+    assert PlainBackend().choose("Pick", choices, default="2") == "2"
+    _answers(monkeypatch, "2")
+    assert PlainBackend().choose("Pick", choices, default="2") == "other"
+    _answers(monkeypatch, "cancel")
+    with pytest.raises(Cancelled):
+        PlainBackend().choose("Pick", OPTIONS)
+
+
 def _picker(keys: str, ask: Callable[[PickerBackend], Any]) -> Any:
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput

@@ -958,8 +958,8 @@ def test_repl_author_metric_previews_writes_parse_validates_and_undoes(
             "",
             "",
             "",
-            "",
             "2",
+            "",
             "yes",
         ]
     )
@@ -1182,7 +1182,7 @@ def test_repl_manage_metric_kind_removes_stale_fields_and_preserves_public_id(
     ]["total_amount"]
     assert len(undo_stack) == 1
     assert metric["kind"] == "ratio"
-    assert metric["value_type"] == "percent"
+    assert metric["value_type"] == "ratio"  # an amount per event, not a percent
     assert metric["as"] == "metric.metric_manage_core.total_amount"
     assert metric["numerator"] == "measure.metric_manage_core.total_amount"
     assert metric["denominator"] == "measure.metric_manage_core.event_count"
