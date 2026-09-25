@@ -484,6 +484,7 @@ runs every file through schema validation, `Runtime.validate`, and
 2. Use [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md) to model or edit a package.
 3. Use [AGENT_QUICKSTART.md](AGENT_QUICKSTART.md) when wiring an agent or MCP client.
 4. Use [QUERY_API.md](QUERY_API.md) for request and response shapes.
-   Use the preferred cascade: `discover -> inspect -> plan/build-options -> valid-values -> validate -> compile -> execute`.
+   The core loop is `discover -> plan -> execute`. `execute` validates and compiles first, so
+   `validate` and `compile` are optional dry runs.
 5. Scaffold a new package with `semantic-rails init` (it validates as it generates). [configs/examples/semantic_rails_package_starter.yml](../configs/examples/semantic_rails_package_starter.yml) is a *single-file* package starter — if you explode it into a directory package, drop the `grain:` keys (directory packages reject them under `schema_strict`).
 6. Use [ARCHITECTURE.md](ARCHITECTURE.md) when you need the architecture spec rather than the user guide.

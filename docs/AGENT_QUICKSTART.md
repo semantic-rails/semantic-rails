@@ -4,11 +4,13 @@ This guide is for agents and agent applications that need governed analytics wit
 model direct warehouse access. The core contract is:
 
 ```text
-discover -> inspect -> plan/build-options -> valid-values -> validate -> compile -> execute
+discover -> plan -> execute
 ```
 
-Use the earliest tool that can answer the next question. Do not skip straight to `execute` unless
-the query has already passed validation or was produced by `plan` with an `ok` status.
+Use the earliest tool that can answer the next question. `inspect`, `build-options` and
+`valid-values` help choose objects and values. `execute` validates and compiles the query before it
+runs it, so `validate` and `compile` are optional dry runs. Run a `plan` draft only when its status
+is `ok` and it has no warnings.
 
 ## Local MCP
 
@@ -99,8 +101,8 @@ package-authoring MCP. `--mcp both` installs both entries.
 
 Semantic Rails is designed for human-defined semantics and agent-first query building. Humans own
 entities, measures, metrics, policies, examples, and tests in the package. Agents use the runtime
-API to discover that governed surface, assemble Query IR, validate it, and compile SQL before
-local/customer-side execution.
+API to discover that governed surface, assemble Query IR, and execute it locally or customer-side;
+the runtime validates and compiles every query before it runs.
 
 Start the active package:
 
@@ -113,43 +115,52 @@ Routes are available under stable `/api/v1/*` paths.
 ### Recommended Loop
 
 ```text
-discover -> inspect -> plan/build-options -> valid-values -> validate -> compile -> execute
+discover -> plan -> execute
 ```
 
 - `discover` maps business terms to governed semantic objects.
-- `inspect` opens an object card with usage, provenance, comparison metadata, and starter patches.
+- `inspect` (optional) opens an object card with usage, provenance, comparison metadata, and
+  starter patches.
 - `plan` returns a validated best Query IR draft for natural-language intents. Use `detail="full"` only when you need alternatives or blocked drafts.
 - `build-options` returns legal next query choices for guided builders.
 - `valid-values` searches categorical values for selected dimensions.
-- `validate` returns diagnostics, repair hints, output columns, and risk metadata.
-- `compile` returns SQL and plan metadata without executing. At `compact` or `full` verbosity,
+- `execute` is the MCP tool name (HTTP path `/api/v1/query`, CLI verb `semantic-rails query`). It
+  validates and compiles the request, then executes it in the local or customer-operated runtime.
+  An invalid query fails with a structured error and, where possible, recovery hints instead of
+  running.
+- `validate` (optional dry run) returns diagnostics, repair hints, output columns, and risk
+  metadata without executing.
+- `compile` (optional dry run) returns SQL and plan metadata without executing. At `compact` or `full` verbosity,
   its response also includes an `explain` payload with the semantic and physical plan plus a
   `chosen_paths` map keyed by target entity ID — each entry carries `selected` (the chosen
   relationship path), `candidates` (every considered path), and `contracts` (the relationship
   contracts along the selected path). The CLI defaults to `compact`; the MCP tool defaults to
   `minimal`, which leaves `explain` out, so pass `verbosity: "compact"` to review join paths
   and safety before execution.
-- `execute` is the MCP tool name (HTTP path `/api/v1/query`, CLI verb `semantic-rails query`) and
-  executes the compiled request in the local or customer-operated runtime.
 
 ### Plan Status And Detail
 
 Use `plan` when the user gives a natural-language analysis intent. Use `build-options` when the
 user is interactively editing Query IR one step at a time.
 
-`plan` runs validation inline. When `status="ok"`, agents can forward `best.query_ir` directly
-to `compile` or `/api/v1/query`; call `validate` again only for hand-authored or edited Query IR,
-or when full diagnostics are needed after `low_confidence`.
+`plan` runs validation inline and checks the draft against the question. When `status="ok"` and
+there are no `warnings`, agents can forward `best.query_ir` directly to `execute`
+(`/api/v1/query`). Call `validate` only when you want diagnostics without running the query, for
+example after editing Query IR or after `low_confidence`.
 
-`ok` means the draft validated, not that it covers the whole question: the planner can drop or
-misread a constraint (see the README's known limitations). Compare `best.query_ir` with the
-question before executing it.
+The checks cover time windows, rankings, named filter values, and exclusions, not every phrasing:
+a draft can still misread a question and report `ok`, sometimes with only a `PLAN_UNMATCHED_TERMS`
+warning (see the README's known limitations). Compare `best.query_ir` with the question before
+executing it.
 
 Statuses are:
 
-- `ok`: the best draft validated.
-- `low_confidence`: a draft exists, but validation failed or a validating fallback would drift from
-  the requested target, grouping, qualification, filters, or time scope.
+- `ok`: the best draft validated, and no check found part of the question it leaves out.
+  `warnings` can still name question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
+- `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
+  question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP` or `TIME_WINDOW_UNRESOLVED`),
+  or a validating fallback would drift from the requested target, grouping, qualification,
+  filters, or time scope.
 - `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 
@@ -243,13 +254,15 @@ consistently across discovery, metadata, validation, compile, and query calls.
    capabilities.
 2. Call `discover` with business terms before selecting IDs. Treat low-relevance or off-topic
    responses as a stop condition.
-3. Call `inspect` on candidate metrics, measures, dimensions, or segments before composing a query.
+3. Call `inspect` on a candidate metric, measure, dimension, or segment when you need its
+   aggregations, values, or time roles.
 4. Use `plan` for natural-language questions, or `build-options` plus `valid-values` when the
    agent is interactively assembling Query IR.
-5. Call `validate` before `compile` or `execute` when the Query IR did not come from an `ok` plan.
+5. Run a `plan` draft only when its status is `ok` and it has no warnings; otherwise fix the Query
+   IR or ask the user.
 6. Prefer `compile` when the user wants SQL, lineage, path selection, or explain output.
-7. Call `execute` only when the user explicitly wants rows and the query has passed the governed
-   path.
+7. Call `execute` when the user wants rows. It validates and compiles first, so it needs no
+   separate `validate` or `compile` call; use `validate` for diagnostics without running the query.
 
 Use `summary`, `minimal`, or `compact` verbosity unless the user asks for debugging detail. Request
 `full` only for explainability, test failure triage, or query review.
@@ -270,8 +283,10 @@ If a framework does not speak MCP directly, wrap each `/api/v1/*` route as a too
 loop policy:
 
 ```text
-discover terms -> inspect object_id -> plan intent -> validate query -> compile query -> execute query
+discover terms -> plan intent -> execute query
 ```
+
+Expose `inspect`, `validate`, and `compile` as optional tools for object details and dry runs.
 
 Keep warehouse credentials outside the model context. The model should receive structured results
 and recovery hints, not raw credentials or arbitrary SQL execution privileges.
@@ -285,10 +300,11 @@ paths, and service deployments should rely on their own config/vault boundary.
 Model the loop as explicit nodes:
 
 ```text
-orient -> discover -> inspect -> draft -> validate -> compile -> execute
+orient -> discover -> draft -> execute
 ```
 
-Branch on structured status fields. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
+Branch on structured status fields: a `plan` draft that isn't `ok`, or has warnings, goes to a
+repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 `MIXED_GRAIN_INVALID`, `POLICY_DENIED`, and low-relevance results should route to repair or refusal
 nodes instead of being retried as raw SQL.
 

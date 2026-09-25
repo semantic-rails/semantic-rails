@@ -2,9 +2,10 @@
 """Run the README's published-package quickstart in clean environments.
 
 The commands below install the latest release from PyPI, not this checkout, so the
-check shows whether the README works for a new user today. Each command must appear
-verbatim, as whole lines of a README code block: editing one without the other fails
-the check. The Claude Code and Codex registration lines are held to the same rule, and
+check shows whether the README works for a new user today. `--spec` installs another
+version or a built wheel in its place, to check a release candidate against the README
+before it is published. Each command must appear verbatim, as whole lines of a README
+code block: editing one without the other fails the check. The Claude Code and Codex registration lines are held to the same rule, and
 the check starts the stdio server they register. The Claude Desktop and Cursor blocks
 run as shown too, finding the installed command with `uv tool dir --bin`. The MetricFlow
 import is not run here.
@@ -15,6 +16,8 @@ Environments:
   --local        this machine, with a scratch HOME, an empty uv cache and PATH limited
                  to /usr/bin:/bin plus uv. On macOS this is the stock-macOS check: the
                  only Python on PATH is Apple's /usr/bin/python3.
+  --spec SPEC    what to install instead of the latest release: a requirement such as
+                 'semantic-rails==0.3.0', or the path of a wheel from `uv build --wheel`.
 
 The README warns about two traps. While a trap still reproduces, its warning must stay
 in the README; when it stops reproducing, the check says so without failing. Any other
@@ -91,11 +94,29 @@ BOOTSTRAP = (
     "| env UV_UNMANAGED_INSTALL=/usr/local/bin sh >/dev/null"
 )
 
+PACKAGE = "semantic-rails"
+UVX_RUN = re.compile(rf"\buvx {PACKAGE}(?= )")
+# The package argument of `uv tool install` and `uv pip install`, after any options.
+INSTALL = re.compile(rf"(\buv (?:tool|pip) install (?:[^\s;&|]+ )*?){PACKAGE}(?=$|[\s;&|])")
+
+
+def with_spec(command: str, spec: str) -> str:
+    """The command, running and installing spec where the README names the package."""
+    if spec == PACKAGE:
+        return command
+    quoted = shlex.quote(spec)
+    command = UVX_RUN.sub(lambda _: f"uvx --from {quoted} {PACKAGE}", command)
+    return INSTALL.sub(lambda match: match[1] + quoted, command)
+
 
 class Environment:
-    """Run shell commands in one clean environment, from a scratch working directory."""
+    """Run shell commands in one clean environment, from a scratch working directory.
+
+    Commands are written as the README shows them; `run` installs `spec` in their place.
+    """
 
     name: str
+    spec: str = PACKAGE
 
     def run(self, command: str) -> subprocess.CompletedProcess[str]:
         raise NotImplementedError
@@ -115,7 +136,7 @@ class Environment:
 
 
 class Container(Environment):
-    def __init__(self, image: str) -> None:
+    def __init__(self, image: str, spec: str = PACKAGE) -> None:
         self.name = image
         self.id = f"sr-quickstart-{uuid.uuid4().hex[:10]}"
         subprocess.run(
@@ -138,17 +159,24 @@ class Container(Environment):
         )
         try:
             bootstrap = self.run(BOOTSTRAP)
+            if bootstrap.returncode:
+                output = (bootstrap.stdout + bootstrap.stderr)[-2000:]
+                raise RuntimeError(f"{image}: bootstrap failed:\n{output}")
+            if spec.endswith(".whl"):
+                # The wheel keeps its file name, which uv reads its version from.
+                wheel = f"/tmp/{Path(spec).name}"
+                subprocess.run(
+                    ["docker", "cp", spec, f"{self.id}:{wheel}"], check=True, capture_output=True
+                )
+                spec = wheel
         except BaseException:
-            # A timeout here must not leave a `sleep infinity` container behind.
+            # A failure or timeout here must not leave a `sleep infinity` container behind.
             self.close()
             raise
-        if bootstrap.returncode:
-            self.close()
-            raise RuntimeError(
-                f"{image}: bootstrap failed:\n{(bootstrap.stdout + bootstrap.stderr)[-2000:]}"
-            )
+        self.spec = spec
 
     def run(self, command: str) -> subprocess.CompletedProcess[str]:
+        command = with_spec(command, self.spec)
         return subprocess.run(
             ["docker", "exec", "-w", "/work", self.id, "bash", "-c", command],
             capture_output=True,
@@ -178,11 +206,13 @@ class Container(Environment):
 
 
 class Local(Environment):
-    def __init__(self) -> None:
+    def __init__(self, spec: str = PACKAGE) -> None:
         uv, uvx = shutil.which("uv"), shutil.which("uvx")
         if not uv or not uvx:
             raise RuntimeError("--local needs uv and uvx on PATH")
         self.name = f"local ({sys.platform})"
+        # Commands run from a scratch directory, so a wheel needs its absolute path.
+        self.spec = str(Path(spec).resolve()) if spec.endswith(".whl") else spec
         self.root = Path(tempfile.mkdtemp(prefix="sr-quickstart-"))
         for directory in ("home", "bin", "work", "cache", "tmp"):
             (self.root / directory).mkdir()
@@ -198,7 +228,7 @@ class Local(Environment):
 
     def run(self, command: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["/bin/bash", "-c", command],
+            ["/bin/bash", "-c", with_spec(command, self.spec)],
             cwd=self.root / "work",
             env=self.env,
             capture_output=True,
@@ -339,7 +369,7 @@ def mcp_handshake(
     """
     if argv is None:
         # The command the README registers with Claude Code and Codex, run from its workdir.
-        argv = shlex.split(MCP_STDIO.replace("$PWD", env.workdir()))
+        argv = shlex.split(with_spec(MCP_STDIO, env.spec).replace("$PWD", env.workdir()))
         if isinstance(env, Local):
             argv[0] = str(env.root / "bin" / "uvx")
     process = env.popen(argv)
@@ -589,9 +619,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image", action="append", default=[], help="container image to test")
     parser.add_argument("--local", action="store_true", help="also test this machine")
     parser.add_argument("--json", type=Path, help="write the results as JSON")
+    parser.add_argument(
+        "--spec",
+        default=PACKAGE,
+        help="install this instead of the latest release: a requirement or a wheel's path",
+    )
     args = parser.parse_args(argv)
     if not args.image and not args.local:
         parser.error("choose at least one --image or --local")
+    if args.spec.endswith(".whl") and not Path(args.spec).is_file():
+        parser.error(f"no wheel at {args.spec}")
 
     markdown = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     # The warnings are prose, which wraps mid-sentence: compare with whitespace collapsed.
@@ -603,9 +640,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     results: list[dict[str, object]] = []
-    targets: list[Callable[[], Environment]] = [partial(Container, image) for image in args.image]
+    targets: list[Callable[[], Environment]] = [
+        partial(Container, image, args.spec) for image in args.image
+    ]
     if args.local:
-        targets.append(Local)
+        targets.append(partial(Local, args.spec))
     for make in targets:
         env = make()
         try:
@@ -621,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         args.json.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     failures = [row for row in results if row["status"] == "fail"]
-    print(f"{len(results) - len(failures)} passed or noted, {len(failures)} failed")
+    print(f"{len(results) - len(failures)} passed or noted, {len(failures)} failed ({args.spec})")
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for row in results:
             if row["status"] == "note":

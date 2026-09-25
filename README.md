@@ -1,17 +1,19 @@
 # Semantic Rails
 
-[![CI](https://github.com/semantic-rails/semantic-rails/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/semantic-rails/semantic-rails/actions/workflows/ci.yml?query=branch%3Amain) [![PyPI](https://img.shields.io/pypi/v/semantic-rails.svg?label=PyPI)](https://pypi.org/project/semantic-rails/) [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://pypi.org/project/semantic-rails/) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE) [![Docs](https://img.shields.io/badge/docs-semantic--rails.com-0f766e.svg)](https://semantic-rails.com/docs/)
+[![CI](https://github.com/semantic-rails/semantic-rails/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/semantic-rails/semantic-rails/actions/workflows/ci.yml?query=branch%3Amain) [![PyPI](https://img.shields.io/pypi/v/semantic-rails.svg?label=PyPI)](https://pypi.org/project/semantic-rails/) [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://pypi.org/project/semantic-rails/) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/semantic-rails/semantic-rails/blob/main/LICENSE) [![Docs](https://img.shields.io/badge/docs-semantic--rails.com-0f766e.svg)](https://semantic-rails.com/docs/)
 
 Semantic Rails is an open-source, agent-first semantic layer, licensed Apache-2.0.
 You define metrics, dimensions and join paths once, in YAML. Agents then discover
-those definitions, validate a query and compile governed SQL through an MCP server,
+those definitions, plan a query and run it as governed SQL through an MCP server,
 a CLI or an HTTP API, instead of writing joins and metric formulas by hand.
 
 - Runs locally on DuckDB with no account or server. Optional connectors cover
   Snowflake, BigQuery, Databricks, Postgres, Athena, ClickHouse, MotherDuck and DuckLake.
 - No telemetry and no update checks. The engine makes network connections only
-  for what you configure; see [Telemetry and network access](#telemetry-and-network-access).
-- Beta. See [Project status](#project-status) for what is supported and what isn't yet.
+  for what you configure; see
+  [Telemetry and network access](https://github.com/semantic-rails/semantic-rails#telemetry-and-network-access).
+- Beta. See [Project status](https://github.com/semantic-rails/semantic-rails#project-status) for what is supported
+  and what isn't yet.
 
 ## Try it in one command
 
@@ -22,9 +24,9 @@ compatible Python (3.11 or newer) if your system Python is older.
 uvx semantic-rails ask --package jaffle_shop "revenue by store" --run
 ```
 
-This plans the question against the bundled synthetic Jaffle Shop package, validates
-the plan, compiles SQL and runs it on DuckDB. It prints how it resolved the question
-and the Query IR, then the rows.
+This plans the question against the bundled synthetic Jaffle Shop package, then
+validates, compiles and runs the plan on DuckDB. It prints how it interpreted the
+question, the rows and any warnings, then the Query IR.
 To try the same loop without installing anything, use the
 [browser demo](https://semantic-rails.com/try) or the hosted MCP endpoint below.
 
@@ -39,12 +41,12 @@ uvx semantic-rails ask --path ./my_package "total amount by event type" --run
 `init` writes a runnable starter package (YAML models, metrics, examples, tests and
 CSV data). Edit it to describe your own tables, then rerun `project validate`.
 
-Pass `--path` on commands that use your own package. In the published 0.2.1 release,
-without it and without a saved profile, commands fall back to the bundled
-`jaffle_shop` package: `ask` answers from it and `project validate` validates it,
-both exiting 0. The current source checkout instead refuses with
-`no_package_selected`. (`--package` only names a bundled package, such as
-`jaffle_shop`.)
+Pass `--path` on commands that use your own package, or run them inside the package
+directory. Without either, and without a saved profile, commands stop with
+`no_package_selected` and list the ways to choose a package; at an interactive terminal,
+`ask` first offers the bundled sample package. (`--package` only names a bundled
+package, such as `jaffle_shop`.) Releases before 0.3.0 don't stop: there, commands fall
+back to the bundled `jaffle_shop` package and exit 0.
 
 To keep a `semantic-rails` command on your PATH instead of running it through `uvx`:
 
@@ -67,14 +69,14 @@ uv pip install semantic-rails
 
 With pip, run `python -m pip install semantic-rails` inside a Python 3.11+
 environment. On Windows, activate the environment with `.venv\Scripts\activate`; see the
-[agent quickstart](docs/AGENT_QUICKSTART.md#local-mcp) for how MCP differs there. CI
-doesn't cover Windows yet.
+[agent quickstart](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md#local-mcp)
+for how MCP differs there. CI doesn't cover Windows yet.
 
 The interactive wizard, `semantic-rails setup --interactive`, walks through the same
 steps and can register the MCP server with Claude Desktop or Codex. Run it from an
 installed `semantic-rails`, not through `uvx`, for the reason given under
-[Claude Desktop](#connect-your-agent) below. Inside
-`semantic-rails repl`, type `author` to add models, dimensions, measures, metrics and
+[Claude Desktop](https://github.com/semantic-rails/semantic-rails#connect-your-agent) below.
+Inside `semantic-rails repl`, type `author` to add models, dimensions, measures, metrics and
 segments with previews and validation.
 
 ## Connect your agent
@@ -138,32 +140,41 @@ codex mcp add semantic-rails-demo --url https://semantic-rails.com/mcp
 ```
 
 The agent loop, tool policy and HTTP routes are in
-[docs/AGENT_QUICKSTART.md](docs/AGENT_QUICKSTART.md). The full MCP contract, including
-`semantic-rails mcp http` for a local Streamable HTTP server, is in
-[docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
+[docs/AGENT_QUICKSTART.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md).
+The full MCP contract, including its interface versions and `semantic-rails mcp http`
+for a local Streamable HTTP server, is in
+[docs/MCP_INTERFACE.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/MCP_INTERFACE.md).
 
 ## How it works
 
 An agent works through separate, inspectable steps instead of one SQL string:
 
 ```text
-discover -> inspect -> plan/build-options -> valid-values -> validate -> compile -> execute
+discover -> plan -> execute
 ```
 
-- `discover` and `inspect` map business terms to governed metric, dimension and
-  segment IDs.
-- `plan` drafts Query IR from a natural-language question; `build-options` and
-  `valid-values` guide step-by-step builders.
-- `validate` rejects unknown fields, dimension mismatches, bad filters and policy
-  failures with structured errors and, where possible, recovery hints.
-- `compile` renders SQL for the target warehouse. At `compact` verbosity (the CLI's
-  default) or `full`, it also returns an `explain` payload: the chosen join path to each
-  entity, the candidate paths it considered and the relationship contracts along the
-  chosen path. The MCP tool defaults to `minimal`, which leaves `explain` out.
-- `execute` runs the compiled query where the package's connection lives.
+- `discover` maps business terms to governed metric, dimension and segment IDs.
+  `inspect` opens one object's card when the agent needs its aggregations, values or
+  time roles.
+- `plan` drafts Query IR from a natural-language question and checks the draft against
+  the question. Run the draft when its status is `ok` and it has no warnings; otherwise
+  the response says what the draft misses. `build-options` and `valid-values` guide
+  step-by-step builders instead.
+- `execute` (the CLI's `query`, HTTP `/api/v1/query`) validates, compiles and runs the
+  Query IR where the package's connection lives. It rejects unknown fields, dimension
+  mismatches, bad filters and policy failures with structured errors and, where
+  possible, recovery hints.
+- `validate` and `compile` are optional dry runs of the same checks. `validate` returns
+  the diagnostics without running anything; `compile` also renders SQL for the target
+  warehouse. At `compact` verbosity (the CLI's default) or `full`, `compile` returns an
+  `explain` payload: the chosen join path to each entity, the candidate paths it
+  considered and the relationship contracts along the chosen path. The MCP tool
+  defaults to `minimal`, which leaves `explain` out.
 
-The engine design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the
-supported modeling surface is in [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+The engine design is in
+[docs/ARCHITECTURE.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ARCHITECTURE.md),
+and the supported modeling surface is in
+[docs/CAPABILITIES.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/CAPABILITIES.md).
 
 ## How it compares
 
@@ -174,12 +185,12 @@ Microsoft Fabric, MySQL and Trino. dbt, Cube and Looker also connect to far more
 tools and offer caching or pre-aggregation. Semantic Rails is narrower: an engine
 built around the agent loop above, which you can run locally or embed.
 
-The [comparison pack](comparisons/semantic_layers/) asks the same 16 questions of
-six modeled layers: Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views
+The [comparison pack](https://github.com/semantic-rails/semantic-rails/tree/main/comparisons/semantic_layers/)
+asks the same 16 questions of six modeled layers: Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views
 and KtX. It compares capability, not performance; its support labels describe the
 authored models, not each layer's limits. Nine questions were chosen to exercise
 primitives Semantic Rails ships. The
-[output consistency check](comparisons/semantic_layers/shared/results/validation/output_consistency.md)
+[output consistency check](https://github.com/semantic-rails/semantic-rails/blob/main/comparisons/semantic_layers/shared/results/validation/output_consistency.md)
 compares five layers on the current shared dataset, including Semantic Rails,
 against an independent SQL answer key: all 16 match. Cube's captured SQL was
 replayed on current data, but Cube itself was not rerun. Snowflake Semantic Views
@@ -201,7 +212,8 @@ uvx semantic-rails import --from metricflow --source target/semantic_manifest.js
 The imported package targets DuckDB and names a seed script,
 `data/seed_my_dbt_package.sql`, that the import doesn't create. Before
 `project validate`, replace `seed` with your warehouse's `connection` (see
-[`package.yml`](docs/PACKAGE_AUTHORING.md#packageyml)) or add that script.
+[`package.yml`](https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md#packageyml))
+or add that script.
 
 ## Warehouses
 
@@ -215,8 +227,9 @@ The other connector extras are `snowflake`, `bigquery`, `databricks`, `athena` a
 `clickhouse`, and `all` installs every connector. In a project environment, use
 `uv pip install 'semantic-rails[all]'`. MotherDuck and DuckLake use the core `duckdb`
 dependency. Keep secrets in environment
-variables or files, not in package YAML. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-and [docs/ADDING_A_DIALECT.md](docs/ADDING_A_DIALECT.md).
+variables or files, not in package YAML. See
+[docs/DEPLOYMENT.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/DEPLOYMENT.md) and
+[docs/ADDING_A_DIALECT.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ADDING_A_DIALECT.md).
 
 ## Telemetry and network access
 
@@ -239,18 +252,19 @@ Semantic Rails is beta software. The supported core is the open-source runtime, 
 CLI, the MCP stdio and HTTP servers, the `/api/v1/*` HTTP API, the DuckDB path and
 Snowflake execution. The other connectors are supported with guardrails, and live
 warehouse credentials are exercised on demand, not in every CI run. The
-[agent quickstart](docs/AGENT_QUICKSTART.md#supported-vs-experimental) lists what is
-experimental or out of scope.
+[agent quickstart](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md#supported-vs-experimental)
+lists what is experimental or out of scope.
 
 Known limitations in the current release:
 
-- Without `--path` and without a profile, commands fall back to the bundled
-  `jaffle_shop` package.
-- `plan` and `ask` can return a draft that validates but leaves out or misreads part
-  of the question. For example, "revenue by store for 2017" drops the year and still
-  reports `ok`. Check the Query IR before you rely on the numbers.
-- Currency measures print binary floating-point noise: long decimal tails such as
-  `…85000000062`.
+- `plan` reports the parts of a question its draft doesn't honor, as `low_confidence`
+  or a `PLAN_UNMATCHED_TERMS` warning, but its checks don't cover every phrasing. For
+  "revenue by store before today" it plans today alone and reports `ok` with only that
+  warning, and `ask` runs it. Check the Query IR, or `ask`'s "Interpreted as" line,
+  before you rely on the numbers.
+- `ask` rounds its tables, but JSON results (`query`, `ask --json`, MCP `execute` and the
+  HTTP API) return the warehouse's floating-point values as they are, for example
+  `486468.17999985756` for a currency total.
 - The MetricFlow importer is partial. It can keep a metric whose model it dropped,
   and that metric then fails to compile.
 
@@ -278,22 +292,22 @@ Questions and proposals are welcome in
 ## Docs
 
 - [Getting started](https://semantic-rails.com/docs/getting-started)
-- [Agent quickstart](docs/AGENT_QUICKSTART.md)
-- [Package authoring](docs/PACKAGE_AUTHORING.md)
-- [MCP interface](docs/MCP_INTERFACE.md)
-- [Architect MCP](docs/ARCHITECT_MCP.md)
-- [Query API](docs/QUERY_API.md)
-- [Capabilities](docs/CAPABILITIES.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Benchmark evidence](docs/BENCHMARK_EVIDENCE.md)
-- [Deployment](docs/DEPLOYMENT.md)
-- [Comparison pack](comparisons/semantic_layers/)
-- [Changelog](CHANGELOG.md)
+- [Agent quickstart](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md)
+- [Package authoring](https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md)
+- [MCP interface](https://github.com/semantic-rails/semantic-rails/blob/main/docs/MCP_INTERFACE.md)
+- [Architect MCP](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ARCHITECT_MCP.md)
+- [Query API](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_API.md)
+- [Capabilities](https://github.com/semantic-rails/semantic-rails/blob/main/docs/CAPABILITIES.md)
+- [Architecture](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ARCHITECTURE.md)
+- [Benchmark evidence](https://github.com/semantic-rails/semantic-rails/blob/main/docs/BENCHMARK_EVIDENCE.md)
+- [Deployment](https://github.com/semantic-rails/semantic-rails/blob/main/docs/DEPLOYMENT.md)
+- [Comparison pack](https://github.com/semantic-rails/semantic-rails/tree/main/comparisons/semantic_layers/)
+- [Changelog](https://github.com/semantic-rails/semantic-rails/blob/main/CHANGELOG.md)
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) covers scope, architecture ownership and the
-validation commands. To work from a source checkout:
+[CONTRIBUTING.md](https://github.com/semantic-rails/semantic-rails/blob/main/CONTRIBUTING.md)
+covers scope, architecture ownership and the validation commands. To work from a source checkout:
 
 ```bash
 git clone https://github.com/semantic-rails/semantic-rails.git
@@ -334,10 +348,13 @@ MetricFlow translator behind `semantic-rails import`.
 ## Support, security and license
 
 Support, issue reporting, conduct and security reporting are documented in
-[SUPPORT.md](SUPPORT.md), [CONTRIBUTING.md](CONTRIBUTING.md),
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [SECURITY.md](SECURITY.md).
+[SUPPORT.md](https://github.com/semantic-rails/semantic-rails/blob/main/SUPPORT.md),
+[CONTRIBUTING.md](https://github.com/semantic-rails/semantic-rails/blob/main/CONTRIBUTING.md),
+[CODE_OF_CONDUCT.md](https://github.com/semantic-rails/semantic-rails/blob/main/CODE_OF_CONDUCT.md) and
+[SECURITY.md](https://github.com/semantic-rails/semantic-rails/blob/main/SECURITY.md).
 
-Semantic Rails is licensed under Apache 2.0; see [LICENSE](LICENSE). Everything in
-this repository is open source, with no gated features. Semantic Rails, Inc., which
+Semantic Rails is licensed under Apache 2.0; see
+[LICENSE](https://github.com/semantic-rails/semantic-rails/blob/main/LICENSE). Everything in this
+repository is open source, with no gated features. Semantic Rails, Inc., which
 runs [semantic-rails.com](https://semantic-rails.com), also offers a hosted service;
 nothing here requires it.
