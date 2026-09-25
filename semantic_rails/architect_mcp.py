@@ -1255,6 +1255,50 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
+    @mcp.tool(
+        annotations=_mutation_annotations("Remove object"),
+        description=(
+            "Preview or atomically remove a model, dimension, time, measure, metric, segment or "
+            "relationship (a model's foreign key, keyed by its entity), archiving its YAML. model "
+            "picks the model when several hold the key. A model takes its entity and relationships "
+            "along. Refused if a metric would still name it; impact lists the behavior changes "
+            "and the files still naming a removed id."
+        ),
+    )
+    def remove_object(
+        project_path: str,
+        kind: str,
+        key: str,
+        expected_revision: str,
+        idempotency_key: str,
+        model: str = "",
+        reason: str = "",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            return _mutation_result(
+                ArchitectProject(project_path, workspace_root=root)
+                .remove_object(
+                    kind=kind,
+                    key=key,
+                    model=model,
+                    reason=reason,
+                    validate_after=True,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
     @mcp.tool(annotations=_mutation_annotations("Archive project file"))
     def archive_project_file(
         project_path: str,

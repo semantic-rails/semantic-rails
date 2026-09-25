@@ -18,7 +18,7 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -717,7 +717,8 @@ class ProjectTransaction:
             mode=(path.stat().st_mode & 0o777) if existed else None,
         )
 
-    def _proposed_revision(self, updates: Iterable[ProjectFileUpdate]) -> str:
+    def proposed_files(self, updates: Iterable[ProjectFileUpdate]) -> dict[str, bytes]:
+        """The authored files as they would be with ``updates`` applied."""
         files = _authored_project_files(self.project_path)
         for update in updates:
             if not _is_authored_relative(update.relative_path):
@@ -726,7 +727,20 @@ class ProjectTransaction:
                 files.pop(update.relative_path, None)
             else:
                 files[update.relative_path] = update.content
-        return _revision_from_files(files)
+        return files
+
+    @contextlib.contextmanager
+    def virtual_project(self, updates: Iterable[ProjectFileUpdate]) -> Iterator[Path]:
+        """A temporary copy of the authored project with ``updates`` applied."""
+        files = self.proposed_files(updates)
+        with tempfile.TemporaryDirectory(prefix="semantic-rails-architect-preview-") as temporary:
+            project = Path(temporary) / self.project_path.name
+            for relative_path, content in files.items():
+                _atomic_write_bytes(project / relative_path, content)
+            yield project
+
+    def _proposed_revision(self, updates: Iterable[ProjectFileUpdate]) -> str:
+        return _revision_from_files(self.proposed_files(updates))
 
     def _apply_updates(
         self,
@@ -749,18 +763,7 @@ class ProjectTransaction:
                 snapshot.path.unlink()
 
     def _validate_virtual(self, updates: tuple[ProjectFileUpdate, ...]) -> dict[str, Any]:
-        files = _authored_project_files(self.project_path)
-        for update in updates:
-            if not _is_authored_relative(update.relative_path):
-                continue
-            if update.content is None:
-                files.pop(update.relative_path, None)
-            else:
-                files[update.relative_path] = update.content
-        with tempfile.TemporaryDirectory(prefix="semantic-rails-architect-preview-") as temporary:
-            project = Path(temporary) / self.project_path.name
-            for relative_path, content in files.items():
-                _atomic_write_bytes(project / relative_path, content)
+        with self.virtual_project(updates) as project:
             parse, _ = parse_config_report(PackageReference(source_path=str(project)))
         return parse
 
