@@ -96,9 +96,16 @@ package test and a `.gitignore` for build outputs.
   documented ambient defaults. Name secrets by environment variable only; unsupported or
   malformed connection options are rejected before scaffold files or transaction receipts are
   created, without returning their values.
-5. Use `upsert_model`, `upsert_metric`, `upsert_segment`, or scoped file tools
-   with the latest project revision. Generate a new idempotency key for each
+5. Use `upsert_model`, `upsert_relationship`, `upsert_metric`, `upsert_segment`, or scoped
+   file tools with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.
+   `upsert_relationship` relates `from_entity` to `to_entity`: `columns` on `from_entity`'s
+   model hold `to_entity`'s key, in key order, and go in that model's `entities` block (as
+   `expr` when named differently). That is a many-to-one relationship; `cardinality:
+   one_to_one` also records it in `graph.relationships`. Relate one-to-many from the many
+   side, and many-to-many through a bridge model related to each side. A model that already
+   relates `to_entity` in a legacy `joins:` or `keys.foreign:` block is refused, since that
+   block would override the columns.
 6. Run `validate_project` with `mode=parse` after structural edits and `mode=runtime` before
    trusting queries.
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
@@ -248,6 +255,7 @@ stale one gets `CONFIG_CONFLICT`.
 - `read_project_file`
 - `write_project_file`
 - `upsert_model`
+- `upsert_relationship`
 - `upsert_metric`
 - `upsert_segment`
 - `archive_project_file`

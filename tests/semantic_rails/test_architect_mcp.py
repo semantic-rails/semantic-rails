@@ -72,6 +72,7 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
         "create_project",
         "upsert_metric",
         "upsert_model",
+        "upsert_relationship",
         "upsert_segment",
         "write_project_file",
     }
