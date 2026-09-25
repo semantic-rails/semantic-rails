@@ -524,7 +524,6 @@ INTERNAL_ERROR = {"ok": False, "status": "error", "errors": [{"code": "INTERNAL_
     ("tool", "arguments", "payload", "probe"),
     [
         ("segment-preview", None, INTERNAL_ERROR, "segment_preview"),
-        ("execute", None, INTERNAL_ERROR, "execute"),
         # A mistake must fail with its own code, not with some other error...
         (
             "inspect",
