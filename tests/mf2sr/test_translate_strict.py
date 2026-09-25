@@ -13,7 +13,6 @@ import yaml
 
 from mf2sr import translate
 from mf2sr.cli import main as cli_main
-from semantic_rails import config_validation
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse
 
@@ -85,6 +84,8 @@ def test_relations_keep_their_schema(
     assert len(report.warnings) == len(warnings), report.warnings
     for warning, parts in zip(report.warnings, warnings, strict=True):
         assert all(part in warning for part in parts), warning
+    if warehouse == "snowflake":  # the implied database is pinned, not left to the session
+        assert package["connection"]["options"]["database"] == "analytics"
 
 
 def test_a_relation_outside_the_usual_database_names_it(tmp_path: Path) -> None:
@@ -111,6 +112,8 @@ def test_a_relation_outside_the_usual_database_names_it(tmp_path: Path) -> None:
         for name in ("orders", "customers")
     }
     assert relations == {"orders": "main_marts.fct_orders", "customers": "raw.crm.dim_customers"}
+    package = yaml.safe_load((report.package_dir / "package.yml").read_text())["package"]
+    assert package["connection"]["options"]["database"] == "analytics"
 
 
 def test_a_strict_package_queries_the_dbt_built_marts(tmp_path: Path) -> None:
@@ -139,19 +142,16 @@ def test_a_strict_package_queries_the_dbt_built_marts(tmp_path: Path) -> None:
     assert rows and rows[0]["revenue"] > 0
 
 
-def test_strict_parse_errors_are_warnings_that_fail_strict_runs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def parse(*_args: Any, **_kwargs: Any) -> tuple[dict[str, Any], None]:
-        return {"ok": False, "errors": [{"message": "a strict problem"}]}, None
-
-    monkeypatch.setattr(config_validation, "parse_config_report", parse)
+def test_parse_errors_fail_strict_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A Postgres package has no connection block yet, so it doesn't parse."""
     source = str(_manifest(tmp_path, NODE))
-    arguments = ["--source", source, "--package-id", "shop", "--schema-strict"]
+    arguments = ["--source", source, "--package-id", "shop", "--warehouse", "postgres"]
 
-    assert cli_main([*arguments, "--output", str(tmp_path / "loose")]) == 0
-    assert cli_main([*arguments, "--output", str(tmp_path / "strict"), "--strict"]) == 2
-    assert "parse: a strict problem" in capsys.readouterr().out
+    assert cli_main([*arguments, "--output", str(tmp_path / "a"), "--schema-strict"]) == 0
+    assert (
+        cli_main([*arguments, "--output", str(tmp_path / "b"), "--schema-strict", "--strict"]) == 2
+    )
+    assert "parse: " in capsys.readouterr().out
 
 
 def test_semantic_rails_import_takes_schema_strict(tmp_path: Path) -> None:

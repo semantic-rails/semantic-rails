@@ -107,7 +107,9 @@ package over the tables dbt built:
   which it never rebuilds. Point `--default-db` at that file, inside the package.
 - The output is parse-checked, and each error is a `parse:` warning, so `--strict`
   fails the run. mf2sr writes a `connection` block for DuckDB and Snowflake only;
-  add one for another warehouse before the package parses.
+  add one for another warehouse before the package parses. Snowflake's pins the
+  usual database (`options.database`), since relations leave it out; a connection
+  you add must point at the same database.
 
 Without `--schema-strict`, DuckDB packages emit a placeholder `seed.source` pointing at
 `data/seed_<package_id>.sql` that the author must create. Snowflake

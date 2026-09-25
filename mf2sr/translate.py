@@ -103,15 +103,17 @@ def translate(
                       when `namespace` is omitted.
         namespace:    Optional namespace prefix for auto-derived IDs.
                       Defaults to `package_id`.
-        warehouse:    `duckdb` or `snowflake`. Controls the `package.yml`
+        warehouse:    A registered warehouse; mf2sr writes a connection block for
+                      `duckdb` and `snowflake` only. Controls the `package.yml`
                       shape; DuckDB packages additionally need `default_db`.
         default_db:   File path for DuckDB. Ignored for Snowflake.
         description:  Optional package description.
-        schema_strict: Write a ``schema_strict: true`` package whose relations
-                      keep the schema (and, on a catalog warehouse, the
-                      database) of their ``node_relation``, as dbt's
-                      ``semantic_manifest.json`` records it. The package is
-                      parse-checked, and each strict error is a warning.
+        schema_strict: Write a ``schema_strict: true`` package over the tables
+                      dbt built: relations keep their ``node_relation`` schema,
+                      and their database when it isn't the one most models use
+                      (Snowflake's connection pins that one). A DuckDB package
+                      reads dbt's database (``seed.kind: external``). The
+                      package is parse-checked; each error is a ``parse:`` warning.
     """
     namespace = namespace or package_id
     src = Path(source)
@@ -129,6 +131,10 @@ def translate(
     out_root.mkdir(parents=True, exist_ok=True)
 
     raw = parsers.load(src)
+    databases = Counter(
+        str((sm.get("node_relation") or {}).get("database") or "") for sm in raw["semantic_models"]
+    )
+    usual_database = databases.most_common(1)[0][0] if databases else ""
     report = TranslationReport(package_dir=out_root)
 
     graph = _build_graph(raw["semantic_models"], report)
@@ -141,6 +147,7 @@ def translate(
         default_db=default_db,
         description=description,
         schema_strict=schema_strict,
+        database=usual_database if schema_strict else "",
     )
     _write_graph_yml(out_root, graph)
 
@@ -165,10 +172,6 @@ def translate(
     source_metrics = {metric["name"]: metric for metric in raw["metrics"] if metric.get("name")}
 
     owning_models: set[str] = graph.get("_owning_models", set())
-    databases = Counter(
-        str((sm.get("node_relation") or {}).get("database") or "") for sm in raw["semantic_models"]
-    )
-    usual_database = databases.most_common(1)[0][0] if databases else ""
     models_dir = out_root / "models"
     models_dir.mkdir(exist_ok=True)
     for sm in raw["semantic_models"]:
@@ -1556,6 +1559,7 @@ def _write_package_yml(
     default_db: str | None,
     description: str | None,
     schema_strict: bool,
+    database: str = "",
 ) -> None:
     # Without --schema-strict the package is `schema_strict: false`, so a
     # project whose relations or types need review still loads; strict mode
@@ -1571,9 +1575,8 @@ def _write_package_yml(
         pkg["description"] = description
     if warehouse == "duckdb":
         pkg["default_db"] = default_db or f"data/{package_id}.duckdb"
-        # DuckDB packages require a seed block. We emit a placeholder
-        # `sql_script` seed pointing to a file the author will create.
-        # Without this the loader rejects the package outright.
+        # DuckDB packages require a seed block. Without --schema-strict it is a
+        # placeholder `sql_script` seed pointing to a file the author will create.
         pkg["seed"] = (
             {"kind": "external"}  # a strict package reads the database dbt built
             if schema_strict
@@ -1592,6 +1595,8 @@ def _write_package_yml(
                 "password_env": "SNOWFLAKE_PASSWORD",
                 "warehouse": "COMPUTE_WH",
                 "query_tag": f"mf2sr-{package_id}",
+                # Relations leave the usual database out, so the session must not guess it.
+                **({"database": database} if database else {}),
             },
         }
     body = {
