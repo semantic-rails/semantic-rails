@@ -12,6 +12,7 @@ import pytest
 import yaml
 from mcp.shared.memory import create_connected_server_and_client_session
 
+from semantic_rails.architect_introspection import open_duckdb, suggest_model
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.architect_transactions import project_revision
@@ -582,6 +583,28 @@ def test_intentionally_unselected_dbt_target_can_use_existing_relation(workspace
     ]
 
 
+def test_unselected_target_in_the_default_schema_matches_an_introspected_model(
+    workspace: Path,
+) -> None:
+    path = workspace / "dbt" / "target" / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    test = manifest["nodes"]["test.shop_dbt.relationships_fct_orders_customer_id"]
+    test["test_metadata"]["kwargs"].update(to="ref('raw_customers')", field="id")  # schema main
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    with open_duckdb(workspace / "shop" / "data" / "warehouse.duckdb") as warehouse:
+        draft = suggest_model(warehouse, "raw_customers")["upsert_model"]
+    assert project.upsert_model(**draft).report["ok"] is True
+    items, _, _ = dbt_import_models(load_dbt_artifacts(path.parent), ["fct_orders"])
+
+    applied = project.upsert_models(items).report
+
+    assert applied["ok"] is True, applied
+    assert {"model": "orders", "entity": "customer", "columns": ["customer_id"]} in applied[
+        "references"
+    ]
+
+
 def _customers(**extra: Any) -> dict[str, Any]:
     return {
         "model_id": "customers",
@@ -665,8 +688,9 @@ def test_identical_foreign_keys_to_one_entity_are_recorded_once(
         },
     ]
     lines["references"] = list(reversed(references)) if reverse else references
+    assert project.upsert_model(**_target_model("customer")).report["ok"] is True
 
-    applied = project.upsert_models([_target_model("customer"), lines]).report
+    applied = project.upsert_models([lines]).report
 
     assert applied["ok"] is True, applied
     assert applied["references"] == [
@@ -683,12 +707,11 @@ def test_identical_foreign_keys_to_one_entity_are_recorded_once(
     [
         ([], [], None),
         (["customer"], [], "customer"),
-        ([], ["customer"], "customer"),
         (["customer", "client"], [], None),
-        ([], ["customer", "client"], None),
-        (["customer"], ["client"], None),
+        ([], ["customer"], None),  # a batch target is named by its entity
+        (["customer"], ["client"], "customer"),
     ],
-    ids=["zero", "one-existing", "one-staged", "two-existing", "two-staged", "mixed"],
+    ids=["zero", "one-existing", "two-existing", "staged", "mixed"],
 )
 def test_relation_reference_requires_one_eligible_entity(
     workspace: Path, existing: list[str], staged: list[str], expected: str | None
@@ -713,11 +736,7 @@ def test_relation_reference_requires_one_eligible_entity(
         assert preview["references"] == []
         assert len(preview["skipped_references"]) == 1
         reason = preview["skipped_references"][0]["reason"]
-        assert (
-            "multiple eligible entities" in reason
-            if existing or staged
-            else "not a model" in reason
-        )
+        assert ("multiple eligible entities" if len(existing) > 1 else "not a model") in reason
 
 
 def test_explicit_entity_and_staged_update_override_relation_ambiguity(workspace: Path) -> None:

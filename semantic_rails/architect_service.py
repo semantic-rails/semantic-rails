@@ -682,9 +682,9 @@ class ArchitectProject:
         Each item takes :meth:`upsert_model`'s arguments plus optional
         ``references``: foreign keys, as ``{"entity": <key>}`` or
         ``{"relation": <relation>}`` with ``"columns"`` (this model's key
-        columns) and optionally ``"to_columns"`` (the target's). A target is an
-        entity already in the package or created by this batch; a relation
-        resolves only when exactly one eligible entity reads it. Each becomes
+        columns) and optionally ``"to_columns"`` (the target's). An entity may
+        be in the package or created by this batch; a relation resolves only
+        when exactly one existing package entity reads it. Each becomes
         an entry in the model's ``entities`` block (``expr`` when the column
         differs from the target's key), which strict packages read as a
         many-to-one relationship. A reference whose target is missing or
@@ -721,24 +721,17 @@ class ArchitectProject:
             graph = dict(documents[fact["graph_path"]].get("graph", {}) or {})
             for name, spec in dict(graph.get("entities", {}) or {}).items():
                 entity_keys[str(name)] = _as_list(dict(spec or {}).get("key"))
-        relation_entities: dict[str, set[str]] = {}
-        staged_models = {fact["model"] for fact in staged}
+        readers: dict[str, set[str]] = {}
         for row in raw["models"]:
-            if row.key in staged_models:
-                continue
-            relation = str(row.spec.get("relation") or "")
             entity = self._primary_entity_for_model(row, raw["entities"])
-            if relation and entity in entity_keys:
-                relation_entities.setdefault(relation, set()).add(entity)
-        for item, fact in zip(models, staged, strict=True):
-            if item.get("relation"):
-                relation_entities.setdefault(str(item["relation"]), set()).add(fact["entity_key"])
+            if row.spec.get("relation") and entity in entity_keys:
+                readers.setdefault(str(row.spec["relation"]), set()).add(entity)
         added: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         pending: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any], list[str]]]] = {}
         for item, fact in zip(models, staged, strict=True):
             for reference in list(item.get("references") or []):
-                candidates = relation_entities.get(str(reference.get("relation") or ""), set())
+                candidates = readers.get(str(reference.get("relation") or ""), set())
                 target = str(reference.get("entity") or "")
                 if not target and len(candidates) == 1:
                     target = next(iter(candidates))

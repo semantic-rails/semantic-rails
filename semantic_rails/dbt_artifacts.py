@@ -158,14 +158,18 @@ def load_dbt_artifacts(
         for key, value in {**nodes, **sources}.items()
         if isinstance(value, dict) and value.get("resource_type") in _RELATION_RESOURCES
     }
-    databases = Counter(str(entry.get("database") or "") for entry in entries.values())
+    # The project's own database, not the one most sources happen to live in.
+    built = [row for row in entries.values() if row["resource_type"] != "source"]
+    databases = Counter(str(row.get("database") or "") for row in built or entries.values())
     default_database = databases.most_common(1)[0][0] if databases else ""
+    # dbt-duckdb builds into schema main, which introspection and packages leave out.
+    default_schema = "main" if metadata.get("adapter_type") == "duckdb" else ""
     catalog_entries = {
         **_mapping(catalog.get("nodes", {}), label="catalog nodes"),
         **_mapping(catalog.get("sources", {}), label="catalog sources"),
     }
     relations = {
-        key: _relation(key, entry, catalog_entries.get(key, {}), default_database)
+        key: _relation(key, entry, catalog_entries.get(key, {}), default_database, default_schema)
         for key, entry in entries.items()
     }
     warnings = _apply_tests(relations, nodes)
@@ -180,7 +184,11 @@ def load_dbt_artifacts(
 
 
 def _relation(
-    unique_id: str, entry: dict[str, Any], catalog: dict[str, Any], default_database: str
+    unique_id: str,
+    entry: dict[str, Any],
+    catalog: dict[str, Any],
+    default_database: str,
+    default_schema: str,
 ) -> DbtRelation:
     resource_type = str(entry.get("resource_type"))
     database = str(entry.get("database") or "")
@@ -189,6 +197,8 @@ def _relation(
     parts = [part for part in (schema, alias) if part]
     if database and database != default_database:
         parts.insert(0, database)
+    elif schema == default_schema:
+        parts = [alias]
     columns: dict[str, DbtColumn] = {}
     catalog_columns = {
         str(name).lower(): dict(spec or {})
@@ -285,7 +295,8 @@ def _target_of(to: str, relations: dict[str, DbtRelation]) -> DbtRelation | None
             row.unique_id,
             row.relation,
             row.alias,
-            f"{row.database}.{row.relation}" if row.database else "",
+            f"{row.schema}.{row.alias}",
+            f"{row.database}.{row.schema}.{row.alias}",
         )
     ]
     return found[0] if len(found) == 1 else None

@@ -40,7 +40,6 @@ MAX_SAMPLE_CHARS = 200
 DEFAULT_PROFILE_ROWS = 1_000_000
 MAX_PROFILE_ROWS = 1_000_000
 MAX_SUGGESTION_KEY_COLUMNS = 8
-MAX_FK_TARGETS_PER_COLUMN = 8
 
 _KEY_SUFFIXES = ("_id", "_key", "_code", "_sk")
 _LINE_WORDS = ("line", "line_number", "line_no", "row_number", "seq", "sequence", "position")
@@ -669,9 +668,9 @@ def _suggest_key(
     probe = f"(SELECT * FROM {source} LIMIT {MAX_PROFILE_ROWS})" if sampled else source
     for index, first in enumerate(id_like):
         for second in id_like[index + 1 :]:
+            a, b = quote_identifier(first), quote_identifier(second)
             checked, present_first, present_second, pairs = warehouse.execute(
-                f"SELECT count(*), count({quote_identifier(first)}), count({quote_identifier(second)}), "
-                f"count(DISTINCT ({quote_identifier(first)}, {quote_identifier(second)})) FROM {probe}"
+                f"SELECT count(*), count({a}), count({b}), count(DISTINCT ({a}, {b})) FROM {probe}"
             ).fetchone()
             if checked and checked == present_first == present_second == pairs:
                 return {
@@ -704,200 +703,70 @@ def _suggest_key(
     return None
 
 
-def _key_catalog(warehouse: DuckDBWarehouse) -> dict[str, list[dict[str, Any]]]:
-    """Every column of every relation, with whether it is that relation's declared key."""
-    keys = {
-        (str(row["schema_name"]), str(row["table_name"])): list(row["constraint_column_names"])
-        for row in warehouse.rows(
-            "SELECT schema_name, table_name, constraint_column_names FROM duckdb_constraints() "
-            "WHERE database_name = current_database() AND constraint_type = 'PRIMARY KEY'"
-        )
-    }
-    catalog: dict[str, list[dict[str, Any]]] = {}
+def _declared_keys(warehouse: DuckDBWarehouse) -> dict[str, list[dict[str, str]]]:
+    """Single-column declared primary keys by lowercased column name, with their types."""
+    keys: dict[str, list[dict[str, str]]] = {}
     for row in warehouse.rows(
-        "SELECT schema_name, table_name, column_name, data_type FROM duckdb_columns() "
-        "WHERE database_name = current_database() AND NOT internal "
-        "AND schema_name <> '_semantic_rails' ORDER BY schema_name, table_name"
+        "SELECT k.schema_name, k.table_name, c.column_name, c.data_type "
+        "FROM duckdb_constraints() AS k JOIN duckdb_columns() AS c "
+        "ON c.database_name = k.database_name AND c.schema_name = k.schema_name "
+        "AND c.table_name = k.table_name AND c.column_name = k.constraint_column_names[1] "
+        "WHERE k.database_name = current_database() AND k.constraint_type = 'PRIMARY KEY' "
+        "AND len(k.constraint_column_names) = 1 ORDER BY 1, 2"
     ):
         schema, table, column = str(row["schema_name"]), str(row["table_name"]), row["column_name"]
-        if _dotted(schema, table):
-            continue
-        catalog.setdefault(str(column).lower(), []).append(
-            {
-                "relation": _relation_name(schema, table),
-                "source": quote_relation(f"{schema}.{table}"),
-                "column": str(column),
-                "type": str(row["data_type"]),
-                "declared_key": keys.get((schema, table)) == [str(column)],
-                "has_declared_key": (schema, table) in keys,
-            }
-        )
-    return catalog
+        if not _dotted(schema, table):
+            keys.setdefault(str(column).lower(), []).append(
+                {
+                    "relation": _relation_name(schema, table),
+                    "column": str(column),
+                    "type": str(row["data_type"]),
+                }
+            )
+    return keys
 
 
 def _foreign_keys(
-    warehouse: DuckDBWarehouse,
-    described: dict[str, Any],
-    key: list[str],
-    source: str,
-    profile: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    warehouse: DuckDBWarehouse, described: dict[str, Any], key: list[str]
+) -> list[dict[str, Any]]:
+    """Declared foreign keys, then key-like columns named like another relation's declared key.
+
+    Inferred links are review evidence from names and declarations only; no
+    values are compared.
+    """
     links = [
         fk_link(fk["columns"], fk["references"], "high", "declared FOREIGN KEY")
         for fk in described["foreign_keys"]
     ]
-    declared = {column for fk in described["foreign_keys"] for column in fk["columns"]}
     # A single-column key identifies this relation; a composite key's parts
     # usually point at other entities (order_id in order lines).
-    own_key = set(key) if len(key) == 1 else set()
+    skip = {column for fk in described["foreign_keys"] for column in fk["columns"]}
+    skip |= set(key) if len(key) == 1 else set()
     candidates = [
-        str(column["name"])
+        column
         for column in described["columns"]
-        if _key_like(str(column["name"]))
-        and column["name"] not in own_key
-        and column["name"] not in declared
-        and not _is_container_type(str(column["type"]))
-    ][:MAX_SUGGESTION_KEY_COLUMNS]
-    catalog = _key_catalog(warehouse) if candidates else {}
-    child_types = {str(column["name"]): str(column["type"]) for column in described["columns"]}
-    diagnostics: list[dict[str, str]] = []
-    child_sampled = bool(profile["sampled"])
-    child_probe = f"(SELECT * FROM {source} LIMIT {MAX_PROFILE_ROWS})" if child_sampled else source
+        if _key_like(str(column["name"])) and column["name"] not in skip
+    ]
+    declared_keys = _declared_keys(warehouse) if candidates else {}
     for column in candidates:
-        # Declared keys first, then relations without a declared key (a view,
-        # a dbt model without a contract) where the column is unique.
-        discovered = sorted(
-            (
-                target
-                for target in catalog.get(column.lower(), [])
-                if target["relation"] != described["relation"]
-                and (target["declared_key"] or not target["has_declared_key"])
-            ),
-            key=lambda target: not target["declared_key"],
-        )
-        targets = []
-        for target in discovered:
-            if _fk_types_compatible(child_types[column], target["type"]):
-                targets.append(target)
-            else:
-                diagnostics.append(
-                    {
-                        "column": column,
-                        "relation": target["relation"],
-                        "reason": f"incompatible key types: {child_types[column]} versus {target['type']}",
-                    }
-                )
-        proposed: list[tuple[dict[str, Any], int | None]] = []
-        incomplete = False
-        for target in targets[:MAX_FK_TARGETS_PER_COLUMN]:
-            try:
-                quoted = quote_identifier(target["column"])
-                (target_rows,) = warehouse.execute(
-                    f"SELECT count(*) FROM (SELECT 1 FROM {target['source']} "
-                    f"LIMIT {MAX_PROFILE_ROWS + 1})"
-                ).fetchone()
-                target_large = int(target_rows) > MAX_PROFILE_ROWS
-                if target_large and not target["declared_key"]:
-                    # A bounded prefix cannot establish uniqueness for an
-                    # undeclared target key.
-                    incomplete = True
-                    diagnostics.append(
-                        {
-                            "column": column,
-                            "relation": target["relation"],
-                            "reason": "undeclared target exceeds the bounded uniqueness probe",
-                        }
-                    )
-                    continue
-                if not target["declared_key"]:
-                    rows, present, distinct = warehouse.execute(
-                        f"SELECT count(*), count({quoted}), count(DISTINCT {quoted}) "
-                        f"FROM {target['source']}"
-                    ).fetchone()
-                    if not rows or present != rows or distinct != rows:
-                        continue
-                orphans = None
-                if not target_large:
-                    (orphans,) = warehouse.execute(
-                        f"SELECT count(*) FROM {child_probe} AS child "
-                        f"WHERE child.{quote_identifier(column)} IS NOT NULL "
-                        f"AND NOT EXISTS (SELECT 1 FROM {target['source']} AS parent "
-                        f"WHERE parent.{quoted} = child.{quote_identifier(column)})"
-                    ).fetchone()
-            except SemanticLayerError as exc:
-                if exc.code != "UNSUPPORTED_PLATFORM":
-                    raise
-                incomplete = True
-                diagnostics.append(
-                    {
-                        "column": column,
-                        "relation": target["relation"],
-                        "reason": "candidate could not be checked safely",
-                    }
-                )
-                continue
-            except duckdb.Error:
-                incomplete = True
-                diagnostics.append(
-                    {
-                        "column": column,
-                        "relation": target["relation"],
-                        "reason": "candidate probe is unsupported",
-                    }
-                )
-                continue
-            confidence = (
-                "low"
-                if target_large or orphans or child_sampled
-                else "medium"
-                if not target["declared_key"]
-                else "high"
-            )
-            evidence = (
-                f"; target has more than {MAX_PROFILE_ROWS} rows, so values were not checked"
-                if target_large
-                else f"; {orphans} rows in the bounded prefix have no match"
-                if orphans and child_sampled
-                else f"; {orphans} rows here have no match"
-                if orphans
-                else "; every value in the bounded prefix matches"
-                if child_sampled
-                else "; every value here matches a row there"
-            )
-            if (target_large or child_sampled) and not orphans:
-                evidence += "; full-relation referential integrity must be confirmed"
-            proposed.append(
-                (
-                    fk_link(
-                        [column],
-                        {"relation": target["relation"], "columns": [target["column"]]},
-                        confidence,
-                        f"{target['relation']}.{target['column']} is "
-                        + ("its declared key" if target["declared_key"] else "unique there")
-                        + evidence,
-                    ),
-                    orphans,
+        targets = [
+            target
+            for target in declared_keys.get(str(column["name"]).lower(), [])
+            if target["relation"] != described["relation"]
+            and _fk_types_compatible(str(column["type"]), target["type"])
+        ]
+        for target in targets:
+            links.append(
+                fk_link(
+                    [str(column["name"])],
+                    {"relation": target["relation"], "columns": [target["column"]]},
+                    "medium" if len(targets) == 1 else "low",
+                    f"{target['relation']}.{target['column']} is its declared key; values were "
+                    "not compared"
+                    + ("" if len(targets) == 1 else f"; {len(targets)} relations declare this key"),
                 )
             )
-        # An unmatched child value makes a candidate weaker than one whose
-        # observed values all match. Unknown values in a large target remain
-        # possible, and cannot establish a unique destination either.
-        plausible = [item for item in proposed if not item[1]]
-        selected = plausible if plausible else proposed
-        ambiguous = len(selected) > 1
-        truncated = len(targets) > MAX_FK_TARGETS_PER_COLUMN
-        for link, _ in selected:
-            if ambiguous or truncated or incomplete:
-                link["confidence"] = "low"
-                if ambiguous:
-                    link["reason"] += "; multiple possible target relations match"
-                if truncated:
-                    link["reason"] += "; additional target relations were not checked"
-                if incomplete:
-                    link["reason"] += "; another candidate could not be checked"
-                link["reason"] += "; confirm the intended relationship"
-            links.append(link)
-    return links, diagnostics
+    return links
 
 
 def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
@@ -913,9 +782,7 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     entity = entity_name(name)
     key = _suggest_key(warehouse, described, profile, entity, source)
     key_columns = list(key["columns"]) if key else []
-    links, foreign_key_diagnostics = _foreign_keys(
-        warehouse, described, key_columns, source, profile
-    )
+    links = _foreign_keys(warehouse, described, key_columns)
     roles, unmodeled = draft_roles(
         entity, key_columns, links, profile["columns"], rows=profile["row_count"]
     )
@@ -936,7 +803,6 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         "primary_key": key,
         **roles,
         "foreign_keys": links,
-        **({"foreign_key_diagnostics": foreign_key_diagnostics} if foreign_key_diagnostics else {}),
         **({"unsupported_columns": unsupported_columns} if unsupported_columns else {}),
         "upsert_model": upsert_model_draft(
             entity=entity, relation=described["relation"], key_columns=key_columns, **roles

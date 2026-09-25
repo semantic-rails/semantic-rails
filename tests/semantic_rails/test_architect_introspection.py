@@ -10,6 +10,7 @@ import duckdb
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
+from semantic_rails import architect_mcp
 from semantic_rails.architect_introspection import (
     MAX_PROFILE_ROWS,
     MAX_SAMPLE_CHARS,
@@ -181,90 +182,37 @@ def test_declared_foreign_key_keeps_schema_and_special_composite_target(tmp_path
     assert mcp_quoted_target["relation"] == mcp_quoted["foreign_keys"][0]["references"]["relation"]
 
 
-@pytest.mark.parametrize("parent_order", [("main", "main_marts"), ("main_marts", "main")])
-def test_undeclared_foreign_key_reports_all_matching_targets(
-    tmp_path: Path, parent_order: tuple[str, str]
+@pytest.mark.parametrize("schemas", [["main_marts"], ["main", "main_marts"]])
+def test_inferred_foreign_keys_follow_declared_keys_of_the_same_name(
+    tmp_path: Path, schemas: list[str]
 ) -> None:
-    db_path = tmp_path / "ambiguous.duckdb"
+    db_path = tmp_path / "keys.duckdb"
     with duckdb.connect(str(db_path)) as conn:
         conn.execute("CREATE SCHEMA main_marts")
-        for schema in parent_order:
+        for schema in schemas:
             conn.execute(f"CREATE TABLE {schema}.customers (customer_id INTEGER PRIMARY KEY)")
-            conn.execute(f"INSERT INTO {schema}.customers VALUES (1)")
+        conn.execute("CREATE TABLE main.clients (customer_id VARCHAR PRIMARY KEY)")  # other type
+        conn.execute("CREATE TABLE main.stores (store_id INTEGER)")  # no declared key
         conn.execute(
-            "CREATE TABLE main_marts.orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)"
+            "CREATE TABLE main_marts.orders "
+            "(order_id INTEGER PRIMARY KEY, customer_id INTEGER, store_id INTEGER)"
         )
-        conn.execute("INSERT INTO main_marts.orders VALUES (10, 1)")
 
     with open_duckdb(db_path) as warehouse:
         suggested = suggest_model(warehouse, "main_marts.orders")
-    server = create_architect_mcp_server(workspace_root=tmp_path)
     (mcp_suggested,) = _session(
-        server,
+        create_architect_mcp_server(workspace_root=tmp_path),
         [("suggest_model", {"duckdb_path": db_path.name, "relation": "main_marts.orders"})],
     )
+
     links = suggested["foreign_keys"]
-    assert {link["references"]["relation"] for link in links} == {
-        "customers",
-        "main_marts.customers",
-    }
-    assert all(link["column"] == "customer_id" for link in links)
-    assert all(link["confidence"] == "low" for link in links)
-    assert all("multiple possible target relations" in link["reason"] for link in links)
     assert mcp_suggested["foreign_keys"] == links
-
-
-def test_undeclared_foreign_key_with_one_matching_target_remains_high_confidence(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "unambiguous.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute("CREATE SCHEMA main_marts")
-        conn.execute("CREATE TABLE main.customers (customer_id INTEGER PRIMARY KEY)")
-        conn.execute("INSERT INTO main.customers VALUES (2)")
-        conn.execute("CREATE TABLE main_marts.customers (customer_id INTEGER PRIMARY KEY)")
-        conn.execute("INSERT INTO main_marts.customers VALUES (1)")
-        conn.execute(
-            "CREATE TABLE main_marts.orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)"
-        )
-        conn.execute("INSERT INTO main_marts.orders VALUES (10, 1)")
-
-    with open_duckdb(db_path) as warehouse:
-        suggested = suggest_model(warehouse, "main_marts.orders")
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-    (mcp_suggested,) = _session(
-        server,
-        [("suggest_model", {"duckdb_path": db_path.name, "relation": "main_marts.orders"})],
-    )
-    assert suggested["foreign_keys"] == [
-        {
-            "column": "customer_id",
-            "references": {"relation": "main_marts.customers", "columns": ["customer_id"]},
-            "confidence": "high",
-            "reason": "main_marts.customers.customer_id is its declared key; every value here matches a row there",
-        }
+    assert [link["references"]["relation"] for link in links] == [
+        "customers" if schema == "main" else f"{schema}.customers" for schema in schemas
     ]
-    assert mcp_suggested["foreign_keys"] == suggested["foreign_keys"]
-
-
-def test_undeclared_foreign_key_target_cap_does_not_imply_unique_target(tmp_path: Path) -> None:
-    db_path = tmp_path / "many-targets.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)")
-        conn.execute("INSERT INTO orders VALUES (10, 1)")
-        for index in range(9):
-            schema = f"s{index:02d}"
-            conn.execute(f"CREATE SCHEMA {schema}")
-            conn.execute(f"CREATE TABLE {schema}.customers (customer_id INTEGER PRIMARY KEY)")
-            conn.execute(f"INSERT INTO {schema}.customers VALUES ({1 if index == 0 else 2})")
-
-    with open_duckdb(db_path) as warehouse:
-        suggested = suggest_model(warehouse, "orders")
-    links = suggested["foreign_keys"]
-    assert len(links) == 1
-    assert links[0]["references"]["relation"] == "s00.customers"
-    assert links[0]["confidence"] == "low"
-    assert "additional target relations were not checked" in links[0]["reason"]
+    assert {link["confidence"] for link in links} == {"medium" if len(links) == 1 else "low"}
+    assert all(link["column"] == "customer_id" for link in links)
+    assert all("declared key; values were not compared" in link["reason"] for link in links)
 
 
 def test_profile_counts_and_caps_what_it_returns(tmp_path: Path) -> None:
@@ -517,26 +465,6 @@ def test_composite_duplicate_outside_probe_remains_tentative(tmp_path: Path) -> 
     assert "must be confirmed" in suggested["primary_key"]["reason"]
 
 
-def test_foreign_key_unmatched_outside_probe_requires_confirmation(tmp_path: Path) -> None:
-    db_path = tmp_path / "late-orphan.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute("CREATE TABLE dim_customers (customer_id BIGINT PRIMARY KEY)")
-        conn.execute("INSERT INTO dim_customers VALUES (1)")
-        conn.execute(
-            "CREATE TABLE fct_orders AS SELECT range AS order_id, "
-            "CASE WHEN range = 1000000 THEN 99 ELSE 1 END AS customer_id "
-            f"FROM range({MAX_PROFILE_ROWS + 1})"
-        )
-
-    with open_duckdb(db_path) as warehouse:
-        suggested = suggest_model(warehouse, "fct_orders")
-
-    link = _by(suggested["foreign_keys"], "column")["customer_id"]
-    assert link["confidence"] == "low"
-    assert "bounded prefix" in link["reason"]
-    assert "must be confirmed" in link["reason"]
-
-
 def test_introspection_never_writes_or_creates_a_database(
     warehouse_path: Path, tmp_path: Path
 ) -> None:
@@ -624,18 +552,11 @@ def test_suggest_model_for_a_fact_table(warehouse_path: Path) -> None:
     assert _by(orders["dimensions"], "column")["status"]["confidence"] == "high"
     measures = _by(orders["measures"], "key")
     assert measures["order_total"]["aggregation"] == "sum"
-    links = orders["foreign_keys"]
-    assert {
-        link["references"]["relation"] for link in links if link["column"] == "customer_id"
-    } == {
+    (link,) = orders["foreign_keys"]  # dim_stores declares no key
+    assert (link["column"], link["references"]["relation"]) == (
+        "customer_id",
         "main_marts.dim_customers",
-        "main_staging.stg_customers",
-    }
-    assert {link["references"]["relation"] for link in links if link["column"] == "store_id"} == {
-        "main_marts.dim_stores",
-        "main_staging.stg_stores",
-    }
-    assert all(link["confidence"] == "low" for link in links)
+    )
 
 
 def test_suggest_model_for_a_line_table_finds_the_composite_key(warehouse_path: Path) -> None:
@@ -643,16 +564,7 @@ def test_suggest_model_for_a_line_table_finds_the_composite_key(warehouse_path: 
         lines = suggest_model(warehouse, "main_marts.fct_order_lines")
 
     assert lines["primary_key"]["columns"] == ["order_id", "line_number"]
-    links = lines["foreign_keys"]
-    assert {link["references"]["relation"] for link in links if link["column"] == "order_id"} == {
-        "main_marts.fct_orders",
-        "main_staging.stg_orders",
-    }
-    assert {link["references"]["relation"] for link in links if link["column"] == "product_id"} == {
-        "main_marts.dim_products",
-        "main_staging.stg_products",
-    }
-    assert all(link["confidence"] == "low" for link in links)
+    assert lines["foreign_keys"] == []  # no target declares order_id or product_id
     measures = _by(lines["measures"], "key")
     assert measures["unit_price"]["aggregation"] == "avg"  # summing unit prices is wrong
     assert measures["net_amount"]["aggregation"] == "sum"
@@ -762,137 +674,6 @@ def test_scalar_classifier_does_not_promote_nested_type_words(
     name: str, data_type: str, expected: str
 ) -> None:
     assert classify_column(name, data_type) == expected
-
-
-@pytest.mark.parametrize("incompatible_count", [1, 9])
-def test_incompatible_foreign_key_targets_do_not_erase_valid_suggestion(
-    tmp_path: Path, incompatible_count: int
-) -> None:
-    db_path = tmp_path / "types.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute("CREATE TABLE customers (customer_id INTEGER PRIMARY KEY)")
-        conn.execute("INSERT INTO customers VALUES (1), (2)")
-        conn.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)")
-        conn.execute("INSERT INTO orders VALUES (10, 1), (20, 2)")
-        for index in range(incompatible_count):
-            conn.execute(f"CREATE TABLE unrelated_{index} (customer_id VARCHAR PRIMARY KEY)")
-            conn.execute(f"INSERT INTO unrelated_{index} VALUES ('not-a-number')")
-
-    with open_duckdb(db_path) as warehouse:
-        direct = suggest_model(warehouse, "orders")
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-    (mcp,) = _session(
-        server,
-        [("suggest_model", {"duckdb_path": "types.duckdb", "relation": "orders"})],
-    )
-
-    for result in (direct, mcp):
-        assert result.get("ok", True) is True
-        assert [
-            (link["references"]["relation"], link["confidence"]) for link in result["foreign_keys"]
-        ] == [("customers", "high")]
-        assert len(result["foreign_key_diagnostics"]) == incompatible_count
-        assert all(
-            "INTEGER versus VARCHAR" in diagnostic["reason"]
-            for diagnostic in result["foreign_key_diagnostics"]
-        )
-        assert result["upsert_model"]["primary_key"] == ["order_id"]
-
-
-def test_failed_individual_fk_probe_leaves_valid_link_with_incomplete_evidence(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "probe.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute("CREATE TABLE customers (customer_id INTEGER PRIMARY KEY)")
-        conn.execute("INSERT INTO customers VALUES (1)")
-        conn.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER)")
-        conn.execute("INSERT INTO orders VALUES (10, 1)")
-        conn.execute(
-            "CREATE VIEW broken_customers AS SELECT CAST(value AS INTEGER) AS customer_id "
-            "FROM (VALUES ('not-a-number')) AS source(value)"
-        )
-
-    with open_duckdb(db_path) as warehouse:
-        direct = suggest_model(warehouse, "orders")
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-    (mcp,) = _session(
-        server,
-        [("suggest_model", {"duckdb_path": "probe.duckdb", "relation": "orders"})],
-    )
-
-    for result in (direct, mcp):
-        assert result.get("ok", True) is True
-        assert [link["references"]["relation"] for link in result["foreign_keys"]] == ["customers"]
-        assert result["foreign_keys"][0]["confidence"] == "low"
-        assert "another candidate could not be checked" in result["foreign_keys"][0]["reason"]
-        assert result["foreign_key_diagnostics"] == [
-            {
-                "column": "customer_id",
-                "relation": "broken_customers",
-                "reason": "candidate probe is unsupported",
-            }
-        ]
-
-
-@pytest.mark.parametrize("target_kind", ["undeclared_large", "declared_large", "checked_unique"])
-def test_oversized_undeclared_fk_target_keeps_search_uncertainty(
-    tmp_path: Path, target_kind: str
-) -> None:
-    db_path = tmp_path / "target-bound.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute("CREATE TABLE a_customers (customer_id BIGINT PRIMARY KEY)")
-        conn.execute("INSERT INTO a_customers VALUES (1), (2)")
-        conn.execute("CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id BIGINT)")
-        conn.execute("INSERT INTO orders VALUES (10, 1), (20, 2)")
-        if target_kind == "declared_large":
-            conn.execute("CREATE TABLE b_customers (customer_id BIGINT PRIMARY KEY)")
-            conn.execute(f"INSERT INTO b_customers SELECT range FROM range({MAX_PROFILE_ROWS + 1})")
-        elif target_kind == "undeclared_large":
-            conn.execute(
-                "CREATE VIEW b_customers AS SELECT range AS customer_id "
-                f"FROM range({MAX_PROFILE_ROWS + 1})"
-            )
-        else:
-            conn.execute("CREATE VIEW b_customers AS SELECT range AS customer_id FROM range(1, 3)")
-
-    with open_duckdb(db_path) as warehouse:
-        direct = suggest_model(warehouse, "orders")
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-    (mcp,) = _session(
-        server,
-        [("suggest_model", {"duckdb_path": "target-bound.duckdb", "relation": "orders"})],
-    )
-
-    for result in (direct, mcp):
-        assert result.get("ok", True) is True
-        links = (
-            _by(result["foreign_keys"], "column")
-            if target_kind == "undeclared_large"
-            else result["foreign_keys"]
-        )
-        if target_kind == "undeclared_large":
-            assert links["customer_id"]["references"]["relation"] == "a_customers"
-            assert links["customer_id"]["confidence"] == "low"
-            assert "another candidate could not be checked" in links["customer_id"]["reason"]
-            assert result["foreign_key_diagnostics"] == [
-                {
-                    "column": "customer_id",
-                    "relation": "b_customers",
-                    "reason": "undeclared target exceeds the bounded uniqueness probe",
-                }
-            ]
-        else:
-            assert {link["references"]["relation"] for link in links} == {
-                "a_customers",
-                "b_customers",
-            }
-            assert all(link["confidence"] == "low" for link in links)
-            assert "foreign_key_diagnostics" not in result
-            if target_kind == "declared_large":
-                assert any("values were not checked" in link["reason"] for link in links)
-            else:
-                assert all("every value here matches" in link["reason"] for link in links)
 
 
 def test_container_columns_are_diagnosed_and_scalar_draft_executes(tmp_path: Path) -> None:
@@ -1026,14 +807,18 @@ def _session(server: Any, calls: list[tuple[str, dict[str, Any]]]) -> list[dict[
     return asyncio.run(run())
 
 
-def test_mcp_session_explores_a_dbt_warehouse(tmp_path: Path) -> None:
+def test_mcp_session_explores_a_dbt_warehouse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     build_dbt_warehouse(tmp_path / "dbt" / "warehouse.duckdb")
     server = create_architect_mcp_server(workspace_root=tmp_path)
     path = {"duckdb_path": "dbt/warehouse.duckdb"}
+    monkeypatch.setattr(architect_mcp, "MAX_LISTED_TABLES", 5)
 
-    tables, described, profiled, suggested = _session(
+    everything, tables, described, profiled, suggested = _session(
         server,
         [
+            ("list_tables", path),
             ("list_tables", {**path, "schema": "main_marts"}),
             ("describe_table", {**path, "relation": "main_marts.dim_customers"}),
             ("profile_columns", {**path, "relation": "main_marts.fct_orders", "sample_limit": 2}),
@@ -1041,7 +826,8 @@ def test_mcp_session_explores_a_dbt_warehouse(tmp_path: Path) -> None:
         ],
     )
 
-    assert tables["ok"] is True and len(tables["tables"]) == 5
+    assert len(everything["tables"]) == 5 and everything["truncated"] is True
+    assert len(tables["tables"]) == 5 and tables["truncated"] is False
     assert described["primary_key"] == ["customer_id"]
     assert profiled["row_count"] == 8
     assert suggested["upsert_model"]["primary_key"] == ["order_id"]

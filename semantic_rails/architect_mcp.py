@@ -63,6 +63,9 @@ ArchitectTransport = Literal["stdio", "sse", "streamable-http"]
 ARCHITECT_TOKEN_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN"
 ARCHITECT_TOKEN_FILE_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN_FILE"
 MIN_ARCHITECT_TOKEN_LENGTH = 32
+# Response caps for unnarrowed listings: narrow with schema, or with select.
+MAX_LISTED_TABLES = 200
+MAX_UNSELECTED_DBT_SUGGESTIONS = 20
 # RFC 6750 b64token: what a client can send in an Authorization header.
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
 _TOKEN_HINT = (
@@ -1147,7 +1150,12 @@ def create_architect_mcp_server(
         """List tables and views (read-only) in a DuckDB package's database or a DuckDB file."""
         try:
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
-                return {"ok": True, "tables": introspection.list_tables(warehouse, schema=schema)}
+                tables = introspection.list_tables(warehouse, schema=schema)
+            return {
+                "ok": True,
+                "tables": tables[:MAX_LISTED_TABLES],
+                "truncated": len(tables) > MAX_LISTED_TABLES,
+            }
         except Exception as exc:
             return _report_error(exc)
 
@@ -1165,10 +1173,8 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_read_only_annotations("Profile table columns"),
         description=(
-            "Row, distinct and null counts, min/max and up to 20 sample values per column "
-            "(read-only). Profiles at most max_rows rows (capped at one million), sampling "
-            "beyond that; sample_limit=0 "
-            "returns no values."
+            "Per-column counts, min/max and up to 20 samples (sample_limit=0 for none), sampling "
+            "tables above max_rows (at most one million). Read-only."
         ),
     )
     def profile_columns(
@@ -1197,9 +1203,8 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_read_only_annotations("Suggest a model"),
         description=(
-            "Propose a key, time roles, dimensions, measures (with aggregations) and foreign "
-            "keys for a relation, each with a confidence and a reason, plus draft upsert_model "
-            "arguments to review. Read-only."
+            "Propose a key, times, dimensions, measures and foreign keys for a relation, with "
+            "confidences, reasons and draft upsert_model arguments. Read-only."
         ),
     )
     def suggest_model(
@@ -1247,10 +1252,9 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_read_only_annotations("Suggest models from dbt"),
         description=(
-            "Read a dbt project's manifest.json and catalog.json (never run dbt) and propose a "
-            "model per dbt model: key, foreign keys and value sets from dbt tests and contracts, "
-            "times, dimensions and measures from column types, each with a confidence and a "
-            "reason, plus draft upsert_model arguments. select narrows by model name."
+            "suggest_model for each dbt model, from manifest.json and catalog.json (dbt never "
+            "runs); keys, links and value sets come from dbt tests and contracts. select narrows "
+            "by model name. Read-only."
         ),
     )
     def suggest_models_from_dbt(
@@ -1261,11 +1265,14 @@ def create_architect_mcp_server(
     ) -> dict[str, Any]:
         try:
             project = _dbt_project(target_dir, manifest_path, catalog_path)
+            models = dbt_artifacts.suggest_models_from_dbt(project, list(select or []))
+            limit = len(models) if select else MAX_UNSELECTED_DBT_SUGGESTIONS
             return {
                 "ok": True,
                 "dbt_project": project.project_name,
                 "adapter_type": project.adapter_type,
-                "models": dbt_artifacts.suggest_models_from_dbt(project, list(select or [])),
+                "models": models[:limit],
+                "truncated": len(models) > limit,
                 "dbt_warnings": project.warnings,
             }
         except Exception as exc:
@@ -1274,11 +1281,10 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_mutation_annotations("Import dbt models"),
         description=(
-            "Preview or atomically create or update package models from dbt models (reads "
-            "manifest.json and catalog.json; dbt never runs), with foreign keys from "
-            "relationships tests as entity references. select names the dbt models; review them "
-            "with suggest_models_from_dbt first. Models without a key in dbt are reported in "
-            "skipped_models, references to models outside the package in skipped_references."
+            "Create or update package models from the selected dbt models in one transaction, "
+            "writing their foreign keys as entity references. Review with "
+            "suggest_models_from_dbt first; skipped_models and skipped_references say what was "
+            "left out."
         ),
     )
     def import_dbt_project(

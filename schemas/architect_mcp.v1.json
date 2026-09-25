@@ -2077,7 +2077,7 @@
         "readOnlyHint": true,
         "title": "Profile table columns"
       },
-      "description": "Row, distinct and null counts, min/max and up to 20 sample values per column (read-only). Profiles at most max_rows rows (capped at one million), sampling beyond that; sample_limit=0 returns no values.",
+      "description": "Per-column counts, min/max and up to 20 samples (sample_limit=0 for none), sampling tables above max_rows (at most one million). Read-only.",
       "inputSchema": {
         "properties": {
           "columns": {
@@ -2141,7 +2141,7 @@
         "readOnlyHint": true,
         "title": "Suggest a model"
       },
-      "description": "Propose a key, time roles, dimensions, measures (with aggregations) and foreign keys for a relation, each with a confidence and a reason, plus draft upsert_model arguments to review. Read-only.",
+      "description": "Propose a key, times, dimensions, measures and foreign keys for a relation, with confidences, reasons and draft upsert_model arguments. Read-only.",
       "inputSchema": {
         "properties": {
           "duckdb_path": {
@@ -2180,7 +2180,7 @@
         "readOnlyHint": true,
         "title": "Suggest models from dbt"
       },
-      "description": "Read a dbt project's manifest.json and catalog.json (never run dbt) and propose a model per dbt model: key, foreign keys and value sets from dbt tests and contracts, times, dimensions and measures from column types, each with a confidence and a reason, plus draft upsert_model arguments. select narrows by model name.",
+      "description": "suggest_model for each dbt model, from manifest.json and catalog.json (dbt never runs); keys, links and value sets come from dbt tests and contracts. select narrows by model name. Read-only.",
       "inputSchema": {
         "properties": {
           "catalog_path": {
@@ -2232,7 +2232,7 @@
         "readOnlyHint": false,
         "title": "Import dbt models"
       },
-      "description": "Preview or atomically create or update package models from dbt models (reads manifest.json and catalog.json; dbt never runs), with foreign keys from relationships tests as entity references. select names the dbt models; review them with suggest_models_from_dbt first. Models without a key in dbt are reported in skipped_models, references to models outside the package in skipped_references.",
+      "description": "Create or update package models from the selected dbt models in one transaction, writing their foreign keys as entity references. Review with suggest_models_from_dbt first; skipped_models and skipped_references say what was left out.",
       "inputSchema": {
         "properties": {
           "catalog_path": {

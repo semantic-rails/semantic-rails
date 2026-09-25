@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
+from semantic_rails import architect_mcp
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.dbt_artifacts import (
@@ -37,12 +38,24 @@ def _by(rows: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any]]:
 
 
 def test_relations_keep_their_schema_and_alias(target: Path) -> None:
+    path = target / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    for index in range(20):  # more sources in another database than models in the project's
+        manifest["sources"][f"source.shop_dbt.lake.feed_{index}"] = {
+            "resource_type": "source",
+            "database": "lake",
+            "schema": "main",
+            "identifier": f"feed_{index}",
+        }
+    path.write_text(json.dumps(manifest), encoding="utf-8")
     project = load_dbt_artifacts(target)
 
     assert project.project_name == "shop_dbt" and project.adapter_type == "duckdb"
     assert project.find("fct_orders").relation == "main_marts.fct_orders"
     assert project.find("stg_orders").relation == "main_staging.stg_orders"
-    assert project.find("seed.shop_dbt.raw_orders").relation == "main.raw_orders"
+    # dbt-duckdb's default schema is left out, as introspection and packages spell it.
+    assert project.find("seed.shop_dbt.raw_orders").relation == "raw_orders"
+    assert project.find("source.shop_dbt.lake.feed_0").relation == "lake.main.feed_0"
     assert project.find("fct_orders").materialized == "table"
 
 
@@ -658,13 +671,13 @@ def test_contract_source_target_uses_source_manifest_identity(target: Path) -> N
         fk for fk in project.find("fct_orders").foreign_keys if fk["source"] == "contract"
     )
     assert foreign_key["to"] == "source.shop_dbt.raw.customer_feed"
-    assert foreign_key["to_relation"] == "main.raw_customers"
+    assert foreign_key["to_relation"] == "raw_customers"
     items, skipped, _ = dbt_import_models(
         project, ["source.shop_dbt.raw.customer_feed", "fct_orders"]
     )
     assert skipped == []
     orders = next(item for item in items if item["model_id"] == "orders")
-    assert any(reference["relation"] == "main.raw_customers" for reference in orders["references"])
+    assert any(reference["relation"] == "raw_customers" for reference in orders["references"])
 
 
 def test_an_unknown_or_ambiguous_model_is_reported(target: Path) -> None:
@@ -711,18 +724,23 @@ def _call(server: Any, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(run())
 
 
-def test_mcp_session_suggests_models_from_the_dbt_target(tmp_path: Path) -> None:
+def test_mcp_session_suggests_models_from_the_dbt_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = build_dbt_warehouse(tmp_path / "dbt" / "warehouse.duckdb")
     write_dbt_artifacts(db_path, tmp_path / "dbt" / "target")
     server = create_architect_mcp_server(workspace_root=tmp_path)
+    monkeypatch.setattr(architect_mcp, "MAX_UNSELECTED_DBT_SUGGESTIONS", 2)
 
     result = _call(
         server,
         "suggest_models_from_dbt",
-        {"target_dir": "dbt/target", "select": ["fct_orders", "fct_order_lines"]},
+        {"target_dir": "dbt/target", "select": ["fct_orders", "fct_order_lines", "dim_stores"]},
     )
+    unselected = _call(server, "suggest_models_from_dbt", {"target_dir": "dbt/target"})
 
-    assert result["ok"] is True, result
+    assert len(unselected["models"]) == 2 and unselected["truncated"] is True
+    assert result["ok"] is True and result["truncated"] is False, result
     assert result["dbt_project"] == "shop_dbt"
     models = _by(result["models"], "relation")
     assert models["main_marts.fct_order_lines"]["primary_key"]["columns"] == [
