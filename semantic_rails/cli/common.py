@@ -124,16 +124,23 @@ def default_package_ref(*, interactive: bool = False) -> PackageReference:
     interactive terminal. Otherwise the command stops with guidance.
     """
 
-    cwd_ref = _package_ref_from_cwd()
-    if cwd_ref is not None:
-        return cwd_ref
-    local_path = resolve_local_package_path()
-    if local_path:
-        return resolve_package_reference(path=local_path)
+    chosen = chosen_package_ref()
+    if chosen is not None:
+        return chosen
     demo_available = DEMO_PACKAGE_ID in list_package_paths()
     if interactive and demo_available and _confirm_demo_package():
         return resolve_package_reference(package_id=DEMO_PACKAGE_ID)
     raise _no_package_selected_error(demo_available=demo_available)
+
+
+def chosen_package_ref() -> PackageReference | None:
+    """The package in the working directory or a parent, then the local profile's, else None."""
+
+    cwd_ref = _package_ref_from_cwd()
+    if cwd_ref is not None:
+        return cwd_ref
+    local_path = resolve_local_package_path()
+    return resolve_package_reference(path=local_path) if local_path else None
 
 
 def _confirm_demo_package() -> bool:
@@ -192,18 +199,21 @@ def _is_bundled_ref(ref: PackageReference) -> bool:
 
 def _package_ref_from_cwd() -> PackageReference | None:
     cwd = Path.cwd().resolve()
+    return next(filter(None, map(_package_ref_at, [cwd, *cwd.parents])), None)
+
+
+def _package_ref_at(directory: Path) -> PackageReference | None:
+    """The package whose ``package.yml`` is in ``directory``, if there is one."""
+
+    package_yml = directory / "package.yml"
+    if not package_yml.is_file():
+        return None
+    source_path = str((directory if (directory / "graph.yml").is_file() else package_yml).resolve())
     registered = {
-        str(Path(source_path).resolve()): package_id
-        for package_id, source_path in list_package_paths().items()
+        str(Path(source).resolve()): package_id
+        for package_id, source in list_package_paths().items()
     }
-    for directory in [cwd, *cwd.parents]:
-        package_yml = directory / "package.yml"
-        if not package_yml.is_file():
-            continue
-        source = directory if (directory / "graph.yml").is_file() else package_yml
-        source_path = str(source.resolve())
-        return PackageReference(source_path=source_path, package_id=registered.get(source_path, ""))
-    return None
+    return PackageReference(source_path=source_path, package_id=registered.get(source_path, ""))
 
 
 def _package_id_from_yaml(source_path: str | Path) -> str:

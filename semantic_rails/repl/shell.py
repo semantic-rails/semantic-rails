@@ -12,6 +12,7 @@ from ..cli.common import (
     _repl_capabilities,
     _repl_color,
     _runtime_from_ref,
+    chosen_package_ref,
 )
 from ..cli.output import (
     _authoring_error_messages,
@@ -35,15 +36,17 @@ from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
 from .authoring import Undoable, _authoring_warehouse, _run_authoring_flow
 from .backend import current_backend, pickers_available
+from .home import _shown_path, run_home
 from .prompts import _author_confirm, _AuthoringCancelled
 
 
 def run_interactive_shell(*, package: str = "", path: str = "") -> None:
-    current_ref = _default_ref(
-        package=package,
-        path=path,
-        interactive=_is_terminal(sys.stdin) and _is_terminal(sys.stdout),
-    )
+    if package or path or not (_is_terminal(sys.stdin) and _is_terminal(sys.stdout)):
+        current_ref: PackageReference | None = _default_ref(package=package, path=path)
+    else:  # a person at a terminal without a chosen package starts on the home screen
+        current_ref = chosen_package_ref() or run_home()
+    if current_ref is None:
+        return
     undo_stack: list[Undoable] = []
     current_backend()  # an unusable SEMANTIC_RAILS_UI fails here, before the banner
     _print_repl_welcome(current_ref)
@@ -123,6 +126,11 @@ def _handle_repl_line(
     if command in {"packages", "projects"}:
         _print_project_list(project_list_report(with_status=False))
         return current_ref
+    if command == "home":
+        chosen = run_home(current_ref) or current_ref
+        if chosen != current_ref:
+            print(f"Using {_ref_display(chosen)}")
+        return chosen
     if command == "use":
         if not rest:
             raise SemanticLayerError("INVALID_CONFIG", "Usage: use <package-id|path>")
@@ -258,13 +266,6 @@ def _operational_notice(ref: PackageReference, mode: str) -> str:
         runtime.close()
 
 
-def _shown_path(path: Path) -> str:
-    try:
-        return f"./{path.relative_to(Path.cwd().resolve()).as_posix()}"
-    except ValueError:
-        return str(path)
-
-
 def _print_repl_help() -> None:
     visual, color = _repl_capabilities()
     if visual:
@@ -275,6 +276,7 @@ def _print_repl_help() -> None:
         print()
         print(_repl_color("Commands", "1", enabled=color))
         rows = (
+            ("home", "Open, create or import a project"),
             ("packages", "List registered packages"),
             ("use <package|path>", "Switch package"),
             ("debug", "Show package status"),
@@ -292,6 +294,7 @@ def _print_repl_help() -> None:
         return
 
     print("Commands:")
+    print("  home                     Open, create or import a project")
     print("  packages                 List registered packages")
     print("  use <package|path>       Switch package")
     print("  debug                    Show package status")
