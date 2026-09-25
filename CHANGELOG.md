@@ -16,8 +16,8 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   `calendar_id`, to make a model the package calendar: its entity becomes
   `kind: time` and not a query root, and may carry date dimensions, so
   `time.fill` works in packages authored through the MCP.
-- One project scaffold, `architect_service.create_project(path, ProjectSpec)`,
-  shared by the Architect MCP, `semantic-rails init` and the REPL. It is
+- One project scaffold, shared by `architect_service.create_project(path, ProjectSpec)`
+  (the Architect MCP and the REPL) and `semantic-rails init`. It is
   warehouse-aware: DuckDB packages get a starter CSV seed or read a database
   another tool builds (`data: external`, for dbt), and other warehouses get a
   `connection` block. Every package is strict and ships a `.gitignore`. The
@@ -84,8 +84,8 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   id, replacing `catalog`. `discover` and `inspect` return slim cards, `plan`
   defaults to `detail="query"`, `execute` returns at most 200 rows (with
   `truncated` and `total_row_count` beyond that), and `segment` defaults to
-  minimal responses. `capabilities` and `build-options` are v1-only; calling a
-  v1-only tool on v2 returns `UNKNOWN_MCP_TOOL` naming the v2 call. The contract
+  minimal responses. The `capabilities` and `build-options` tools are v1-only;
+  calling a v1-only tool on v2 returns `UNKNOWN_MCP_TOOL` naming the v2 call. The contract
   is `query_mcp.v2.json`, and `initialize` reports the interface as
   `serverInfo.version`. Interface v1 is unchanged and stays the default.
 - To move a v1 client to v2, call `execute(query, mode="validate")` for
@@ -95,6 +95,10 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   `inspect` cards, `detail="best"` for v1's `plan` response and
   `verbosity="full"` for v1's segment responses. See "Interface v2" in
   [docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
+- Add `semantic-rails://catalog/index` for counts and ids per kind and
+  `semantic-rails://capabilities/summary` for tool names and titles. These compact resources are
+  opt-in. Existing v1 `catalog/summary` keeps its descriptive rows and `counts_total`, and
+  `capabilities` keeps complete tool definitions for existing consumers.
 - `mcp setup` and `mcp client-config` take `--client claude-code` and
   `--client cursor`. Claude Code servers are registered at user scope through
   `claude mcp add-json`; Cursor servers go into `~/.cursor/mcp.json`. `--client both`
@@ -144,10 +148,6 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   stdin and stdout aren't a terminal, the REPL keeps its plain line prompts;
   `SEMANTIC_RAILS_UI=plain` forces them (for example with a screen reader) and
   `SEMANTIC_RAILS_UI=pickers` insists on pickers.
-- Add `semantic-rails://catalog/index` for counts and ids per kind and
-  `semantic-rails://capabilities/summary` for tool names and titles. These compact resources are
-  opt-in. Existing v1 `catalog/summary` keeps its descriptive rows and `counts_total`, and
-  `capabilities` keeps complete tool definitions for existing consumers.
 
 ### Changed
 
@@ -197,6 +197,9 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
 - MCP `plan` supports opt-in `detail="query"`: `status`, `best.query_ir`, and any `why` or
   `warnings`. An unchanged v1 call keeps the `best` response, including `intent_ir`,
   `best.trace` and `next`. The HTTP API also keeps `detail="best"`.
+- `create_optional_fastmcp_server` selects `MCPServer` when the MCP Python SDK 2.x module is
+  present, or `FastMCP` on the installed 1.x SDK. The 2.x branch is covered by a simulated
+  module test; an SDK 2.x install has not been qualified for the full package.
 - MCP `segment-validate`, `segment-explain` and `segment-preview` accept `verbosity="minimal"`
   to return what each tool is for (validity and
   the derived query; the definition, derived query and SQL; member rows and counts) without the
@@ -222,9 +225,6 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   now fails, including during client initialization, instead of following it.
   Databricks results are fetched inline
   (`use_cloud_fetch=False`) instead of being downloaded from result links.
-- `create_optional_fastmcp_server` selects `MCPServer` when the MCP Python SDK 2.x module is
-  present, or `FastMCP` on the installed 1.x SDK. The 2.x branch is covered by a simulated
-  module test; an SDK 2.x install has not been qualified for the full package.
 - Package metadata names Semantic Rails, Inc. as the author.
 
 ### Removed
