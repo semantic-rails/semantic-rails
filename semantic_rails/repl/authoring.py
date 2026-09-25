@@ -591,16 +591,18 @@ def _measure_change(
         project, inventory, "measure", "revenue", parent=str(model.get("key", ""))
     )
     current = dict(existing.get("spec", {}) or {}) if existing else {}
-    measure_kind = _author_choice(
+    measure_kind = _kept_choice(
         "What primitive fact is this?",
         [
             ("aggregate", "Aggregate - sum, average, minimum, or maximum"),
             ("entity_count", "Entity count - distinct count of business keys"),
         ],
-        default=str(current.get("kind", "aggregate")),
+        current.get("kind"),
+        "aggregate",
     )
     # A saved accumulation (a stock, a population) stays while the kind does.
-    accumulation = current.get("accumulation") if current.get("kind") == measure_kind else None
+    same_kind = str(current.get("kind", "")).lower() == measure_kind
+    accumulation = current.get("accumulation") if same_kind else None
     description = _author_prompt(
         "Description", str(current.get("description", f"Governed {label.lower()} primitive."))
     )

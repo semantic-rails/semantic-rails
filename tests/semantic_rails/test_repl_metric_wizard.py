@@ -1310,6 +1310,8 @@ KEPT_CHOICES = [
     ("measure", "total_amount", {"accumulation": {"kind": "stock", "snapshot": "start_of_period"},
                                  "default_agg": ABSENT}, {"default_agg": "first_value"}),
     ("measure", "event_count", {"accumulation": {"kind": "population"}}, None),
+    ("measure", "event_count", {"kind": "Entity_Count", "accumulation": {"kind": "population"}},
+     {"kind": "entity_count"}),
     ("measure", "total_amount", {"default_agg": "MEDIAN", "value_type": "ratio"}, {"default_agg": "median"}),
     ("dimension", "event_type", {"kind": "number", "description": "Event type."}, None),
     ("time", "occurred_at", {"kind": "Date", "class": "State_Time", "default_query_axis": True},
@@ -1365,6 +1367,8 @@ def test_a_new_default_aggregation_names_the_metrics_it_changes(
     _write_yaml(project / EVENTS, events)
     ratio = {"numerator": "metric.shop.total_amount", "denominator": "measure.shop.event_count"}
     _write_metric(project, "per_event", {"kind": "ratio", **ratio, "value_type": "ratio"})
+    ratio = {"numerator": "metric.shop.per_event", "denominator": "measure.shop.event_count"}
+    _write_metric(project, "per_event_2", {"kind": "ratio", **ratio, "value_type": "ratio"})
     top = {"kind": "aggregate", "measure": "total_amount", "aggregation": "max"}
     _write_metric(project, "top", {**top, "value_type": "number"})
     confirm = ("Manage and update this existing measure?", "Update this measure?")
@@ -1379,5 +1383,6 @@ def test_a_new_default_aggregation_names_the_metrics_it_changes(
         assert "[warning] This changes the default aggregation" not in out
     else:
         assert "[warning] This changes the default aggregation from median to sum." in out
-        # The metric on the measure's default and the ratio built on it; not `top`.
-        assert "different numbers: metric.shop.per_event, metric.shop.total_amount\n" in out
+        # The metric on the measure's default and the ratios built on it; not `top`.
+        changed = "metric.shop.per_event, metric.shop.per_event_2, metric.shop.total_amount"
+        assert f"different numbers: {changed}\n" in out
