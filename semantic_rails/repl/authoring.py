@@ -4,6 +4,7 @@ metrics and segments.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, is_dataclass, replace
@@ -14,7 +15,7 @@ import yaml
 
 from .. import architect_introspection as introspection
 from ..architect_service import ArchitectMutation, ArchitectProject
-from ..cli.common import _quote, _ref_label, _slug, _title
+from ..cli.common import _quote, _ref_label, _runtime_from_ref, _slug, _title
 from ..cli.output import _authoring_error_messages, _authoring_warning_messages
 from ..cli.reports import project_validation_report
 from ..config import _derive_measure_semantics, load_package_config
@@ -125,7 +126,10 @@ def _run_authoring_flow(
         kind = _resolve_authoring_kind(requested_kind, inventory)
         print()
         print(f"Authoring {_ref_label(current_ref)} - {kind}")
-        print("Press Ctrl-C, or type `cancel` at a text prompt or list, to stop without writing.")
+        print(
+            "Press Ctrl-C, or type `cancel` at a text prompt or list, to stop without writing "
+            "(where a list option contains `cancel`, typing it picks that option)."
+        )
 
         before_warnings = set(_authoring_warning_messages(initial))
         dispatch = {
@@ -190,6 +194,12 @@ def _author_model(
         "Warehouse table or relation (for example raw_orders)",
         str(spec.get("relation", key)),
     )
+    # A new name must be a table in the listed database or a relation pipeline; a saved
+    # relation kept by pressing Enter stays as it was.
+    if source is not None and not (existing and relation == spec.get("relation")):
+        pipelines = load_package_config(ref.source_path).relations
+        if not any(relation in (row.id, row.name, row.output_name) for row in pipelines):
+            _relation_columns(project, ref, relation)
     entity_key = _author_slug_prompt(
         "Business entity at one row of this model",
         str(existing_entity["key"]),
@@ -373,6 +383,14 @@ def _table_source(
     if not tables:
         print(f"{path} has no tables yet. Enter the table by hand.")
         return None
+    with contextlib.suppress(Exception):  # only a hint; the tables listed are real
+        runtime = _runtime_from_ref(ref)
+        try:  # notes `validate runtime`'s STALE_SEED_DATABASE rebuild hint
+            runtime._get_adapter()
+        finally:
+            runtime.close()
+        for warning in runtime._seed_warnings:
+            print(f"[warning] {warning['message']}")
     return path, tables
 
 
@@ -454,8 +472,12 @@ def _author_model_from_table(
             _author_multi_choice(
                 "Which of these are money amounts?",
                 [(key, key) for key in amounts],
+                # A `_cents` column isn't pre-checked: as currency it would print cents as dollars.
                 defaults=[
-                    key for key in amounts if any(w in key.lower() for w in _MONEY_WORDS.split())
+                    key
+                    for key in amounts
+                    if any(w in key.lower() for w in _MONEY_WORDS.split())
+                    and "cents" not in key.lower()
                 ],
             )
         )

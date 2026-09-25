@@ -28,6 +28,7 @@ from semantic_rails.cli import scaffold
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.repl import backend, shell
+from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse
 
 ORDERS = "main_marts.fct_orders ("
@@ -222,6 +223,7 @@ def test_a_table_it_cannot_read_falls_back_to_the_typed_flow(
         {
             "Table to model": "main_staging.csv_events (",
             "Model key": "csv_events",
+            "Warehouse table": "main_staging.csv_events",
             "Create this model?": False,
         },
     )
@@ -238,11 +240,69 @@ def test_type_a_table_name_uses_the_typed_flow(shop: Path) -> None:
         {
             "Table to model": "Type a table name instead",
             "Model key": "orders",
+            "Warehouse table": "main_marts.fct_orders",
             "Create this model?": False,
         },
     )
 
     assert "Warehouse table or relation (for example raw_orders)" in script.asked
+
+
+def test_a_seed_file_added_after_the_build_is_flagged_and_its_table_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = Path(
+        scaffold.create_project_report(
+            package_id="shop", workspace_root=str(tmp_path), run_checks=False
+        )["project_path"]
+    )
+    runtime = Runtime.from_path(str(project))
+    runtime._get_adapter()  # builds the database from the seed, as `validate runtime` does
+    runtime.close()
+    (project / "data" / "shop_csv" / "cancelled_orders.csv").write_text("id\n1\n", "utf-8")
+    before = _files(project)
+
+    with pytest.raises(SemanticLayerError, match="'cancelled_orders' does not exist"):
+        _author(
+            project,
+            {
+                "Table to model": "Type a table name instead",
+                "Model key": "cancelled_orders",
+                "Warehouse table": "cancelled_orders",
+            },
+        )
+
+    out = capsys.readouterr().out
+    # `validate runtime`'s rebuild hint, above the table list
+    assert f"[warning] package.default_db '{runtime.db_path}' was built before" in out
+    assert out.count(f"rm {runtime.db_path}") == 1
+    assert _files(project) == before
+
+
+def test_a_saved_relation_or_a_relation_pipeline_is_not_checked_as_a_table(shop: Path) -> None:
+    _author(shop, {"Table to model": ORDERS, "Create this model?": True})
+    with duckdb.connect(str(shop / "data" / "shop.duckdb")) as connection:
+        connection.execute("ALTER TABLE main_marts.fct_orders RENAME TO fct_orders_v2")
+    (shop / "relations").mkdir()
+    (shop / "relations" / "recent.yml").write_text(
+        "relations:\n  recent_orders:\n    source: main_marts.fct_orders_v2\n", "utf-8"
+    )
+    typed = {"Table to model": "Type a table name instead", "Update this model?": False}
+
+    _author(shop, {**typed, "Model key": "orders", "Manage and update": True})  # Enter keeps it
+    _author(shop, {**typed, "Model key": "recent", "Warehouse table": "recent_orders"})
+
+
+def test_a_cents_column_is_not_prechecked_as_money(shop: Path) -> None:
+    with duckdb.connect(str(shop / "data" / "shop.duckdb")) as connection:
+        connection.execute("ALTER TABLE main_marts.fct_orders ADD COLUMN tax_paid_cents BIGINT")
+
+    script, _ = _author(shop, {"Table to model": ORDERS, "Create this model?": True})
+
+    assert script.defaults["Which of these are money amounts?"] == ["order_total"]
+    measures = _model(shop, "orders")["measures"]
+    assert measures["tax_paid_cents"]["value_type"] == "number"
+    assert "currency" not in measures["tax_paid_cents"]
 
 
 def test_other_wording_for_a_similar_table_model_asks_for_its_key(
@@ -258,6 +318,7 @@ def test_other_wording_for_a_similar_table_model_asks_for_its_key(
             "Table to model": ORDERS,
             "How should we proceed?": "different key",
             "Model key": "order_facts",
+            "Warehouse table": "main_marts.fct_orders",
             "Create this model?": False,
         },
     )

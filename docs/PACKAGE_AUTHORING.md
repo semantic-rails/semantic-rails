@@ -75,6 +75,13 @@ and names the metrics whose numbers change. Successful edits are parse-validated
 and can be restored with `undo` during the same REPL session. A failed parse
 restores the original files automatically.
 
+`author model` lists the tables in the package's DuckDB file. When the seed files
+changed after that file was built, it prints the `STALE_SEED_DATABASE` warning and
+its rebuild command first. It refuses a new typed name that is neither a table in
+that file nor a relation pipeline. It doesn't pre-tick `_cents` columns as money
+amounts: as currency they would print cents as dollars. Publish them in dollars
+with a measure such as `amount_cents / 100.0`.
+
 Rolling windows, prior periods and growth fill empty periods from the package
 calendar, so `author metric` offers them only once the package has one. A calendar
 is a model whose graph entity has `kind: time`: one row per day in a `date_day`

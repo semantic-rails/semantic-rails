@@ -633,6 +633,11 @@ def test_dbt_style_debug_ls_and_ask_commands_are_human_readable() -> None:
     assert listed.returncode == 0, listed.stderr
     assert "metric.sales.cumulative_revenue" in listed.stdout
     assert "use --limit 0 or --json" in listed.stdout
+    # The REPL's `ls [kind] [search]` form lists the same objects.
+    positional = _run_cli("ls", "--package", "jaffle_shop", "metric", "revenue", "--limit", "3")
+    assert positional.returncode == 0 and positional.stdout == listed.stdout, positional.stderr
+    searched = _run_json("ls", "--package", "jaffle_shop", "complet", "--json")
+    assert (searched["resource_type"], searched["search"]) == ("all", "complet")
     every = _run_json("ls", "--package", "jaffle_shop", "--json")  # as that hint says
     assert every["truncated"] is False and len(every["objects"]) == every["count"] > 50
 
