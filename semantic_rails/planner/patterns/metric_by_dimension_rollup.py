@@ -143,9 +143,14 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         getattr(target, "temporal_role", "") or ""
     )
     if temporal_role:
-        time_spec = _time_spec(temporal_role, text)
+        # A grouping that names this clock ("by order date") is the time axis, not a dimension.
+        # The grouping above, without the clock, only picked measure or metric.
+        role = _object_by_id(config.temporal_roles, temporal_role)
+        clock = str(getattr(role, "label", "") or "")
+        group_by = _maybe_group_by(config, text, target_terms=target_terms, clock=clock)
+        time_spec = _time_spec(temporal_role, text, clock)
         if (
-            not _explicit_grain(text)
+            not _explicit_grain(text, clock)
             and not _implied_window_grain(lowered)
             and not _time_bounds_from_text(text)
             and not any(phrase in lowered for phrase in _TIME_SERIES_PHRASES)
