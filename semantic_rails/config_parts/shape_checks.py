@@ -25,12 +25,6 @@ _VALID_DIMENSION_KINDS: frozenset[str] = frozenset(
     }
 )
 
-# Temporal `kind:` values are forbidden under `dimensions:` — date/time
-# columns must be declared under `times:` so they get a temporal role
-# (grain ladder, snapshot semantics, timezone). A categorical date is
-# almost always an authoring mistake.
-_FORBIDDEN_DIMENSION_KINDS: frozenset[str] = frozenset({"date", "timestamp", "datetime", "time"})
-
 # Compiled-config dimension-kind enum. Broader than the YAML authoring
 # set because `times:` blocks AUTO-GENERATE a paired DimensionConfig
 # with semantic_kind="date"/"timestamp" — those are legitimate at the

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from semantic_rails.compiler import compile_query, plan_comparison_bundle
+from semantic_rails.compiler import compile_query
 from semantic_rails.registry import Registry
 
 VALIDATION_MATRIX = [
@@ -183,46 +183,9 @@ def test_metricflow_compile_regression_matrix(package_config_factory, case):
     assert compiled["logical_plan"].fanout_strategy["status"] == case["expected_fanout_status"]
 
 
-def test_metricflow_comparison_bundle_uses_same_query_for_same_clock_family(package_config_factory):
+def test_mixed_clock_measures_compile_as_joined_leaves(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
 
-    result = plan_comparison_bundle(
-        config,
-        Registry(config),
-        left_object_id="metric.sales.food_revenue_share",
-        right_object_id="metric.sales.drink_revenue_share",
-        partial_query={"version": 1},
-    )
-
-    assert result["comparison_mode"] == "same_query"
-    assert result["same_query_candidate"] is not None
-    assert [row["object_id"] for row in result["comparison_bundle"]] == [
-        "metric.sales.food_revenue_share",
-        "metric.sales.drink_revenue_share",
-    ]
-
-
-def test_metricflow_comparison_bundle_coordinates_mixed_clock_metrics(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-
-    result = plan_comparison_bundle(
-        config,
-        Registry(config),
-        left_object_id="measure.jaffle.delivered_revenue_usd",
-        right_object_id="measure.jaffle.revenue_usd",
-        partial_query={
-            "version": 1,
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-        },
-    )
-
-    assert result["comparison_mode"] == "coordinated_queries"
-    assert result["same_query_candidate"] is None
-    assert result["blocked_same_query"] is None
-    assert [row["query_patch"]["time"]["temporal_role"] for row in result["comparison_bundle"]] == [
-        "temporal_role.jaffle_lifecycle_delivered_at",
-        "temporal_role.jaffle_order_time",
-    ]
     combined = compile_query(
         config,
         Registry(config),

@@ -6,8 +6,7 @@ package config, validates path safety (fanout, rollup, predicate
 scope), applies the registered rewrites, and emits both a logical plan
 (:mod:`semantic_rails.ir`) and a SQL AST
 (:mod:`semantic_rails.sql_ast`). Exposes :func:`compile_query` (the
-runtime entry point) and :func:`plan_comparison_bundle` (used by older
-comparison-bundle helpers). Heavy lifting lives in
+runtime entry point). Heavy lifting lives in
 ``semantic_rails/compiler_parts/`` — this module is the orchestration
 layer.
 """
@@ -78,10 +77,10 @@ from .compiler_parts.post_aggregation import (
     _expr_requires_dense_series,
     _namespace_sql_select,
 )
+from .compiler_parts.sql_lowering import _count_key_expr, _last_token, _preferred_path, _slug
 from .compiler_parts.temporal import (
     _combine_temporal_roles,
     _expr_compatible_temporal_roles,
-    _expr_contains_cumulative,
     _expr_leaf_temporal_role_sets,
     _recipe_compatible_temporal_roles,
     _requires_query_time,
@@ -119,7 +118,7 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, choose_path, package_hop_limit
+from .fanout import analyze_fanout, choose_path
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -259,10 +258,8 @@ __all__ = [
     "_entity_in_terms_of_rewrite_supported",
     "_entity_index",
     "_entity_key_dimension_ids",
-    "_entity_key_expr",
     "_expanded_predicate_range",
     "_expr_compatible_temporal_roles",
-    "_expr_contains_cumulative",
     "_expr_leaf_temporal_role_sets",
     "_expr_requires_dense_series",
     "_expression_alias",
@@ -281,10 +278,7 @@ __all__ = [
     "_measure_index",
     "_measure_required_entities",
     "_namespace_sql_select",
-    "_object_comparison_metadata",
     "_object_default_query_temporal_role",
-    "_object_kind",
-    "_object_label",
     "_parse_public_expr",
     "_parse_time_literal",
     "_path_can_project_count_key_from_rewrite_anchor",
@@ -344,21 +338,10 @@ __all__ = [
     "get_package_analysis",
     "lower_to_sql",
     "normalize_query",
-    "plan_comparison_bundle",
     "plan_query",
     "relationship_contract_payload",
     "render_select_for_profile",
 ]
-
-
-def _slug(value: str, *, fallback: str = "item") -> str:
-    raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
-    parts = [part for part in raw.split("_") if part]
-    return "_".join(parts) or fallback
-
-
-def _last_token(value: str) -> str:
-    return str(value or "").split(".")[-1]
 
 
 def _semantic_token(value: str, *, fallback: str = "item") -> str:
@@ -398,24 +381,6 @@ def _predicate_sql_names(
     return source_name, set_name
 
 
-def _object_kind(config: PackageConfig, object_id: str) -> str:
-    if object_id in _measure_index(config):
-        return "measure"
-    if object_id in _recipe_index(config):
-        return "metric"
-    raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown semantic object '{object_id}'")
-
-
-def _object_label(config: PackageConfig, object_id: str) -> str:
-    measures = _measure_index(config)
-    recipes = _recipe_index(config)
-    if object_id in measures:
-        return measures[object_id].label
-    if object_id in recipes:
-        return recipes[object_id].label
-    raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown semantic object '{object_id}'")
-
-
 def _object_default_query_temporal_role(config: PackageConfig, object_id: str) -> str:
     measures = _measure_index(config)
     recipes = _recipe_index(config)
@@ -433,25 +398,6 @@ def _object_default_query_temporal_role(config: PackageConfig, object_id: str) -
     )
     compatible = sorted(_expr_compatible_temporal_roles(recipe.expression, config, query))
     return compatible[0] if compatible else ""
-
-
-def _object_comparison_metadata(config: PackageConfig, object_id: str) -> dict[str, Any]:
-    measures = _measure_index(config)
-    recipes = _recipe_index(config)
-    obj: Any
-    if object_id in measures:
-        obj = measures[object_id]
-    elif object_id in recipes:
-        obj = recipes[object_id]
-    else:
-        raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown semantic object '{object_id}'")
-    return {
-        "comparison_family": str(getattr(obj, "comparison_family", "") or ""),
-        "comparison_mode": str(getattr(obj, "comparison_mode", "") or ""),
-        "comparison_peers": list(getattr(obj, "comparison_peers", []) or []),
-        "clock_variants": list(getattr(obj, "clock_variants", []) or []),
-        "preferred_companion_metrics": list(getattr(obj, "preferred_companion_metrics", []) or []),
-    }
 
 
 def _can_project_entity_key_from_source(
@@ -902,21 +848,6 @@ def _unsupported_conversion(expr: ConversionExpr) -> SemanticLayerError:
                 key: dict(value) for key, value in dict(expr.dimension_bindings or {}).items()
             },
         },
-    )
-
-
-def _preferred_path(
-    config: PackageConfig, *, start: str, target: str, preference: str
-) -> tuple[list[str], list[list[str]]]:
-    explicit = get_package_analysis(config).path_preferences.get((start, target))
-    if explicit is not None:
-        return list(explicit), [list(explicit)]
-    return choose_path(
-        config,
-        start=start,
-        target=target,
-        hop_limit=package_hop_limit(config),
-        preference=preference,
     )
 
 
@@ -2266,18 +2197,6 @@ def _unique_path_selections(rows: Iterable[PathSelection]) -> list[PathSelection
     return list(dedup.values())
 
 
-def _entity_key_expr(table: str, columns: list[str]) -> Any:
-    if len(columns) == 1:
-        return _column_ref(table, columns[0])
-    return SqlCall(
-        "CONCAT_WS",
-        [
-            SqlLiteral("|"),
-            *[SqlCast(_column_ref(table, column), "VARCHAR") for column in columns],
-        ],
-    )
-
-
 def _conversion_operand_filters(
     filter_spec: dict[str, Any], config: PackageConfig, *, side: str
 ) -> list[dict[str, Any]]:
@@ -2662,7 +2581,7 @@ def _conversion_event_cte(
     select_fields.append(SqlField(event_time_expr, time_alias))
     selected_aliases.add(time_alias)
     select_fields.append(
-        SqlField(_entity_key_expr(source_table, list(event_entity.key)), event_key_alias)
+        SqlField(_count_key_expr(source_table, list(event_entity.key)), event_key_alias)
     )
     selected_aliases.add(event_key_alias)
     for alias, expr in _conversion_entity_key_fields(match_entity, config):
@@ -3977,95 +3896,4 @@ def compile_query(
         "physical_plan": physical_plan,
         "performance_plan": performance_plan,
         "compile_stats": compile_stats,
-    }
-
-
-def plan_comparison_bundle(
-    config: PackageConfig,
-    registry: Registry,
-    *,
-    left_object_id: str,
-    right_object_id: str,
-    partial_query: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    partial_query = dict(partial_query or {})
-    partial_query.setdefault("version", 1)
-
-    def _select_item(object_id: str) -> dict[str, Any]:
-        kind = _object_kind(config, object_id)
-        if kind == "metric":
-            return {"expression": {"metric": object_id}, "as": _object_label(config, object_id)}
-        measure = _measure_index(config)[object_id]
-        return {
-            "expression": {"measure": object_id, "aggregation": measure.default_aggregation},
-            "as": measure.label,
-        }
-
-    left_meta = _object_comparison_metadata(config, left_object_id)
-    right_meta = _object_comparison_metadata(config, right_object_id)
-    family = left_meta["comparison_family"] or right_meta["comparison_family"]
-    preferred_mode = left_meta["comparison_mode"] or right_meta["comparison_mode"] or "same_query"
-
-    combined_query = dict(partial_query)
-    combined_query["select"] = [_select_item(left_object_id), _select_item(right_object_id)]
-
-    combined_validation: dict[str, Any] = {"ok": True, "error": {}}
-    try:
-        compile_query(config, registry, combined_query)
-    except SemanticLayerError as exc:
-        combined_validation = {
-            "ok": False,
-            "error": {"code": exc.code, "message": str(exc), "details": exc.details},
-        }
-
-    def _single_query(object_id: str) -> dict[str, Any]:
-        query = dict(partial_query)
-        query["version"] = int(query.get("version", 1) or 1)
-        query["select"] = [_select_item(object_id)]
-        if dict(query.get("time", {}) or {}):
-            time_spec = dict(query.get("time", {}) or {})
-            default_role = _object_default_query_temporal_role(config, object_id)
-            if default_role:
-                time_spec["temporal_role"] = default_role
-            query["time"] = time_spec
-        return query
-
-    left_query = _single_query(left_object_id)
-    right_query = _single_query(right_object_id)
-
-    try:
-        compile_query(config, registry, left_query)
-        compile_query(config, registry, right_query)
-    except SemanticLayerError as exc:
-        raise SemanticLayerError(
-            exc.code,
-            str(exc),
-            details={
-                "left_object_id": left_object_id,
-                "right_object_id": right_object_id,
-                **dict(exc.details or {}),
-            },
-        ) from exc
-
-    same_query_allowed = preferred_mode != "coordinated_queries" and combined_validation["ok"]
-    comparison_mode = "same_query" if same_query_allowed else "coordinated_queries"
-    bundle = [
-        {
-            "object_id": left_object_id,
-            "label": _object_label(config, left_object_id),
-            "query_patch": left_query,
-        },
-        {
-            "object_id": right_object_id,
-            "label": _object_label(config, right_object_id),
-            "query_patch": right_query,
-        },
-    ]
-    return {
-        "comparison_family": family,
-        "comparison_mode": comparison_mode,
-        "same_query_candidate": combined_query if same_query_allowed else None,
-        "comparison_bundle": bundle,
-        "blocked_same_query": None if combined_validation["ok"] else combined_validation["error"],
-        "preferred_mode": preferred_mode,
     }

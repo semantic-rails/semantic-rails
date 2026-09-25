@@ -174,11 +174,6 @@ def _load_yaml_file(path: str) -> dict[str, Any]:
     return dict(load_yaml_file(path) or {})
 
 
-def _split_column_ref(value: str) -> tuple[str, str]:
-    table, _, column = str(value).strip().partition(".")
-    return table, column or table
-
-
 def _unique_aliases(*groups: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []

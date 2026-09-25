@@ -673,53 +673,6 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
             )
 
 
-def _expr_contains_cumulative(expr: SemanticExpr, config: PackageConfig) -> bool:
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
-        return _expr_contains_cumulative(recipe.expression, config)
-    if (
-        isinstance(expr, (CumulativeExpr, OffsetWindowExpr))
-        and getattr(expr, "kind", "cumulative") == "cumulative"
-    ):
-        return True
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _expr_contains_cumulative(expr.left, config) or _expr_contains_cumulative(
-            expr.right, config
-        )
-    if isinstance(expr, BooleanExpr):
-        return any(_expr_contains_cumulative(arg, config) for arg in expr.args)
-    if isinstance(expr, CallExpr):
-        return any(_expr_contains_cumulative(arg, config) for arg in expr.args)
-    if isinstance(expr, CaseExpr):
-        return any(
-            _expr_contains_cumulative(item.when, config)
-            or _expr_contains_cumulative(item.then, config)
-            for item in expr.whens
-        ) or (expr.else_expr is not None and _expr_contains_cumulative(expr.else_expr, config))
-    if isinstance(
-        expr,
-        (RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr, MetricPredicateExpr),
-    ):
-        return _expr_contains_cumulative(expr.input, config)
-    if isinstance(expr, RatioExpr):
-        return _expr_contains_cumulative(expr.numerator, config) or _expr_contains_cumulative(
-            expr.denominator, config
-        )
-    if isinstance(expr, EntityValueExpr):
-        return _expr_contains_cumulative(expr.input, config)
-    if isinstance(expr, DistributionExpr):
-        return _expr_contains_cumulative(expr.over, config)
-    if isinstance(expr, ConversionExpr):
-        return _expr_contains_cumulative(expr.base, config) or _expr_contains_cumulative(
-            expr.converted, config
-        )
-    return False
-
-
 def _expr_contains_unsafe_bounded_cumulative(expr: SemanticExpr, config: PackageConfig) -> bool:
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)

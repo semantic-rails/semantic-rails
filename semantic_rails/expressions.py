@@ -1981,7 +1981,3 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
 
     _walk(expr)
     return refs
-
-
-def exprs_to_dict(rows: Iterable[SemanticExpr]) -> list[dict[str, Any]]:
-    return [expr_to_dict(row) for row in rows]
