@@ -49,6 +49,9 @@ def test_decimal_results_match_the_numbers_written_in_yaml(tmp_path: Path) -> No
 def test_numbers_compare_by_value_to_the_last_digit() -> None:
     assert _normalize_rows([{"x": Decimal("0.10")}]) == _normalize_rows([{"x": 0.1}])
     assert _normalize_rows([{"x": Decimal("262.00")}]) == _normalize_rows([{"x": 262}])
+    # Rows sort by their JSON text, which put Decimal 3 before 30 but int 30 before 3.
+    decimals = [{"x": Decimal("3")}, {"x": Decimal("30")}]
+    assert _normalize_rows(decimals) == _normalize_rows([{"x": 30}, {"x": 3}])
     assert _normalize_rows([{"x": 1.5}]) != _normalize_rows([{"x": 2.5}])
     assert _normalize_rows([{"x": Decimal("12345678.123456789012")}]) != _normalize_rows(
         [{"x": Decimal("12345678.123456789013")}]
