@@ -1,0 +1,12 @@
+# Query MCP: answer a question that needs a filter and a time window, on a copy of the bundled
+# jaffle_shop package. The expected answer, 152,884.57, is case J07 of
+# tests/semantic_rails/mcp_context/eval_jaffle.jsonl.
+task: What was the Philadelphia store's revenue in the second quarter of 2017?
+servers:
+  query: semantic-rails mcp stdio --path jaffle_shop
+setup: >-
+  cp -R {repo}/configs/semantic_rails/jaffle_shop jaffle_shop && mkdir jaffle_shop/data
+  && cp -R {repo}/data/jaffle_csv {repo}/data/seed_jaffle.sql jaffle_shop/data/
+check: tr -d ',$' < "$AGENT_FINAL_ANSWER" | grep -qE '(^|[^0-9])152884\.5[67]'
+max_turns: 12
+max_tokens: 200000

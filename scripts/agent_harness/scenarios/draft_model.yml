@@ -1,0 +1,16 @@
+# Architect MCP: find the tables in a DuckDB file, then draft one model.
+# The check needs a package that parses, a model reading orders, and an answer naming both tables.
+task: |
+  My shop's data is in the DuckDB file shop.duckdb. Which tables are in it? Then set up a
+  Semantic Rails project called "shop" that reads that database, with a model for the orders table.
+servers:
+  architect: semantic-rails-architect-mcp --workspace-root .
+setup: >-
+  {python} -c "import duckdb, sys; duckdb.connect('shop.duckdb').execute(open(sys.argv[1]).read())"
+  {here}/shop.sql
+check: >-
+  pkg=$(dirname "$(find . -name package.yml -not -path './.semantic-rails/*' | head -1)")
+  && semantic-rails project validate --path "$pkg" --mode parse
+  && grep -rq orders "$pkg/models" && grep -qi customers "$AGENT_FINAL_ANSWER"
+max_turns: 20
+max_tokens: 300000
