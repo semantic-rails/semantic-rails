@@ -96,8 +96,8 @@ package test and a `.gitignore` for build outputs.
   documented ambient defaults. Name secrets by environment variable only; unsupported or
   malformed connection options are rejected before scaffold files or transaction receipts are
   created, without returning their values.
-5. Use `upsert_model`, `upsert_relationship`, `upsert_metric`, `upsert_segment`, or scoped
-   file tools with the latest project revision. Generate a new idempotency key for each
+5. Use `upsert_model`, `upsert_relationship`, `upsert_metric`, `upsert_segment`,
+   `upsert_example`, `upsert_test`, or scoped file tools with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.
    `upsert_relationship` relates `from_entity` to `to_entity`: `columns` on `from_entity`'s
    model hold `to_entity`'s key, in key order, and go in that model's `entities` block (as
@@ -245,6 +245,34 @@ On a regular model, `calendar_id` binds the model's times to an existing calenda
 Calendar checks run after receipt replay and the revision check, so a retried call replays and a
 stale one gets `CONFIG_CONFLICT`.
 
+## Examples, Package Tests and Query Previews
+
+`upsert_example` writes an example question to `examples/<file_name>` (`core.yml` by default):
+`spec` takes a `query`, and optionally a `question` and an `expected_shape` (`columns`,
+`min_rows`, `max_rows`). `upsert_test` writes a package test to `tests/<file_name>`; `spec.kind`
+is one of:
+
+| Kind | Fields |
+|---|---|
+| `query_returns_columns` | `query`, `columns` |
+| `query_row_count_bounds` | `query`, `min_rows` and/or `max_rows` |
+| `query_matches_snapshot` | `query`, `expected_rows` |
+| `validate_fails_with_code` | `query`, `code` |
+| `explain_contains` | `query`, `text` |
+| `metric_equals_query` | `metric_query` (or `query`), `expected_query` |
+
+Both tools refuse an entry the test runner would crash on or pass without checking anything,
+such as a test without `columns` or bounds, and validate every query against the package without
+running it. A `validate_fails_with_code` query must fail with its `code`. `spec` merges into an
+existing entry, which stays in its file. These checks run after receipt replay and the revision
+check, so a retried call replays and a stale one gets `CONFIG_CONFLICT`. Python callers use
+`ArchitectProject.upsert_check(kind="example" | "test", ...)`.
+
+`preview_query` runs a semantic query against the package's warehouse, as the query server's
+`execute` does, and returns at most `max_rows` rows (default 20, at most 200), with `truncated` and
+`total_row_count` when there are more. Its values are real warehouse data; like runtime
+validation, it may build a missing seeded DuckDB database.
+
 ## Tool Surface
 
 - `architect_guidance`
@@ -258,6 +286,9 @@ stale one gets `CONFIG_CONFLICT`.
 - `upsert_relationship`
 - `upsert_metric`
 - `upsert_segment`
+- `upsert_example`
+- `upsert_test`
+- `preview_query`
 - `archive_project_file`
 - `validate_project`
 - `diff_project`

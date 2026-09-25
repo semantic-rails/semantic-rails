@@ -47,8 +47,8 @@
  "tracked": {
   "architect.instructions_tokens": 72,
   "architect.tools_list.largest_tool_tokens": 518,
-  "architect.tools_list.model_visible_tokens": 3822,
-  "architect.tools_list.tools": 22,
-  "architect.tools_list.wire_tokens": 9723
+  "architect.tools_list.model_visible_tokens": 4736,
+  "architect.tools_list.tools": 26,
+  "architect.tools_list.wire_tokens": 13159
  }
 }

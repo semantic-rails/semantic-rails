@@ -15,7 +15,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -47,6 +47,7 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
+from .mcp import SemanticLayerMCPAdapter, json_text
 from .package_tools import (
     diff_package_report,
     impact_report,
@@ -66,6 +67,7 @@ MIN_ARCHITECT_TOKEN_LENGTH = 32
 # Response caps for unnarrowed listings: narrow with schema, or with select.
 MAX_LISTED_TABLES = 200
 MAX_UNSELECTED_DBT_SUGGESTIONS = 20
+MAX_PREVIEW_ROWS = 200
 # RFC 6750 b64token: what a client can send in an Authorization header.
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
 _TOKEN_HINT = (
@@ -147,13 +149,13 @@ class ArchitectMutationResult(BaseModel):
     errors: list[ArchitectMutationIssue] = Field(default_factory=list)
 
 
-def _read_only_annotations(title: str) -> ToolAnnotations:
+def _read_only_annotations(title: str, *, open_world: bool = False) -> ToolAnnotations:
     return ToolAnnotations(
         title=title,
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=open_world,
     )
 
 
@@ -353,7 +355,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             },
             {
                 "step": "edit",
-                "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / write_project_file",
+                "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / upsert_example / upsert_test / write_project_file",
                 "result": (
                     "Preview or atomically commit scoped changes with expected_revision "
                     "and a caller-generated idempotency_key."
@@ -1143,6 +1145,103 @@ def create_architect_mcp_server(
                 idempotency_key=idempotency_key,
                 dry_run=dry_run,
             )
+
+    def _upsert_check(kind: str, project_path: str, **arguments: Any) -> ArchitectMutationResult:
+        try:
+            project = ArchitectProject(project_path, workspace_root=root)
+            return _mutation_result(project.upsert_check(kind=kind, **arguments).report)
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=arguments["expected_revision"],
+                idempotency_key=arguments["idempotency_key"],
+                dry_run=arguments["dry_run"],
+            )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert example"),
+        description=(
+            "Preview or atomically upsert an example question in examples/<file_name>: spec "
+            "has query, and optionally question and expected_shape (columns, min_rows, "
+            "max_rows). The query must validate. spec merges into an existing example."
+        ),
+    )
+    def upsert_example(
+        project_path: str,
+        example_key: str,
+        spec: dict[str, Any],
+        expected_revision: str,
+        idempotency_key: str,
+        file_name: str = "core.yml",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        return _upsert_check(
+            "example",
+            project_path,
+            key=example_key,
+            spec=spec,
+            file_name=file_name,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert package test"),
+        description=(
+            "Preview or atomically upsert a package test in tests/<file_name>. spec.kind is "
+            "query_returns_columns (query, columns), query_row_count_bounds (query, min_rows "
+            "and/or max_rows), query_matches_snapshot (query, expected_rows), "
+            "validate_fails_with_code (query, code), explain_contains (query, text) or "
+            "metric_equals_query (metric_query, expected_query). Queries must validate; a "
+            "validate_fails_with_code query must fail with its code. spec merges into an "
+            "existing test."
+        ),
+    )
+    def upsert_test(
+        project_path: str,
+        test_key: str,
+        spec: dict[str, Any],
+        expected_revision: str,
+        idempotency_key: str,
+        file_name: str = "core.yml",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        return _upsert_check(
+            "test",
+            project_path,
+            key=test_key,
+            spec=spec,
+            file_name=file_name,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Preview query", open_world=True),
+        description=(
+            "Run a semantic query on the package's warehouse, as the query server's execute "
+            "does, and return at most max_rows rows (1-200), with truncated and total_row_count "
+            "when there are more. Values are real warehouse data."
+        ),
+    )
+    def preview_query(
+        project_path: str,
+        query: dict[str, Any],
+        max_rows: Annotated[int, Field(ge=1, le=MAX_PREVIEW_ROWS)] = 20,
+    ) -> dict[str, Any]:
+        try:
+            project = _resolve_project_path(project_path, workspace_root=root)
+            adapter = SemanticLayerMCPAdapter.from_path(str(project))
+            try:
+                result = adapter.call_tool("execute", {"query": query, "max_rows": max_rows})
+            finally:
+                adapter.close()
+            return dict(json.loads(json_text(result)))
+        except Exception as exc:
+            return _report_error(exc)
 
     @mcp.tool(annotations=_mutation_annotations("Archive project file"))
     def archive_project_file(

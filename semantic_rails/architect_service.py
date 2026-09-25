@@ -58,6 +58,78 @@ _INVENTORY_KINDS = {
 _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 
 
+def _is_query(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value)
+
+
+def _is_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+# The fields package_tools._run_test needs for each package test kind, and what
+# each field an example or test sets must hold for the runner to check anything.
+_TEST_FIELDS: dict[str, tuple[str, ...]] = {
+    "query_returns_columns": ("query", "columns"),
+    "query_row_count_bounds": ("query",),
+    "query_matches_snapshot": ("query", "expected_rows"),
+    "validate_fails_with_code": ("query", "code"),
+    "explain_contains": ("query", "text"),
+    "metric_equals_query": ("metric_query", "expected_query"),
+}
+_FIELD_CHECKS: dict[str, tuple[Callable[[Any], bool], str]] = {
+    "query": (_is_query, "a query object"),
+    "metric_query": (_is_query, "a query object"),
+    "expected_query": (_is_query, "a query object"),
+    "columns": (
+        lambda value: isinstance(value, list) and bool(value) and all(map(_is_text, value)),
+        "a list of column names",
+    ),
+    "expected_rows": (
+        lambda value: isinstance(value, list) and all(isinstance(row, dict) for row in value),
+        "a list of rows",
+    ),
+    "code": (_is_text, "an error code"),
+    "text": (_is_text, "text"),
+    "min_rows": (_is_count, "a non-negative integer"),
+    "max_rows": (_is_count, "a non-negative integer"),
+}
+
+
+def _check_fields(kind: str, spec: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """The fields the runner reads from an example or test, and what is wrong with them."""
+    test_kind = str(spec.get("kind") or "")
+    if kind == "example":
+        names = ["query"]
+    elif test_kind in _TEST_FIELDS:
+        # The runner reads query when a test has no metric_query key.
+        names = [
+            "query" if name == "metric_query" and name not in spec else name
+            for name in _TEST_FIELDS[test_kind]
+        ]
+    else:
+        return {}, [f"kind must be one of {', '.join(_TEST_FIELDS)} (got {test_kind!r})"]
+    fields = {name: spec.get(name) for name in names}
+    problems = [f"needs {name}" for name, value in fields.items() if value is None]
+    shape, bounds = spec.get("expected_shape") or {}, ("min_rows", "max_rows")
+    if kind == "example" and not isinstance(shape, dict):
+        problems.append("expected_shape must be a mapping")
+    elif kind == "example":
+        fields.update({f"expected_shape.{name}": shape.get(name) for name in ("columns", *bounds)})
+    elif test_kind == "query_row_count_bounds":
+        fields.update({name: spec.get(name) for name in bounds})
+        if all(fields[name] is None for name in bounds):
+            problems.append("needs min_rows or max_rows")
+    for name, value in fields.items():
+        valid, expected = _FIELD_CHECKS[name.rsplit(".", 1)[-1]]
+        if value is not None and not valid(value):
+            problems.append(f"{name} must be {expected}")
+    return fields, problems
+
+
 def _slug(value: str, *, fallback: str) -> str:
     out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "")).strip("_")
     while "__" in out:
@@ -1354,6 +1426,97 @@ class ArchitectProject:
             _snapshots=outcome.snapshots,
             _active=bool(outcome.snapshots),
         )
+
+    def upsert_check(
+        self,
+        *,
+        kind: str,
+        key: str,
+        spec: dict[str, Any],
+        file_name: str = "core.yml",
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Upsert an example (``kind="example"``) in ``examples/<file_name>`` or a
+        package test (``kind="test"``) in ``tests/<file_name>``, merging ``spec``
+        into an existing entry, which stays in its file. ``_check_entry`` runs
+        after receipt replay and the revision check.
+        """
+        expected, idempotency = self._mutation_identity(expected_revision, idempotency_key)
+        name = str(key or "").strip()
+        if kind not in {"example", "test"}:
+            raise SemanticLayerError("INVALID_CONFIG", "kind must be example or test")
+        if not name:
+            raise SemanticLayerError("INVALID_CONFIG", f"{kind}_key is required")
+        plural = f"{kind}s"
+        directory = self._target_path(plural)
+        rows = self._mapping_inventory(
+            package_doc={}, package_path=directory, plural=plural, singular=kind, namespace=""
+        )
+        # The runner reads only the examples/ and tests/ directories.
+        existing = self._find_raw(
+            [row for row in rows if _within(row.source_path, directory)], name
+        )
+        stem = _slug(file_name.rsplit(".", 1)[0], fallback="core")
+        path = existing.source_path if existing else self._target_path(f"{plural}/{stem}.yml")
+        documents = self._load_documents(path)
+        merged = {**(existing.spec if existing else {}), **deepcopy(dict(spec or {}))}
+        self._store_mapping_object(documents[path], existing, wrapper=plural, key=name, spec=merged)
+        return self._commit(
+            documents,
+            kind=kind,
+            key=name,
+            existed=existing is not None,
+            source_file=self._relative(existing.source_path) if existing else "",
+            target_file=self._relative(path),
+            validate_after=validate_after,
+            expected_revision=expected,
+            idempotency_key=idempotency,
+            dry_run=dry_run,
+            intent={
+                "operation": f"upsert_{kind}",
+                f"{kind}_key": key,
+                "spec": spec,
+                "file_name": file_name,
+            },
+            check=partial(self._check_entry, kind, name, merged),
+        )
+
+    def _check_entry(self, kind: str, name: str, spec: dict[str, Any]) -> None:
+        """Refuse an entry the runner can't check, or whose queries don't validate; a
+        ``validate_fails_with_code`` query must fail with its ``code``."""
+        from .runtime import Runtime
+
+        fields, problems = _check_fields(kind, spec)
+        must_fail = kind == "test" and spec.get("kind") == "validate_fails_with_code"
+        if not problems:
+            runtime = Runtime.from_path(str(self.project_path))
+            try:
+                for field_name in ("query", "metric_query", "expected_query"):
+                    if field_name not in fields:
+                        continue
+                    result = runtime.validate(deepcopy(fields[field_name]))
+                    error = dict((result.get("errors") or [{}])[0])
+                    code = str(error.get("code", "") or "")
+                    if must_fail and (result.get("ok") or code != spec["code"]):
+                        problems.append(
+                            f"the query must fail with {spec['code']}, but "
+                            + (f"fails with {code}" if code else "it is valid")
+                        )
+                    elif not must_fail and not result.get("ok"):
+                        problems.append(
+                            f"{field_name} does not validate ({code}: {error.get('message', '')})"
+                        )
+            finally:
+                runtime.close()
+        if problems:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{kind} {name!r}: " + "; ".join(problems),
+                details={kind: name, "problems": problems},
+            )
 
     def write_file(
         self,
