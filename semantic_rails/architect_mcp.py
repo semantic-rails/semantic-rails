@@ -975,7 +975,16 @@ def create_architect_mcp_server(
                 dry_run=dry_run,
             )
 
-    @mcp.tool(annotations=_mutation_annotations("Upsert semantic model"))
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert semantic model"),
+        description=(
+            "Preview or atomically upsert a model and aligned graph entity. calendar: true makes "
+            'it the package calendar for calendar_id (default "default", which a package with '
+            "calendars needs): time.fill reads its date_day time and week_start, month_start, "
+            "quarter_start and year_start kind: date dimensions. calendar: false reverts that. "
+            "On a regular model, calendar_id binds its times to a calendar."
+        ),
+    )
     def upsert_model(
         project_path: str,
         model_id: str,
@@ -990,9 +999,10 @@ def create_architect_mcp_server(
         joins: dict[str, Any] | None = None,
         group: str = "core",
         description: str = "",
+        calendar: bool | None = None,
+        calendar_id: str = "",
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a model and aligned graph entity."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1007,6 +1017,8 @@ def create_architect_mcp_server(
                     joins=joins,
                     group=group,
                     description=description,
+                    calendar=calendar,
+                    calendar_id=calendar_id,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,

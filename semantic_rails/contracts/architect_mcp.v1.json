@@ -810,9 +810,26 @@
         "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
-      "description": "Preview or atomically upsert a model and aligned graph entity.",
+      "description": "Preview or atomically upsert a model and aligned graph entity. calendar: true makes it the package calendar for calendar_id (default \"default\", which a package with calendars needs): time.fill reads its date_day time and week_start, month_start, quarter_start and year_start kind: date dimensions. calendar: false reverts that. On a regular model, calendar_id binds its times to a calendar.",
       "inputSchema": {
         "properties": {
+          "calendar": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Calendar"
+          },
+          "calendar_id": {
+            "default": "",
+            "title": "Calendar Id",
+            "type": "string"
+          },
           "description": {
             "default": "",
             "title": "Description",
