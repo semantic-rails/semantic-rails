@@ -556,9 +556,12 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
                 "or run the previewed `claude mcp add-json` commands yourself.",
             )
         for name, add in zip(servers, _claude_code_add(claude, servers), strict=True):
-            remove = [claude, "mcp", "remove", "--scope", "user", name]
-            subprocess.run(remove, capture_output=True, check=False)
             added = subprocess.run(add, capture_output=True, text=True, check=False)
+            if added.returncode and "already exists" in added.stderr + added.stdout:
+                # Replace only a server Claude Code says exists, as the file clients do.
+                remove = [claude, "mcp", "remove", "--scope", "user", name]
+                subprocess.run(remove, capture_output=True, check=False)
+                added = subprocess.run(add, capture_output=True, text=True, check=False)
             if added.returncode:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",

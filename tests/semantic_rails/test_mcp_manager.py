@@ -112,17 +112,23 @@ def test_cursor_and_claude_code_targets_install_and_both_stays_desktop_and_codex
     cursor.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}, "keep": 1}))
     monkeypatch.setenv("SEMANTIC_RAILS_CURSOR_CONFIG", str(cursor))
     calls: list[list[str]] = []
+    registered: set[str] = set()
+
+    def claude(args: list[str], **_: object) -> subprocess.CompletedProcess:
+        calls.append(args)
+        verb, name = args[2], args[5]
+        if verb == "add-json" and name in registered:
+            return subprocess.CompletedProcess(args, 1, "", f"MCP server {name} already exists")
+        (registered.add if verb == "add-json" else registered.discard)(name)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
     monkeypatch.setattr(manager.shutil, "which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr(
-        manager.subprocess,
-        "run",
-        lambda args, **_: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
-    )
+    monkeypatch.setattr(manager.subprocess, "run", claude)
     ref = PackageReference(source_path="", package_id="jaffle_shop")
 
     both = manager.mcp_client_config_report(ref, client="both", workspace_root=str(tmp_path))
     assert sorted(both["previews"]) == ["claude", "codex"]
-    for client in ("cursor", "claude-code", "cursor"):  # the repeat must be idempotent
+    for client in ("cursor", "claude-code", "claude-code", "cursor"):  # repeats replace
         report = manager.mcp_client_config_report(
             ref, client=client, workspace_root=str(tmp_path), install=True
         )
@@ -134,14 +140,21 @@ def test_cursor_and_claude_code_targets_install_and_both_stays_desktop_and_codex
     servers = report["servers"]
     written = json.loads(cursor.read_text())
     assert written == {"keep": 1, "mcpServers": {"other": {"command": "x"}, **servers}}
-    assert calls == [
-        step
+    adds = {
+        name: ["/bin/claude", "mcp", "add-json", "--scope", "user", name, json.dumps(config)]
         for name, config in servers.items()
+    }
+    replace = [
+        step
+        for name in servers
         for step in (
+            adds[name],
             ["/bin/claude", "mcp", "remove", "--scope", "user", name],
-            ["/bin/claude", "mcp", "add-json", "--scope", "user", name, json.dumps(config)],
+            adds[name],
         )
     ]
+    assert calls == list(adds.values()) + replace
+    assert registered == set(servers)
     preview = manager.mcp_client_config_report(ref, client="claude-code", mcp="query")
     assert preview["previews"]["claude-code"]["commands"] == [
         f"claude mcp add-json --scope user semantic-rails '{json.dumps(servers['semantic-rails'])}'"
@@ -159,11 +172,12 @@ def test_claude_code_install_reports_a_missing_or_failing_cli(
 
     import semantic_rails.mcp_manager as manager
 
+    calls: list[list[str]] = []
     monkeypatch.setattr(manager.shutil, "which", lambda _name: claude)
     monkeypatch.setattr(
         manager.subprocess,
         "run",
-        lambda args, **_: subprocess.CompletedProcess(args, 1, "", "boom"),
+        lambda args, **_: calls.append(args) or subprocess.CompletedProcess(args, 1, "", "boom"),
     )
 
     with pytest.raises(SemanticLayerError, match=error):
@@ -174,6 +188,7 @@ def test_claude_code_install_reports_a_missing_or_failing_cli(
             workspace_root=str(tmp_path),
             install=True,
         )
+    assert not any("remove" in call for call in calls)  # an unrelated failure keeps the old server
 
 
 @pytest.mark.parametrize("conflict", ["package", "host", "port", "health"])
