@@ -30,7 +30,6 @@ import semantic_rails.cli.interpretation as interpretation
 import semantic_rails.cli.output as cli_output
 import semantic_rails.cli.reports as reports
 import semantic_rails.cli.scaffold as scaffold
-import semantic_rails.repl.shell as repl_shell
 from semantic_rails.config import list_package_paths
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
@@ -236,24 +235,11 @@ def test_json_mode_and_chosen_packages_never_prompt(
     assert prompts == []
 
 
-def test_repl_without_a_package_asks_before_opening_the_sample_package(
-    nowhere: dict[str, str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    prompts = _answer(monkeypatch, "", "y", "exit")
-    with pytest.raises(SemanticLayerError):
-        repl_shell.run_interactive_shell()
-
-    repl_shell.run_interactive_shell()
-
-    assert prompts[:2] == ["Use the bundled `jaffle_shop` sample package? [y/N]: "] * 2
-    assert "package  jaffle_shop (bundled sample package, not your data)" in (sys.stdout.getvalue())
-
-
 ASK = ("ask", "monthly revenue by store", "--run", "--limit", "2")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX pseudo-terminal")
-@pytest.mark.parametrize(("args", "reply", "code"), [(ASK, "", 1), (ASK, "y", 0), ((), "", 1)])
+@pytest.mark.parametrize(("args", "reply", "code"), [(ASK, "", 1), (ASK, "y", 0), ((), "leave", 0)])
 def test_real_terminal_confirmation_gates_the_sample_package(
     nowhere: dict[str, str], args: tuple[str, ...], reply: str, code: int
 ) -> None:
@@ -263,7 +249,7 @@ def test_real_terminal_confirmation_gates_the_sample_package(
         stdin=secondary,
         stdout=secondary,
         stderr=secondary,
-        env=nowhere,
+        env={**nowhere, "SEMANTIC_RAILS_UI": "plain"},
     )
     os.close(secondary)
     output, answered, deadline = b"", False, time.monotonic() + 120
@@ -280,7 +266,7 @@ def test_real_terminal_confirmation_gates_the_sample_package(
             if not chunk:
                 break
             output += chunk
-            if not answered and b"[y/N]: " in output:
+            if not answered and (b"[y/N]: " in output or b"Choose [create]: " in output):
                 os.write(primary, reply.encode() + b"\n")
                 answered = True
         returncode = proc.wait(timeout=30)
@@ -291,6 +277,9 @@ def test_real_terminal_confirmation_gates_the_sample_package(
     text = output.decode(errors="replace")
 
     assert returncode == code, text
+    if not args:  # bare semantic-rails starts on the home screen, where nothing opens implicitly
+        assert "No package open." in text and "Governed questions" not in text
+        return
     assert "No package selected." in text
     if code:
         assert "Choose one:" in text

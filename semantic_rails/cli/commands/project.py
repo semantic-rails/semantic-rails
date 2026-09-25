@@ -149,7 +149,9 @@ def add_developer_cli(sub: argparse._SubParsersAction, package_choices: list[str
     p_repl = sub.add_parser(
         "repl",
         description=(
-            "Open an interactive Semantic Rails command loop. In a terminal it uses "
+            "Open an interactive Semantic Rails command loop. Without a package it starts "
+            "on a home screen: open a project found here, create one, import a dbt project, "
+            "or try the bundled sample. In a terminal it uses "
             "arrow-key pickers when semantic-rails[repl] is installed; set "
             "SEMANTIC_RAILS_UI=plain for line prompts (e.g. with a screen reader)."
         ),

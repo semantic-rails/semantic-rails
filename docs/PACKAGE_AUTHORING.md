@@ -102,10 +102,24 @@ developer machine, not checked into the package, not a secret store, and not
 hosted control-plane configuration.
 
 Without `--package` or `--path`, a command uses the package directory it runs in
-(or a parent), then this profile. With neither, `ask`, `ls`, `project`, `repl` and
-bare `semantic-rails` offer the bundled `jaffle_shop` sample package at an
-interactive terminal (default No); everything else stops and lists how to choose
-a package. Scripts that want the sample pass `--package jaffle_shop`.
+(or a parent), then this profile. With neither, at an interactive terminal, `repl`
+and bare `semantic-rails` open a home screen, and `ask`, `ls` and `project` offer
+the bundled `jaffle_shop` sample package (default No); everything else stops and
+lists how to choose a package. Scripts that want the sample pass
+`--package jaffle_shop`.
+
+The home screen, also the REPL's `home` command, offers:
+
+- **Open**: a package found in or below the working directory (a bounded scan that
+  skips hidden, build and dependency folders), or any folder by path.
+- **Create**: the starter package `init` writes, in a new folder.
+- **Import a dbt project**: pick models from a dbt-duckdb project's `target/`
+  (after `dbt build` and `dbt docs generate`). It creates a package over DuckDB data
+  that dbt builds (`seed: {kind: external}`) and imports the models as
+  `import_dbt_project` does (see [ARCHITECT_MCP.md](ARCHITECT_MCP.md#dbt-projects)).
+  Point the dbt profile's `path` at the package's `data/<package_id>.duckdb`. A
+  failed or cancelled import keeps nothing.
+- **Try the bundled sample**, labelled as sample data.
 
 `validate-config` and `project validate` write a `.compiled/manifest.json` next
 to the package. The manifest holds `package_id`, a content `fingerprint` of the
