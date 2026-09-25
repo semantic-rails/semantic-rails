@@ -56,6 +56,10 @@ Key authoring principles:
 - Physical routing is semantic-first. The compiler may use exact aggregate
   relations for efficiency, but only when the configured rollup covers the
   requested measures, dimensions, filters, time role, and time grain.
+- Modules import only their own or lower layers: entry points, transports, authoring,
+  planner, metadata, runtime, compiler, warehouses, package loading, SQL, core.
+  `tests/semantic_rails/test_import_layers.py` lists each module's layer and the known
+  exceptions and import cycles, which may only shrink.
 
 ## Semantic Primitives
 
