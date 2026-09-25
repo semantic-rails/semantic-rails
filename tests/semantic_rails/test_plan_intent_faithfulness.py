@@ -94,7 +94,7 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
 
     assert payload["status"] == "ok", payload.get("why")
     assert payload["best"]["pattern"] == pattern
-    assert payload["next"]["ready_for"] == ["compile", "execute"]
+    assert payload["next"]["ready_for"] == ["execute"]
 
 
 def test_positive_value_filter_is_not_mistaken_for_negation(runtime_factory) -> None:

@@ -1,4 +1,4 @@
-"""Legacy v1 resource bodies remain readable; smaller projections are opt-in."""
+"""Legacy resource bodies remain readable; smaller projections are opt-in."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def test_legacy_capabilities_retains_full_tool_definitions(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     payload = adapter.read_resource("semantic-rails://capabilities")["payload"]
-    assert payload["interface_version"] == "v1"
+    assert payload["interface_version"] == "v2"
     assert payload["tools"] == list_tool_definitions()
     first = payload["tools"][0]
     assert first["description"]
@@ -61,7 +61,6 @@ def test_legacy_catalog_summary_retains_rows_and_counts(
     assert catalog["measures"][0]["id"]
     assert catalog["counts_total"]["measures"] >= len(catalog["measures"])
     assert catalog["meta"]["verbosity"] == "compact"
-    assert catalog == adapter.call_tool("catalog", {"verbosity": "compact"})["catalog"]
 
 
 def test_opt_in_catalog_index_is_small_and_full_is_whole(
@@ -69,7 +68,7 @@ def test_opt_in_catalog_index_is_small_and_full_is_whole(
 ) -> None:
     index = adapter.read_resource("semantic-rails://catalog/index")
     catalog = index["payload"]["catalog"]
-    assert catalog == adapter.call_tool("catalog", {})["catalog"]
+    assert catalog == adapter.call_tool("discover", {"terms": ""})["catalog"]
     assert catalog["meta"]["verbosity"] == "summary"
     assert catalog["measure_ids"]
     legacy = adapter.read_resource("semantic-rails://catalog/summary")

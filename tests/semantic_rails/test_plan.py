@@ -184,14 +184,14 @@ def test_plan_caps_why_errors_with_truncation_marker(runtime_factory, monkeypatc
     assert payload["why"]["truncated"]["dropped"] == 7
 
 
-def test_plan_next_signals_ready_for_compile_and_execute(runtime_factory) -> None:
+def test_plan_next_signals_ready_for_execute(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent="top stores by revenue")
     finally:
         runtime.close()
     next_block = payload["next"]
-    assert next_block["ready_for"] == ["compile", "execute"]
+    assert next_block["ready_for"] == ["execute"]
     assert next_block["validate"]["query"] == payload["best"]["query_ir"]
     assert "compile" not in next_block
     assert "execute" not in next_block

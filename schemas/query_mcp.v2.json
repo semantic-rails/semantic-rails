@@ -596,7 +596,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted (call plan first), or Query IR you fixed from it. time.end is exclusive. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query (errors, warnings, repair hints); mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. row_format='columns' is compact. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
+      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted (call plan first), or Query IR you fixed from it. time.end is exclusive. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query; mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {

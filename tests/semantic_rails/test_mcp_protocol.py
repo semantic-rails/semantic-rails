@@ -118,8 +118,8 @@ def test_facade_uses_whichever_sdk_is_installed(
     assert created["cls"] == expected
     assert created["instructions"] == MCP_SERVER_INSTRUCTIONS
     names = [name for name, _fn in created["tools"]]
-    assert names[:3] == ["capabilities", "catalog", "discover"] and len(names) == 13
-    text = dict(created["tools"])["capabilities"]({})
+    assert names == ["discover", "inspect", "valid-values", "plan", "execute", "segment"]
+    text = dict(created["tools"])["discover"]({})
     assert "\n" not in text and json.loads(text)["ok"] is True
     with pytest.raises(RuntimeError, match="stdio-only"):
         facade.run(transport="streamable-http")

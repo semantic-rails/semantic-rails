@@ -23,11 +23,15 @@ _JSON_SCHEMA_ARTIFACTS = {
 }
 
 
+# Contracts a release stopped shipping; a baseline that has one reports it removed.
+_RETIRED_CONTRACT_NAMES = ("query_mcp.v1.json",)
+
+
 def load_contract_directory(path: str | Path) -> dict[str, dict[str, Any]]:
     root = Path(path)
     return {
         name: dict(json.loads((root / name).read_text(encoding="utf-8")))
-        for name in CONTRACT_NAMES
+        for name in (*CONTRACT_NAMES, *_RETIRED_CONTRACT_NAMES)
         if (root / name).is_file()
     }
 

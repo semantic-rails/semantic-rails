@@ -166,15 +166,16 @@ def test_mcp_adapter_surfaces_grain_error_with_recovery_hints(runtime_factory):
     try:
         adapter = SemanticLayerMCPAdapter(runtime)
         out = adapter.call_tool(
-            "validate",
+            "execute",
             {
+                "mode": "validate",
                 "query": {
                     "select": _select_revenue(),
                     "time": {
                         "temporal_role": "temporal_role.jaffle_order_time",
                         "grain": "fortnight",
                     },
-                }
+                },
             },
         )
         assert out.get("ok") is False

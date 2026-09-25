@@ -1,8 +1,9 @@
 """Query patches returned by the MCP metadata tools are pure Query IR.
 
-discover (with full cards, verbosity="compact"), inspect and build-options
-return starter patches an agent can pass straight to validate or execute. A patch must carry only Query IR fields: never
-the caller's policy context, response options, or the tool's own arguments.
+discover (with full cards, verbosity="compact") and inspect return starter
+patches an agent can pass straight to execute, as does build-options (HTTP and
+CLI). A patch must carry only Query IR fields: never the caller's policy
+context, response options, or the tool's own arguments.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.metadata import _QUERY_IR_KEYS
+from semantic_rails.metadata import _QUERY_IR_KEYS, build_options_payload
 from semantic_rails.request_context import RequestContext
 
 QUERY_IR_KEYS = set(_QUERY_IR_KEYS)
@@ -37,7 +38,6 @@ POLICY_CONTEXT = {"environment": "development", "audience": "internal", "roles":
 CALLS = [
     ("discover", {"terms": "revenue by store", "verbosity": "compact"}),
     ("inspect", {"object_id": "measure.jaffle.revenue_usd"}),
-    ("build-options", {"focus_terms": "store"}),
 ]
 
 
@@ -119,7 +119,7 @@ def test_every_patch_runs_as_is(
     assert patches
     # Windowed metrics (such as cumulative revenue) carry their default time block.
     for patch in patches:
-        validated = adapter.call_tool("validate", {"query": patch})
+        validated = adapter.call_tool("execute", {"query": patch, "mode": "validate"})
         assert validated["ok"], (patch, validated["errors"])
 
 
@@ -128,19 +128,21 @@ def test_build_options_patches_are_pure_ir_and_run_at_every_step(
     adapter: SemanticLayerMCPAdapter, step: str
 ) -> None:
     # Response options and a policy context must not leak into the patches.
-    arguments = {
-        **BUILDER_STEPS[step],
+    arguments = dict(BUILDER_STEPS[step])
+    query = {
+        **arguments.pop("query", {}),
         "policy_context": POLICY_CONTEXT,
         "verbosity": "full",
         "sql_profile": "off",
     }
-    response = adapter.call_tool("build-options", arguments)
-    assert response["ok"], response["errors"]
+    response = build_options_payload(
+        adapter.runtime, partial_query=query, verbosity="full", **arguments
+    )
     assert response.get("builder_step", step) == step
     patches = list(_patches(response))
     assert patches, f"no patches at step {step}"
     for patch in patches:
         assert set(patch) <= QUERY_IR_KEYS, (step, sorted(set(patch) - QUERY_IR_KEYS))
         if patch.get("select"):
-            validated = adapter.call_tool("validate", {"query": patch})
+            validated = adapter.call_tool("execute", {"query": patch, "mode": "validate"})
             assert validated["ok"], (step, patch, validated["errors"])

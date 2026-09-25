@@ -3,15 +3,13 @@
 Audit finding I4: every tool description used to be a one-liner ending
 in 'Equivalent to POST /api/v1/X.' That's an HTTP-SDK stencil, not
 agent-first guidance. An LLM ranking tools by description had no signal
-about which tool to call first, no input-shape note, no gotcha. This
-test pins three constraints:
+about which tool to call first, no input-shape note, no gotcha. The
+workflow itself is stated once, in the server instructions
+(``MCP_SERVER_INSTRUCTIONS``; see test_mcp_instructions.py). This test pins
+two constraints:
 
-  1. Each description says when to use its tool (after/before/first/step).
-     The workflow itself is stated once, in the server instructions
-     (``MCP_SERVER_INSTRUCTIONS``; see test_mcp_instructions.py), not as
-     "loop position" prose on every tool.
-  2. Each description names a concrete gotcha or call-shape note.
-  3. Each description is non-trivial in length (>= 200 chars) so it
+  1. Each description names a concrete gotcha or call-shape note.
+  2. Each description is non-trivial in length (>= 200 chars) so it
      can't silently regress to a one-liner.
 """
 
@@ -21,19 +19,7 @@ import copy
 
 from semantic_rails.mcp import list_tool_definitions
 
-LOOP_KEYWORDS = ("loop position", "loop", "after", "before", "step", "first")
 GOTCHA_KEYWORDS = ("gotcha", "must be", "do not", "don't", "skip", "only after", "cost")
-
-
-def test_every_tool_description_references_the_loop():
-    tools = list_tool_definitions()
-    assert tools, "tools/list must return at least one tool"
-    for tool in tools:
-        desc = tool["description"].lower()
-        assert any(kw in desc for kw in LOOP_KEYWORDS), (
-            f"tool {tool['name']!r} description should say when to use the tool; "
-            f"got: {tool['description']!r}"
-        )
 
 
 def test_every_tool_description_names_a_gotcha_or_call_shape():
@@ -64,18 +50,6 @@ def test_every_tool_description_is_non_trivial():
         )
 
 
-def test_capabilities_description_teaches_question_answering_core_tools():
-    tools = list_tool_definitions()
-    capabilities = next(t for t in tools if t["name"] == "capabilities")
-    desc = capabilities["description"]
-    assert "Semantic Rails MCP question-answering entrypoint" in desc
-    for tool_name in ("discover", "plan", "validate", "compile", "execute", "catalog"):
-        assert tool_name in desc, (
-            "capabilities must name the core question-answering tools so "
-            f"lazy MCP hosts can discover {tool_name!r}; got: {desc!r}"
-        )
-
-
 def test_every_tool_description_under_700_chars():
     """Upper bound so descriptions stay scannable in tools/list."""
     tools = list_tool_definitions()
@@ -101,90 +75,14 @@ def test_plan_description_mentions_out_of_scope_branch():
 
 def test_ir_accepting_tool_descriptions_enumerate_select_expression_shapes():
     """The handoff finding F4: blind agents had no signal about which
-    `select.expression` shapes are accepted. The cheat-sheet ships ONCE —
-    on `validate`, the loop's gate — and compile/execute point back at it
-    so tools/list doesn't pay for the same ~400 chars three times."""
+    `select.expression` shapes are accepted. The cheat-sheet ships once, on
+    `execute`, the only tool that takes Query IR to run."""
     tools = list_tool_definitions()
-    targets = {
-        t["name"]: t["description"]
-        for t in tools
-        if t["name"] in {"validate", "compile", "execute"}
-    }
-    assert set(targets) == {"validate", "compile", "execute"}
-    validate_desc = targets["validate"]
-    assert "{aggregation, measure}" in validate_desc, (
-        f"validate description must enumerate the aggregate shape; got {validate_desc!r}"
-    )
-    assert "{metric}" in validate_desc, (
-        f"validate description must enumerate the metric shape; got {validate_desc!r}"
-    )
-    assert "prior_period" in validate_desc, (
-        f"validate description must enumerate prior_period; got {validate_desc!r}"
-    )
-    assert "capabilities.expression_shapes" in validate_desc, (
-        f"validate description must point at capabilities.expression_shapes "
-        f"for examples; got {validate_desc!r}"
-    )
-    for name in ("compile", "execute"):
-        desc = targets[name]
-        assert "'validate'" in desc, (
-            f"{name} description must point at the validate tool for the IR "
-            f"cheat-sheet; got {desc!r}"
+    execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
+    for shape in ("{aggregation, measure}", "{metric}", "prior_period"):
+        assert shape in execute_desc, (
+            f"execute description must enumerate {shape}; got {execute_desc!r}"
         )
-        assert "{aggregation, measure}" not in desc, (
-            f"{name} description must NOT duplicate the IR cheat-sheet "
-            f"(it lives on validate); got {desc!r}"
-        )
-
-
-def test_tool_definitions_under_byte_budget():
-    """Hard cap on the bytes a fresh agent has to read on `tools/list`.
-
-    Audit finding I8 (round-eight): tool definitions ballooned from a
-    lean ~26KB to ~39KB through accreted prose — embedded QUERY_SCHEMA
-    repeated 8x, HTTP route stubs, paragraph-length property docs. The
-    slim refactor brought it back to ~28KB. Pin a 30KB ceiling so the
-    next 'just add one sentence' PR can't silently re-bloat the
-    response.
-
-    Reduction must stay >= 10% vs the documented 39,288 byte regression
-    baseline. If a real feature needs more bytes, bump the budget
-    explicitly and update the comment so the next reader knows it was
-    a conscious choice.
-
-    Budget history:
-      30,000 — single plan intent surface (13 tools total).
-               Replacing formulate/propose/parse-intent/expand with
-               plan keeps the typed IR contract while returning to the
-               pre-bloat tools/list budget.
-      ~15.8KB measured — IR cheat-sheet + full QUERY_SCHEMA dedupe
-               (cheat-sheet and full time-block schema live on
-               'validate' only; other IR tools point there). A tighter
-               24,000 ceiling is pinned separately in
-               test_mcp_minimal_default_verbosity.py.
-    """
-    import json
-
-    from semantic_rails.mcp import MCP_TOOL_DEFINITIONS
-
-    total = sum(len(json.dumps(t, separators=(",", ":"))) for t in MCP_TOOL_DEFINITIONS)
-    assert total < 30_000, (
-        f"tool definitions exceed 30,000 byte budget (got {total:,}). "
-        "If this is intentional, raise the cap explicitly. Otherwise, "
-        "trim the offending description or de-duplicate a schema."
-    )
-
-    # Per-tool ceiling: keep any single tool from absorbing the headroom.
-    # The current max is compile/execute/validate at ~3.5KB because they
-    # embed QUERY_SCHEMA + VERBOSITY_SCHEMA + SQL_PROFILE_SCHEMA. 4,000
-    # bytes is a generous-but-finite upper bound.
-    sizes = {t["name"]: len(json.dumps(t, separators=(",", ":"))) for t in MCP_TOOL_DEFINITIONS}
-    over = {n: b for n, b in sizes.items() if b > 4_000}
-    assert not over, (
-        f"Single-tool size over 4,000 byte ceiling: {over}. "
-        "A single description should not absorb headroom meant for "
-        "the whole tool surface."
-    )
 
 
 def test_no_orphan_explain_tool_references():
@@ -199,6 +97,8 @@ def test_no_orphan_explain_tool_references():
 
     for tool in MCP_TOOL_DEFINITIONS:
         desc = str(tool["description"])
+        if tool["name"] == "segment":  # 'explain' is one of its actions
+            continue
         assert "'explain'" not in desc, (
             f"tool {tool['name']!r} description references removed tool 'explain': {desc!r}"
         )
@@ -215,24 +115,13 @@ def test_ir_accepting_tool_descriptions_teach_positional_shapes():
     """Round-six finding B6: select/group_by/where/order_by use three
     different key vocabularies (`as`, bare string, `field`). A blind
     agent had to discover each by validator rejection. The positional
-    teach ships once — on validate, the loop's gate — and compile/execute
-    descriptions route agents there instead of triplicating it.
+    teach ships once, on execute.
     """
     tools = list_tool_definitions()
-    targets = {
-        t["name"]: t["description"]
-        for t in tools
-        if t["name"] in {"validate", "compile", "execute"}
-    }
-    validate_desc = targets["validate"]
+    execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
     for marker in ("select[]", "group_by[]", "where[]", "order_by[]"):
-        assert marker in validate_desc, (
-            f"validate description must teach the {marker} shape; got {validate_desc!r}"
-        )
-    for name in ("compile", "execute"):
-        assert "'validate'" in targets[name], (
-            f"{name} description must route agents to validate for the "
-            f"positional shapes; got {targets[name]!r}"
+        assert marker in execute_desc, (
+            f"execute description must teach the {marker} shape; got {execute_desc!r}"
         )
 
 
@@ -375,7 +264,7 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
                     "temporal_role": "temporal_role.jaffle_order_time",
                     "grain": "month",
                 }
-            response = adapter.call_tool("validate", {"query": query_ir})
+            response = adapter.call_tool("execute", {"mode": "validate", "query": query_ir})
             errors = response.get("errors") or []
             # Shape failures = any error pointing into select.expression
             # OR a structural code like INVALID_EXPRESSION_SHAPE.

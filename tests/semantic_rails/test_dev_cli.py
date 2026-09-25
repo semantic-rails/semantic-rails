@@ -302,7 +302,7 @@ def test_mcp_doctor_loads_path_package_and_lists_tools(tmp_path: Path) -> None:
 
     assert payload["ok"] is True, payload
     assert payload["package"]["source_path"] == str(project_path)
-    assert payload["mcp"]["tool_count"] >= 13
+    assert payload["mcp"]["tool_count"] >= 6
     assert payload["mcp"]["required_tools_present"] is True
     assert "supported" in payload["managed_lifecycle"]
     if payload["managed_lifecycle"]["supported"]:
