@@ -164,8 +164,8 @@ class PickerBackend:
         self._io = {key: value for key, value in (("input", input), ("output", output)) if value}
         self._console = Console()
 
-    def _ask(self, question: Any, *, untouched: str = "") -> Any:
-        _cancel_on_ctrl_d(question.application, untouched=untouched)
+    def _ask(self, question: Any) -> Any:
+        _cancel_keys(question.application)
         try:
             answer = question.unsafe_ask()
         except (EOFError, KeyboardInterrupt) as exc:
@@ -173,14 +173,17 @@ class PickerBackend:
         return answer
 
     def text(self, label: str, *, default: str = "") -> str:
-        question = self._questionary.text(label, default=default, **self._io)
-        value = str(self._ask(question, untouched=default)).strip()
+        # The default is a placeholder, not text to edit: typing replaces it, Enter keeps it.
+        question = self._questionary.text(label, placeholder=default, **self._io)
+        value = str(self._ask(question)).strip()
         if value.lower() in _CANCEL_WORDS:
             raise Cancelled
         return value or default
 
     def confirm(self, label: str, *, default: bool) -> bool:
-        return bool(self._ask(self._questionary.confirm(label, default=default, **self._io)))
+        # y or n waits for Enter, so the Enter after `y` cannot answer the next question.
+        question = self._questionary.confirm(label, default=default, auto_enter=False, **self._io)
+        return bool(self._ask(question))
 
     def choose(self, label: str, options: Sequence[Option], *, default: str = "") -> str:
         choices = [
@@ -194,7 +197,7 @@ class PickerBackend:
             label,
             choices=choices,
             default=chosen,
-            use_search_filter=len(choices) > 8,
+            use_search_filter=True,  # also collects a typed cancel word
             use_jk_keys=False,
             instruction="(arrows to move, type to filter, Enter to pick, Ctrl-C to cancel)",
             **self._io,
@@ -226,25 +229,32 @@ class PickerBackend:
         )
 
 
-def _cancel_on_ctrl_d(app: Any, *, untouched: str = "") -> None:
-    """Make Ctrl-D cancel a picker the way it cancels an empty line prompt.
+def _cancel_keys(app: Any) -> None:
+    """Cancel a picker the way a line prompt cancels.
 
     questionary ends only an empty text prompt on Ctrl-D. This also cancels
-    lists, checkbox lists, and a text prompt still showing ``untouched`` (its
-    default). Once the person edits the text, Ctrl-D edits it as usual.
+    lists and checkbox lists on Ctrl-D, and a list when the person types a
+    cancel word and presses Enter. Once the text is edited, Ctrl-D edits it.
     """
 
     from prompt_toolkit.filters import Condition
     from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+    from questionary.prompts.common import InquirerControl
+
+    lists = [item for item in app.layout.find_all_controls() if isinstance(item, InquirerControl)]
 
     @Condition
     def unedited() -> bool:
-        buffer = app.current_buffer  # a dummy empty buffer for lists
-        return buffer.text in {"", untouched} and buffer.cursor_position == len(buffer.text)
+        return not app.current_buffer.text  # a dummy empty buffer for lists
+
+    @Condition
+    def typed_cancel() -> bool:
+        return any((item.search_filter or "").strip().lower() in _CANCEL_WORDS for item in lists)
 
     bindings = KeyBindings()
 
     @bindings.add("c-d", filter=unedited, eager=True)
+    @bindings.add("enter", filter=typed_cancel, eager=True)
     def _cancel(event: Any) -> None:
         event.app.exit(exception=EOFError(), style="class:exiting")
 

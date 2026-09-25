@@ -192,7 +192,13 @@ def ask_report(
             "query": query,
         }
         if not _payload_ok(plan):
-            out["errors"] = list(plan.get("errors", []) or [])
+            errors = list(plan.get("errors", []) or [])
+            if not errors and query:
+                # A plan that fails validation keeps the reason in its diagnostics.
+                errors = list(runtime.validate(query).get("errors", []) or [])
+            if not errors and isinstance(plan.get("why"), dict):
+                errors = [plan["why"]]
+            out["errors"] = errors
             return out
         if not query:
             out["ok"] = False

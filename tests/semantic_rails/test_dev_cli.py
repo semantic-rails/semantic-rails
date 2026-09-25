@@ -1189,7 +1189,7 @@ def test_repl_manage_metric_kind_removes_stale_fields_and_preserves_public_id(
     assert "measure" not in metric
 
 
-def test_repl_exact_metric_key_defaults_to_cancel_without_any_file_change(
+def test_repl_exact_metric_key_asks_for_another_key_without_any_file_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     import semantic_rails.repl.shell as repl_shell
@@ -1198,7 +1198,7 @@ def test_repl_exact_metric_key_defaults_to_cancel_without_any_file_change(
     project_path = _create_repl_split_package(tmp_path, "collision_core")
     ref = PackageReference(source_path=str(project_path))
     before = _tree_bytes(project_path)
-    answers = iter(["total_amount", ""])
+    answers = iter(["total_amount", "", "cancel"])  # Enter: don't update it
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     undo_stack = []
@@ -1207,6 +1207,7 @@ def test_repl_exact_metric_key_defaults_to_cancel_without_any_file_change(
 
     output = capsys.readouterr().out
     assert "`total_amount` already exists" in output
+    assert "Enter another metric key, or type cancel." in output
     assert "Authoring cancelled; no files changed." in output
     assert undo_stack == []
     assert _tree_bytes(project_path) == before
