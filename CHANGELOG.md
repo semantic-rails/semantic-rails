@@ -8,6 +8,76 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.1 — 2026-09-25 — Honest plans, clock-safe metrics and a REPL calendar
+
+**Upgrading from 0.3.0:** validation and planning are stricter; run `project validate --mode parse`
+on existing packages. A metric that names an undefined measure or metric now fails validation, as
+does a non-conversion metric whose declared clock one of its multi-clock measures lacks, and a query
+on such a clock fails with `INCOMPATIBLE_TEMPORAL_ROLE`. `plan` no longer returns a runnable draft
+on `TIME_WINDOW_UNRESOLVED`. Details are under Fixed.
+
+### Added
+
+- `mf2sr --schema-strict`, and `semantic-rails import --from metricflow --schema-strict`, write a
+  `schema_strict: true` package whose relations keep the schema and database that dbt's
+  `semantic_manifest.json` records, named the way `import_dbt_project` names dbt relations. A DuckDB
+  package reads the database dbt built (`seed: {kind: external}`), and the output is parse-checked.
+  See [mf2sr/README.md](mf2sr/README.md).
+
+### Changed
+
+- The Architect MCP's tool list is a fifth smaller: its schemas no longer carry a title for every
+  property, and the workflow and write contract moved into the server instructions. Every tool now
+  has a title and hints, including `openWorldHint` on the checks that query the warehouse. See
+  [docs/ARCHITECT_MCP.md](docs/ARCHITECT_MCP.md).
+
+### Fixed
+
+- A retried Architect `write_project_file` with `overwrite: false`, or a retried
+  `archive_project_file`, now replays the first call's result instead of failing because the first
+  call already wrote or archived the file.
+- On Linux, `semantic-rails mcp start`, `mcp status` and `mcp stop` identify a managed server
+  by the kernel's process start tick instead of `ps`'s start time, which can shift by a second
+  when the system clock is stepped. `mcp start` no longer reports `failed_to_start` for a
+  healthy server, and `mcp stop` no longer refuses to stop one. Servers started by an earlier
+  version are still recognized.
+- A query whose clock a metric's measure lacks no longer times that measure by the first
+  of several clocks it has. For example, a ratio of order-line revenue (order and delivery
+  clocks) over orders, queried on the order's delivery clock, divided order-date revenue
+  by delivered orders and warned only `REWRITE_APPLIED`. The query now fails with
+  `INCOMPATIBLE_TEMPORAL_ROLE`, naming the measure and its clocks; choose one with
+  `temporal_role_overrides`. This includes a snapshot measure aligned to a calendar clock
+  at month grain or coarser. A measure with a single clock is still aligned by it;
+  conversion operands and `metric_predicate` inputs are unchanged. Package validation
+  rejects a metric without a conversion whose declared clock would be refused this way.
+- Package validation, including `project validate --mode parse`, rejects a metric that
+  names a measure or metric the package doesn't define. Before, the package parsed and
+  every query of the metric failed with `Unknown measure`.
+- `plan` no longer returns a runnable `best.query_ir` when it can't resolve the question's time
+  window (`TIME_WINDOW_UNRESOLVED`); executing that draft used to return every period with `ok`.
+  Pass the window, temporal role and grain in `query.time` and plan again.
+- A number in a time phrase no longer makes a top N: "What was revenue from January 1 2017 to
+  March 31 2017 by store?" or "…in the last 3 months by store?" used to return only the first
+  1 or 3 rows ranked by revenue.
+- A question that names a metric whose measure has the same name ("rolling 28-day revenue by
+  day", "Revenue QTD by day") now uses that metric instead of plain revenue.
+- `plan` flags a second subject named with "count" or a question word ("What is order count and
+  revenue by month?", "how many orders and revenue by month") instead of answering with revenue
+  alone.
+- `ask` and the REPL now print the plan's own warnings, such as `PLAN_UNMATCHED_TERMS`.
+- The `UNGRAINED_TIME_PROJECTION` hint no longer suggests removing `time.temporal_role`, which
+  the engine rejects. The MCP `max_rows` description says `total_row_count` is null past
+  10,000 rows.
+- The REPL's `author calendar` writes the package calendar, so rolling, prior-period and
+  growth metrics can be authored without editing YAML; the metric wizard offers the units
+  of the calendar that queries fill from.
+- In the REPL, `ls` accepts `--limit N` and `--json`, a bare `ls` of a large package counts
+  objects by kind, and `help <command>` shows that command. `ls --json` without `--limit`
+  lists every object, in the CLI too, as the truncation hint says.
+- `ask` and `run` print the engine's first recovery hint under each error.
+- In an arrow-key list, typing `cancel` picks an option that contains it, such as
+  "Cancelled orders", instead of ending the wizard.
+
 ## 0.3.0 — 2026-09-25 — Guided authoring, warehouse import and a leaner query MCP
 
 ### Added

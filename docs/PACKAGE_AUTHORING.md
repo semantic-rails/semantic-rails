@@ -983,9 +983,9 @@ In **direct named fields** (`measure:`, `numerator:`, `denominator:`), reference
 use package-relative keys (`revenue_usd`) — the loader resolves them. Inside an
 **`expression:` AST** the rule differs: measure references must be fully
 qualified (`measure: measure.shop.revenue_usd`); a package-relative measure key
-there fails validation with `OBJECT_NOT_FOUND` ("Unknown measure
-'revenue_usd'"). Metric references inside an AST (`{kind: metric, metric:
-revenue_usd}`) still resolve package-relative.
+there fails validation, even `--mode parse` ("metric … references unknown measure
+'revenue_usd'; did you mean 'measure.shop.revenue_usd'?"). Metric references inside
+an AST (`{kind: metric, metric: revenue_usd}`) still resolve package-relative.
 
 With `schema_strict: true`, every authored metric needs an explicit, nonblank string
 `value_type:` in either a directory or single-file package. `number` is valid when

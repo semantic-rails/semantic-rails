@@ -206,10 +206,10 @@ is a stale capture on an older dataset and is excluded from that count; it match
 some intended semantics weakly tested, so matching outputs are not a ranking.
 
 Coming from MetricFlow? Translate a MetricFlow YAML directory or a dbt
-`semantic_manifest.json` into a new package. The importer is partial: models it can't
-translate are listed as warnings, but metrics that depended on them can still be
-written out and then fail to compile. Compile the metrics you rely on before trusting
-the import.
+`semantic_manifest.json` into a new package. The importer is partial: models and
+measures it can't translate are listed as warnings, but a metric that used them can
+still be written out. `project validate --mode parse` then fails and names that
+metric; remove it, or define the measure it names, before you rely on the import.
 
 ```bash
 uvx semantic-rails import --from metricflow --source target/semantic_manifest.json \
@@ -274,15 +274,15 @@ In the current release:
 - `ask` rounds its tables, but JSON results (`query`, `ask --json`, MCP `execute` and the
   HTTP API) return the warehouse's floating-point values as they are, for example
   `486468.17999985756` for a currency total.
-- The MetricFlow importer is partial. It can keep a metric whose model it dropped,
-  and that metric then fails to compile.
+- The MetricFlow importer is partial. It can keep a metric whose model or measure it
+  dropped, and package validation then fails, naming that metric.
 
 ### Roadmap
 
 Work in progress, without dates:
 
 - Query MCP interface v2 as the default, once it answers a held-out question set at
-  least as accurately as v1. In 0.3.0 it is opt-in.
+  least as accurately as v1. It is opt-in for now.
 - Packaged agent integrations: Claude Code and Codex plugins and a Claude Desktop
   bundle. `mcp setup` already writes the client configs.
 - A flagship example: a dbt project on an open dataset, modeled end to end.
