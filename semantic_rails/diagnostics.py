@@ -909,14 +909,8 @@ def recovery_hints_for_error(
             )
         return hints
     if code == "UNKNOWN_MCP_TOOL":
-        # Interface v2 names the tool that replaced a v1 one, and has no validate or compile.
+        # A removed v1 tool name carries the tool that replaced it.
         replacement = str(details.get("replacement") or "")
-        available = list(details.get("available_tools", []) or [])
-        entry_points = ", ".join(
-            f"'{name}'"
-            for name in ("discover", "inspect", "plan", "validate", "compile")
-            if not available or name in available
-        )
         return [
             {
                 "kind": "use_available_tool",
@@ -924,7 +918,8 @@ def recovery_hints_for_error(
                     f"Use {replacement} instead."
                     if replacement
                     else "Call tools/list first and pick a name from "
-                    f"available_tools — common entry points are {entry_points}."
+                    "available_tools — common entry points are 'discover', "
+                    "'inspect', 'plan'."
                 ),
                 "available_tools": list(details.get("available_tools", []) or []),
                 "details": dict(details),

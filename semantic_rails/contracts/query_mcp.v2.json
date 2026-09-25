@@ -503,7 +503,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Draft one best Query IR from a natural-language intent. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are no warnings.",
+      "description": "Draft one best Query IR from a natural-language intent; call it before 'execute' instead of writing Query IR from scratch. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are no warnings.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -596,7 +596,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted, or Query IR you fixed from it. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query (errors, warnings, repair hints); mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. row_format='columns' is compact. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
+      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted (call plan first), or Query IR you fixed from it. time.end is exclusive. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query (errors, warnings, repair hints); mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. row_format='columns' is compact. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {

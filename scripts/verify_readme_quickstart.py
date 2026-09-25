@@ -413,7 +413,7 @@ def mcp_handshake(
         listed = call({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         result = listed.get("result")
         tools = [tool["name"] for tool in result["tools"]] if isinstance(result, dict) else []
-        missing = {"discover", "validate", "compile", "execute"} - set(tools)
+        missing = {"discover", "execute"} - set(tools)
         return f"tools/list lacks {sorted(missing)}" if missing else ""
     except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
         # OSError covers TimeoutError and a broken pipe to a server that exited.

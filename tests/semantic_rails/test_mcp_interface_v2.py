@@ -1,9 +1,8 @@
-"""Query MCP interface v2: six tools served by the v1 handlers.
+"""Query MCP interface v2, the only interface since v1 was removed in 0.3.3.
 
-v2 folds validate and compile into ``execute(mode)`` and the three segment tools
-into ``segment(action)``, drops capabilities, catalog and build-options, and
-defaults every tool to its smallest response. It is opt-in, by argument or
-``SEMANTIC_RAILS_MCP_INTERFACE``; interface v1 stays the default and byte-identical.
+v2 folded v1's validate and compile into ``execute(mode)`` and its three segment
+tools into ``segment(action)``, dropped capabilities, catalog and build-options,
+and defaults every tool to its smallest response.
 """
 
 from __future__ import annotations
@@ -17,11 +16,8 @@ from semantic_rails.cli.commands.mcp import _mcp_tool_check
 from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import (
-    MCP_DEFAULT_INTERFACE,
     MCP_DEFAULT_MAX_ROWS,
-    MCP_INTERFACE_ENV,
     MCP_SERVER_INSTRUCTIONS,
-    MCP_SERVER_INSTRUCTIONS_V2,
     SemanticLayerMCPAdapter,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
@@ -65,13 +61,8 @@ def runtime(runtime_factory: Any) -> Iterator[Any]:
 
 
 @pytest.fixture()
-def v1(runtime: Any) -> SemanticLayerMCPAdapter:
-    return SemanticLayerMCPAdapter(runtime, interface="v1")
-
-
-@pytest.fixture()
 def v2(runtime: Any) -> SemanticLayerMCPAdapter:
-    return SemanticLayerMCPAdapter(runtime, interface="v2")
+    return SemanticLayerMCPAdapter(runtime)
 
 
 def _stable(response: dict[str, Any]) -> dict[str, Any]:
@@ -86,84 +77,49 @@ def _initialize(adapter: SemanticLayerMCPAdapter) -> dict[str, Any]:
     return result
 
 
-def test_the_interface_comes_from_the_argument_then_the_environment(
+def test_asking_for_the_removed_v1_interface_fails(
     runtime: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv(MCP_INTERFACE_ENV, raising=False)
-    assert SemanticLayerMCPAdapter(runtime).interface == MCP_DEFAULT_INTERFACE == "v1"
-    monkeypatch.setenv(MCP_INTERFACE_ENV, " V2 ")
+    env = "SEMANTIC_RAILS_MCP_INTERFACE"
+    monkeypatch.setenv(env, " V2 ")
     assert SemanticLayerMCPAdapter(runtime).interface == "v2"
-    assert SemanticLayerMCPAdapter(runtime, interface="v1").interface == "v1"
-    monkeypatch.setenv(MCP_INTERFACE_ENV, "v3")
-    with pytest.raises(SemanticLayerError) as raised:
-        SemanticLayerMCPAdapter(runtime)
-    assert raised.value.code == "INVALID_CONFIG"
-    assert raised.value.details["valid_values"] == ["v1", "v2"]
+    for argument, environment in (("v1", ""), (None, "v1"), (None, "v3")):
+        monkeypatch.setenv(env, environment)
+        with pytest.raises(SemanticLayerError) as raised:
+            SemanticLayerMCPAdapter(runtime, interface=argument)
+        assert raised.value.code == "INVALID_CONFIG"
+        assert "v1 MCP interface was removed in 0.3.3; use v2" in str(raised.value)
+    # mcp stdio, http and doctor build their adapter from the environment.
+    with pytest.raises(SemanticLayerError, match="removed in 0.3.3"):
+        _mcp_tool_check(runtime)
 
 
-def test_each_interface_serves_its_own_frozen_contract(
-    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
-) -> None:
-    for adapter, contract in ((v1, "query_mcp.v1.json"), (v2, "query_mcp.v2.json")):
-        manifest = load_contract(contract)
-        assert adapter.list_tools() == manifest["tools"]
-        assert adapter.list_resources() == manifest["resources"]
-        assert adapter.list_prompts() == manifest["prompts"]
-        assert manifest["interface_version"] == adapter.interface
+def test_the_adapter_serves_the_frozen_contract(v2: SemanticLayerMCPAdapter) -> None:
+    manifest = load_contract("query_mcp.v2.json")
+    assert v2.list_tools() == manifest["tools"]
+    assert v2.list_resources() == manifest["resources"]
+    assert v2.list_prompts() == manifest["prompts"]
+    assert manifest["interface_version"] == v2.interface == "v2"
     assert [tool["name"] for tool in v2.list_tools()] == V2_TOOLS
-    assert _initialize(v1)["serverInfo"]["version"] == "v1"
-    assert _initialize(v1)["instructions"] == MCP_SERVER_INSTRUCTIONS
     initialized = _initialize(v2)
     assert initialized["serverInfo"]["version"] == "v2"
-    assert initialized["instructions"] == MCP_SERVER_INSTRUCTIONS_V2
-    assert len(MCP_SERVER_INSTRUCTIONS_V2) <= 2048
+    assert initialized["instructions"] == MCP_SERVER_INSTRUCTIONS
+    assert len(MCP_SERVER_INSTRUCTIONS) <= 2048
 
 
-def _changed_paths(before: Any, after: Any, path: str = "") -> Iterator[str]:
-    if isinstance(before, dict) and isinstance(after, dict):
-        for key in sorted(set(before) | set(after)):
-            yield from _changed_paths(before.get(key), after.get(key), f"{path}/{key}")
-    elif before != after:
-        yield path
-
-
-def test_v2_contract_differs_from_v1_only_as_designed() -> None:
-    v1_tools = {tool["name"]: tool for tool in load_contract("query_mcp.v1.json")["tools"]}
-    v2_tools = {tool["name"]: tool for tool in load_contract("query_mcp.v2.json")["tools"]}
-    assert set(v1_tools) - set(v2_tools) == V1_ONLY_TOOLS
-    assert set(v2_tools) - set(v1_tools) == {"segment"}
-    envelope = {"/outputSchema/description", "/outputSchema/properties/api_version/const"}
-    execute_input = "/inputSchema/properties/"
-    # Their Query IR points at v2's execute instead of v1's validate.
-    query = f"{execute_input}query/description"
-    slim_cards = {"/description", f"{execute_input}verbosity/default", query, *envelope}
-    paging = {f"{execute_input}limit/description", f"{execute_input}offset"}
-    expected = {
-        "discover": {*slim_cards, *paging},
-        "inspect": slim_cards,
-        "valid-values": {query, *envelope},
-        "plan": {"/description", f"{execute_input}detail/default", query, *envelope},
-        "execute": {
-            "/description",
-            f"{execute_input}mode",
-            f"{execute_input}max_rows/default",
-            f"{execute_input}max_rows/description",
-            f"{execute_input}verbosity/description",
-            # The full Query IR schema moves here from v1's validate, saying end is exclusive.
-            f"{execute_input}query/description",
-            f"{execute_input}query/properties",
-            *envelope,
-        },
-    }
-    changed = {name: set(_changed_paths(v1_tools[name], v2_tools[name])) for name in expected}
-    assert changed == expected
-    assert v2_tools["plan"]["inputSchema"]["properties"]["detail"]["default"] == "query"
-    execute = v2_tools["execute"]["inputSchema"]["properties"]
+def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
+    tools = {tool["name"]: tool for tool in load_contract("query_mcp.v2.json")["tools"]}
+    assert tools["plan"]["inputSchema"]["properties"]["detail"]["default"] == "query"
+    execute = tools["execute"]["inputSchema"]["properties"]
     assert execute["max_rows"]["default"] == MCP_DEFAULT_MAX_ROWS
     assert execute["mode"]["enum"] == ["run", "validate", "sql"]
     assert "exclusive" in execute["query"]["properties"]["time"]["properties"]["end"]["description"]
     for tool in ("discover", "inspect"):
-        assert v2_tools[tool]["inputSchema"]["properties"]["verbosity"]["default"] == "minimal"
+        assert tools[tool]["inputSchema"]["properties"]["verbosity"]["default"] == "minimal"
+    # Hosts that drop the server instructions still see plan-first and the exclusive end.
+    assert "call it before 'execute'" in tools["plan"]["description"]
+    assert "call plan first" in tools["execute"]["description"]
+    assert "time.end is exclusive" in tools["execute"]["description"]
 
 
 def _descriptions(node: Any) -> Iterator[str]:
@@ -179,7 +135,7 @@ def _descriptions(node: Any) -> Iterator[str]:
 
 
 def test_v2_text_names_only_v2_tools(v2: SemanticLayerMCPAdapter) -> None:
-    texts = [MCP_SERVER_INSTRUCTIONS_V2]
+    texts = [MCP_SERVER_INSTRUCTIONS]
     texts += _descriptions([v2.list_tools(), v2.list_prompts(), v2.list_resources()])
     for prompt, arguments in (
         ("semantic-rails-query-builder", {"intent": "revenue by store"}),
@@ -194,32 +150,26 @@ def test_v2_text_names_only_v2_tools(v2: SemanticLayerMCPAdapter) -> None:
             assert f"'{name}'" not in text and f"`{name}`" not in text, (name, text)
 
 
-def test_execute_modes_return_what_the_v1_tools_return(
-    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
-) -> None:
-    pairs = (
-        ({"query": QUERY}, "execute", {"query": QUERY, "max_rows": MCP_DEFAULT_MAX_ROWS}),
-        ({"query": QUERY, "mode": "validate"}, "validate", {"query": QUERY}),
-        ({"query": QUERY, "mode": "sql", "row_format": "columns"}, "compile", {"query": QUERY}),
+def test_execute_modes_run_validate_or_compile(v2: SemanticLayerMCPAdapter) -> None:
+    for arguments, sql, rows in (
+        ({"query": QUERY}, False, True),
+        ({"query": QUERY, "mode": "validate"}, False, False),
+        ({"query": QUERY, "mode": "sql", "row_format": "columns"}, True, False),
         # Top-level Query IR passthrough works in every mode.
-        ({**QUERY, "mode": "validate"}, "validate", QUERY),
-    )
-    for v2_arguments, v1_tool, v1_arguments in pairs:
-        v2_response = v2.call_tool("execute", v2_arguments)
-        assert v2_response["ok"] is True, v2_response["errors"]
-        assert v2_response["api_version"] == "v2"
-        assert _stable(v2_response) == _stable(v1.call_tool(v1_tool, v1_arguments))
+        ({**QUERY, "mode": "validate"}, False, False),
+    ):
+        response = v2.call_tool("execute", arguments)
+        assert response["ok"] is True, response["errors"]
+        assert response["api_version"] == "v2"
+        assert ("rendered_sql" in response, "rows" in response) == (sql, rows), arguments
 
 
-def test_execute_caps_rows_by_default_in_v2_only(
-    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
-) -> None:
+def test_execute_caps_rows_by_default(v2: SemanticLayerMCPAdapter) -> None:
     capped = v2.call_tool("execute", {"query": UNGRAINED})
     assert capped["truncated"] is True
     assert capped["row_count"] == MCP_DEFAULT_MAX_ROWS
     assert "EXECUTE_ROWS_TRUNCATED" in {warning["code"] for warning in capped["warnings"]}
     assert v2.call_tool("execute", {"query": UNGRAINED, "max_rows": 5})["row_count"] == 5
-    assert v1.call_tool("execute", {"query": UNGRAINED})["row_count"] > MCP_DEFAULT_MAX_ROWS
 
 
 def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) -> None:
@@ -236,73 +186,50 @@ def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) 
             assert error["details"]["field"] == field
 
 
-def test_v1_execute_still_ignores_mode_with_a_warning(v1: SemanticLayerMCPAdapter) -> None:
-    response = v1.call_tool("execute", {"query": QUERY, "mode": "validate", "max_rows": 1})
-    assert response["ok"] is True and response["row_count"] == 1
-    assert "EXECUTE_UNKNOWN_ARG" in {warning["code"] for warning in response["warnings"]}
-
-
 @pytest.mark.parametrize("action", ["validate", "explain", "preview"])
-def test_segment_actions_are_the_v1_segment_tools_at_minimal_verbosity(
-    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter, action: str
+def test_segment_actions_default_to_minimal_verbosity(
+    v2: SemanticLayerMCPAdapter, action: str
 ) -> None:
     # limit only applies to previews, and is accepted with any action.
-    arguments = {"segment_id": SEGMENT, "limit": 3}
-    v1_tool = f"segment-{action}"
-    v1_arguments = arguments if action == "preview" else {"segment_id": SEGMENT}
-    for v2_verbosity, v1_verbosity in (({}, {"verbosity": "minimal"}), ({"verbosity": "full"}, {})):
-        v2_response = v2.call_tool("segment", {**arguments, "action": action, **v2_verbosity})
-        v1_response = v1.call_tool(v1_tool, {**v1_arguments, **v1_verbosity})
-        assert v2_response["ok"] is True, v2_response["errors"]
-        assert set(v2_response) == set(v1_response)
-        # Preview samples rows, and full responses carry timings, so compare counts there.
-        if action == "preview" or v2_verbosity:
-            for key in ("status", "member_count", "preview_row_count", "derived_query"):
-                assert v2_response.get(key) == v1_response.get(key), key
-        else:
-            assert _stable(v2_response) == _stable(v1_response)
+    arguments = {"segment_id": SEGMENT, "limit": 3, "action": action}
+    default = v2.call_tool("segment", arguments)
+    minimal = v2.call_tool("segment", {**arguments, "verbosity": "minimal"})
+    full = v2.call_tool("segment", {**arguments, "verbosity": "full"})
+    assert default["ok"] is True, default["errors"]
+    assert set(default) == set(minimal) and len(str(default)) < len(str(full))
+    for key in ("status", "member_count", "preview_row_count", "derived_query"):
+        assert default.get(key) == full.get(key), key
 
 
-def test_plan_defaults_to_the_compact_query_detail_in_v2(
-    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
-) -> None:
+def test_plan_defaults_to_the_compact_query_detail(v2: SemanticLayerMCPAdapter) -> None:
     intent = {"intent": "revenue by store"}
     compact = _stable(v2.call_tool("plan", intent))
-    assert compact == _stable(v1.call_tool("plan", {**intent, "detail": "query"}))
+    assert compact == _stable(v2.call_tool("plan", {**intent, "detail": "query"}))
     assert "intent_ir" not in compact
-    assert "intent_ir" in v1.call_tool("plan", intent)
     assert "intent_ir" in v2.call_tool("plan", {**intent, "detail": "best"})
 
 
-def test_discover_and_inspect_return_slim_cards_by_default_in_v2(
-    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
-) -> None:
+def test_discover_and_inspect_return_slim_cards_by_default(v2: SemanticLayerMCPAdapter) -> None:
     for tool, arguments in (
         ("discover", {"terms": "revenue by store"}),
         ("inspect", {"object_id": "measure.jaffle.revenue_usd"}),
     ):
         slim = _stable(v2.call_tool(tool, arguments))
-        assert slim == _stable(v1.call_tool(tool, {**arguments, "verbosity": "minimal"}))
+        assert slim == _stable(v2.call_tool(tool, {**arguments, "verbosity": "minimal"}))
         full = v2.call_tool(tool, {**arguments, "verbosity": "compact"})
-        assert _stable(full) == _stable(v1.call_tool(tool, arguments))
         assert len(str(slim)) < len(str(full))
 
 
-def test_discover_with_empty_terms_lists_ids_in_v2(
-    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
-) -> None:
+def test_discover_with_empty_terms_lists_ids(v2: SemanticLayerMCPAdapter) -> None:
     # A page large enough for every kind, whatever the fixture's size.
     listed = v2.call_tool("discover", {"terms": "", "limit": 10_000})
     assert listed["ok"] is True and listed["warnings"] == []
-    assert listed["catalog"] == v1.call_tool("catalog", {})["catalog"]
+    index = v2.read_resource("semantic-rails://catalog/index")["payload"]["catalog"]
+    assert listed["catalog"] == index
     segments = v2.call_tool("discover", {"terms": " ", "kinds": ["segment"]})["catalog"]
     assert SEGMENT in segments["segment_ids"] and "measure_ids" not in segments
     two = v2.call_tool("discover", {"terms": "", "kinds": "segment,metric"})["catalog"]
     assert {key for key in two if key.endswith("_ids")} == {"segment_ids", "metric_ids"}
-    # v1 keeps its short ranked browse.
-    assert "DISCOVER_NO_TERMS" in {
-        warning["code"] for warning in v1.call_tool("discover", {"terms": ""})["warnings"]
-    }
 
 
 def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) -> None:
@@ -324,16 +251,14 @@ def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) ->
 
 
 def test_unknown_tool_hint_names_only_tools_the_interface_has(
-    v1: SemanticLayerMCPAdapter, v2: SemanticLayerMCPAdapter
+    v2: SemanticLayerMCPAdapter,
 ) -> None:
     hint = v2.call_tool("forecast", {})["errors"][0]["recovery_hints"][0]["message"]
     assert hint.endswith("common entry points are 'discover', 'inspect', 'plan'.")
-    hint = v1.call_tool("forecast", {})["errors"][0]["recovery_hints"][0]["message"]
-    assert hint.endswith("'discover', 'inspect', 'plan', 'validate', 'compile'.")
 
 
 @pytest.mark.parametrize("tool", sorted(V1_ONLY_TOOLS))
-def test_v1_only_tools_point_to_their_v2_replacement(
+def test_removed_v1_tools_point_to_their_replacement(
     v2: SemanticLayerMCPAdapter, tool: str
 ) -> None:
     response = v2.call_tool(tool, {})
@@ -341,14 +266,15 @@ def test_v1_only_tools_point_to_their_v2_replacement(
     assert error["code"] == "UNKNOWN_MCP_TOOL"
     assert error["details"]["available_tools"] == sorted(V2_TOOLS)
     replacement = error["details"]["replacement"]
-    assert replacement in error["message"]
+    assert (
+        error["message"]
+        == f"The '{tool}' tool was removed with MCP interface v1; use {replacement}."
+    )
     assert error["recovery_hints"][0]["message"] == f"Use {replacement} instead."
 
 
-def test_mcp_doctor_checks_the_selected_interface(
-    runtime: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv(MCP_INTERFACE_ENV, "v2")
+def test_mcp_doctor_checks_the_v2_tools(runtime: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SEMANTIC_RAILS_MCP_INTERFACE", raising=False)
     check = _mcp_tool_check(runtime)
     assert check["interface"] == "v2"
     assert check["required_tools_present"] is True

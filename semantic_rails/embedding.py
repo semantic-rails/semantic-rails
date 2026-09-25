@@ -45,7 +45,7 @@ from .dialects import (
 )
 from .errors import SemanticLayerError
 from .http_core import API_VERSION, PUBLIC_V1_ROUTES, SemanticHTTPService
-from .mcp import MCP_INTERFACE_VERSION, SemanticLayerMCPAdapter
+from .mcp import SemanticLayerMCPAdapter
 from .mcp_server import MCP_PROTOCOL_VERSION, handle_jsonrpc_message
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .package_tools import run_package_tests_report
@@ -82,7 +82,6 @@ __all__ = [
     "HeaderPolicyContextResolver",
     "LoadedPackageSnapshot",
     "LruCompiledSqlCache",
-    "MCP_INTERFACE_VERSION",
     "MCP_PROTOCOL_VERSION",
     "MOTHERDUCK_CONNECTION_OPTIONS",
     "POSTGRES_CONNECTION_OPTIONS",
