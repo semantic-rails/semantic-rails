@@ -53,7 +53,9 @@ model is asked, without tools, to summarize every turn but the last `--compact-k
 prompt. A later compaction summarizes the previous summary with the turns since. Set it
 below the window by at least one turn's growth and one reply, and above what the kept turns
 alone can reach: once they reach it, every turn compacts again, at the cost of one more
-request each.
+request each. A compaction that fails (the request fails, or the summary is empty or cut off
+by `--turn-tokens`) ends the run rather than going on uncompacted, so leave the summary room
+under `--turn-tokens`, reasoning included.
 
 ## Scenario files
 
@@ -107,8 +109,8 @@ pressing Enter through a wizard's prompts is not a loop.
   `turn` event per model reply (tokens, finish reason, seconds, text, the tools it called),
   one `call` event per tool call (arguments, error, argument problems, whether it repeats an
   earlier call, the result and its full length, seconds), and one `compaction` event per
-  compaction (the turn it followed, the estimated prompt before it, the messages it
-  replaced, its tokens and seconds, and the summary).
+  compaction that got a reply (the turn it followed, `estimated_prompt_tokens` before it,
+  the messages it replaced, its tokens and seconds, `failed` if it did, and the summary).
 - `summary.json`: the scenario, model and servers; `stop` (`final`, `length`, `max_turns`,
   `max_tokens`, `loop`, `timeout`, `no usage reported`, `request failed: …` or `compaction …`);
   `finished`; `success` (the check passed); turns, tool calls and errors; token totals, which

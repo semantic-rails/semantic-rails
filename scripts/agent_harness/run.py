@@ -286,25 +286,28 @@ class Agent:
             return f"compaction {answer}"
         choice, tokens = answer
         summary = (choice["message"].get("content") or "").strip()
-        if not summary or choice.get("finish_reason") == "length":
-            return "compaction failed: " + ("summary cut off" if summary else "no summary")
+        cut_off = choice.get("finish_reason") == "length"
+        failed = "no summary" if not summary else "summary cut off" if cut_off else None
+        record = {
+            "turn": len(self.turns),
+            "estimated_prompt_tokens": before,
+            "messages_summarized": cut - 2,
+            "summary_chars": len(summary),
+            **tokens,
+            "seconds": round(time.monotonic() - started, 2),
+            "failed": failed,
+        }
+        self.compactions.append(record)  # a failed one spent tokens too
+        self.log(event="compaction", **record, summary=summary)
+        if failed:
+            return f"compaction failed: {failed}"
+        if None in (tokens["prompt_tokens"], tokens["completion_tokens"]):
+            return "compaction: no usage reported"  # the token budget can't be enforced
         self.summary = summary
         note = "This session continues from earlier turns, which this summary replaces:"
         self.messages[1:cut] = [
             {"role": "user", "content": f"{self.task}\n\n{note}\n\n{self.summary}"}
         ]
-        record = {
-            "turn": len(self.turns),
-            "context_before": before,
-            "messages_summarized": cut - 2,
-            "summary_chars": len(self.summary),
-            **tokens,
-            "seconds": round(time.monotonic() - started, 2),
-        }
-        self.compactions.append(record)
-        self.log(event="compaction", **record, summary=self.summary)
-        if None in (tokens["prompt_tokens"], tokens["completion_tokens"]):
-            return "compaction: no usage reported"  # the token budget can't be enforced
         return ""
 
     async def call(self, call: dict[str, Any], share: int) -> None:
