@@ -180,8 +180,10 @@ def test_model_upsert_reads_yaml_1_2_so_no_and_on_stay_strings(tmp_path: Path) -
     project_path = _create_project(tmp_path)
     model_path = project_path / "models" / "core" / "events.yml"
     authored = model_path.read_text(encoding="utf-8")
+    categorical = "      kind: categorical\n"
+    assert categorical in authored
     model_path.write_text(
-        authored.replace("domain:\n      - starter\n      - follow_up", "domain: [no, on]")
+        authored.replace(categorical, categorical + "      domain: [no, on]\n", 1)
     )
 
     mutation = ArchitectProject(project_path, workspace_root=tmp_path).upsert_model(
