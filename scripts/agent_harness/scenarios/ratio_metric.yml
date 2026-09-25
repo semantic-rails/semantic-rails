@@ -1,0 +1,14 @@
+# Architect MCP: add a ratio metric to an existing package (a `project new` starter).
+task: |
+  The Semantic Rails project in the folder "shop" has order_count and total_amount metrics.
+  Add an "average order value" metric: the total amount divided by the number of orders.
+servers:
+  architect: semantic-rails-architect-mcp --workspace-root .
+setup: >-
+  semantic-rails project new shop --output shop --entity order --relation orders
+  --primary-key order_id --time-column ordered_at --amount-column amount > /dev/null
+check: >-
+  semantic-rails project validate --path shop --mode full
+  && grep -rqE "kind: (ratio|derived)" shop/metrics
+max_turns: 20
+max_tokens: 300000
