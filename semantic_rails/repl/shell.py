@@ -253,7 +253,10 @@ def _list_objects(rest: str, ref: PackageReference) -> None:
     else:
         kind = "all"
     report = list_objects_report(
-        ref, resource_type=kind, search=" ".join(terms), limit=30 if limit is None else limit
+        ref,
+        resource_type=kind,
+        search=" ".join(terms),
+        limit=(0 if as_json else 30) if limit is None else limit,
     )
     if as_json:
         _print_json(report)

@@ -111,8 +111,7 @@ def add_developer_cli(sub: argparse._SubParsersAction, package_choices: list[str
     p_ls.add_argument(
         "--limit",
         type=int,
-        default=50,
-        help="Maximum objects to print in human output (default: 50).",
+        help="Maximum objects to list (default: 50; all with --json; 0 for all).",
     )
     p_ls.add_argument("--json", action="store_true", help="Print a JSON report.")
     p_ls.set_defaults(func=cmd_ls, human_cli=True)
@@ -360,7 +359,7 @@ def cmd_ls(args: argparse.Namespace) -> None:
         ref,
         resource_type=args.resource_type,
         search=args.search,
-        limit=args.limit,
+        limit=(0 if args.json else 50) if args.limit is None else args.limit,
     )
     if args.json:
         _print_json(report)

@@ -633,6 +633,8 @@ def test_dbt_style_debug_ls_and_ask_commands_are_human_readable() -> None:
     assert listed.returncode == 0, listed.stderr
     assert "metric.sales.cumulative_revenue" in listed.stdout
     assert "use --limit 0 or --json" in listed.stdout
+    every = _run_json("ls", "--package", "jaffle_shop", "--json")  # as that hint says
+    assert every["truncated"] is False and len(every["objects"]) == every["count"] > 50
 
     planned = _run_json("ask", "--package", "jaffle_shop", "monthly revenue by store", "--json")
     assert planned["ok"] is True, planned

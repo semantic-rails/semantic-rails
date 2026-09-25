@@ -527,6 +527,7 @@ def test_repl_commands_answer_a_new_user_in_a_line_terminal(tmp_path: Path) -> N
         "ls",
         "ls measure --limit 0",
         "ls --bogus",
+        "ls --json",
         "run revenue by store and by calendar month",
     ]
     out = _journey(COMMAND_JOURNEY, *lines, SEMANTIC_RAILS_HOME=str(tmp_path), TERM="dumb")
@@ -542,5 +543,6 @@ def test_repl_commands_answer_a_new_user_in_a_line_terminal(tmp_path: Path) -> N
     assert "Search" not in shown["ls measure --limit 0"]
     assert "..." not in shown["ls measure --limit 0"]
     assert "Usage: ls [kind] [search] [--limit N] [--json]" in shown["ls --bogus"]
+    assert '"truncated": false' in shown["ls --json"]  # as the hint says, --json lists all
     run = shown["run revenue by store and by calendar month"]
     assert "MIXED_GRAIN_INVALID" in run and "    Try: Group by time" in run
