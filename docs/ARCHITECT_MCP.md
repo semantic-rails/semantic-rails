@@ -248,6 +248,27 @@ On a regular model, `calendar_id` binds the model's times to an existing calenda
 Calendar checks run after receipt replay and the revision check, so a retried call replays and a
 stale one gets `CONFIG_CONFLICT`.
 
+## Removing Objects
+
+`remove_object` removes a `model`, `dimension`, `time`, `measure`, `metric`, `segment` or
+`relationship` in one parse-gated transaction and keeps what it removed in
+`.architect/archive/<id>/removed.yml`, which `undo` deletes again.
+
+- A relationship is a model's foreign-key reference to another entity (what `upsert_relationship`
+  writes): `key` is that entity, and a `graph.relationships` entry for the pair goes too. `model`
+  picks the model when several hold a dimension, time, measure or relationship with that key.
+- A model takes its dimensions, times and measures, its entity, other models' references to that
+  entity, and the `graph.relationships` entries naming it.
+- Every definition goes, including ones an override shadows, so none resurfaces. An emptied root
+  `metrics.yml` or `segments.yml` stays, so it keeps masking `package.yml`.
+
+The parse gate rolls back a removal that breaks the package, such as a dimension a segment filters
+on. It loads a metric whose measure or input metric is gone, which fails only when queried, so
+`remove_object` refuses a removal that leaves a metric naming a removed object and names those
+metrics. The report lists `removed`, and `impact` holds the `impact_project` summary of the change
+(`risk`, `impacted_metrics`, `changes`) plus `references`: authored files, such as examples and
+tests, that still name a removed id.
+
 ## Examples, Package Tests and Query Previews
 
 `upsert_example` writes an example question to `examples/<file_name>` (`core.yml` by default):
@@ -293,6 +314,7 @@ validation, it may build a missing seeded DuckDB database.
 - `upsert_test`
 - `preview_query`
 - `archive_project_file`
+- `remove_object`
 - `validate_project`
 - `diff_project`
 - `impact_project`

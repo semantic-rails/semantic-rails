@@ -11,10 +11,11 @@ and mapping key that supplied an existing object.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -44,6 +45,9 @@ from .architect_transactions import (
 from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
+from .expressions import expr_to_dict
+from .package_snapshot import load_package_snapshot
+from .package_tools import impact_report
 from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
@@ -55,6 +59,8 @@ _INVENTORY_KINDS = {
     "metric": "metrics",
     "segment": "segments",
 }
+# What remove_object removes: a relationship is a model's foreign-key entity reference.
+_REMOVABLE = ("model", "dimension", "time", "measure", "metric", "segment", "relationship")
 _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 
 
@@ -1523,6 +1529,313 @@ class ArchitectProject:
                 details={kind: name, "problems": problems},
             )
 
+    def remove_object(
+        self,
+        *,
+        kind: str,
+        key: str,
+        model: str = "",
+        reason: str = "",
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Remove a model, dimension, time, measure, metric, segment or relationship.
+
+        A relationship is a model's foreign-key reference, keyed by the entity
+        it names; ``model`` picks the model when several hold the key. Every
+        definition goes, shadowed ones too, and a model takes its entity and the
+        relationships naming it along. The YAML goes to ``.architect/archive/``.
+        Checks run after receipt replay and the revision check (see
+        :meth:`_removal_impact`).
+        """
+        singular, name = str(kind or "").strip().lower(), str(key or "").strip()
+        if singular not in _REMOVABLE or not name:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"kind must be one of {', '.join(_REMOVABLE)}, and key is required",
+                details={"kind": kind, "key": key},
+            )
+        expected, idempotency = self._mutation_identity(expected_revision, idempotency_key)
+        arguments = {"kind": singular, "key": name, "model": model, "reason": reason}
+        archive_id = hashlib.sha256(idempotency.encode("utf-8")).hexdigest()[:16]
+        archive = f".architect/archive/{archive_id}/removed.yml"
+        metadata: dict[str, Any] = {"operation": "removed", "kind": singular, "key": name}
+
+        def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
+            raw = self._raw_inventory()
+            documents: dict[Path, dict[str, Any] | None] = {}
+            removed: list[dict[str, Any]] = []
+            if singular in {"model", "metric", "segment"}:
+                self._drop_definitions(raw, singular, name, documents, removed)
+            else:
+                self._drop_model_field(raw, singular, name, model, documents, removed)
+            # Write only what changed, so the other files keep their layout.
+            updates = self._file_updates(
+                {path: doc for path, doc in documents.items() if doc != _yaml_load(path)}
+            )
+            metadata.update(
+                removed=[{k: v for k, v in row.items() if k != "spec"} for row in removed],
+                archived_to=archive,
+                impact=self._removal_impact(updates, removed, f"removing {singular} {name!r}"),
+            )
+            content = yaml.safe_dump({"reason": reason, "removed": removed}, sort_keys=False)
+            return [*updates, ProjectFileUpdate(archive, content.encode("utf-8"))], None
+
+        outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
+            (),
+            expected_revision=expected,
+            idempotency_key=idempotency,
+            intent={"operation": "remove_object", "expected_revision": expected, **arguments},
+            dry_run=dry_run,
+            validate_after=validate_after,
+            allow_internal_paths=True,
+            success_status="removed",
+            metadata=metadata,
+            prepare_updates=prepare,
+        )
+        return ArchitectMutation(
+            report=outcome.report,
+            project_path=self.project_path,
+            _snapshots=outcome.snapshots,
+            _active=bool(outcome.snapshots),
+        )
+
+    def _document(self, documents: dict[Path, dict[str, Any] | None], path: Path) -> dict[str, Any]:
+        """The staged document for ``path``, loaded on first use (never a deleted one)."""
+        if path not in documents:
+            documents.update(self._load_documents(path))
+        doc = documents[path]
+        assert doc is not None, path
+        return doc
+
+    def _row(self, kind: str, key: str, path: Path, spec: Any, **extra: Any) -> dict[str, Any]:
+        """One removed object, as the report and the archive list it."""
+        return dict(kind=kind, key=key, **extra, source_file=self._relative(path), spec=spec)
+
+    def _drop_definitions(
+        self,
+        raw: dict[str, list[_RawObject]],
+        singular: str,
+        name: str,
+        documents: dict[Path, dict[str, Any] | None],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        """Remove every definition of a model, metric or segment; a ``None`` document is deleted."""
+        plural = f"{singular}s"
+        found = self._find_raw(raw[plural], name)
+        if found is None:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"{singular} {name!r} is not in this package",
+                details={"kind": singular, "key": name},
+            )
+        # The inventory's sources. A root metrics.yml masks package.yml's block, and
+        # stays even when emptied, so that it keeps masking it.
+        root = self._target_path(f"{plural}.yml")
+        first = root if singular != "model" and root.exists() else self._target_path("package.yml")
+        for path in [first, *self._yaml_files(self._target_path(plural))]:
+            doc = self._document(documents, path)
+            if plural in doc or path == first:
+                rows = dict(doc.get(plural, {}) or {})
+                # A model is known by its id, else its key; a metric or segment by its key.
+                ids = {
+                    k: (singular == "model" and dict(v or {}).get("id")) or k
+                    for k, v in rows.items()
+                }
+                specs = [rows.pop(k) for k, defined in ids.items() if str(defined) == name]
+                if not specs:
+                    continue
+                last = not rows and path != first and len(doc) == 1
+                documents[path] = None if last else {**doc, plural: rows}
+            else:  # a file holding one object, known by its name, id or file name
+                spec = dict(doc.get(singular, doc) or {})
+                fields = ("id",) if singular == "model" else ("name", "id")
+                if next((str(spec[f]) for f in fields if spec.get(f)), path.stem) != name:
+                    continue
+                specs, documents[path] = [spec], None
+            shadowed = {} if path == found.source_path else {"shadowed": True}
+            removed.extend(
+                self._row(singular, name, path, spec, id=found.object_id, **shadowed)
+                for spec in specs
+            )
+        if singular == "model":
+            self._drop_model_entity(raw, found, documents, removed)
+
+    def _drop_model_entity(
+        self,
+        raw: dict[str, list[_RawObject]],
+        owner: _RawObject,
+        documents: dict[Path, dict[str, Any] | None],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        """List a removed model's fields; drop its entity and every relationship naming it."""
+        removed.extend(
+            self._row(row.kind, row.key, owner.source_path, None, id=row.object_id, model=owner.key)
+            for plural in ("dimensions", "times", "measures")
+            for row in raw[plural]
+            if row.model_key == owner.key
+        )
+        entity = self._find_raw(
+            raw["entities"], self._primary_entity_for_model(owner, raw["entities"])
+        )
+        if entity is None or str(entity.spec.get("model") or owner.key) != owner.key:
+            return  # a fact model, or a model without an entity of its own
+        graph_doc = self._document(documents, entity.source_path)
+        graph = dict(graph_doc.get("graph", {}) or {})
+        entities = dict(graph.get("entities", {}) or {})
+        spec = entities.pop(entity.key)
+        removed.append(
+            self._row("entity", entity.key, entity.source_path, spec, id=entity.object_id)
+        )
+        graph_doc["graph"] = {**graph, "entities": entities}
+        self._drop_graph_relationships(raw, entity.key, documents, removed)
+        for other in raw["models"]:
+            if other.key != owner.key and entity.key in dict(other.spec.get("entities", {}) or {}):
+                reference = self._pop_model_entry(other, "entities", entity.key, documents)
+                removed.append(
+                    self._row(
+                        "relationship", entity.key, other.source_path, reference, model=other.key
+                    )
+                )
+
+    def _drop_model_field(
+        self,
+        raw: dict[str, list[_RawObject]],
+        singular: str,
+        name: str,
+        model: str,
+        documents: dict[Path, dict[str, Any] | None],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        """Remove a dimension, time or measure, or a foreign-key reference, from its model."""
+        if singular == "relationship":
+            block = "entities"
+            ids = {
+                row.key: ""
+                for row in raw["models"]
+                if name in dict(row.spec.get(block, {}) or {})
+                and name != self._primary_entity_for_model(row, raw["entities"])
+            }
+        else:
+            block = _INVENTORY_KINDS[singular]
+            ids = {row.model_key: row.object_id for row in raw[block] if row.key == name}
+        owners = [row for row in raw["models"] if row.key in ids and model in {"", row.key}]
+        if len(owners) != 1:
+            raise SemanticLayerError(
+                "INVALID_CONFIG" if owners else "OBJECT_NOT_FOUND",
+                f"{singular} {name!r} is on several models; pass model"
+                if owners
+                else f"{singular} {name!r} is not on {f'model {model!r}' if model else 'any model'}",
+                details={"kind": singular, "key": name, "models": [row.key for row in owners]},
+            )
+        owner = owners[0]
+        entry = self._pop_model_entry(owner, block, name, documents)
+        removed.append(
+            self._row(singular, name, owner.source_path, entry, id=ids[owner.key], model=owner.key)
+        )
+        if singular == "relationship":
+            source = self._primary_entity_for_model(owner, raw["entities"])
+            self._drop_graph_relationships(raw, name, documents, removed, source=source)
+
+    def _pop_model_entry(
+        self,
+        model: _RawObject,
+        block: str,
+        key: str,
+        documents: dict[Path, dict[str, Any] | None],
+    ) -> Any:
+        """Remove ``key`` from one of ``model``'s blocks (dimensions, entities, ...)."""
+        doc = self._document(documents, model.source_path)
+        spec, wrapper = self._model_for_update(doc, model, model_slug=model.key)
+        entries = dict(spec.get(block, {}) or {})
+        entry = entries.pop(key)
+        if entries:
+            spec[block] = entries  # in place, so the file keeps its key order
+        else:
+            spec.pop(block)
+        self._store_model(doc, wrapper, model.key, spec)
+        return entry
+
+    def _drop_graph_relationships(
+        self,
+        raw: dict[str, list[_RawObject]],
+        entity: str,
+        documents: dict[Path, dict[str, Any] | None],
+        removed: list[dict[str, Any]],
+        *,
+        source: str = "",
+    ) -> None:
+        """Drop ``graph.relationships`` entries naming ``entity`` (with ``source``, if given)."""
+        if not raw["entities"]:
+            return
+        path = raw["entities"][0].source_path
+        graph_doc = self._document(documents, path)
+        graph = dict(graph_doc.get("graph", {}) or {})
+        relationships = dict(graph.get("relationships", {}) or {})
+        for entry_name, entry in list(relationships.items()):
+            pair = set(_as_list(dict(entry or {}).get("entities")))
+            if pair == {source, entity} if source else entity in pair:
+                removed.append(self._row("relationship", str(entry_name), path, entry))
+                del relationships[entry_name]
+        if relationships:
+            graph["relationships"] = relationships
+        else:
+            graph.pop("relationships", None)
+        graph_doc["graph"] = graph
+
+    def _removal_impact(
+        self, updates: list[ProjectFileUpdate], removed: list[dict[str, Any]], change: str
+    ) -> dict[str, Any]:
+        """Refuse a removal that leaves a metric naming what it removes; else its impact.
+
+        The parse gate loads such a metric, which fails only when queried.
+        Metrics name measures and metrics by id or key, dimensions and times by
+        id. The impact is ``impact_project``'s, plus files still naming an id.
+        """
+        ids = sorted({str(row["id"]) for row in removed if row.get("id")})
+        names = {*ids, *(str(r["key"]) for r in removed if r["kind"] in {"measure", "metric"})}
+        transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+        mention = re.compile(rf"(?<![\w.])({'|'.join(map(re.escape, ids))})(?![\w.])")
+        references = [
+            {"file": relative, "ids": sorted(set(found))}
+            for relative, content in sorted(transaction.proposed_files(updates).items())
+            if ids and (found := mention.findall(content.decode("utf-8", errors="replace")))
+        ]
+        with transaction.virtual_project(updates) as proposed:
+            try:
+                snapshot = load_package_snapshot(str(proposed))
+            except Exception:  # the transaction's parse gate reports it
+                return {"references": references}
+            quoted = [json.dumps(name) for name in names]  # whole JSON strings, not substrings
+            broken = sorted(
+                recipe.id
+                for recipe in snapshot.config.metric_recipes
+                if any(
+                    q in json.dumps([recipe.temporal_role, expr_to_dict(recipe.expression)])
+                    for q in quoted
+                )
+            )
+            if broken:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{change} leaves {', '.join(broken)} naming it; remove or change those first",
+                    details={"metrics": broken, "references": references},
+                )
+            try:
+                report = impact_report(
+                    PackageReference(source_path=str(proposed)),
+                    compare_path=str(self.project_path),
+                    snapshot=snapshot,
+                )
+            except Exception as exc:  # the current package does not load: nothing to compare
+                return {"references": references, "error": str(exc)}
+        changes = [
+            {k: row[k] for k in ("object_id", "kind", "change_type")} for row in report["changes"]
+        ]
+        return {**report["impact"], "changes": changes, "references": references}
+
     def write_file(
         self,
         *,
@@ -1718,9 +2031,14 @@ class ArchitectProject:
         )
         return mutation
 
-    def _file_updates(self, documents: dict[Path, dict[str, Any]]) -> list[ProjectFileUpdate]:
+    def _file_updates(
+        self, documents: Mapping[Path, dict[str, Any] | None]
+    ) -> list[ProjectFileUpdate]:
+        """File updates for staged ``documents``; a ``None`` document deletes its file."""
         return [
-            ProjectFileUpdate(
+            ProjectFileUpdate(self._relative(path), None)
+            if doc is None
+            else ProjectFileUpdate(
                 self._relative(path),
                 yaml.safe_dump(doc, sort_keys=False, allow_unicode=False).encode("utf-8"),
                 (path.stat().st_mode & 0o777) if path.exists() else None,

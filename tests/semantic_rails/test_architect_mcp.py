@@ -70,6 +70,7 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
     mutation_names = {
         "archive_project_file",
         "create_project",
+        "remove_object",
         "upsert_metric",
         "upsert_model",
         "upsert_relationship",
