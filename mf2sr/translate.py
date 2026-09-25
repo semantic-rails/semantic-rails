@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast as pyast
 import hashlib
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -164,6 +165,10 @@ def translate(
     source_metrics = {metric["name"]: metric for metric in raw["metrics"] if metric.get("name")}
 
     owning_models: set[str] = graph.get("_owning_models", set())
+    databases = Counter(
+        str((sm.get("node_relation") or {}).get("database") or "") for sm in raw["semantic_models"]
+    )
+    usual_database = databases.most_common(1)[0][0] if databases else ""
     models_dir = out_root / "models"
     models_dir.mkdir(exist_ok=True)
     for sm in raw["semantic_models"]:
@@ -179,7 +184,13 @@ def translate(
             graph,
             report,
             suppress_publish=metric_names,
-            relation=_relation(sm, warehouse=warehouse, keep_schema=schema_strict, report=report),
+            relation=_relation(
+                sm,
+                warehouse=warehouse,
+                keep_schema=schema_strict,
+                usual_database=usual_database,
+                report=report,
+            ),
         )
         (models_dir / f"{name}.yml").write_text(_dump_yaml({"model": model_doc}))
         report.models_emitted.append(name)
@@ -232,7 +243,7 @@ def translate(
         from semantic_rails.config_validation import PackageReference, parse_config_report
 
         parse, _ = parse_config_report(PackageReference(source_path=str(out_root)))
-        report.warnings.extend(f"strict parse: {e.get('message', '')}" for e in parse["errors"])
+        report.warnings.extend(f"parse: {e.get('message', '')}" for e in parse["errors"])
     report.provenance = {
         "format_version": 1,
         "framework": "metricflow",
@@ -245,15 +256,17 @@ def translate(
     return report
 
 
-# Warehouses whose dbt ``database`` is a catalog that a relation name leads with.
-_CATALOG_WAREHOUSES = frozenset({"bigquery", "databricks", "snowflake"})
-
-
 def _relation(
-    sm: dict[str, Any], *, warehouse: str, keep_schema: bool, report: TranslationReport
+    sm: dict[str, Any],
+    *,
+    warehouse: str,
+    keep_schema: bool,
+    usual_database: str,
+    report: TranslationReport,
 ) -> str:
     """The relation a semantic model reads: its ``node_relation`` alias, and in
-    strict mode also its schema (and a catalog warehouse's database)."""
+    strict mode also its schema and database, named as ``import_dbt_project``
+    names a dbt relation."""
     node = dict(sm.get("node_relation") or {})
     alias = str(node.get("alias") or sm["name"])
     if not keep_schema:
@@ -264,8 +277,15 @@ def _relation(
             "translate dbt's target/semantic_manifest.json to keep schemas"
         )
         return alias
-    database = str(node.get("database") or "") if warehouse in _CATALOG_WAREHOUSES else ""
-    return ".".join(part for part in (database, str(node["schema_name"]), alias) if part)
+    from semantic_rails.dbt_artifacts import qualified_relation
+
+    return qualified_relation(
+        str(node.get("database") or ""),
+        str(node["schema_name"]),
+        alias,
+        default_database=usual_database,
+        default_schema="main" if warehouse == "duckdb" else "",  # as dbt-duckdb builds it
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1554,10 +1574,11 @@ def _write_package_yml(
         # DuckDB packages require a seed block. We emit a placeholder
         # `sql_script` seed pointing to a file the author will create.
         # Without this the loader rejects the package outright.
-        pkg["seed"] = {
-            "kind": "sql_script",
-            "source": f"data/seed_{package_id}.sql",
-        }
+        pkg["seed"] = (
+            {"kind": "external"}  # a strict package reads the database dbt built
+            if schema_strict
+            else {"kind": "sql_script", "source": f"data/seed_{package_id}.sql"}
+        )
     elif warehouse == "snowflake":
         # Snowflake packages need a connection block. We emit the
         # env-var-indirection shape so the YAML is safe to commit; the

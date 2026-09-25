@@ -42,7 +42,7 @@ files from authored files; choose a fresh output path for each translation.
 | MetricFlow concept | Semantic Rails analogue |
 |---|---|
 | `semantic_model` | `model:` block in `models/<name>.yml` |
-| `node_relation.alias` | `model.relation` |
+| `node_relation` | `model.relation`: the alias, or with `--schema-strict` the schema-qualified name |
 | `entities[*].type: primary/unique` | Graph entity in `graph.yml` with `key:` and `model:` |
 | `entities[*].type: foreign` | FK entry in `model.entities` (if the entity has an owner) |
 | `primary_entity:` (no explicit primary) | Synthetic primary with key `<name>_id` |
@@ -95,18 +95,21 @@ is the bare dbt alias (`fct_orders`), so a project that needs review still loads
 `semantic-rails import --from metricflow`) writes a `schema_strict: true`
 package over the tables dbt built:
 
-- Each relation keeps the schema from its `node_relation`
-  (`main_marts.fct_orders`), and on Snowflake, BigQuery and Databricks also the
-  database. dbt's `target/semantic_manifest.json` records them; a MetricFlow YAML
-  directory (`model: ref('fct_orders')`) doesn't, so its relations stay bare, with
-  a warning.
-- The output is parse-checked. Each strict error is a `strict parse:` warning,
-  so `--strict` fails the run.
+- Each relation keeps the schema from its `node_relation` (`main_marts.fct_orders`),
+  named the way `import_dbt_project` names dbt relations: the database leads only
+  when it differs from the one most models use, and dbt-duckdb's default `main`
+  schema is left out. dbt's `target/semantic_manifest.json` records these for the
+  target it was built with, so generate it for the target the package will read
+  (for example `dbt parse --target prod`). A MetricFlow YAML directory
+  (`model: ref('fct_orders')`) records none, so its relations stay bare, with a
+  warning.
+- A DuckDB package gets `seed: {kind: external}`: it reads the database dbt builds,
+  which it never rebuilds. Point `--default-db` at that file, inside the package.
+- The output is parse-checked, and each error is a `parse:` warning, so `--strict`
+  fails the run. mf2sr writes a `connection` block for DuckDB and Snowflake only;
+  add one for another warehouse before the package parses.
 
-For a DuckDB warehouse, point `--default-db` at the database file dbt builds,
-inside the package.
-
-DuckDB packages emit a placeholder `seed.source` pointing at
+Without `--schema-strict`, DuckDB packages emit a placeholder `seed.source` pointing at
 `data/seed_<package_id>.sql` that the author must create. Snowflake
 packages emit a `connection.kind: snowflake_native` block reading
 credentials from environment variables.

@@ -48,16 +48,19 @@ def _model(report: Any) -> dict[str, Any]:
     return yaml.safe_load((report.package_dir / "models" / "orders.yml").read_text())["model"]
 
 
+NO_SCHEMA = ["semantic model `orders` names no schema"]
+NO_CONNECTION = ["parse: ", "package.connection"]  # mf2sr writes one for Snowflake only
+
+
 @pytest.mark.parametrize(
-    ("warehouse", "node_relation", "strict", "relation", "warned"),
+    ("warehouse", "node_relation", "strict", "relation", "warnings"),
     [
-        ("duckdb", NODE, False, "fct_orders", False),  # unchanged without the flag
-        ("duckdb", NODE, True, "main_marts.fct_orders", False),  # a DuckDB database is its file
-        ("snowflake", NODE, True, "analytics.main_marts.fct_orders", False),
-        ("bigquery", NODE, True, "analytics.main_marts.fct_orders", False),
-        ("databricks", NODE, True, "analytics.main_marts.fct_orders", False),
-        ("postgres", NODE, True, "main_marts.fct_orders", False),
-        ("duckdb", {"alias": "fct_orders"}, True, "fct_orders", True),  # YAML input: no schema
+        ("duckdb", NODE, False, "fct_orders", []),  # unchanged without the flag
+        ("duckdb", NODE, True, "main_marts.fct_orders", []),
+        ("duckdb", {**NODE, "schema_name": "main"}, True, "fct_orders", []),  # dbt-duckdb's default
+        ("snowflake", NODE, True, "main_marts.fct_orders", []),  # the usual database is implied
+        ("postgres", NODE, True, "main_marts.fct_orders", [NO_CONNECTION, NO_CONNECTION]),
+        ("duckdb", {"alias": "fct_orders"}, True, "fct_orders", [NO_SCHEMA]),  # a YAML directory
     ],
 )
 def test_relations_keep_their_schema(
@@ -66,7 +69,7 @@ def test_relations_keep_their_schema(
     node_relation: dict[str, Any],
     strict: bool,
     relation: str,
-    warned: bool,
+    warnings: list[list[str]],
 ) -> None:
     report = translate(
         _manifest(tmp_path, node_relation),
@@ -79,7 +82,35 @@ def test_relations_keep_their_schema(
     assert _model(report)["relation"] == relation
     package = yaml.safe_load((report.package_dir / "package.yml").read_text())["package"]
     assert package["schema_strict"] is strict
-    assert any("names no schema" in warning for warning in report.warnings) is warned
+    assert len(report.warnings) == len(warnings), report.warnings
+    for warning, parts in zip(report.warnings, warnings, strict=True):
+        assert all(part in warning for part in parts), warning
+
+
+def test_a_relation_outside_the_usual_database_names_it(tmp_path: Path) -> None:
+    """As import_dbt_project names dbt relations: the database only when it differs."""
+    manifest = json.loads(_manifest(tmp_path, NODE).read_text())
+    manifest["semantic_models"].append(
+        {
+            "name": "customers",
+            "node_relation": {"database": "raw", "schema_name": "crm", "alias": "dim_customers"},
+            "entities": [{"name": "customer", "type": "primary", "expr": "customer_id"}],
+        }
+    )
+    source = tmp_path / "two.json"
+    source.write_text(json.dumps(manifest))
+
+    report = translate(
+        source, tmp_path / "out", package_id="shop", warehouse="snowflake", schema_strict=True
+    )
+
+    relations = {
+        name: yaml.safe_load((report.package_dir / "models" / f"{name}.yml").read_text())["model"][
+            "relation"
+        ]
+        for name in ("orders", "customers")
+    }
+    assert relations == {"orders": "main_marts.fct_orders", "customers": "raw.crm.dim_customers"}
 
 
 def test_a_strict_package_queries_the_dbt_built_marts(tmp_path: Path) -> None:
@@ -92,7 +123,9 @@ def test_a_strict_package_queries_the_dbt_built_marts(tmp_path: Path) -> None:
     )
     build_dbt_warehouse(report.package_dir / "data" / "warehouse.duckdb")
 
-    assert report.warnings == []  # including no strict parse errors
+    assert report.warnings == []  # including no parse errors
+    package = yaml.safe_load((report.package_dir / "package.yml").read_text())["package"]
+    assert package["seed"] == {"kind": "external"}  # dbt built it; never rebuilt
     engine = Runtime.from_path(str(report.package_dir))
     try:
         rows = engine.query(
@@ -118,7 +151,7 @@ def test_strict_parse_errors_are_warnings_that_fail_strict_runs(
 
     assert cli_main([*arguments, "--output", str(tmp_path / "loose")]) == 0
     assert cli_main([*arguments, "--output", str(tmp_path / "strict"), "--strict"]) == 2
-    assert "strict parse: a strict problem" in capsys.readouterr().out
+    assert "parse: a strict problem" in capsys.readouterr().out
 
 
 def test_semantic_rails_import_takes_schema_strict(tmp_path: Path) -> None:

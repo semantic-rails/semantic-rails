@@ -183,6 +183,19 @@ def load_dbt_artifacts(
     )
 
 
+def qualified_relation(
+    database: str, schema: str, alias: str, *, default_database: str, default_schema: str
+) -> str:
+    """How a package names a dbt-built relation: ``schema.alias``, led by the database only
+    when it isn't the project's usual one, and bare in the adapter's default schema."""
+    parts = [part for part in (schema, alias) if part]
+    if database and database != default_database:
+        parts.insert(0, database)
+    elif schema == default_schema:
+        parts = [alias]
+    return ".".join(parts)
+
+
 def _relation(
     unique_id: str,
     entry: dict[str, Any],
@@ -194,11 +207,6 @@ def _relation(
     database = str(entry.get("database") or "")
     schema = str(entry.get("schema") or "")
     alias = str(entry.get("alias") or entry.get("identifier") or entry.get("name") or "")
-    parts = [part for part in (schema, alias) if part]
-    if database and database != default_database:
-        parts.insert(0, database)
-    elif schema == default_schema:
-        parts = [alias]
     columns: dict[str, DbtColumn] = {}
     catalog_columns = {
         str(name).lower(): dict(spec or {})
@@ -253,7 +261,13 @@ def _relation(
         unique_id=unique_id,
         resource_type=resource_type,
         name=str(entry.get("name") or alias),
-        relation=".".join(parts),
+        relation=qualified_relation(
+            database,
+            schema,
+            alias,
+            default_database=default_database,
+            default_schema=default_schema,
+        ),
         database=database,
         schema=schema,
         alias=alias,
