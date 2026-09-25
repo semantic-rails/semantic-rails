@@ -388,10 +388,28 @@ def _dimension_for_value(config: Any, value: str, *, terms: Iterable[str] = ()) 
     return _dimension(config, [*terms, "product"])
 
 
-def _explicit_grain(text: str) -> str:
-    """Return the grain the intent explicitly cues ("" when absent)."""
+def _explicit_grain(text: str, clock: str = "") -> str:
+    """Return the grain the intent explicitly cues ("" when absent).
+
+    With ``clock``, the label of the query's temporal role, a grouping that names that clock
+    ("by order month", "by order date") takes its own unit, else a cadence the question
+    names ("monthly", "per week", "at week grain"), else days. A unit that only a window
+    names ("for the first quarter of 2017", "last month") doesn't set it.
+    """
     lowered = str(text or "").lower()
     terms = _runtime_composition_terms(text)
+    for term in _requested_grouping_terms(text) if clock else ():
+        if _names_time_axis(term, clock):
+            tokens = set(_tokens(term))
+            cues = ("by {}", "per {}", "each {}", "{} grain", "{}ly")
+            own = [unit for unit in _TIME_UNITS if unit in tokens]
+            cadence = [
+                unit
+                for unit in _TIME_UNITS
+                if any(cue.format(unit) in lowered for cue in cues)
+                or (unit == "day" and "daily" in lowered)
+            ]
+            return (own or cadence or ["day"])[0]
     for candidate in _TIME_UNITS:
         if (
             f"by {candidate}" in lowered
@@ -429,9 +447,9 @@ def _single_bucket_grain(bounds: dict[str, Any]) -> str:
     return "year"
 
 
-def _time_spec(role: str, text: str) -> dict[str, Any]:
+def _time_spec(role: str, text: str, clock: str = "") -> dict[str, Any]:
     lowered = str(text or "").lower()
-    grain = _explicit_grain(text)
+    grain = _explicit_grain(text, clock)
     window = _time_window(text)
     if not grain and window.relative_unit:
         # A relative window ("last 7 days", "yesterday") buckets at its own
@@ -1035,7 +1053,29 @@ def _requested_grouping_terms(text: str) -> list[str]:
         raw_terms = by_match.group(1).strip() if by_match else ""
     if not raw_terms:
         return []
-    return [term.strip() for term in re.split(r"\s*(?:,| and | & )\s*", raw_terms) if term.strip()]
+    parts = re.split(r"\s*(?:,| and | & | by )\s*", raw_terms)
+    return [term.strip() for term in parts if term.strip()]
+
+
+# Words that make a grouping term name a clock ("order date", "order month at month grain").
+_TIME_AXIS_WORDS = frozenset({"date", "dates", *_TIME_UNITS})
+_GRAIN_WORDS = frozenset({"at", "grain", "level"})
+
+
+def _names_time_axis(term: str, clock: str) -> bool:
+    """Whether a grouping term names the query's own clock, by its label: "order date" for
+    "Order time".
+
+    The query's ``time`` block already groups by that clock, at the intent's grain. Resolving
+    the term to a dimension instead would group by some other timestamp ("Customer first
+    order at"). A term that names another clock ("customer first order date") is not this one.
+    """
+
+    tokens = set(_tokens(term))
+    content = tokens - _TIME_AXIS_WORDS - _GRAIN_WORDS
+    if not clock or not content or not tokens & _TIME_AXIS_WORDS:
+        return False
+    return content <= set(_tokens(clock))
 
 
 def _is_temporal_grouping_term(term: str) -> bool:
@@ -1067,7 +1107,9 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     return False
 
 
-def _maybe_group_by(config: Any, text: str, *, target_terms: Iterable[str] = ()) -> list[str]:
+def _maybe_group_by(
+    config: Any, text: str, *, target_terms: Iterable[str] = (), clock: str = ""
+) -> list[str]:
     lowered = str(text or "").lower()
     terms = _runtime_composition_terms(text)
     target_set = {term for term in target_terms if term}
@@ -1089,6 +1131,7 @@ def _maybe_group_by(config: Any, text: str, *, target_terms: Iterable[str] = ())
         if (
             term_tokens & {"store", "geo"}
             or _is_temporal_grouping_term(term)
+            or _names_time_axis(term, clock)
             or _term_matches_value_domain(config, term)
         ):
             continue

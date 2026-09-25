@@ -1752,7 +1752,12 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
         by_initial.setdefault(known[:1], []).append(known)
     skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
     text = str(question or "")
-    time_spans = _time_window(text).spans
+    # "At month grain" is accounted for when the draft's time block has that grain.
+    grain = str((query.get("time") or {}).get("grain") or "")
+    grain_spans = (
+        [m.span() for m in re.finditer(rf"\b{grain} grain\b", text.lower())] if grain else []
+    )
+    time_spans = [*_time_window(text).spans, *grain_spans]
     seen: set[str] = set()
     out: list[str] = []
     for match in re.finditer(r"[^\W_]+", text.lower()):
