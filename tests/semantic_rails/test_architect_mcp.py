@@ -101,6 +101,33 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
         assert tool.annotations.openWorldHint is False
 
 
+def _titles(schema) -> list[str]:
+    """Every ``title`` annotation in a JSON schema (not a property named title)."""
+    if isinstance(schema, list):
+        return [title for item in schema for title in _titles(item)]
+    if not isinstance(schema, dict):
+        return []
+    own = [schema["title"]] if isinstance(schema.get("title"), str) else []
+    return own + [
+        title for key, value in schema.items() if key != "title" for title in _titles(value)
+    ]
+
+
+def test_tool_list_follows_the_description_rules(tmp_path: Path):
+    """docs/MCP_INTERFACE.md's rules: the workflow once, annotated tools, no repeated titles."""
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    tools = _list_tools(server)
+
+    assert len(server.instructions or "") < 2048
+    assert all(name in (server.instructions or "") for name in ("dry_run", "expected_revision"))
+    for tool in tools:
+        assert tool.annotations is not None and tool.annotations.title, tool.name
+        assert _titles([tool.inputSchema, tool.outputSchema]) == [], tool.name
+        assert "Preview or atomically" not in (tool.description or ""), tool.name
+    warehouse = {tool.name for tool in tools if tool.annotations.openWorldHint}
+    assert {"project_status", "validate_project", "promotion_check", "preview_query"} <= warehouse
+
+
 def test_setup_project_dialog_returns_noninteractive_draft(tmp_path: Path):
     server = create_architect_mcp_server(workspace_root=tmp_path)
 

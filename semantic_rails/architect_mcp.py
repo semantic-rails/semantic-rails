@@ -19,6 +19,7 @@ from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import Tool as MCPTool
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.applications import Starlette
@@ -167,6 +168,19 @@ def _mutation_annotations(title: str) -> ToolAnnotations:
         idempotentHint=True,
         openWorldHint=False,
     )
+
+
+def _without_titles(schema: Any) -> Any:
+    """``schema`` without ``title`` annotations; a property named title, and values, stay."""
+    if isinstance(schema, list):
+        return [_without_titles(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    return {
+        key: value if key in {"default", "const", "enum", "examples"} else _without_titles(value)
+        for key, value in schema.items()
+        if not (key == "title" and isinstance(value, str))
+    }
 
 
 def _slug(value: str, *, fallback: str = "semantic_project") -> str:
@@ -692,6 +706,22 @@ class ArchitectMCPServer(FastMCP[Any]):
 
     bearer_token: str = ""
 
+    async def list_tools(self) -> list[MCPTool]:
+        """The tools, without the title pydantic gives each schema and property.
+
+        Titles such as ``"Project Path"`` only repeat the name, and were a
+        fifth of the tool list.
+        """
+        return [
+            tool.model_copy(
+                update={
+                    "inputSchema": _without_titles(tool.inputSchema),
+                    "outputSchema": _without_titles(tool.outputSchema),
+                }
+            )
+            for tool in await super().list_tools()
+        ]
+
     def sse_app(self, mount_path: str | None = None) -> Starlette:
         return self._gated(super().sse_app(mount_path))
 
@@ -727,10 +757,20 @@ def create_architect_mcp_server(
     mcp = ArchitectMCPServer(
         name="Semantic Rails Architect MCP",
         instructions=(
-            "Use architect_guidance and project_status before editing. Prefer setup_project_dialog "
-            "for new packages, then create_project, upsert_model, validate_project, and impact_project. "
-            "All writes are scoped to the configured workspace root and this server does not manage "
-            "cloud service processes."
+            "Semantic Rails Architect writes a package's YAML inside the workspace root. A new "
+            "package starts with setup_project_dialog, then create_project (expected_revision: "
+            "absent).\n"
+            "Order: project_status (note its revision); explore a DuckDB warehouse (list_tables, "
+            "describe_table, profile_columns, suggest_model) or a dbt target "
+            "(suggest_models_from_dbt); write (upsert_model, upsert_relationship, upsert_metric, "
+            "upsert_segment, upsert_example, upsert_test, import_dbt_project, remove_object); "
+            "check (validate_project mode=parse after each change, mode=runtime before trusting "
+            "answers; preview_query); review (diff_project, impact_project).\n"
+            "Every write previews with dry_run: true and takes expected_revision (from "
+            "project_status or the last write) and a new idempotency_key per change; a retry "
+            "with the same key replays. A write the package can't parse is rolled back, and a "
+            "stale revision returns CONFIG_CONFLICT. Prefer the typed tools over "
+            "write_project_file. This server doesn't manage cloud services."
         ),
         host=host,
         port=port,
@@ -748,12 +788,12 @@ def create_architect_mcp_server(
             "commands/tools, and identify behavior risks before applying edits."
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=_read_only_annotations("Architect guidance"))
     def architect_guidance(goal: str = "", project_path: str = "") -> dict[str, Any]:
         """Return the recommended Architect MCP workflow and safety guidance."""
         return _guidance_payload(goal=goal, project_path=project_path)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_read_only_annotations("New project dialog"))
     async def setup_project_dialog(
         ctx: Context,
         package_id: str = "",
@@ -807,7 +847,7 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_mutation_annotations("Create Semantic Rails project"),
         description=(
-            "Preview or atomically create a strict schema_version: 1 project. DuckDB packages "
+            "Create a strict schema_version: 1 project. DuckDB packages "
             "use a two-row starter CSV (data=starter) or read a database another tool builds, "
             "such as dbt (data=external); other warehouses need connection_kind, with secrets "
             "named by environment variable only."
@@ -880,9 +920,16 @@ def create_architect_mcp_server(
                 dry_run=dry_run,
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=_read_only_annotations("Project status", open_world=True),
+        description=(
+            "Return the package's revision (pass it as expected_revision), files and parse "
+            "report. Use first, and again when the package may have changed. Gotcha: "
+            "include_runtime_checks also runs runtime validation, examples and tests, which query "
+            "the warehouse."
+        ),
+    )
     def project_status(project_path: str, include_runtime_checks: bool = False) -> dict[str, Any]:
-        """Inspect package files and optionally run runtime validation, examples, and package tests."""
         try:
             project = _resolve_project_path(project_path, workspace_root=root)
             parse = _parse_report(project)
@@ -913,7 +960,7 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_read_only_annotations("List project files"))
     def list_project_files(project_path: str) -> dict[str, Any]:
         """List files inside a Semantic Rails project directory."""
         try:
@@ -927,7 +974,7 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_read_only_annotations("Read project file"))
     def read_project_file(project_path: str, relative_path: str) -> dict[str, Any]:
         """Read a UTF-8 project file by relative path."""
         try:
@@ -953,7 +1000,7 @@ def create_architect_mcp_server(
         overwrite: bool = True,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically write a UTF-8 file, rolling back parse failures."""
+        """Write one UTF-8 package file. Gotcha: overwrite: false refuses an existing file."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -980,7 +1027,7 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_mutation_annotations("Upsert semantic model"),
         description=(
-            "Preview or atomically upsert a model and aligned graph entity. calendar: true makes "
+            "Upsert a model and its graph entity. calendar: true makes "
             'it the package calendar for calendar_id (default "default", which a package with '
             "calendars needs): time.fill reads its date_day time and week_start, month_start, "
             "quarter_start and year_start kind: date dimensions. calendar: false reverts that. "
@@ -1046,7 +1093,7 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_mutation_annotations("Upsert relationship"),
         description=(
-            "Preview or atomically relate two entities: columns on from_entity's model hold "
+            "Relate two entities: columns on from_entity's model hold "
             "to_entity's key, in key order. cardinality: many_to_one or one_to_one."
         ),
     )
@@ -1084,7 +1131,15 @@ def create_architect_mcp_server(
                 dry_run=dry_run,
             )
 
-    @mcp.tool(annotations=_mutation_annotations("Upsert metric"))
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert metric"),
+        description=(
+            "Upsert a metric from spec (kind, measure or inputs, value_type, label, description). "
+            "A new metric goes in metrics/<file_name>, or metrics/<group>/<metric_key>.yml; an "
+            "existing one stays in its file. Fields merge; replace: true rewrites it, keeping its "
+            "id. Gotcha: strict packages need an explicit value_type."
+        ),
+    )
     def upsert_metric(
         project_path: str,
         metric_key: str,
@@ -1096,7 +1151,6 @@ def create_architect_mcp_server(
         replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a metric; replace: true rewrites it, keeping its id."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1122,7 +1176,14 @@ def create_architect_mcp_server(
                 dry_run=dry_run,
             )
 
-    @mcp.tool(annotations=_mutation_annotations("Upsert segment"))
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert segment"),
+        description=(
+            "Upsert a segment in segments/<file_name>: entity, basis_metric, label, membership. "
+            "Fields merge; replace: true rewrites it, keeping its id. Gotcha: membership needs "
+            "where, metric_filters or a time window, and fields outside membership: are refused."
+        ),
+    )
     def upsert_segment(
         project_path: str,
         segment_key: str,
@@ -1133,7 +1194,6 @@ def create_architect_mcp_server(
         replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a segment; replace: true rewrites it, keeping its id."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1174,7 +1234,7 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_mutation_annotations("Upsert example"),
         description=(
-            "Preview or atomically upsert an example question in examples/<file_name>: spec "
+            "Upsert an example question in examples/<file_name>: spec "
             "has query, and optionally question and expected_shape (columns, min_rows, "
             "max_rows). The query must validate. spec merges into an existing example."
         ),
@@ -1202,7 +1262,7 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_mutation_annotations("Upsert package test"),
         description=(
-            "Preview or atomically upsert a package test in tests/<file_name>. spec.kind is "
+            "Upsert a package test in tests/<file_name>. spec.kind is "
             "query_returns_columns (query, columns), query_row_count_bounds (query, min_rows "
             "and/or max_rows), query_matches_snapshot (query, expected_rows), "
             "validate_fails_with_code (query, code), explain_contains (query, text) or "
@@ -1258,7 +1318,7 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_mutation_annotations("Remove object"),
         description=(
-            "Preview or atomically remove a model, dimension, time, measure, metric, segment or "
+            "Remove a model, dimension, time, measure, metric, segment or "
             "relationship (a model's foreign key, keyed by its entity), archiving its YAML. model "
             "picks the model when several hold the key. A model takes its entity and relationships "
             "along. Refused if a metric would still name it; impact lists the behavior changes "
@@ -1308,7 +1368,7 @@ def create_architect_mcp_server(
         reason: str = "",
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically move a file into the internal archive."""
+        """Move one package file into .architect/archive/; remove_object removes one object."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1545,7 +1605,15 @@ def create_architect_mcp_server(
                 dry_run=dry_run,
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=_read_only_annotations("Validate project", open_world=True),
+        description=(
+            "Validate the package: mode parse, runtime, examples, tests, impact or release. Use "
+            "parse after each change and runtime (compiles and queries every measure and metric) "
+            "before trusting answers. Gotcha: runtime, examples, tests and release query the "
+            "warehouse and may build a seeded DuckDB file; impact needs compare_path or base_ref."
+        ),
+    )
     def validate_project(
         project_path: str,
         mode: str = "parse",
@@ -1553,7 +1621,6 @@ def create_architect_mcp_server(
         compare_path: str = "",
         base_ref: str = "",
     ) -> dict[str, Any]:
-        """Run parse, runtime, examples, tests, impact, or release validation for a project path."""
         try:
             project = _resolve_project_path(project_path, workspace_root=root)
             ref = _package_ref(project)
@@ -1589,7 +1656,7 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_read_only_annotations("Diff project"))
     def diff_project(
         project_path: str, compare_path: str = "", base_ref: str = ""
     ) -> dict[str, Any]:
@@ -1604,7 +1671,7 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_read_only_annotations("Impact of a change"))
     def impact_project(
         project_path: str, compare_path: str = "", base_ref: str = ""
     ) -> dict[str, Any]:
@@ -1619,11 +1686,17 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=_read_only_annotations("Promotion check", open_world=True),
+        description=(
+            "Return whether the package is ready for an environment: parse, runtime, examples, "
+            "tests. Pass compare_path or base_ref to include impact. Gotcha: it queries the "
+            "warehouse."
+        ),
+    )
     def promotion_check(
         project_path: str, environment: str, compare_path: str = "", base_ref: str = ""
     ) -> dict[str, Any]:
-        """Run promotion readiness checks for a target package environment."""
         try:
             project = _resolve_project_path(project_path, workspace_root=root)
             return promote_package_report(
@@ -1635,7 +1708,7 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(annotations=_read_only_annotations("Client configuration"))
     def mcp_client_config(
         transport: str = "stdio", host: str = "127.0.0.1", port: int = DEFAULT_ARCHITECT_PORT
     ) -> dict[str, Any]:

@@ -328,6 +328,13 @@ It doesn't check that metrics still find their measures: after dropping a measur
 
 ## Tool Surface
 
+The server's `instructions` hold the workflow and the write contract (`dry_run`,
+`expected_revision`, idempotency keys, rollback) once. Tool descriptions follow the rules in
+[MCP_INTERFACE.md](MCP_INTERFACE.md#writing-tool-descriptions), and every tool carries a title and
+hints: `openWorldHint` marks the ones that can query the warehouse. The listed schemas leave out
+pydantic's per-property titles, which only repeated the names. `scripts/mcp_context.py` tracks the
+tool list's size.
+
 - `architect_guidance`
 - `setup_project_dialog`
 - `create_project`
