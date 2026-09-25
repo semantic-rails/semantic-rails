@@ -376,7 +376,7 @@ def _measure_change(
     ref: PackageReference,
     before_warnings: set[str],
     *,
-    on_commit: Callable[[ArchitectMutation], None] | None = None,
+    on_commit: Callable[[ArchitectMutation, str], None] | None = None,
 ) -> tuple[ArchitectMutation, str, str]:
     """Run the measure wizard; returns the change, the measure key and its model."""
 
@@ -488,22 +488,28 @@ def _author_metric(
     before_warnings: set[str],
 ) -> Undoable:
     committed: list[ArchitectMutation] = []
+    kept: list[str] = []
+
+    def commit(part: ArchitectMutation, name: str) -> None:
+        committed.append(part)
+        kept.append(name)
+
     try:
-        _metric_change(project, inventory, ref, before_warnings, committed)
-    except BaseException:
+        _metric_change(project, inventory, ref, before_warnings, commit)
+    except BaseException as stopped:
         # Cancellation restores every committed part before the caller reports
-        # "no files changed". A later external edit is a conflict, not a
-        # successful cancellation, and must remain untouched.
-        if committed:
-            rollback = ArchitectMutation.undo_together(committed)
-            if not rollback.get("ok"):
-                raise SemanticLayerError(
-                    "CONFIG_CONFLICT",
-                    "Metric authoring stopped, but a committed file changed afterward and "
-                    "could not be restored. Review the named file before retrying.",
-                    details={"conflicting_files": rollback.get("conflicting_files", [])},
-                ) from None
-        raise
+        # "no files changed". A file edited since is a conflict: nothing is
+        # restored, and the parts stay on the undo stack like any other change.
+        rollback = ArchitectMutation.undo_together(committed) if committed else {}
+        if rollback.get("status") != "undo_conflict":
+            raise
+        if str(stopped):
+            print(f"[error] {stopped}")
+        print("[error] Authoring stopped, but nothing was restored: a file changed afterward.")
+        for relative_path in rollback.get("conflicting_files", []) or []:
+            print(f"  conflict {project.project_path / relative_path}")
+        print(f"  kept    {', '.join(kept)}")
+        print("  undo    Type `undo` to restore them once the conflicting file is resolved.")
     return _Mutations(committed) if len(committed) > 1 else committed[0]
 
 
@@ -512,11 +518,11 @@ def _metric_change(
     inventory: dict[str, Any],
     ref: PackageReference,
     before_warnings: set[str],
-    committed: list[ArchitectMutation],
+    on_commit: Callable[[ArchitectMutation, str], None],
 ) -> ArchitectMutation:
     def new_measure() -> dict[str, Any]:
         mutation, key, model = _measure_change(
-            project, inventory, ref, before_warnings, on_commit=committed.append
+            project, inventory, ref, before_warnings, on_commit=on_commit
         )
         before_warnings.update(_authoring_warning_messages(mutation.report.get("parse", {})))
         inventory.clear()
@@ -662,6 +668,13 @@ def _metric_change(
             default_key=denominator_default,
             create=create_measure,
         )
+        # A measure created or managed at this step can be the numerator again.
+        if str(denominator.get("id") or denominator.get("key", "")) == str(
+            numerator.get("id") or numerator.get("key", "")
+        ):
+            raise SemanticLayerError(
+                "INVALID_CONFIG", "A ratio needs two distinct measures or metrics."
+            )
         spec.update(
             {
                 "numerator": str(numerator.get("id") or numerator.get("key", "")),
@@ -695,7 +708,7 @@ def _metric_change(
         preview={"metrics": {key: spec}},
         apply=lambda: project.upsert_metric(metric_key=key, spec=spec, group="core", replace=True),
         next_action=f"Try `ask {example}`.",
-        on_commit=committed.append,
+        on_commit=on_commit,
     )
 
 
@@ -852,7 +865,7 @@ def _apply_authoring_change(
     preview: dict[str, Any],
     apply: Any,
     next_action: str,
-    on_commit: Callable[[ArchitectMutation], None] | None = None,
+    on_commit: Callable[[ArchitectMutation, str], None] | None = None,
 ) -> ArchitectMutation:
     operation = "update" if existing else "create"
     print()
@@ -895,7 +908,7 @@ def _apply_authoring_change(
     # Record a successful commit before any output can be interrupted. The
     # metric wizard then restores every committed part on cancellation.
     if on_commit is not None:
-        on_commit(mutation)
+        on_commit(mutation, f"{kind} `{key}`")
 
     after_warnings = set(_authoring_warning_messages(report.get("parse", {})))
     new_warnings = sorted(after_warnings - before_warnings)

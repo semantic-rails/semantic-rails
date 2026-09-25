@@ -166,17 +166,21 @@ def test_cancelling_the_metric_takes_back_its_inline_measure_unless_edited_since
 
     script = _EditThenCancel({**NEW_TAX_MEASURE, "Create this metric?": False})
     undo: list[Any] = []
+    _repl(project, "author metric", script, undo)
+
+    output = capsys.readouterr().out
+    assert not (project / TAX_METRIC).exists()
     if edit_before_cancel:
-        with pytest.raises(SemanticLayerError, match="could not be restored"):
-            _repl(project, "author metric", script, undo)
-        assert "no files changed" not in capsys.readouterr().out
-        assert (project / EVENTS).read_text("utf-8").endswith("# edit\n")
-        assert not (project / TAX_METRIC).exists()
+        # Nothing is restored, the kept measure is named, and `undo` can still reach it.
+        assert "no files changed" not in output
+        assert f"conflict {project / EVENTS}" in output and "kept    measure `tax`" in output
+        assert len(undo) == 1
+        edited = (project / EVENTS).read_bytes()
+        (project / EVENTS).write_bytes(edited.removesuffix(b"# edit\n"))
+        _repl(project, "undo", None, undo)
     else:
-        _repl(project, "author metric", script, undo)
-        assert "Authoring cancelled; no files changed." in capsys.readouterr().out
-        assert _authored(project) == before
-    assert undo == []
+        assert "Authoring cancelled; no files changed." in output
+    assert undo == [] and _authored(project) == before
 
 
 @pytest.mark.parametrize("create_metric", [True, False])
@@ -243,27 +247,49 @@ def test_two_inline_measures_keep_an_edit_made_between_them(
         }
     )
     undo: list[Any] = []
-    if external_edit and not create_metric:
-        with pytest.raises(SemanticLayerError, match="could not be restored"):
-            _repl(project, "author metric", script, undo)
-    else:
-        _repl(project, "author metric", script, undo)
+    _repl(project, "author metric", script, undo)
 
-    edited_label = yaml.safe_load((project / EVENTS).read_text("utf-8"))["model"]["label"]
     metric_path = project / "metrics" / "core" / "tax_to_shipping.yml"
     assert metric_path.exists() is create_metric
-    if create_metric:
-        after = _authored(project)
-        _repl(project, "undo", None, undo)
-        if external_edit:
-            assert "Undo was not applied" in capsys.readouterr().out
-            assert len(undo) == 1 and _authored(project) == after
-        else:
-            assert undo == [] and _authored(project) == before
-    elif external_edit:
-        assert edited_label == "Externally labeled events"
-    else:
-        assert _authored(project) == before
+    if not external_edit:
+        if create_metric:
+            _repl(project, "undo", None, undo)
+        assert undo == [] and _authored(project) == before
+        return
+    # The edit between the two measures blocks restoring either one; both stay undoable.
+    after = _authored(project)
+    if not create_metric:
+        output = capsys.readouterr().out
+        assert f"conflict {project / EVENTS}" in output
+        assert "kept    measure `tax`, measure `shipping`" in output
+    _repl(project, "undo", None, undo)
+    assert "Undo was not applied" in capsys.readouterr().out
+    assert len(undo) == 1 and _authored(project) == after
+    assert yaml.safe_load((project / EVENTS).read_text("utf-8"))["model"]["label"] == (
+        "Externally labeled events"
+    )
+
+
+def test_a_ratio_refuses_the_same_input_twice(tmp_path: Path) -> None:
+    project = _starter(tmp_path)
+    before = _authored(project)
+    script = _Script(
+        {
+            "Metric key": "total_per_total",
+            "Metric recipe": "Ratio",
+            "Numerator": "total_amount - ",
+            # Creating the denominator can land on the numerator's own key.
+            "Denominator": "Create a new measure first",
+            "Model to extend": "events - ",
+            "Measure key": "total_amount",
+            "Manage and update this existing measure?": True,
+            "Update this measure?": True,
+        }
+    )
+
+    with pytest.raises(SemanticLayerError, match="two distinct measures or metrics"):
+        _repl(project, "author metric", script, [])
+    assert _authored(project) == before
 
 
 @pytest.mark.parametrize("interrupt_after", ["Measure", "Metric"])
