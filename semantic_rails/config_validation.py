@@ -9,6 +9,7 @@ errors production would raise.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections import Counter
@@ -23,6 +24,7 @@ import yaml
 from .ast import NormalizedQuery
 from .compiler import (
     _collect_conversion_exprs,
+    _conversion_sources,
     _expr_leaf_temporal_role_sets,
     _requires_query_time,
     compile_query,
@@ -1037,6 +1039,7 @@ def _reference_errors(config, source_path: Path) -> list[str]:
         *_segment_reference_errors(config, source_path),
         *_metric_reference_errors(config, source_path),
         *_metric_time_role_errors(config, source_path),
+        *_conversion_window_errors(config, source_path),
     ]
 
 
@@ -1127,6 +1130,27 @@ def _metric_time_role_errors(config, source_path: Path) -> list[str]:
                     f"its measures is timed by {', '.join(sorted(leaf))} instead, so queries on "
                     f"{role!r} are refused. Give that measure the clock {role!r}.",
                 )
+    return errors
+
+
+def _conversion_window_errors(config, source_path: Path) -> list[str]:
+    """Conversion metrics whose window can never apply, which queries refuse.
+
+    Other operand problems depend on the query and are left to the compile probes.
+    """
+    errors: list[str] = []
+    query = NormalizedQuery(version=1, select=[])
+    for recipe in config.metric_recipes:
+        expression = recipe.expression
+        if not isinstance(expression, ConversionExpr):
+            continue
+        try:
+            for operand in (expression.base, expression.converted):
+                _expr_leaf_temporal_role_sets(operand, config, query)  # A recipe cycle raises.
+            _conversion_sources(expression, config, query)
+        except SemanticLayerError as exc:
+            if exc.details.get("conversion_single_event"):
+                add_error(errors, f"{source_path}: metric {recipe.id}: {exc}")
     return errors
 
 
@@ -1255,9 +1279,29 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
         warnings.append(f"{source_path}: package does not declare package.environments")
     # (Pseudo-entity smell warning removed — fact models with `kind: fact`
     # are now the supported way to declare time-keyed rollup tables.)
+    first_by_definition: dict[str, str] = {}
     for measure in config.measures:
         meta = dict(getattr(measure, "meta", {}) or {})
         prefix = f"{source_path}: public measure {measure.id}"
+        # Same rows, value and default clock: every query answers the same with either.
+        definition = json.dumps(
+            [
+                measure.entity,
+                measure.source_relation,
+                measure.measure_class,
+                measure.default_aggregation,
+                measure.default_temporal_role or [*measure.compatible_temporal_roles, ""][0],
+                expr_to_dict(measure.expr),
+            ],
+            sort_keys=True,
+            default=str,
+        )
+        twin = first_by_definition.setdefault(definition, measure.id)
+        if twin != measure.id:
+            warnings.append(
+                f"{prefix} duplicates {twin} (same entity, expression, aggregation and default "
+                "clock). Keep one, and point anything that reads the other at it."
+            )
         for warning in list(getattr(measure, "authoring_warnings", []) or []):
             warnings.append(f"{prefix}: {warning}")
         if not str(meta.get("owner_team", "") or "").strip():

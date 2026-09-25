@@ -246,6 +246,7 @@ __all__ = [
     "_conversion_event_cte",
     "_conversion_leaf_cte",
     "_conversion_predicate_set_ctes",
+    "_conversion_sources",
     "_conversion_supported",
     "_converted_side_group_dimensions",
     "_date_key",
@@ -2678,12 +2679,60 @@ def _conversion_predicate_set_ctes(
     return [source_cte, set_cte], set_name, projected_keys
 
 
+def _conversion_sources(
+    expr: ConversionExpr, config: PackageConfig, query: NormalizedQuery
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Both operands' event sources, refusing a pair the window can't apply to.
+
+    An operand that counts the conversion entity itself has one event per entity (a
+    row of the entity's own table). When both operands do, on the same clock, each
+    base event converts to itself at the same instant, so the window excludes
+    nothing and the metric is a share of entities, not a conversion within it.
+    """
+    base = _resolve_conversion_source(expr.base, config, query, side="base")
+    converted = _resolve_conversion_source(expr.converted, config, query, side="converted")
+    entity = str(expr.entity or base["root_entity"])
+    role = base["time_role"]
+    if base["root_entity"] == converted["root_entity"] == entity and converted["time_role"] == role:
+        keyed_by = {
+            row.source_entity
+            for row in config.relationships
+            if row.target_entity == entity and row.cardinality == "N:1"
+        }
+        entities = _entity_index(config)
+        candidates = [
+            measure.id
+            for measure in config.measures
+            if measure.entity in keyed_by
+            and measure.measure_class in {"event_count", "distinct_population"}
+            and _conversion_operand_problem(measure, entities.get(measure.entity)) is None
+        ]
+        example = f", for example {', '.join(map(repr, candidates[:3]))}" if candidates else ""
+        raise SemanticLayerError(
+            "CONVERSION_NOT_SUPPORTED",
+            (
+                f"Both conversion operands count '{entity}' itself on the clock '{role}', so "
+                "each base event converts to itself at the same time and the "
+                f"{expr.window_value}-{expr.window_unit} window can never apply. Count events "
+                f"keyed by '{entity}' in both operands instead{example}."
+            ),
+            details={
+                "conversion_single_event": True,
+                "entity": entity,
+                "temporal_role": role,
+                "base_measure": base["measure"].id,
+                "converted_measure": converted["measure"].id,
+                "candidate_measures": candidates,
+            },
+        )
+    return base, converted
+
+
 def _conversion_supported(
     expr: ConversionExpr, config: PackageConfig, query: NormalizedQuery
 ) -> bool:
     try:
-        _resolve_conversion_source(expr.base, config, query)
-        _resolve_conversion_source(expr.converted, config, query)
+        _conversion_sources(expr, config, query)
         return True
     except SemanticLayerError:
         return False
@@ -2765,10 +2814,7 @@ def _conversion_leaf_cte(
     dialect = dialect_for_warehouse(config.package.warehouse)
     query = normalize_query(plan.query)
     with leaf_objects(_expression_alias(expr, config)):
-        base_source = _resolve_conversion_source(expr.base, config, query, side="base")
-        converted_source = _resolve_conversion_source(
-            expr.converted, config, query, side="converted"
-        )
+        base_source, converted_source = _conversion_sources(expr, config, query)
         match_entity = str(expr.entity or base_source["root_entity"])
         entities.get(match_entity)
         for dimension_id in expr.constant_properties or []:

@@ -372,7 +372,8 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
                 "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / upsert_example / upsert_test / write_project_file",
                 "result": (
                     "Preview or atomically commit scoped changes with expected_revision "
-                    "and a caller-generated idempotency_key."
+                    "and a caller-generated idempotency_key, one write at a time: each "
+                    "takes the revision the previous write returned."
                 ),
             },
             {
@@ -768,8 +769,9 @@ def create_architect_mcp_server(
             "answers; preview_query); review (diff_project, impact_project).\n"
             "Every write previews with dry_run: true and takes expected_revision (from "
             "project_status or the last write) and a new idempotency_key per change; a retry "
-            "with the same key replays. A write the package can't parse is rolled back, and a "
-            "stale revision returns CONFIG_CONFLICT. Prefer the typed tools over "
+            "with the same key replays. Send writes one at a time: writes sent together with "
+            "one expected_revision apply only the first. A write the package can't parse is "
+            "rolled back, and a stale revision returns CONFIG_CONFLICT. Prefer the typed tools over "
             "write_project_file. This server doesn't manage cloud services."
         ),
         host=host,
