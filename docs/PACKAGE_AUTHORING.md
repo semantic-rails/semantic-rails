@@ -57,6 +57,7 @@ semantic-rails [my_pkg] › author
   4. Measure — a primitive count, sum, or aggregatable fact
   5. Metric — a stable governed KPI built from measures or metrics
   6. Segment — a reusable entity cohort
+  7. Calendar — the date spine rolling, prior-period and growth metrics need
 ```
 
 Use `author metric` (or any other kind) to skip the first menu. The flow lists
@@ -65,13 +66,21 @@ choice, shows the target file and YAML before writing, calls out exact or
 similar existing definitions as soon as you name the object (choosing other
 wording asks for the key and label again), and defaults every create/update
 confirmation to No. Press Ctrl-C, or type `cancel` at a text prompt or list, to
-stop without writing. In arrow-key pickers a suggested default is a placeholder:
-typing replaces it. Managing an existing object starts every prompt at its saved
+stop without writing (in an arrow-key list, `cancel` picks an option containing it,
+such as "Cancelled orders"). In arrow-key pickers a suggested default is a
+placeholder: typing replaces it. Managing an existing object starts every prompt at its saved
 value, even a value the menu does not otherwise list, so pressing Enter
 throughout leaves it as it was. Changing a measure's default aggregation warns
 and names the metrics whose numbers change. Successful edits are parse-validated
 and can be restored with `undo` during the same REPL session. A failed parse
 restores the original files automatically.
+
+Rolling windows, prior periods and growth fill empty periods from the package
+calendar, so `author metric` offers them only once the package has one. A calendar
+is a model whose graph entity has `kind: time`: one row per day in a `date_day`
+column, plus `week_start`, `month_start`, `quarter_start` and `year_start` date
+columns for the coarser units (see `models/core/calendar.yml` in the bundled
+package). `author calendar` writes it from your date-spine table.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh

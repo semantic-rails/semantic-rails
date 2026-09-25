@@ -8,6 +8,7 @@ from pathlib import Path
 from ..cli.common import (
     _default_ref,
     _is_terminal,
+    _print_json,
     _ref_display,
     _repl_capabilities,
     _repl_color,
@@ -16,6 +17,7 @@ from ..cli.common import (
 )
 from ..cli.output import (
     _authoring_error_messages,
+    _package_display,
     _print_ask_report,
     _print_objects,
     _print_project_list,
@@ -25,6 +27,7 @@ from ..cli.output import (
 from ..cli.reports import (
     CATALOG_KINDS,
     PROJECT_CHECK_MODES,
+    _catalog_kind,
     ask_report,
     list_objects_report,
     project_list_report,
@@ -60,9 +63,6 @@ def run_interactive_shell(*, package: str = "", path: str = "") -> None:
             continue
         if line in {"exit", "quit", ":q"}:
             return
-        if line == "help":
-            _print_repl_help()
-            continue
         try:
             current_ref = _handle_repl_line(line, current_ref, undo_stack=undo_stack)
         except SemanticLayerError as exc:
@@ -123,6 +123,9 @@ def _handle_repl_line(
     command, _, rest = line.partition(" ")
     command = command.strip().lower()
     rest = rest.strip()
+    if command == "help":
+        _print_repl_help(rest)
+        return current_ref
     if command in {"packages", "projects"}:
         _print_project_list(project_list_report(with_status=False))
         return current_ref
@@ -164,12 +167,7 @@ def _handle_repl_line(
         _print_project_validation(project_validation_report(current_ref, mode=mode))
         return current_ref
     if command == "ls":
-        parts = rest.split(maxsplit=1)
-        kind = parts[0] if parts and parts[0] in CATALOG_KINDS else "all"
-        search = parts[1] if kind != "all" and len(parts) > 1 else (rest if kind == "all" else "")
-        _print_objects(
-            list_objects_report(current_ref, resource_type=kind, search=search, limit=30)
-        )
+        _list_objects(rest, current_ref)
         return current_ref
     if command in {"ask", "plan"}:
         _print_ask_report(ask_report(current_ref, question=rest))
@@ -221,6 +219,56 @@ def _handle_repl_line(
     )
 
 
+# `ls` kinds in the order a new user needs them, with their key in the catalog counts.
+_LS_KINDS = (
+    ("metric", "metrics"),
+    ("measure", "measures"),
+    ("dimension", "dimensions"),
+    ("time", "temporal_roles"),
+    ("entity", "entities"),
+    ("segment", "segments"),
+)
+
+
+def _list_objects(rest: str, ref: PackageReference) -> None:
+    """`ls [kind] [search] [--limit N] [--json]`. A bare `ls` that would cut the list short
+    counts the objects by kind instead."""
+
+    words, terms, limit, as_json = rest.split(), [], None, False
+    while words:
+        word = words.pop(0)
+        if word == "--json":
+            as_json = True
+        elif word == "--limit" and words and words[0].isdigit():
+            limit = int(words.pop(0))
+        elif word.startswith("--"):
+            raise SemanticLayerError(
+                "INVALID_CONFIG", "Usage: ls [kind] [search] [--limit N] [--json]"
+            )
+        else:
+            terms.append(word)
+    kind = _catalog_kind(terms[0]) if terms else "all"
+    if kind in CATALOG_KINDS:
+        terms = terms[1:]
+    else:
+        kind = "all"
+    report = list_objects_report(
+        ref,
+        resource_type=kind,
+        search=" ".join(terms),
+        limit=(0 if as_json else 30) if limit is None else limit,
+    )
+    if as_json:
+        _print_json(report)
+    elif limit is None and not rest and report["truncated"]:
+        counts = report["catalog_counts"]
+        by_kind = ", ".join(f"{name} {counts.get(key, 0)}" for name, key in _LS_KINDS)
+        print(f"{_package_display(report['package'])}: {report['count']} objects ({by_kind})")
+        print("List one kind with `ls <kind> [search]`, for example `ls metric revenue`.")
+    else:
+        _print_objects(report)
+
+
 def _operational_notice(ref: PackageReference, mode: str) -> str:
     """Name the selected database and describe the runtime's no-replacement rule."""
 
@@ -266,42 +314,33 @@ def _operational_notice(ref: PackageReference, mode: str) -> str:
         runtime.close()
 
 
-def _print_repl_help() -> None:
+_HELP_ROWS = (
+    ("home", "Open, create or import a project"),
+    ("packages", "List registered packages"),
+    ("use <package|path>", "Switch package"),
+    ("debug", "Show package status"),
+    ("validate [mode]", "Parse safely; runtime/full ask first"),
+    ("ls [kind] [search]", "List catalog objects; also --limit N and --json"),
+    ("author [kind]", "Create or update a semantic abstraction"),
+    ("undo", "Undo the last authoring change this session"),
+    ("ask <question>", "Plan a query"),
+    ("run <question>", "Plan and execute a query"),
+    ("exit", "Quit"),
+)
+
+
+def _print_repl_help(topic: str = "") -> None:
+    """Every command, or only the one named by ``help <command>``."""
+
+    rows = [row for row in _HELP_ROWS if row[0].split()[0] == topic.strip().lower()]
     visual, color = _repl_capabilities()
     if visual:
-
-        def accent(text: str) -> str:
-            return _repl_color(text, "36", enabled=color)
-
         print()
         print(_repl_color("Commands", "1", enabled=color))
-        rows = (
-            ("home", "Open, create or import a project"),
-            ("packages", "List registered packages"),
-            ("use <package|path>", "Switch package"),
-            ("debug", "Show package status"),
-            ("validate [mode]", "Parse safely; runtime/full ask first"),
-            ("ls [kind] [search]", "List catalog objects"),
-            ("author [kind]", "Create or update a semantic abstraction"),
-            ("undo", "Undo the last authoring change this session"),
-            ("ask <question>", "Plan a query"),
-            ("run <question>", "Plan and execute a query"),
-            ("exit", "Quit"),
-        )
-        for command, description in rows:
-            print(f"  {accent(command.ljust(22))} {description}")
+    else:
+        print("Commands:")
+    for command, description in rows or _HELP_ROWS:
+        shown = _repl_color(command.ljust(22), "36", enabled=color) if visual else command.ljust(24)
+        print(f"  {shown} {description}")
+    if visual:
         print()
-        return
-
-    print("Commands:")
-    print("  home                     Open, create or import a project")
-    print("  packages                 List registered packages")
-    print("  use <package|path>       Switch package")
-    print("  debug                    Show package status")
-    print("  validate [mode]          Parse safely; runtime/full ask first")
-    print("  ls [kind] [search]       List catalog objects")
-    print("  author [kind]            Create or update a semantic abstraction")
-    print("  undo                     Undo the last authoring change this session")
-    print("  ask <question>           Plan a query")
-    print("  run <question>           Plan and execute a query")
-    print("  exit                     Quit")

@@ -290,6 +290,12 @@ def _picker_within(keys: str, ask: Callable[[PickerBackend], Any], seconds: floa
             lambda b: b.multi_choose("Cols", OPTIONS, defaults=["c"]),
             ["a", "b", "c"],
         ),
+        # A cancel word that filters to a real option picks that option.
+        (
+            "cancel" + ENTER,
+            lambda b: b.choose("Status", [("placed", "Placed orders"), ("x", "Cancelled orders")]),
+            "x",
+        ),
     ],
 )
 def test_pickers_answer_from_keystrokes(keys: str, ask: Any, expected: Any) -> None:
@@ -306,6 +312,8 @@ def test_pickers_answer_from_keystrokes(keys: str, ask: Any, expected: Any) -> N
         ("cancel" + ENTER, lambda b: b.text("Model key", default="order_value")),
         ("cancel" + ENTER, lambda b: b.choose("Pick", OPTIONS, default="b")),
         ("quit" + ENTER, lambda b: b.choose("Pick", [(f"v{i}", f"Value {i}") for i in range(20)])),
+        # " cancel" filters to nothing (questionary then lists every option), so it cancels.
+        (" cancel" + ENTER, lambda b: b.choose("Status", [("p", "Placed"), ("x", "Cancelled")])),
     ],
 )
 def test_pickers_cancel_like_plain_prompts(keys: str, ask: Any) -> None:
@@ -442,6 +450,19 @@ def test_repl_banner_says_which_prompts_are_in_use(monkeypatch: pytest.MonkeyPat
 
 # pexpect forks a pseudo-terminal; do it from a fresh single-threaded interpreter,
 # because forking pytest's multi-threaded process can deadlock the child.
+def _journey(script: str, *args: str, **env: str) -> str:
+    proc = subprocess.run(
+        [sys.executable, "-c", script, *args],
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT), **env},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc.returncode == 0 and "journey ok" in proc.stdout, proc.stdout + proc.stderr
+    return proc.stdout
+
+
 PICKER_JOURNEY = r"""
 import sys, pexpect
 repl = pexpect.spawn(
@@ -471,22 +492,59 @@ def test_repl_authoring_runs_on_pickers_in_a_real_terminal(tmp_path: Path) -> No
         )["project_path"]
     )
     before = {p: p.read_bytes() for p in project_path.rglob("*") if p.is_file()}
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(REPO_ROOT),
-        "SEMANTIC_RAILS_HOME": str(tmp_path / "home"),
-        "SEMANTIC_RAILS_UI": "pickers",
-        "TERM": "xterm-256color",
-    }
 
-    proc = subprocess.run(
-        [sys.executable, "-c", PICKER_JOURNEY, str(project_path)],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
+    _journey(
+        PICKER_JOURNEY,
+        str(project_path),
+        SEMANTIC_RAILS_HOME=str(tmp_path / "home"),
+        SEMANTIC_RAILS_UI="pickers",
+        TERM="xterm-256color",
     )
 
-    assert proc.returncode == 0 and "journey ok" in proc.stdout, proc.stdout + proc.stderr
     assert {p: p.read_bytes() for p in project_path.rglob("*") if p.is_file()} == before
+
+
+# Each command line, then what the REPL printed before its next prompt.
+COMMAND_JOURNEY = r"""
+import sys, pexpect
+repl = pexpect.spawn(
+    sys.executable, ["-m", "semantic_rails", "repl", "--package", "jaffle_shop"],
+    dimensions=(50, 250), encoding="utf-8", timeout=60,
+)
+repl.expect_exact("› ")
+for line in sys.argv[1:]:
+    repl.sendline(line)
+    repl.expect_exact("› ")
+    print(f"<<{line}>>{repl.before}")
+repl.sendline("exit")
+repl.expect(pexpect.EOF)
+print("journey ok")
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX pseudo-terminal")
+def test_repl_commands_answer_a_new_user_in_a_line_terminal(tmp_path: Path) -> None:
+    lines = [
+        "help ls",
+        "ls",
+        "ls measure --limit 0",
+        "ls --bogus",
+        "ls --json",
+        "run revenue by store and by calendar month",
+    ]
+    out = _journey(COMMAND_JOURNEY, *lines, SEMANTIC_RAILS_HOME=str(tmp_path), TERM="dumb")
+    shown = dict(zip(lines, re.split(r"<<[^>]+>>", out)[1:], strict=True))
+
+    assert "ls [kind] [search]" in shown["help ls"] and "author" not in shown["help ls"]
+    # A bare ls of a large package counts objects by kind instead of 30 dimensions.
+    assert re.search(r"\(metric [1-9]\d*, measure [1-9]\d*", shown["ls"])
+    assert "dimension:" not in shown["ls"]
+    assert "List one kind with `ls <kind> [search]`" in shown["ls"]
+    # The REPL takes the flags its own hint suggests instead of searching for them.
+    assert re.search(r"[1-9]\d* measure object", shown["ls measure --limit 0"])
+    assert "Search" not in shown["ls measure --limit 0"]
+    assert "..." not in shown["ls measure --limit 0"]
+    assert "Usage: ls [kind] [search] [--limit N] [--json]" in shown["ls --bogus"]
+    assert '"truncated": false' in shown["ls --json"]  # as the hint says, --json lists all
+    run = shown["run revenue by store and by calendar month"]
+    assert "MIXED_GRAIN_INVALID" in run and re.search(r"\n    Try: \S", run)

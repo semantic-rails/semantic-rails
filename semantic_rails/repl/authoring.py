@@ -38,7 +38,7 @@ from .prompts import (
     _AuthoringCancelled,
 )
 
-_AUTHORING_KINDS = ("model", "dimension", "time", "measure", "metric", "segment")
+_AUTHORING_KINDS = ("model", "dimension", "time", "measure", "metric", "segment", "calendar")
 
 
 class Undoable(Protocol):
@@ -83,6 +83,7 @@ _AUTHORING_ALIASES = {
     "measures": "measure",
     "metrics": "metric",
     "segments": "segment",
+    "calendars": "calendar",
 }
 
 
@@ -134,6 +135,7 @@ def _run_authoring_flow(
             "measure": _author_measure,
             "metric": _author_metric,
             "segment": _author_segment,
+            "calendar": _author_calendar,
         }
         mutation = dispatch[kind](project, inventory, current_ref, before_warnings)
         return mutation
@@ -152,7 +154,7 @@ def _resolve_authoring_kind(requested: str, inventory: dict[str, Any]) -> str:
         if raw not in _AUTHORING_KINDS:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                "Usage: author [model|dimension|time|measure|metric|segment]",
+                "Usage: author [model|dimension|time|measure|metric|segment|calendar]",
             )
         return raw
 
@@ -166,6 +168,7 @@ def _resolve_authoring_kind(requested: str, inventory: dict[str, Any]) -> str:
         ("measure", "Measure - a primitive count, sum, or aggregatable fact"),
         ("metric", "Metric - a stable governed KPI built from measures or metrics"),
         ("segment", "Segment - a reusable entity cohort, such as high-value customers"),
+        ("calendar", "Calendar - the date spine rolling, prior-period and growth metrics need"),
     ]
     return _author_choice("What do you want to create or update?", options, default=recommended)
 
@@ -244,6 +247,108 @@ def _author_model(
         ),
         next_action="Add a dimension with `author dimension`.",
     )
+
+
+def _author_calendar(
+    project: ArchitectProject,
+    inventory: dict[str, Any],
+    ref: PackageReference,
+    before_warnings: set[str],
+) -> ArchitectMutation:
+    """The package calendar: a date spine, one row per `date_day`, that time.fill reads."""
+
+    calendars = {
+        str((row.get("spec") or {}).get("model", "")): str(row.get("key", ""))
+        for row in _inventory_items(inventory, "entity")
+        if (row.get("spec") or {}).get("kind") == "time"
+    }
+    key, label, existing = _author_identity(
+        project, inventory, "model", next(iter(calendars), "calendar")
+    )
+    if existing and key not in calendars:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", f"Model `{key}` is not a calendar; give the calendar its own key."
+        )
+    spec = dict(existing.get("spec", {}) or {}) if existing else {}
+    relation = _author_prompt(
+        "Warehouse table with one row per day in a `date_day` column",
+        str(spec.get("relation", key)),
+    )
+    columns = _relation_columns(project, ref, relation)
+    if columns is not None and "date_day" not in columns:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", f"`{relation}` has no `date_day` column, so it can't be a calendar."
+        )
+    entity_key = calendars.get(key) or key
+    _check_entity_is_free(inventory, entity_key, model=key)
+    saved_times, saved = dict(spec.get("times") or {}), dict(spec.get("dimensions") or {})
+    starts = [column for unit, column in _CALENDAR_COLUMNS.items() if unit != "day"]
+    chosen = _author_multi_choice(
+        "Period-start columns on the table (each adds that unit)",
+        [(column, column) for column in starts],
+        defaults=[c for c in starts if c in (saved if columns is None else columns)],
+    )
+    day = {"label": "Calendar day", "column": "date_day", "kind": "date", "class": "calendar_time"}
+    times = {"date_day": {**day, **dict(saved_times.get("date_day") or {})}}
+    dimensions = {
+        column: {"label": _title(column), "kind": "date", **dict(saved.get(column) or {})}
+        for column in chosen
+    }
+    # upsert_model merges: saved columns stay whether or not they are ticked.
+    preview = {
+        "model": {
+            "id": key,
+            "relation": relation,
+            "times": {**saved_times, **times},
+            "dimensions": {**saved, **dimensions},
+        },
+        "graph": {"entities": {entity_key: {"kind": "time", "key": ["date_day"], "model": key}}},
+    }
+    return _apply_authoring_change(
+        project,
+        ref,
+        before_warnings,
+        kind="calendar",
+        key=key,
+        label=label,
+        existing=existing,
+        target=str(existing.get("relative_path", "")) if existing else f"models/core/{key}.yml",
+        preview=preview,
+        apply=lambda: project.upsert_model(
+            model_id=key,
+            entity_key=entity_key,
+            relation=relation,
+            primary_key=["date_day"],
+            times=times,
+            dimensions=dimensions,
+            label=label,
+            calendar=True,
+        ),
+        next_action="Rolling, prior-period and growth recipes now appear in `author metric`.",
+    )
+
+
+def _relation_columns(
+    project: ArchitectProject, ref: PackageReference, relation: str
+) -> set[str] | None:
+    """The relation's columns in the package's DuckDB file; None when there is no file to read.
+
+    A relation the file doesn't have is refused, not waved through unchecked.
+    """
+
+    if _authoring_warehouse(ref) != "duckdb":
+        return None
+    try:
+        with introspection.open_duckdb(
+            introspection.package_duckdb_path(project.project_path)
+        ) as warehouse:
+            described = introspection.describe_table(warehouse, relation)
+    except SemanticLayerError as exc:
+        if exc.code in {"OBJECT_NOT_FOUND", "INVALID_QUERY"}:
+            raise
+        print(f"Can't check the table's columns: {exc}")
+        return None
+    return {str(column["name"]) for column in described["columns"]}
 
 
 _TYPE_IT = "__type__"
@@ -795,9 +900,8 @@ def _metric_change(
         recipes.insert(0, (_PRESERVE, f"Keep this {what} unchanged"))
     if not units:
         print(
-            "  Rolling windows, prior periods and growth need a calendar table in the package "
-            f"with at least one of the columns {', '.join(_CALENDAR_COLUMNS.values())}; "
-            "they appear here once it has one."
+            "  Rolling windows, prior periods and growth need a package calendar (a date spine); "
+            "add it with `author calendar`, and they appear here."
         )
     recipe = _author_choice(
         "Metric recipe",
@@ -1185,10 +1289,15 @@ def _time_recipe(
 
 
 def _calendar_units(config: PackageConfig) -> list[tuple[str, str]]:
-    """The units whose periods the package calendar can fill."""
+    """The units whose periods the package calendar can fill.
 
-    calendars = {row.id for row in config.entities if row.kind == "time"}
-    columns = {row.column for row in config.dimensions if row.entity in calendars}
+    Like the engine's time.fill, this reads the default calendar, else the first one.
+    """
+
+    calendars = [row for row in config.entities if row.kind == "time"]
+    calendar = next((row for row in calendars if (row.calendar_id or "default") == "default"), None)
+    calendar = calendar or next(iter(calendars), None)
+    columns = {row.column for row in config.dimensions if calendar and row.entity == calendar.id}
     return [(unit, text) for unit, text in _UNITS if _CALENDAR_COLUMNS[unit] in columns]
 
 
@@ -1200,7 +1309,10 @@ def _unit_choice(label: str, units: list[tuple[str, str]], saved: Any, fallback:
 
     missing = [f"`{_CALENDAR_COLUMNS[unit]}`" for unit, _ in _UNITS if unit not in dict(units)]
     if missing:
-        print(f"  More units need these columns on the calendar model: {', '.join(missing)}.")
+        print(
+            f"  More units need these columns on the calendar model: {', '.join(missing)}. "
+            "Add them with `author calendar`."
+        )
     offered = [(unit, text) for unit, text in _UNITS if unit in dict(units) or unit == saved]
     return _saved_choice(
         label, offered, saved, fallback if fallback in dict(units) else units[0][0]
