@@ -18,6 +18,7 @@ of those exact released bytes, not an independently edited registry.
 | `validation_report.v1.json` | Engine | Stable cross-validator report envelope |
 | `http_api.v1.openapi.json` | Engine | Stable `/api/v1` operations and envelope |
 | `query_mcp.v1.json` | Engine | Stable query-MCP tools, resources, prompts, schemas, and annotations |
+| `query_mcp.v2.json` | Engine | Query-MCP interface v2: its six tools, resources, prompts, schemas, and annotations |
 
 The Python distribution version, package schema, Query IR, HTTP API, query MCP,
 semantic contract, and validation-report format are separate version

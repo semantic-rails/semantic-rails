@@ -193,10 +193,12 @@ class QueryMCPClient:
     the identity and policy context.
     """
 
-    def __init__(self, package_path: Path, *, request_context: Any = None) -> None:
+    def __init__(
+        self, package_path: Path, *, request_context: Any = None, interface: str = "v1"
+    ) -> None:
         from semantic_rails.mcp import SemanticLayerMCPAdapter
 
-        self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path))
+        self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path), interface=interface)
         self.request_context = request_context
         self._next_id = 0
 
@@ -351,6 +353,47 @@ COMPACT_PROBES: list[Step] = [
     ("segment_preview", "segment-preview", {"segment_id": SEGMENT, "verbosity": "minimal"}),
 ]
 
+# Interface v2 at its defaults: plan detail "query", a 200-row execute cap and
+# minimal segment responses. Its by-the-book session follows the loop the v2
+# instructions describe (validate and compile are optional execute modes).
+V2_PROBES: list[Step] = [
+    ("discover", "discover", {"terms": "revenue by store"}),
+    ("discover_ids", "discover", {"terms": ""}),
+    ("inspect", "inspect", {"object_id": REVENUE["measure"]}),
+    ("valid_values", "valid-values", {"dimension_id": STORE}),
+    ("plan", "plan", {"intent": QUESTIONS[0]}),
+    ("execute", "execute", {"query": Q1}),
+    ("execute_validate", "execute", {"query": Q1, "mode": "validate"}),
+    ("execute_sql", "execute", {"query": Q1, "mode": "sql"}),
+    ("execute_no_grain_window", "execute", {"query": NO_GRAIN_WINDOW}),
+    ("segment_validate", "segment", {"segment_id": SEGMENT, "action": "validate"}),
+    ("segment_explain", "segment", {"segment_id": SEGMENT, "action": "explain"}),
+    ("segment_preview", "segment", {"segment_id": SEGMENT, "action": "preview"}),
+]
+V2_SESSIONS: dict[str, list[Step]] = {
+    "by_the_book": [
+        ("s1_discover_ids", "discover", {"terms": ""}),
+        ("q1_discover", "discover", {"terms": "monthly revenue by store"}),
+        ("q1_inspect_measure", "inspect", {"object_id": REVENUE["measure"]}),
+        ("q1_inspect_dimension", "inspect", {"object_id": STORE}),
+        ("q1_plan", "plan", {"intent": QUESTIONS[0]}),
+        ("q1_execute", "execute", {"query": Q1}),
+        ("q2_discover", "discover", {"terms": "top products by revenue"}),
+        ("q2_inspect_dimension", "inspect", {"object_id": PRODUCT}),
+        ("q2_plan", "plan", {"intent": QUESTIONS[1]}),
+        ("q2_execute", "execute", {"query": Q2}),
+        ("q3_discover", "discover", {"terms": "average order value"}),
+        ("q3_inspect_metric", "inspect", {"object_id": "metric.sales.aov_usd"}),
+        ("q3_valid_values", "valid-values", {"dimension_id": STORE}),
+        ("q3_plan", "plan", {"intent": QUESTIONS[2]}),
+        ("q3_execute", "execute", {"query": Q3}),
+    ],
+    "lean": [
+        (step, tool, {k: v for k, v in args.items() if k not in {"detail", "max_rows"}})
+        for step, tool, args in SESSIONS["lean"]
+    ],
+}
+
 # Metadata calls behind an authenticated transport, which supplies a policy
 # context on every call. Query patches in these responses must stay pure IR.
 HOSTED_PROBES: list[Step] = [
@@ -479,21 +522,7 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
 
     metrics: dict[str, int] = {}
     with QueryMCPClient(package_path) as client:
-        initialize = client.request(
-            "initialize",
-            {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {"name": "mcp-context", "version": "1"},
-            },
-        )
-        metrics["query.instructions_tokens"] = approx_tokens(
-            str(initialize.get("instructions") or "")
-        )
-        tools = client.request("tools/list")["tools"]
-        metrics.update(
-            {f"query.tools_list.{key}": value for key, value in tool_list_sizes(tools).items()}
-        )
+        metrics.update(_measure_surface(client, "query."))
         resources = client.request("resources/list")["resources"]
         metrics["query.resources_list_tokens"] = approx_tokens(
             json.dumps(resources, sort_keys=True)
@@ -524,22 +553,55 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
             metrics[f"query.hosted.{name}_tokens"] = _measured_call(
                 client, f"hosted.{name}", tool, arguments
             )[0]
-    for session, steps in SESSIONS.items():
+    metrics.update(_measure_sessions(package_path, SESSIONS, "query.", "v1"))
+    with QueryMCPClient(package_path, interface="v2") as client:
+        metrics.update(_measure_surface(client, "query.v2."))
+        for name, tool, arguments in V2_PROBES:
+            metrics[f"query.v2.default.{name}_tokens"] = _measured_call(
+                client, f"v2.{name}", tool, arguments
+            )[0]
+    metrics.update(_measure_sessions(package_path, V2_SESSIONS, "query.v2.", "v2"))
+    return metrics
+
+
+def _measure_surface(client: QueryMCPClient, prefix: str) -> dict[str, int]:
+    """Size what a client pays before its first call: instructions and tools/list."""
+
+    initialize = client.request(
+        "initialize",
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "mcp-context", "version": "1"},
+        },
+    )
+    tools = client.request("tools/list")["tools"]
+    return {
+        f"{prefix}instructions_tokens": approx_tokens(str(initialize.get("instructions") or "")),
+        **{f"{prefix}tools_list.{key}": value for key, value in tool_list_sizes(tools).items()},
+    }
+
+
+def _measure_sessions(
+    package_path: Path, sessions: Mapping[str, list[Step]], prefix: str, interface: str
+) -> dict[str, int]:
+    metrics: dict[str, int] = {}
+    for session, steps in sessions.items():
         # A fresh runtime per session, so one session's caches can't shrink
         # or grow another's responses.
         structured_total = text_total = largest = 0
         surfaced: set[str] = set()
-        with QueryMCPClient(package_path) as client:
+        with QueryMCPClient(package_path, interface=interface) as client:
             for step, tool, arguments in steps:
                 structured, text_tokens = _measured_call(
-                    client, f"{session}.{step}", tool, arguments, surfaced=surfaced
+                    client, f"{interface}.{session}.{step}", tool, arguments, surfaced=surfaced
                 )
                 structured_total += structured
                 text_total += text_tokens
                 largest = max(largest, structured)
-        metrics[f"query.session.{session}.structured_tokens"] = structured_total
-        metrics[f"query.session.{session}.text_tokens"] = text_total
-        metrics[f"query.session.{session}.max_step_structured_tokens"] = largest
+        metrics[f"{prefix}session.{session}.structured_tokens"] = structured_total
+        metrics[f"{prefix}session.{session}.text_tokens"] = text_total
+        metrics[f"{prefix}session.{session}.max_step_structured_tokens"] = largest
     return metrics
 
 
@@ -1262,10 +1324,11 @@ def write_baseline(
     tolerance = float(budgets.get("tolerance", DEFAULT_TOLERANCE))
     document = {
         "description": (
-            "Ceilings for scripts/mcp_context.py measurements, in tokens = round(chars / 4). "
-            "Gated token metrics fail CI above budget + max(8, budget * tolerance), counts "
-            "above budget; tracked ones are reported only. Regenerate with --write-baseline "
-            "and review the diff."
+            "Ceilings for scripts/mcp_context.py explicit compact probes and accepted v1 "
+            "default sessions (query.*), and interface v2 at its defaults (query.v2.*), in "
+            "tokens = round(chars / 4). Gated token metrics fail CI above budget + max(8, "
+            "budget * tolerance), counts above budget; tracked ones are reported only. "
+            "Regenerate with --write-baseline and review the diff."
         ),
         "tolerance": tolerance,
         "gated": rebaseline(

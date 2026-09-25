@@ -1,0 +1,886 @@
+{
+  "$id": "https://semantic-rails.com/schemas/query_mcp.v2.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "interface_version": "v2",
+  "manifest_version": 1,
+  "mcp_protocol": {
+    "default": "2025-11-25",
+    "supported": [
+      "2025-11-25",
+      "2025-03-26",
+      "2024-11-05"
+    ]
+  },
+  "producer": {
+    "name": "semantic-rails",
+    "version": "0.2.1"
+  },
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "description": "Business question or analysis goal.",
+          "name": "intent",
+          "required": true
+        },
+        {
+          "description": "Semantic layer package id.",
+          "name": "package_id",
+          "required": false
+        }
+      ],
+      "description": "Guide an agent from a question to rows: discover, inspect, plan (and valid-values), then execute.",
+      "name": "semantic-rails-query-builder"
+    },
+    {
+      "arguments": [
+        {
+          "description": "Query IR JSON to review.",
+          "name": "query_json",
+          "required": true
+        }
+      ],
+      "description": "Review existing Query IR with execute mode 'validate', then mode 'sql', before running it.",
+      "name": "semantic-rails-query-review"
+    },
+    {
+      "arguments": [
+        {
+          "description": "Segment id such as segment.jaffle.high_value_customers.",
+          "name": "segment_id",
+          "required": true
+        }
+      ],
+      "description": "Validate, explain and preview a package-authored segment with the segment tool.",
+      "name": "semantic-rails-segment-workflow"
+    }
+  ],
+  "resources": [
+    {
+      "description": "Interface v2 tool definitions, resources and prompts. Large; use capabilities/summary for names and titles.",
+      "mimeType": "application/json",
+      "name": "capabilities",
+      "uri": "semantic-rails://capabilities"
+    },
+    {
+      "description": "Small capabilities index: tool names and titles, plus resources and prompts.",
+      "mimeType": "application/json",
+      "name": "capabilities-summary",
+      "uri": "semantic-rails://capabilities/summary"
+    },
+    {
+      "description": "V1 catalog summary with descriptive rows and counts. Large; use catalog/index for counts and ids.",
+      "mimeType": "application/json",
+      "name": "catalog-summary",
+      "uri": "semantic-rails://catalog/summary"
+    },
+    {
+      "description": "Small catalog index: counts and ids per object kind for the active package.",
+      "mimeType": "application/json",
+      "name": "catalog-index",
+      "uri": "semantic-rails://catalog/index"
+    },
+    {
+      "description": "Every object's full card and the alias index for the active package. Large: start with catalog-index.",
+      "mimeType": "application/json",
+      "name": "catalog-full",
+      "uri": "semantic-rails://catalog/full"
+    }
+  ],
+  "resultSchema": {
+    "$defs": {
+      "issue": {
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object"
+          },
+          "message": {
+            "type": "string"
+          },
+          "recovery_hints": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": true,
+    "description": "Semantic Rails MCP result envelope. Tool-specific fields are additive; the status, issue, request, and package fields are stable v2.",
+    "properties": {
+      "api_version": {
+        "const": "v2",
+        "type": "string"
+      },
+      "error": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/issue"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "errors": {
+        "items": {
+          "$ref": "#/$defs/issue"
+        },
+        "type": "array"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "package_id": {
+        "type": "string"
+      },
+      "recovery_hints": {
+        "items": {
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "request_context": {
+        "type": "object"
+      },
+      "request_id": {
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "ok",
+          "warning",
+          "error",
+          "low_confidence",
+          "unrealizable",
+          "out_of_scope"
+        ],
+        "type": "string"
+      },
+      "timing_ms": {
+        "minimum": 0,
+        "type": "number"
+      },
+      "warnings": {
+        "items": {
+          "$ref": "#/$defs/issue"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "ok",
+      "status",
+      "api_version",
+      "request_id",
+      "package_id",
+      "warnings",
+      "errors"
+    ],
+    "type": "object"
+  },
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Discover"
+      },
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list every id per kind instead. Default: slim cards (id, label, description, score); verbosity='compact' adds match_reasons and starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "kinds": {
+            "description": "Object kinds to rank, such as measure or metric. Default: all.",
+            "oneOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "limit": {
+            "default": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "stage": {
+            "description": "Builder stage that tunes ranking: initial, post_measure, post_dimension or comparison. Inferred when omitted.",
+            "type": "string"
+          },
+          "terms": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "discover",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v2 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v2",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Inspect"
+      },
+      "description": "Return one object's card: label, description, aggregations or values, temporal roles, related objects, policy. Default: the card without duplicate fields; verbosity='compact' returns the full card. Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "object_id": {
+            "type": "string"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "type": "object"
+      },
+      "name": "inspect",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v2 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v2",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Valid Values"
+      },
+      "description": "Return a dimension's governed values: from its declared value domain, or from a constrained warehouse probe with allow_live_query: true. Use it before writing a 'where' filter on a categorical dimension. Gotcha: 'dimension_id' must be a full id like 'dimension.jaffle_store_name'; allow_live_query costs a warehouse round-trip, so use it only when no domain is declared.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "allow_live_query": {
+            "default": false,
+            "type": "boolean"
+          },
+          "dimension_id": {
+            "type": "string"
+          },
+          "include_counts": {
+            "default": false,
+            "description": "With allow_live_query, add each value's row count.",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "search": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dimension_id"
+        ],
+        "type": "object"
+      },
+      "name": "valid-values",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v2 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v2",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Plan"
+      },
+      "description": "Draft one best Query IR from a natural-language intent. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are no warnings.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "detail": {
+            "default": "query",
+            "enum": [
+              "query",
+              "best",
+              "full",
+              "debug"
+            ],
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "limit": {
+            "default": 3,
+            "description": "Drafts to consider; detail='full' returns the runners-up.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "type": "object"
+      },
+      "name": "plan",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v2 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v2",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Execute"
+      },
+      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted, or Query IR you fixed from it. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query (errors, warnings, repair hints); mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. row_format='columns' is compact. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
+      "inputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "max_rows": {
+            "default": 200,
+            "description": "Rows to return in mode 'run'. A larger result sets truncated=true and total_row_count.",
+            "maximum": 100000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "run",
+            "description": "'run' returns rows; 'validate' only checks the query; 'sql' also returns rendered_sql. Only 'run' queries the warehouse.",
+            "enum": [
+              "run",
+              "validate",
+              "sql"
+            ],
+            "type": "string"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "query": {
+            "additionalProperties": true,
+            "description": "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as INVALID_QUERY (offenders under details.unsupported_keys).",
+            "properties": {
+              "time": {
+                "additionalProperties": true,
+                "description": "Time anchor: temporal_role + grain + start|end|range + fill + calendar_id. Omit entirely for an all-time scalar aggregate.",
+                "properties": {
+                  "calendar_id": {
+                    "default": "default",
+                    "description": "Calendar for dense spine (Gregorian or authored fiscal).",
+                    "type": "string"
+                  },
+                  "end": {
+                    "description": "ISO-8601, exclusive: March 2017 is start 2017-03-01, end 2017-04-01.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "fill": {
+                    "default": false,
+                    "description": "Dense calendar spine for grain buckets (0 / NULL fill). Requires grain; otherwise fails as INVALID_QUERY.",
+                    "type": "boolean"
+                  },
+                  "grain": {
+                    "description": "Bucket size. Required when fill=true or for inline prior_period.",
+                    "enum": [
+                      "",
+                      "day",
+                      "week",
+                      "month",
+                      "quarter",
+                      "year",
+                      "hour",
+                      "minute"
+                    ],
+                    "type": "string"
+                  },
+                  "range": {
+                    "additionalProperties": true,
+                    "description": "Relative window {last: {unit, value}}: window ends at the floor of now (start of current period) — covers the last N completed periods, NOT a rolling-to-today window. Mutually exclusive with start/end; string shorthand rejected as USE_OBJECT_SHAPE.",
+                    "properties": {
+                      "last": {
+                        "additionalProperties": false,
+                        "description": "{unit, value} — e.g. {unit: 'day', value: 90}.",
+                        "properties": {
+                          "unit": {
+                            "enum": [
+                              "minute",
+                              "hour",
+                              "day",
+                              "week",
+                              "month",
+                              "quarter",
+                              "year"
+                            ],
+                            "type": "string"
+                          },
+                          "value": {
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "unit",
+                          "value"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "start": {
+                    "description": "ISO-8601.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "temporal_role": {
+                    "description": "Clock id, e.g. 'temporal_role.<x>'. Must match the metric's anchor; mismatch fails as INVALID_TEMPORAL_BINDING.",
+                    "type": "string"
+                  }
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "row_format": {
+            "default": "records",
+            "description": "Execute row shape. 'records' (default)=rows as objects; 'columns'=columns plus array rows, avoiding repeated field names.",
+            "enum": [
+              "records",
+              "columns"
+            ],
+            "type": "string"
+          },
+          "sql_profile": {
+            "default": "audit",
+            "description": "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; 'off' suppresses rendered_sql + sql_plan entirely.",
+            "enum": [
+              "audit",
+              "compact",
+              "debug",
+              "off"
+            ],
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "description": "Response detail. 'minimal' (default)={ok,errors,warnings}, plus rendered_sql in mode 'sql' and rows in mode 'run'. 'compact' adds sql_plan, explain and the normalized query; 'full' is the maximal envelope (~100KB).",
+            "enum": [
+              "minimal",
+              "compact",
+              "full"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "execute",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v2 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v2",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Segment"
+      },
+      "description": "Work with a package-authored segment: action='validate' checks it and the Query IR derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows and the total member count. Default verbosity='minimal' leaves out compiler plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like 'segment.jaffle.high_value_customers' (discover with empty terms lists them); 'preview' queries the warehouse.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "validate",
+              "explain",
+              "preview"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "description": "Sample rows for action 'preview'.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "policy_context": {
+            "additionalProperties": true,
+            "description": "Optional visibility/access policy context.",
+            "properties": {
+              "audience": {
+                "type": "string"
+              },
+              "environment": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": "string"
+          },
+          "verbosity": {
+            "default": "minimal",
+            "enum": [
+              "minimal",
+              "full"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment_id",
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "segment",
+      "outputSchema": {
+        "additionalProperties": true,
+        "description": "Semantic Rails MCP v2 result envelope.",
+        "properties": {
+          "api_version": {
+            "const": "v2",
+            "type": "string"
+          },
+          "errors": {
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

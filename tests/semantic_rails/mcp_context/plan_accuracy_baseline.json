@@ -1,6 +1,6 @@
 {
  "eval_set_sha256": "9b5b8693dac9ab61f85c3496edd1785f024e3cfed35a0b7183e27cc19a640d0a",
- "summary": {"cases": 38, "pass": 16, "pass_flagged": 1, "wrong_flagged": 14, "wrong_warned": 7, "wrong_silent": 0},
+ "summary": {"cases": 38, "pass": 18, "pass_flagged": 1, "wrong_flagged": 14, "wrong_warned": 5, "wrong_silent": 0},
  "cases": {
   "J01": {"outcome": "pass", "mismatched": []},
   "J02": {"outcome": "pass", "mismatched": []},
@@ -29,10 +29,10 @@
   "J25": {"outcome": "pass", "mismatched": []},
   "J26": {"outcome": "wrong_flagged", "mismatched": ["select"]},
   "J27": {"outcome": "pass", "mismatched": []},
-  "J28": {"outcome": "wrong_warned", "mismatched": ["select"]},
+  "J28": {"outcome": "pass", "mismatched": []},
   "J29": {"outcome": "pass", "mismatched": []},
   "J30": {"outcome": "pass", "mismatched": []},
-  "J31": {"outcome": "wrong_warned", "mismatched": ["select"]},
+  "J31": {"outcome": "pass", "mismatched": []},
   "J32": {"outcome": "wrong_flagged", "mismatched": ["select", "window"]},
   "J33": {"outcome": "wrong_flagged", "mismatched": ["select"]},
   "J34": {"outcome": "wrong_warned", "mismatched": ["answered"]},

@@ -10,7 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from scripts.agent_harness import report, run, terminal
+from scripts import mcp_context
+from scripts.agent_harness import eval_ab, report, run, terminal
 
 SERVER = '''
 from typing import Any
@@ -222,3 +223,34 @@ def test_terminal_replaces_its_program_and_keeps_the_tail(tmp_path, monkeypatch)
         terminal.clean("abc\rdef\r") == "def"
         and terminal.clean("\x1b[1mbold\x1b[0m\r\n") == "bold\n"
     )
+
+
+def test_eval_ab_grades_each_interface_on_the_gold_rows(tmp_path, monkeypatch):
+    """A scripted model answers J01 wrongly on v1 and rightly on v2, through real query servers."""
+    cases = {case["id"]: case for case in mcp_context.load_eval_cases()}
+    gold = cases["J01"]["gold_query"]
+    wrong = {**gold, "time": {**gold["time"], "grain": "year"}}
+    answered = "Done.\nANSWER_STATUS: answered"
+    replies = [[call("execute", {"query": wrong})], answered]
+    replies += [[call("execute", {"query": gold, "mode": "run"})], answered]
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run lock
+    model, requests = serve(replies, "full")
+    url, out = f"http://127.0.0.1:{model.server_port}/v1", tmp_path / "runs"
+    try:
+        eval_ab.main(
+            ["run", "--out", str(out), "--model", "m", "--base-url", url, "--cases", "J01"]
+        )
+    finally:
+        model.shutdown()
+
+    names = {tool["function"]["name"] for tool in requests[2]["tools"]}
+    assert "segment" in names and "validate" not in names  # the second run served v2
+    # Like a host, the harness shows the model the server's instructions.
+    assert "execute(query)" in requests[2]["messages"][0]["content"]
+    table = eval_ab.summary(out)
+    assert "| v1 | 1 | 0 | 1 | 0 | 0 |" in table and "| v2 | 1 | 1 | 0 | 0 | 0 |" in table
+    assert "v2 vs v1, 1 paired runs: accuracy +100.0 points" in table
+    refuse, trend = cases["J34"], cases["J01"]
+    assert eval_ab.grade(refuse, "No.\nANSWER_STATUS: cannot_answer", None, out) == "correct"
+    assert eval_ab.grade(refuse, "It's 3.", {"select": []}, out) == "silent_wrong"
+    assert eval_ab.grade(trend, "ANSWER_STATUS: needs_clarification", None, out) == "declined"
