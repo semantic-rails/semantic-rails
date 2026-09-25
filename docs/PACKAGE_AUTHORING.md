@@ -1297,13 +1297,33 @@ Routing is conservative in the MVP:
   `eligible_time_grains`.
 - The rollup grain must not be coarser than the requested query grain. A monthly
   table can answer month, quarter, or year queries, but not day queries.
+- A weekly rollup answers only week queries, because weeks straddle month,
+  quarter, and year boundaries. Its default `eligible_time_grains` is `[week]`.
+  Build it on Monday-start (ISO) weeks, the weeks the compiled SQL uses.
+- The query's `start` and `end` must fall on the rollup's bucket boundaries, in
+  UTC: a monthly table answers `2026-01-01` to `2026-04-01`, not `2026-01-15` to
+  `2026-03-31`. A minute or hour rollup answers only queries without bounds.
+- A `count_distinct` routes only when it counts the model's single-column row key
+  (for example distinct `order_id` on an orders model with `grain: [order_id]`).
+  Distinct counts of anything else, such as customers or one column of a
+  composite key, can't be added up across rollup rows.
+- A time role whose `column_timezone` differs from its `timezone`, and a query
+  with a non-default `calendar_id`, run on the base tables: a rollup is bucketed
+  in UTC on the default calendar.
 - Every selected measure must have a column in the variant. Additive and
   precomputed rollups are supported; non-additive rollup semantics fall back to
   raw.
 - Every grouped or filtered dimension must be covered by the variant. If a
   query groups by `customer_id` and the monthly table excludes that dimension,
   the planner scans the raw relation.
-- Query-time `metric_predicate` shapes do not route through variants yet.
+- Query-time `metric_predicate` shapes, including a `metric_predicate` inside an
+  aggregate's `filter`, do not route through variants yet.
+- An `aggregate_relations:` entry that declares `filters` doesn't route yet: it
+  holds only the rows its filters kept.
+
+When a rollup can't answer a query exactly, the query runs on the base tables, and
+`logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
+rollup of that measure's entity to the reason.
 
 Strict config validation checks the `variants` shape, nested keys
 (`grain`, `time`, `excludes`, `selection`, `equivalence`), value-list fields,

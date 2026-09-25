@@ -223,6 +223,8 @@ def _coarser_time_grains(grain: str) -> list[str]:
         return [text] if text else []
     if text == "transaction":
         return list(_TIME_GRAIN_ORDER)
+    if text == "week":
+        return ["week"]  # weeks straddle month, quarter and year boundaries
     start = _TIME_GRAIN_ORDER.index(text)
     return _TIME_GRAIN_ORDER[start:]
 

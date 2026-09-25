@@ -202,7 +202,12 @@ Aggregate relation rules:
 
 - the MVP only accepts `source: default`; cross-warehouse routing is future work
 - `equivalence_kind` must be `exact` for automatic routing
-- the rollup grain must be at or below the requested query grain
+- the rollup grain must be at or below the requested query grain, its buckets
+  must nest in the query's (a week rollup answers only week queries), and the
+  query's bounds must fall on its bucket boundaries
+- a `count_distinct` routes only when it counts the model's single-column row
+  key; relations that declare `filters`, leaves with metric predicates, roles
+  that convert time zones and non-default calendars don't route
 - all selected measures, grouped dimensions, and filtered dimensions must be
   covered by the relation
 - unsupported rollups fall back to the raw model relation rather than compiling
