@@ -211,6 +211,9 @@ a many-to-one relationship. It follows the usual mutation contract (`expected_re
 package, gets the reference; references elsewhere are listed in `skipped_references`, and dbt models
 without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
 (`fct_orders` and a model `orders` for entity `order`) updates that model.
+Measure keys are package-wide, so a drafted measure whose key another model already has, in the
+package or earlier in the call, gets its entity as a prefix (`order_line_usd_to_local_rate`), like
+the drafted `<entity>_count`, unless that key is taken too; a re-imported model keeps its own keys.
 A foreign key to a dbt model imported in the same call names that model's entity, even when
 another package model reads the same relation. Any other foreign key resolves only when exactly
 one existing package entity reads its relation; otherwise it is listed in `skipped_references`.

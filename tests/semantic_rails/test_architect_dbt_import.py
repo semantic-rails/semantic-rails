@@ -167,6 +167,91 @@ def test_dbt_imported_special_measure_names_query_the_physical_column(
     assert rows == [{"actual": expected * 8}]
 
 
+@pytest.mark.parametrize(
+    "selects",
+    [[["fct_orders"], ["fct_order_lines"]], [["fct_orders", "fct_order_lines"]]],
+    ids=["sequential", "batch"],
+)
+def test_facts_sharing_a_column_each_get_their_own_measure(
+    workspace: Path, selects: list[list[str]]
+) -> None:
+    catalog_path = workspace / "dbt" / "target" / "catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    with duckdb.connect(str(workspace / "shop" / "data" / "warehouse.duckdb")) as conn:
+        for table, rate in (("fct_orders", 2), ("fct_order_lines", 3)):
+            conn.execute(
+                f"ALTER TABLE main_marts.{table} ADD COLUMN usd_to_local_rate DOUBLE DEFAULT {rate}"
+            )
+            catalog["nodes"][f"model.shop_dbt.{table}"]["columns"]["usd_to_local_rate"] = {
+                "name": "usd_to_local_rate",
+                "type": "DOUBLE",
+                "index": 100,
+            }
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    server = create_architect_mcp_server(workspace_root=workspace)
+
+    def measures() -> tuple[dict[str, Any], dict[str, Any]]:
+        orders = _model(workspace / "shop" / "models" / "orders.yml")["measures"]
+        lines = _model(workspace / "shop" / "models" / "dbt" / "order_lines.yml")["measures"]
+        return orders, lines
+
+    # The last import re-imports both, in the other order: the keys must not move.
+    for index, select in enumerate([*selects, ["fct_order_lines", "fct_orders"]]):
+        request = {"project_path": "shop", "target_dir": "dbt/target", "select": select}
+        revision = {"expected_revision": project_revision(workspace / "shop")}
+        (result,) = _calls(
+            server, [("import_dbt_project", {**request, **revision, "idempotency_key": str(index)})]
+        )
+        assert result["ok"] is True, result
+        if index == len(selects) - 1:
+            imported = measures()
+
+    orders, lines = measures()
+    assert (orders, lines) == imported
+    assert "usd_to_local_rate" not in lines and "order_usd_to_local_rate" not in orders
+    runtime = Runtime.from_path(str(workspace / "shop"))
+    try:
+        rates = [
+            runtime.query(
+                {
+                    "version": 1,
+                    "select": [{"expression": {"measure": f"measure.shop.{key}"}, "as": "rate"}],
+                    "limit": 5,
+                }
+            )["rows"]
+            for key in ("usd_to_local_rate", "order_line_usd_to_local_rate")
+        ]
+    finally:
+        runtime.close()
+    assert rates == [[{"rate": 2}], [{"rate": 3}]]
+
+
+@pytest.mark.parametrize(
+    ("owners", "renamed"),
+    [
+        ({"line_count": "orders", "order_total": "orders"}, {}),  # its own keys stay
+        ({"line_count": "order_lines"}, {"line_count": "order_line_count"}),
+        ({"line_count": "order_lines", "order_line_count": "stores"}, {}),  # taken too
+        ({"total": "order_lines"}, {}),  # order_total is another drafted measure
+    ],
+)
+def test_drafted_measure_keys_step_around_other_models_keys(
+    workspace: Path, owners: dict[str, str], renamed: dict[str, str]
+) -> None:
+    catalog_path = workspace / "dbt" / "target" / "catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    total = {"name": "total", "type": "DOUBLE", "index": 100}
+    catalog["nodes"]["model.shop_dbt.fct_orders"]["columns"]["total"] = total
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+
+    (orders,), _, _ = dbt_import_models(
+        load_dbt_artifacts(catalog_path.parent), ["fct_orders"], owners
+    )
+
+    drafted = ["order_count", "line_count", "order_total", "total"]
+    assert set(orders["measures"]) == {renamed.get(key, key) for key in drafted}
+
+
 @pytest.mark.parametrize("reverse", [False, True])
 def test_unattached_relationship_suggests_and_imports_the_child_reference(
     workspace: Path, reverse: bool

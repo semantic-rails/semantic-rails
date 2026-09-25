@@ -1355,24 +1355,24 @@ def create_architect_mcp_server(
     ) -> ArchitectMutationResult:
         try:
             dbt = _dbt_project(target_dir, manifest_path, catalog_path)
-            items, skipped, unresolved = dbt_artifacts.dbt_import_models(dbt, list(select or []))
+            project = ArchitectProject(project_path, workspace_root=root)
+            owners = {row["key"]: row["model_key"] for row in project.inventory()["measures"]}
+            items, skipped, unresolved = dbt_artifacts.dbt_import_models(
+                dbt, list(select or []), owners
+            )
             if not items:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     "none of the selected dbt models has a key to import",
                     details={"skipped_models": skipped},
                 )
-            report = (
-                ArchitectProject(project_path, workspace_root=root)
-                .upsert_models(
-                    items,
-                    group=group,
-                    expected_revision=expected_revision,
-                    idempotency_key=idempotency_key,
-                    dry_run=dry_run,
-                )
-                .report
-            )
+            report = project.upsert_models(
+                items,
+                group=group,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            ).report
             return _mutation_result(
                 {
                     **report,
