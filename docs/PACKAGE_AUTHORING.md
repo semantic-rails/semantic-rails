@@ -1450,6 +1450,17 @@ would ignore such a key, so the package would behave differently from what it sa
 Every metric also gets the kind checks: a metric with an unknown `kind:`, or
 without a field its kind requires, such as a ratio's `denominator`, is rejected.
 
+### Filter values
+
+Validation that reads the data (`validate-config`, `check`, and the `runtime`
+and `full` modes) looks up the values of each string dimension a metric's
+`filter` compares with `=`, `!=`, `IN` or `NOT IN`, through the same live
+lookup as `valid-values`. A literal that matches no value, such as `'Completed'`
+over data holding `completed`, gets a `FILTER_VALUE_NOT_FOUND` warning that
+names the closest value. It is a warning because sample data can lack a value
+that production data holds. A dimension with more values than the
+`valid-values` limit is skipped, and parse-only validation reads no data.
+
 ### Semantic collision warnings
 
 `validate-config` flags pairs of measures, metrics, dimensions, or

@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, fields, is_dataclass
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +44,15 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
-from .expressions import ConversionExpr, MetricPredicateExpr, parse_semantic_expression
+from .expressions import (
+    AggregateExpr,
+    ConversionExpr,
+    MetricPredicateExpr,
+    parse_semantic_expression,
+    resolve_filter_dimension,
+)
 from .meta_contract import validate_meta_payload
+from .metadata_parts.valid_values import max_valid_values_limit, valid_values_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
 from .registry import Registry
 from .runtime import Runtime, runtime_request_scope
@@ -1629,6 +1637,88 @@ def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:
     return _run_probe(runtime, kind="metric", object_id=recipe.id, query=retry_query)
 
 
+# A filter with these operators matches rows only when its literal is a value in the data.
+_VALUE_FILTER_OPS = frozenset({"=", "!=", "<>", "IN", "NOT IN"})
+
+
+def _metric_filter_literals(config) -> Iterator[tuple[str, str, str]]:
+    """(metric id, dimension id, literal) for each string a metric filter compares a column to."""
+    string_dimensions = {row.id for row in config.dimensions if row.data_type == "string"}
+    for recipe in config.metric_recipes:
+        for node in _expression_nodes(recipe.expression):
+            for clause in node.filter.get("all", []) if isinstance(node, AggregateExpr) else []:
+                op = " ".join(str(clause.get("op") or "=").split()).upper()
+                if "field" not in clause or op not in _VALUE_FILTER_OPS:
+                    continue
+                try:
+                    dimension_id = resolve_filter_dimension(str(clause["field"]), config)
+                except SemanticLayerError:
+                    continue  # the metric's probe reports the unknown field
+                raw = clause.get("value")
+                for literal in raw if isinstance(raw, list) else [raw]:
+                    if dimension_id in string_dimensions and isinstance(literal, str):
+                        yield recipe.id, dimension_id, literal
+
+
+def _data_values(runtime: Runtime, dimension_id: str) -> list[str]:
+    """Every value of a dimension in the data, or [] when they cannot all be read."""
+    limit = max_valid_values_limit()
+    try:
+        # A query makes valid-values read the data even for a dimension with a
+        # declared domain: the filter matches data rows, not the domain.
+        payload = valid_values_payload(
+            runtime,
+            dimension_id=dimension_id,
+            query={"version": 1},
+            limit=limit,
+            allow_live_query=True,
+        )
+    except SemanticLayerError:
+        return []
+    # A full page, one slot of which a NULL row can take, may hide more values.
+    if payload["total_count"] >= limit - 1:
+        return []
+    return [str(row["value"]) for row in payload["values"]]
+
+
+def _filter_value_warnings(runtime: Runtime) -> list[dict[str, Any]]:
+    """Warn when a metric filter compares a column to a value its data does not hold.
+
+    ``status = 'Completed'`` over data holding ``completed`` runs, and the metric
+    silently comes back empty. This is a warning, not an error: sample data can
+    lack a value the production data holds.
+    """
+    data_values: dict[str, list[str]] = {}
+    warnings: list[dict[str, Any]] = []
+    for metric_id, dimension_id, literal in _metric_filter_literals(runtime._config):
+        if dimension_id not in data_values:
+            data_values[dimension_id] = _data_values(runtime, dimension_id)
+        values = data_values[dimension_id]
+        if not values or literal in values:
+            continue
+        folded = {value.casefold(): value for value in values}
+        close = get_close_matches(literal.casefold(), list(folded), n=1)
+        suggestion = folded[close[0]] if close else None
+        warnings.append(
+            {
+                "code": "FILTER_VALUE_NOT_FOUND",
+                "severity": "warning",
+                "message": (
+                    f"Metric {metric_id} filters {dimension_id} on {literal!r}, "
+                    "which matches no value in the data"
+                    + (f"; did you mean {suggestion!r}?" if suggestion else "")
+                ),
+                "details": {
+                    "object_id": metric_id,
+                    "dimension": dimension_id,
+                    "value": literal,
+                    "suggestion": suggestion,
+                },
+            }
+        )
+    return warnings
+
+
 def validate_config_report(
     ref: PackageReference,
     *,
@@ -1718,6 +1808,7 @@ def validate_config_report(
                 if progress is not None:
                     progress(f"WARNING metric failed: {recipe.id} ({probe['error']['code']})")
 
+        warnings.extend(_filter_value_warnings(runtime))
         passed = sum(1 for probe in probes if probe["ok"])
         failed = len(probes) - passed
         return {
