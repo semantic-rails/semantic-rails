@@ -80,16 +80,13 @@ def test_project_new_creates_split_package_and_validates(tmp_path: Path) -> None
     assert payload["project_path"] == str(project_path)
     assert (project_path / "package.yml").is_file()
     assert (project_path / "graph.yml").is_file()
-    assert (project_path / ".gitignore").read_text(encoding="utf-8").splitlines() == [
-        "data/*.duckdb",
-        "data/*.sqlite",
-        "data/*.sqlite3",
-        ".compiled/",
-    ]
+    assert {"*.duckdb", ".compiled/"} <= set(
+        (project_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    )
     assert (project_path / "models" / "core" / "events.yml").is_file()
     assert payload["checks"]["parse"]["ok"] is True
     assert payload["checks"]["examples"]["passed"] == 1
-    assert payload["checks"]["tests"]["passed"] == 2
+    assert payload["checks"]["tests"]["passed"] == 1
 
     validate = _run_json(
         "project",
@@ -388,6 +385,32 @@ def test_interactive_setup_does_not_offer_managed_start_when_unsupported(
     assert "Windows" in output
     assert "stdio" in output
     assert f"semantic-rails repl --path {tmp_path / 'package'}" in output
+
+
+def test_interactive_setup_creates_the_same_package_as_project_new(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import semantic_rails.cli.setup_wizard as setup_wizard
+    from semantic_rails.architect_scaffold import ProjectSpec, project_scaffold_files
+
+    def sources(root: Path) -> dict[str, bytes]:  # authored files, not build outputs
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix != ".duckdb" and ".compiled" not in path.parts
+        }
+
+    (tmp_path / "wizard").mkdir()
+    monkeypatch.chdir(tmp_path / "wizard")
+    monkeypatch.setattr(setup_wizard, "_confirm", lambda *_args, **_kwargs: True)
+
+    ref = setup_wizard._interactive_package_ref(SimpleNamespace(package="", path=""))
+    _run_json("project", "new", "my_package", "--workspace-root", str(tmp_path), "--json")
+
+    wizard_package = tmp_path / "wizard" / "my_package"
+    assert Path(ref.source_path) == wizard_package.resolve()
+    shared = project_scaffold_files(ProjectSpec(package_id="my_package"))
+    assert sources(wizard_package) == shared == sources(tmp_path / "my_package")
 
 
 def test_interactive_setup_cleans_dead_mcp_registration_and_retries(
@@ -1007,7 +1030,7 @@ def test_repl_author_segment_selects_dimension_and_basis_metric_and_parses(
     segment_doc = yaml.safe_load(segment_path.read_text(encoding="utf-8"))
     segment = segment_doc["segments"]["starter_events"]
     assert segment["entity"] == "entity.segment_core_event"
-    assert segment["basis_metric"] == "metric.segment_core.total_amount"
+    assert segment["basis_metric"] == "metric.segment_core.event_count"
     assert segment["preview_dimensions"] == ["dimension.segment_core_event_event_type"]
     assert segment["membership"]["where"] == [
         {
@@ -1085,6 +1108,10 @@ def test_repl_manage_preserves_unsurfaced_fields_and_model_label(
     from semantic_rails.config_validation import PackageReference
 
     project_path = _create_repl_split_package(tmp_path, "manage_core")
+    events_path = project_path / "models" / "core" / "events.yml"
+    starter = yaml.safe_load(events_path.read_text(encoding="utf-8"))
+    starter["model"]["dimensions"]["event_type"]["domain"] = ["starter", "follow_up"]
+    events_path.write_text(yaml.safe_dump(starter, sort_keys=False), encoding="utf-8")
     ref = PackageReference(source_path=str(project_path))
     undo_stack = []
     answers = iter(
@@ -1150,9 +1177,9 @@ def test_repl_manage_metric_kind_removes_stale_fields_and_preserves_public_id(
 
     repl_shell._handle_repl_line("author metric", ref, undo_stack=undo_stack)
 
-    metric = yaml.safe_load(
-        (project_path / "metrics" / "core" / "starter.yml").read_text(encoding="utf-8")
-    )["metrics"]["total_amount"]
+    metric = yaml.safe_load((project_path / "metrics" / "core.yml").read_text(encoding="utf-8"))[
+        "metrics"
+    ]["total_amount"]
     assert len(undo_stack) == 1
     assert metric["kind"] == "ratio"
     assert metric["value_type"] == "percent"

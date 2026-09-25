@@ -1,7 +1,7 @@
 """The one Semantic Rails project scaffold.
 
-Every surface that creates a package (the Architect MCP's ``create_project``,
-and the CLI and REPL once they switch over) builds it from a
+Every surface that creates a package (the Architect MCP's ``create_project``
+and the CLI's ``init``, ``project new`` and setup wizard) builds it from a
 :class:`ProjectSpec` here, so each creates the same files and object ids.
 
 The scaffold is warehouse-aware. A DuckDB package either gets a two-row starter
@@ -22,7 +22,7 @@ from typing import Any, Literal
 import yaml
 
 from .config import SEED_KIND_EXTERNAL
-from .config import _slug as _id_slug  # the slug the loader derives object ids with
+from .config_parts.package_loader import _slug as _id_slug  # the loader's id slug
 from .dialects import supported_warehouses, warehouse_connector
 from .errors import SemanticLayerError
 

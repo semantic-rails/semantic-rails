@@ -2268,3 +2268,26 @@ def test_external_projects_carry_no_placeholders(tmp_path: Path) -> None:
     assert "dimensions" not in model and "topics" not in model
     assert set(model["measures"]) == {"order_count"}
     assert set(_yaml(tmp_path / "shop" / "metrics" / "core.yml")["metrics"]) == {"order_count"}
+
+
+def test_example_ids_match_the_loader_for_double_underscore_columns(tmp_path: Path) -> None:
+    """The loader collapses ``__`` in ids: ``ordered__at`` becomes ``..._ordered_at``."""
+    first_model = replace(ORDERS, time_column="ordered__at", dimension_column="status__code")
+    for path, content in project_scaffold_files(
+        replace(EXTERNAL_SHOP, first_model=first_model)
+    ).items():
+        (tmp_path / "shop" / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "shop" / path).write_bytes(content)
+
+    config = load_package_config(str(tmp_path / "shop"))
+    query = _yaml(tmp_path / "shop" / "examples" / "core.yml")["examples"][
+        "starter_total_amount_by_day"
+    ]["query"]
+    test_query = _yaml(tmp_path / "shop" / "tests" / "core.yml")["tests"][
+        "starter_count_returns_rows"
+    ]["query"]
+    assert query["time"]["temporal_role"] == "temporal_role.shop_order_ordered_at"
+    assert query["group_by"] == ["dimension.shop_order_status_code"]
+    assert test_query["time"]["temporal_role"] == query["time"]["temporal_role"]
+    assert query["time"]["temporal_role"] in {row.id for row in config.temporal_roles}
+    assert query["group_by"][0] in {row.id for row in config.dimensions}
