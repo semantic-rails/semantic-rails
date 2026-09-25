@@ -141,9 +141,11 @@ def test_run_records_tokens_friction_and_the_check(
 
 PROGRAM = """
 import os, sys
-print("\\x1b[1mready\\x1b[0m", os.environ.get("JAILED", "-"), flush=True)
+print("\\x1b[1mready\\x1b[0m", os.environ.get("JAILED", "-"), os.environ.get("AGENT_API_KEY", "-"))
+n = 0
 while (line := input()) != "quit":
-    print("you said", line, flush=True)
+    n += 1
+    print(n, "you said", line, flush=True)
 sys.exit(3)
 """
 
@@ -160,7 +162,12 @@ def test_terminal_tools_drive_a_program_in_a_pty(tmp_path, monkeypatch):
     early, unknown = call("term_type", {"text": "early"}), call("term_start", {"program": "sh"})
     start, hello = call("term_start", {"program": "echo"}), call("term_type", {"text": "hello"})
     bad_wait, stop = call("term_read", {"wait_ms": "soon"}), call("term_type", {"text": "quit"})
-    model, requests = serve([[early, unknown, start], [hello, bad_wait, stop], "Done."], "full")
+    enter = call(
+        "term_key", {"key": "enter"}
+    )  # three in a row, as when accepting a wizard's defaults
+    turns = [[early, unknown, start], [hello, bad_wait], [enter], [enter], [enter], [stop], "Done."]
+    model, requests = serve(turns, "full")
+    monkeypatch.setenv("AGENT_API_KEY", "not-for-programs")
     out, url = tmp_path / "run", f"http://127.0.0.1:{model.server_port}/v1"
     try:
         argv = [
@@ -177,13 +184,15 @@ def test_terminal_tools_drive_a_program_in_a_pty(tmp_path, monkeypatch):
         model.shutdown()
 
     summary = json.loads((out / "summary.json").read_text())
-    assert summary["stop"] == "final" and summary["unused_tools"] == ["term_key"]
+    assert summary["stop"] == "final" and summary["unused_tools"] == []
+    assert summary["friction"]["term_key"]["repeats"] == 0  # the output changed each time
     offered = {tool["function"]["name"] for tool in requests[0]["tools"]}
     assert offered == {"term_start", "term_type", "term_key", "term_read"}
-    shown = [m["content"] for m in requests[2]["messages"] if m["role"] == "tool"]
+    shown = [m["content"] for m in requests[-1]["messages"] if m["role"] == "tool"]
     assert shown[0].startswith("error: no program is running") and "unknown program" in shown[1]
-    assert shown[2].strip() == "ready yes"  # escapes removed; the jail prefix ran the program
-    assert "you said hello" in shown[3] and "[the program exited with code 3]" in shown[5]
+    assert shown[2].strip() == "ready yes -"  # escapes removed; the jail ran it; no API key
+    assert "1 you said hello" in shown[3] and "4 you said" in shown[7]
+    assert "[the program exited with code 3]" in shown[8]
     assert shown[4].startswith("error: invalid literal")  # a bad argument is an error, not a crash
     friction = summary["friction"]
     assert friction["term_type"]["errors"] == 1 and friction["term_start"]["errors"] == 1

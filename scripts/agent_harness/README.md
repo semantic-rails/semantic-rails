@@ -80,8 +80,11 @@ A scenario's `terminal` names the programs the model may start. It then gets fou
 with no shell, with `TERM=dumb` and `NO_COLOR` so it prints plain text. Each tool returns what
 the program printed since the last call, once output has paused for 1.5 seconds (or after
 `wait_ms`, default 10 seconds, with none), escape sequences removed and at most the last 6,000
-characters. One program runs at a time; starting another stops it. Its errors, repeats and
-wasted tokens count like any tool's.
+characters. One program runs at a time; starting another stops it. Programs get the same
+minimal environment as the MCP servers (`HOME`, `PATH` and a few more), never the harness's
+own, so `AGENT_API_KEY` can't reach them. Terminal errors and wasted tokens count like any
+tool's; a terminal call is a repeat only if the same call also printed the same output, so
+pressing Enter through a wizard's prompts is not a loop.
 
 ## The run folder
 

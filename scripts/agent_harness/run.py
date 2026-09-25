@@ -120,7 +120,7 @@ async def dispatch(routes: dict[str, Route], name: str, raw: Any, deadline: floa
     timeout = timedelta(seconds=max(1.0, deadline - time.monotonic()))
     try:
         if isinstance(session, Terminal):
-            text, error = await asyncio.to_thread(session.call, tool, args)
+            text, error = await asyncio.to_thread(session.call, tool, args, deadline)
         else:
             text, error = result_text(
                 await session.call_tool(tool, args, read_timeout_seconds=timeout)
@@ -223,6 +223,10 @@ class Agent:
         raw = call["function"].get("arguments")
         args, text, error, problems = await dispatch(self.routes, name, raw, self.deadline)
         key = name + json.dumps(args, sort_keys=True, default=str)
+        if isinstance(self.routes.get(name, (None, None))[1], Terminal):
+            key += (
+                text  # a terminal has state: the same keystroke is a repeat only if nothing changed
+            )
         self.seen[key] += 1
         self.streak, self.last = (self.streak + 1 if key == self.last else 1), key
         repeat = self.seen[key] > 1

@@ -11,7 +11,7 @@ setup: >-
   cp -R {repo}/configs/semantic_rails/jaffle_shop jaffle_shop && mkdir jaffle_shop/data
   && cp -R {repo}/data/jaffle_csv {repo}/data/seed_jaffle.sql jaffle_shop/data/
 check: >-
-  for value in 45017.95 43358.12 49092.33 24857.99; do
-  tr -d ',$' < "$AGENT_FINAL_ANSWER" | grep -q "$value" || exit 1; done
+  for value in '45017\.95' '43358\.12' '49092\.33' '24857\.99'; do
+  tr -d ',$' < "$AGENT_FINAL_ANSWER" | grep -qE "(^|[^0-9])$value" || exit 1; done
 max_turns: 20
 max_tokens: 200000

@@ -20,6 +20,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from mcp.client.stdio import get_default_environment
+
 ESCAPES = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 KEYS = {
     "enter": "\r",
@@ -94,10 +96,16 @@ class Terminal:
             ),
         ]
 
-    def call(self, name: str, args: dict[str, Any]) -> tuple[str, str]:
-        """Run one terminal tool; return (text for the model, error)."""
+    def call(
+        self, name: str, args: dict[str, Any], deadline: float = float("inf")
+    ) -> tuple[str, str]:
+        """Run one terminal tool; return (text for the model, error). Reads stop at `deadline`."""
         wait_ms = args.get("wait_ms")
         wait = min(max(int(10_000 if wait_ms is None else wait_ms), 0), 60_000) / 1000
+        wait = max(0.0, min(wait, deadline - time.monotonic()))
+        enter = args.get("enter", True)
+        if not isinstance(enter, bool):
+            return "error: enter must be true or false", "bad enter"
         if name == "term_start":
             if args.get("program") not in self.programs:
                 return (
@@ -108,7 +116,8 @@ class Terminal:
             extra = args.get("args") or []  # a string of arguments is split like a command line
             extra = shlex.split(extra) if isinstance(extra, str) else [str(arg) for arg in extra]
             argv = [*self.jail, *shlex.split(self.programs[args["program"]]), *extra]
-            env = {**os.environ, "TERM": "dumb", "NO_COLOR": "1", "COLUMNS": "100", "LINES": "30"}
+            # The MCP servers' environment (HOME, PATH, USER and a few more), never the harness's own
+            env = {**get_default_environment(), "TERM": "dumb", "NO_COLOR": "1", "COLUMNS": "100"}
             self.fd, child = pty.openpty()
             try:
                 self.proc = subprocess.Popen(
@@ -127,7 +136,7 @@ class Terminal:
         elif self.proc is None:
             return "error: no program is running; call term_start first", "no program running"
         elif name == "term_type":
-            self.write(str(args.get("text", "")) + ("\r" if args.get("enter", True) else ""))
+            self.write(str(args.get("text", "")) + ("\r" if enter else ""))
         elif name == "term_key":
             if args.get("key") not in KEYS:
                 return f"error: unknown key; choose one of {', '.join(KEYS)}", "unknown key"
@@ -136,7 +145,9 @@ class Terminal:
 
     def write(self, text: str) -> None:
         if self.proc is not None and self.proc.poll() is None:  # else read() reports the exit
-            os.write(self.fd, text.encode())
+            data = text.encode()
+            while data:
+                data = data[os.write(self.fd, data) :]
 
     def read(self, wait: float) -> str:
         """Output until it has paused for QUIET seconds, or `wait` seconds pass without any."""
