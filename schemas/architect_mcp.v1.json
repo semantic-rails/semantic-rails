@@ -1161,7 +1161,7 @@
         "readOnlyHint": false,
         "title": "Upsert relationship"
       },
-      "description": "Preview or atomically relate two entities: columns on from_entity's model hold\n        to_entity's key, in key order. cardinality: many_to_one or one_to_one.",
+      "description": "Preview or atomically relate two entities: columns on from_entity's model hold to_entity's key, in key order. cardinality: many_to_one or one_to_one.",
       "inputSchema": {
         "properties": {
           "cardinality": {

@@ -1023,7 +1023,13 @@ def create_architect_mcp_server(
                 dry_run=dry_run,
             )
 
-    @mcp.tool(annotations=_mutation_annotations("Upsert relationship"))
+    @mcp.tool(
+        annotations=_mutation_annotations("Upsert relationship"),
+        description=(
+            "Preview or atomically relate two entities: columns on from_entity's model hold "
+            "to_entity's key, in key order. cardinality: many_to_one or one_to_one."
+        ),
+    )
     def upsert_relationship(
         project_path: str,
         from_entity: str,
@@ -1034,8 +1040,6 @@ def create_architect_mcp_server(
         cardinality: str = "many_to_one",
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically relate two entities: columns on from_entity's model hold
-        to_entity's key, in key order. cardinality: many_to_one or one_to_one."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
