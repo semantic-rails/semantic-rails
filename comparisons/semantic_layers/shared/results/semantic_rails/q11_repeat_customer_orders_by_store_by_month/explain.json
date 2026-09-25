@@ -101,8 +101,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.114,
-      "compile_ms": 1.018,
+      "cache_lookup_ms": 1.189,
+      "compile_ms": 0.262,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -292,7 +292,7 @@
         {
           "aggregation": "count_distinct",
           "aggregation_params": {},
-          "alias": "leaf__measure_jaffle_order_count__count_distinct",
+          "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
           "filter_spec": {
             "all": [
               {
@@ -562,10 +562,11 @@
       "measure_plans": [
         {
           "aggregate_relation_id": "",
+          "aggregate_relation_rejections": {},
           "bound_measure": {
             "aggregation": "count_distinct",
             "aggregation_params": {},
-            "alias": "leaf__measure_jaffle_order_count__count_distinct",
+            "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
             "filter_spec": {
               "all": [
                 {
@@ -940,7 +941,7 @@
           "measures": [
             {
               "aggregation": "count_distinct",
-              "alias": "leaf__measure_jaffle_order_count__count_distinct",
+              "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
               "measure_id": "measure.jaffle.order_count"
             }
           ],
@@ -1140,7 +1141,7 @@
             "measures": [
               {
                 "aggregation": "count_distinct",
-                "alias": "leaf__measure_jaffle_order_count__count_distinct",
+                "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
                 "measure_id": "measure.jaffle.order_count"
               }
             ],
@@ -1428,7 +1429,7 @@
             "measures": [
               {
                 "aggregation": "count_distinct",
-                "alias": "leaf__measure_jaffle_order_count__count_distinct",
+                "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
                 "measure_id": "measure.jaffle.order_count"
               }
             ]
@@ -1481,7 +1482,7 @@
         }
       ],
       "outputs": {
-        "leaf__measure_jaffle_order_count__count_distinct": "leaf_1",
+        "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc": "leaf_1",
         "repeat_customer_orders": "final_project"
       },
       "version": 1
@@ -1917,7 +1918,7 @@
       {
         "aggregation": "count_distinct",
         "aggregation_params": {},
-        "alias": "leaf__measure_jaffle_order_count__count_distinct",
+        "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
         "filter_spec": {
           "all": [
             {
@@ -2187,10 +2188,11 @@
     "measure_plans": [
       {
         "aggregate_relation_id": "",
+        "aggregate_relation_rejections": {},
         "bound_measure": {
           "aggregation": "count_distinct",
           "aggregation_params": {},
-          "alias": "leaf__measure_jaffle_order_count__count_distinct",
+          "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
           "filter_spec": {
             "all": [
               {

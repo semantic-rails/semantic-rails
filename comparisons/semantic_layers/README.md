@@ -11,8 +11,8 @@ compare latency, token use or cost. It runs without touching the active
   independent answer key's normalized outputs, with numbers matching within 1e-6** (Semantic
   Rails, MetricFlow, Cube, Malloy and KtX). No layer is the reference: the answer key is SQL
   written against the same views without seeing any layer's models or outputs (see *Independent
-  Answer Key* below). Every layer reads the same `comparison_*` views, and every one of those
-  five ran live for this capture.
+  Answer Key* below). Every layer reads the same `comparison_*` views, and all five ran live on
+  2026-09-25 for this capture.
 - **Snowflake Semantic Views is a stale April capture.** It ran on 2026-04-07 on an earlier
   dataset, whose lifecycle view held only the 11 hand-authored lifecycle rows, and it can't be
   re-run or re-authored without a live account. The output check reports it separately: it matches the answer key on
@@ -50,7 +50,7 @@ compare latency, token use or cost. It runs without touching the active
 
 | Layer | Version | Captured (UTC) | Re-runnable from this repo |
 | --- | --- | --- | --- |
-| Semantic Rails | 0.2.1 | 2026-09-23 | yes |
+| Semantic Rails | 0.3.1, not a release (engine tree `e398685`, `main` after v0.3.1) | 2026-09-25 | yes |
 | MetricFlow | `dbt-metricflow 0.15.0` (`metricflow 0.213.0`), `dbt-core 1.12.5`, `dbt-duckdb 1.11.0` (`metricflow/requirements.lock`) | 2026-09-25 | yes; installs the locked packages |
 | Cube | Cube Core `1.7.45` (`@cubejs-backend/server`, `@cubejs-backend/duckdb-driver`; `cube/package-lock.json`) | 2026-09-25 | yes, on darwin-arm64 (the only platform whose native binary is pinned); installs the locked packages and starts Cube locally |
 | Malloy | `@malloydata/cli 0.0.57` (`malloy/package-lock.json`) | 2026-09-25 | yes; installs the locked CLI |
@@ -64,10 +64,10 @@ can tell a capture made on other data from a real mismatch.
 
 The Semantic Rails runner also records the source trees of its engine, its package, its queries
 and runner, and the question suite, and whether the engine is exactly a tagged release. The
-committed Semantic Rails evidence ran on the v0.2.1 engine: its engine tree equals
-`git rev-parse v0.2.1:semantic_rails`. The commit it records may not survive a squash merge, but
-the tree hashes do. Re-running from a later commit whose engine differs is labeled "0.2.1, not a
-release (engine tree …)" wherever the version is shown.
+committed Semantic Rails evidence ran on an engine after the v0.3.1 release: its engine tree,
+`e398685`, is `main`'s engine tree at `62a0b26`, not `git rev-parse v0.3.1:semantic_rails`, so it is
+labeled "0.3.1, not a release (engine tree e398685)" wherever the version is shown. The commit it
+records may not survive a squash merge, but the tree hashes do.
 
 ## Shared Questions: q01-q07
 

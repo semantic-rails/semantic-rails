@@ -101,8 +101,8 @@
     },
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 1.728,
-      "compile_ms": 1.242,
+      "cache_lookup_ms": 0.901,
+      "compile_ms": 0.416,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -292,7 +292,7 @@
         {
           "aggregation": "sum",
           "aggregation_params": {},
-          "alias": "leaf__measure_jaffle_revenue_usd__sum",
+          "alias": "leaf__measure_jaffle_revenue_usd__sum__2171fc6aaa83",
           "filter_spec": {
             "all": [
               {
@@ -563,10 +563,11 @@
       "measure_plans": [
         {
           "aggregate_relation_id": "",
+          "aggregate_relation_rejections": {},
           "bound_measure": {
             "aggregation": "sum",
             "aggregation_params": {},
-            "alias": "leaf__measure_jaffle_revenue_usd__sum",
+            "alias": "leaf__measure_jaffle_revenue_usd__sum__2171fc6aaa83",
             "filter_spec": {
               "all": [
                 {
@@ -950,7 +951,7 @@
           "measures": [
             {
               "aggregation": "sum",
-              "alias": "leaf__measure_jaffle_revenue_usd__sum",
+              "alias": "leaf__measure_jaffle_revenue_usd__sum__2171fc6aaa83",
               "measure_id": "measure.jaffle.revenue_usd"
             }
           ],
@@ -1150,7 +1151,7 @@
             "measures": [
               {
                 "aggregation": "sum",
-                "alias": "leaf__measure_jaffle_revenue_usd__sum",
+                "alias": "leaf__measure_jaffle_revenue_usd__sum__2171fc6aaa83",
                 "measure_id": "measure.jaffle.revenue_usd"
               }
             ],
@@ -1447,7 +1448,7 @@
             "measures": [
               {
                 "aggregation": "sum",
-                "alias": "leaf__measure_jaffle_revenue_usd__sum",
+                "alias": "leaf__measure_jaffle_revenue_usd__sum__2171fc6aaa83",
                 "measure_id": "measure.jaffle.revenue_usd"
               }
             ]
@@ -1500,7 +1501,7 @@
         }
       ],
       "outputs": {
-        "leaf__measure_jaffle_revenue_usd__sum": "leaf_1",
+        "leaf__measure_jaffle_revenue_usd__sum__2171fc6aaa83": "leaf_1",
         "qualifying_revenue_usd": "final_project"
       },
       "version": 1
@@ -2055,7 +2056,7 @@
       {
         "aggregation": "sum",
         "aggregation_params": {},
-        "alias": "leaf__measure_jaffle_revenue_usd__sum",
+        "alias": "leaf__measure_jaffle_revenue_usd__sum__2171fc6aaa83",
         "filter_spec": {
           "all": [
             {
@@ -2326,10 +2327,11 @@
     "measure_plans": [
       {
         "aggregate_relation_id": "",
+        "aggregate_relation_rejections": {},
         "bound_measure": {
           "aggregation": "sum",
           "aggregation_params": {},
-          "alias": "leaf__measure_jaffle_revenue_usd__sum",
+          "alias": "leaf__measure_jaffle_revenue_usd__sum__2171fc6aaa83",
           "filter_spec": {
             "all": [
               {
@@ -2758,7 +2760,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 4.354,
+  "timing_ms": 4.583,
   "trace": {
     "fallback": {
       "reason": "",

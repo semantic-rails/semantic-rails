@@ -20,8 +20,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.849,
-      "compile_ms": 1.025,
+      "cache_lookup_ms": 0.951,
+      "compile_ms": 0.202,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -57,7 +57,7 @@
         {
           "aggregation": "count_distinct",
           "aggregation_params": {},
-          "alias": "leaf__measure_jaffle_order_count__count_distinct",
+          "alias": "leaf__measure_jaffle_order_count__count_distinct__2171fc6aaa83",
           "filter_spec": {
             "all": [
               {
@@ -113,10 +113,11 @@
       "measure_plans": [
         {
           "aggregate_relation_id": "",
+          "aggregate_relation_rejections": {},
           "bound_measure": {
             "aggregation": "count_distinct",
             "aggregation_params": {},
-            "alias": "leaf__measure_jaffle_order_count__count_distinct",
+            "alias": "leaf__measure_jaffle_order_count__count_distinct__2171fc6aaa83",
             "filter_spec": {
               "all": [
                 {
@@ -372,7 +373,7 @@
           "measures": [
             {
               "aggregation": "count_distinct",
-              "alias": "leaf__measure_jaffle_order_count__count_distinct",
+              "alias": "leaf__measure_jaffle_order_count__count_distinct__2171fc6aaa83",
               "measure_id": "measure.jaffle.order_count"
             }
           ],
@@ -446,7 +447,7 @@
             "measures": [
               {
                 "aggregation": "count_distinct",
-                "alias": "leaf__measure_jaffle_order_count__count_distinct",
+                "alias": "leaf__measure_jaffle_order_count__count_distinct__2171fc6aaa83",
                 "measure_id": "measure.jaffle.order_count"
               }
             ],
@@ -611,7 +612,7 @@
             "measures": [
               {
                 "aggregation": "count_distinct",
-                "alias": "leaf__measure_jaffle_order_count__count_distinct",
+                "alias": "leaf__measure_jaffle_order_count__count_distinct__2171fc6aaa83",
                 "measure_id": "measure.jaffle.order_count"
               }
             ]
@@ -663,7 +664,7 @@
         }
       ],
       "outputs": {
-        "leaf__measure_jaffle_order_count__count_distinct": "leaf_1",
+        "leaf__measure_jaffle_order_count__count_distinct__2171fc6aaa83": "leaf_1",
         "orders_from_customers_with_10plus_orders_in_period": "final_project"
       },
       "version": 1
@@ -1114,7 +1115,7 @@
       {
         "aggregation": "count_distinct",
         "aggregation_params": {},
-        "alias": "leaf__measure_jaffle_order_count__count_distinct",
+        "alias": "leaf__measure_jaffle_order_count__count_distinct__2171fc6aaa83",
         "filter_spec": {
           "all": [
             {
@@ -1170,10 +1171,11 @@
     "measure_plans": [
       {
         "aggregate_relation_id": "",
+        "aggregate_relation_rejections": {},
         "bound_measure": {
           "aggregation": "count_distinct",
           "aggregation_params": {},
-          "alias": "leaf__measure_jaffle_order_count__count_distinct",
+          "alias": "leaf__measure_jaffle_order_count__count_distinct__2171fc6aaa83",
           "filter_spec": {
             "all": [
               {
