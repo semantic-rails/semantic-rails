@@ -1,11 +1,13 @@
-"""Grade the frozen eval questions through the agent harness, once per query-MCP interface.
+"""Grade the frozen eval questions through the agent harness, once per query-MCP build.
 
     uv run python scripts/agent_harness/eval_ab.py run --out RUNS --model MODEL \\
+        [--arms main=/path/to/main/.venv/bin/semantic-rails,head=semantic-rails] \\
         [--base-url URL] [--reasoning-effort low] [--cases J01,J02] [--repeats 3]
     uv run python scripts/agent_harness/eval_ab.py summary RUNS
 
 `run` writes one scenario per question of tests/semantic_rails/mcp_context/eval_jaffle.jsonl
-and runs it with run.py once per interface and repeat, alternating which interface goes first.
+and runs it with run.py once per arm and repeat, alternating which arm goes first. An arm is
+`name=command`: the `semantic-rails` executable whose `mcp stdio` serves the query MCP.
 Like Claude Code, the model gets the server's instructions and results cut at 100,000
 characters. A folder that already exists is
 skipped, so an interrupted run resumes. Each run's check is `eval_ab.py grade`: it re-runs the
@@ -18,8 +20,8 @@ case's frozen answer, using scripts/mcp_context.py's equivalence. The model ends
 - declined: an answerable question the model declined or asked about;
 - incomplete: the run stopped before a final reply.
 
-`summary` counts outcomes and median tokens per interface, and the paired accuracy change with
-a 95% bootstrap interval. Compare interfaces within one set of runs, not across models.
+`summary` counts outcomes and median tokens per arm, and the paired accuracy change with
+a 95% bootstrap interval. Compare arms within one set of runs, not across models.
 """
 
 from __future__ import annotations
@@ -50,14 +52,11 @@ STATUSES = ("answered", "cannot_answer", "needs_clarification")
 OUTCOMES = ("correct", "silent_wrong", "declined", "incomplete")
 
 
-def scenario(case: dict[str, Any], interface: str) -> dict[str, Any]:
+def scenario(case: dict[str, Any], arm: str, server: str = "semantic-rails") -> dict[str, Any]:
     return {
-        "name": f"{case['id']}-{interface}",
+        "name": f"{case['id']}-{arm}",
         "task": case["question"] + STATUS_LINE,
-        "servers": {
-            "query": f"env SEMANTIC_RAILS_MCP_INTERFACE={interface} "
-            "semantic-rails mcp stdio --path jaffle_shop"
-        },
+        "servers": {"query": f"{server} mcp stdio --path jaffle_shop"},
         "setup": "cp -R {repo}/configs/semantic_rails/jaffle_shop jaffle_shop && mkdir "
         "jaffle_shop/data && cp -R {repo}/data/jaffle_csv {repo}/data/seed_jaffle.sql "
         "jaffle_shop/data/",
@@ -111,27 +110,27 @@ def grade(case: dict[str, Any], final: str, query: dict[str, Any] | None, packag
 def summary(runs: Path) -> str:
     rows: dict[tuple[str, str, int], dict[str, Any]] = {}
     for path in sorted(runs.glob("*/summary.json")):
-        case_id, interface, repeat = path.parent.name.split("-")
+        case_id, arm, repeat = path.parent.name.split("-")
         data = json.loads(path.read_text(encoding="utf-8"))
         output = str(data["check"].get("output") or "").split()
         outcome = output[0] if data["finished"] and output else "incomplete"
-        rows[(case_id, interface, int(repeat))] = {**data, "outcome": outcome}
-    interfaces = sorted({interface for _case, interface, _repeat in rows})
+        rows[(case_id, arm, int(repeat))] = {**data, "outcome": outcome}
+    arms = sorted({arm for _case, arm, _repeat in rows})
     lines = [
-        "| interface | runs | " + " | ".join(OUTCOMES) + " | median tokens | median tool calls |",
+        "| arm | runs | " + " | ".join(OUTCOMES) + " | median tokens | median tool calls |",
         "|---|---|" + "---|" * (len(OUTCOMES) + 2),
     ]
-    for interface in interfaces:
-        mine = [row for key, row in rows.items() if key[1] == interface]
+    for arm in arms:
+        mine = [row for key, row in rows.items() if key[1] == arm]
         tokens = statistics.median(row["total_tokens"] or 0 for row in mine)
         calls = statistics.median(row["tool_calls"] for row in mine)
         counts = " | ".join(str(sum(row["outcome"] == o for row in mine)) for o in OUTCOMES)
-        lines.append(f"| {interface} | {len(mine)} | {counts} | {tokens:,.0f} | {calls:g} |")
-    base, new = (interfaces + ["", ""])[:2]
+        lines.append(f"| {arm} | {len(mine)} | {counts} | {tokens:,.0f} | {calls:g} |")
+    base, new = (arms + ["", ""])[:2]
     pairs = [
         (row, rows[(case, new, repeat)])
-        for (case, interface, repeat), row in rows.items()
-        if interface == base and (case, new, repeat) in rows
+        for (case, arm, repeat), row in rows.items()
+        if arm == base and (case, new, repeat) in rows
     ]
     if pairs:
         deltas = [(b["outcome"] == "correct") - (a["outcome"] == "correct") for a, b in pairs]
@@ -163,7 +162,9 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--base-url", default="http://127.0.0.1:8081/v1")
     runner.add_argument("--reasoning-effort", default="")
     runner.add_argument("--cases", default="", help="comma-separated case ids (default: all)")
-    runner.add_argument("--interfaces", default="v1,v2")
+    runner.add_argument(
+        "--arms", default="head=semantic-rails", help="comma-separated name=command (no '-')"
+    )
     runner.add_argument("--repeats", type=int, default=1)
     commands.add_parser("grade").add_argument("case")
     commands.add_parser("summary").add_argument("runs", type=Path)
@@ -179,16 +180,18 @@ def main(argv: list[str] | None = None) -> int:
         print(summary(args.runs))
         return 0
     wanted = [case for case in cases if not args.cases or case in args.cases.split(",")]
-    interfaces = args.interfaces.split(",")
+    arms = dict(arm.split("=", 1) for arm in args.arms.split(","))
     (args.out / "scenarios").mkdir(parents=True, exist_ok=True)
     for index, case_id in enumerate(wanted):
         for repeat in range(args.repeats):
-            for interface in interfaces if index % 2 == 0 else interfaces[::-1]:
-                out = args.out / f"{case_id}-{interface}-{repeat}"
+            for arm in list(arms) if index % 2 == 0 else list(arms)[::-1]:
+                out = args.out / f"{case_id}-{arm}-{repeat}"
                 if out.exists():
                     continue
-                path = args.out / "scenarios" / f"{case_id}-{interface}.yml"
-                path.write_text(json.dumps(scenario(cases[case_id], interface)), encoding="utf-8")
+                path = args.out / "scenarios" / f"{case_id}-{arm}.yml"
+                path.write_text(
+                    json.dumps(scenario(cases[case_id], arm, arms[arm])), encoding="utf-8"
+                )
                 command = [str(path), "--out", str(out), "--model", args.model]
                 command += ["--base-url", args.base_url, "--host-result-chars", "100000"]
                 command += ["--instructions"]

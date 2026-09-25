@@ -319,8 +319,8 @@ def _low_relevance_block(
             "object name, label, or search term"
         ),
         "recovery_hint": (
-            "Call the `discover` tool with simpler terms, or the `catalog` "
-            "tool to browse the available objects in this package."
+            "Call `discover` with simpler terms, or browse the catalog of available "
+            "objects in this package (over MCP, `discover` with empty terms)."
         ),
         "catalog_token_sample": catalog_token_sample,
     }

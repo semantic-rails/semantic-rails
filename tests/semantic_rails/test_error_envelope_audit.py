@@ -51,7 +51,7 @@ def _trigger_object_not_found(adapter: SemanticLayerMCPAdapter) -> dict[str, Any
 
 
 def _trigger_invalid_mcp_arguments(adapter: SemanticLayerMCPAdapter) -> dict[str, Any]:
-    return adapter.call_tool("compile", {"query": "this is not a query"})
+    return adapter.call_tool("execute", {"query": "this is not a query", "mode": "sql"})
 
 
 def _trigger_unknown_mcp_tool(adapter: SemanticLayerMCPAdapter) -> dict[str, Any]:
@@ -142,8 +142,8 @@ def test_mcp_handler_bare_exception_surfaces_as_internal_error(runtime_factory) 
 
             return adapter._guarded(arguments, _inner)  # noqa: SLF001
 
-        adapter._tool_handlers["catalog"] = _exploding_handler  # noqa: SLF001
-        result = adapter.call_tool("catalog", {})
+        adapter._tool_handlers["discover"] = _exploding_handler  # noqa: SLF001
+        result = adapter.call_tool("discover", {})
         assert result["ok"] is False
         errors = list(result.get("errors", []) or [])
         assert errors

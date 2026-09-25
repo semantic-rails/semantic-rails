@@ -4,11 +4,11 @@ A blind-agent evaluation (2026-06) measured the validate/compile/execute
 MCP tools returning 91KB/99KB/103KB envelopes at their old default
 verbosity ('compact', inherited from the HTTP v1 surface), and a single
 failed call burning 62KB of a context-constrained agent's window. The
-MCP adapter now defaults those three tools to verbosity='minimal':
+MCP adapter now defaults execute, in every mode, to verbosity='minimal':
 
-  * validate -> {ok, errors, warnings}
-  * compile  -> {ok, errors, warnings, rendered_sql}
-  * execute  -> {ok, errors, warnings, rows, row_count}
+  * mode validate -> {ok, errors, warnings}
+  * mode sql      -> {ok, errors, warnings, rendered_sql}
+  * mode run      -> {ok, errors, warnings, rows, row_count}
 
 (plus the standard MCP envelope keys: status, request_id, recovery_hints,
 ...). Explicit `verbosity` arguments still win, and the HTTP v1 surface
@@ -75,7 +75,7 @@ def test_tool_schemas_advertise_minimal_default() -> None:
     """The inputSchema default must match the runtime behavior so agents
     reading tools/list aren't lied to."""
     for tool in MCP_TOOL_DEFINITIONS:
-        if tool["name"] not in {"validate", "compile", "execute"}:
+        if tool["name"] != "execute":
             continue
         verbosity = tool["inputSchema"]["properties"]["verbosity"]
         assert verbosity["default"] == "minimal", (
@@ -88,10 +88,9 @@ def test_validate_defaults_to_minimal_envelope(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
-        default = adapter.call_tool("validate", {"query": dict(_TWO_ROW_QUERY)})
-        explicit = adapter.call_tool(
-            "validate", {"query": dict(_TWO_ROW_QUERY), "verbosity": "minimal"}
-        )
+        validate = {"query": dict(_TWO_ROW_QUERY), "mode": "validate"}
+        default = adapter.call_tool("execute", validate)
+        explicit = adapter.call_tool("execute", {**validate, "verbosity": "minimal"})
         assert default["ok"] is True
         for key in (*_HEAVY_KEYS, "rendered_sql"):
             assert key not in default, f"default validate envelope leaked {key}"
@@ -101,9 +100,7 @@ def test_validate_defaults_to_minimal_envelope(runtime_factory) -> None:
             "timing_ms",
         }
         # Explicit verbosity still wins over the minimal default.
-        compact = adapter.call_tool(
-            "validate", {"query": dict(_TWO_ROW_QUERY), "verbosity": "compact"}
-        )
+        compact = adapter.call_tool("execute", {**validate, "verbosity": "compact"})
         assert "normalized_query" in compact, "explicit verbosity=compact must win"
     finally:
         adapter.close()
@@ -113,7 +110,7 @@ def test_compile_defaults_to_minimal_but_keeps_rendered_sql(runtime_factory) -> 
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
-        default = adapter.call_tool("compile", {"query": dict(_TWO_ROW_QUERY)})
+        default = adapter.call_tool("execute", {"query": dict(_TWO_ROW_QUERY), "mode": "sql"})
         assert default["ok"] is True
         assert default.get("rendered_sql"), (
             "minimal compile must keep rendered_sql — it is the tool's product"
@@ -147,11 +144,11 @@ def test_execute_default_args_returns_rows_under_six_kb(runtime_factory) -> None
         adapter.close()
 
 
-@pytest.mark.parametrize("tool_name", ["validate", "compile", "execute"])
-def test_error_envelopes_are_minimal_by_default(runtime_factory, tool_name: str) -> None:
+@pytest.mark.parametrize("mode", ["validate", "sql", "run"])
+def test_error_envelopes_are_minimal_by_default(runtime_factory, mode: str) -> None:
     """Failed calls must not cost more than successful ones — the blind
     agent burned 62KB on a single failed default-verbosity call. A bad
-    grain through any of the three tools must come back small, while
+    grain through any execute mode must come back small, while
     still carrying the structured errors + recovery_hints contract."""
     bad_query = {
         "version": 1,
@@ -169,17 +166,17 @@ def test_error_envelopes_are_minimal_by_default(runtime_factory, tool_name: str)
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
-        envelope = adapter.call_tool(tool_name, {"query": bad_query})
+        envelope = adapter.call_tool("execute", {"query": bad_query, "mode": mode})
         assert envelope["ok"] is False
         assert envelope.get("errors"), "structured errors must survive minimal gating"
         assert envelope.get("recovery_hints"), (
             "recovery_hints must survive minimal gating — that is the loop-repair signal"
         )
         for key in _HEAVY_KEYS:
-            assert key not in envelope, f"default {tool_name} error envelope leaked {key}"
+            assert key not in envelope, f"default {mode} error envelope leaked {key}"
         size = _wire_bytes(envelope)
         assert size < 8_000, (
-            f"default-verbosity {tool_name} ERROR envelope is {size:,}B; "
+            f"default-verbosity {mode} ERROR envelope is {size:,}B; "
             "failed calls must stay cheap for context-constrained agents."
         )
     finally:
@@ -199,7 +196,7 @@ def test_plan_next_block_inherits_minimal_default(runtime_factory) -> None:
         assert "query" in validate_args, "plan.next.validate must pre-bake the query"
         assert "verbosity" not in validate_args
         assert "verbosity" not in (validate_args.get("query") or {})
-        forwarded = adapter.call_tool("validate", validate_args)
+        forwarded = adapter.call_tool("execute", {**validate_args, "mode": "validate"})
         for key in (*_HEAVY_KEYS, "rendered_sql"):
             assert key not in forwarded, (
                 f"forwarding plan.next.validate leaked {key} — the pre-baked "
@@ -218,6 +215,6 @@ def test_tools_list_under_24kb_budget() -> None:
     assert total < 24_000, (
         f"tools/list JSON is {total:,}B — over the 24,000B budget. "
         "Dedupe schemas/descriptions (the IR cheat-sheet and full "
-        "QUERY_SCHEMA live on 'validate' only) or raise the cap "
+        "QUERY_SCHEMA live on 'execute' only) or raise the cap "
         "explicitly with a comment."
     )

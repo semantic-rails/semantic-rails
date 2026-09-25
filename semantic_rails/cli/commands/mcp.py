@@ -31,19 +31,7 @@ from ..common import (
 )
 from ..output import _package_display
 
-MCP_REQUIRED_TOOLS = (
-    "capabilities",
-    "catalog",
-    "discover",
-    "inspect",
-    "build-options",
-    "valid-values",
-    "plan",
-    "validate",
-    "compile",
-    "execute",
-)
-MCP_V2_REQUIRED_TOOLS = ("discover", "inspect", "valid-values", "plan", "execute", "segment")
+MCP_REQUIRED_TOOLS = ("discover", "inspect", "valid-values", "plan", "execute", "segment")
 
 
 def _mcp_tool_check(runtime: Runtime) -> dict[str, Any]:
@@ -53,8 +41,7 @@ def _mcp_tool_check(runtime: Runtime) -> dict[str, Any]:
     finally:
         adapter.close()
     tool_names = sorted(str(tool.get("name", "")) for tool in tools if tool.get("name"))
-    required = MCP_REQUIRED_TOOLS if adapter.interface == "v1" else MCP_V2_REQUIRED_TOOLS
-    missing = [name for name in required if name not in tool_names]
+    missing = [name for name in MCP_REQUIRED_TOOLS if name not in tool_names]
     return {
         "adapter": "ok",
         "interface": adapter.interface,

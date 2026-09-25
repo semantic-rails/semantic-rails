@@ -56,7 +56,7 @@ def plan_payload(
           "status":      "ok|low_confidence|unrealizable|out_of_scope",
           "best":        {...} | None,
           "why":         {...} | None,              # set when status != ok
-          "next":        {"validate":{...}, "valid_values":[...], "ready_for":[...]},
+          "next":        {"validate":{...}, "valid_values":[...], "ready_for":["execute"]},
         }
     """
 
@@ -172,7 +172,7 @@ def plan_payload(
                 "message": (
                     "No built-in pattern realized this intent. Use "
                     "compose_hints to author a Query IR directly, "
-                    "then call validate."
+                    "then validate it (over MCP, execute with mode 'validate')."
                 ),
             },
             "compose_hints": compose_hints(intent_ir),
@@ -936,7 +936,10 @@ def _fallback_semantic_drift(
         "recovery_hints": [
             {
                 "kind": "inspect_primary_failure",
-                "message": "Call validate on best.query_ir to see why the semantically closest draft failed.",
+                "message": (
+                    "Validate best.query_ir (over MCP, execute with mode 'validate') to see "
+                    "why the semantically closest draft failed."
+                ),
             },
             {
                 "kind": "use_explicit_filter_or_segment",
@@ -1169,7 +1172,7 @@ def _unresolved_time_why(
                     "Or pass a complete window in the plan tool's query argument: "
                     "set query.time.start and query.time.end (end-exclusive), or "
                     "query.time.range.last with unit and value. Include the selected "
-                    "temporal_role and grain in query.time; use build-options to choose them."
+                    "temporal_role and grain in query.time; inspect the measure to choose them."
                 ),
             },
         ],
@@ -1342,8 +1345,8 @@ def _trim_why_errors(errors: list[dict[str, Any]]) -> dict[str, Any]:
         why["truncated"] = {
             "dropped": overflow,
             "hint": (
-                f"+{overflow} additional validation errors; call "
-                "validate on best.query_ir for the full list."
+                f"+{overflow} additional validation errors; validate best.query_ir "
+                "(over MCP, execute with mode 'validate') for the full list."
             ),
         }
     return why
@@ -1399,23 +1402,22 @@ def _next_block(query: dict[str, Any], *, ready: bool) -> dict[str, Any]:
     immediately useful next workflow steps.
 
     Carries ``validate`` with the query inline so the agent can
-    forward without restructuring. When the IR has ``where`` filters,
+    forward without restructuring (over MCP, validation is ``execute``
+    with ``mode: "validate"``). When the IR has ``where`` filters,
     ``valid_values`` lists one entry per filtered dimension so the
     agent can confirm the literal values exist before executing.
 
-    ``ready_for`` flags downstream calls that take the same ``{query}``
+    ``ready_for`` flags the downstream call that takes the same ``{query}``
     shape — once validate passes, the agent reuses
     ``next.validate.query`` (or equivalently ``best.query_ir``) for
-    those calls instead of paying to duplicate the IR three times in
-    every response.
+    ``execute`` instead of paying to duplicate the IR in every response.
     """
 
     out: dict[str, Any] = {"validate": {"query": query}}
     if ready:
-        # Cheap signal that the same query is ready to forward to these
-        # later workflow steps. Avoids triplicating the IR under three
-        # separate keys (validate/compile/execute).
-        out["ready_for"] = ["compile", "execute"]
+        # Cheap signal that the same query is ready to run, without
+        # repeating the IR under another key.
+        out["ready_for"] = ["execute"]
     valid_values_calls = _valid_values_next_steps(query)
     if valid_values_calls:
         out["valid_values"] = valid_values_calls

@@ -93,8 +93,8 @@ measure), jaffle ships both so authors can compare the trade-offs.
 ### Metadata APIs
 
 - catalog browsing with four verbosity tiers (`summary`, `minimal`, `compact`, `full`)
-- standalone compact `capabilities` MCP tool for orientation
-- guided discovery via `discover`, `inspect`, `build-options`, and `plan`
+- compact `capabilities` endpoint (`/api/v1/capabilities`) for orientation
+- guided discovery via `discover`, `inspect`, `build-options` (HTTP and CLI), and `plan`
 - stage-aware discovery and builder ranking
 - resolution by canonical ID, `name`, `label`, and inline synonyms
 - `build-options` as the preferred guided-builder API
@@ -485,6 +485,6 @@ runs every file through schema validation, `Runtime.validate`, and
 3. Use [AGENT_QUICKSTART.md](AGENT_QUICKSTART.md) when wiring an agent or MCP client.
 4. Use [QUERY_API.md](QUERY_API.md) for request and response shapes.
    The core loop is `discover -> plan -> execute`. `execute` validates and compiles first, so
-   `validate` and `compile` are optional dry runs.
+   `validate` and `compile` (on MCP, `execute` modes `validate` and `sql`) are optional dry runs.
 5. Scaffold a new package with `semantic-rails init` (it validates as it generates). [configs/examples/semantic_rails_package_starter.yml](../configs/examples/semantic_rails_package_starter.yml) is a *single-file* package starter — if you explode it into a directory package, drop the `grain:` keys (directory packages reject them under `schema_strict`).
 6. Use [ARCHITECTURE.md](ARCHITECTURE.md) when you need the architecture spec rather than the user guide.

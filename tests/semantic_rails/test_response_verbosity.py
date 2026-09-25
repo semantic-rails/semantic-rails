@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 _BASE_QUERY = {
     "version": 1,
     "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
@@ -315,8 +313,8 @@ def test_mcp_validate_hoists_verbosity_from_outer_arguments(runtime_factory):
     try:
         adapter = SemanticLayerMCPAdapter(runtime)
         envelope = adapter.call_tool(
-            "validate",
-            {"query": dict(_BASE_QUERY), "verbosity": "minimal"},
+            "execute",
+            {"query": dict(_BASE_QUERY), "mode": "validate", "verbosity": "minimal"},
         )
         # The MCP envelope adds status/ok/api_version/etc., but the
         # validate-shaped payload it wraps must reflect minimal gating.
@@ -470,10 +468,10 @@ def test_http_query_payload_in_query_values_win_over_outer():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tool_name", ["validate", "compile", "execute"])
-def test_mcp_tool_schema_advertises_verbosity_and_sql_profile(tool_name: str):
+def test_mcp_tool_schema_advertises_verbosity_and_sql_profile():
     from semantic_rails.mcp import MCP_TOOL_DEFINITIONS
 
+    tool_name = "execute"
     matches = [row for row in MCP_TOOL_DEFINITIONS if row["name"] == tool_name]
     assert matches, f"tool {tool_name} not registered"
     schema = matches[0]["inputSchema"]
@@ -483,7 +481,7 @@ def test_mcp_tool_schema_advertises_verbosity_and_sql_profile(tool_name: str):
     assert verbosity.get("enum") == ["minimal", "compact", "full"], (
         f"{tool_name}.verbosity must offer the Phase 1 levels, got {verbosity.get('enum')}"
     )
-    # The MCP adapter defaults these three tools to 'minimal' for
+    # The MCP adapter defaults execute, in every mode, to 'minimal' for
     # context-constrained agents (the HTTP v1 surface keeps 'compact').
     assert verbosity.get("default") == "minimal"
 
@@ -510,8 +508,8 @@ def test_mcp_plan_tool_schema_advertises_query_detail():
     detail = plan["inputSchema"]["properties"].get("detail") or {}
 
     assert detail.get("enum") == ["query", "best", "full", "debug"]
-    # Stable v1 keeps its detailed default; compact query is an explicit opt-in.
-    assert detail.get("default") == "best"
+    # The compact query is the default; 'best' and above are explicit opt-ins.
+    assert detail.get("default") == "query"
 
 
 # ---------------------------------------------------------------------------

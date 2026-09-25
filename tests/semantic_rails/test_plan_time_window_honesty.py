@@ -162,7 +162,7 @@ def test_plan_last_month_is_time_bounded_and_ready(runtime_factory) -> None:
     time_spec = payload["best"]["query_ir"]["time"]
     assert time_spec["range"] == {"last": {"unit": "month", "value": 1}}
     assert payload["best"]["validation_ok"] is True
-    assert payload["next"]["ready_for"] == ["compile", "execute"]
+    assert payload["next"]["ready_for"] == ["execute"]
 
 
 def test_plan_last_n_days_is_time_bounded(runtime_factory) -> None:
@@ -201,14 +201,14 @@ def test_plan_unresolved_window_downgrades_instead_of_silently_dropping(
     assert "query_ir" not in payload["best"] and "validate" not in payload["next"]
 
 
-@pytest.mark.parametrize(("interface", "detail"), [("v1", "best"), ("v1", "full"), ("v2", None)])
+@pytest.mark.parametrize("detail", ["best", "full", None])
 def test_mcp_plan_offers_no_runnable_draft_without_the_window(
-    runtime_factory, interface: str, detail: str | None
+    runtime_factory, detail: str | None
 ) -> None:
     intent = "Revenue by store and month for January, February and March 2017"
     time = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
     window = {**time, "start": "2017-01-01", "end": "2017-04-01"}
-    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"), interface=interface)
+    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
     try:
         plan = mcp.call_tool("plan", {"intent": intent, **({"detail": detail} if detail else {})})
         bounded = mcp.call_tool("plan", {"intent": intent, "query": {"time": window}})
@@ -255,7 +255,7 @@ def test_partial_query_bounds_suppress_the_downgrade(runtime_factory) -> None:
     time_spec = payload["best"]["query_ir"]["time"]
     assert time_spec["start"] == "2025-01-01"
     assert time_spec["end"] == "2025-02-01"
-    assert payload["next"]["ready_for"] == ["compile", "execute"]
+    assert payload["next"]["ready_for"] == ["execute"]
 
 
 def test_plan_period_shift_comparison_is_not_window_bounded(runtime_factory) -> None:

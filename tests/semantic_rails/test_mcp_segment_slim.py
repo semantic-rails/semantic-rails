@@ -1,11 +1,10 @@
-"""MCP segment tools offer an explicit minimal response.
+"""The MCP segment tool returns a minimal response by default.
 
-validate, compile and execute already default to minimal responses over MCP,
-but the three segment tools returned the runtime's whole response: logical,
-SQL, physical and performance plans, most of them twice. segment-preview was
-the largest default MCP response, over 11K tokens. Explicit
-``verbosity="minimal"`` returns what each tool is for; omitted and ``"full"``
-return the v1 whole response.
+The segment tools used to return the runtime's whole response: logical,
+SQL, physical and performance plans, most of them twice. A segment preview was
+the largest default MCP response, over 11K tokens. ``verbosity="minimal"``
+(the default) returns what each action is for; ``"full"`` returns the whole
+response.
 """
 
 from __future__ import annotations
@@ -20,11 +19,11 @@ from semantic_rails.schema import SemanticPolicyConfig
 
 SEGMENT = "segment.jaffle.high_value_customers"
 ARGUMENTS = {
-    "segment-validate": {"segment_id": SEGMENT},
-    "segment-explain": {"segment_id": SEGMENT},
-    "segment-preview": {"segment_id": SEGMENT, "limit": 3},
+    "validate": {"segment_id": SEGMENT, "action": "validate"},
+    "explain": {"segment_id": SEGMENT, "action": "explain"},
+    "preview": {"segment_id": SEGMENT, "action": "preview", "limit": 3},
 }
-TOOLS = tuple(ARGUMENTS)
+ACTIONS = tuple(ARGUMENTS)
 PLANS = {"explain", "logical_plan", "sql_plan", "physical_plan", "performance_plan", "count_sql"}
 ENVELOPE = {
     "ok",
@@ -39,9 +38,9 @@ ENVELOPE = {
     "request_context",
 }
 EXPECTED = {
-    "segment-validate": {"segment", "normalized_segment", "derived_query"},
-    "segment-explain": {"segment", "normalized_segment", "derived_query", "rendered_sql"},
-    "segment-preview": {"segment", "rows", "preview_row_count", "member_count", "derived_query"},
+    "validate": {"segment", "normalized_segment", "derived_query"},
+    "explain": {"segment", "normalized_segment", "derived_query", "rendered_sql"},
+    "preview": {"segment", "rows", "preview_row_count", "member_count", "derived_query"},
 }
 
 
@@ -54,23 +53,22 @@ def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
         mcp.close()
 
 
-@pytest.mark.parametrize("tool", TOOLS)
-def test_segment_tools_advertise_v1_default_and_minimal_opt_in(tool: str) -> None:
-    definition = next(item for item in list_tool_definitions() if item["name"] == tool)
+def test_segment_tool_advertises_minimal_default_and_full_opt_in() -> None:
+    definition = next(item for item in list_tool_definitions() if item["name"] == "segment")
     verbosity = definition["inputSchema"]["properties"]["verbosity"]
-    assert verbosity["default"] == "full"
+    assert verbosity["default"] == "minimal"
     assert verbosity["enum"] == ["minimal", "full"]
 
 
-@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("action", ACTIONS)
 def test_minimal_response_answers_without_compiler_plans(
-    adapter: SemanticLayerMCPAdapter, tool: str
+    adapter: SemanticLayerMCPAdapter, action: str
 ) -> None:
-    response = adapter.call_tool(tool, {**ARGUMENTS[tool], "verbosity": "minimal"})
+    response = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "minimal"})
     assert response["ok"] is True, response["errors"]
-    assert EXPECTED[tool] <= set(response), sorted(EXPECTED[tool] - set(response))
+    assert EXPECTED[action] <= set(response), sorted(EXPECTED[action] - set(response))
     assert not PLANS & set(response)
-    extra = set(response) - ENVELOPE - EXPECTED[tool]
+    extra = set(response) - ENVELOPE - EXPECTED[action]
     assert extra <= {
         "segment_policy_effects",
         "policy_effects",
@@ -80,24 +78,21 @@ def test_minimal_response_answers_without_compiler_plans(
     assert response["segment"]["id"] == SEGMENT
 
 
-@pytest.mark.parametrize("tool", TOOLS)
-def test_full_response_on_request(adapter: SemanticLayerMCPAdapter, tool: str) -> None:
-    full = adapter.call_tool(tool, {**ARGUMENTS[tool], "verbosity": "full"})
-    slim = adapter.call_tool(tool, {**ARGUMENTS[tool], "verbosity": "minimal"})
+@pytest.mark.parametrize("action", ACTIONS)
+def test_full_response_on_request(adapter: SemanticLayerMCPAdapter, action: str) -> None:
+    full = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "full"})
+    slim = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "minimal"})
     assert {"explain", "logical_plan"} <= set(full)
-    default = adapter.call_tool(tool, ARGUMENTS[tool])
-    assert set(default) == set(full)
-    assert {"explain", "logical_plan"} <= set(default)
     # "compact", the whole-response level on other tools, means the same here.
-    compact = adapter.call_tool(tool, {**ARGUMENTS[tool], "verbosity": "compact"})
+    compact = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "compact"})
     assert set(compact) == set(full)
     assert len(str(slim)) < len(str(full)) / 3
 
 
 def test_preview_keeps_its_rows_and_counts(adapter: SemanticLayerMCPAdapter) -> None:
-    arguments = ARGUMENTS["segment-preview"]
-    full = adapter.call_tool("segment-preview", {**arguments, "verbosity": "full"})
-    slim = adapter.call_tool("segment-preview", {**arguments, "verbosity": "minimal"})
+    arguments = ARGUMENTS["preview"]
+    full = adapter.call_tool("segment", {**arguments, "verbosity": "full"})
+    slim = adapter.call_tool("segment", {**arguments, "verbosity": "minimal"})
     for key in ("preview_row_count", "member_count", "derived_query"):
         assert slim[key] == full[key], key
     # The sample itself is unordered, so compare its shape.
@@ -107,13 +102,13 @@ def test_preview_keeps_its_rows_and_counts(adapter: SemanticLayerMCPAdapter) -> 
     }
 
 
-@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("action", ACTIONS)
 def test_minimal_retains_production_policy_effects_from_real_segment(
-    adapter: SemanticLayerMCPAdapter, tool: str
+    adapter: SemanticLayerMCPAdapter, action: str
 ) -> None:
-    arguments = {**ARGUMENTS[tool], "policy_context": {"environment": "production"}}
-    full = adapter.call_tool(tool, {**arguments, "verbosity": "full"})
-    minimal = adapter.call_tool(tool, {**arguments, "verbosity": "minimal"})
+    arguments = {**ARGUMENTS[action], "policy_context": {"environment": "production"}}
+    full = adapter.call_tool("segment", {**arguments, "verbosity": "full"})
+    minimal = adapter.call_tool("segment", {**arguments, "verbosity": "minimal"})
     assert full["ok"] is minimal["ok"] is True
     assert minimal["policy_effects"] == full["policy_effects"]
     assert any(
@@ -121,26 +116,26 @@ def test_minimal_retains_production_policy_effects_from_real_segment(
         and effect["action"] == "protected"
         for effect in minimal["policy_effects"]
     )
-    if tool != "segment-preview":
+    if action != "preview":
         assert minimal["segment_policy_effects"] == full["segment_policy_effects"]
     assert not PLANS & set(minimal)
 
 
-@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("action", ACTIONS)
 def test_minimal_retains_real_missing_segment_diagnostics(
-    adapter: SemanticLayerMCPAdapter, tool: str
+    adapter: SemanticLayerMCPAdapter, action: str
 ) -> None:
-    arguments = {"segment_id": "segment.jaffle.nope", "verbosity": "full"}
-    full = adapter.call_tool(tool, arguments)
-    minimal = adapter.call_tool(tool, {**arguments, "verbosity": "minimal"})
+    arguments = {"segment_id": "segment.jaffle.nope", "action": action, "verbosity": "full"}
+    full = adapter.call_tool("segment", arguments)
+    minimal = adapter.call_tool("segment", {**arguments, "verbosity": "minimal"})
     assert full["ok"] is minimal["ok"] is False
     assert minimal["errors"] == full["errors"]
     assert minimal["recovery_hints"] == full["recovery_hints"]
     assert minimal["errors"][0]["code"]
 
 
-@pytest.mark.parametrize("tool", TOOLS)
-def test_minimal_retains_real_policy_denial(runtime_factory: Any, tool: str) -> None:
+@pytest.mark.parametrize("action", ACTIONS)
+def test_minimal_retains_real_policy_denial(runtime_factory: Any, action: str) -> None:
     original = runtime_factory("jaffle_shop")
     config = original.config
     config.semantic_policies.append(
@@ -162,11 +157,11 @@ def test_minimal_retains_real_policy_denial(runtime_factory: Any, tool: str) -> 
     mcp = SemanticLayerMCPAdapter(runtime)
     try:
         arguments = {
-            **ARGUMENTS[tool],
+            **ARGUMENTS[action],
             "policy_context": {"audience": "external", "tenant": "tenant-a"},
         }
-        full = mcp.call_tool(tool, {**arguments, "verbosity": "full"})
-        minimal = mcp.call_tool(tool, {**arguments, "verbosity": "minimal"})
+        full = mcp.call_tool("segment", {**arguments, "verbosity": "full"})
+        minimal = mcp.call_tool("segment", {**arguments, "verbosity": "minimal"})
         assert full["ok"] is minimal["ok"] is False
         assert minimal["errors"] == full["errors"]
         assert minimal["errors"][0]["code"] == "POLICY_DENIED"
@@ -175,13 +170,13 @@ def test_minimal_retains_real_policy_denial(runtime_factory: Any, tool: str) -> 
         mcp.close()
 
 
-@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize("action", ACTIONS)
 def test_minimal_retains_soft_failure_policy_and_recovery_fields(
-    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch, tool: str
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch, action: str
 ) -> None:
     # Segment validate can return a soft failure after validating the derived
     # query. Exercise the same response shaper for every segment entry point.
-    method_name = tool.replace("-", "_")
+    method_name = f"segment_{action}"
     payload = {
         "ok": False,
         "status": "blocked",
@@ -196,8 +191,8 @@ def test_minimal_retains_soft_failure_policy_and_recovery_fields(
         "logical_plan": {"root_entity": "customers"},
     }
     monkeypatch.setattr(adapter.runtime, method_name, lambda *args, **kwargs: payload)
-    full = adapter.call_tool(tool, {**ARGUMENTS[tool], "verbosity": "full"})
-    minimal = adapter.call_tool(tool, {**ARGUMENTS[tool], "verbosity": "minimal"})
+    full = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "full"})
+    minimal = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "minimal"})
     for key in (
         "ok",
         "status",

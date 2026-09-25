@@ -2505,7 +2505,7 @@ def discover_payload(
         payload["no_matches"] = {
             "terms": terms,
             "reason": "no candidate matched the supplied search terms",
-            "recovery_hint": "Try simpler or more specific terms, or call the `catalog` tool to browse available objects.",
+            "recovery_hint": "Try simpler or more specific terms, or browse the catalog of available objects.",
         }
     # Empty-`terms` warning. The blind-agent benchmark caught a probe
     # that passed `term` (singular) and silently got back default-ordering
@@ -2526,8 +2526,8 @@ def discover_payload(
                 ),
                 "recovery_hint": (
                     "Pass `terms` as a string of business words "
-                    "(e.g. 'revenue by store'), or call the `catalog` tool to "
-                    "browse the full object inventory without ranking."
+                    "(e.g. 'revenue by store'), or browse the catalog for the full "
+                    "object inventory without ranking."
                 ),
             },
         ]

@@ -113,8 +113,8 @@ def test_kinded_expression_with_only_valid_keys_passes_unknown_key_check():
 
 
 def _first_error(out: dict) -> dict:
-    """``validate`` returns ``ok=False`` with the structured issue in
-    ``errors[0]``; ``compile`` raises (caught by the adapter and packed
+    """execute mode ``validate`` returns ``ok=False`` with the structured issue
+    in ``errors[0]``; mode ``sql`` raises (caught by the adapter and packed
     into ``error`` at the top level). Return whichever shape is present.
     """
     if isinstance(out.get("error"), dict):
@@ -128,8 +128,9 @@ def test_mcp_validate_with_bad_order_by_returns_structured_envelope(runtime_fact
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         out = adapter.call_tool(
-            "validate",
+            "execute",
             {
+                "mode": "validate",
                 "query": {
                     "version": 1,
                     "select": [
@@ -141,7 +142,7 @@ def test_mcp_validate_with_bad_order_by_returns_structured_envelope(runtime_fact
                             "direction": "DESC",
                         }
                     ],
-                }
+                },
             },
         )
     finally:
@@ -155,7 +156,7 @@ def test_mcp_validate_with_bad_order_by_returns_structured_envelope(runtime_fact
 
 
 def test_mcp_compile_with_bad_order_by_returns_structured_envelope(runtime_factory):
-    """``compile`` raises rather than soft-failing — the adapter must
+    """execute mode ``sql`` raises rather than soft-failing — the adapter must
     still pack the structured envelope (this is the surface the reviewer
     reported as 'MCP error -32603: field').
     """
@@ -163,8 +164,9 @@ def test_mcp_compile_with_bad_order_by_returns_structured_envelope(runtime_facto
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         out = adapter.call_tool(
-            "compile",
+            "execute",
             {
+                "mode": "sql",
                 "query": {
                     "version": 1,
                     "select": [
@@ -176,7 +178,7 @@ def test_mcp_compile_with_bad_order_by_returns_structured_envelope(runtime_facto
                             "direction": "DESC",
                         }
                     ],
-                }
+                },
             },
         )
     finally:
@@ -194,8 +196,9 @@ def test_mcp_validate_with_unknown_expression_key_returns_closest_matches(runtim
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         out = adapter.call_tool(
-            "validate",
+            "execute",
             {
+                "mode": "validate",
                 "query": {
                     "version": 1,
                     "select": [
@@ -207,7 +210,7 @@ def test_mcp_validate_with_unknown_expression_key_returns_closest_matches(runtim
                             "as": "rev",
                         }
                     ],
-                }
+                },
             },
         )
     finally:

@@ -4,10 +4,10 @@ After blind-agent probing, the MCP tools no longer
 silently accept unknown arguments. Each tool either:
 
 * **strict-reject** — raises ``INVALID_MCP_ARGUMENTS`` with
-  ``closest_matches`` (capabilities, catalog, segment-*); or
+  ``closest_matches`` (segment); or
 * **warn-and-ignore** — emits a ``<TOOL>_UNKNOWN_ARG`` warning with
-  ``closest_matches`` and continues (discover, build-options,
-  inspect, valid-values, plan, validate, compile, execute).
+  ``closest_matches`` and continues (discover, inspect, valid-values,
+  plan, execute).
 
 These tests pin that contract per tool and verify that ``policy_context``
 and top-level Query-IR passthrough still work on the warn-tools.
@@ -34,44 +34,26 @@ from semantic_rails.mcp import (
 # ----------------------------------------------------------------------
 
 _MINIMUM_ARGS: dict[str, dict[str, Any]] = {
-    "capabilities": {},
-    "catalog": {},
     "discover": {"terms": "revenue"},
     "inspect": {"object_id": "measure.jaffle.revenue_usd"},
-    "build-options": {},
     "valid-values": {"dimension_id": "dimension.jaffle.store_name"},
     "plan": {"intent": "revenue"},
-    "validate": {
-        "query": {"select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "r"}]}
-    },
-    "compile": {
-        "query": {"select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "r"}]}
-    },
     "execute": {
         "query": {"select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "r"}]}
     },
-    "segment-validate": {"segment_id": "segment.jaffle.high_value_customers"},
-    "segment-explain": {"segment_id": "segment.jaffle.high_value_customers"},
-    "segment-preview": {"segment_id": "segment.jaffle.high_value_customers"},
+    "segment": {"segment_id": "segment.jaffle.high_value_customers", "action": "validate"},
 }
 
 # Per-tool known-typo case: (typo_key, typo_value, expected_closest_match).
 # The expected match is an existing legitimate argument the typo should
 # resolve to via ``difflib.get_close_matches``.
 _KNOWN_TYPOS: dict[str, tuple[str, Any, str]] = {
-    "capabilities": ("request_idd", "x", "request_id"),
-    "catalog": ("verbosityy", "compact", "verbosity"),
     "discover": ("limitt", 5, "limit"),
     "inspect": ("object_ids", "measure.jaffle.revenue_usd", "object_id"),
-    "build-options": ("focus_object", "x", "focus_object_id"),
     "valid-values": ("dimension", "x", "dimension_id"),
     "plan": ("intentt", "revenue", "intent"),
-    "validate": ("verbosityy", "compact", "verbosity"),
-    "compile": ("verbosityy", "compact", "verbosity"),
     "execute": ("verbosityy", "compact", "verbosity"),
-    "segment-validate": ("segment_idd", "segment.jaffle.x", "segment_id"),
-    "segment-explain": ("segment_idd", "segment.jaffle.x", "segment_id"),
-    "segment-preview": ("limitt", 5, "limit"),
+    "segment": ("segment_idd", "segment.jaffle.x", "segment_id"),
 }
 
 
@@ -213,8 +195,8 @@ def test_policy_context_passthrough_no_warning(runtime_factory, tool_name: str) 
     assert out["request_context"]["audience"] == "internal"
 
 
-@pytest.mark.parametrize("tool_name", ["validate", "compile", "execute"])
-def test_top_level_ir_passthrough_no_warning(runtime_factory, tool_name: str) -> None:
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+def test_top_level_ir_passthrough_no_warning(runtime_factory, mode: str) -> None:
     """Callers who skip the ``query`` wrapper and pass canonical IR
     keys at top-level (``select``, ``time``, ``version``) must not
     trigger unknown-arg warnings — that shortcut is part of the
@@ -232,8 +214,9 @@ def test_top_level_ir_passthrough_no_warning(runtime_factory, tool_name: str) ->
             ],
             "version": 1,
             "request_id": "rq-top-level-ir",
+            "mode": mode,
         }
-        out = adapter.call_tool(tool_name, args)
+        out = adapter.call_tool("execute", args)
     finally:
         adapter.close()
     warnings = out.get("warnings") or []
@@ -243,6 +226,6 @@ def test_top_level_ir_passthrough_no_warning(runtime_factory, tool_name: str) ->
         if isinstance(w, dict) and str(w.get("code", "")).endswith("_UNKNOWN_ARG")
     ]
     assert not unknown_arg_codes, (
-        f"{tool_name}: top-level IR passthrough must not trigger "
+        f"execute mode {mode}: top-level IR passthrough must not trigger "
         f"unknown-arg warnings; got {unknown_arg_codes}"
     )

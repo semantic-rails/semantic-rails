@@ -69,7 +69,7 @@
       "uri": "semantic-rails://capabilities/summary"
     },
     {
-      "description": "V1 catalog summary with descriptive rows and counts. Large; use catalog/index for counts and ids.",
+      "description": "Catalog summary with descriptive rows and counts. Large; use catalog/index for counts and ids.",
       "mimeType": "application/json",
       "name": "catalog-summary",
       "uri": "semantic-rails://catalog/summary"
@@ -205,7 +205,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list every id per kind instead. Default: slim cards (id, label, description, score); verbosity='compact' adds match_reasons and starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list ids per kind instead, 100 at a time (limit, offset). Default: slim cards (id, label, description, score); verbosity='compact' adds match_reasons and starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -225,7 +225,14 @@
           },
           "limit": {
             "default": 10,
+            "description": "Per kind; with empty terms, ids per kind (default 100).",
             "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "With empty terms, ids to skip per kind.",
+            "minimum": 0,
             "type": "integer"
           },
           "policy_context": {
@@ -496,7 +503,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Draft one best Query IR from a natural-language intent. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are no warnings.",
+      "description": "Draft one best Query IR from a natural-language intent; call it before 'execute' instead of writing Query IR from scratch. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are no warnings.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -589,7 +596,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted, or Query IR you fixed from it. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query (errors, warnings, repair hints); mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. row_format='columns' is compact. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
+      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted (call plan first), or Query IR you fixed from it. time.end is exclusive. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query; mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {

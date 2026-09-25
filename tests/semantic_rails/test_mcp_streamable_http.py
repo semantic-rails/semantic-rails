@@ -267,7 +267,7 @@ def test_asgi_exposes_stateless_mcp_with_single_protocol_header():
     assert status == 200
     assert len([value for key, value in decoded_headers if key == "x-request-id"]) == 1
     assert len([value for key, value in decoded_headers if key == "mcp-protocol-version"]) == 1
-    assert len(payload["result"]["tools"]) == 13
+    assert len(payload["result"]["tools"]) == 6
 
 
 def test_asgi_mcp_requires_api_key_when_configured(monkeypatch):
@@ -378,8 +378,9 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
                     "id": 1,
                     "method": "tools/call",
                     "params": {
-                        "name": "validate",
+                        "name": "execute",
                         "arguments": {
+                            "mode": "validate",
                             "policy_context": {
                                 "actor": "spoofed-outer",
                                 "tenant": "tenant-spoofed",
@@ -430,9 +431,9 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
                     "id": 2,
                     "method": "tools/call",
                     "params": {
-                        "name": "catalog",
+                        "name": "discover",
                         "arguments": {
-                            "verbosity": "compact",
+                            "terms": "",
                             "policy_context": {"audience": "internal"},
                         },
                     },
@@ -471,9 +472,10 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
                     "id": 4,
                     "method": "tools/call",
                     "params": {
-                        "name": "segment-preview",
+                        "name": "segment",
                         "arguments": {
                             "segment_id": "segment.jaffle.high_value_customers",
+                            "action": "preview",
                             "policy_context": {"audience": "internal"},
                         },
                     },

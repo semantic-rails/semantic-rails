@@ -1,11 +1,11 @@
-"""MCP inspect states each fact once on explicit minimal requests.
+"""MCP inspect states each fact once at its default minimal verbosity.
 
 The inspect card repeated itself: ``object_type`` copied ``kind``,
 ``usage_summary`` copied the aggregation guidance beside it, ``top_values``
 copied ``sample_values``, and four starter patches each repeated the select.
-Its ``verbosity`` argument changed nothing. Explicit ``verbosity="minimal"``
-now returns every fact once, without empty fields, with the first starter
-patch; omitted, ``compact`` and ``full`` keep the v1 whole card.
+Its ``verbosity`` argument changed nothing. ``verbosity="minimal"`` (the
+default) now returns every fact once, without empty fields, with the first
+starter patch; ``compact`` and ``full`` keep the whole card.
 """
 
 from __future__ import annotations
@@ -42,10 +42,10 @@ def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
         mcp.close()
 
 
-def test_inspect_advertises_v1_default_and_minimal_opt_in() -> None:
+def test_inspect_advertises_minimal_default_and_whole_card_opt_in() -> None:
     inspect = next(tool for tool in list_tool_definitions() if tool["name"] == "inspect")
     verbosity = inspect["inputSchema"]["properties"]["verbosity"]
-    assert verbosity["default"] == "compact"
+    assert verbosity["default"] == "minimal"
     assert verbosity["enum"] == ["minimal", "compact", "full"]
 
 
@@ -199,17 +199,6 @@ def test_whole_card_on_request(adapter: SemanticLayerMCPAdapter, verbosity: str)
     assert card["usage_summary"]["default_aggregation"] == "sum"
     assert len(card["starter_query_patches"]) > 1
     assert response["verbosity"] == verbosity
-
-
-def test_omitted_inspect_verbosity_keeps_v1_whole_card(
-    adapter: SemanticLayerMCPAdapter,
-) -> None:
-    object_id = "measure.jaffle.revenue_usd"
-    default = adapter.call_tool("inspect", {"object_id": object_id})
-    compact = adapter.call_tool("inspect", {"object_id": object_id, "verbosity": "compact"})
-    assert default["card"] == compact["card"]
-    assert default["verbosity"] == "compact"
-    assert {"object_type", "usage_summary", "starter_query_patches"} <= set(default["card"])
 
 
 def test_http_inspect_defaults_to_whole_card_and_explicit_minimal_is_slim(

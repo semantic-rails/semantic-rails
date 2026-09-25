@@ -66,6 +66,10 @@ def governed_app(package_config_factory, monkeypatch):
         set_policy_context_resolver(previous_resolver)
 
 
+# MCP runs REST's compile and validate as execute modes.
+_EXECUTE_MODES = {"compile": "sql", "validate": "validate"}
+
+
 def _call(app, transport, operation, arguments, *, key="test-plan-dev"):
     async def request():
         headers = {
@@ -79,11 +83,14 @@ def _call(app, transport, operation, arguments, *, key="test-plan-dev"):
         path = f"/api/v1/{operation}"
         if transport == "mcp":
             path = "/mcp"
+            name = operation
+            if operation in _EXECUTE_MODES:
+                name, body = "execute", {"mode": _EXECUTE_MODES[operation], **arguments}
             body = {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": operation, "arguments": arguments},
+                "params": {"name": name, "arguments": body},
             }
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://testserver"

@@ -55,15 +55,10 @@ def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("interface", "probes"), [("v1", mcp_context.COMPACT_PROBES), ("v2", mcp_context.V2_PROBES)]
-)
-def test_compact_probes_call_every_tool(
-    jaffle_package: Path, interface: str, probes: list[mcp_context.Step]
-) -> None:
-    with mcp_context.QueryMCPClient(jaffle_package, interface=interface) as client:
+def test_default_probes_call_every_tool(jaffle_package: Path) -> None:
+    with mcp_context.QueryMCPClient(jaffle_package) as client:
         listed = {tool["name"] for tool in client.request("tools/list")["tools"]}
-    assert {tool for _name, tool, _arguments in probes} == listed
+    assert {tool for _name, tool, _arguments in mcp_context.V2_PROBES} == listed
 
 
 def test_architect_tool_list_is_tracked(tmp_path: Path) -> None:
@@ -528,7 +523,12 @@ INTERNAL_ERROR = {"ok": False, "status": "error", "errors": [{"code": "INTERNAL_
 @pytest.mark.parametrize(
     ("tool", "arguments", "payload", "probe"),
     [
-        ("segment-preview", None, INTERNAL_ERROR, "segment_preview"),
+        (
+            "segment",
+            {"segment_id": mcp_context.SEGMENT, "action": "preview"},
+            INTERNAL_ERROR,
+            "segment_preview",
+        ),
         # A mistake must fail with its own code, not with some other error...
         (
             "inspect",

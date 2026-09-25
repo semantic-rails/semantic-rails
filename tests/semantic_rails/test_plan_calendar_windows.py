@@ -299,7 +299,8 @@ def test_a_lookback_metric_keeps_its_end_and_says_so(runtime_factory: Any) -> No
         from semantic_rails.mcp import SemanticLayerMCPAdapter
 
         adapter = SemanticLayerMCPAdapter(runtime)
-        assert adapter.call_tool("validate", {"query": _best(payload)})["ok"] is True
+        checked = adapter.call_tool("execute", {"mode": "validate", "query": _best(payload)})
+        assert checked["ok"] is True
     finally:
         runtime.close()
 

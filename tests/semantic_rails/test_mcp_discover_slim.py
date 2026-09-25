@@ -1,9 +1,9 @@
-"""MCP discover offers slim cards explicitly, and canonical objects rank first.
+"""MCP discover returns slim cards by default, and canonical objects rank first.
 
 Full cards (match reasons, starter patches, comparison metadata) made
-discover over half of a typical agent session's context. Explicit
-verbosity="minimal" returns five slim cards per kind; omitted arguments keep
-the v1 full cards and count. When the question names an object outright ("revenue by
+discover over half of a typical agent session's context. verbosity="minimal"
+(the default) returns slim cards; verbosity="compact" returns the full
+cards. When the question names an object outright ("revenue by
 store"), that object outranks near-duplicates that add a qualifier the question
 never used ("delivered revenue", "drink revenue").
 """
@@ -34,10 +34,10 @@ def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
         mcp.close()
 
 
-def test_discover_advertises_v1_defaults_and_slim_opt_in() -> None:
+def test_discover_advertises_slim_default_and_full_card_opt_in() -> None:
     discover = next(tool for tool in list_tool_definitions() if tool["name"] == "discover")
     properties = discover["inputSchema"]["properties"]
-    assert properties["verbosity"]["default"] == "compact"
+    assert properties["verbosity"]["default"] == "minimal"
     assert properties["verbosity"]["enum"] == ["minimal", "compact", "full"]
     assert properties["limit"]["default"] == 10
 
@@ -93,19 +93,6 @@ def test_minimal_blocked_dimension_value_keeps_label_availability_and_reason(
     assert slim_value["available"] is False
     assert slim_value["blocked_reason"]
     assert set(slim_value) <= VALUE_KEYS | {"blocked_reason"}
-
-
-def test_omitted_discover_options_keep_v1_full_cards_and_count(
-    adapter: SemanticLayerMCPAdapter,
-) -> None:
-    default = adapter.call_tool("discover", {"terms": "revenue by store"})
-    explicit = adapter.call_tool(
-        "discover", {"terms": "revenue by store", "verbosity": "compact", "limit": 10}
-    )
-    for bucket in ("measures", "metrics", "dimensions", "entities"):
-        assert default[bucket] == explicit[bucket]
-    assert len(default["measures"]) > 5
-    assert {"match_reasons", "starter_query_patch", "topics"} <= set(default["measures"][0])
 
 
 def test_unavailable_candidates_keep_their_reason(adapter: SemanticLayerMCPAdapter) -> None:

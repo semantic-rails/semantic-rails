@@ -765,7 +765,7 @@ def recovery_hints_for_error(
                     "message": (
                         "No close matches in the catalog. Call discover with "
                         f"terms={discover_term!r} to find candidates by topic, "
-                        "or catalog to browse the full inventory."
+                        "or browse the full catalog (over MCP, discover with empty terms)."
                     ),
                     "recommended_tool": "discover",
                     "recommended_terms": discover_term,
@@ -909,7 +909,7 @@ def recovery_hints_for_error(
             )
         return hints
     if code == "UNKNOWN_MCP_TOOL":
-        # Interface v2 names the tool that replaced a v1 one.
+        # A removed v1 tool name carries the tool that replaced it.
         replacement = str(details.get("replacement") or "")
         return [
             {
@@ -919,7 +919,7 @@ def recovery_hints_for_error(
                     if replacement
                     else "Call tools/list first and pick a name from "
                     "available_tools — common entry points are 'discover', "
-                    "'inspect', 'plan', 'validate', 'compile'."
+                    "'inspect', 'plan'."
                 ),
                 "available_tools": list(details.get("available_tools", []) or []),
                 "details": dict(details),

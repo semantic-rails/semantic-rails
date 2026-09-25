@@ -467,14 +467,14 @@ def test_authenticated_asgi_grants_roundtrip_and_revoke(
                 route = f"/api/v1/{operation}"
                 if transport == "mcp":
                     route = "/mcp"
+                    name = {"query": "execute", "catalog": "discover"}.get(operation, operation)
+                    if operation == "catalog":  # MCP lists the catalog as discover's empty terms.
+                        arguments = {"terms": "", **arguments}
                     body = {
                         "jsonrpc": "2.0",
                         "id": 1,
                         "method": "tools/call",
-                        "params": {
-                            "name": "execute" if operation == "query" else operation,
-                            "arguments": arguments,
-                        },
+                        "params": {"name": name, "arguments": arguments},
                     }
                 response = (
                     await client.get(route, headers=headers)
@@ -508,9 +508,10 @@ def test_authenticated_asgi_grants_roundtrip_and_revoke(
             )
             assert AOV not in json.dumps(catalogs[0])
             assert CUSTOMERS not in json.dumps(catalogs[1])
-            capabilities = await call("capabilities", {"policy_context": spoof})
-            assert [row["name"] for row in capabilities["expression_shapes"]] == ["metric"]
-            assert "default_db" not in json.dumps(capabilities)
+            if transport == "rest":  # MCP has no capabilities tool.
+                capabilities = await call("capabilities", {"policy_context": spoof})
+                assert [row["name"] for row in capabilities["expression_shapes"]] == ["metric"]
+                assert "default_db" not in json.dumps(capabilities)
 
     try:
         asyncio.run(run())
@@ -541,9 +542,16 @@ def test_manifest_and_unsupported_operations_cannot_bypass(granted_runtime, monk
     assert not runtime.adapter.statements
 
 
-@pytest.mark.parametrize("transport", ["http", "mcp"])
 @pytest.mark.parametrize(
-    "operation", ["catalog", "discover", "inspect", "plan", "compile", "execute"]
+    ("transport", "operation"),
+    [
+        ("http", "catalog"),  # MCP lists the catalog through discover's empty terms.
+        *[
+            (transport, operation)
+            for transport in ("http", "mcp")
+            for operation in ("discover", "inspect", "plan", "compile", "execute")
+        ],
+    ],
 )
 def test_transport_trusted_context_overrides_nested_grant_forgery(
     granted_runtime, transport, operation
@@ -579,8 +587,11 @@ def test_transport_trusted_context_overrides_nested_grant_forgery(
         except SemanticLayerError as exc:
             result = {"ok": False, "error": {"code": exc.code}}
     else:
+        tool = operation
+        if operation == "compile":  # MCP compiles through execute's sql mode.
+            tool, arguments["mode"] = "execute", "sql"
         result = SemanticLayerMCPAdapter(runtime).call_tool(
-            operation, arguments, request_context=trusted
+            tool, arguments, request_context=trusted
         )
     if operation in {"inspect", "compile", "execute"}:
         assert not result["ok"]
@@ -599,6 +610,12 @@ def test_business_wording_consumer_flow_retains_columns_and_starters(runtime_fac
 
     def call(operation, arguments):
         if transport == "mcp":
+            if operation == "catalog":  # MCP serves the compact catalog as a resource.
+                uri = "semantic-rails://catalog/summary"
+                return adapter.read_resource(uri, request_context=trusted)["payload"]
+            if operation in {"validate", "compile"}:  # MCP runs both as execute modes.
+                mode = "sql" if operation == "compile" else "validate"
+                operation, arguments = "execute", {**arguments, "mode": mode}
             return adapter.call_tool(operation, arguments, request_context=trusted)
         result, _ = service.handle(
             "POST",
@@ -678,29 +695,20 @@ def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(grante
     assert AOV not in json.dumps(full)
 
 
-@pytest.mark.parametrize("transport", ["http", "mcp"])
 @pytest.mark.parametrize("metric", [CUSTOMERS, ""])
-def test_capabilities_obey_trusted_grants_and_hide_package_operations(
-    granted_runtime, transport, metric
-):
+def test_capabilities_obey_trusted_grants_and_hide_package_operations(granted_runtime, metric):
     runtime = granted_runtime
     trusted = context(metric)
-    if transport == "http":
-        result, _ = SemanticHTTPService(runtime).handle("GET", "/capabilities", context=trusted)
-    else:
-        result = SemanticLayerMCPAdapter(runtime).call_tool(
-            "capabilities", {}, request_context=trusted
-        )
+    result, _ = SemanticHTTPService(runtime).handle("GET", "/capabilities", context=trusted)
     serialized = json.dumps(result)
     assert "default_db" not in serialized
     assert "connection" not in serialized
     assert "seed" not in serialized
     assert "aggregate" not in {row["name"] for row in result["expression_shapes"]}
     assert [row["name"] for row in result["expression_shapes"]] == (["metric"] if metric else [])
-    if transport == "http":
-        assert result["warehouse"] == result["dialect"] == "duckdb"
-        assert {row["path"] for row in result["routes"]} >= {"/api/v1/catalog", "/api/v1/compile"}
-        assert "/api/v1/valid-values" not in {row["path"] for row in result["routes"]}
+    assert result["warehouse"] == result["dialect"] == "duckdb"
+    assert {row["path"] for row in result["routes"]} >= {"/api/v1/catalog", "/api/v1/compile"}
+    assert "/api/v1/valid-values" not in {row["path"] for row in result["routes"]}
 
 
 def test_restricted_warehouse_failure_keeps_safe_operational_code(granted_runtime, monkeypatch):

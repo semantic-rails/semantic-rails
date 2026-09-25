@@ -193,12 +193,10 @@ class QueryMCPClient:
     the identity and policy context.
     """
 
-    def __init__(
-        self, package_path: Path, *, request_context: Any = None, interface: str = "v1"
-    ) -> None:
+    def __init__(self, package_path: Path, *, request_context: Any = None) -> None:
         from semantic_rails.mcp import SemanticLayerMCPAdapter
 
-        self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path), interface=interface)
+        self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path))
         self.request_context = request_context
         self._next_id = 0
 
@@ -287,75 +285,9 @@ MINIMAL_DISCOVER = {"verbosity": "minimal", "limit": 5}
 
 Step = tuple[str, str, dict[str, Any]]
 
-SESSIONS: dict[str, list[Step]] = {
-    # The loop the tool descriptions prescribe, explicitly using compact plan
-    # responses and bounded execute results on the stable v1 interface.
-    "by_the_book": [
-        ("s0_capabilities", "capabilities", {}),
-        ("s1_catalog", "catalog", {}),
-        ("q1_discover", "discover", {"terms": "monthly revenue by store"}),
-        ("q1_inspect_measure", "inspect", {"object_id": REVENUE["measure"]}),
-        ("q1_inspect_dimension", "inspect", {"object_id": STORE}),
-        ("q1_plan", "plan", {"intent": QUESTIONS[0], "detail": "query"}),
-        ("q1_validate", "validate", {"query": Q1}),
-        ("q1_compile", "compile", {"query": Q1}),
-        ("q1_execute", "execute", {"query": Q1, "max_rows": 200}),
-        ("q2_discover", "discover", {"terms": "top products by revenue"}),
-        ("q2_inspect_dimension", "inspect", {"object_id": PRODUCT}),
-        ("q2_plan", "plan", {"intent": QUESTIONS[1], "detail": "query"}),
-        (
-            "q2_build_options",
-            "build-options",
-            {"query": {"version": 2, "select": Q2["select"]}, "focus_terms": "product"},
-        ),
-        ("q2_validate", "validate", {"query": Q2}),
-        ("q2_compile", "compile", {"query": Q2}),
-        ("q2_execute", "execute", {"query": Q2, "max_rows": 200}),
-        ("q3_discover", "discover", {"terms": "average order value"}),
-        ("q3_inspect_metric", "inspect", {"object_id": "metric.sales.aov_usd"}),
-        ("q3_valid_values", "valid-values", {"dimension_id": STORE}),
-        ("q3_plan", "plan", {"intent": QUESTIONS[2], "detail": "query"}),
-        ("q3_validate", "validate", {"query": Q3}),
-        ("q3_compile", "compile", {"query": Q3}),
-        ("q3_execute", "execute", {"query": Q3, "max_rows": 200}),
-    ],
-    # The leanest path the current surface supports.
-    "lean": [
-        ("q1_discover", "discover", {"terms": "monthly revenue by store", **MINIMAL_DISCOVER}),
-        ("q1_plan", "plan", {"intent": QUESTIONS[0], "detail": "query"}),
-        ("q1_execute", "execute", {"query": Q1, "row_format": "columns", "max_rows": 200}),
-        ("q2_discover", "discover", {"terms": "top products by revenue", **MINIMAL_DISCOVER}),
-        ("q2_plan", "plan", {"intent": QUESTIONS[1], "detail": "query"}),
-        ("q2_execute", "execute", {"query": Q2, "row_format": "columns", "max_rows": 200}),
-        ("q3_discover", "discover", {"terms": "average order value", **MINIMAL_DISCOVER}),
-        ("q3_plan", "plan", {"intent": QUESTIONS[2], "detail": "query"}),
-        ("q3_execute", "execute", {"query": Q3, "row_format": "columns", "max_rows": 200}),
-    ],
-}
-
-# One call per tool, explicitly opting into slim metadata/segment responses,
-# compact plans, and bounded results. The scripted by-the-book session below
-# keeps the accepted v1 omitted-argument behavior.
-COMPACT_PROBES: list[Step] = [
-    ("capabilities", "capabilities", {}),
-    ("catalog", "catalog", {}),
-    ("discover", "discover", {"terms": "revenue by store", "verbosity": "minimal", "limit": 5}),
-    ("inspect", "inspect", {"object_id": REVENUE["measure"], "verbosity": "minimal"}),
-    ("build_options", "build-options", {"query": {"version": 2, "select": Q1["select"]}}),
-    ("valid_values", "valid-values", {"dimension_id": STORE}),
-    ("plan", "plan", {"intent": QUESTIONS[0], "detail": "query"}),
-    ("validate", "validate", {"query": Q1}),
-    ("compile", "compile", {"query": Q1}),
-    ("execute", "execute", {"query": Q1, "max_rows": 200}),
-    ("execute_no_grain_window", "execute", {"query": NO_GRAIN_WINDOW, "max_rows": 200}),
-    ("segment_validate", "segment-validate", {"segment_id": SEGMENT, "verbosity": "minimal"}),
-    ("segment_explain", "segment-explain", {"segment_id": SEGMENT, "verbosity": "minimal"}),
-    ("segment_preview", "segment-preview", {"segment_id": SEGMENT, "verbosity": "minimal"}),
-]
-
-# Interface v2 at its defaults: plan detail "query", a 200-row execute cap and
-# minimal segment responses. Its by-the-book session follows the loop the v2
-# instructions describe (validate and compile are optional execute modes).
+# One call per tool at its defaults: plan detail "query", a 200-row execute cap
+# and minimal responses. The by-the-book session follows the loop the
+# instructions describe (validate and sql are optional execute modes).
 V2_PROBES: list[Step] = [
     ("discover", "discover", {"terms": "revenue by store"}),
     ("discover_ids", "discover", {"terms": ""}),
@@ -370,7 +302,7 @@ V2_PROBES: list[Step] = [
     ("segment_explain", "segment", {"segment_id": SEGMENT, "action": "explain"}),
     ("segment_preview", "segment", {"segment_id": SEGMENT, "action": "preview"}),
 ]
-V2_SESSIONS: dict[str, list[Step]] = {
+SESSIONS: dict[str, list[Step]] = {
     "by_the_book": [
         ("s1_discover_ids", "discover", {"terms": ""}),
         ("q1_discover", "discover", {"terms": "monthly revenue by store"}),
@@ -388,18 +320,26 @@ V2_SESSIONS: dict[str, list[Step]] = {
         ("q3_plan", "plan", {"intent": QUESTIONS[2]}),
         ("q3_execute", "execute", {"query": Q3}),
     ],
+    # The leanest path the surface supports.
     "lean": [
-        (step, tool, {k: v for k, v in args.items() if k not in {"detail", "max_rows"}})
-        for step, tool, args in SESSIONS["lean"]
+        ("q1_discover", "discover", {"terms": "monthly revenue by store", **MINIMAL_DISCOVER}),
+        ("q1_plan", "plan", {"intent": QUESTIONS[0]}),
+        ("q1_execute", "execute", {"query": Q1, "row_format": "columns"}),
+        ("q2_discover", "discover", {"terms": "top products by revenue", **MINIMAL_DISCOVER}),
+        ("q2_plan", "plan", {"intent": QUESTIONS[1]}),
+        ("q2_execute", "execute", {"query": Q2, "row_format": "columns"}),
+        ("q3_discover", "discover", {"terms": "average order value", **MINIMAL_DISCOVER}),
+        ("q3_plan", "plan", {"intent": QUESTIONS[2]}),
+        ("q3_execute", "execute", {"query": Q3, "row_format": "columns"}),
     ],
 }
 
 # Metadata calls behind an authenticated transport, which supplies a policy
-# context on every call. Query patches in these responses must stay pure IR.
+# context on every call. Query patches in these responses must stay pure IR,
+# so the probes ask for the compact cards that carry them.
 HOSTED_PROBES: list[Step] = [
-    ("discover", "discover", {"terms": "revenue by store"}),
-    ("inspect", "inspect", {"object_id": REVENUE["measure"]}),
-    ("build_options", "build-options", {"query": {"version": 2, "select": Q1["select"]}}),
+    ("discover", "discover", {"terms": "revenue by store", "verbosity": "compact"}),
+    ("inspect", "inspect", {"object_id": REVENUE["measure"], "verbosity": "compact"}),
 ]
 
 
@@ -421,26 +361,28 @@ ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool, str]] = [
     ("inspect_label_not_id", "inspect", {"object_id": "revenue"}, False, "OBJECT_NOT_FOUND"),
     (
         "validate_unknown_dimension",
-        "validate",
+        "execute",
         {
+            "mode": "validate",
             "query": {
                 **Q1,
                 "group_by": ["dimension.jaffle_store"],
                 "order_by": [{"field": "time", "direction": "ASC"}],
-            }
+            },
         },
         False,
         "OBJECT_NOT_FOUND",
     ),
     (
         "validate_fanout",
-        "validate",
+        "execute",
         {
+            "mode": "validate",
             "query": {
                 **Q2,
                 "select": Q1["select"],
                 "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
-            }
+            },
         },
         False,
         "MIXED_GRAIN_INVALID",
@@ -455,7 +397,6 @@ class MeasurementError(RuntimeError):
 
 
 _ID_PREFIXES = ("measure.", "metric.", "dimension.", "temporal_role.", "segment.", "entity.")
-_QUERY_TOOLS = frozenset({"validate", "compile", "execute"})
 
 
 def semantic_ids(node: Any) -> set[str]:
@@ -506,7 +447,7 @@ def _measured_call(
             + f"; reported {codes}"
         )
     if surfaced is not None:
-        if tool in _QUERY_TOOLS:
+        if tool == "execute":
             unseen = sorted(semantic_ids(arguments.get("query")) - surfaced)
             if unseen:
                 raise MeasurementError(
@@ -518,11 +459,11 @@ def _measured_call(
 
 
 def measure_query_mcp(package_path: Path) -> dict[str, int]:
-    """Measure the query MCP's upfront surface, compact responses and sessions."""
+    """Measure the query MCP's upfront surface, default responses, errors and sessions."""
 
     metrics: dict[str, int] = {}
     with QueryMCPClient(package_path) as client:
-        metrics.update(_measure_surface(client, "query."))
+        metrics.update(_measure_surface(client, "query.v2."))
         resources = client.request("resources/list")["resources"]
         metrics["query.resources_list_tokens"] = approx_tokens(
             json.dumps(resources, sort_keys=True)
@@ -535,15 +476,15 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
             )
         prompts = client.request("prompts/list")["prompts"]
         metrics["query.prompts_list_tokens"] = approx_tokens(json.dumps(prompts, sort_keys=True))
-        compact_structured: list[int] = []
-        compact_text: list[int] = []
-        for name, tool, arguments in COMPACT_PROBES:
-            structured, text_tokens = _measured_call(client, name, tool, arguments)
-            metrics[f"query.compact.{name}_tokens"] = structured
-            compact_structured.append(structured)
-            compact_text.append(text_tokens)
-        metrics["query.compact.max_structured_tokens"] = max(compact_structured)
-        metrics["query.compact.max_text_tokens"] = max(compact_text)
+        structured_sizes: list[int] = []
+        text_sizes: list[int] = []
+        for name, tool, arguments in V2_PROBES:
+            structured, text_tokens = _measured_call(client, f"v2.{name}", tool, arguments)
+            metrics[f"query.v2.default.{name}_tokens"] = structured
+            structured_sizes.append(structured)
+            text_sizes.append(text_tokens)
+        metrics["query.v2.default.max_structured_tokens"] = max(structured_sizes)
+        metrics["query.v2.default.max_text_tokens"] = max(text_sizes)
         for name, tool, arguments, ok, code in ERROR_PROBES:
             metrics[f"query.error.{name}_tokens"] = _measured_call(
                 client, name, tool, arguments, ok=ok, code=code
@@ -553,14 +494,7 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
             metrics[f"query.hosted.{name}_tokens"] = _measured_call(
                 client, f"hosted.{name}", tool, arguments
             )[0]
-    metrics.update(_measure_sessions(package_path, SESSIONS, "query.", "v1"))
-    with QueryMCPClient(package_path, interface="v2") as client:
-        metrics.update(_measure_surface(client, "query.v2."))
-        for name, tool, arguments in V2_PROBES:
-            metrics[f"query.v2.default.{name}_tokens"] = _measured_call(
-                client, f"v2.{name}", tool, arguments
-            )[0]
-    metrics.update(_measure_sessions(package_path, V2_SESSIONS, "query.v2.", "v2"))
+    metrics.update(_measure_sessions(package_path, SESSIONS, "query.v2."))
     return metrics
 
 
@@ -583,7 +517,7 @@ def _measure_surface(client: QueryMCPClient, prefix: str) -> dict[str, int]:
 
 
 def _measure_sessions(
-    package_path: Path, sessions: Mapping[str, list[Step]], prefix: str, interface: str
+    package_path: Path, sessions: Mapping[str, list[Step]], prefix: str
 ) -> dict[str, int]:
     metrics: dict[str, int] = {}
     for session, steps in sessions.items():
@@ -591,10 +525,10 @@ def _measure_sessions(
         # or grow another's responses.
         structured_total = text_total = largest = 0
         surfaced: set[str] = set()
-        with QueryMCPClient(package_path, interface=interface) as client:
+        with QueryMCPClient(package_path) as client:
             for step, tool, arguments in steps:
                 structured, text_tokens = _measured_call(
-                    client, f"{interface}.{session}.{step}", tool, arguments, surfaced=surfaced
+                    client, f"{session}.{step}", tool, arguments, surfaced=surfaced
                 )
                 structured_total += structured
                 text_total += text_tokens
@@ -1324,8 +1258,8 @@ def write_baseline(
     tolerance = float(budgets.get("tolerance", DEFAULT_TOLERANCE))
     document = {
         "description": (
-            "Ceilings for scripts/mcp_context.py explicit compact probes and accepted v1 "
-            "default sessions (query.*), and interface v2 at its defaults (query.v2.*), in "
+            "Ceilings for scripts/mcp_context.py's query MCP (interface v2): its surface, "
+            "defaults, sessions, resources, errors and hosted probes, in "
             "tokens = round(chars / 4). Gated token metrics fail CI above budget + max(8, "
             "budget * tolerance), counts above budget; tracked ones are reported only. "
             "Regenerate with --write-baseline and review the diff."

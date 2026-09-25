@@ -163,12 +163,12 @@ done
 Replace `SURFACE_SETTING` with the setting that selects the surface. A model's runs vary, so
 repeat each scenario a few times before drawing a conclusion.
 
-For the query MCP's interfaces, `eval_ab.py` does this over the frozen eval questions
+To compare two builds of the query MCP, `eval_ab.py` does this over the frozen eval questions
 (`tests/semantic_rails/mcp_context/eval_jaffle.jsonl`): one scenario per question, run once per
-interface (`SEMANTIC_RAILS_MCP_INTERFACE`) and repeat. Like Claude Code, the model gets the
+arm (`--arms main=<path to its semantic-rails>,head=semantic-rails`) and repeat. Like Claude Code, the model gets the
 server's instructions and results cut at 100,000 characters. Each run's check grades the query of the model's last `execute` against the
 question's gold rows and reports `correct`, `silent_wrong` (answered, but wrong) or `declined`;
-`summary` counts them per interface with median tokens and the paired accuracy change.
+`summary` counts them per arm with median tokens and the paired accuracy change.
 
 ```bash
 uv run python scripts/agent_harness/eval_ab.py run --out ../agent-runs/ab --model qwen3.8-27b \

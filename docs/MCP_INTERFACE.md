@@ -1,7 +1,7 @@
 # MCP Interface
 
-`semantic_rails.mcp` exposes a dependency-free Model Context Protocol interface for the same
-stable operations served by `/api/v1/*`. The canonical implementation remains the in-process
+`semantic_rails.mcp` exposes a dependency-free Model Context Protocol interface over the same
+runtime that serves `/api/v1/*`. The canonical implementation remains the in-process
 `SemanticLayerMCPAdapter`. The ASGI app serves stateless MCP Streamable HTTP at `/mcp`, while the
 CLI retains packaged stdio and legacy HTTP/SSE transports for local compatibility.
 
@@ -26,12 +26,6 @@ Accept: application/json, text/event-stream
 MCP-Protocol-Version: 2025-11-25
 ```
 
-To keep MCP context small, stay on the defaults (`minimal` for
-validate/compile/execute, `summary` for catalog) and reach for `compact`/`full`
-only when you need explain plans or descriptive rows; [interface v2](#interface-v2)
-makes the smallest responses its defaults. Measured sizes for every tier are in the
-tables below.
-
 ## Runtime Adapter
 
 ```python
@@ -40,11 +34,9 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 adapter = SemanticLayerMCPAdapter.from_package("jaffle_shop")
 try:
     tools = adapter.list_tools()       # Paid once at connect time.
-    # Orientation: what the package supports, and every id per kind.
-    capabilities = adapter.call_tool("capabilities", {})
-    catalog = adapter.call_tool("catalog", {"verbosity": "summary"})
-    draft = adapter.call_tool("plan", {"intent": "orders by store", "detail": "query"})
-    if draft["status"] == "ok":
+    found = adapter.call_tool("discover", {"terms": "orders by store"})  # "" lists every id.
+    draft = adapter.call_tool("plan", {"intent": "orders by store"})
+    if draft["status"] == "ok" and not draft["warnings"]:
         result = adapter.call_tool(
             "execute",
             {"query": draft["best"]["query_ir"], "row_format": "columns"},
@@ -68,59 +60,35 @@ API:
 
 Every `tools/list` definition publishes an `outputSchema` for this envelope and
 MCP-standard annotations (`readOnlyHint`, `destructiveHint`,
-`idempotentHint`, and `openWorldHint`). The complete generated contracts are
-packaged as `semantic_rails/contracts/query_mcp.v1.json` and `query_mcp.v2.json`; CI
-compares them with the executable definitions so tool/schema drift cannot be merged
-silently.
+`idempotentHint`, and `openWorldHint`). The complete generated contract is packaged as
+`semantic_rails/contracts/query_mcp.v2.json`; CI compares it with the executable definitions so
+tool/schema drift cannot be merged silently.
 
 ## Tools
 
-The interface v1 tool names mirror the public API operations ([interface v2](#interface-v2) has
-six tools):
-
-- `capabilities` (compact orientation)
-- `catalog` (counts + IDs at `verbosity=summary`)
-- `discover`
-- `inspect`
-- `build-options`
-- `valid-values`
-- `plan`
-- `validate`
-- `compile`
-- `execute` (`/api/v1/query`)
-- `segment-validate`
-- `segment-explain`
-- `segment-preview`
+- `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
+- `inspect`: one object's card.
+- `valid-values`: a dimension's governed values.
+- `plan`: draft Query IR from a natural-language question.
+- `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
+  `mode="sql"` stops before running it.
+- `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
 `discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
-first, so `validate` and `compile` are optional dry runs. The instructions also carry the
+first, so its `validate` and `sql` modes are optional dry runs. The instructions also carry the
 conventions every tool shares: full ids, response detail controls, recovery hints, and
 `policy_context`. Each tool description then says what the tool does, when to use it, and its
-one gotcha.
+one gotcha. Every tool returns its smallest response by default (`verbosity="minimal"`, `plan`
+`detail="query"`); ask for more only when you need it.
 
-Every v1 tool schema advertises and accepts optional `request_id` and `policy_context`.
+Every tool schema advertises and accepts optional `request_id` and `policy_context`.
 `policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
 transports supply the trusted context and ignore the argument.
 
-For first-time question-answering tests, make the session aware of the core loop before
-asking for rows: `capabilities`, `catalog`, `discover`, `plan`, `validate`, `compile`,
-and `execute`. Some MCP hosts lazily expose only tools that match the user's first
-request; in those hosts, start with a setup prompt such as:
-
-```text
-Load the Semantic Rails MCP question-answering tools: capabilities, catalog, discover,
-plan, validate, compile, execute. Then use plan(detail="query") and
-execute(row_format="columns") to answer the question; call validate when editing IR
-or when diagnostics are needed.
-```
-
-
-`tools/list` is paid once at connect time, before the first call. To keep that
-cold-start payload bounded, the IR cheat-sheet and the full Query-IR time-block
-schema ship once: on `validate` in v1, where `compile`, `execute`, and the other
-IR-accepting tools point at it instead of repeating it, and on `execute` in v2. Catalog payload
-size varies materially with package size and selected verbosity.
+`tools/list` is paid once at connect time, before the first call. To keep it bounded, the IR
+cheat-sheet and the full Query-IR time-block schema ship once, on `execute`; the other
+IR-accepting tools point at it.
 
 ### Writing Tool Descriptions
 
@@ -140,64 +108,52 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
   (`readOnlyHint`, `openWorldHint`).
 - **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
   meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Keep
-  the v1 `request_id` and `policy_context` properties until a separately versioned interface
-  can remove them.
+  the shared `request_id` and `policy_context` properties on every tool.
 - **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
   and the instructions (see "Measuring Context Cost").
 
-### Catalog Verbosity Tiers
+### Catalog And Metadata
 
-`catalog` accepts four `verbosity` values, sized by use case:
+`discover` with empty `terms` lists the catalog instead of ranking: counts, the package's
+capability flags, and ids per object kind, 100 per kind at a time. `limit` and `offset` page the
+ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning gives
+`details.next_offset` while more remain. The `semantic-rails://catalog/index`, `catalog/summary`
+and `catalog/full` resources return the whole index, descriptive rows, or every card with the
+alias index (see [Resources And Prompts](#resources-and-prompts)).
 
-| Verbosity | Shape | Relative payload | Use case |
-|---|---|---|---|
-| `summary` (default) | counts + flat ID list per kind + capabilities | Smallest | Cold-start orientation |
-| `minimal` | skeleton rows `{id, kind, name, label, available}` + counts | Small | "Show me what exists with labels" |
-| `compact` | descriptive rows capped at 200/kind + counts + counts_total | Larger, bounded | Browsing with descriptions |
-| `full` | uncapped rows + alias_index + aliases | Largest, package-dependent | Debugging, code-gen, exhaustive scans |
-
-The MCP `catalog` tool defaults to `verbosity=summary` (the tool description says so too).
-Anything above `summary` is a large envelope — request `compact` or `full` only when you
-genuinely need descriptions or the alias index.
-
-`alias_index` and `aliases` ship only at `verbosity=full` — agents who need typo-resolution opt in explicitly.
-
-`discover(verbosity="minimal", limit=5)` returns slim cards: `id`, `kind`, `label`, `score`, a
-`description` trimmed to 120 characters, `default_temporal_role` and `available`, plus
-`blocked_reason` for a candidate that isn't available; interface v2 returns them by default.
-Omitted options keep the v1 default of 10 full cards per kind, with match reasons, starter
-patches and comparison metadata. When the question uses an object's whole name ("revenue by
+`discover` returns slim cards by default: `id`, `kind`, `label`, `score`, a `description`
+trimmed to 120 characters, `default_temporal_role` and `available`, plus `blocked_reason` for a
+candidate that isn't available. `verbosity="compact"` returns full cards with match reasons,
+starter patches and comparison metadata. When the question uses an object's whole name ("revenue by
 store"), that object ranks above near-duplicates that add a qualifier the question doesn't use
 ("Delivered revenue").
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
 `available` flag, including when a value is blocked.
 
-`inspect(verbosity="minimal")` states each fact once. It leaves out fields that
+`inspect` (default `verbosity="minimal"`) states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
 the label, empty structural fields, and every starter patch after the first. Declared sample values
-and query literals remain exact, including blank and null values. Omitted verbosity and explicit
-`"compact"` or `"full"` keep the whole v1 card on MCP and HTTP. Explicit HTTP
-`verbosity="minimal"` uses the same slim projection.
+and query literals remain exact, including blank and null values. `"compact"` or `"full"` return
+the whole card, which is also the HTTP default.
 
-The segment tools offer an explicit `verbosity="minimal"` response.
-`segment-validate` returns validity, the segment's definition and its derived query;
-`segment-explain` adds the rendered SQL; `segment-preview` returns member rows, the preview and
-member counts, and the derived query. Omitted verbosity and `"full"` keep the v1 whole response
-with compiler plans. Minimal responses still include query and segment policy effects, warnings,
-errors, and actionable recovery hints when present.
+`segment` (default `verbosity="minimal"`) with `action="validate"` returns validity, the
+segment's definition and its derived query; `"explain"` adds the rendered SQL; `"preview"`
+returns member rows, the preview and member counts, and the derived query. `verbosity="full"`
+returns the whole response with compiler plans. Minimal responses still include query and
+segment policy effects, warnings, errors, and actionable recovery hints when present.
 
-`validate`, `compile`, and `execute` accept either `{"query": {...}}` or a Query IR
-object directly. Metadata tools accept the same request fields documented in
-[QUERY_API.md](QUERY_API.md), including optional `policy_context`.
+`execute` accepts either `{"query": {...}}` or Query IR fields at the top level. Metadata tools
+accept the same request fields documented in [QUERY_API.md](QUERY_API.md), including optional
+`policy_context`.
 
-`plan` is the only public natural-language intent tool. Stable v1 MCP calls without a
-`detail` argument keep `detail="best"`: `status`, `best.query_ir`, `intent_ir`, `best.trace`,
-`next`, and a `why` or `warnings` entry for any part of the question the draft doesn't honor.
-For the lowest-token QA loop, pass `detail="query"` to return `status`, `best.query_ir` and
-any `why` or `warnings`, then forward `best.query_ir` to `execute` with
-`row_format="columns"` and an explicit `max_rows`. When `status="ok"`, the draft has already
-paid validation cost, so call `validate` again only when you are editing the IR or
-need full diagnostics.
+### Plan
+
+`plan` is the only natural-language intent tool. Its default `detail="query"` returns `status`,
+`best.query_ir`, and a `why` or `warnings` entry for any part of the question the draft doesn't
+honor; `detail="best"` adds `intent_ir`, `best.trace` and `next`. Forward `best.query_ir` to
+`execute` (`row_format="columns"` is the lowest-token shape). When `status="ok"`, the draft has
+already paid validation cost, so run `execute` with `mode="validate"` only when you are editing
+the IR or need full diagnostics.
 
 A draft that validates can still leave out part of the question. `plan` returns
 `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
@@ -273,29 +229,27 @@ bounds. Include the selected `temporal_role` and `grain` in that time block. A d
 qualifier beyond the limit therefore cannot silently disappear from an otherwise ready draft.
 Use `detail="full"` only when you need alternatives or blocked drafts.
 
-Use `compile` and read its `explain` payload to review relationship paths before executing a
-cross-entity query. `explain.chosen_paths` is keyed by target entity ID; each entry carries
-`selected` (the chosen relationship path), `candidates` (every considered path), and
-`contracts` (the relationship contracts along the selected path) — i.e.
-`explain.chosen_paths["entity.jaffle_store"].candidates`, not `explain.candidates`.
-Note the MCP `compile` default (`verbosity=minimal`) strips `explain`; pass
-`verbosity="compact"` or `"full"` when you need it.
+### Query Verbosity Tiers (execute modes)
 
-### Query Verbosity Tiers (validate / compile / execute)
-
-At the MCP adapter boundary, `validate`, `compile`, and `execute` default to
-`verbosity=minimal`. An explicit `verbosity` argument always wins, and error envelopes
-(`ok: false`) inherit the same default. This is an MCP-only default — the HTTP `/api/v1/*`
-default remains `compact`.
+`execute` defaults to `verbosity=minimal` in every mode. An explicit `verbosity` argument always
+wins, and error envelopes (`ok: false`) inherit the same default. This is an MCP-only default —
+the HTTP `/api/v1/*` default remains `compact`.
 
 | Verbosity | What's kept | Size (jaffle, measured*) | When to use |
 |---|---|---|---|
-| `minimal` (MCP default) | `{ok, status, errors, warnings, recovery_hints}`; `compile` also keeps `rendered_sql`; `execute` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
+| `minimal` (MCP default) | `{ok, status, errors, warnings, recovery_hints}`; mode `sql` also keeps `rendered_sql`; mode `run` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
 | `compact` (HTTP default) | includes compact `trace`; drops top-level `physical_plan`, `performance_plan`, `semantic_summary`, `compile_stats`; strips `output_columns.lineage` | ~88KB / ~94KB / ~96KB | Diagnostics, `explain` review |
 | `full` | includes compact `trace` plus every field, including the heavy plan trees | ~97KB / ~114KB / ~116KB | Debugging, code-gen |
 
-*Sizes are validate / compile / execute for a representative 5-row jaffle query (revenue by
+*Sizes are modes `validate` / `sql` / `run` for a representative 5-row jaffle query (revenue by
 store by month); they scale with query complexity and row count.
+
+To review relationship paths before running a cross-entity query, call `execute` with
+`mode="sql"` and `verbosity="compact"` (minimal leaves `explain` out) and read
+`explain.chosen_paths`. It is keyed by target entity ID; each entry carries `selected` (the chosen
+relationship path), `candidates` (every considered path), and `contracts` (the relationship
+contracts along the selected path) — i.e.
+`explain.chosen_paths["entity.jaffle_store"].candidates`, not `explain.candidates`.
 
 `sql_profile="off"` drops `rendered_sql` and `sql_plan` at any verbosity for callers that want the semantic envelope without the SQL.
 
@@ -304,32 +258,28 @@ keeps `rows` as objects (`[{...}]`). The opt-in columnar form returns
 `columns: [...]`, `rows: [[...]]`, `row_format: "columns"`, and the same
 `row_count`, warnings, and errors while avoiding repeated field names.
 
-Stable v1 MCP `execute` calls without `max_rows` keep the caller's existing Query IR row limit;
-they do not add a response cap. Pass `max_rows=200` (or another value up to 100,000) to bound
-the response. A larger result comes back with `truncated: true`, `total_row_count` and an
-`EXECUTE_ROWS_TRUNCATED` warning that says how to narrow the query. With an explicit cap,
-execute asks the warehouse for up to 10,000 rows to count them, so
-`total_row_count` is `null` when more rows exist than were fetched. Some warehouse adapters fetch
-the whole result and then clip it; the cap bounds the response, not the warehouse work. Pass a
-larger `max_rows` to see more.
+In mode `run`, `execute` returns at most `max_rows` rows (default 200, up to 100,000). A larger
+result comes back with `truncated: true`, `total_row_count` and an `EXECUTE_ROWS_TRUNCATED`
+warning that says how to narrow the query. Execute asks the warehouse for up to 10,000 rows (or
+`max_rows`, if larger) to count them, so `total_row_count` is `null` when more rows exist than
+were fetched. Some warehouse adapters fetch the whole result and then clip it; the cap bounds the
+response, not the warehouse work.
 
-A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower an explicit
-`max_rows` cap (and then `total_row_count` is `null` once it is reached), but it never raises it.
+A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower the `max_rows`
+cap (and then `total_row_count` is `null` once it is reached), but it never raises it.
 The `query` that execute echoes back carries the caller's own `limits`; a transport-level
-`max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint also leaves
+`max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.
 
-Query patches returned by `discover`, `inspect` and `build-options` (at every builder step) contain
-only Query IR fields and validate as returned, except that a temporal role offered at the
-`time` step may not be one the selected measure uses. They never carry the caller's `policy_context` or
-the tool's own arguments, so pass the policy context again on the call that uses a patch. A patch
-that selects a metric needing a time window carries the metric's default one, and a `percentile`
-aggregation option carries `p: 0.5`. These tools read Query IR only from their `query` argument,
-not from Query IR fields passed at the top level.
+Query patches returned by `discover` and `inspect` contain only Query IR fields and validate as
+returned. They never carry the caller's `policy_context` or the tool's own arguments, so pass the
+policy context again on the call that uses a patch. A patch that selects a metric needing a time
+window carries the metric's default one. These tools read Query IR only from their `query`
+argument, not from Query IR fields passed at the top level.
 
 ### Semantic Trace
 
-`plan.best.trace` and `compile`/`execute` with `verbosity="compact"` or
+`plan.best.trace` (`detail="best"` and above) and `execute` with `verbosity="compact"` or
 `"full"` expose a compact, human-facing explanation of what the runtime did.
 The trace includes intent slots, selected subjects, filters, groupings,
 relationship paths, root entity, rewrite/fanout status, fallback decision, and
@@ -342,107 +292,73 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 
 | Code | Tool(s) | Meaning |
 |---|---|---|
-| `DISCOVER_NO_TERMS` | `discover` | `terms` was empty/whitespace; results are default-ordered, not ranked |
+| `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of ids and more remain; `details.next_offset` is the next page |
 | `DISCOVER_TERMS_COERCED` | `discover` | `terms` was a non-string (int/float/bool); coerced to a string |
-| `DISCOVER_UNKNOWN_ARG` | `discover` | Unknown argument (incl. `term`/`kind` typos); the value was ignored |
 | `DISCOVER_UNKNOWN_KIND` | `discover` | One or more `kinds` values aren't valid object kinds; ignored |
-| `BUILD_OPTIONS_UNKNOWN_ARG` | `build-options` | Unknown argument (incl. `object_id`/`terms` typos); the value was ignored |
-| `INSPECT_UNKNOWN_ARG` | `inspect` | Unknown argument received; the value was ignored |
-| `VALID_VALUES_UNKNOWN_ARG` | `valid-values` | Unknown argument received; the value was ignored |
-| `PLAN_UNKNOWN_ARG` | `plan` | Unknown argument received; the value was ignored |
-| `VALIDATE_UNKNOWN_ARG` | `validate` | Unknown argument received; the value was ignored |
-| `COMPILE_UNKNOWN_ARG` | `compile` | Unknown argument received; the value was ignored |
-| `EXECUTE_UNKNOWN_ARG` | `execute` | Unknown argument received; the value was ignored |
+| `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
-| `UNGRAINED_TIME_PROJECTION` | `validate`, `compile`, `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
-| `UNGRAINED_GROUPED_TIME_PROJECTION` | `validate`, `compile`, `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
-| `SEMANTIC_CAVEAT_APPLIED` | `validate`, `compile`, `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
-| `SEMANTIC_CAVEATS_TRUNCATED` | `validate`, `compile`, `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
+| `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
+| `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
+| `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
+| `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
 
 Every `*_UNKNOWN_ARG` warning carries `details.received` (the offending key). Most also carry `details.closest_matches` (up to two ranked suggestions via `difflib.get_close_matches`); the special-cased singular/plural typos (e.g. `term` → `terms` on `discover`) carry `details.expected` with the canonical spelling instead.
 
-Errors return `INVALID_MCP_ARGUMENTS` (with `closest_matches` for typo'd keys) when the boundary contract is violated outright — e.g. wrong arg name, wrong type, value outside a declared enum. The full envelope shape is identical across all 13 tools.
+Errors return `INVALID_MCP_ARGUMENTS` (with `closest_matches` for typo'd keys) when the boundary contract is violated outright — e.g. wrong arg name, wrong type, value outside a declared enum. The full envelope shape is identical across all six tools.
 
 ### Argument strictness contract
 
-Eight rounds of blind-agent probing found that the 13 tools used to apply three different strictness models when given unknown arguments. The current contract is uniform: every tool either **rejects** unknown args (with a structured error) or **warns** and ignores them (with `details.closest_matches`). No tool silently accepts unknown keys.
+No tool silently accepts unknown keys. `segment` **rejects** them with `INVALID_MCP_ARGUMENTS`; `discover`, `inspect`, `valid-values`, `plan` and `execute` **warn** and ignore them with `DISCOVER_UNKNOWN_ARG`, `INSPECT_UNKNOWN_ARG`, `VALID_VALUES_UNKNOWN_ARG`, `PLAN_UNKNOWN_ARG` or `EXECUTE_UNKNOWN_ARG`. The warn-and-ignore tools cannot reject all unknown keys because callers legitimately add `policy_context` and may pass canonical Query-IR keys (`select`, `time`, `version`, etc.) at top level on `execute` — those passthroughs are part of the contract and never trigger an unknown-arg warning. Query-IR shape errors (e.g. an unknown key *inside* `query`) surface separately as `INVALID_QUERY` from the IR validator in `ast.py`.
 
-| Tool | Unknown-arg behavior | Warning / error code |
-|---|---|---|
-| `capabilities` | strict-reject | `INVALID_MCP_ARGUMENTS` |
-| `catalog` | strict-reject | `INVALID_MCP_ARGUMENTS` |
-| `segment-validate` | strict-reject | `INVALID_MCP_ARGUMENTS` |
-| `segment-explain` | strict-reject | `INVALID_MCP_ARGUMENTS` |
-| `segment-preview` | strict-reject | `INVALID_MCP_ARGUMENTS` |
-| `discover` | warn-and-ignore | `DISCOVER_UNKNOWN_ARG` |
-| `build-options` | warn-and-ignore | `BUILD_OPTIONS_UNKNOWN_ARG` |
-| `inspect` | warn-and-ignore | `INSPECT_UNKNOWN_ARG` |
-| `valid-values` | warn-and-ignore | `VALID_VALUES_UNKNOWN_ARG` |
-| `plan` | warn-and-ignore | `PLAN_UNKNOWN_ARG` |
-| `validate` | warn-and-ignore | `VALIDATE_UNKNOWN_ARG` |
-| `compile` | warn-and-ignore | `COMPILE_UNKNOWN_ARG` |
-| `execute` | warn-and-ignore | `EXECUTE_UNKNOWN_ARG` |
+## Migrating from interface v1
 
-The warn-and-ignore tools cannot reject all unknown keys because callers legitimately add `policy_context` (every warn-tool) and may pass canonical Query-IR keys (`select`, `time`, `version`, etc.) at top level on `validate`, `compile`, and `execute` — those passthroughs are explicitly part of the contract and never trigger an unknown-arg warning. Query-IR shape errors (e.g. an unknown key *inside* `query`) surface separately as `INVALID_QUERY` from the IR validator in `ast.py`.
-
-## Interface v2
-
-Interface v2 serves six tools from the same handlers as v1. It is opt-in; v1 stays the default
-and unchanged. Select an interface per server process:
-
-```bash
-SEMANTIC_RAILS_MCP_INTERFACE=v2 semantic-rails mcp stdio --package jaffle_shop
-```
-
-In MCP client configs, set the variable in the server's `env`. In Python, pass
-`SemanticLayerMCPAdapter(runtime, interface="v2")`; the argument wins over the variable, and an
-unknown value fails with `INVALID_CONFIG`. `initialize` reports the interface as
-`serverInfo.version`, responses carry it as `api_version`, and `mcp doctor` prints it. The
-generated contract is `semantic_rails/contracts/query_mcp.v2.json`.
+Interface v1 (thirteen tools) was removed in 0.3.3; v2 serves the same handlers as six tools.
+Setting `SEMANTIC_RAILS_MCP_INTERFACE=v1` or passing `SemanticLayerMCPAdapter(runtime,
+interface="v1")` fails with `INVALID_CONFIG`: "The v1 MCP interface was removed in 0.3.3; use v2
+(see docs/MCP_INTERFACE.md)." Remove the setting (`v2` is still accepted). Calling a v1-only tool
+returns `UNKNOWN_MCP_TOOL`, whose message and `details.replacement` name the call to use.
+`initialize` reports `v2` as `serverInfo.version`, responses carry it as `api_version`, and
+`mcp doctor` prints it.
 
 | v2 tool | Replaces in v1 | Difference from v1 |
 |---|---|---|
-| `discover` | `discover`, `catalog` | `verbosity` defaults to `minimal`, slim cards (v1: `compact`, full cards). Empty `terms` returns the catalog index (counts and ids per kind), limited to `kinds` when given. |
+| `discover` | `discover`, `catalog` | `verbosity` defaults to `minimal`, slim cards (v1: `compact`, full cards). Empty `terms` returns the catalog index (see [Catalog And Metadata](#catalog-and-metadata)). |
 | `inspect` | `inspect` | `verbosity` defaults to `minimal`, the card without duplicate fields (v1: `compact`). |
 | `valid-values` | `valid-values` | None. |
-| `plan` | `plan` | `detail` defaults to `query` (v1: `best`). |
-| `execute` | `validate`, `compile`, `execute` | `mode`: `run` (default) returns what v1 `execute` returns, `validate` what `validate` returns, `sql` what `compile` returns. In mode `run`, `max_rows` defaults to 200 (v1: no cap). Its Query IR schema says `time.end` is exclusive. |
+| `plan` | `plan` | `detail` defaults to `query` (v1: `best`). `next.ready_for` lists only `execute`. |
+| `execute` | `validate`, `compile`, `execute` | `mode`: `run` (default) returns what v1 `execute` returns, `validate` what `validate` returns, `sql` what `compile` returns. In mode `run`, `max_rows` defaults to 200 (v1: no cap). |
 | `segment` | `segment-validate`, `segment-explain`, `segment-preview` | A required `action`: `validate`, `explain` or `preview`. `verbosity` defaults to `minimal` (v1: the whole response). |
 
-Every v2 tool returns its smallest response unless asked for more, and the v2 instructions and
-`execute` description point agents at `plan` rather than hand-written Query IR. `capabilities`
-and `build-options` have no v2 tool. Calling a v1-only tool on v2 returns
-`UNKNOWN_MCP_TOOL`, with the v2 call to use in `details.replacement`. Every v2 tool keeps the
-`request_id` and `policy_context` arguments, and resources and prompts keep their v1 names (the
-prompts' text names v2 tools).
-
-To move a v1 client to v2:
+To move a v1 client:
 
 - `validate(query)` becomes `execute(query, mode="validate")`, and `compile(query)` becomes
   `execute(query, mode="sql")`.
 - `execute(query)` returns at most 200 rows; pass `max_rows` (up to 100,000) for more.
 - `segment-validate`, `segment-explain` and `segment-preview` become
   `segment(segment_id, action=...)`; pass `verbosity="full"` for v1's whole response.
-- `catalog()` becomes `discover(terms="")`. For v1's default responses, pass
-  `verbosity="compact"` to `discover` and `inspect`, and `detail="best"` to `plan`.
-- Clients that need `capabilities` or `build-options` stay on v1.
+- `catalog()` becomes `discover(terms="")` or a `semantic-rails://catalog/*` resource. For v1's
+  default responses, pass `verbosity="compact"` to `discover` and `inspect`, and `detail="best"`
+  to `plan`.
+- `capabilities` and `build-options` have no MCP tool: draft Query IR with `plan` (the `execute`
+  schema lists the expression shapes) and look up filter values with `valid-values`. The HTTP API
+  keeps `/api/v1/capabilities` and `/api/v1/build-options`, and the CLI keeps `build-options`.
 
 ## Resources And Prompts
 
 Declarative resources:
 
-- `semantic-rails://capabilities`: the v1 interface version and complete tool definitions,
+- `semantic-rails://capabilities`: the interface version (`v2`) and complete tool definitions,
   resources and prompts. Existing consumers can read `tools[].inputSchema` and `outputSchema`.
   This is a large resource; `tools/list` also has the tool definitions.
 - `semantic-rails://capabilities/summary`: a small opt-in index of tool names and titles,
   resources and prompts.
-- `semantic-rails://catalog/summary`: the v1 catalog's descriptive rows and `counts_total`.
+- `semantic-rails://catalog/summary`: descriptive rows (up to 200 per kind) and `counts_total`.
   Existing consumers can read fields such as `catalog.measures[].id`. This is a large resource.
 - `semantic-rails://catalog/index`: a small opt-in index of counts and ids per object kind,
-  the same as the `catalog` tool's default `summary` view.
+  the same as `discover` with empty `terms`, unpaged.
 - `semantic-rails://catalog/full`: every object's full card and the alias index. It grows with the
   package (about 200K tokens for `jaffle_shop`), so read the index first. `resources/read` has
   no paging arguments; paging this resource needs resource templates, planned with the
@@ -723,7 +639,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_EXPRESSION_AST` | Expression AST is malformed; check the position-specific shape. |
 | `OBJECT_NOT_FOUND` | Referenced `object_id` does not exist; see `details.closest_matches`. |
 | `INVALID_QUERY` | Query IR fails structural validation. |
-| `INVALID_CONFIG` | Package config is malformed. |
+| `INVALID_CONFIG` | Package config is malformed, or the removed MCP interface v1 was requested. |
 | `INVALID_METRIC_FILTER` | `metric_filters[]` entry is malformed; check the shape. |
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
@@ -745,7 +661,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `CONVERSION_MATCHING_MODE_REQUIRED` | Conversion is missing the matching mode (`first_after`, `last_before`, ...). |
 | `UNKNOWN_MCP_PROMPT` | Prompt name isn't in the catalog; see `details.available_prompts`. |
 | `UNKNOWN_MCP_RESOURCE` | Resource URI isn't in the catalog; see `details.available_resources`. |
-| `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`. |
+| `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`, and `details.replacement` for a removed v1 tool. |
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |
 
@@ -815,12 +731,12 @@ uv run python scripts/mcp_context.py --eval-file PATH # score a copy of a frozen
 | Gold answers | A gold query fails, its rows no longer match the frozen answer, or a listed alternative answers differently. |
 | Frozen eval set | `eval_jaffle.jsonl` no longer matches `DEV_SET_SHA256` in the script. |
 
-The budgets cover `tools/list`, the `initialize` instructions, the resource and prompt lists, every
-resource read, one compact opt-in call per tool (`plan(detail="query")` and
-`execute(max_rows=200)`, including a time window without a grain), three metadata calls behind
-an authenticated transport, four common mistakes, and two
-scripted three-question sessions. Budgets named `query.v2.*` cover interface v2 at its defaults:
-`tools/list`, the instructions, one call per tool and mode, and its two sessions. Three of the
+The budgets cover `tools/list` and the `initialize` instructions (`query.v2.tools_list.*`,
+`query.v2.instructions_tokens`), the resource and prompt lists and every resource read
+(`query.resource*`, `query.prompts_list_tokens`), one call per tool and mode at its defaults,
+including a time window without a grain, and the largest of them (`query.v2.default.*`), two
+metadata calls behind an authenticated transport (`query.hosted.*`), four common mistakes
+(`query.error.*`), and two scripted three-question sessions (`query.v2.session.*`). Three of the
 mistakes fail with a specific error code; the fourth,
 a misspelled `discover` argument, succeeds with a warning. A scripted call that fails when it should
 succeed (or the reverse), or that reports a different code, stops the measurement rather than
@@ -852,10 +768,10 @@ and `--write-baseline` refuses to run while a gold answer fails or the eval set 
 
 `scripts/agent_harness/eval_ab.py` runs the same eval questions through a real agent instead: the
 agent harness has a model behind any OpenAI-compatible chat endpoint answer each question once per
-interface, and each run's check scores the query the model last ran against the gold rows. It
-reports correct and silent wrong answers, tokens and tool calls per interface (see
-`scripts/agent_harness/README.md`). Its numbers depend on the model, so compare interfaces within
-one set of runs.
+build of the query MCP (`--arms name=command`), and each run's check scores the query the model
+last ran against the gold rows. It reports correct and silent wrong answers, tokens and tool calls
+per arm (see `scripts/agent_harness/README.md`). Its numbers depend on the model, so compare arms
+within one set of runs.
 
 The release workflows also run `scripts/benchmark_plan.py --gate` over the blind-agent corpus.
 That gate checks that plans are actionable, carry the expected IDs and Query IR fields, stay

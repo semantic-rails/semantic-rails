@@ -13,7 +13,10 @@ from semantic_rails.contracts import (
     load_contract,
     semantic_contract_fingerprint,
 )
-from semantic_rails.contracts.compatibility import compare_contract_bundles
+from semantic_rails.contracts.compatibility import (
+    compare_contract_bundles,
+    load_contract_directory,
+)
 from semantic_rails.contracts.generation import PUBLIC_SCHEMA_BASE, generated_artifacts
 from semantic_rails.errors import SemanticLayerError
 
@@ -285,8 +288,8 @@ def test_compatibility_checker_flags_breaking_schema_http_and_mcp_changes() -> N
     baseline["semantic_contract.v1.json"] = load_contract("semantic_contract.v1.json")
     current = json.loads(json.dumps(baseline))
     del current["http_api.v1.openapi.json"]["paths"]["/api/v1/query"]["post"]
-    current["query_mcp.v1.json"]["tools"] = [
-        tool for tool in current["query_mcp.v1.json"]["tools"] if tool["name"] != "execute"
+    current["query_mcp.v2.json"]["tools"] = [
+        tool for tool in current["query_mcp.v2.json"]["tools"] if tool["name"] != "execute"
     ]
     current["semantic_contract.v1.json"]["$defs"]["SemanticPackage"]["required"].append(
         "new_required"
@@ -296,6 +299,17 @@ def test_compatibility_checker_flags_breaking_schema_http_and_mcp_changes() -> N
     assert report["ok"] is False
     kinds = {change["kind"] for change in report["breaking_changes"]}
     assert {"operation_removed", "tool_removed", "required_added"}.issubset(kinds)
+
+
+def test_compatibility_checker_reports_a_retired_contract_as_removed(tmp_path: Path) -> None:
+    # 0.3.3 stopped shipping query_mcp.v1.json; a baseline that has it must not pass silently.
+    (tmp_path / "query_mcp.v1.json").write_text(json.dumps({"tools": []}), encoding="utf-8")
+    baseline = load_contract_directory(tmp_path)
+    assert set(baseline) == {"query_mcp.v1.json"}
+    removed = compare_contract_bundles(baseline, {})["breaking_changes"]
+    assert [(change["artifact"], change["kind"]) for change in removed] == [
+        ("query_mcp.v1.json", "artifact_removed")
+    ]
 
 
 def test_export_contract_wraps_unexpected_loader_shape_errors(monkeypatch) -> None:

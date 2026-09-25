@@ -154,10 +154,10 @@ def handle_jsonrpc_message(
             )
             result: dict[str, Any] = {
                 "protocolVersion": negotiated_version,
-                # An adapter-shaped object without these attributes serves v1.
+                # An adapter-shaped object without these attributes serves v2.
                 "serverInfo": {
                     "name": "semantic-rails",
-                    "version": getattr(adapter, "interface", "v1"),
+                    "version": getattr(adapter, "interface", "v2"),
                 },
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                 "instructions": getattr(adapter, "instructions", MCP_SERVER_INSTRUCTIONS),

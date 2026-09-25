@@ -5,7 +5,7 @@ position" prose, some of it contradictory (plan said a status-ok draft could
 go straight to execute; execute said to run it only after validate and
 compile). ``initialize`` now returns the workflow and shared conventions as
 ``instructions``; each description says what its tool does, when to use it and
-its one gotcha. The published v1 schemas still advertise and accept
+its one gotcha. The published schemas still advertise and accept
 request_id and policy_context, including on tools with closed input schemas.
 """
 
@@ -28,25 +28,18 @@ from semantic_rails.mcp import (
 from semantic_rails.mcp_server import handle_jsonrpc_message
 
 MINIMAL_ARGUMENTS: dict[str, dict[str, Any]] = {
-    "capabilities": {},
-    "catalog": {},
     "discover": {"terms": "revenue"},
     "inspect": {"object_id": "measure.jaffle.revenue_usd"},
-    "build-options": {},
     "valid-values": {"dimension_id": "dimension.jaffle_store_name"},
     "plan": {"intent": "revenue by store"},
-    "validate": {
-        "query": {"version": 2, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
-    },
-    "compile": {
-        "query": {"version": 2, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
-    },
     "execute": {
         "query": {"version": 2, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
     },
-    "segment-validate": {"segment_id": "segment.jaffle.high_value_customers"},
-    "segment-explain": {"segment_id": "segment.jaffle.high_value_customers"},
-    "segment-preview": {"segment_id": "segment.jaffle.high_value_customers", "limit": 2},
+    "segment": {
+        "segment_id": "segment.jaffle.high_value_customers",
+        "action": "preview",
+        "limit": 2,
+    },
 }
 
 
@@ -73,7 +66,7 @@ def test_initialize_sends_the_workflow_once(adapter: SemanticLayerMCPAdapter) ->
     assert instructions == MCP_SERVER_INSTRUCTIONS
     # Hosts load instructions up front, so they stay short.
     assert len(instructions) <= 2048
-    for tool in ("discover", "inspect", "plan", "execute", "validate", "compile", "catalog"):
+    for tool in MINIMAL_ARGUMENTS:
         assert f"{tool}" in instructions, tool
     assert "policy_context" in instructions
 
@@ -102,11 +95,8 @@ def test_request_id_and_policy_context_remain_advertised_and_accepted(
         assert response["request_id"] == "req-accepted", name
 
 
-@pytest.mark.parametrize(
-    "tool_name",
-    ["capabilities", "catalog", "segment-validate", "segment-explain", "segment-preview"],
-)
-def test_published_v1_closed_schemas_validate_existing_context_arguments(tool_name: str) -> None:
+@pytest.mark.parametrize("tool_name", ["segment"])
+def test_published_closed_schemas_validate_existing_context_arguments(tool_name: str) -> None:
     tool = next(tool for tool in list_tool_definitions() if tool["name"] == tool_name)
     schema = tool["inputSchema"]
     assert schema["additionalProperties"] is False
@@ -118,7 +108,7 @@ def test_published_v1_closed_schemas_validate_existing_context_arguments(tool_na
     }
     validator.validate(arguments)
     with pytest.raises(ValidationError):
-        validator.validate({**arguments, "unknown_v1_argument": True})
+        validator.validate({**arguments, "unknown_argument": True})
 
 
 def test_fastmcp_facade_sends_the_instructions(

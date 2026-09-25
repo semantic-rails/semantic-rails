@@ -1284,18 +1284,18 @@ def test_mcp_plan_rejects_list_values_for_scalar_filter_ops(
     )
 
 
-def test_mcp_plan_keeps_the_v1_best_default(adapter: SemanticLayerMCPAdapter) -> None:
-    default = adapter.call_tool("plan", {"intent": "revenue by store"})
-    assert default["best"]["query_ir"]
-    assert "intent_ir" in default and "next" in default
-    assert "trace" in default["best"]
-    # An unknown detail level gets the same default.
+def test_mcp_plan_detail_best_adds_the_trace(adapter: SemanticLayerMCPAdapter) -> None:
+    best = adapter.call_tool("plan", {"intent": "revenue by store", "detail": "best"})
+    assert best["best"]["query_ir"]
+    assert "intent_ir" in best and "next" in best
+    assert "trace" in best["best"]
+    # The compact default leaves them out, and an unknown detail level gets it.
+    compact = adapter.call_tool("plan", {"intent": "revenue by store"})
     unknown = adapter.call_tool("plan", {"intent": "revenue by store", "detail": "brief"})
     envelope = {"request_id", "timing_ms"}
     assert {key: value for key, value in unknown.items() if key not in envelope} == {
-        key: value for key, value in default.items() if key not in envelope
+        key: value for key, value in compact.items() if key not in envelope
     }
-    compact = adapter.call_tool("plan", {"intent": "revenue by store", "detail": "query"})
     for key in ("intent_ir", "next"):
         assert key not in compact
     assert "trace" not in compact["best"]
