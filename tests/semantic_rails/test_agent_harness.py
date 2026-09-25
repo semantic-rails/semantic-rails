@@ -74,6 +74,7 @@ def serve(replies: list, usage_kind: str | list[str]) -> tuple[ThreadingHTTPServ
             kind = usage_kind[len(requests) - 1] if isinstance(usage_kind, list) else usage_kind
             if kind == "full":
                 usage["completion_tokens_details"] = {"reasoning_tokens": 4}
+                message["reasoning_content"] = f"thought {len(requests)}"
             choice = {"message": {"role": "assistant", **message}, "finish_reason": finish}
             reply = {"choices": [choice], **({"usage": usage} if kind != "none" else {})}
             self.send_response(200)
@@ -136,6 +137,9 @@ def test_run_records_tokens_friction_and_the_check(
     assert add["wasted_tokens"] == 37 + 70 + 70
     assert fail["errors_seen"] == {"REFUSED: no": 1}
     assert ghost["errors"] == 1 and "unknown tool" in next(iter(ghost["errors_seen"]))
+    # the model's reasoning goes back with its calls, unchanged, so the server can reuse its cache
+    replies = [m for m in requests[2]["messages"] if m["role"] == "assistant"]
+    assert [m.get("reasoning_content") for m in replies] == ["thought 1", "thought 2"]
     shown = [m["content"] for m in requests[2]["messages"] if m["role"] == "tool"]
     assert (
         shown[0] == '{"ok":true,"sum":3}' and "REFUSED" in shown[1] and "unknown tool" in shown[4]

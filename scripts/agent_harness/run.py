@@ -232,7 +232,11 @@ class Agent:
         if not calls or finish == "length":  # a reply cut off mid-call isn't dispatched
             self.final = content
             return "length" if finish == "length" else "final"
-        self.messages.append({"role": "assistant", "content": content, "tool_calls": calls})
+        sent = {"role": "assistant", "content": content, "tool_calls": calls}
+        # the reasoning goes back as received, as hosts such as pi send it: the server reuses its cache
+        if reasoning := message.get("reasoning_content"):
+            sent["reasoning_content"] = reasoning
+        self.messages.append(sent)
         spent_now = (tokens["prompt_tokens"] or 0) + (tokens["completion_tokens"] or 0)
         for call in calls:
             await self.call(call, round(spent_now / len(calls)))
