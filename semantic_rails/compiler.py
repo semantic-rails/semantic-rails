@@ -3475,7 +3475,8 @@ def _select_aggregate_relation(
         for field in (str(item.get("field", "")) for item in _bound_filter_clauses(bound, config))
         if field
     )
-    counts_fact_key = bool(_measure_count_distinct_key_columns(measure, config))
+    # A whole single-column key sits in one rollup row; part of a composite key can repeat.
+    counts_fact_key = len(_measure_count_distinct_key_columns(measure, config)) == 1
     rejections = {
         row.id: reason
         for row in rows

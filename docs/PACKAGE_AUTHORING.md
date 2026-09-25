@@ -1302,9 +1302,10 @@ Routing is conservative in the MVP:
 - The query's `start` and `end` must fall on the rollup's bucket boundaries: a
   monthly table answers `2026-01-01` to `2026-04-01`, not `2026-01-15` to
   `2026-03-31`.
-- A `count_distinct` routes only when it counts the model's own key (for example
-  distinct `order_id` on an orders model). Distinct counts of anything else, such
-  as customers, can't be added up across rollup rows.
+- A `count_distinct` routes only when it counts the model's own single-column key
+  (for example distinct `order_id` on an orders model). Distinct counts of anything
+  else, such as customers or one column of a composite key, can't be added up
+  across rollup rows.
 - Every selected measure must have a column in the variant. Additive and
   precomputed rollups are supported; non-additive rollup semantics fall back to
   raw.

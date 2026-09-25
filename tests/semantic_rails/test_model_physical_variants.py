@@ -272,7 +272,9 @@ _BIG_ORDERS = {
 }
 
 
-def _rollup_package(package_dir: Path, variants: dict, aggregate_relations: list) -> None:
+def _rollup_package(
+    package_dir: Path, variants: dict, aggregate_relations: list, entity_key: tuple = ("order_id",)
+) -> None:
     _write_yaml(
         package_dir / "package.yml",
         {
@@ -288,7 +290,7 @@ def _rollup_package(package_dir: Path, variants: dict, aggregate_relations: list
             **({"aggregate_relations": aggregate_relations} if aggregate_relations else {}),
         },
     )
-    order = {"id": "entity.order", "key": ["order_id"], "model": "orders"}
+    order = {"id": "entity.order", "key": list(entity_key), "model": "orders"}
     _write_yaml(package_dir / "graph.yml", {"graph": {"entities": {"order": order}}})
     dims = {
         key: {"id": f"dimension.{key}", "column": key, "kind": "categorical"}
@@ -371,6 +373,12 @@ _BUYERS, _REVENUE = "measure.buyers", "measure.revenue"
             id="distinct-buyers-across-stores",
         ),
         pytest.param(
+            ({"monthly": _MONTHLY}, [], ("customer_id", "order_id")),
+            _rollup_query(_BUYERS, "count_distinct", "quarter"),
+            "aggregation_not_reaggregable",
+            id="distinct-buyers-composite-key",
+        ),
+        pytest.param(
             ({"weekly": _WEEKLY}, []),
             _rollup_query(_REVENUE, "sum", "month"),
             "unsupported_query_grain",
@@ -422,7 +430,7 @@ def test_rollup_routing_matches_base_tables(
     connection = duckdb.connect()
     connection.execute(_ROLLUP_SEED)
     answers = {}
-    for name, package in {"base": ({}, []), "rollup": rollups}.items():
+    for name, package in {"base": ({}, [], *rollups[2:]), "rollup": rollups}.items():
         _rollup_package(tmp_path / name, *package)
         config = load_package_config(str(tmp_path / name))
         answers[name] = compile_query(config, Registry(config), query)
