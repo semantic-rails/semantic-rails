@@ -45,8 +45,7 @@ Pass `--path` on commands that use your own package, or run them inside the pack
 directory. Without either, and without a saved profile, commands stop with
 `no_package_selected` and list the ways to choose a package; at an interactive terminal,
 `ask` first offers the bundled sample package. (`--package` only names a bundled
-package, such as `jaffle_shop`.) Releases before 0.3.0 don't stop: there, commands fall
-back to the bundled `jaffle_shop` package and exit 0.
+package, such as `jaffle_shop`.)
 
 To keep a `semantic-rails` command on your PATH instead of running it through `uvx`:
 
@@ -105,8 +104,9 @@ uv tool install semantic-rails
 
 `uv tool dir --bin` finds the command even when uv's tool directory isn't on your
 `PATH` yet. Run `mcp setup` without `--install --yes` to preview the change.
-`--client codex` and `--client both` also work, and `--mcp both` adds the Architect
-MCP, which can edit package files. Don't run `mcp setup --install` through `uvx`: the
+`--client codex`, `--client claude-code` (registers the server at user scope),
+`--client cursor` (writes `~/.cursor/mcp.json`) and `--client both` (Claude Desktop and
+Codex) also work, and `--mcp both` adds the Architect MCP, which can edit package files. Don't run `mcp setup --install` through `uvx`: the
 config would point into uv's cache, which `uv cache clean` deletes.
 
 **Cursor.** Install the command and print the two absolute paths the config needs:
@@ -274,7 +274,8 @@ Work in progress, without dates:
 
 - Query MCP interface v2 as the default, once it answers a held-out question set at
   least as accurately as v1. In 0.3.0 it is opt-in.
-- One-step agent setup: Claude Code and Codex plugins and a Claude Desktop bundle.
+- Packaged agent integrations: Claude Code and Codex plugins and a Claude Desktop
+  bundle. `mcp setup` already writes the client configs.
 - A flagship example: a dbt project on an open dataset, modeled end to end.
 - Broader native-model coverage in the comparison pack and a refreshed Snowflake
   capture on the current dataset.
