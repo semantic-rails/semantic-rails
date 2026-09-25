@@ -14,9 +14,11 @@ import hashlib
 import os
 import re
 import uuid
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,7 @@ _INVENTORY_KINDS = {
     "metric": "metrics",
     "segment": "segments",
 }
+_CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 
 
 def _slug(value: str, *, fallback: str) -> str:
@@ -657,15 +660,26 @@ class ArchitectProject:
         group: str = "core",
         description: str = "",
         label: str = "",
+        calendar: bool | None = None,
+        calendar_id: str = "",
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
+        """Create or update a model and its primary graph entity.
+
+        ``calendar=True`` makes the entity the package calendar for
+        ``calendar_id`` (default ``"default"``): ``kind: time``, not a query
+        root. ``calendar=False`` makes a calendar a regular entity again;
+        ``None`` leaves it as it is. On a regular model, ``calendar_id`` binds
+        its times to that calendar.
+        """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         documents: dict[Path, dict[str, Any]] = {}
+        raw = self._raw_inventory()
         staged = self._stage_model(
-            self._raw_inventory(),
+            raw,
             documents,
             model_id=model_id,
             entity_key=entity_key,
@@ -678,6 +692,8 @@ class ArchitectProject:
             group=group,
             description=description,
             label=label,
+            calendar=calendar,
+            calendar_id=calendar_id,
         )
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
@@ -692,6 +708,9 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
+            check=partial(self._check_calendars, raw, documents)
+            if staged["calendar_changed"]
+            else None,
             intent={
                 "operation": "upsert_model",
                 "model_id": model_id,
@@ -705,6 +724,8 @@ class ArchitectProject:
                 "group": group,
                 "description": description,
                 "label": label,
+                "calendar": calendar,
+                "calendar_id": calendar_id,
             },
             extra={"entity": staged["entity"]},
         )
@@ -843,6 +864,9 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
+            check=partial(self._check_calendars, raw, documents)
+            if any(fact["calendar_changed"] for fact in staged)
+            else None,
             intent={"operation": "upsert_models", "models": deepcopy(models), "group": group},
             extra={
                 "models": [
@@ -882,6 +906,8 @@ class ArchitectProject:
         group: str = "core",
         description: str = "",
         label: str = "",
+        calendar: bool | None = None,
+        calendar_id: str = "",
     ) -> dict[str, Any]:
         """Apply one model upsert to ``documents`` (files load on first use).
 
@@ -940,6 +966,23 @@ class ArchitectProject:
         )
         if label:
             model["label"] = label
+        requested_calendar = str(calendar_id or "").strip()
+        if requested_calendar and not _CALENDAR_ID.fullmatch(requested_calendar):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "calendar_id must be lowercase letters, digits and underscores "
+                f"(got {calendar_id!r})",
+            )
+        was_calendar = existing_entity is not None and (
+            str(existing_entity.spec.get("kind") or "").strip().lower() == "time"
+        )
+        if calendar:
+            model["calendar_id"] = requested_calendar or str(model.get("calendar_id") or "default")
+        elif requested_calendar:
+            # A regular model's calendar_id binds its times to that calendar.
+            model["calendar_id"] = requested_calendar
+        elif calendar is False and was_calendar:
+            model.pop("calendar_id", None)
         if dimensions is not None:
             model["dimensions"] = {
                 **dict(model.get("dimensions", {}) or {}),
@@ -975,12 +1018,18 @@ class ArchitectProject:
         }
         if existing_entity is None and entity_slug not in entities:
             desired_entity.update({"label": _title(entity_slug), "allowed_as_root": True})
+        if calendar:
+            desired_entity.update({"kind": "time", "allowed_as_root": False})
+        elif calendar is False and was_calendar:
+            desired_entity.pop("kind", None)
+            desired_entity["allowed_as_root"] = True
         entities[entity_slug] = desired_entity
         graph["entities"] = entities
         graph_doc["graph"] = graph
         return {
             "model": model_slug,
             "entity_key": entity_slug,
+            "calendar_changed": calendar is not None or bool(requested_calendar),
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
@@ -996,6 +1045,61 @@ class ArchitectProject:
                 "target_file": self._relative(graph_path),
             },
         }
+
+    @staticmethod
+    def _check_calendars(
+        raw: dict[str, list[_RawObject]], documents: dict[Path, dict[str, Any]]
+    ) -> None:
+        """Refuse staged calendars the engine would read ambiguously.
+
+        One calendar entity per calendar_id; a default calendar once there is
+        any (a query without a calendar_id fills from it, and would otherwise
+        fall back to another calendar's grains); and a regular model may only
+        be bound to a calendar that exists.
+        """
+        models = {row.key: dict(row.spec) for row in raw["models"]}
+        entities = {row.key: dict(row.spec) for row in raw["entities"]}
+        for path, doc in documents.items():
+            graph = doc.get("graph")
+            if isinstance(graph, dict) and "entities" in graph:
+                entities = {
+                    str(key): dict(spec or {})
+                    for key, spec in dict(graph.get("entities") or {}).items()
+                }
+            if isinstance(doc.get("model"), dict):
+                models[str(doc["model"].get("id") or path.stem)] = dict(doc["model"])
+            for key, spec in dict(doc.get("models", {}) or {}).items():
+                models[str(dict(spec or {}).get("id") or key)] = dict(spec or {})
+        calendars: dict[str, str] = {}
+        for key, spec in entities.items():
+            if str(spec.get("kind") or "").strip().lower() != "time":
+                continue
+            model = models.get(str(spec.get("model") or key), {})
+            calendar_id = str(model.get("calendar_id") or "default").strip().lower()
+            if calendar_id in calendars:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"calendar_id {calendar_id!r} would belong to both {calendars[calendar_id]!r} "
+                    f"and {key!r}; a package has one calendar per calendar_id",
+                    details={"calendar_id": calendar_id},
+                )
+            calendars[calendar_id] = key
+        if calendars and "default" not in calendars:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "a package with calendars needs a default one (calendar_id: default); a query "
+                "without a calendar_id fills from it",
+                details={"calendars": sorted(calendars)},
+            )
+        calendar_models = {str(entities[key].get("model") or key) for key in calendars.values()}
+        for key, spec in models.items():
+            bound = str(spec.get("calendar_id") or "").strip().lower()
+            if key not in calendar_models and bound not in {"", "default", *calendars}:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"model {key!r} is bound to calendar {bound!r}, which no calendar declares",
+                    details={"model": key, "calendar_id": bound},
+                )
 
     def upsert_metric(
         self,
@@ -1239,7 +1343,16 @@ class ArchitectProject:
         dry_run: bool,
         intent: dict[str, Any],
         extra: dict[str, Any] | None = None,
+        check: Callable[[], None] | None = None,
     ) -> ArchitectMutation:
+        """Apply staged ``documents``; ``check`` runs under the transaction
+        lock, after receipt replay and the revision check."""
+
+        def checked(_: str) -> tuple[list[ProjectFileUpdate], None]:
+            if check is not None:
+                check()
+            return [], None
+
         operation = "updated" if existed else "created"
         metadata: dict[str, Any] = {
             "operation": operation,
@@ -1285,6 +1398,7 @@ class ArchitectProject:
             validate_after=validate_after,
             success_status="upserted",
             metadata=metadata,
+            prepare_updates=None if check is None else checked,
         )
         mutation = ArchitectMutation(
             report=outcome.report,
