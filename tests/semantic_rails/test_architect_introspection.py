@@ -827,7 +827,8 @@ def test_mcp_session_explores_a_dbt_warehouse(
     )
 
     assert len(everything["tables"]) == 5 and everything["truncated"] is True
-    assert len(tables["tables"]) == 5 and tables["truncated"] is False
+    assert everything["hint"] == "narrow with schema"
+    assert len(tables["tables"]) == 5 and tables["truncated"] is False and "hint" not in tables
     assert described["primary_key"] == ["customer_id"]
     assert profiled["row_count"] == 8
     assert suggested["upsert_model"]["primary_key"] == ["order_id"]

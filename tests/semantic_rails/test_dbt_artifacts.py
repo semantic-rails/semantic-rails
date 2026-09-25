@@ -740,6 +740,7 @@ def test_mcp_session_suggests_models_from_the_dbt_target(
     unselected = _call(server, "suggest_models_from_dbt", {"target_dir": "dbt/target"})
 
     assert len(unselected["models"]) == 2 and unselected["truncated"] is True
+    assert unselected["hint"] == "narrow with select"
     assert result["ok"] is True and result["truncated"] is False, result
     assert result["dbt_project"] == "shop_dbt"
     models = _by(result["models"], "relation")

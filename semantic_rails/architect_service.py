@@ -740,6 +740,11 @@ class ArchitectProject:
                 target_key = entity_keys.get(target, [])
                 if not target and len(candidates) > 1:
                     reason = f"the relation has multiple eligible entities: {', '.join(sorted(candidates))}"
+                elif not target:
+                    reason = (
+                        "no existing package entity reads this relation; name the entity for "
+                        "targets created in this batch"
+                    )
                 elif target not in entity_keys:
                     reason = "the target is not a model in this package or batch"
                 elif target == fact["entity_key"]:

@@ -1155,6 +1155,7 @@ def create_architect_mcp_server(
                 "ok": True,
                 "tables": tables[:MAX_LISTED_TABLES],
                 "truncated": len(tables) > MAX_LISTED_TABLES,
+                **({"hint": "narrow with schema"} if len(tables) > MAX_LISTED_TABLES else {}),
             }
         except Exception as exc:
             return _report_error(exc)
@@ -1273,6 +1274,7 @@ def create_architect_mcp_server(
                 "adapter_type": project.adapter_type,
                 "models": models[:limit],
                 "truncated": len(models) > limit,
+                **({"hint": "narrow with select"} if len(models) > limit else {}),
                 "dbt_warnings": project.warnings,
             }
         except Exception as exc:
@@ -1283,8 +1285,8 @@ def create_architect_mcp_server(
         description=(
             "Create or update package models from the selected dbt models in one transaction, "
             "writing their foreign keys as entity references. Review with "
-            "suggest_models_from_dbt first; skipped_models and skipped_references say what was "
-            "left out."
+            "suggest_models_from_dbt first; dry_run=true previews without writing. "
+            "skipped_models and skipped_references say what was left out."
         ),
     )
     def import_dbt_project(

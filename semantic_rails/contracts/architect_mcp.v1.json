@@ -2232,7 +2232,7 @@
         "readOnlyHint": false,
         "title": "Import dbt models"
       },
-      "description": "Create or update package models from the selected dbt models in one transaction, writing their foreign keys as entity references. Review with suggest_models_from_dbt first; skipped_models and skipped_references say what was left out.",
+      "description": "Create or update package models from the selected dbt models in one transaction, writing their foreign keys as entity references. Review with suggest_models_from_dbt first; dry_run=true previews without writing. skipped_models and skipped_references say what was left out.",
       "inputSchema": {
         "properties": {
           "catalog_path": {

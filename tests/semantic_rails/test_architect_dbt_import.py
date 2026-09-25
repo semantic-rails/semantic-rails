@@ -736,7 +736,12 @@ def test_relation_reference_requires_one_eligible_entity(
         assert preview["references"] == []
         assert len(preview["skipped_references"]) == 1
         reason = preview["skipped_references"][0]["reason"]
-        assert ("multiple eligible entities" if len(existing) > 1 else "not a model") in reason
+        expected_reason = (
+            "multiple eligible entities" if len(existing) > 1 else "no existing package entity"
+        )
+        assert expected_reason in reason
+        if staged:
+            assert "name the entity for targets created in this batch" in reason
 
 
 def test_explicit_entity_and_staged_update_override_relation_ambiguity(workspace: Path) -> None:
@@ -848,7 +853,7 @@ def test_references_resolve_by_entity_or_relation_and_otherwise_are_reported(
         ("customer", ("buyer_id",)),
     }
     reasons = [row["reason"] for row in report["skipped_references"]]
-    assert any("not a model in this package" in reason for reason in reasons)  # products
+    assert any("no existing package entity" in reason for reason in reasons)  # products
     assert any("not order's key" in reason for reason in reasons)
     lines = _model(workspace / "shop" / "models" / "core" / "lines.yml")
     assert lines["entities"]["customer"] == {"expr": "buyer_id"}  # a differently named key
@@ -1044,7 +1049,7 @@ def test_unresolved_contract_reference_is_reported_instead_of_dropped(workspace:
         if row.get("relation") == "ref('missing_customers')"
     ]
     assert len(missing) == 1
-    assert "not a model in this package" in missing[0]["reason"]
+    assert "no existing package entity reads this relation" in missing[0]["reason"]
 
 
 def test_contract_composite_width_and_target_column_mismatches_are_reported(
