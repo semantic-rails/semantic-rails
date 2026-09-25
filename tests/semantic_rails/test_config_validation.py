@@ -175,6 +175,7 @@ def _write_minimal_package(
                     "description": "Order count",
                     "kind": "entity_count",
                     "time": "ordered_at",
+                    "topics": ["orders"],
                     "publish": {"id": "metric.sales.orders"},
                 },
                 **dict(extra_measures or {}),
@@ -286,6 +287,7 @@ def _write_monolithic_package(path: Path, package_id: str) -> None:
                     "description": "Order count",
                     "kind": "entity_count",
                     "time": "ordered_at",
+                    "topics": ["orders"],
                     "publish": {"id": "metric.sales.orders"},
                 }
             },
@@ -351,6 +353,7 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
                         "kind": "entity_count",
                         "entity_key": ["O_ORDERKEY"],
                         "time": "order_date",
+                        "topics": ["orders"],
                         "publish": {"id": "metric.sales.orders"},
                     },
                     "revenue": {
@@ -1081,6 +1084,7 @@ def test_validate_config_generates_query_time_for_time_required_metrics(tmp_path
                 "description": "Cumulative orders",
                 "kind": "cumulative",
                 "temporal_role": "temporal_role.demo_order_time",
+                "topics": ["orders"],
                 "expression": {
                     "kind": "cumulative",
                     "input": {"kind": "metric", "metric": "metric.sales.orders"},
@@ -1174,6 +1178,7 @@ def test_validate_config_continues_after_failures_and_reports_execution_errors(t
                 "kind": "entity_count",
                 "expr": {"kind": "column", "column": "missing_order_id"},
                 "time": "ordered_at",
+                "topics": ["orders"],
                 "publish": False,
             }
         },
@@ -1185,6 +1190,7 @@ def test_validate_config_continues_after_failures_and_reports_execution_errors(t
                 "description": "Broken cumulative orders",
                 "kind": "cumulative",
                 "temporal_role": "temporal_role.missing",
+                "topics": ["orders"],
                 "expression": {
                     "kind": "cumulative",
                     "input": {"kind": "metric", "metric": "metric.sales.orders"},
@@ -1279,6 +1285,7 @@ def test_cli_validate_config_exits_nonzero_on_failure(
                 "kind": "entity_count",
                 "expr": {"kind": "column", "column": "missing_order_id"},
                 "time": "ordered_at",
+                "topics": ["orders"],
                 "publish": False,
             }
         },
@@ -3060,6 +3067,17 @@ def test_parse_report_rejects_a_conversion_whose_window_cannot_apply(
     [
         ({"entity_key": "order_id"}, "order_count"),
         ({"entity_key": "customer_id"}, "ordering_customer_count"),
+        # Another clock beyond the same default one: the warning says to keep both clocks.
+        (
+            {
+                "entity_key": "order_id",
+                "times": [
+                    "temporal_role.jaffle_order_time",
+                    "temporal_role.jaffle_customer_first_order_at",
+                ],
+            },
+            "order_count",
+        ),
         # The same count on another default clock, or of another column, is its own measure.
         (
             {"entity_key": "order_id", "times": ["temporal_role.jaffle_customer_first_order_at"]},
@@ -3067,7 +3085,7 @@ def test_parse_report_rejects_a_conversion_whose_window_cannot_apply(
         ),
         ({"entity_key": "store_id"}, None),
     ],
-    ids=["same-key", "same-column", "other-clock", "other-column"],
+    ids=["same-key", "same-column", "extra-clock", "other-clock", "other-column"],
 )
 def test_parse_report_warns_on_a_measure_that_duplicates_another(
     package_config_factory, spec, twin
@@ -3093,8 +3111,8 @@ def test_parse_report_warns_on_a_measure_that_duplicates_another(
     assert duplicates == (
         [
             f"public measure measure.jaffle.placed_orders duplicates measure.jaffle.{twin} "
-            "(same entity, expression, aggregation and default clock). Keep one, and point "
-            "anything that reads the other at it."
+            "(same entity, expression, aggregation and default clock). Keep one, give it every "
+            "clock the other has, and point anything that reads the other at it."
         ]
         if twin
         else []

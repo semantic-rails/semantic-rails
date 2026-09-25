@@ -1283,7 +1283,7 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
     for measure in config.measures:
         meta = dict(getattr(measure, "meta", {}) or {})
         prefix = f"{source_path}: public measure {measure.id}"
-        # Same rows, value and default clock: every query answers the same with either.
+        # Same rows and value on the same default clock; other clocks may differ.
         definition = json.dumps(
             [
                 measure.entity,
@@ -1300,7 +1300,8 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
         if twin != measure.id:
             warnings.append(
                 f"{prefix} duplicates {twin} (same entity, expression, aggregation and default "
-                "clock). Keep one, and point anything that reads the other at it."
+                "clock). Keep one, give it every clock the other has, and point anything that "
+                "reads the other at it."
             )
         for warning in list(getattr(measure, "authoring_warnings", []) or []):
             warnings.append(f"{prefix}: {warning}")
