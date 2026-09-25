@@ -51,7 +51,9 @@ that size (the last prompt's tokens plus four characters a token for what came s
 model is asked, without tools, to summarize every turn but the last `--compact-keep` (default
 2). The summary then replaces them, after the task, which is kept whole along with the system
 prompt. A later compaction summarizes the previous summary with the turns since. Set it
-below the window by at least one turn's growth and one reply.
+below the window by at least one turn's growth and one reply, and above what the kept turns
+alone can reach: once they reach it, every turn compacts again, at the cost of one more
+request each.
 
 ## Scenario files
 

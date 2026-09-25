@@ -208,6 +208,8 @@ class Agent:
             return "timeout"
         if reason := await self.compact(request):
             return reason
+        if time.monotonic() >= self.deadline:  # a compaction can use up the time
+            return "timeout"
         self.sent = len(self.messages)
         answer = await self.ask({**request, "messages": self.messages})
         if isinstance(answer, str):
@@ -264,12 +266,13 @@ class Agent:
 
     async def compact(self, request: dict[str, Any]) -> str:
         """Near --compact-at, replace all but the last turns with the model's summary of them."""
-        if not (self.opts.compact_at and self.turns and self.context() >= self.opts.compact_at):
-            return ""
+        if not (self.opts.compact_at and self.turns):
+            return ""  # off, or nothing sent yet
+        before = self.context()
         starts = [i for i, message in enumerate(self.messages) if message["role"] == "assistant"]
-        if len(starts) <= self.opts.compact_keep:
-            return ""
-        cut, before, started = starts[-self.opts.compact_keep], self.context(), time.monotonic()
+        if before < self.opts.compact_at or len(starts) <= self.opts.compact_keep:
+            return ""  # not due yet, or nothing older than the kept turns
+        cut, started = starts[-self.opts.compact_keep], time.monotonic()
         earlier = f"The summary so far:\n{self.summary}\n\n" if self.summary else ""
         turns = "\n\n".join(map(as_text, self.messages[2:cut]))
         prompt = f"The task:\n{self.task}\n\n{earlier}The turns to summarize:\n\n{turns}"
@@ -282,9 +285,10 @@ class Agent:
         if isinstance(answer, str):
             return f"compaction {answer}"
         choice, tokens = answer
-        self.summary = (choice["message"].get("content") or "").strip()
-        if not self.summary or choice.get("finish_reason") == "length":
-            return "compaction failed: no summary"
+        summary = (choice["message"].get("content") or "").strip()
+        if not summary or choice.get("finish_reason") == "length":
+            return "compaction failed: " + ("summary cut off" if summary else "no summary")
+        self.summary = summary
         note = "This session continues from earlier turns, which this summary replaces:"
         self.messages[1:cut] = [
             {"role": "user", "content": f"{self.task}\n\n{note}\n\n{self.summary}"}
@@ -299,6 +303,8 @@ class Agent:
         }
         self.compactions.append(record)
         self.log(event="compaction", **record, summary=self.summary)
+        if None in (tokens["prompt_tokens"], tokens["completion_tokens"]):
+            return "compaction: no usage reported"  # the token budget can't be enforced
         return ""
 
     async def call(self, call: dict[str, Any], share: int) -> None:

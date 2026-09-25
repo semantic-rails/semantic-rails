@@ -52,8 +52,9 @@ FRICTION = [  # errors, a repeat, bad arguments, an unknown tool, then an answer
 ]
 
 
-def serve(replies: list, usage_kind: str) -> tuple[ThreadingHTTPServer, list[dict]]:
-    """A chat endpoint that answers request n with replies[n] and reports full, partial or no usage."""
+def serve(replies: list, usage_kind: str | list[str]) -> tuple[ThreadingHTTPServer, list[dict]]:
+    """A chat endpoint that answers request n with replies[n] and reports full, partial or no
+    usage, for every request or, given a list, for each."""
     requests: list[dict] = []
 
     class Model(BaseHTTPRequestHandler):
@@ -62,10 +63,11 @@ def serve(replies: list, usage_kind: str) -> tuple[ThreadingHTTPServer, list[dic
             reply = replies[len(requests) - 1]
             message = {"content": reply} if isinstance(reply, str) else {"tool_calls": reply}
             usage = {"prompt_tokens": 100 * len(requests), "completion_tokens": 10}
-            if usage_kind == "full":
+            kind = usage_kind[len(requests) - 1] if isinstance(usage_kind, list) else usage_kind
+            if kind == "full":
                 usage["completion_tokens_details"] = {"reasoning_tokens": 4}
             choice = {"message": {"role": "assistant", **message}, "finish_reason": "stop"}
-            reply = {"choices": [choice], **({"usage": usage} if usage_kind != "none" else {})}
+            reply = {"choices": [choice], **({"usage": usage} if kind != "none" else {})}
             self.send_response(200)
             self.end_headers()
             self.wfile.write(json.dumps(reply).encode())
@@ -175,6 +177,36 @@ def test_compaction_replaces_older_turns_with_the_models_summary(tmp_path, monke
     events = [json.loads(line) for line in (out / "transcript.jsonl").read_text().splitlines()]
     assert [e["summary"] for e in events if e["event"] == "compaction"] == ["S1", "S2"]
     assert "| 2 |" in report.report([summary]).splitlines()[2]
+
+
+@pytest.mark.parametrize(
+    ("summary", "usage", "stop"),
+    [
+        ("", "full", "compaction failed: no summary"),
+        ("S1", "none", "compaction: no usage reported"),
+    ],
+)
+def test_a_failed_compaction_stops_the_run_and_keeps_its_record(
+    tmp_path, monkeypatch, summary, usage, stop
+):
+    (tmp_path / "server.py").write_text(SERVER, encoding="utf-8")
+    scenario = {"task": "Add 1 and 2.", "servers": {"fixture": f"{sys.executable} server.py"}}
+    (tmp_path / "scenario.yml").write_text(json.dumps(scenario), encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run lock
+    turns = [[call("add", {"a": n, "b": n})] for n in (1, 2)]
+    model, _ = serve([*turns, summary], ["full", "full", usage])
+    url, out = f"http://127.0.0.1:{model.server_port}/v1", tmp_path / "run"
+    argv = ["--out", str(out), "--model", "m", "--base-url", url, "--workdir", str(tmp_path)]
+    try:
+        run.main(
+            [str(tmp_path / "scenario.yml"), *argv, "--compact-at", "230", "--compact-keep", "1"]
+        )
+    finally:
+        model.shutdown()
+
+    result = json.loads((out / "summary.json").read_text())
+    assert (result["stop"], result["turns"], len(result["compactions"])) == (stop, 2, bool(summary))
+    assert ("prompt_tokens" in result["unavailable"]) == (usage == "none")
 
 
 PROGRAM = """
