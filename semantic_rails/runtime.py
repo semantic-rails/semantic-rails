@@ -738,8 +738,8 @@ def _ungrained_time_projection_warnings(payload: dict[str, Any]) -> list[dict[st
                 "query.time.temporal_role is set without time.grain; the "
                 "planner will group by the raw timestamp and return one row "
                 "per distinct value. Set time.grain (e.g. 'month', 'day') for "
-                "a bucketed result, or to the window's size (e.g. 'quarter') "
-                "for one total over it."
+                "a bucketed result, or to a grain whose one calendar bucket "
+                "covers the window (e.g. 'quarter') for one total."
             ),
             severity="warning",
             stage="validate",
@@ -749,8 +749,8 @@ def _ungrained_time_projection_warnings(payload: dict[str, Any]) -> list[dict[st
                     {
                         "code": "SET_TIME_GRAIN",
                         "message": (
-                            "Add time.grain to bucket the result; a grain the "
-                            "size of [time.start, time.end) returns one total."
+                            "Add time.grain to bucket the result; a grain whose "
+                            "one calendar bucket covers the window returns one total."
                         ),
                         "suggested_patches": [{"add": {"time.grain": "month"}}],
                     }

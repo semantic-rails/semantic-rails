@@ -206,22 +206,24 @@ def test_mcp_plan_offers_no_runnable_draft_without_the_window(
     runtime_factory, interface: str, detail: str | None
 ) -> None:
     intent = "Revenue by store and month for January, February and March 2017"
-    window = {"start": "2017-01-01", "end": "2017-04-01"}
+    time = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
+    window = {**time, "start": "2017-01-01", "end": "2017-04-01"}
     mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"), interface=interface)
     try:
         plan = mcp.call_tool("plan", {"intent": intent, **({"detail": detail} if detail else {})})
         bounded = mcp.call_tool("plan", {"intent": intent, "query": {"time": window}})
+        long_plan = mcp.call_tool("plan", {"intent": "revenue by store " + "x " * 1000})
     finally:
         mcp.close()
-    assert (plan["status"], plan["why"]["code"]) == ("low_confidence", "TIME_WINDOW_UNRESOLVED")
-    assert all("query_ir" not in row for row in [plan["best"], *plan.get("alternatives", [])])
-    # The recovery hint's way out: pass the window, and plan fills in the rest.
+    for refused in (plan, long_plan):
+        assert refused["status"] == "low_confidence"
+        assert refused["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+        rows = [refused["best"], *refused.get("alternatives", []), *refused.get("blocked", [])]
+        assert all("query_ir" not in row for row in rows)
+        assert "validate" not in refused.get("next", {})
+    # The recovery hint's way out: pass the window with its temporal role and grain.
     assert bounded["status"] == "ok"
-    assert bounded["best"]["query_ir"]["time"] == {
-        "temporal_role": "temporal_role.jaffle_order_time",
-        "grain": "month",
-        **window,
-    }
+    assert bounded["best"]["query_ir"]["time"] == window
 
 
 def test_plan_since_year_downgrades(runtime_factory) -> None:

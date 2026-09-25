@@ -1067,7 +1067,8 @@ The response `warnings` array can carry these non-error signals:
   period_to_date) carries its own grain. The planner will group by the
   raw timestamp column and return one row per distinct value;
   `details.recovery_hints[0]` (`SET_TIME_GRAIN`) recommends adding
-  `time.grain`: a grain the size of `[start, end)` returns one total.
+  `time.grain`: a grain whose one calendar bucket covers `[start, end)`
+  returns one total.
 - `EXPRESSION_NORMALIZED_AWAY` — fires when an input expression `kind`
   was recognized by the parser but did not survive normalization (or
   the user's `as:` alias is missing from compiled output). Carries

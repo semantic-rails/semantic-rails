@@ -1,6 +1,6 @@
 - `plan` no longer returns a runnable `best.query_ir` when it can't resolve the question's time
   window (`TIME_WINDOW_UNRESOLVED`); executing that draft used to return every period with `ok`.
-  Pass the window in `query.time` and plan again.
+  Pass the window, temporal role and grain in `query.time` and plan again.
 - A number in a time phrase no longer makes a top N: "What was revenue from January 1 2017 to
   March 31 2017 by store?" or "…in the last 3 months by store?" used to return only the first
   1 or 3 rows ranked by revenue.

@@ -249,8 +249,8 @@ bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a compari
 windows at once (such as "last month and this month"), return `low_confidence` with
 `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases they couldn't resolve, rather than the
 nearest parsed window. That response has no `best.query_ir` to execute, since a query without
-the window answers a different question: pass the window in `query.time` and plan again, and
-`plan` fills in the temporal role and grain. **Qualified relative periods remain a limitation:** for phrases such as
+the window answers a different question: pass the window in `query.time`, with the temporal
+role and grain, and plan again. **Qualified relative periods remain a limitation:** for phrases such as
 "before today", "after last month", or "until this week", `plan` may return `status="ok"`
 with the embedded period's bounds but without the qualifier, rather than
 `TIME_WINDOW_UNRESOLVED`. A `PLAN_UNMATCHED_TERMS` warning may appear, but "until" is treated as
@@ -264,7 +264,7 @@ question compares with an earlier period, `plan` keeps the end and returns
 Questions longer than 2,000 characters are not partially parsed for time: unless the caller
 provides a complete window in `query.time` (both `start` and `end`, or a relative `range`),
 they return `TIME_WINDOW_UNRESOLVED` with a request to shorten the question or supply those
-bounds. A date or
+bounds. Include the selected `temporal_role` and `grain` in that time block. A date or
 qualifier beyond the limit therefore cannot silently disappear from an otherwise ready draft.
 Use `detail="full"` only when you need alternatives or blocked drafts.
 

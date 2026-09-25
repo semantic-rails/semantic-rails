@@ -1155,8 +1155,8 @@ def _unresolved_time_why(
                 "message": (
                     "Or pass a complete window in the plan tool's query argument: "
                     "set query.time.start and query.time.end (end-exclusive), or "
-                    "query.time.range.last with unit and value. plan fills in the "
-                    "temporal role and grain."
+                    "query.time.range.last with unit and value. Include the selected "
+                    "temporal_role and grain in query.time; use build-options to choose them."
                 ),
             },
         ],
