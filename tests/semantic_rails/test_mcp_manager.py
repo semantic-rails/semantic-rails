@@ -359,7 +359,10 @@ def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
         port=port,
     )
     try:
-        assert started["ok"] is True, started["server"]["health"]
+        server = started["server"]
+        assert started["ok"] is True, {
+            key: server.get(key) for key in ("health", "pid_alive", "process_identity_verified")
+        }
         assert started["status"] == "started"
         assert started["server"]["health"]["ok"] is True
         assert started["server"]["process_identity_verified"] is True
@@ -386,8 +389,24 @@ def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
     assert load_mcp_registry()["servers"] == {}
 
 
-@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="Linux /proc only")
-def test_process_identity_survives_a_shifting_ps_start_time(monkeypatch) -> None:
+STAT = b"42 (python) S " + b" ".join(str(field).encode() for field in range(4, 53))
+
+
+def _no_proc(_pid: int) -> bytes:
+    raise OSError("no /proc")
+
+
+@pytest.mark.parametrize(
+    ("proc_stat", "key", "matches"),
+    [
+        (lambda _pid: STAT, "start_ticks", True),  # Linux: immune to a shifting ps start time
+        (_no_proc, "started", False),  # no /proc (macOS): ps start time, as before
+        (lambda _pid: b"42 (python) S 1", "started", False),  # unreadable stat: ps, fail closed
+    ],
+)
+def test_process_identity_prefers_the_kernel_start_tick(
+    monkeypatch, proc_stat, key: str, matches: bool
+) -> None:
     # procps derives lstart from /proc/stat btime, which moves when the clock is stepped.
     import semantic_rails.mcp_manager as manager
 
@@ -401,15 +420,27 @@ def test_process_identity_survives_a_shifting_ps_start_time(monkeypatch) -> None
         return real_run(cmd, **kwargs)
 
     monkeypatch.setattr(manager.subprocess, "run", run)
+    monkeypatch.setattr(manager, "_proc_stat", proc_stat)
     identity = manager._process_identity(os.getpid())
-    assert manager._record_process_matches({"pid": os.getpid(), "process_identity": identity})
+    assert set(identity) == {key, "command"}
+    record = {"pid": os.getpid(), "process_identity": identity}
+    assert manager._record_process_matches(record) is matches
 
 
-@pytest.mark.parametrize("name", ["python", "a) b (c", "two words"])
-def test_start_ticks_reads_field_22_after_any_command_name(name: str) -> None:
+def test_a_record_from_an_earlier_version_still_matches(monkeypatch) -> None:
     import semantic_rails.mcp_manager as manager
 
-    stat = f"42 ({name}) S " + " ".join(str(field) for field in range(4, 53))
+    monkeypatch.setattr(manager, "_proc_stat", lambda _pid: STAT)
+    legacy = manager._process_identity(os.getpid(), kernel_start=False)
+    assert set(legacy) == {"started", "command"}
+    assert manager._record_process_matches({"pid": os.getpid(), "process_identity": legacy})
+
+
+@pytest.mark.parametrize("name", [b"python", b"a) b (c", b"two words", b"\xe2\x82"])
+def test_start_ticks_reads_field_22_after_any_command_name(name: bytes) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    stat = b"42 (" + name + b") S " + b" ".join(str(field).encode() for field in range(4, 53))
     assert manager._start_ticks(stat) == "22"
 
 

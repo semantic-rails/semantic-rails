@@ -806,7 +806,7 @@ def _assert_process_identity_supported() -> None:
         )
 
 
-def _process_identity(pid: int) -> dict[str, str]:
+def _process_identity(pid: int, *, kernel_start: bool = True) -> dict[str, str]:
     """Return stable OS-observed identity fields for a live process.
 
     The registry never relies on PID alone: PIDs can be reused after a
@@ -816,6 +816,8 @@ def _process_identity(pid: int) -> dict[str, str]:
     On Linux, ``ps`` derives ``lstart`` from the boot time in /proc/stat,
     which moves when the clock is stepped, so one process can report a
     different second on the next call; the kernel's start tick does not.
+    ``kernel_start=False`` gives the ``ps``-only identity that records from
+    earlier versions hold, so those servers can still be stopped.
     """
 
     if not _pid_alive(pid):
@@ -823,8 +825,9 @@ def _process_identity(pid: int) -> dict[str, str]:
     values: dict[str, str] = {}
     fields = [("started", "lstart="), ("command", "command=")]
     with contextlib.suppress(OSError, IndexError):  # no /proc (macOS) or the process just exited
-        values["start_ticks"] = _start_ticks(Path(f"/proc/{pid}/stat").read_text())
-        fields.pop(0)
+        if kernel_start:
+            values["start_ticks"] = _start_ticks(_proc_stat(pid))
+            fields.pop(0)
     for key, field in fields:
         try:
             result = subprocess.run(
@@ -842,10 +845,14 @@ def _process_identity(pid: int) -> dict[str, str]:
     return values
 
 
-def _start_ticks(stat: str) -> str:
-    """Field 22 of /proc/<pid>/stat, counted after the parenthesized command name."""
+def _proc_stat(pid: int) -> bytes:
+    return Path(f"/proc/{pid}/stat").read_bytes()
 
-    return stat.rpartition(")")[2].split()[19]
+
+def _start_ticks(stat: bytes) -> str:
+    """Field 22 of /proc/<pid>/stat, counted after the command name (any bytes, in parentheses)."""
+
+    return stat.rpartition(b")")[2].split()[19].decode("ascii")
 
 
 def _record_process_matches(record: dict[str, Any]) -> bool:
@@ -854,7 +861,7 @@ def _record_process_matches(record: dict[str, Any]) -> bool:
     started = expected.get("start_ticks") or expected.get("started")
     if not pid or not started or not expected.get("command"):
         return False
-    return _process_identity(pid) == expected
+    return _process_identity(pid, kernel_start="start_ticks" in expected) == expected
 
 
 def _wait_for_http_health(
