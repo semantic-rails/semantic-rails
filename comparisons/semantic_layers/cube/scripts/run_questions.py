@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -21,14 +26,28 @@ PACK = REPO_ROOT / "comparisons" / "semantic_layers"
 PROJECT_DIR = PACK / "cube"
 RESULTS_DIR = PACK / "shared" / "results" / "cube"
 DATABASE = PACK / "shared" / "data" / "jaffle_comparison.duckdb"
-BASE_URL = "http://127.0.0.1:4000/cubejs-api/v1"  # index.js runs in dev mode: no token needed
+BASE_URL = "http://127.0.0.1:4000/cubejs-api/v1"
 PACKAGES = ["@cubejs-backend/server", "@cubejs-backend/duckdb-driver", "@duckdb/node-api"]
+# A fresh API secret per run: Cube accepts only requests carrying a JWT signed with it.
+API_SECRET = secrets.token_hex(32)
+
+
+def token(secret: str) -> str:
+    """An HS256 JWT signed with the API secret, which Cube requires on every request."""
+
+    def encode(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    signed = encode(b'{"alg":"HS256","typ":"JWT"}') + "." + encode(b"{}")
+    signature = hmac.new(secret.encode(), signed.encode(), hashlib.sha256).digest()
+    return f"{signed}.{encode(signature)}"
 
 
 def _request(path: str, query: str | None = None) -> str:
     url = BASE_URL + path + (f"?{urllib.parse.urlencode({'query': query})}" if query else "")
+    request = urllib.request.Request(url, headers={"Authorization": token(API_SECRET)})
     while True:
-        with urllib.request.urlopen(url, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=120) as response:
             body = response.read().decode("utf-8")
         if json.loads(body).get("error") != "Continue wait":  # a long query: ask again
             return body
@@ -70,7 +89,10 @@ def main() -> None:
     shutil.rmtree(RESULTS_DIR, ignore_errors=True)
     questions, unsupported = [], {}
     with tempfile.TemporaryFile() as log:
-        server = subprocess.Popen(["node", "index.js"], cwd=PROJECT_DIR, stdout=log, stderr=log)
+        env = os.environ | {"CUBEJS_API_SECRET": API_SECRET}
+        server = subprocess.Popen(
+            ["node", "index.js"], cwd=PROJECT_DIR, env=env, stdout=log, stderr=log
+        )
         try:
             _write(RESULTS_DIR / "meta.json", _wait_for_meta(server, log))
             for query_file in sorted((PROJECT_DIR / "queries").glob("q*.json")):
@@ -82,7 +104,8 @@ def main() -> None:
                     status = "executed"
                 except urllib.error.HTTPError as exc:
                     _write(target / "error.txt", exc.read().decode("utf-8"))
-                    unsupported[query_file.stem] = f"HTTP {exc.code}"
+                    reason = f"HTTP {exc.code}"
+                    unsupported[query_file.stem] = {"status": "unsupported", "reason": reason}
                     status = "unsupported"
                 questions.append(
                     {

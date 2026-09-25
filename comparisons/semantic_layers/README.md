@@ -52,7 +52,7 @@ compare latency, token use or cost. It runs without touching the active
 | --- | --- | --- | --- |
 | Semantic Rails | 0.2.1 | 2026-09-23 | yes |
 | MetricFlow | `dbt-metricflow 0.15.0` (`metricflow 0.213.0`), `dbt-core 1.12.5`, `dbt-duckdb 1.11.0` (`metricflow/requirements.lock`) | 2026-09-25 | yes; installs the locked packages |
-| Cube | Cube Core `1.7.45` (`@cubejs-backend/server`, `@cubejs-backend/duckdb-driver`; `cube/package-lock.json`) | 2026-09-25 | yes; installs the locked packages and starts Cube locally |
+| Cube | Cube Core `1.7.45` (`@cubejs-backend/server`, `@cubejs-backend/duckdb-driver`; `cube/package-lock.json`) | 2026-09-25 | yes, on darwin-arm64 (the only platform whose native binary is pinned); installs the locked packages and starts Cube locally |
 | Malloy | `@malloydata/cli 0.0.57` (`malloy/package-lock.json`) | 2026-09-25 | yes; installs the locked CLI |
 | Snowflake Semantic Views | Snowflake CLI + semantic view trial account | stale: 2026-04-07, on an earlier dataset | needs a live Snowflake account |
 | KtX | `@kaelio/ktx 0.16.0` (its bundled `ktx-sl` wheel, pinned by sha256) | 2026-09-25 | yes; fetches the npm package and checks the wheel's hash |

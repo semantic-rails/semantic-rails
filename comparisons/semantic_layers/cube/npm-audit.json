@@ -1,182 +1,185 @@
 {
-  "auditReportVersion": 2,
-  "vulnerabilities": {
-    "@cubejs-backend/api-gateway": {
-      "name": "@cubejs-backend/api-gateway",
-      "severity": "low",
-      "isDirect": false,
-      "via": [
-        "jwk-to-pem"
-      ],
-      "effects": [
-        "@cubejs-backend/server-core"
-      ],
-      "range": ">=0.26.15",
-      "nodes": [
-        "node_modules/@cubejs-backend/api-gateway"
-      ],
-      "fixAvailable": {
-        "name": "@cubejs-backend/server",
-        "version": "0.26.13",
-        "isSemVerMajor": true
-      }
-    },
-    "@cubejs-backend/server": {
-      "name": "@cubejs-backend/server",
-      "severity": "low",
-      "isDirect": true,
-      "via": [
-        "@cubejs-backend/server-core"
-      ],
-      "effects": [],
-      "range": ">=0.26.15",
-      "nodes": [
-        "node_modules/@cubejs-backend/server"
-      ],
-      "fixAvailable": {
-        "name": "@cubejs-backend/server",
-        "version": "0.26.13",
-        "isSemVerMajor": true
-      }
-    },
-    "@cubejs-backend/server-core": {
-      "name": "@cubejs-backend/server-core",
-      "severity": "low",
-      "isDirect": false,
-      "via": [
-        "@cubejs-backend/api-gateway"
-      ],
-      "effects": [
-        "@cubejs-backend/server"
-      ],
-      "range": ">=0.26.15",
-      "nodes": [
-        "node_modules/@cubejs-backend/server-core"
-      ],
-      "fixAvailable": {
-        "name": "@cubejs-backend/server",
-        "version": "0.26.13",
-        "isSemVerMajor": true
-      }
-    },
-    "elliptic": {
-      "name": "elliptic",
-      "severity": "low",
-      "isDirect": false,
-      "via": [
-        {
-          "source": 1112030,
-          "name": "elliptic",
-          "dependency": "elliptic",
-          "title": "Elliptic Uses a Cryptographic Primitive with a Risky Implementation",
-          "url": "https://github.com/advisories/GHSA-848j-6mx2-7j84",
-          "severity": "low",
-          "cwe": [
-            "CWE-1240"
-          ],
-          "cvss": {
-            "score": 5.6,
-            "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:L"
-          },
-          "range": "<=6.6.1"
-        }
-      ],
-      "effects": [
-        "jwk-to-pem"
-      ],
-      "range": "*",
-      "nodes": [
-        "node_modules/elliptic"
-      ],
-      "fixAvailable": {
-        "name": "@cubejs-backend/server",
-        "version": "0.26.13",
-        "isSemVerMajor": true
-      }
-    },
-    "gaxios": {
-      "name": "gaxios",
-      "severity": "moderate",
-      "isDirect": false,
-      "via": [
-        "uuid"
-      ],
-      "effects": [],
-      "range": "6.4.0 - 6.7.1",
-      "nodes": [
-        "node_modules/gaxios"
-      ],
-      "fixAvailable": true
-    },
-    "jwk-to-pem": {
-      "name": "jwk-to-pem",
-      "severity": "low",
-      "isDirect": false,
-      "via": [
-        "elliptic"
-      ],
-      "effects": [
-        "@cubejs-backend/api-gateway"
-      ],
-      "range": "*",
-      "nodes": [
-        "node_modules/jwk-to-pem"
-      ],
-      "fixAvailable": {
-        "name": "@cubejs-backend/server",
-        "version": "0.26.13",
-        "isSemVerMajor": true
-      }
-    },
-    "uuid": {
-      "name": "uuid",
-      "severity": "moderate",
-      "isDirect": false,
-      "via": [
-        {
-          "source": 1119441,
-          "name": "uuid",
-          "dependency": "uuid",
-          "title": "uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided",
-          "url": "https://github.com/advisories/GHSA-w5hq-g745-h8pq",
-          "severity": "moderate",
-          "cwe": [
-            "CWE-787",
-            "CWE-1285"
-          ],
-          "cvss": {
-            "score": 7.5,
-            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
-          },
-          "range": "<11.1.1"
-        }
-      ],
-      "effects": [
-        "gaxios"
-      ],
-      "range": "<11.1.1",
-      "nodes": [
-        "node_modules/gaxios/node_modules/uuid"
-      ],
-      "fixAvailable": true
-    }
-  },
-  "metadata": {
+  "package_lock_sha256": "ad7797d2953c8ca49363a893f83d5e0d418f77b358a7833b683b1d5a00d1d459",
+  "report": {
+    "auditReportVersion": 2,
     "vulnerabilities": {
-      "info": 0,
-      "low": 5,
-      "moderate": 2,
-      "high": 0,
-      "critical": 0,
-      "total": 7
+      "@cubejs-backend/api-gateway": {
+        "name": "@cubejs-backend/api-gateway",
+        "severity": "low",
+        "isDirect": false,
+        "via": [
+          "jwk-to-pem"
+        ],
+        "effects": [
+          "@cubejs-backend/server-core"
+        ],
+        "range": ">=0.26.15",
+        "nodes": [
+          "node_modules/@cubejs-backend/api-gateway"
+        ],
+        "fixAvailable": {
+          "name": "@cubejs-backend/server",
+          "version": "0.26.13",
+          "isSemVerMajor": true
+        }
+      },
+      "@cubejs-backend/server": {
+        "name": "@cubejs-backend/server",
+        "severity": "low",
+        "isDirect": true,
+        "via": [
+          "@cubejs-backend/server-core"
+        ],
+        "effects": [],
+        "range": ">=0.26.15",
+        "nodes": [
+          "node_modules/@cubejs-backend/server"
+        ],
+        "fixAvailable": {
+          "name": "@cubejs-backend/server",
+          "version": "0.26.13",
+          "isSemVerMajor": true
+        }
+      },
+      "@cubejs-backend/server-core": {
+        "name": "@cubejs-backend/server-core",
+        "severity": "low",
+        "isDirect": false,
+        "via": [
+          "@cubejs-backend/api-gateway"
+        ],
+        "effects": [
+          "@cubejs-backend/server"
+        ],
+        "range": ">=0.26.15",
+        "nodes": [
+          "node_modules/@cubejs-backend/server-core"
+        ],
+        "fixAvailable": {
+          "name": "@cubejs-backend/server",
+          "version": "0.26.13",
+          "isSemVerMajor": true
+        }
+      },
+      "elliptic": {
+        "name": "elliptic",
+        "severity": "low",
+        "isDirect": false,
+        "via": [
+          {
+            "source": 1112030,
+            "name": "elliptic",
+            "dependency": "elliptic",
+            "title": "Elliptic Uses a Cryptographic Primitive with a Risky Implementation",
+            "url": "https://github.com/advisories/GHSA-848j-6mx2-7j84",
+            "severity": "low",
+            "cwe": [
+              "CWE-1240"
+            ],
+            "cvss": {
+              "score": 5.6,
+              "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:L"
+            },
+            "range": "<=6.6.1"
+          }
+        ],
+        "effects": [
+          "jwk-to-pem"
+        ],
+        "range": "*",
+        "nodes": [
+          "node_modules/elliptic"
+        ],
+        "fixAvailable": {
+          "name": "@cubejs-backend/server",
+          "version": "0.26.13",
+          "isSemVerMajor": true
+        }
+      },
+      "gaxios": {
+        "name": "gaxios",
+        "severity": "moderate",
+        "isDirect": false,
+        "via": [
+          "uuid"
+        ],
+        "effects": [],
+        "range": "6.4.0 - 6.7.1",
+        "nodes": [
+          "node_modules/gaxios"
+        ],
+        "fixAvailable": true
+      },
+      "jwk-to-pem": {
+        "name": "jwk-to-pem",
+        "severity": "low",
+        "isDirect": false,
+        "via": [
+          "elliptic"
+        ],
+        "effects": [
+          "@cubejs-backend/api-gateway"
+        ],
+        "range": "*",
+        "nodes": [
+          "node_modules/jwk-to-pem"
+        ],
+        "fixAvailable": {
+          "name": "@cubejs-backend/server",
+          "version": "0.26.13",
+          "isSemVerMajor": true
+        }
+      },
+      "uuid": {
+        "name": "uuid",
+        "severity": "moderate",
+        "isDirect": false,
+        "via": [
+          {
+            "source": 1119441,
+            "name": "uuid",
+            "dependency": "uuid",
+            "title": "uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided",
+            "url": "https://github.com/advisories/GHSA-w5hq-g745-h8pq",
+            "severity": "moderate",
+            "cwe": [
+              "CWE-787",
+              "CWE-1285"
+            ],
+            "cvss": {
+              "score": 7.5,
+              "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
+            },
+            "range": "<11.1.1"
+          }
+        ],
+        "effects": [
+          "gaxios"
+        ],
+        "range": "<11.1.1",
+        "nodes": [
+          "node_modules/gaxios/node_modules/uuid"
+        ],
+        "fixAvailable": true
+      }
     },
-    "dependencies": {
-      "prod": 622,
-      "dev": 0,
-      "optional": 9,
-      "peer": 0,
-      "peerOptional": 0,
-      "total": 630
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 5,
+        "moderate": 2,
+        "high": 0,
+        "critical": 0,
+        "total": 7
+      },
+      "dependencies": {
+        "prod": 622,
+        "dev": 0,
+        "optional": 9,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 630
+      }
     }
   }
 }

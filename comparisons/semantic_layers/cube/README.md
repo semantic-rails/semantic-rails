@@ -22,14 +22,17 @@ npm rebuild @cubejs-backend/native
 install script. The one install script the pack needs is `@cubejs-backend/native`'s
 `postinstall`, which `npm rebuild @cubejs-backend/native` runs alone: it downloads Cube's
 prebuilt native binary from Cube's GitHub releases, outside the lockfile's integrity hashes,
-and Cube 1.7 doesn't start without it. `index.js` pins that binary by sha256 and refuses to
-start if the installed one differs:
+and Cube 1.7 doesn't start without it. The release tarball is extracted into the package, so
+`index.js` pins the sha256 of the whole installed `node_modules/@cubejs-backend/native`
+package (every file's path and bytes, binary and loader alike) and refuses to start if it
+differs:
 
-| Platform | Release asset | `native/index.node` sha256 |
-| --- | --- | --- |
-| darwin-arm64 | `https://github.com/cube-js/cube/releases/download/v1.7.45/native-darwin-arm64-unknown-fallback.tar.gz` | `b174bb6ea896cf4d5b6446d5c06a0217d232050fd343b8264a8d8c39af3cd56b` |
+| Platform | Release asset | `native/index.node` sha256 | Package tree sha256 (pinned) |
+| --- | --- | --- | --- |
+| darwin-arm64 | `https://github.com/cube-js/cube/releases/download/v1.7.45/native-darwin-arm64-unknown-fallback.tar.gz` | `b174bb6ea896cf4d5b6446d5c06a0217d232050fd343b8264a8d8c39af3cd56b` | `2d56629d47ef78fc49855f958bccb186778d06312f7d4efcfc47073e12b8b7ba` |
 
-Another platform needs its own asset's hash added to `index.js` after checking it. The pack
+Cube therefore runs only on darwin-arm64 until another platform's tree hash is checked and
+added to `index.js`. The pack
 doesn't use Cube Store, so its `postinstall` (a second GitHub download) never runs, and
 `CUBESTORE_SKIP_POST_INSTALL=true` keeps it skipped if scripts are ever enabled. The other
 install scripts in the lockfile (`es5-ext`, `fsevents`) aren't needed. This setup is for local
@@ -37,22 +40,28 @@ runs only.
 
 `npm audit --audit-level=high` reports 0 high and 0 critical advisories. It reports 2 moderate
 (`uuid` under `gaxios`) and 5 low (`elliptic`, through `jwk-to-pem` in Cube's API gateway; npm
-has no fix). `npm-audit.json` records that report, and CI checks the install surface offline:
+has no fix). `npm-audit.json` records that report with the sha256 of the `package-lock.json`
+it audited, and CI checks the install surface offline, failing if the lockfile changed since
+the audit. After changing the lockfile, re-record the audit (this runs `npm audit`):
 
 ```bash
-python3 comparisons/semantic_layers/cube/scripts/verify_evidence.py
+python3 comparisons/semantic_layers/cube/scripts/verify_evidence.py            # offline check
+python3 comparisons/semantic_layers/cube/scripts/verify_evidence.py --record   # re-audit
 ```
 
 ## Start Cube (for a benchmark or by hand)
 
 ```bash
-cd comparisons/semantic_layers/cube && npm start
+cd comparisons/semantic_layers/cube && CUBEJS_API_SECRET="$(openssl rand -hex 32)" npm start
 ```
 
 Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sql`, `/load`).
 `index.js` fixes everything else:
 
-- Dev mode, so requests need no token and the Playground is at `http://localhost:4000`.
+- Production mode: no dev server or Playground, and every request needs an `Authorization`
+  header carrying an HS256 JWT signed with `CUBEJS_API_SECRET` (`token()` in
+  `scripts/run_questions.py` makes one). Cube listens on every interface (it has no bind
+  option), so keep the secret private; cross-origin browser requests are refused.
 - `TZ=UTC` and DuckDB `SET TimeZone = 'UTC'`: Cube's SQL casts time dimensions through
   `timestamptz`, so results would otherwise depend on the machine's time zone.
 - DuckDB opens `:memory:` and attaches `../shared/data/jaffle_comparison.duckdb` read-only
@@ -60,7 +69,7 @@ Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sq
   While Cube runs, other processes can open the file read-only, but not read-write.
 - An in-memory cache and queue, no Cube Store and no pre-aggregations. Cube caches each result
   in memory and re-checks it every 10 seconds; pass `cache=no-cache` on `/load` to skip it.
-- Overrides: `PORT`, `CUBE_DUCKDB_PATH` (another DuckDB file) and `CUBEJS_API_SECRET`.
+- Overrides: `PORT` and `CUBE_DUCKDB_PATH` (another DuckDB file).
 
 ## Run the pack
 
@@ -68,7 +77,7 @@ Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sq
 uv run python comparisons/semantic_layers/cube/scripts/run_questions.py
 ```
 
-The runner starts `node index.js`, waits for `/meta`, saves `/sql` and `/load` for each query
+The runner starts `node index.js` with a fresh random API secret, waits for `/meta`, saves `/sql` and `/load` for each query
 under `shared/results/cube/`, and stops Cube. `summary.json` records the versions, the dataset
 fingerprint and whether each question executed; the rubric assigns the labels.
 

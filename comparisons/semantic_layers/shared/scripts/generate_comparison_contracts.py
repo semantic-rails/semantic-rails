@@ -438,7 +438,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         ],
         "weaknesses": [
             "q11 counts a duplicate `orders.order_count` measure: Cube 1.7.45's Tesseract planner renders invalid SQL when a query selects a measure and filters on a subquery dimension over that same measure.",
-            "Its `@cubejs-backend/native` package downloads a prebuilt binary from Cube's GitHub releases at install time, outside the lockfile's integrity hashes; Cube 1.7 doesn't start without it, so the pack pins it by sha256.",
+            "Its `@cubejs-backend/native` package downloads a prebuilt binary from Cube's GitHub releases at install time, outside the lockfile's integrity hashes; Cube 1.7 doesn't start without it, so the pack pins the installed package by sha256 and runs only on darwin-arm64 for now.",
         ],
         "scale": {
             "baseline_files": [
@@ -552,9 +552,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Join-tree aggregation is expressive without a large semantic scaffolding layer.",
             "Arbitrary-condition joins and query-derived sources answer q08-q16 without SQL blocks.",
         ],
-        "weaknesses": [
-            "The as-of joins assume at most one valid customer-history row per order: `customer_history` has no single-column key for Malloy to guard the join with.",
-        ],
+        "weaknesses": [],
         "scale": {
             "baseline_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
             "stretch_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],

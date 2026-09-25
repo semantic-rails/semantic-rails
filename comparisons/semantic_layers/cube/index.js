@@ -1,27 +1,48 @@
 // Cube's SQL casts time dimensions through timestamptz, which DuckDB reads in its session
 // time zone (taken from TZ). Pin it so results don't depend on the machine.
 process.env.TZ = "UTC";
+// Production mode: no dev server or Playground routes, and every API request needs a JWT
+// signed with the API secret.
+process.env.NODE_ENV = "production";
 
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-// @cubejs-backend/native's postinstall downloads this binary from Cube's GitHub releases,
-// outside package-lock.json's integrity hashes. Refuse to start on any other build.
-const NATIVE_SHA256 = {
-  // https://github.com/cube-js/cube/releases/download/v1.7.45/native-darwin-arm64-unknown-fallback.tar.gz
-  "darwin-arm64": "b174bb6ea896cf4d5b6446d5c06a0217d232050fd343b8264a8d8c39af3cd56b",
+// @cubejs-backend/native's postinstall downloads its binary from Cube's GitHub releases
+// (native-<platform>-<arch>-unknown-fallback.tar.gz for v1.7.45) and extracts it into the
+// package, outside package-lock.json's integrity hashes. Pin the whole installed package,
+// binary and loader, and refuse to start on anything else.
+const NATIVE_TREE_SHA256 = {
+  "darwin-arm64": "2d56629d47ef78fc49855f958bccb186778d06312f7d4efcfc47073e12b8b7ba",
 };
-const native = path.join(__dirname, "node_modules/@cubejs-backend/native/native/index.node");
+
+function treeSha256(dir) {
+  const hash = crypto.createHash("sha256");
+  const walk = (relative) => {
+    for (const name of fs.readdirSync(path.join(dir, relative)).sort()) {
+      const file = path.posix.join(relative, name);
+      if (fs.statSync(path.join(dir, file)).isDirectory()) walk(file);
+      else hash.update(`${file}\0`).update(fs.readFileSync(path.join(dir, file)));
+    }
+  };
+  walk("");
+  return hash.digest("hex");
+}
+
 const platform = `${process.platform}-${process.arch}`;
-const digest = fs.existsSync(native)
-  ? crypto.createHash("sha256").update(fs.readFileSync(native)).digest("hex")
-  : "missing";
-if (digest !== NATIVE_SHA256[platform]) {
+const native = path.join(__dirname, "node_modules/@cubejs-backend/native");
+const digest = fs.existsSync(native) ? treeSha256(native) : "missing";
+if (digest !== NATIVE_TREE_SHA256[platform]) {
   console.error(
-    `Cube's native binary for ${platform} is ${digest}, not the pinned ` +
-      `${NATIVE_SHA256[platform] || "(none recorded)"}; see README.md.`,
+    `@cubejs-backend/native for ${platform} hashes to ${digest}, not the pinned ` +
+      `${NATIVE_TREE_SHA256[platform] || "(none recorded)"}; see README.md.`,
   );
+  process.exit(1);
+}
+const apiSecret = process.env.CUBEJS_API_SECRET;
+if (!apiSecret) {
+  console.error("Set CUBEJS_API_SECRET; each request needs a JWT signed with it (README.md).");
   process.exit(1);
 }
 
@@ -33,9 +54,11 @@ const database = path.resolve(
 );
 
 const server = new CubejsServer({
-  apiSecret: process.env.CUBEJS_API_SECRET || "comparison-secret",
+  apiSecret,
   schemaPath: "model",
   telemetry: false,
+  // No cross-origin browser access.
+  http: { cors: { origin: false } },
   // Queries only: no Cube Store for the cache and queue, and no pre-aggregations.
   cacheAndQueueDriver: "memory",
   // The driver opens an in-memory DuckDB and attaches the shared file read-only, so other

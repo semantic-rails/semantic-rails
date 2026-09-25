@@ -1,6 +1,6 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
-  "generated_at": "2026-09-25T22:43:03+00:00",
+  "generated_at": "2026-09-25T23:00:18+00:00",
   "questions": [
     {
       "comparable_layers": [
@@ -16663,37 +16663,37 @@
         "cube": [
           {
             "month": "2016-09-01",
-            "qualifying_revenue_usd": 6080.06,
+            "qualifying_revenue_usd": 6080.0599999999995,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-10-01",
-            "qualifying_revenue_usd": 10002.660000000002,
+            "qualifying_revenue_usd": 10002.659999999998,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-11-01",
-            "qualifying_revenue_usd": 14757.670000000002,
+            "qualifying_revenue_usd": 14757.669999999998,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-12-01",
-            "qualifying_revenue_usd": 19451.92,
+            "qualifying_revenue_usd": 19451.919999999995,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-01-01",
-            "qualifying_revenue_usd": 24923.480000000003,
+            "qualifying_revenue_usd": 24923.479999999996,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-02-01",
-            "qualifying_revenue_usd": 20033.92,
+            "qualifying_revenue_usd": 20033.920000000002,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-03-01",
-            "qualifying_revenue_usd": 27524.640000000003,
+            "qualifying_revenue_usd": 27524.639999999996,
             "store_name": "Philadelphia"
           },
           {
@@ -16708,27 +16708,27 @@
           },
           {
             "month": "2017-04-01",
-            "qualifying_revenue_usd": 22774.050000000003,
+            "qualifying_revenue_usd": 22774.05,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-05-01",
-            "qualifying_revenue_usd": 24180.96,
+            "qualifying_revenue_usd": 24180.959999999995,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-05-01",
-            "qualifying_revenue_usd": 29219.310000000005,
+            "qualifying_revenue_usd": 29219.309999999998,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-06-01",
-            "qualifying_revenue_usd": 19267.010000000002,
+            "qualifying_revenue_usd": 19267.01,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-06-01",
-            "qualifying_revenue_usd": 19678.33,
+            "qualifying_revenue_usd": 19678.329999999998,
             "store_name": "Philadelphia"
           },
           {
@@ -16738,17 +16738,17 @@
           },
           {
             "month": "2017-07-01",
-            "qualifying_revenue_usd": 22613.710000000003,
+            "qualifying_revenue_usd": 22613.71,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-08-01",
-            "qualifying_revenue_usd": 24424.96,
+            "qualifying_revenue_usd": 24424.960000000006,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-08-01",
-            "qualifying_revenue_usd": 35339.079999999994,
+            "qualifying_revenue_usd": 35339.08,
             "store_name": "Brooklyn"
           }
         ],
