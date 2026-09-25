@@ -30,6 +30,7 @@ from ..output import (
 from ..reports import (
     CATALOG_KINDS,
     PROJECT_CHECK_MODES,
+    _catalog_kind,
     ask_report,
     list_objects_report,
     project_list_report,
@@ -94,6 +95,12 @@ def add_developer_cli(sub: argparse._SubParsersAction, package_choices: list[str
         description="List semantic objects in the active package, similar to dbt ls.",
     )
     _add_optional_reference_args(p_ls, package_choices)
+    p_ls.add_argument(
+        "terms",
+        nargs="*",
+        metavar="TERM",
+        help="As in the REPL's `ls [kind] [search]`: an optional kind, then search text.",
+    )
     p_ls.add_argument(
         "--resource-type",
         "--kind",
@@ -355,10 +362,13 @@ def cmd_debug(args: argparse.Namespace) -> None:
 
 def cmd_ls(args: argparse.Namespace) -> None:
     ref = _ref_from_args(args, interactive=_prompts_allowed(args))
+    kind, terms = args.resource_type, list(args.terms)
+    if kind == "all" and terms and _catalog_kind(terms[0]) in CATALOG_KINDS:
+        kind = _catalog_kind(terms.pop(0))
     report = list_objects_report(
         ref,
-        resource_type=args.resource_type,
-        search=args.search,
+        resource_type=kind,
+        search=" ".join([args.search, *terms]).strip(),
         limit=(0 if args.json else 50) if args.limit is None else args.limit,
     )
     if args.json:
