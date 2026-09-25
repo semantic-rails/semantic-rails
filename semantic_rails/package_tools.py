@@ -1344,7 +1344,7 @@ def _impacted_metric_ids(config, changes: list[dict[str, Any]]) -> list[str]:
         return sorted(recipe.id for recipe in config.metric_recipes)
     affected = {row["object_id"] for row in changes}
     expressions = {
-        recipe.id: json.dumps(expr_to_dict(recipe.expression), sort_keys=True)
+        recipe.id: json.dumps(expr_to_dict(recipe.expression), sort_keys=True, default=str)
         for recipe in config.metric_recipes
     }
     while True:

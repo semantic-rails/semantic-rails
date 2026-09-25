@@ -18,7 +18,7 @@ from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.architect_transactions import project_revision
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
-from tests.semantic_rails.dbt_warehouse import write_orders_package
+from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse, write_orders_package
 
 JAFFLE = Path(__file__).resolve().parents[2] / "configs" / "semantic_rails" / "jaffle_shop"
 
@@ -138,6 +138,14 @@ def test_refusals(
             ["models/customers.yml"],
             [("time", "signed_up_on")],
         ),
+        (
+            "measure",
+            "order_count",
+            "",
+            "removed",
+            ["models/orders.yml"],
+            [("measure", "order_count")],
+        ),
     ],
 )
 def test_removals(
@@ -165,6 +173,40 @@ def test_removals(
     assert load_package_config(str(workspace / "shop"))
 
 
+def _derived(expression: dict[str, Any]) -> dict[str, Any]:
+    return {"label": "X", "kind": "derived", "value_type": "currency", "expression": expression}
+
+
+SIGNED_UP = {"field": "dimension.shop_customer_signed_up_on", "op": "is_not_null"}
+
+
+@pytest.mark.parametrize(
+    ("metric", "kind", "key"),
+    [
+        ({**_metric("order_total"), "measure": "shop.order_total"}, "measure", "order_total"),
+        (_derived({"kind": "metric", "metric": "revenue"}), "metric", "revenue"),
+        (_derived({"kind": "metric", "metric": "metric.shop.revenue"}), "metric", "revenue"),
+        (
+            _derived(
+                {"kind": "aggregate", "measure": "order_total", "filter": {"all": [SIGNED_UP]}}
+            ),
+            "time",
+            "signed_up_on",
+        ),
+    ],
+    ids=["measure-name", "metric-key", "metric-id", "time-dimension-id"],
+)
+def test_a_metric_naming_it_any_way_refuses_the_removal(
+    workspace: Path, metric: dict[str, Any], kind: str, key: str
+) -> None:
+    metrics = _yaml(workspace, "metrics/core.yml")
+    metrics["metrics"]["x"] = metric
+    _dump(workspace / "shop" / "metrics" / "core.yml", metrics)
+
+    with pytest.raises(SemanticLayerError, match=r"leaves .*metric\.shop\.x naming it"):
+        _project(workspace).remove_object(kind=kind, key=key)
+
+
 def test_a_date_in_a_metric_filter(workspace: Path) -> None:
     """YAML reads an unquoted date as a date, which the metric check must still read."""
     metrics = _yaml(workspace, "metrics/core.yml")
@@ -180,7 +222,8 @@ def test_a_date_in_a_metric_filter(workspace: Path) -> None:
 
     with pytest.raises(SemanticLayerError, match="metric.shop.recent"):
         project.remove_object(kind="measure", key="order_total")
-    assert project.remove_object(kind="segment", key="big").report["ok"] is True
+    report = project.remove_object(kind="segment", key="big").report
+    assert report["ok"] is True and "error" not in report["impact"], report["impact"]
 
 
 def test_a_key_on_several_models_needs_model(workspace: Path) -> None:
@@ -255,6 +298,7 @@ def test_every_definition_goes_and_mentions_are_reported(workspace: Path) -> Non
 
 
 def test_mcp_preview_apply_replay_and_stale_revision(workspace: Path) -> None:
+    build_dbt_warehouse(workspace / "shop" / "data" / "warehouse.duckdb")
     server = create_architect_mcp_server(workspace_root=workspace)
     before = project_revision(workspace / "shop")
     arguments = {

@@ -1793,18 +1793,13 @@ class ArchitectProject:
     ) -> dict[str, Any]:
         """Refuse a removal that leaves a metric naming what it removes; else its impact.
 
-        The parse gate loads such a metric, which fails only when queried.
-        Metrics name anything by id, and measures and metrics by key too (as
-        ``measure:``/``metric:``). The impact is ``impact_project``'s, plus the
-        files still naming a removed id (dotted ids only: a model's is a plain word).
+        The parse gate loads such a metric, which fails only when queried. What
+        goes is ``impact_project``'s diff of the change (published metrics and
+        ``as`` ids too), and a metric names it if its expression, as the current
+        package resolves it, holds its id. ``references`` lists the files still
+        naming a removed id (dotted ids only: a model's is a plain word).
         """
         ids = sorted({str(row["id"]) for row in removed if "." in str(row.get("id") or "")})
-        quoted = [json.dumps(object_id) for object_id in ids] + [
-            f'"{field}": {json.dumps(row["key"])}'
-            for row in removed
-            if row["kind"] in {"measure", "metric"}
-            for field in ("measure", "metric")
-        ]
         transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
         mention = re.compile(rf"(?<![\w.])({'|'.join(map(re.escape, ids))})(?![\w.])")
         references = [
@@ -1815,33 +1810,35 @@ class ArchitectProject:
         with transaction.virtual_project(updates) as proposed:
             try:
                 snapshot = load_package_snapshot(str(proposed))
-            except Exception:  # the transaction's parse gate reports it
-                return {"references": references}
-            broken = sorted(
-                recipe.id
-                for recipe in snapshot.config.metric_recipes
-                if any(
-                    q
-                    in json.dumps(  # dates in filters are not JSON types
-                        [recipe.temporal_role, expr_to_dict(recipe.expression)], default=str
-                    )
-                    for q in quoted
-                )
-            )
-            if broken:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{change} leaves {', '.join(broken)} naming it; remove or change those first",
-                    details={"metrics": broken, "references": references},
-                )
-            try:
                 report = impact_report(
                     PackageReference(source_path=str(proposed)),
                     compare_path=str(self.project_path),
                     snapshot=snapshot,
                 )
-            except Exception as exc:  # the current package does not load: nothing to compare
+            except Exception as exc:  # the parse gate reports a package that doesn't load
                 return {"references": references, "error": str(exc)}
+        gone = [
+            json.dumps(row["object_id"])
+            for row in report["changes"]
+            if row["change_type"] == "removed"
+        ]
+        kept = {recipe.id for recipe in snapshot.config.metric_recipes}
+        broken = sorted(
+            recipe.id
+            for recipe in load_package_snapshot(str(self.project_path)).config.metric_recipes
+            if recipe.id in kept
+            and any(
+                q
+                in json.dumps([recipe.temporal_role, expr_to_dict(recipe.expression)], default=str)
+                for q in gone
+            )
+        )
+        if broken:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{change} leaves {', '.join(broken)} naming it; remove or change those first",
+                details={"metrics": broken, "references": references},
+            )
         changes = [
             {k: row[k] for k in ("object_id", "kind", "change_type")} for row in report["changes"]
         ]
