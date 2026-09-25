@@ -178,6 +178,54 @@ def test_a_low_confidence_suggestion_ticked_by_the_person_is_kept(shop: Path) ->
     assert list(_model(shop, "orders")["times"]) == ["ordered_at", "updated_at"]
 
 
+def test_a_composite_key_drops_the_entity_count(shop: Path) -> None:
+    key = ["order_id", "customer_id"]
+    _author(shop, {"Table to model": ORDERS, "Primary key": key, "Create this model?": True})
+
+    assert "order_count" not in _model(shop, "orders")["measures"]
+    graph = yaml.safe_load((shop / "graph.yml").read_text("utf-8"))
+    assert graph["graph"]["entities"]["order"]["key"] == key
+
+
+def test_plain_prompts_can_clear_prefilled_checkboxes(
+    shop: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # table, entity, key, clocks, dimensions (none), measures, money (none), confirm
+    answers = iter(["main_marts.fct_orders", "", "", "", "none", "", "none", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    backend.set_backend(backend.PlainBackend())
+
+    shell._handle_repl_line("author model", PackageReference(source_path=str(shop)), undo_stack=[])
+
+    model = _model(shop, "orders")
+    assert not model.get("dimensions")
+    assert model["measures"]["order_total"]["value_type"] == "number"
+    assert "currency" not in model["measures"]["order_total"]
+    assert next(answers, None) is None
+
+
+def test_a_table_it_cannot_read_falls_back_to_the_typed_flow(
+    shop: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    csv = shop / "data" / "shop_csv" / "raw_events.csv"
+    with duckdb.connect(str(shop / "data" / "shop.duckdb")) as connection:
+        connection.execute(f"CREATE VIEW main_staging.csv_events AS FROM read_csv('{csv}')")
+
+    script, _ = _author(
+        shop,
+        {
+            "Table to model": "main_staging.csv_events (",
+            "Model key": "csv_events",
+            "Create this model?": False,
+        },
+    )
+
+    assert "Can't suggest a model for main_staging.csv_events: introspection cannot read" in (
+        capsys.readouterr().out
+    )
+    assert "Warehouse table or relation (for example raw_orders)" in script.asked
+
+
 def test_type_a_table_name_uses_the_typed_flow(shop: Path) -> None:
     script, _ = _author(
         shop,

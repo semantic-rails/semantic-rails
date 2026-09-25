@@ -3,4 +3,5 @@
   entity, key, time columns, dimensions and measures as prefilled checkboxes, and which
   measures are money amounts. The whole model is written in one change with a preview, a
   parse check and `undo`. Detected links to other tables are listed. Without a readable
-  database, `author model` asks for the table by name as before.
+  database or table, `author model` asks for the table by name as before. Plain prompts
+  accept `none` to clear prefilled checkboxes.

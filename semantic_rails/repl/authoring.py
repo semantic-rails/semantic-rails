@@ -251,9 +251,13 @@ def _author_model_from_table(
     relation = _author_choice(f"Table to model (from {path})", options, default=default)
     if relation == _TYPE_IT:
         return None
-    with introspection.open_duckdb(path) as warehouse:
-        suggestion = introspection.suggest_model(warehouse, relation)
-        described = introspection.describe_table(warehouse, relation)
+    try:
+        with introspection.open_duckdb(path) as warehouse:
+            suggestion = introspection.suggest_model(warehouse, relation)
+            described = introspection.describe_table(warehouse, relation)
+    except SemanticLayerError as exc:
+        print(f"Can't suggest a model for {relation}: {exc}. Enter the table by hand.")
+        return None
     columns = [column["name"] for column in described["columns"]]
 
     entity = _author_slug_prompt("Business entity at one row of this table", suggestion["entity"])
@@ -329,7 +333,8 @@ def _author_model_from_table(
     if any(row["key"] == model_id for row in models):
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"Model `{model_id}` already exists. Use `author model` and type its key to update it.",
+            f"Model `{model_id}` already exists. To update it, run `author model`, pick "
+            '"Type a table name instead" and enter its key.',
         )
     label = _title(model_id)
     preview = {
