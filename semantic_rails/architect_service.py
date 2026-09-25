@@ -57,6 +57,11 @@ _INVENTORY_KINDS = {
 }
 _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 
+# What upsert_model(replace=True) keeps from the model it rewrites.
+_KEPT_ON_REPLACE = ("id", "entities", "calendar_id")
+# Model blocks of named objects: dropped_fields names each object a replace drops.
+_MODEL_BLOCKS = ("dimensions", "times", "measures", "joins")
+
 
 def _is_query(value: Any) -> bool:
     return isinstance(value, dict) and bool(value)
@@ -740,12 +745,17 @@ class ArchitectProject:
         label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        replace: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
         """Create or update a model and its primary graph entity.
+
+        Fields merge into an existing model; ``replace=True`` rewrites it from
+        the arguments, keeping only its ``id``, ``entities`` block and
+        ``calendar_id``, and reports what it dropped as ``dropped_fields``.
 
         ``calendar=True`` makes the entity the package calendar for
         ``calendar_id`` (default ``"default"``): ``kind: time``, not a query
@@ -772,9 +782,11 @@ class ArchitectProject:
             label=label,
             calendar=calendar,
             calendar_id=calendar_id,
+            replace=replace,
         )
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
+        dropped = {"dropped_fields": staged["dropped_fields"]} if replace else {}
         return self._commit(
             documents,
             kind="model",
@@ -804,8 +816,9 @@ class ArchitectProject:
                 "label": label,
                 "calendar": calendar,
                 "calendar_id": calendar_id,
+                "replace": replace,
             },
-            extra={"entity": staged["entity"]},
+            extra={"entity": staged["entity"], **dropped},
         )
 
     def upsert_models(
@@ -950,6 +963,11 @@ class ArchitectProject:
                         "entity": fact["entity_key"],
                         "existed": fact["existed"],
                         "target_file": fact["target_file"],
+                        **(
+                            {}
+                            if fact["dropped_fields"] is None
+                            else {"dropped_fields": fact["dropped_fields"]}
+                        ),
                     }
                     for fact in staged
                 ],
@@ -983,6 +1001,7 @@ class ArchitectProject:
         label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        replace: bool = False,
     ) -> dict[str, Any]:
         """Apply one model upsert to ``documents`` (files load on first use).
 
@@ -1030,6 +1049,16 @@ class ArchitectProject:
         model, model_wrapper = self._model_for_update(
             model_doc, existing_model, model_slug=model_slug
         )
+        if str(model.get("kind") or "").strip().lower() == "fact":
+            # A replace would drop kind: fact and silently make it an entity model.
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{model_slug!r} is a fact model; upsert_model manages entity models",
+                details={"model": model_slug},
+            )
+        previous = model
+        if replace:
+            model = {field: model[field] for field in _KEPT_ON_REPLACE if field in model}
         model.update(
             {
                 "id": model_slug,
@@ -1079,6 +1108,16 @@ class ArchitectProject:
                 **deepcopy(dict(joins or {})),
             }
         self._store_model(model_doc, model_wrapper, model_slug, model)
+        dropped_fields: list[str] | None = None
+        if replace:
+            dropped_fields = []
+            for field, value in previous.items():
+                if field in _MODEL_BLOCKS and isinstance(value, dict):
+                    kept = dict(model.get(field) or {})
+                    dropped_fields += [f"{field}.{name}" for name in value if name not in kept]
+                elif field not in model:
+                    dropped_fields.append(field)
+            dropped_fields.sort()
 
         graph_doc = documents[graph_path]
         graph = dict(graph_doc.get("graph", {}) or {})
@@ -1105,6 +1144,7 @@ class ArchitectProject:
             "model": model_slug,
             "entity_key": entity_slug,
             "calendar_changed": calendar is not None or bool(requested_calendar),
+            "dropped_fields": dropped_fields,
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
@@ -1188,6 +1228,12 @@ class ArchitectProject:
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
+        """Create or update a metric; ``spec`` merges into an existing one unless ``replace``.
+
+        A replace rewrites the metric from ``spec`` but keeps its ``id``,
+        ``as`` and ``name`` unless ``spec`` restates them, so its public id
+        does not move.
+        """
         expected, idempotency = self._mutation_identity(expected_revision, idempotency_key)
         key = str(metric_key or "").strip()
         if not key:
@@ -1204,9 +1250,7 @@ class ArchitectProject:
         documents = self._load_documents(path)
         doc = documents[path]
         current = dict(existing.spec if existing is not None else {})
-        merged = (
-            deepcopy(dict(spec or {})) if replace else {**current, **deepcopy(dict(spec or {}))}
-        )
+        merged = _replaced(current, spec) if replace else {**current, **deepcopy(dict(spec or {}))}
         self._store_mapping_object(doc, existing, wrapper="metrics", key=key, spec=merged)
         return self._commit(
             documents,
@@ -1234,11 +1278,13 @@ class ArchitectProject:
         segment_key: str,
         spec: dict[str, Any],
         file_name: str = "core.yml",
+        replace: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
+        """Create or update a segment; ``replace`` works as in :meth:`upsert_metric`."""
         expected, idempotency = self._mutation_identity(expected_revision, idempotency_key)
         key = str(segment_key or "").strip()
         if not key:
@@ -1255,7 +1301,7 @@ class ArchitectProject:
         documents = self._load_documents(path)
         doc = documents[path]
         current = dict(existing.spec if existing is not None else {})
-        merged = {**current, **deepcopy(dict(spec or {}))}
+        merged = _replaced(current, spec) if replace else {**current, **deepcopy(dict(spec or {}))}
         self._store_mapping_object(doc, existing, wrapper="segments", key=key, spec=merged)
         return self._commit(
             documents,
@@ -1273,6 +1319,7 @@ class ArchitectProject:
                 "segment_key": segment_key,
                 "spec": spec,
                 "file_name": file_name,
+                "replace": replace,
             },
         )
 
@@ -2035,6 +2082,15 @@ class ArchitectProject:
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.project_path).as_posix()
+
+
+def _replaced(current: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """``spec`` as the whole object, keeping the public identity it doesn't restate."""
+    replacement = deepcopy(dict(spec or {}))
+    for identity in ("id", "as", "name"):
+        if identity in current and identity not in replacement:
+            replacement[identity] = current[identity]
+    return replacement
 
 
 def _normal_text(value: str) -> str:

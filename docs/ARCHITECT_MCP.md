@@ -276,6 +276,22 @@ check, so a retried call replays and a stale one gets `CONFIG_CONFLICT`. Python 
 `total_row_count` when there are more. Its values are real warehouse data; like runtime
 validation, it may build a missing seeded DuckDB database.
 
+## Replacing Objects
+
+`upsert_model`, `upsert_metric` and `upsert_segment` merge their arguments into an existing
+object. `replace: true` rewrites the object from the arguments instead.
+
+- A model keeps only its `id`, its `entities` block (the relationships `upsert_relationship`
+  wrote) and its `calendar_id`. The report's `dropped_fields` names every field, dimension, time,
+  measure and join the rewrite drops, such as `label` or `dimensions.status`; restate what should
+  stay. `upsert_model` refuses fact models.
+- A metric or segment keeps its `id`, `as` and `name` unless the spec restates them, so its public
+  id doesn't move.
+
+The parse gate still runs, so a replace that drops a dimension a segment filters on is rolled back.
+It doesn't check that metrics still find their measures: after dropping a measure, run
+`validate_project` with `mode=runtime`.
+
 ## Tool Surface
 
 - `architect_guidance`

@@ -810,7 +810,7 @@
         "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
-      "description": "Preview or atomically upsert a model and aligned graph entity. calendar: true makes it the package calendar for calendar_id (default \"default\", which a package with calendars needs): time.fill reads its date_day time and week_start, month_start, quarter_start and year_start kind: date dimensions. calendar: false reverts that. On a regular model, calendar_id binds its times to a calendar.",
+      "description": "Preview or atomically upsert a model and aligned graph entity. calendar: true makes it the package calendar for calendar_id (default \"default\", which a package with calendars needs): time.fill reads its date_day time and week_start, month_start, quarter_start and year_start kind: date dimensions. calendar: false reverts that. On a regular model, calendar_id binds its times to a calendar. Fields merge into an existing model; replace: true rewrites it from the arguments, keeping only its id, entities and calendar_id, and lists what it drops in dropped_fields.",
       "inputSchema": {
         "properties": {
           "calendar": {
@@ -883,6 +883,11 @@
             "default": null,
             "title": "Joins"
           },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
           "measures": {
             "anyOf": [
               {
@@ -914,6 +919,11 @@
           "relation": {
             "title": "Relation",
             "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "title": "Replace",
+            "type": "boolean"
           },
           "times": {
             "anyOf": [
@@ -1467,7 +1477,7 @@
         "readOnlyHint": false,
         "title": "Upsert metric"
       },
-      "description": "Preview or atomically upsert a curated metric recipe.",
+      "description": "Preview or atomically upsert a metric; replace: true rewrites it, keeping its id.",
       "inputSchema": {
         "properties": {
           "dry_run": {
@@ -1495,6 +1505,11 @@
           "project_path": {
             "title": "Project Path",
             "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "title": "Replace",
+            "type": "boolean"
           },
           "spec": {
             "additionalProperties": true,
@@ -1749,7 +1764,7 @@
         "readOnlyHint": false,
         "title": "Upsert segment"
       },
-      "description": "Preview or atomically upsert a segment definition.",
+      "description": "Preview or atomically upsert a segment; replace: true rewrites it, keeping its id.",
       "inputSchema": {
         "properties": {
           "dry_run": {
@@ -1773,6 +1788,11 @@
           "project_path": {
             "title": "Project Path",
             "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "title": "Replace",
+            "type": "boolean"
           },
           "segment_key": {
             "title": "Segment Key",
