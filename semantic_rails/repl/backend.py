@@ -129,8 +129,12 @@ class PlainBackend:
         )
         aliases = {str(index): value for index, (value, _) in enumerate(options, start=1)}
         values = {value for value, _ in options}
+        if numbers:
+            print("  Enter keeps the checked ones; type none to check nothing.")
         while True:
             raw = self.text("Choose numbers or names, comma separated", default=numbers)
+            if raw.lower() == "none" and "none" not in values:
+                return []
             picked = [aliases.get(part.strip(), part.strip()) for part in raw.split(",")]
             picked = [part for part in picked if part]
             unknown = [part for part in picked if part not in values]
