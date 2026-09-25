@@ -99,6 +99,83 @@ def test_start_fails_before_spawn_when_process_identity_is_unsupported(
     assert spawned == []
 
 
+def test_cursor_and_claude_code_targets_install_and_both_stays_desktop_and_codex(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+    import subprocess
+
+    import semantic_rails.mcp_manager as manager
+
+    cursor = tmp_path / "cursor" / "mcp.json"
+    cursor.parent.mkdir()
+    cursor.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}, "keep": 1}))
+    monkeypatch.setenv("SEMANTIC_RAILS_CURSOR_CONFIG", str(cursor))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(manager.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        manager.subprocess,
+        "run",
+        lambda args, **_: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    ref = PackageReference(source_path="", package_id="jaffle_shop")
+
+    both = manager.mcp_client_config_report(ref, client="both", workspace_root=str(tmp_path))
+    assert sorted(both["previews"]) == ["claude", "codex"]
+    for client in ("cursor", "claude-code", "cursor"):  # the repeat must be idempotent
+        report = manager.mcp_client_config_report(
+            ref, client=client, workspace_root=str(tmp_path), install=True
+        )
+        assert report["installed"][client]["servers"] == [
+            "semantic-rails",
+            "semantic-rails-architect",
+        ]
+
+    servers = report["servers"]
+    written = json.loads(cursor.read_text())
+    assert written == {"keep": 1, "mcpServers": {"other": {"command": "x"}, **servers}}
+    assert calls == [
+        step
+        for name, config in servers.items()
+        for step in (
+            ["/bin/claude", "mcp", "remove", "--scope", "user", name],
+            ["/bin/claude", "mcp", "add-json", "--scope", "user", name, json.dumps(config)],
+        )
+    ]
+    preview = manager.mcp_client_config_report(ref, client="claude-code", mcp="query")
+    assert preview["previews"]["claude-code"]["commands"] == [
+        f"claude mcp add-json --scope user semantic-rails '{json.dumps(servers['semantic-rails'])}'"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("claude", "error"),
+    [(None, "not on PATH"), ("/bin/claude", "add-json` failed for semantic-rails: boom")],
+)
+def test_claude_code_install_reports_a_missing_or_failing_cli(
+    tmp_path: Path, monkeypatch, claude: str | None, error: str
+) -> None:
+    import subprocess
+
+    import semantic_rails.mcp_manager as manager
+
+    monkeypatch.setattr(manager.shutil, "which", lambda _name: claude)
+    monkeypatch.setattr(
+        manager.subprocess,
+        "run",
+        lambda args, **_: subprocess.CompletedProcess(args, 1, "", "boom"),
+    )
+
+    with pytest.raises(SemanticLayerError, match=error):
+        manager.mcp_client_config_report(
+            PackageReference(source_path="", package_id="jaffle_shop"),
+            client="claude-code",
+            mcp="query",
+            workspace_root=str(tmp_path),
+            install=True,
+        )
+
+
 @pytest.mark.parametrize("conflict", ["package", "host", "port", "health"])
 def test_start_rejects_named_server_config_or_health_conflict_without_restart(
     tmp_path: Path, monkeypatch, conflict: str
