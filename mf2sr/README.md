@@ -42,7 +42,7 @@ files from authored files; choose a fresh output path for each translation.
 | MetricFlow concept | Semantic Rails analogue |
 |---|---|
 | `semantic_model` | `model:` block in `models/<name>.yml` |
-| `node_relation.alias` | `model.relation` |
+| `node_relation` | `model.relation`: the alias, or with `--schema-strict` the schema-qualified name |
 | `entities[*].type: primary/unique` | Graph entity in `graph.yml` with `key:` and `model:` |
 | `entities[*].type: foreign` | FK entry in `model.entities` (if the entity has an owner) |
 | `primary_entity:` (no explicit primary) | Synthetic primary with key `<name>_id` |
@@ -88,14 +88,30 @@ files from authored files; choose a fresh output path for each translation.
   metrics/<group>.yml  # metrics grouped by the source semantic_model
 ```
 
-`schema_strict: false` is emitted by default because MetricFlow
-measure metadata is too thin to satisfy Semantic Rails' strict
-validator (most measures lack a meaningful `value_type:` distinction
-to support ratio/derived metric type inference). Flip it to `true`
-after reviewing measure value_types and adding governance metadata
-(`meta.owner_team`, `meta.review_priority`, `meta.change_risk`).
+By default the package is `schema_strict: false` and each model's `relation`
+is the bare dbt alias (`fct_orders`), so a project that needs review still loads.
 
-DuckDB packages emit a placeholder `seed.source` pointing at
+`--schema-strict` (`translate(schema_strict=True)`, also on
+`semantic-rails import --from metricflow`) writes a `schema_strict: true`
+package over the tables dbt built:
+
+- Each relation keeps the schema from its `node_relation` (`main_marts.fct_orders`),
+  named the way `import_dbt_project` names dbt relations: the database leads only
+  when it differs from the one most models use, and dbt-duckdb's default `main`
+  schema is left out. dbt's `target/semantic_manifest.json` records these for the
+  target it was built with, so generate it for the target the package will read
+  (for example `dbt parse --target prod`). A MetricFlow YAML directory
+  (`model: ref('fct_orders')`) records none, so its relations stay bare, with a
+  warning.
+- A DuckDB package gets `seed: {kind: external}`: it reads the database dbt builds,
+  which it never rebuilds. Point `--default-db` at that file, inside the package.
+- The output is parse-checked, and each error is a `parse:` warning, so `--strict`
+  fails the run. mf2sr writes a `connection` block for DuckDB and Snowflake only;
+  add one for another warehouse before the package parses. Snowflake's pins the
+  usual database (`options.database`), since relations leave it out; a connection
+  you add must point at the same database.
+
+Without `--schema-strict`, DuckDB packages emit a placeholder `seed.source` pointing at
 `data/seed_<package_id>.sql` that the author must create. Snowflake
 packages emit a `connection.kind: snowflake_native` block reading
 credentials from environment variables.

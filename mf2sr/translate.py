@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast as pyast
 import hashlib
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,7 @@ def translate(
     warehouse: str = "duckdb",
     default_db: str | None = None,
     description: str | None = None,
+    schema_strict: bool = False,
 ) -> TranslationReport:
     """Translate a MetricFlow input into a Semantic Rails package
     directory and return a :class:`TranslationReport`.
@@ -101,10 +103,17 @@ def translate(
                       when `namespace` is omitted.
         namespace:    Optional namespace prefix for auto-derived IDs.
                       Defaults to `package_id`.
-        warehouse:    `duckdb` or `snowflake`. Controls the `package.yml`
+        warehouse:    A registered warehouse; mf2sr writes a connection block for
+                      `duckdb` and `snowflake` only. Controls the `package.yml`
                       shape; DuckDB packages additionally need `default_db`.
         default_db:   File path for DuckDB. Ignored for Snowflake.
         description:  Optional package description.
+        schema_strict: Write a ``schema_strict: true`` package over the tables
+                      dbt built: relations keep their ``node_relation`` schema,
+                      and their database when it isn't the one most models use
+                      (Snowflake's connection pins that one). A DuckDB package
+                      reads dbt's database (``seed.kind: external``). The
+                      package is parse-checked; each error is a ``parse:`` warning.
     """
     namespace = namespace or package_id
     src = Path(source)
@@ -122,6 +131,10 @@ def translate(
     out_root.mkdir(parents=True, exist_ok=True)
 
     raw = parsers.load(src)
+    databases = Counter(
+        str((sm.get("node_relation") or {}).get("database") or "") for sm in raw["semantic_models"]
+    )
+    usual_database = databases.most_common(1)[0][0] if databases else ""
     report = TranslationReport(package_dir=out_root)
 
     graph = _build_graph(raw["semantic_models"], report)
@@ -133,6 +146,8 @@ def translate(
         warehouse=warehouse,
         default_db=default_db,
         description=description,
+        schema_strict=schema_strict,
+        database=usual_database if schema_strict else "",
     )
     _write_graph_yml(out_root, graph)
 
@@ -168,7 +183,17 @@ def translate(
             # Already warned during graph extraction; just skip emit.
             continue
         model_doc, measures_in_model = _build_model(
-            sm, graph, report, suppress_publish=metric_names
+            sm,
+            graph,
+            report,
+            suppress_publish=metric_names,
+            relation=_relation(
+                sm,
+                warehouse=warehouse,
+                keep_schema=schema_strict,
+                usual_database=usual_database,
+                report=report,
+            ),
         )
         (models_dir / f"{name}.yml").write_text(_dump_yaml({"model": model_doc}))
         report.models_emitted.append(name)
@@ -217,6 +242,11 @@ def translate(
             grouped = {name: doc for name, doc in entries}
             (metrics_dir / f"{owner}.yml").write_text(_dump_yaml({"metrics": grouped}))
 
+    if schema_strict:  # semantic_rails loads only here, so mf2sr imports without it
+        from semantic_rails.config_validation import PackageReference, parse_config_report
+
+        parse, _ = parse_config_report(PackageReference(source_path=str(out_root)))
+        report.warnings.extend(f"parse: {e.get('message', '')}" for e in parse["errors"])
     report.provenance = {
         "format_version": 1,
         "framework": "metricflow",
@@ -227,6 +257,38 @@ def translate(
         "warnings": list(report.warnings),
     }
     return report
+
+
+def _relation(
+    sm: dict[str, Any],
+    *,
+    warehouse: str,
+    keep_schema: bool,
+    usual_database: str,
+    report: TranslationReport,
+) -> str:
+    """The relation a semantic model reads: its ``node_relation`` alias, and in
+    strict mode also its schema and database, named as ``import_dbt_project``
+    names a dbt relation."""
+    node = dict(sm.get("node_relation") or {})
+    alias = str(node.get("alias") or sm["name"])
+    if not keep_schema:
+        return alias
+    if not node.get("schema_name"):
+        report.warnings.append(
+            f"semantic model `{sm['name']}` names no schema, so its relation stays `{alias}`; "
+            "translate dbt's target/semantic_manifest.json to keep schemas"
+        )
+        return alias
+    from semantic_rails.dbt_artifacts import qualified_relation
+
+    return qualified_relation(
+        str(node.get("database") or ""),
+        str(node["schema_name"]),
+        alias,
+        default_database=usual_database,
+        default_schema="main" if warehouse == "duckdb" else "",  # as dbt-duckdb builds it
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +426,7 @@ def _build_model(
     report: TranslationReport,
     *,
     suppress_publish: set[str] | None = None,
+    relation: str,
 ) -> tuple[dict[str, Any], list[tuple[str, str, str]]]:
     """Build the Semantic Rails `model:` body for one MetricFlow
     semantic_model. Returns `(model_doc, measures)` where `measures` is
@@ -372,7 +435,6 @@ def _build_model(
     primary entity and no measures (skipped).
     """
     name = sm["name"]
-    relation = (sm.get("node_relation") or {}).get("alias") or name
     description = sm.get("description") or sm.get("label") or name
 
     doc: dict[str, Any] = {
@@ -1496,31 +1558,30 @@ def _write_package_yml(
     warehouse: str,
     default_db: str | None,
     description: str | None,
+    schema_strict: bool,
+    database: str = "",
 ) -> None:
-    # The translator emits `schema_strict: false` because MetricFlow
-    # measure metadata is too thin to satisfy strict checks out of the
-    # gate (most measures lack a meaningful `value_type:` distinction,
-    # so ratio/derived metrics fall back to `number` and strict mode
-    # rejects them). The author should flip this to `true` after
-    # reviewing measure value_types and adding business meaning.
+    # Without --schema-strict the package is `schema_strict: false`, so a
+    # project whose relations or types need review still loads; strict mode
+    # parse-checks the output instead.
     pkg: dict[str, Any] = {
         "id": package_id,
         "namespace": namespace,
         "warehouse": warehouse,
-        "schema_strict": False,
+        "schema_strict": schema_strict,
         "environments": ["development", "staging", "production"],
     }
     if description:
         pkg["description"] = description
     if warehouse == "duckdb":
         pkg["default_db"] = default_db or f"data/{package_id}.duckdb"
-        # DuckDB packages require a seed block. We emit a placeholder
-        # `sql_script` seed pointing to a file the author will create.
-        # Without this the loader rejects the package outright.
-        pkg["seed"] = {
-            "kind": "sql_script",
-            "source": f"data/seed_{package_id}.sql",
-        }
+        # DuckDB packages require a seed block. Without --schema-strict it is a
+        # placeholder `sql_script` seed pointing to a file the author will create.
+        pkg["seed"] = (
+            {"kind": "external"}  # a strict package reads the database dbt built
+            if schema_strict
+            else {"kind": "sql_script", "source": f"data/seed_{package_id}.sql"}
+        )
     elif warehouse == "snowflake":
         # Snowflake packages need a connection block. We emit the
         # env-var-indirection shape so the YAML is safe to commit; the
@@ -1534,6 +1595,8 @@ def _write_package_yml(
                 "password_env": "SNOWFLAKE_PASSWORD",
                 "warehouse": "COMPUTE_WH",
                 "query_tag": f"mf2sr-{package_id}",
+                # Relations leave the usual database out, so the session must not guess it.
+                **({"database": database} if database else {}),
             },
         }
     body = {
