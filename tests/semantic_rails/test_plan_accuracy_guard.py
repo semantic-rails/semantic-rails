@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.planner._base import _named_metric
 from semantic_rails.planner.faithfulness import (
     _filter_value_gaps,
     _ranking_request,
@@ -1510,3 +1511,19 @@ def test_a_where_clause_is_honored_by_a_filter_on_its_dimension(
     number = "dimension.jaffle_order_customer_order_number"
     assert _gap_kinds(adapter, text, _query()) == ["dimension_filter_unrealized"]
     assert _gap_kinds(adapter, text, _query(where=[{"field": number, "op": "=", "value": 1}])) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        ("large order revenue by month", "metric.sales.large_order_revenue"),
+        # Revenue named again outside the metric's name leaves the measure first.
+        ("large order revenue minus revenue by month", None),
+        ("revenue minus large order revenue by month", None),
+    ],
+)
+def test_a_metric_is_named_only_around_every_measure_named(
+    named_metrics: SemanticLayerMCPAdapter, text: str, named: str | None
+) -> None:
+    found = _named_metric(named_metrics.runtime._config, text)
+    assert (found[0].id if found else None) == named

@@ -332,12 +332,9 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
         for row in rows:
             for name in (row.label, row.id, *(getattr(row, "aliases", None) or [])):
                 parts = re.findall(r"[^\W_]+", str(name or "").lower())
-                start = next(
-                    (i for i in range(len(said)) if parts and said[i : i + len(parts)] == parts),
-                    None,
-                )
-                if start is not None:
-                    yield len(parts), start, row
+                for start in range(len(said) - len(parts) + 1):
+                    if parts and said[start : start + len(parts)] == parts:
+                        yield len(parts), start, row
 
     size, start, metric = max(
         (item for item in named(config.metric_recipes) if item[0] > 1),
