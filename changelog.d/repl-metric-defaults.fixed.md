@@ -16,8 +16,6 @@
   window or offset unit the wizard cannot offer is refused rather than replaced.
 - Editing a metric keeps its authored `examples` instead of replacing them.
 - Plain REPL choices keep canonical option values when accepting uppercase defaults or
-  case-insensitive typed answers, including filtered-metric `IN` and `NOT IN` operators. A
-  saved value the menu does not list, such as a `median` default aggregation, is not offered
-  as the default, as with the arrow-key pickers.
+  case-insensitive typed answers, including filtered-metric `IN` and `NOT IN` operators.
 - A new model proposes a singular entity key without clipping words such as `status` or
   `address` to `statu` or `addre`.

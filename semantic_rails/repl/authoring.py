@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -17,7 +17,7 @@ from ..architect_service import ArchitectMutation, ArchitectProject
 from ..cli.common import _quote, _ref_label, _slug, _title
 from ..cli.output import _authoring_error_messages, _authoring_warning_messages
 from ..cli.reports import project_validation_report
-from ..config import load_package_config
+from ..config import _derive_measure_semantics, load_package_config
 from ..config_validation import PackageReference
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -462,7 +462,7 @@ def _author_dimension(
         project, inventory, "dimension", "status", parent=str(model.get("key", ""))
     )
     current = dict(existing.get("spec", {}) or {}) if existing else {}
-    kind = _author_choice(
+    kind = _kept_choice(
         "How should values behave?",
         [
             ("categorical", "Categorical - labels such as placed, shipped, cancelled"),
@@ -470,7 +470,8 @@ def _author_dimension(
             ("integer", "Integer - whole numbers that can be grouped or filtered"),
             ("continuous", "Continuous - numeric values used as dimensions"),
         ],
-        default=str(current.get("kind", "categorical")),
+        current.get("kind"),
+        "categorical",
     )
     column = _author_slug_prompt("Backing column", str(current.get("expr", key)))
     description = _author_prompt(
@@ -510,12 +511,13 @@ def _author_time(
     )
     current = dict(existing.get("spec", {}) or {}) if existing else {}
     column = _author_slug_prompt("Date or timestamp column", str(current.get("column", key)))
-    kind = _author_choice(
+    kind = _kept_choice(
         "Column type",
         [("timestamp", "Timestamp - date and time"), ("date", "Date - calendar date only")],
-        default=str(current.get("kind", "timestamp")),
+        current.get("kind"),
+        "timestamp",
     )
-    clock_class = _author_choice(
+    clock_class = _kept_choice(
         "What does this clock mean?",
         [
             ("event_time", "Event time - when an event happened"),
@@ -523,7 +525,8 @@ def _author_time(
             ("as_of_time", "As-of time - effective point for temporal joins"),
             ("calendar_time", "Calendar time - a date-spine or calendar model"),
         ],
-        default=str(current.get("class", "event_time")),
+        current.get("class"),
+        "event_time",
     )
     model_times = dict((model.get("spec", {}) or {}).get("times", {}) or {})
     should_default = bool(current.get("default", not model_times))
@@ -588,14 +591,18 @@ def _measure_change(
         project, inventory, "measure", "revenue", parent=str(model.get("key", ""))
     )
     current = dict(existing.get("spec", {}) or {}) if existing else {}
-    measure_kind = _author_choice(
+    measure_kind = _kept_choice(
         "What primitive fact is this?",
         [
             ("aggregate", "Aggregate - sum, average, minimum, or maximum"),
             ("entity_count", "Entity count - distinct count of business keys"),
         ],
-        default=str(current.get("kind", "aggregate")),
+        current.get("kind"),
+        "aggregate",
     )
+    # A saved accumulation (a stock, a population) stays while the kind does.
+    same_kind = str(current.get("kind", "")).strip().casefold() == measure_kind
+    accumulation = current.get("accumulation") if same_kind else None
     description = _author_prompt(
         "Description", str(current.get("description", f"Governed {label.lower()} primitive."))
     )
@@ -613,7 +620,7 @@ def _measure_change(
             "description": description,
             "kind": "entity_count",
             "entity_key": entity_key,
-            "accumulation": {"kind": "event"},
+            "accumulation": accumulation or {"kind": "event"},
             "value_type": "count",
             "meta": {
                 "owner_team": "analytics",
@@ -622,7 +629,7 @@ def _measure_change(
                 **dict(current.get("meta", {}) or {}),
             },
         }
-        if current.get("kind") != "entity_count":
+        if not same_kind:
             for stale_key in ("expr", "default_agg", "currency", "rollup"):
                 measure.pop(stale_key, None)
     else:
@@ -630,14 +637,29 @@ def _measure_change(
             "Column or scalar expression (for example amount_cents / 100.0)",
             str(current.get("expr", key)),
         )
-        aggregation = _author_choice(
+        # The loader's aggregations for this accumulation, less percentile: a
+        # measure cannot give it the `p` it needs, so only a saved one is offered.
+        default_agg, allowed, _, _ = _derive_measure_semantics(
+            {**current, "kind": "aggregate", "accumulation": accumulation}
+        )
+        aggregation = _kept_choice(
             "Default aggregation",
-            [(value, value.replace("_", " ").title()) for value in ("sum", "avg", "min", "max")],
-            default=str(current.get("default_agg", "sum")),
+            [
+                (value, value.replace("_", " ").title())
+                for value in allowed
+                if value != "percentile"
+            ],
+            current.get("default_agg"),
+            default_agg,
         )
-        value_type = _author_choice(
-            "Result type", _VALUE_TYPES, default=str(current.get("value_type", "number"))
-        )
+        value_type = _kept_choice("Result type", _VALUE_TYPES, current.get("value_type"), "number")
+        if existing:
+            _warn_on_new_aggregation(
+                load_package_config(ref.source_path),
+                _row_id(existing),
+                aggregation,
+                authored={_row_id(row) for row in _inventory_items(inventory, "metric")},
+            )
         measure = {
             **current,
             "label": label,
@@ -645,7 +667,7 @@ def _measure_change(
             "kind": "aggregate",
             "expr": expression,
             "default_agg": aggregation,
-            "accumulation": {"kind": "flow"},
+            "accumulation": accumulation or {"kind": "flow"},
             "value_type": value_type,
             "meta": {
                 "owner_team": "analytics",
@@ -654,7 +676,7 @@ def _measure_change(
                 **dict(current.get("meta", {}) or {}),
             },
         }
-        if current.get("kind") != "aggregate":
+        if not same_kind:
             measure.pop("entity_key", None)
         if value_type == "currency":
             measure["currency"] = _author_prompt(
@@ -905,17 +927,15 @@ def _metric_change(
     # changed inputs propose theirs.
     value_options = _RATIO_VALUE_TYPES if recipe == "ratio" else _VALUE_TYPES
     value_default = str(current.get("value_type") or "") if retain else ""
-    if value_default not in dict(value_options):
+    if not value_default:
         types = [getattr(_loaded_input(config, row), "value_type", "") for row in inputs]
         if recipe == "ratio":
             value_default = "currency" if types == ["currency", "count"] else "ratio"
-        else:
-            value_default = "percent" if recipe == "growth" else types[0]
-    value_type = _author_choice(
-        "Result type",
-        value_options,
-        default=value_default if value_default in dict(value_options) else value_options[0][0],
-    )
+        elif recipe == "growth":
+            value_default = "percent"
+        elif types[0] in dict(value_options):
+            value_default = types[0]
+    value_type = _kept_choice("Result type", value_options, value_default, value_options[0][0])
     spec["value_type"] = value_type
     if value_type == "currency":
         currency = str(
@@ -1161,6 +1181,60 @@ def _saved_choice(label: str, options: list[tuple[str, str]], saved: Any, fallba
             "the authored metric was left unchanged.",
         )
     return _author_choice(label, options, default=default)
+
+
+def _kept_choice(label: str, options: list[tuple[str, str]], saved: Any, fallback: str) -> str:
+    """Preselect the saved value so Enter keeps it, offering it when the menu lacks it.
+
+    A saved value that differs from an option only in case selects that option.
+    """
+
+    saved = str(saved or fallback).strip()
+    listed = next((value for value, _ in options if value.casefold() == saved.casefold()), "")
+    if not listed:
+        options = [*options, (saved, f"Keep {saved} (the saved value)")]
+    return _author_choice(label, options, default=listed or saved)
+
+
+def _warn_on_new_aggregation(
+    config: PackageConfig, measure_id: str, aggregation: str, *, authored: set[str]
+) -> None:
+    """Warn when an edit changes a measure's default aggregation, naming the metrics it changes.
+
+    A loaded metric that isn't ``authored`` was published from a measure by the loader,
+    which spells out the measure's default aggregation.
+    """
+
+    measure = next((row for row in config.measures if row.id == measure_id), None)
+    if measure is None or measure.default_aggregation == aggregation.lower():
+        return
+    changed: set[str] = set()
+
+    def uses(node: Any, published: bool) -> bool:
+        """The node aggregates the measure by its default, or reads a metric that does."""
+        if isinstance(node, MetricRecipeRefExpr):
+            return node.metric_recipe in changed
+        if getattr(node, "measure", None) == measure_id:
+            return published or not getattr(node, "aggregation", "")
+        if isinstance(node, list | tuple):
+            return any(uses(item, published) for item in node)
+        return is_dataclass(node) and any(
+            uses(getattr(node, part.name), published) for part in fields(node)
+        )
+
+    rows = config.metric_recipes
+    while more := {
+        row.id
+        for row in rows
+        if row.id not in changed and uses(row.expression, row.id not in authored)
+    }:
+        changed |= more
+    print(
+        f"[warning] This changes the default aggregation from "
+        f"{measure.default_aggregation} to {aggregation}."
+    )
+    if changed:
+        print("  These metrics will return different numbers: " + ", ".join(sorted(changed)))
 
 
 def _row_filter(

@@ -1106,9 +1106,9 @@ def test_a_recipe_refuses_a_measure_it_cannot_read(
 
 @contextmanager
 def _real_backend(
-    ui: str, monkeypatch: pytest.MonkeyPatch, key: str, search: str = ""
+    ui: str, monkeypatch: pytest.MonkeyPatch, key: str, search: str = "", kind: str = "metric"
 ) -> Iterator[dict[str, tuple[list[tuple[str, str]], str]]]:
-    """Type the metric key, confirm the write, and press Enter everywhere else.
+    """Type the ``kind``'s key, confirm the write, and press Enter everywhere else.
 
     Where nothing is offered, take the first option; Plain prompts type
     ``search`` at list filters. Yields each choice's options and default by label.
@@ -1127,9 +1127,9 @@ def _real_backend(
 
         def reply(prompt: str = "") -> str:
             record(prompt)
-            if prompt.startswith("Metric key"):
+            if prompt.startswith(f"{kind.title()} key"):
                 return key
-            if prompt.startswith(("Manage and update", "Update this metric?")):
+            if prompt.startswith(("Manage and update", f"Update this {kind}?")):
                 return "y"
             if prompt.startswith("Filter "):
                 return search
@@ -1155,7 +1155,7 @@ def _real_backend(
         class Picker(backend.PickerBackend):
             def text(self, label: str, *, default: str = "") -> str:
                 record(label)
-                pipe.send_text(("\x15" + key if label == "Metric key" else "") + "\r")
+                pipe.send_text(("\x15" + key if label == f"{kind.title()} key" else "") + "\r")
                 return super().text(label, default=default)
 
             def confirm(self, label: str, *, default: bool) -> bool:
@@ -1302,31 +1302,97 @@ def test_a_new_model_proposes_its_singular_as_the_entity(
     assert script.offered["Primary key column(s), comma separated"] == f"{entity}_id"
 
 
-def test_plain_prompts_edit_a_measure_whose_saved_choice_is_not_offered(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+KEPT_CHOICES = [
+    # command, key, fields saved over the starter's, fields Enter writes back (None: same bytes)
+    ("measure", "total_amount", {"default_agg": "median"}, None),
+    ("measure", "total_amount", {"default_agg": "percentile"}, None),
+    ("measure", "total_amount", {"accumulation": {"kind": "stock"}, "default_agg": "last_value"}, None),
+    ("measure", "total_amount", {"accumulation": {"kind": "stock", "snapshot": "start_of_period"},
+                                 "default_agg": ABSENT}, {"default_agg": "first_value"}),
+    ("measure", "event_count", {"accumulation": {"kind": "population"}}, None),
+    ("measure", "event_count", {"kind": "Entity_Count", "accumulation": {"kind": "population"}},
+     {"kind": "entity_count"}),
+    ("measure", "total_amount", {"default_agg": "MEDIAN", "value_type": "ratio"}, {"default_agg": "median"}),
+    ("dimension", "event_type", {"kind": "number", "description": "Event type."}, None),
+    ("time", "occurred_at", {"kind": "Date", "class": "State_Time", "default_query_axis": True},
+     {"kind": "date", "class": "state_time"}),
+    ("metric", "m", {"value_type": "ratio"}, None),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("ui", ["plain", "pickers"])
+@pytest.mark.parametrize(("command", "key", "saved", "written"), KEPT_CHOICES)
+def test_enter_keeps_a_saved_choice_the_menu_does_not_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ui: str,
+    command: str,
+    key: str,
+    saved: dict[str, Any],
+    written: dict[str, Any] | None,
+) -> None:
+    project = _starter(tmp_path)
+    if command == "metric":
+        _author(project, {"Metric key": key, "Measure to publish": "total_amount - "})
+    path = _path(project, key) if command == "metric" else project / EVENTS
+
+    def spec() -> tuple[dict[str, Any], dict[str, Any]]:
+        doc = yaml.safe_load(path.read_text("utf-8"))
+        return doc, (doc["metrics"] if command == "metric" else doc["model"][f"{command}s"])[key]
+
+    doc, before = spec()
+    before.update(saved)
+    for name in [name for name, value in saved.items() if value is ABSENT]:
+        del before[name]
+    _write_yaml(path, doc)
+    original, undo = path.read_bytes(), list[Any]()
+
+    with _real_backend(ui, monkeypatch, key, kind=command):
+        _repl(project, f"author {command}", None, undo)
+
+    assert len(undo) == 1 and undo[0].report["parse"]["ok"] is True
+    if written is None:
+        assert path.read_bytes() == original
+    else:
+        assert spec()[1] == {**before, **written}
+
+
+@pytest.mark.parametrize(("strict", "aggregation"), [(True, None), (True, "Sum"), (False, "Sum")])
+def test_a_new_default_aggregation_names_the_metrics_it_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], strict: bool, aggregation: str | None
 ) -> None:
     project = _starter(tmp_path)
     events = yaml.safe_load((project / EVENTS).read_text("utf-8"))
     events["model"]["measures"]["total_amount"]["default_agg"] = "median"
     _write_yaml(project / EVENTS, events)
-    prompts: list[str] = []
+    if not strict:
+        # The loader publishes metric.shop.total_amount itself, spelling out the median.
+        package = yaml.safe_load((project / "package.yml").read_text("utf-8"))
+        package["package"]["schema_strict"] = False
+        _write_yaml(project / "package.yml", package)
+        (project / "metrics" / "core.yml").unlink()
+    ratio = {"numerator": "metric.shop.total_amount", "denominator": "measure.shop.event_count"}
+    _write_metric(project, "per_event", {"kind": "ratio", **ratio, "value_type": "ratio"})
+    ratio = {"numerator": "metric.shop.per_event", "denominator": "measure.shop.event_count"}
+    _write_metric(project, "per_event_2", {"kind": "ratio", **ratio, "value_type": "ratio"})
+    scoped = {"kind": "scoped_aggregate", "measure": "measure.shop.total_amount"}
+    _write_metric(
+        project, "scoped", {"kind": "derived", "expression": scoped, "value_type": "number"}
+    )
+    top = {"kind": "aggregate", "measure": "total_amount", "aggregation": "max"}
+    _write_metric(project, "top", {**top, "value_type": "number"})
+    confirm = ("Manage and update this existing measure?", "Update this measure?")
+    answers = {"Measure key": "total_amount", **dict.fromkeys(confirm, True)}
+    script = _Script({**answers, "Default aggregation": aggregation})
 
-    def reply(prompt: str = "") -> str:
-        prompts.append(prompt)
-        if prompt.startswith("Measure key"):
-            return "total_amount"
-        if prompt.startswith(("Manage and update", "Update this measure?")):
-            return "y"
-        return "max" if prompt == "Choose: " else ""
+    _repl(project, "author measure", script, [])
 
-    monkeypatch.setattr("builtins.input", reply)
-    backend.set_backend(backend.PlainBackend())
-    undo: list[Any] = []
-
-    _repl(project, "author measure", None, undo)
-
-    # The median the menu cannot offer is not a default; the person picks again.
-    assert prompts.count("Choose: ") == 1
-    assert len(undo) == 1 and undo[0].report["parse"]["ok"] is True
-    events = yaml.safe_load((project / EVENTS).read_text("utf-8"))
-    assert events["model"]["measures"]["total_amount"]["default_agg"] == "max"
+    out = capsys.readouterr().out
+    assert script.offered["Default aggregation"] == "Median"
+    if aggregation is None:
+        assert "[warning] This changes the default aggregation" not in out
+    else:
+        assert "[warning] This changes the default aggregation from median to sum." in out
+        # The metrics on the measure's default and those built on them; not `top`.
+        changed = "per_event, per_event_2, scoped, total_amount"
+        assert f"different numbers: metric.shop.{changed.replace(', ', ', metric.shop.')}\n" in out
