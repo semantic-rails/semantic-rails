@@ -465,6 +465,14 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   "where <dimension> is <value>" clause (such as "revenue where channel is web" when the
   channel values aren't declared), is now `low_confidence` (`named_metric_unrealized`,
   `dimension_filter_unrealized`).
+- `plan` and `ask` read a grouping that names the query's own clock as its
+  time axis when they total a measure or metric by dimensions. "Revenue by
+  store and order date at month grain, from January 1 2017 to March 31 2017"
+  grouped by *Customer first order at* as well as the month, and still
+  reported `ok`; it now groups by store and month only. "Revenue by store by
+  order date" dropped the date and returned one row per store; it now returns
+  one row per store and day, and a cadence the question names ("monthly",
+  "at week grain") sets the buckets instead.
 - `plan` no longer caps a qualified rollup at 5 rows when the question doesn't ask for a top
   N. "Monthly revenue from customers with at least 2 orders" returned only its first 5
   months with `status: ok`; it now returns every month. A "top 3" question still keeps its
