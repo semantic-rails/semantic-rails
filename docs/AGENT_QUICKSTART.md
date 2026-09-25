@@ -128,7 +128,10 @@ discover -> plan -> execute
 - `execute` is the MCP tool name (HTTP path `/api/v1/query`, CLI verb `semantic-rails query`). It
   validates and compiles the request, then executes it in the local or customer-operated runtime.
   An invalid query fails with a structured error and, where possible, recovery hints instead of
-  running.
+  running. On MCP, pass `max_rows` (for example 200); a capped result sets `truncated` and warns
+  `EXECUTE_ROWS_TRUNCATED`.
+  For one total over a window, set `time.grain` so one bucket spans it (`quarter` for April 1 to
+  July 1): without a grain, `execute` returns one row per timestamp (`UNGRAINED_TIME_PROJECTION`).
 - `validate` (optional dry run) returns diagnostics, repair hints, output columns, and risk
   metadata without executing.
 - `compile` (optional dry run) returns SQL and plan metadata without executing. At `compact` or `full` verbosity,
