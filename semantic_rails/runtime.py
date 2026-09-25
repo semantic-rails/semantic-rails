@@ -25,6 +25,12 @@ from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
 
+from .acceleration.routing import (
+    AGGREGATE_ROUTING_ENV,
+    aggregate_routing,
+    aggregate_routing_enabled,
+    parse_aggregate_routing,
+)
 from .ast import normalize_query
 from .cache import (
     CachedCompilation,
@@ -1317,6 +1323,7 @@ class Runtime:
         self._compile_cache: CompiledSqlCache = LruCompiledSqlCache(
             maxsize=int(os.environ.get("SEMANTIC_RAILS_COMPILE_CACHE_SIZE", "512"))
         )
+        self._aggregate_routing = parse_aggregate_routing(os.environ.get(AGGREGATE_ROUTING_ENV, ""))
         # Lazily loaded on first access; None = not yet looked up,
         # False = looked up and absent/stale (don't retry this call).
         self._manifest: dict[str, Any] | None | bool = None
@@ -1340,7 +1347,7 @@ class Runtime:
         validate/compile/query call.
         """
 
-        with self._state_gate.read():
+        with self._state_gate.read(), aggregate_routing(self._aggregate_routing):
             yield self
 
     def set_compile_cache(self, cache: CompiledSqlCache) -> None:
@@ -1365,6 +1372,17 @@ class Runtime:
             )
         with self._state_gate.write(), self._cache_lock:
             self._compile_cache = cache
+
+    def set_aggregate_routing(self, enabled: bool) -> None:
+        """Turn routing to declared rollups on or off for this runtime's next requests.
+
+        Off, every measure leaf runs on the base tables and each rollup it considered is reported
+        as ``aggregate_routing_off``. The compile cache keys on the switch, so cached plans
+        follow it. The initial value comes from ``SEMANTIC_RAILS_AGGREGATE_ROUTING`` (``on`` or
+        ``off``; default ``on``).
+        """
+        with self._state_gate.write():
+            self._aggregate_routing = bool(enabled)
 
     def _resolve_asset_path(self, value: str, *, kind: str) -> str:
         if not value:
@@ -1783,6 +1801,7 @@ class Runtime:
                 payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"
             ),
             policy_context=dict(policy_context),
+            aggregate_routing=aggregate_routing_enabled(),
         )
         # Lock policy: hold the cache lock only across the in-memory get/put
         # operations. The compile itself (compile_query) runs unlocked so that

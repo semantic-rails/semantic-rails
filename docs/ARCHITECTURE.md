@@ -205,13 +205,19 @@ Aggregate relation rules:
 - the rollup grain must be at or below the requested query grain, its buckets
   must nest in the query's (a week rollup answers only week queries), and the
   query's bounds must fall on its bucket boundaries
-- a `count_distinct` routes only when it counts the model's single-column row
-  key; relations that declare `filters`, leaves with metric predicates, roles
-  that convert time zones and non-default calendars don't route
+- a `count_distinct` routes only when it counts the single-column row key of a
+  model that isn't a fact model; relations that declare `filters`, leaves with
+  metric predicates, roles that convert time zones and non-default calendars
+  don't route
 - all selected measures, grouped dimensions, and filtered dimensions must be
   covered by the relation
 - unsupported rollups fall back to the raw model relation rather than compiling
   an unsafe shortcut
+
+`semantic_rails/acceleration/routing.py` holds the routing kill switch
+(`SEMANTIC_RAILS_AGGREGATE_ROUTING`, `Runtime.set_aggregate_routing`), which the
+runtime's request scope applies, and builds
+`performance_plan.aggregate_routing.candidates` from each measure plan's rejections.
 
 ### ValueDomain
 
@@ -435,8 +441,9 @@ query path and includes the loaded semantic identity in its provenance.
 ### Compile Cache Seam
 
 The runtime memoizes compiled plans behind a cache keyed on a sha256 of the
-normalized query, package fingerprint, warehouse, render profile, and policy
-context (`semantic_rails.cache.compilation_cache_key`). The default backend is
+normalized query, package fingerprint, warehouse, render profile, policy
+context, and aggregate-routing switch (`semantic_rails.cache.compilation_cache_key`).
+The default backend is
 `LruCompiledSqlCache` — an in-process LRU sized via the
 `SEMANTIC_RAILS_COMPILE_CACHE_SIZE` env var (default 512). For the OSS
 standalone experience this is sufficient and requires no setup.

@@ -108,6 +108,7 @@ def compilation_cache_key(
     relation_profile: str,
     render_profile: str = "audit",
     policy_context: dict[str, Any],
+    aggregate_routing: bool = True,
 ) -> str:
     return stable_json_hash(
         {
@@ -118,5 +119,6 @@ def compilation_cache_key(
             "relation_profile": relation_profile,
             "render_profile": render_profile,
             "policy_context": policy_context,
+            "aggregate_routing": aggregate_routing,
         }
     )

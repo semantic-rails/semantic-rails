@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ..acceleration.routing import routing_candidates
 from ..ast import normalize_query
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -3513,6 +3514,7 @@ def build_performance_plan(
         aggregate_routing={
             "selected": sorted(set(routed_aggregates)),
             "selected_count": len(routed_aggregates),
+            "candidates": routing_candidates(plan, config),
         },
     )
 

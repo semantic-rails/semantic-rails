@@ -174,7 +174,8 @@ Current guardrails:
 - grouped and filtered dimensions must exist on the variant
 - weekly rollups answer only week queries, and query bounds must fall on the
   rollup's bucket boundaries
-- `count_distinct` routes only for the model's single-column row key
+- `count_distinct` routes only for the single-column row key of a model that
+  isn't a fact model
 - query-time `metric_predicate` filters, relations that declare `filters`, roles
   that convert time zones and non-default calendars do not route yet
 - `logical_plan.measure_plans[].aggregate_relation_rejections` gives the reason
@@ -186,6 +187,9 @@ Surface signals:
 - `physical_plan.nodes[].details.selected_relation_type`
 - `physical_plan.nodes[].details.aggregate_relation_id`
 - `performance_plan.aggregate_routing.selected`
+- `performance_plan.aggregate_routing.candidates` (each rollup considered per
+  measure leaf, its decision and reason; `SEMANTIC_RAILS_AGGREGATE_ROUTING=off`
+  turns routing off)
 
 ### Metric Predicates
 
