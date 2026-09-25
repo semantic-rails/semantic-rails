@@ -368,7 +368,7 @@ ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool, str]] = [
                 **Q1,
                 "group_by": ["dimension.jaffle_store"],
                 "order_by": [{"field": "time", "direction": "ASC"}],
-            }
+            },
         },
         False,
         "OBJECT_NOT_FOUND",
@@ -382,7 +382,7 @@ ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool, str]] = [
                 **Q2,
                 "select": Q1["select"],
                 "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
-            }
+            },
         },
         False,
         "MIXED_GRAIN_INVALID",

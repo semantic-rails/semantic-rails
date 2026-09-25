@@ -69,7 +69,7 @@
       "uri": "semantic-rails://capabilities/summary"
     },
     {
-      "description": "V1 catalog summary with descriptive rows and counts. Large; use catalog/index for counts and ids.",
+      "description": "Catalog summary with descriptive rows and counts. Large; use catalog/index for counts and ids.",
       "mimeType": "application/json",
       "name": "catalog-summary",
       "uri": "semantic-rails://catalog/summary"

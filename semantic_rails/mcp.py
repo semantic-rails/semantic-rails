@@ -90,12 +90,12 @@ __all__ = [
 _INTERFACE = "v2"
 _INTERFACE_ENV = "SEMANTIC_RAILS_MCP_INTERFACE"
 
-# Default response verbosity for the MCP validate/compile/execute tools.
+# Default response verbosity for MCP execute, in every mode.
 # Context-constrained agents drown in the ~90-100KB envelopes the runtime
 # emits at its own 'compact' default (the HTTP v1 surface keeps that
 # default — see runtime_parts.responses.resolve_verbosity). The MCP
-# adapter defaults to 'minimal' instead: validate={ok,errors,warnings},
-# compile adds rendered_sql, execute adds rows+row_count. An explicit
+# adapter defaults to 'minimal' instead: mode validate={ok,errors,warnings},
+# mode sql adds rendered_sql, mode run adds rows+row_count. An explicit
 # 'verbosity' argument (outer envelope or inside `query`) always wins.
 MCP_DEFAULT_QUERY_VERBOSITY = "minimal"
 
@@ -678,7 +678,7 @@ RESOURCE_DEFINITIONS: tuple[ResourceDefinition, ...] = (
         uri="semantic-rails://catalog/summary",
         name="catalog-summary",
         description=(
-            "V1 catalog summary with descriptive rows and counts. Large; use catalog/index "
+            "Catalog summary with descriptive rows and counts. Large; use catalog/index "
             "for counts and ids."
         ),
     ),
@@ -914,7 +914,7 @@ def _unknown_argument_error(
 ) -> SemanticLayerError | None:
     """Reject unknown tool arguments on strict-reject tools.
 
-    Strict tools (capabilities, catalog, segment-*) raise
+    Strict tools (``segment``) raise
     ``INVALID_MCP_ARGUMENTS`` on any unknown key. Warn-and-ignore tools
     are handled separately via :func:`_unknown_argument_warnings` so
     ``policy_context`` and top-level IR passthrough still work.
@@ -957,7 +957,7 @@ def _unknown_argument_warnings(
     Returns ``[]`` for strict-reject tools (handled by
     :func:`_unknown_argument_error`), unknown tool names, or when every
     received key is legitimate. The warning shape matches the existing
-    ``DISCOVER_UNKNOWN_ARG`` / ``BUILD_OPTIONS_UNKNOWN_ARG`` pattern so
+    ``DISCOVER_UNKNOWN_ARG`` pattern so
     downstream consumers can branch on ``code`` alone.
     """
     from difflib import get_close_matches
@@ -1201,7 +1201,7 @@ def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dic
 
 # Explicit minimal verbosity returns the answer without compiler plans
 # (logical, SQL, physical, performance) and their copies. An omitted level,
-# "compact", and "full" return the v1 whole response.
+# "compact", and "full" return the whole response.
 _SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
     "segment-validate": frozenset({"segment", "normalized_segment", "derived_query"}),
     "segment-explain": frozenset(

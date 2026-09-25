@@ -9,8 +9,8 @@
   - `segment-validate`, `segment-explain`, `segment-preview` → `segment` with `action`
     `validate`, `explain` or `preview` (`verbosity: "full"` for the whole response).
   - `catalog` → `discover` with empty `terms`, or the `semantic-rails://catalog/*` resources.
-  - `capabilities`, `build-options` → draft Query IR with `plan`. The HTTP API and the CLI
-    keep both.
+  - `capabilities`, `build-options` → draft Query IR with `plan`. The HTTP API keeps both,
+    and the CLI keeps `build-options`.
   - Smaller defaults: `execute` returns at most 200 rows (`max_rows` up to 100,000);
     `discover` and `inspect` return slim cards (`verbosity: "compact"` for v1's); `plan`
     returns `detail: "query"` (`detail: "best"` for v1's).

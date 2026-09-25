@@ -148,8 +148,7 @@ codex mcp add semantic-rails-demo --url https://semantic-rails.com/mcp
 
 The agent loop, tool policy and HTTP routes are in
 [docs/AGENT_QUICKSTART.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md).
-The full MCP contract, including its interface versions and `semantic-rails mcp http`
-for a local Streamable HTTP server, is in
+The full MCP contract, including `semantic-rails mcp http` for a local HTTP server, is in
 [docs/MCP_INTERFACE.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/MCP_INTERFACE.md).
 
 ## How it works
@@ -165,8 +164,8 @@ discover -> plan -> execute
   time roles.
 - `plan` drafts Query IR from a natural-language question and checks the draft against
   the question. Run the draft when its status is `ok` and it has no warnings; otherwise
-  the response says what the draft misses. `build-options` and `valid-values` guide
-  step-by-step builders instead.
+  the response says what the draft misses. `valid-values` (and, over HTTP and the CLI,
+  `build-options`) guide step-by-step builders instead.
 - `execute` (the CLI's `query`, HTTP `/api/v1/query`) validates, compiles and runs the
   Query IR where the package's connection lives. It rejects unknown fields, dimension
   mismatches, bad filters and policy failures with structured errors and, where
@@ -175,8 +174,8 @@ discover -> plan -> execute
   the diagnostics without running anything; `compile` also renders SQL for the target
   warehouse. At `compact` verbosity (the CLI's default) or `full`, `compile` returns an
   `explain` payload: the chosen join path to each entity, the candidate paths it
-  considered and the relationship contracts along the chosen path. The MCP tool
-  defaults to `minimal`, which leaves `explain` out.
+  considered and the relationship contracts along the chosen path. On MCP they are
+  `execute` modes `validate` and `sql`, which default to `minimal` and leave `explain` out.
 
 The engine design is in
 [docs/ARCHITECTURE.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ARCHITECTURE.md),
@@ -281,8 +280,6 @@ In the current release:
 
 Work in progress, without dates:
 
-- Query MCP interface v2 as the default, once it answers a held-out question set at
-  least as accurately as v1. It is opt-in for now.
 - Packaged agent integrations: Claude Code and Codex plugins and a Claude Desktop
   bundle. `mcp setup` already writes the client configs.
 - A flagship example: a dbt project on an open dataset, modeled end to end.

@@ -7,10 +7,10 @@ model direct warehouse access. The core contract is:
 discover -> plan -> execute
 ```
 
-Use the earliest tool that can answer the next question. `inspect`, `build-options` and
-`valid-values` help choose objects and values. `execute` validates and compiles the query before it
-runs it, so `validate` and `compile` are optional dry runs. Run a `plan` draft only when its status
-is `ok` and it has no warnings.
+Use the earliest tool that can answer the next question. `inspect` and `valid-values` help choose
+objects and values. `execute` validates and compiles the query before it runs it, so its `validate`
+and `sql` modes (HTTP `/validate` and `/compile`) are optional dry runs. Run a `plan` draft only
+when its status is `ok` and it has no warnings.
 
 ## Local MCP
 
@@ -66,8 +66,8 @@ curl http://127.0.0.1:8091/mcp \
   | python -c 'import json, sys; tools=json.load(sys.stdin)["result"]["tools"]; print(f"{len(tools)} tools"); print("\n".join("- " + tool["name"] for tool in tools))'
 ```
 
-The response should include tools such as `capabilities`, `catalog`, `discover`, `plan`,
-`validate`, `compile`, and `execute`.
+The response should list six tools: `discover`, `inspect`, `valid-values`, `plan`, `execute` and
+`segment`.
 
 On POSIX, stop the managed server when you are done with the terminal smoke:
 
@@ -128,8 +128,8 @@ discover -> plan -> execute
 - `execute` is the MCP tool name (HTTP path `/api/v1/query`, CLI verb `semantic-rails query`). It
   validates and compiles the request, then executes it in the local or customer-operated runtime.
   An invalid query fails with a structured error and, where possible, recovery hints instead of
-  running. On MCP, pass `max_rows` (for example 200); a capped result sets `truncated` and warns
-  `EXECUTE_ROWS_TRUNCATED`.
+  running. On MCP it returns at most `max_rows` rows (default 200); a capped result sets
+  `truncated` and warns `EXECUTE_ROWS_TRUNCATED`.
   For one total over a window, set `time.grain` so one bucket spans it (`quarter` for April 1 to
   July 1): without a grain, `execute` returns one row per timestamp (`UNGRAINED_TIME_PROJECTION`).
 - `validate` (optional dry run) returns diagnostics, repair hints, output columns, and risk
@@ -138,9 +138,9 @@ discover -> plan -> execute
   its response also includes an `explain` payload with the semantic and physical plan plus a
   `chosen_paths` map keyed by target entity ID — each entry carries `selected` (the chosen
   relationship path), `candidates` (every considered path), and `contracts` (the relationship
-  contracts along the selected path). The CLI defaults to `compact`; the MCP tool defaults to
-  `minimal`, which leaves `explain` out, so pass `verbosity: "compact"` to review join paths
-  and safety before execution.
+  contracts along the selected path). The CLI defaults to `compact`; on MCP, `execute` with
+  `mode: "sql"` defaults to `minimal`, which leaves `explain` out, so pass
+  `verbosity: "compact"` to review join paths and safety before execution.
 
 ### Plan Status And Detail
 
@@ -258,21 +258,19 @@ consistently across discovery, metadata, validation, compile, and query calls.
 
 ## Recommended Agent Policy
 
-1. Call `capabilities` once per package to learn expression shapes, limits, and unsupported
-   capabilities.
-2. Call `discover` with business terms before selecting IDs. Treat low-relevance or off-topic
+1. Call `discover` with business terms before selecting IDs. Treat low-relevance or off-topic
    responses as a stop condition.
-3. Call `inspect` on a candidate metric, measure, dimension, or segment when you need its
+2. Call `inspect` on a candidate metric, measure, dimension, or segment when you need its
    aggregations, values, or time roles.
-4. Use `plan` for natural-language questions, or `build-options` plus `valid-values` when the
-   agent is interactively assembling Query IR.
-5. Run a `plan` draft only when its status is `ok` and it has no warnings; otherwise fix the Query
+3. Use `plan` for natural-language questions, and `valid-values` for filter values.
+4. Run a `plan` draft only when its status is `ok` and it has no warnings; otherwise fix the Query
    IR or ask the user.
-6. Prefer `compile` when the user wants SQL, lineage, path selection, or explain output.
-7. Call `execute` when the user wants rows. It validates and compiles first, so it needs no
-   separate `validate` or `compile` call; use `validate` for diagnostics without running the query.
+5. Use `execute` with `mode: "sql"` when the user wants SQL, lineage, path selection, or explain
+   output.
+6. Call `execute` when the user wants rows. It validates and compiles first, so it needs no
+   separate dry run; use `mode: "validate"` for diagnostics without running the query.
 
-Use `summary`, `minimal`, or `compact` verbosity unless the user asks for debugging detail. Request
+Use `minimal` or `compact` verbosity unless the user asks for debugging detail. Request
 `full` only for explainability, test failure triage, or query review.
 
 ## Client Patterns
