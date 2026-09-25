@@ -19,6 +19,22 @@ from tests.semantic_rails.dbt_warehouse import write_orders_package
 
 COUNTRY = "dimension.shop_customer_customer_country"
 US_ONLY = {"where": [{"field": COUNTRY, "op": "=", "value": "US"}]}
+ORDERED = {  # customers with at least one order
+    "metric_filters": [
+        {
+            "expression": {
+                "kind": "metric_predicate",
+                "entity": "entity.shop_customer",
+                "scope_mode": "entity_only",
+                "input": {"measure": "measure.shop.order_count"},
+                "op": ">=",
+                "value": 1,
+            },
+            "op": "=",
+            "value": True,
+        }
+    ]
+}
 SIGNED_UP = {
     "time": {
         "temporal_role": "temporal_role.shop_customer_signed_up_on",
@@ -113,7 +129,14 @@ def test_adding_beside_a_lone_object_keeps_it(
 
 @pytest.mark.parametrize(
     ("membership", "refused"),
-    [(None, True), ({}, True), ({"where": []}, True), (US_ONLY, False), (SIGNED_UP, False)],
+    [
+        (None, True),
+        ({}, True),
+        ({"where": []}, True),
+        (US_ONLY, False),
+        (ORDERED, False),
+        (SIGNED_UP, False),
+    ],
 )
 def test_a_segment_needs_membership_criteria(
     workspace: Path, membership: dict[str, Any] | None, refused: bool
