@@ -387,6 +387,32 @@ def test_interactive_setup_does_not_offer_managed_start_when_unsupported(
     assert f"semantic-rails repl --path {tmp_path / 'package'}" in output
 
 
+def test_interactive_setup_creates_the_same_package_as_project_new(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import semantic_rails.cli.setup_wizard as setup_wizard
+    from semantic_rails.architect_scaffold import ProjectSpec, project_scaffold_files
+
+    def sources(root: Path) -> dict[str, bytes]:  # authored files, not build outputs
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix != ".duckdb" and ".compiled" not in path.parts
+        }
+
+    (tmp_path / "wizard").mkdir()
+    monkeypatch.chdir(tmp_path / "wizard")
+    monkeypatch.setattr(setup_wizard, "_confirm", lambda *_args, **_kwargs: True)
+
+    ref = setup_wizard._interactive_package_ref(SimpleNamespace(package="", path=""))
+    _run_json("project", "new", "my_package", "--workspace-root", str(tmp_path), "--json")
+
+    wizard_package = tmp_path / "wizard" / "my_package"
+    assert Path(ref.source_path) == wizard_package.resolve()
+    shared = project_scaffold_files(ProjectSpec(package_id="my_package"))
+    assert sources(wizard_package) == shared == sources(tmp_path / "my_package")
+
+
 def test_interactive_setup_cleans_dead_mcp_registration_and_retries(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
