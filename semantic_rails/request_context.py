@@ -1,17 +1,16 @@
-"""Request context, API-key auth, and the audit sink protocol.
+"""Request context and the audit sink protocol.
 
 Defines :class:`RequestContext` (actor, tenant, project, roles,
 environment, audience, request_id) and the helpers that resolve it
 from headers, JSON payloads, or a pluggable
-:class:`PolicyContextResolver`. Also owns the constant-time API-key
-check (:func:`api_key_auth_result`, ``hmac.compare_digest`` for free)
-and :func:`emit_audit_event` — the single hook every governed
-write/read funnels through so hosts can plug in an :class:`AuditSink`.
+:class:`PolicyContextResolver`. Also owns :func:`emit_audit_event` —
+the single hook every governed write/read funnels through so hosts can
+plug in an :class:`AuditSink`. API-key auth lives in
+:mod:`semantic_rails.api_keys`; its names are re-exported here.
 """
 
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import sys
@@ -20,8 +19,15 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from .api_keys import (  # noqa: F401 — API-key names are re-exported from their old home
+    MISSING_API_KEY_FILE_SENTINEL,
+    _header,
+    api_key_auth_result,
+    configured_api_keys,
+    extract_bearer_or_api_key,
+)
+
 CONTEXT_FIELDS = ("actor", "tenant", "project", "roles", "environment", "audience")
-MISSING_API_KEY_FILE_SENTINEL = "__missing_api_key_file__"
 
 
 @dataclass(frozen=True)
@@ -65,24 +71,6 @@ def _split_roles(value: Any) -> tuple[str, ...]:
     else:
         roles = [part.strip() for part in str(value or "").replace(";", ",").split(",")]
     return tuple(dict.fromkeys(role for role in roles if role))
-
-
-def _header(headers: Mapping[str, Any] | None, *names: str) -> str:
-    if headers is None:
-        return ""
-    for name in names:
-        try:
-            value = headers.get(name)
-        except AttributeError:
-            value = None
-        if value:
-            return str(value).strip()
-    lower = {str(key).lower(): value for key, value in dict(headers or {}).items()}
-    for name in names:
-        value = lower.get(name.lower())
-        if value:
-            return str(value).strip()
-    return ""
 
 
 def _resource_allowlist(value: Any) -> tuple[str, ...] | None:
@@ -262,52 +250,6 @@ def merge_policy_context(
     for key, value in context.to_policy_context().items():
         policy_context[key] = value
     return policy_context
-
-
-def configured_api_keys() -> tuple[str, ...]:
-    values: list[str] = []
-    raw = os.environ.get("SEMANTIC_RAILS_API_KEYS", "")
-    values.extend(part.strip() for part in raw.replace("\n", ",").split(","))
-    filename = os.environ.get("SEMANTIC_RAILS_API_KEY_FILE", "")
-    if filename:
-        try:
-            with open(filename, encoding="utf-8") as handle:
-                values.extend(part.strip() for part in handle.read().replace("\n", ",").split(","))
-        except FileNotFoundError:
-            values.append(MISSING_API_KEY_FILE_SENTINEL)
-    return tuple(dict.fromkeys(value for value in values if value))
-
-
-def extract_bearer_or_api_key(headers: Mapping[str, Any] | None) -> str:
-    auth = _header(headers, "Authorization")
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-    return _header(headers, "X-API-Key", "X-Semantic-API-Key")
-
-
-def api_key_auth_result(headers: Mapping[str, Any] | None) -> tuple[bool, str]:
-    keys = configured_api_keys()
-    if not keys:
-        return True, "disabled"
-    supplied = extract_bearer_or_api_key(headers)
-    if not supplied or supplied == MISSING_API_KEY_FILE_SENTINEL:
-        return False, "missing_or_invalid"
-    # Timing-safe comparison: walk the full key list and OR-accumulate
-    # `hmac.compare_digest` results so the lookup cost does not depend on
-    # the supplied prefix matching an early key. Always compare against the
-    # supplied value (not the configured one) so length differences don't
-    # short-circuit on bytes-level equality. This matters once the runtime
-    # is fronted by a hosted API where remote attackers can time requests.
-    supplied_bytes = supplied.encode("utf-8")
-    matched = False
-    for key in keys:
-        if key == MISSING_API_KEY_FILE_SENTINEL:
-            continue
-        if hmac.compare_digest(supplied_bytes, key.encode("utf-8")):
-            matched = True
-    if matched:
-        return True, "matched"
-    return False, "missing_or_invalid"
 
 
 def audit_logging_enabled() -> bool:

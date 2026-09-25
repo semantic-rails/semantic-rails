@@ -428,7 +428,7 @@ def test_api_key_check_uses_constant_time_compare(monkeypatch):
     the implementation path goes through `hmac.compare_digest` and that
     valid keys match while close-but-different keys do not.
     """
-    import semantic_rails.request_context as rc
+    import semantic_rails.api_keys as rc
 
     monkeypatch.setenv(
         "SEMANTIC_RAILS_API_KEYS",
