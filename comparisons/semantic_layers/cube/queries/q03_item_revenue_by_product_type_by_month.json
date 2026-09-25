@@ -4,5 +4,8 @@
   "timeDimensions": [
     { "dimension": "order_items.ordered_at", "granularity": "month" }
   ],
-  "order": { "order_items.ordered_at": "asc" }
+  "order": {
+    "order_items.ordered_at": "asc",
+    "order_items.product_type": "asc"
+  }
 }

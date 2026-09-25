@@ -1,13 +1,9 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
 
 ⠙ Initiating query…
-✔ Success 🦄 - query completed after 0.07 seconds
+✔ Success 🦄 - query completed after 0.03 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
 SELECT
@@ -16,13 +12,13 @@ SELECT
 FROM (
   SELECT
     stores_src_10000.store_name AS store__store_name
-    , SUM(subq_1.revenue_usd) AS revenue_usd
-    , SUM(subq_1.orders) AS orders
+    , SUM(subq_1.__revenue_usd) AS revenue_usd
+    , SUM(subq_1.__orders) AS orders
   FROM (
     SELECT
       store_id AS store
-      , 1 AS orders
-      , order_total_cents / 100.0 AS revenue_usd
+      , 1 AS __orders
+      , order_total_cents / 100.0 AS __revenue_usd
     FROM "jaffle_comparison"."main"."orders" orders_src_10000
   ) subq_1
   LEFT OUTER JOIN
@@ -31,6 +27,6 @@ FROM (
     subq_1.store = stores_src_10000.store_id
   GROUP BY
     stores_src_10000.store_name
-) subq_7
+) subq_8
 ORDER BY aov_usd DESC
 

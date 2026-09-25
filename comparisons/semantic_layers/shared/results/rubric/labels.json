@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-23T16:11:35+00:00",
+  "generated_at": "2026-09-25T22:43:03+00:00",
   "labels": {
     "cube": {
       "q01_orders_by_month": {
@@ -19,10 +19,8 @@
         "label": "native"
       },
       "q05_orders_and_item_revenue_by_store_by_month": {
-        "evidence": [
-          "cube order_metrics"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q06_new_customer_orders_by_month": {
         "evidence": [],
@@ -37,52 +35,36 @@
         "label": "native"
       },
       "q09_session_to_order_conversion_7d": {
-        "evidence": [
-          "cube session_conversions_7d"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q10_orders_from_customers_with_10plus_orders_in_month": {
-        "evidence": [
-          "cube qualified_orders"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q11_repeat_customer_orders_by_store_by_month": {
-        "evidence": [
-          "reads lifetime_order_count"
-        ],
-        "label": "precomputed"
+        "evidence": [],
+        "label": "native"
       },
       "q12_orders_by_month_with_lifetime_spend_500_filter": {
-        "evidence": [
-          "reads lifetime_spend_cents"
-        ],
-        "label": "precomputed"
+        "evidence": [],
+        "label": "native"
       },
       "q13_daily_orders_from_customers_with_10plus_orders_in_month": {
-        "evidence": [
-          "cube qualified_orders"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q14_revenue_from_customers_with_10plus_orders_same_store_month": {
-        "evidence": [
-          "cube high_frequency_store_orders"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q15_same_store_session_to_order_conversion_7d": {
-        "evidence": [
-          "cube session_conversions_7d_same_store"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q16_revenue_by_customer_segment_as_of_delivered_time": {
-        "evidence": [
-          "cube delivered_orders_with_customer_segment"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       }
     },
     "ktx": {
@@ -199,58 +181,40 @@
         "label": "native"
       },
       "q08_revenue_by_customer_segment_as_of_order_time": {
-        "evidence": [
-          "SQL source orders_with_customer_segment"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q09_session_to_order_conversion_7d": {
-        "evidence": [
-          "SQL source session_conversions_7d"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q10_orders_from_customers_with_10plus_orders_in_month": {
-        "evidence": [
-          "SQL source orders_from_high_frequency_customers"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q11_repeat_customer_orders_by_store_by_month": {
-        "evidence": [
-          "reads lifetime_order_count"
-        ],
-        "label": "precomputed"
+        "evidence": [],
+        "label": "native"
       },
       "q12_orders_by_month_with_lifetime_spend_500_filter": {
-        "evidence": [
-          "reads lifetime_spend_cents"
-        ],
-        "label": "precomputed"
+        "evidence": [],
+        "label": "native"
       },
       "q13_daily_orders_from_customers_with_10plus_orders_in_month": {
-        "evidence": [
-          "SQL source orders_from_high_frequency_customers"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q14_revenue_from_customers_with_10plus_orders_same_store_month": {
-        "evidence": [
-          "SQL source revenue_from_high_frequency_store_customers"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q15_same_store_session_to_order_conversion_7d": {
-        "evidence": [
-          "SQL source session_conversions_7d_same_store"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q16_revenue_by_customer_segment_as_of_delivered_time": {
-        "evidence": [
-          "SQL source delivered_orders_with_customer_segment"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       }
     },
     "metricflow": {
@@ -287,46 +251,32 @@
         "label": "native"
       },
       "q09_session_to_order_conversion_7d": {
-        "evidence": [
-          "dbt model session_conversions_7d"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q10_orders_from_customers_with_10plus_orders_in_month": {
-        "evidence": [
-          "dbt model high_frequency_orders"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q11_repeat_customer_orders_by_store_by_month": {
-        "evidence": [
-          "reads lifetime_order_count"
-        ],
-        "label": "precomputed"
+        "evidence": [],
+        "label": "native"
       },
       "q12_orders_by_month_with_lifetime_spend_500_filter": {
-        "evidence": [
-          "reads lifetime_spend_cents"
-        ],
-        "label": "precomputed"
+        "evidence": [],
+        "label": "native"
       },
       "q13_daily_orders_from_customers_with_10plus_orders_in_month": {
-        "evidence": [
-          "dbt model high_frequency_orders"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q14_revenue_from_customers_with_10plus_orders_same_store_month": {
-        "evidence": [
-          "dbt model high_frequency_store_orders"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q15_same_store_session_to_order_conversion_7d": {
-        "evidence": [
-          "dbt model session_conversions_7d_same_store"
-        ],
-        "label": "workaround"
+        "evidence": [],
+        "label": "native"
       },
       "q16_revenue_by_customer_segment_as_of_delivered_time": {
         "evidence": [],

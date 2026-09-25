@@ -1,25 +1,18 @@
+WITH __stage0 AS (
+  SELECT 
+     base."customer_id" as "customer_id",
+     DATE_TRUNC('month', base."ordered_at") as "ordered_month",
+     (COUNT(1)) as "monthly_orders"
+  FROM comparison_orders as base
+  GROUP BY 1,2
+)
 SELECT 
-   base."ordered_day" as "ordered_day",
-   COUNT(1) as "qualifying_orders"
-FROM (
-  with customer_months as (
-    select
-      customer_id,
-      date_trunc('month', ordered_at) as ordered_month,
-      count(*) as monthly_orders
-    from comparison_orders
-    group by 1, 2
-  )
-  select
-    o.order_id,
-    date_trunc('day', o.ordered_at) as ordered_day,
-    date_trunc('month', o.ordered_at) as ordered_month
-  from comparison_orders as o
-  inner join customer_months as c
-    on o.customer_id = c.customer_id
-   and date_trunc('month', o.ordered_at) = c.ordered_month
-  where c.monthly_orders > 10
-) as base
+   DATE_TRUNC('day', base."ordered_at") as "ordered_day",
+   COUNT(1) as "orders"
+FROM comparison_orders as base
+ LEFT JOIN __stage0 AS customer_month_orders_0
+  ON (base."customer_id"=customer_month_orders_0."customer_id") and ((DATE_TRUNC('month', base."ordered_at"))=customer_month_orders_0."ordered_month")
+WHERE customer_month_orders_0."monthly_orders">10
 GROUP BY 1
 ORDER BY 1 asc NULLS LAST
 LIMIT 5000

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tomllib
+import tarfile
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -22,20 +23,33 @@ DB_PATH = (
     REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "data" / "jaffle_comparison.duckdb"
 )
 
-KTX_SL_PATH = Path(os.environ.get("KTX_SL_PATH", "/tmp/ktx-compare/python/ktx-sl"))
-if str(KTX_SL_PATH) not in sys.path:
-    sys.path.insert(0, str(KTX_SL_PATH))
+# KtX's npm package bundles its Python semantic layer (`semantic_layer`, ktx-sl) as a wheel;
+# the runner imports it from that wheel, pinned by the hash in the package's manifest.
+KTX_VERSION = "0.16.0"
+KTX_WHEEL_SHA256 = "60c7240bd7b66ec27f9d95b47315d6e41bc1fd2da2660b381800553a8eea7a9d"
+KTX_DIR = Path(os.environ.get("KTX_DIR", "/tmp/ktx-compare"))
+KTX_WHEEL = KTX_DIR / f"kaelio_ktx-{KTX_VERSION}-py3-none-any.whl"
 
-try:
-    from semantic_layer.engine import SemanticEngine
-    from semantic_layer.loader import SourceLoader
-except ModuleNotFoundError as exc:
-    raise SystemExit(
-        "Could not import KtX ktx-sl. Clone https://github.com/Kaelio/ktx to "
-        "/tmp/ktx-compare or set KTX_SL_PATH, then run with "
-        "`uv run --with sqlglot --with pydantic --with pyyaml ...`."
-    ) from exc
 
+def _ktx_wheel() -> Path:
+    """Fetch @kaelio/ktx from the npm registry once, and check the wheel it bundles."""
+    if not KTX_WHEEL.is_file():
+        KTX_DIR.mkdir(parents=True, exist_ok=True)
+        package = f"@kaelio/ktx@{KTX_VERSION}"
+        subprocess.run(["npm", "pack", package, "--pack-destination", str(KTX_DIR)], check=True)
+        with tarfile.open(KTX_DIR / f"kaelio-ktx-{KTX_VERSION}.tgz") as tar:
+            wheel = tar.extractfile(f"package/assets/python/{KTX_WHEEL.name}")
+            if wheel is None:
+                raise SystemExit(f"{package} doesn't bundle {KTX_WHEEL.name}")
+            KTX_WHEEL.write_bytes(wheel.read())
+    if hashlib.sha256(KTX_WHEEL.read_bytes()).hexdigest() != KTX_WHEEL_SHA256:
+        raise SystemExit(f"{KTX_WHEEL} doesn't match the pinned sha256 {KTX_WHEEL_SHA256}")
+    return KTX_WHEEL
+
+
+sys.path.insert(0, str(_ktx_wheel()))  # a pure-Python wheel imports as a zip archive
+from semantic_layer.engine import SemanticEngine  # noqa: E402
+from semantic_layer.loader import SourceLoader  # noqa: E402
 
 QUERIES: dict[str, dict[str, Any]] = {
     "q01_orders_by_month": {
@@ -232,13 +246,6 @@ def main() -> None:
             }
         )
 
-    ktx_commit = subprocess.run(
-        ["git", "-C", str(KTX_SL_PATH), "rev-parse", "HEAD"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    ktx_project = tomllib.loads((KTX_SL_PATH / "pyproject.toml").read_text(encoding="utf-8"))
     with duckdb.connect(str(DB_PATH), read_only=True) as con:
         (fingerprint,) = con.execute("SELECT fingerprint FROM comparison_dataset").fetchone()
     _write(
@@ -249,8 +256,8 @@ def main() -> None:
                 "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "dataset_fingerprint": fingerprint,
                 "environment": {
-                    "ktx_commit": ktx_commit,
-                    "ktx-sl": ktx_project["project"]["version"],
+                    "@kaelio/ktx": KTX_VERSION,
+                    "ktx-sl wheel sha256": KTX_WHEEL_SHA256,
                     **{name: version(name) for name in ("sqlglot", "pydantic", "pyyaml", "duckdb")},
                 },
                 "questions": summary,

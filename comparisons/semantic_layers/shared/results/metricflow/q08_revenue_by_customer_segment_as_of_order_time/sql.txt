@@ -1,25 +1,21 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
 
 ⠙ Initiating query…
-✔ Success 🦄 - query completed after 0.06 seconds
+✔ Success 🦄 - query completed after 0.03 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
 SELECT
   subq_1.metric_time__month AS metric_time__month
   , customer_history_src_10000.customer_segment AS customer__customer_segment
-  , SUM(subq_1.revenue_usd) AS revenue_usd
+  , SUM(subq_1.__revenue_usd) AS revenue_usd
 FROM (
   SELECT
-    DATE_TRUNC('day', ordered_at) AS metric_time__day
+    DATE_TRUNC('minute', ordered_at) AS metric_time__minute
     , DATE_TRUNC('month', ordered_at) AS metric_time__month
     , customer_id AS customer
-    , order_total_cents / 100.0 AS revenue_usd
+    , order_total_cents / 100.0 AS __revenue_usd
   FROM "jaffle_comparison"."main"."orders" orders_src_10000
 ) subq_1
 LEFT OUTER JOIN
@@ -29,10 +25,10 @@ ON
     subq_1.customer = customer_history_src_10000.customer_id
   ) AND (
     (
-      subq_1.metric_time__day >= customer_history_src_10000.valid_from
+      subq_1.metric_time__minute >= customer_history_src_10000.valid_from
     ) AND (
       (
-        subq_1.metric_time__day < customer_history_src_10000.valid_to
+        subq_1.metric_time__minute < customer_history_src_10000.valid_to
       ) OR (
         customer_history_src_10000.valid_to IS NULL
       )

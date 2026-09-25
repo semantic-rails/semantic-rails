@@ -1,19 +1,10 @@
 SELECT 
-   base."delivered_month" as "delivered_month",
-   base."customer_segment" as "customer_segment",
-   COALESCE(SUM(base."delivered_revenue_usd"),0) as "delivered_revenue_total_usd"
-FROM (
-  select
-    l.order_id,
-    date_trunc('month', l.delivered_at) as delivered_month,
-    h.customer_segment,
-    l.order_total_cents / 100.0 as delivered_revenue_usd
-  from comparison_order_lifecycle as l
-  left join comparison_customer_history as h
-    on l.customer_id = h.customer_id
-   and l.delivered_at >= h.valid_from
-   and (h.valid_to is null or l.delivered_at < h.valid_to)
-) as base
+   DATE_TRUNC('month', base."delivered_at") as "delivered_month",
+   customer_history_0."customer_segment" as "customer_segment",
+   COALESCE(SUM(base."order_total_cents"),0)*1.0/100.0::DOUBLE as "delivered_revenue_usd"
+FROM comparison_order_lifecycle as base
+ LEFT JOIN comparison_customer_history AS customer_history_0
+  ON ((base."customer_id"=customer_history_0."customer_id") and (base."delivered_at">=customer_history_0."valid_from")) and ((customer_history_0."valid_to" IS NULL or (base."delivered_at"<customer_history_0."valid_to")))
 GROUP BY 1,2
 ORDER BY 1 asc NULLS LAST
 LIMIT 5000

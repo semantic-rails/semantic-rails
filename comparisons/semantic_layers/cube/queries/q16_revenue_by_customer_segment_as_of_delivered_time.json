@@ -1,8 +1,11 @@
 {
-  "measures": ["delivered_orders_with_customer_segment.delivered_revenue"],
-  "dimensions": ["delivered_orders_with_customer_segment.customer_segment"],
+  "measures": ["order_lifecycle.delivered_revenue"],
+  "dimensions": ["customer_history.customer_segment"],
   "timeDimensions": [
-    { "dimension": "delivered_orders_with_customer_segment.delivered_at", "granularity": "month" }
+    { "dimension": "order_lifecycle.delivered_at", "granularity": "month" }
   ],
-  "order": { "delivered_orders_with_customer_segment.delivered_at": "asc" }
+  "order": {
+    "order_lifecycle.delivered_at": "asc",
+    "customer_history.customer_segment": "asc"
+  }
 }

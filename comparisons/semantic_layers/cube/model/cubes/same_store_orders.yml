@@ -1,0 +1,5 @@
+cubes:
+  # The orders cube under a second name, so sessions can join orders twice with different
+  # conditions (Cube joins a cube at most once per path).
+  - name: same_store_orders
+    extends: orders

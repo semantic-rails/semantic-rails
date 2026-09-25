@@ -31,18 +31,13 @@
   },
   {
     "ordered_month": "2017-03-01 00:00:00",
-    "store_name": "Brooklyn",
-    "orders": 2092
-  },
-  {
-    "ordered_month": "2017-03-01 00:00:00",
     "store_name": "Philadelphia",
     "orders": 3986
   },
   {
-    "ordered_month": "2017-04-01 00:00:00",
-    "store_name": "Philadelphia",
-    "orders": 3746
+    "ordered_month": "2017-03-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 2092
   },
   {
     "ordered_month": "2017-04-01 00:00:00",
@@ -50,14 +45,19 @@
     "orders": 2850
   },
   {
-    "ordered_month": "2017-05-01 00:00:00",
-    "store_name": "Brooklyn",
-    "orders": 3565
+    "ordered_month": "2017-04-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3746
   },
   {
     "ordered_month": "2017-05-01 00:00:00",
     "store_name": "Philadelphia",
     "orders": 4391
+  },
+  {
+    "ordered_month": "2017-05-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 3565
   },
   {
     "ordered_month": "2017-06-01 00:00:00",
@@ -81,12 +81,12 @@
   },
   {
     "ordered_month": "2017-08-01 00:00:00",
-    "store_name": "Philadelphia",
-    "orders": 3801
+    "store_name": "Brooklyn",
+    "orders": 4937
   },
   {
     "ordered_month": "2017-08-01 00:00:00",
-    "store_name": "Brooklyn",
-    "orders": 4937
+    "store_name": "Philadelphia",
+    "orders": 3801
   }
 ]

@@ -1,7 +1,3 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
@@ -10,17 +6,56 @@
 ✔ Success 🦄 - query completed after 0.06 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
+WITH sma_10003_cte AS (
+  SELECT
+    DATE_TRUNC('month', ordered_at) AS metric_time__month
+    , store_id AS store
+    , customer_id || '|' || store_id || '|' || strftime(ordered_at, '%Y-%m') AS customer_store_month
+    , 1 AS __orders
+    , order_total_cents / 100.0 AS __qualifying_revenue_usd_same_store
+  FROM "jaffle_comparison"."main"."orders" orders_src_10000
+)
+
 SELECT
-  DATE_TRUNC('month', high_frequency_store_orders_src_10000.ordered_at) AS metric_time__month
-  , stores_src_10000.store_name AS store__store_name
-  , SUM(high_frequency_store_orders_src_10000.revenue_usd) AS qualifying_revenue_usd_same_store
-FROM "jaffle_comparison"."main"."high_frequency_store_orders" high_frequency_store_orders_src_10000
-LEFT OUTER JOIN
-  "jaffle_comparison"."main"."stores" stores_src_10000
-ON
-  high_frequency_store_orders_src_10000.store_id = stores_src_10000.store_id
+  metric_time__month AS metric_time__month
+  , store__store_name AS store__store_name
+  , SUM(qualifying_revenue_usd_same_store) AS qualifying_revenue_usd_same_store
+FROM (
+  SELECT
+    subq_5.metric_time__month AS metric_time__month
+    , subq_13.store_name AS store__store_name
+    , subq_11.customer_store_month__orders AS customer_store_month__orders
+    , subq_5.__qualifying_revenue_usd_same_store AS qualifying_revenue_usd_same_store
+  FROM (
+    SELECT
+      metric_time__month
+      , store
+      , customer_store_month
+      , __qualifying_revenue_usd_same_store
+    FROM sma_10003_cte
+  ) subq_5
+  LEFT OUTER JOIN (
+    SELECT
+      customer_store_month
+      , SUM(__orders) AS customer_store_month__orders
+    FROM sma_10003_cte
+    GROUP BY
+      customer_store_month
+  ) subq_11
+  ON
+    subq_5.customer_store_month = subq_11.customer_store_month
+  LEFT OUTER JOIN (
+    SELECT
+      store_id AS store
+      , store_name
+    FROM "jaffle_comparison"."main"."stores" stores_src_10000
+  ) subq_13
+  ON
+    subq_5.store = subq_13.store
+) subq_15
+WHERE customer_store_month__orders > 10
 GROUP BY
-  DATE_TRUNC('month', high_frequency_store_orders_src_10000.ordered_at)
-  , stores_src_10000.store_name
+  metric_time__month
+  , store__store_name
 ORDER BY metric_time__month
 

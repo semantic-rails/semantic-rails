@@ -1,0 +1,12 @@
+{
+  "name": "semantic-layer-cube-comparison",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@cubejs-backend/duckdb-driver": "1.7.45",
+    "@cubejs-backend/server": "1.7.45"
+  }
+}

@@ -196,7 +196,7 @@ def snowflake(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
 DETECTORS = {
     "semantic_rails": ("semantic_rails", semantic_rails),
     "metricflow": ("metricflow", metricflow),
-    "cube": ("cube_sql_replay", cube),
+    "cube": ("cube", cube),
     "malloy": ("malloy", malloy),
     "snowflake_semantic_views": ("snowflake_semantic_views", snowflake),
     "ktx": ("ktx", ktx),

@@ -1,12 +1,12 @@
 {
   "layer": "ktx",
-  "generated_at": "2026-09-23T02:31:35+00:00",
+  "generated_at": "2026-09-25T22:43:03+00:00",
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "environment": {
-    "ktx_commit": "a155c0b844c18c1891775de6b67a339ecea7eea7",
-    "ktx-sl": "0.13.1",
+    "@kaelio/ktx": "0.16.0",
+    "ktx-sl wheel sha256": "60c7240bd7b66ec27f9d95b47315d6e41bc1fd2da2660b381800553a8eea7a9d",
     "sqlglot": "30.19.0",
-    "pydantic": "2.13.4",
+    "pydantic": "2.13.5",
     "pyyaml": "6.0.3",
     "duckdb": "1.5.3"
   },

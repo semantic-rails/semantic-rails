@@ -7,6 +7,6 @@
     "validate": "HOME=.home XDG_CACHE_HOME=.cache node_modules/.bin/malloy-cli -c . compile models/jaffle.malloy -n q01_orders_by_month --json"
   },
   "dependencies": {
-    "@malloydata/cli": "0.0.52"
+    "@malloydata/cli": "0.0.57"
   }
 }

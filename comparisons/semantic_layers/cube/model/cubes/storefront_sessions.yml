@@ -1,33 +1,24 @@
 cubes:
   - name: storefront_sessions
-    sql: |
-      WITH matched AS (
-        SELECT
-          s.session_id,
-          s.customer_id,
-          s.store_id,
-          s.started_at,
-          MIN(o.ordered_at) AS converted_at
-        FROM comparison_storefront_sessions AS s
-        LEFT JOIN comparison_orders AS o
-          ON s.customer_id = o.customer_id
-         AND o.ordered_at >= s.started_at
-         AND datediff('day', s.started_at, o.ordered_at) <= 7
-        GROUP BY 1, 2, 3, 4
-      )
-      SELECT
-        session_id,
-        customer_id,
-        store_id,
-        started_at,
-        converted_at,
-        CASE WHEN converted_at IS NOT NULL THEN session_id END AS converted_session_id
-      FROM matched
+    sql_table: comparison_storefront_sessions
 
     joins:
-      - name: stores
-        relationship: many_to_one
-        sql: "{CUBE}.store_id = {stores.store_id}"
+      # The same customer's orders placed within 7 days after the session started (q09).
+      - name: orders
+        relationship: one_to_many
+        sql: >
+          {CUBE}.customer_id = {orders.customer_id}
+          AND {orders.ordered_at} > {CUBE.started_at}
+          AND {orders.ordered_at} <= {CUBE.started_at} + INTERVAL '7 day'
+
+      # The same pairing, also requiring the order's store to be the session's store (q15).
+      - name: same_store_orders
+        relationship: one_to_many
+        sql: >
+          {CUBE}.customer_id = {same_store_orders.customer_id}
+          AND {CUBE}.store_id = {same_store_orders.store_id}
+          AND {same_store_orders.ordered_at} > {CUBE.started_at}
+          AND {same_store_orders.ordered_at} <= {CUBE.started_at} + INTERVAL '7 day'
 
     dimensions:
       - name: session_id
@@ -47,19 +38,34 @@ cubes:
         sql: started_at
         type: time
 
-      - name: converted_at
-        sql: converted_at
-        type: time
+      - name: orders_within_7d
+        sql: "{orders.orders}"
+        type: number
+        sub_query: true
+
+      - name: same_store_orders_within_7d
+        sql: "{same_store_orders.orders}"
+        type: number
+        sub_query: true
 
     measures:
       - name: session_starts
-        sql: session_id
-        type: count_distinct
+        type: count
 
       - name: converted_sessions_7d
-        sql: converted_session_id
-        type: count_distinct
+        type: count
+        filters:
+          - sql: "{orders_within_7d} > 0"
+
+      - name: same_store_converted_sessions_7d
+        type: count
+        filters:
+          - sql: "{same_store_orders_within_7d} > 0"
 
       - name: session_to_order_conversion_rate_7d
-        sql: "{converted_sessions_7d} * 1.0 / NULLIF({session_starts}, 0)"
+        sql: "1.0 * {converted_sessions_7d} / NULLIF({session_starts}, 0)"
+        type: number
+
+      - name: same_store_conversion_rate_7d
+        sql: "1.0 * {same_store_converted_sessions_7d} / NULLIF({session_starts}, 0)"
         type: number

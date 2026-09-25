@@ -10,6 +10,7 @@
   - stretch models: `customer_history`, `order_lifecycle`, `storefront_sessions`
 - Prefer native semantic layer constructs over precomputed marts or handwritten SQL.
 - When a layer needs extra modeling, keep the extra work explicit and local to that layer.
+- Keep member, entity and join expressions row-level: a subquery or derived table hidden in an expression is hand-written SQL, even where the rubric's textual detectors can't see it. Review checks this; a question that needs a derived table uses the layer's SQL-defined source, and is labeled `workaround`.
 - Do not claim runtime support that was not actually executed in this repo on this machine.
 - Score edge cases against their intended semantic behavior, not just matching rows. If a layer only reaches the same result by leaning on helper SQL, extra persisted marts, or source-side rollup columns that bypass the intended metric-predicate or conversion semantics, treat that path as `workaround` or `precomputed`, not `native`. The rubric (`rubric.md`) enforces this for every layer, Semantic Rails included.
 - Keep the narrative honest in both directions. This executed pack emphasizes numeric questions; compiler-surface concerns such as duplicate-alias rejection, metric-time-only or distinct-values planning, and entity-type join contracts should still be called out separately when they are not exercised here.
@@ -53,5 +54,6 @@ The scale-up counts intentionally focus on authored semantic model/config files 
 
 - Snowflake Semantic Views are executed through the Snowflake CLI connection `semantic_views_trial`.
 - For Snowflake, `q01`-`q07` must execute through `SEMANTIC_VIEW(...)`. q08-q16 execute as SQL on the Snowflake comparison tables, so the rubric labels them `workaround`, or `precomputed` where they read a declared rollup column (q11, q12).
-- Cube 1.6.32 was captured locally without Docker. It can't be reinstalled until its dependency advisories are resolved, so `cube/scripts/replay_sql.py` re-executes its captured SQL on the current dataset, with the session time zone pinned to UTC.
-- KtX is executed through its Python semantic layer (`ktx-sl`) from a local clone at `/tmp/ktx-compare` by default. The benchmark does not score KtX's broader context ingestion, wiki/search, daemon, or MCP flows.
+- Snowflake Semantic Views is a stale April capture: its account is unavailable, so it is neither re-run nor re-authored.
+- Cube Core 1.7.45 runs locally without Docker, from its locked npm install, with Node's and DuckDB's time zones pinned to UTC.
+- KtX is executed through its Python semantic layer (`ktx-sl`), taken from the wheel that the `@kaelio/ktx` npm package bundles and pinned by its sha256. The benchmark does not score KtX's broader context ingestion, wiki/search, daemon, or MCP flows.

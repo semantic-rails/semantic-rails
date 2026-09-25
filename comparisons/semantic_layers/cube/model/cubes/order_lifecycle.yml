@@ -7,11 +7,23 @@ cubes:
         relationship: many_to_one
         sql: "{CUBE}.store_id = {stores.store_id}"
 
+      # The customer-history row valid when the order was delivered (q16).
+      - name: customer_history
+        relationship: many_to_one
+        sql: >
+          {CUBE}.customer_id = {customer_history.customer_id}
+          AND {CUBE.delivered_at} >= {customer_history.valid_from}
+          AND ({CUBE.delivered_at} < {customer_history.valid_to} OR {customer_history.valid_to} IS NULL)
+
     dimensions:
       - name: order_id
         sql: order_id
         type: string
         primary_key: true
+
+      - name: customer_id
+        sql: customer_id
+        type: string
 
       - name: store_id
         sql: store_id

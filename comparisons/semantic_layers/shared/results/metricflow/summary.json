@@ -1,14 +1,13 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "environment": {
-    "dbt-core": "1.10.23",
-    "dbt-duckdb": "1.10.1",
-    "dbt-metricflow": "0.11.0",
-    "dbt-semantic-interfaces": "0.9.4.dev0",
+    "dbt-core": "1.12.5",
+    "dbt-duckdb": "1.11.0",
+    "dbt-metricflow": "0.15.0",
     "duckdb": "1.5.5",
-    "metricflow": "0.209.0"
+    "metricflow": "0.213.0"
   },
-  "generated_at": "2026-09-23T02:35:54+00:00",
+  "generated_at": "2026-09-25T22:37:21+00:00",
   "layer": "metricflow",
   "questions": [
     {

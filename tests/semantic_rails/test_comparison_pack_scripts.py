@@ -262,28 +262,6 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
     )
 
 
-def test_a_replay_claims_the_current_dataset_only_when_it_ran_on_it() -> None:
-    cube = {"version": "1.6.32", "captured": "2026-04-07", "re_executed": "2026-09-23"}
-    replayed = (
-        "Cube 1.6.32 was not re-run: the SQL it generated on 2026-04-07 was re-executed on the "
-        "current dataset on 2026-09-23."
-    )
-    assert _claims([_question("q01_shared")], layer_fields={"cube": cube})[1] == replayed
-
-    items = [_question(qid) for qid in SHARED]
-    for item in items:
-        item["current_layers"] = [layer for layer in LAYERS if layer != "cube"]
-    # The validator records the replay's own run time, which isn't when Cube ran.
-    stale = {"cube": {"captured": "2026-09-23T02:00:00+00:00", "matched": SHARED, "mismatched": []}}
-    claims = _claims(items, stale=stale, layer_fields={"cube": cube})
-    assert replayed not in claims
-    assert claims[1] == (
-        "Cube was captured on 2026-04-07 on an earlier dataset and has not been re-run, so it is "
-        "left out of that count. Its capture matches the answer key on 7 questions and differs "
-        "on: none."
-    )
-
-
 def _load_snowflake_runner() -> ModuleType:
     path = SCRIPTS.parents[1] / "snowflake_semantic_views" / "scripts" / "run_questions.py"
     spec = importlib.util.spec_from_file_location("snowflake_runner", path)
@@ -730,54 +708,48 @@ def test_published_labels_come_from_the_rubric() -> None:
         assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
 
 
-def test_contracts_take_rubric_labels_and_keep_a_replayed_layers_capture_date() -> None:
+def test_contracts_take_rubric_labels_and_every_layer_on_current_data_counts() -> None:
     _, matrix = generator.build_contracts()
     labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
     for row in matrix["rows"]:
         qid = row["question_id"]
         assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
-    cube = next(layer for layer in matrix["layers"] if layer["id"] == "cube")
-    assert cube["captured"] == "2026-04-07"
-    assert cube["re_executed"] not in (None, "2026-04-07")
-    assert (
-        "Cube 1.6.32 was not re-run: the SQL it generated on 2026-04-07 was re-executed on the "
-        f"current dataset on {cube['re_executed']}."
-    ) in matrix["claims"]
     assert "(Semantic Rails, MetricFlow, Cube, Malloy and KtX)" in matrix["claims"][0]
-    others = [layer for layer in matrix["layers"] if layer["id"] != "cube"]
-    assert all(layer["re_executed"] is None for layer in others)
+    stale = [layer["id"] for layer in matrix["layers"] if layer["dataset"] == "stale"]
+    assert stale == ["snowflake_semantic_views"]
 
 
-def test_every_layer_reading_a_rollup_column_is_labeled_precomputed() -> None:
+def test_q11_and_q12_are_precomputed_exactly_where_a_layer_reads_the_rollup_column() -> None:
     labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
+    reading = {"semantic_rails", "snowflake_semantic_views", "ktx"}
     for layer in LAYERS:
-        for qid in (
-            "q11_repeat_customer_orders_by_store_by_month",
-            "q12_orders_by_month_with_lifetime_spend_500_filter",
+        for qid, column in (
+            ("q11_repeat_customer_orders_by_store_by_month", "lifetime_order_count"),
+            ("q12_orders_by_month_with_lifetime_spend_500_filter", "lifetime_spend_cents"),
         ):
-            assert labels[layer][qid]["label"] == "precomputed", (layer, qid)
+            expected = (
+                {"label": "precomputed", "evidence": [f"reads {column}"]}
+                if layer in reading
+                else {"label": "native", "evidence": []}
+            )
+            assert labels[layer][qid] == expected, (layer, qid)
 
 
 # Hand-written text naming which questions carry which labels: a layer's headline finding, or
 # its README. Each range must name exactly the questions, in its slices, with those labels.
 LABEL_STATEMENTS = [
-    ("finding", "metricflow", "MetricFlow answers q08 and q16 with", {"native"}),
-    ("finding", "metricflow", "answers q09, q10 and q13-q15 through helper", {"workaround"}),
-    ("finding", "metricflow", "and q11-q12 through helper views", {"precomputed"}),
-    ("finding", "cube", "Cube answers q08 through", {"native"}),
-    ("finding", "cube", "answers q05, q09, q10 and q13-q16 through helper", {"workaround"}),
-    ("finding", "cube", "and q11-q12 through filters", {"precomputed"}),
-    ("finding", "malloy", "Malloy answers q08-q16 through", {"workaround", "precomputed"}),
+    ("finding", "metricflow", "MetricFlow answers q08-q16 with", {"native"}),
+    ("finding", "cube", "Cube answers q08-q16 with", {"native"}),
+    ("finding", "malloy", "Malloy answers q08-q16 with", {"native"}),
     ("finding", "snowflake_semantic_views", "Views answers q01-q07 through", {"native"}),
     ("finding", "snowflake_semantic_views", "and q08-q16 as SQL", {"workaround", "precomputed"}),
     ("finding", "ktx", "KtX answers q01-q07 through", {"native"}),
     ("finding", "ktx", "and q08-q16 through SQL-backed", {"workaround", "precomputed"}),
-    ("readme", "metricflow", "q09, q10 and q13-q15 are implemented through", {"workaround"}),
-    ("readme", "metricflow", "q11 and q12 go through helper views", {"precomputed"}),
-    ("readme", "malloy", "(q08-q10, q13-q16) use explicit DuckDB SQL", {"workaround"}),
-    ("readme", "malloy", "q11 and q12 filter on the precomputed", {"precomputed"}),
+    ("readme", "metricflow", "labels all 16 answers (q01-q16) `native`", {"native"}),
+    ("readme", "malloy", "All 16 questions (q01-q16) run through Malloy sources", {"native"}),
     ("readme", "ktx", "`q01`-`q07` use ordinary KtX sources", {"native"}),
-    ("readme", "ktx", "`q08`-`q16` execute through KtX", {"workaround", "precomputed"}),
+    ("readme", "ktx", "`q08`-`q10` and `q13`-`q16` execute through KtX", {"workaround"}),
+    ("readme", "ktx", "`q11` and `q12` filter on the precomputed", {"precomputed"}),
 ]
 
 

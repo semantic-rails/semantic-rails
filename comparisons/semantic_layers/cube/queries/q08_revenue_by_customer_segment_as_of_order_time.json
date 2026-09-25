@@ -4,5 +4,8 @@
   "timeDimensions": [
     { "dimension": "orders.ordered_at", "granularity": "month" }
   ],
-  "order": { "orders.ordered_at": "asc" }
+  "order": {
+    "orders.ordered_at": "asc",
+    "customer_history.customer_segment": "asc"
+  }
 }

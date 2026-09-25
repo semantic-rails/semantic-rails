@@ -1,31 +1,22 @@
+WITH __stage0 AS (
+  SELECT 
+     base."customer_id" as "customer_id",
+     base."store_id" as "store_id",
+     DATE_TRUNC('month', base."ordered_at") as "ordered_month",
+     (COUNT(1)) as "monthly_orders"
+  FROM comparison_orders as base
+  GROUP BY 1,2,3
+)
 SELECT 
-   base."ordered_month" as "ordered_month",
-   base."store_name" as "store_name",
-   COALESCE(SUM(base."revenue_usd"),0) as "qualifying_revenue_usd"
-FROM (
-  with customer_store_months as (
-    select
-      customer_id,
-      store_id,
-      date_trunc('month', ordered_at) as ordered_month,
-      count(*) as monthly_orders
-    from comparison_orders
-    group by 1, 2, 3
-  )
-  select
-    o.order_id,
-    date_trunc('month', o.ordered_at) as ordered_month,
-    s.store_name,
-    o.order_total_cents / 100.0 as revenue_usd
-  from comparison_orders as o
-  inner join customer_store_months as c
-    on o.customer_id = c.customer_id
-   and o.store_id = c.store_id
-   and date_trunc('month', o.ordered_at) = c.ordered_month
-  inner join comparison_stores as s
-    on o.store_id = s.store_id
-  where c.monthly_orders > 10
-) as base
+   DATE_TRUNC('month', base."ordered_at") as "ordered_month",
+   stores_0."store_name" as "store_name",
+   COALESCE(SUM(base."order_total_cents"),0)*1.0/100.0::DOUBLE as "revenue_usd"
+FROM comparison_orders as base
+ LEFT JOIN __stage0 AS customer_store_month_orders_0
+  ON ((base."customer_id"=customer_store_month_orders_0."customer_id") and (base."store_id"=customer_store_month_orders_0."store_id")) and ((DATE_TRUNC('month', base."ordered_at"))=customer_store_month_orders_0."ordered_month")
+ LEFT JOIN comparison_stores AS stores_0
+  ON stores_0."store_id"=base."store_id"
+WHERE customer_store_month_orders_0."monthly_orders">10
 GROUP BY 1,2
 ORDER BY 1 asc NULLS LAST
 LIMIT 5000

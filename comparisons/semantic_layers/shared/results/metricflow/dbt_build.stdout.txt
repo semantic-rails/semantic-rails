@@ -1,41 +1,34 @@
-[0m02:34:13  Running with dbt=1.10.23
-[0m02:34:13  This version of dbt is deprecated and no longer receives regular patches, including for known bugs. We recommend upgrading to a newer supported version of dbt: https://docs.getdbt.com/docs/dbt-versions
-[0m02:34:13  Registered adapter: duckdb=1.10.1
-[0m02:34:15  Found 14 models, 15 metrics, 486 macros, 13 semantic models
-[0m02:34:15  
-[0m02:34:15  Concurrency: 1 threads (target='dev')
-[0m02:34:15  
-[0m02:34:16  1 of 14 START sql table model main.all_days .................................... [RUN]
-[0m02:34:16  1 of 14 OK created sql table model main.all_days ............................... [[32mOK[0m in 0.08s]
-[0m02:34:16  2 of 14 START sql view model main.customer_history ............................. [RUN]
-[0m02:34:16  2 of 14 OK created sql view model main.customer_history ........................ [[32mOK[0m in 0.04s]
-[0m02:34:16  3 of 14 START sql view model main.customers .................................... [RUN]
-[0m02:34:16  3 of 14 OK created sql view model main.customers ............................... [[32mOK[0m in 0.05s]
-[0m02:34:16  4 of 14 START sql view model main.high_frequency_orders ........................ [RUN]
-[0m02:34:16  4 of 14 OK created sql view model main.high_frequency_orders ................... [[32mOK[0m in 0.07s]
-[0m02:34:16  5 of 14 START sql view model main.high_frequency_store_orders .................. [RUN]
-[0m02:34:16  5 of 14 OK created sql view model main.high_frequency_store_orders ............. [[32mOK[0m in 0.02s]
-[0m02:34:16  6 of 14 START sql view model main.high_value_orders_500 ........................ [RUN]
-[0m02:34:16  6 of 14 OK created sql view model main.high_value_orders_500 ................... [[32mOK[0m in 0.15s]
-[0m02:34:16  7 of 14 START sql view model main.order_items .................................. [RUN]
-[0m02:34:16  7 of 14 OK created sql view model main.order_items ............................. [[32mOK[0m in 0.11s]
-[0m02:34:16  8 of 14 START sql view model main.order_lifecycle .............................. [RUN]
-[0m02:34:16  8 of 14 OK created sql view model main.order_lifecycle ......................... [[32mOK[0m in 0.17s]
-[0m02:34:16  9 of 14 START sql view model main.orders ....................................... [RUN]
-[0m02:34:16  9 of 14 OK created sql view model main.orders .................................. [[32mOK[0m in 0.03s]
-[0m02:34:16  10 of 14 START sql view model main.repeat_customer_orders ...................... [RUN]
-[0m02:34:16  10 of 14 OK created sql view model main.repeat_customer_orders ................. [[32mOK[0m in 0.08s]
-[0m02:34:16  11 of 14 START sql view model main.session_conversions_7d ...................... [RUN]
-[0m02:34:16  11 of 14 OK created sql view model main.session_conversions_7d ................. [[32mOK[0m in 0.03s]
-[0m02:34:16  12 of 14 START sql view model main.session_conversions_7d_same_store ........... [RUN]
-[0m02:34:16  12 of 14 OK created sql view model main.session_conversions_7d_same_store ...... [[32mOK[0m in 0.02s]
-[0m02:34:16  13 of 14 START sql view model main.storefront_sessions ......................... [RUN]
-[0m02:34:16  13 of 14 OK created sql view model main.storefront_sessions .................... [[32mOK[0m in 0.02s]
-[0m02:34:16  14 of 14 START sql view model main.stores ...................................... [RUN]
-[0m02:34:17  14 of 14 OK created sql view model main.stores ................................. [[32mOK[0m in 0.10s]
-[0m02:34:17  
-[0m02:34:17  Finished running 1 table model, 13 view models in 0 hours 0 minutes and 1.32 seconds (1.32s).
-[0m02:34:17  
-[0m02:34:17  [32mCompleted successfully[0m
-[0m02:34:17  
-[0m02:34:17  Done. PASS=14 WARN=0 ERROR=0 SKIP=0 NO-OP=0 TOTAL=14
+[0m22:36:06  Running with dbt=1.12.5
+[0m22:36:06  Registered adapter: duckdb=1.11.0
+[0m22:36:07  [[33mWARNING[0m]: Entity 'customer' was excluded from the OSI document: natural entities have no equivalent in the OSI format.
+[0m22:36:07  [[33mWARNING[0m]: Metric 'session_order_conversions_7d' was excluded from the OSI document: conversion metrics cannot be represented in the OSI format.
+[0m22:36:07  [[33mWARNING[0m]: Metric 'same_store_session_order_conversions_7d' was excluded from the OSI document: conversion metrics cannot be represented in the OSI format.
+[0m22:36:07  Found 8 models, 16 metrics, 500 macros, 7 semantic models
+[0m22:36:07  
+[0m22:36:07  Concurrency: 1 threads (target='dev')
+[0m22:36:07  
+[0m22:36:07  1 of 8 START sql table model main.all_days ..................................... [RUN]
+[0m22:36:07  1 of 8 OK created sql table model main.all_days ................................ [[32mOK[0m in 0.05s]
+[0m22:36:07  2 of 8 START sql view model main.customer_history .............................. [RUN]
+[0m22:36:07  2 of 8 OK created sql view model main.customer_history ......................... [[32mOK[0m in 0.02s]
+[0m22:36:07  3 of 8 START sql view model main.customers ..................................... [RUN]
+[0m22:36:07  3 of 8 OK created sql view model main.customers ................................ [[32mOK[0m in 0.01s]
+[0m22:36:07  4 of 8 START sql view model main.order_items ................................... [RUN]
+[0m22:36:07  4 of 8 OK created sql view model main.order_items .............................. [[32mOK[0m in 0.01s]
+[0m22:36:07  5 of 8 START sql view model main.order_lifecycle ............................... [RUN]
+[0m22:36:07  5 of 8 OK created sql view model main.order_lifecycle .......................... [[32mOK[0m in 0.01s]
+[0m22:36:07  6 of 8 START sql view model main.orders ........................................ [RUN]
+[0m22:36:07  6 of 8 OK created sql view model main.orders ................................... [[32mOK[0m in 0.01s]
+[0m22:36:07  7 of 8 START sql view model main.storefront_sessions ........................... [RUN]
+[0m22:36:07  7 of 8 OK created sql view model main.storefront_sessions ...................... [[32mOK[0m in 0.01s]
+[0m22:36:07  8 of 8 START sql view model main.stores ........................................ [RUN]
+[0m22:36:07  8 of 8 OK created sql view model main.stores ................................... [[32mOK[0m in 0.01s]
+[0m22:36:07  
+[0m22:36:07  Finished running 1 table model, 7 view models in 0 hours 0 minutes and 0.23 seconds (0.23s).
+[0m22:36:07  [[33mWARNING[0m]: Entity 'customer' was excluded from the OSI document: natural entities have no equivalent in the OSI format.
+[0m22:36:07  [[33mWARNING[0m]: Metric 'session_order_conversions_7d' was excluded from the OSI document: conversion metrics cannot be represented in the OSI format.
+[0m22:36:07  [[33mWARNING[0m]: Metric 'same_store_session_order_conversions_7d' was excluded from the OSI document: conversion metrics cannot be represented in the OSI format.
+[0m22:36:07  
+[0m22:36:07  [32mCompleted successfully[0m
+[0m22:36:07  
+[0m22:36:07  Done. PASS=8 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=8
