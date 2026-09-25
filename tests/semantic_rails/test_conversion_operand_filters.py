@@ -376,3 +376,39 @@ def test_curated_conversion_metric_on_an_expression_measure_fails_package_valida
         "metric.sales.session_to_order_conversion_rate_7d"
     ]
     assert failed[0]["error"]["code"] == "CONVERSION_NOT_SUPPORTED"
+
+
+_REPEAT_CUSTOMER = {
+    "all": [{"field": "dimension.jaffle_customer_type", "op": "=", "value": "repeat"}]
+}
+
+
+@pytest.mark.parametrize(
+    ("base", "converted", "refused"),
+    [
+        # Each customer is one event on its first-order clock, so it converts to itself.
+        ("customer_count", "customer_count", True),
+        # A customer, then that customer's orders: the window applies.
+        ("customer_count", "order_count", False),
+        # The same customer row on another clock is a later event.
+        ("customer_count", "latest_customer_count", False),
+    ],
+)
+def test_operands_counting_the_conversion_entity_on_one_clock_are_rejected(
+    tmp_path, base, converted, refused
+):
+    latest = {**_EVENT_COUNT, "times": ["temporal_role.jaffle_customer_latest_ordered_at"]}
+    runtime = _runtime_with_measure(tmp_path, "customers.yml", "latest_customer_count", latest)
+    report = runtime.validate(
+        _conversion_query(
+            base_measure=f"measure.jaffle.{base}",
+            converted_measure=f"measure.jaffle.{converted}",
+            converted_filter=_REPEAT_CUSTOMER,
+        )
+    )
+    assert report["ok"] is not refused, report["errors"]
+    if refused:
+        error = report["errors"][0]
+        assert error["code"] == "CONVERSION_NOT_SUPPORTED"
+        assert "the 28-day window can never apply" in error["message"]
+        assert "for example 'measure.jaffle.order_count'" in error["message"]

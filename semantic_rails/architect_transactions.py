@@ -500,13 +500,22 @@ class ProjectTransaction:
             if expected != current:
                 raise SemanticLayerError(
                     "CONFIG_CONFLICT",
-                    "Architect project revision is stale",
+                    (
+                        "Architect project revision is stale: the project changed after "
+                        "expected_revision, and this write was not applied. Writes sent together "
+                        "with one expected_revision apply only the first; send them one at a "
+                        "time, each with the revision the previous write returned."
+                    ),
                     details={
                         "conflict_kind": "stale_revision",
                         "project_path": str(self.project_path),
                         "expected_revision": expected,
                         "current_revision": current,
-                        "retry": "Read project_status, review intervening changes, and retry with a new idempotency_key.",
+                        "retry": (
+                            "If the intervening change is your own earlier write, resend this "
+                            f"write with expected_revision {current!r} and a new idempotency_key. "
+                            "Otherwise read project_status and review the change first."
+                        ),
                     },
                 )
             if prepare_updates is not None:

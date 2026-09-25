@@ -2970,6 +2970,12 @@ def test_parse_report_rejects_cyclic_metric_references(package_config_factory, m
             "expression": {"kind": "metric", "metric": "metric.sales.aov_usd"},
         }
     _write_yaml(path, doc)
+    # A conversion over the cycle reports it too, instead of recursing.
+    path = Path(package_dir) / "metrics" / "extensions" / "advanced_metrics.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    conversion = doc["metrics"]["sales.session_to_order_conversion_rate_7d"]["expression"]
+    conversion["base"] = {"kind": "metric", "metric": "metric.sales.aov_usd"}
+    _write_yaml(path, doc)
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
@@ -2995,3 +3001,119 @@ def test_validation_accepts_shared_acyclic_metric_references(package_config_fact
     _write_yaml(path, doc)
 
     assert validate_runtime_package(Path(package_dir)) == []
+
+
+def _operand(measure: str, field: str, value: object) -> dict:
+    return {
+        "kind": "aggregate",
+        "measure": measure,
+        "filter": {"all": [{"field": field, "op": "=", "value": value}]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("measure", "field", "temporal_role", "refused"),
+    [
+        # Each customer is one event on one clock, so the window never applies.
+        ("customer_count", "customer_type", "customer_first_order_at", True),
+        # A first order, then a repeat order by the same customer within the window.
+        ("order_count", "order_is_new_customer_order", "order_time", False),
+    ],
+    ids=["counts-customers", "counts-orders"],
+)
+def test_parse_report_rejects_a_conversion_whose_window_cannot_apply(
+    package_config_factory, measure, field, temporal_role, refused
+):
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "metrics" / "extensions" / "derived_metrics.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    base_value, converted_value = ("new", "repeat") if refused else (True, False)
+    doc["metrics"]["sales.repeat_rate_90d"] = {
+        "as": "metric.sales.repeat_rate_90d",
+        "label": "Repeat rate (90d)",
+        "description": "First orders followed by another order within 90 days.",
+        "kind": "conversion",
+        "value_type": "percent",
+        "temporal_role": f"temporal_role.jaffle_{temporal_role}",
+        "expression": {
+            "kind": "conversion",
+            "entity": "entity.jaffle_customer",
+            "window": {"unit": "day", "value": 90},
+            "matching_mode": "first_converted_after_base",
+            "base": _operand(measure, f"dimension.jaffle_{field}", base_value),
+            "converted": _operand(measure, f"dimension.jaffle_{field}", converted_value),
+        },
+    }
+    _write_yaml(path, doc)
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    messages = [row["message"].split(": ", 1)[1] for row in report["errors"]]
+    assert report["ok"] is not refused, messages
+    if refused:
+        assert messages == [
+            "metric metric.sales.repeat_rate_90d: Both conversion operands count "
+            "'entity.jaffle_customer' itself on the clock "
+            "'temporal_role.jaffle_customer_first_order_at', so each base event converts to "
+            "itself at the same time and the 90-day window can never apply. Count events keyed "
+            "by 'entity.jaffle_customer' in both operands instead, for example "
+            "'measure.jaffle.order_count', 'measure.jaffle.delivered_orders', "
+            "'measure.jaffle.session_starts'."
+        ]
+
+
+@pytest.mark.parametrize(
+    ("spec", "twin"),
+    [
+        ({"entity_key": "order_id"}, "order_count"),
+        ({"entity_key": "customer_id"}, "ordering_customer_count"),
+        # Another clock beyond the same default one: the warning says to keep both clocks.
+        (
+            {
+                "entity_key": "order_id",
+                "times": [
+                    "temporal_role.jaffle_order_time",
+                    "temporal_role.jaffle_customer_first_order_at",
+                ],
+            },
+            "order_count",
+        ),
+        # The same count on another default clock, or of another column, is its own measure.
+        (
+            {"entity_key": "order_id", "times": ["temporal_role.jaffle_customer_first_order_at"]},
+            None,
+        ),
+        ({"entity_key": "store_id"}, None),
+    ],
+    ids=["same-key", "same-column", "extra-clock", "other-clock", "other-column"],
+)
+def test_parse_report_warns_on_a_measure_that_duplicates_another(
+    package_config_factory, spec, twin
+):
+    _, package_dir = package_config_factory("jaffle_shop")
+    path = Path(package_dir) / "models" / "core" / "orders.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["model"]["measures"]["placed_orders"] = {
+        "kind": "entity_count",
+        "description": "Orders placed.",
+        **spec,
+    }
+    _write_yaml(path, doc)
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    assert report["ok"] is True, report["errors"]
+    duplicates = [
+        row["message"].split(": ", 1)[1]
+        for row in report["warnings"]
+        if "duplicates" in row["message"]
+    ]
+    assert duplicates == (
+        [
+            f"public measure measure.jaffle.placed_orders duplicates measure.jaffle.{twin} "
+            "(same entity, expression, aggregation and default clock). Keep one, give it every "
+            "clock the other has, and point anything that reads the other at it."
+        ]
+        if twin
+        else []
+    )

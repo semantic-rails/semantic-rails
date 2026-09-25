@@ -391,7 +391,9 @@ archive) use one engine-owned transaction layer:
   databases, and cache files are excluded.
 - `expected_revision` is required at the MCP boundary. A stale writer receives
   `CONFIG_CONFLICT` with both expected and current revisions; it never
-  overwrites an intervening edit.
+  overwrites an intervening edit. Writes sent together with one `expected_revision`
+  apply only the first, so send them one at a time, each with the `revision` the previous
+  write returned; the refusal's `details.retry` names the revision to resend with.
 - `idempotency_key` is required and persisted as a hashed, workspace-local
   receipt. Retrying the identical mutation replays its result. Reusing the key
   for a different intent fails closed. For `create_project`, the transaction checks that receipt

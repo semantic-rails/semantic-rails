@@ -119,7 +119,10 @@ def test_tool_list_follows_the_description_rules(tmp_path: Path):
     tools = _list_tools(server)
 
     assert len(server.instructions or "") < 2048
-    assert all(name in (server.instructions or "") for name in ("dry_run", "expected_revision"))
+    assert all(
+        name in (server.instructions or "")
+        for name in ("dry_run", "expected_revision", "one at a time")
+    )
     for tool in tools:
         assert tool.annotations is not None and tool.annotations.title, tool.name
         assert _titles([tool.inputSchema, tool.outputSchema]) == [], tool.name
@@ -435,6 +438,9 @@ def test_two_writers_from_same_revision_cannot_lose_updates(tmp_path: Path):
     assert conflicts[0]["error"]["code"] == "CONFIG_CONFLICT"
     assert conflicts[0]["error"]["details"]["conflict_kind"] == "stale_revision"
     assert conflicts[0]["error"]["details"]["expected_revision"] == base_revision
+    # The refusal names the batch cause and the revision to resend with.
+    assert "apply only the first" in conflicts[0]["error"]["message"]
+    assert repr(successful[0]["revision"]) in conflicts[0]["error"]["details"]["retry"]
     existing = [
         (project_path / "metrics" / "core" / f"{key}.yml").exists()
         for key in ("first_metric", "second_metric")
