@@ -63,8 +63,11 @@ Use `author metric` (or any other kind) to skip the first menu. The flow lists
 valid package objects where a reference is required, recommends the common
 choice, shows the target file and YAML before writing, calls out exact or
 similar existing definitions, and defaults every create/update confirmation to
-No. Successful edits are parse-validated and can be restored with `undo` during
-the same REPL session. A failed parse restores the original files automatically.
+No. Managing an existing object starts every prompt at its saved value, even a
+value the menu does not otherwise list, so pressing Enter throughout leaves it
+as it was. Successful edits are parse-validated and can be restored with `undo`
+during the same REPL session. A failed parse restores the original files
+automatically.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh
