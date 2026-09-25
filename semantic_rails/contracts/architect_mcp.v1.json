@@ -1479,6 +1479,11 @@
             "title": "Expected Revision",
             "type": "string"
           },
+          "file_name": {
+            "default": "",
+            "title": "File Name",
+            "type": "string"
+          },
           "group": {
             "default": "core",
             "title": "Group",
