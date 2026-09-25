@@ -124,7 +124,7 @@ def _run_authoring_flow(
         kind = _resolve_authoring_kind(requested_kind, inventory)
         print()
         print(f"Authoring {_ref_label(current_ref)} - {kind}")
-        print("Type `cancel` or press Ctrl-C to return without writing files.")
+        print("Press Ctrl-C, or type `cancel` at a text prompt or list, to stop without writing.")
 
         before_warnings = set(_authoring_warning_messages(initial))
         dispatch = {
@@ -1674,10 +1674,13 @@ def _author_identity(
         answer = _author_key_and_label(project, inventory, kind, default_key, parent)
         if answer is None:
             print(f"Enter another {kind} key, or type cancel.")
-        elif answer[2] is not None or _distinct(project, kind, answer[0], answer[1]):
+            continue
+        key, label, existing = answer
+        # An update that keeps its label cannot become ambiguous; a new label can.
+        same_label = existing is not None and label == str(existing.get("label", ""))
+        if same_label or _distinct(project, kind, key, label):
             return answer
-        else:
-            default_key = answer[0]
+        default_key = key
 
 
 def _author_key_and_label(

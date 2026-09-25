@@ -1338,6 +1338,29 @@ def test_a_taken_or_similar_key_asks_again_instead_of_ending_the_wizard(
     assert identity == ("gross_sales", "Gross Sales", None)
 
 
+def test_relabelling_an_existing_object_to_a_similar_label_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = _starter(tmp_path)
+    architect = authoring.ArchitectProject(project, workspace_root=tmp_path)
+    replies = iter(
+        [
+            *("total_amount", "y", "Event count"),  # update it, relabelled as its sibling
+            "",  # Enter: choose a different key and label
+            *("total_amount", "y", ""),  # update it, keeping its label: no warning
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+    backend.set_backend(backend.PlainBackend())
+
+    key, label, existing = authoring._author_identity(
+        architect, architect.inventory(), "measure", "revenue", parent="events"
+    )
+
+    assert (key, label, existing is not None) == ("total_amount", "Total amount", True)
+    assert capsys.readouterr().out.count("This sounds similar to existing definitions") == 1
+
+
 @pytest.mark.parametrize(
     ("model", "entity"),
     [
