@@ -1108,11 +1108,16 @@ def test_validate_config_generates_query_time_for_time_required_metrics(tmp_path
 
 
 @pytest.mark.parametrize(
-    ("status", "suggestions"),
-    [("Completed", ["completed"]), ("Complete", ["completed"]), ("zzz", [None]), ("completed", [])],
+    ("op", "value", "suggestions"),
+    [
+        ("=", "Completed", ["completed"]),
+        ("in", ["Complete", "pending"], ["completed"]),
+        ("!=", "zzz", [None]),
+        ("not in", ["completed"], []),
+    ],
 )
 def test_validation_warns_on_a_filter_value_the_data_lacks(
-    tmp_path: Path, status: str, suggestions: list[str | None]
+    tmp_path: Path, op: str, value: str | list[str], suggestions: list[str | None]
 ):
     package_dir = tmp_path / "status_filter"
     _write_minimal_package(
@@ -1133,9 +1138,7 @@ def test_validation_warns_on_a_filter_value_the_data_lacks(
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                     "filter": {
-                        "all": [
-                            {"field": "dimension.demo_order_status", "op": "in", "value": [status]}
-                        ]
+                        "all": [{"field": "dimension.demo_order_status", "op": op, "value": value}]
                     },
                 },
             }
