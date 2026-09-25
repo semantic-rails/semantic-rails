@@ -54,6 +54,8 @@ def _model(report: Any) -> dict[str, Any]:
         ("duckdb", NODE, False, "fct_orders", False),  # unchanged without the flag
         ("duckdb", NODE, True, "main_marts.fct_orders", False),  # a DuckDB database is its file
         ("snowflake", NODE, True, "analytics.main_marts.fct_orders", False),
+        ("bigquery", NODE, True, "analytics.main_marts.fct_orders", False),
+        ("databricks", NODE, True, "analytics.main_marts.fct_orders", False),
         ("postgres", NODE, True, "main_marts.fct_orders", False),
         ("duckdb", {"alias": "fct_orders"}, True, "fct_orders", True),  # YAML input: no schema
     ],
