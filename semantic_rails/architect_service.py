@@ -74,6 +74,11 @@ def _as_list(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _foreign_key_entry(columns: list[str], target_key: list[str]) -> dict[str, Any]:
+    """A model ``entities`` entry: ``columns`` hold the target entity's ``target_key``."""
+    return {} if columns == target_key else {"expr": columns[0] if len(columns) == 1 else columns}
+
+
 def _within(path: Path, root: Path) -> bool:
     try:
         return os.path.commonpath([str(path), str(root)]) == str(root)
@@ -444,7 +449,8 @@ def _create_next_actions(spec: ProjectSpec) -> list[str]:
     actions.extend(
         [
             "Run validate_project with mode=runtime before trusting queries.",
-            "Use upsert_model to add dimensions, measures, joins, or additional entities.",
+            "Use upsert_model to add dimensions, measures, or entities, and upsert_relationship "
+            "to relate them.",
             "When comparing changes, run impact_project with compare_path or base_ref before "
             "opening a release review.",
         ]
@@ -776,14 +782,11 @@ class ArchitectProject:
                     )
                 continue
             fact, _, columns = references[0]
-            target_key = entity_keys[target]
             model = self._staged_model(documents[fact["model_path"]], fact["model"])
-            entry = (
-                {}
-                if columns == target_key
-                else {"expr": columns[0] if len(columns) == 1 else columns}
-            )
-            model["entities"] = {**dict(model.get("entities", {}) or {}), target: entry}
+            model["entities"] = {
+                **dict(model.get("entities", {}) or {}),
+                target: _foreign_key_entry(columns, entity_keys[target]),
+            }
             added.append({"model": fact["model"], "entity": target, "columns": columns})
         graph_paths = {fact["graph_path"] for fact in staged}
         model_paths = {fact["model_path"] for fact in staged}
@@ -1055,6 +1058,149 @@ class ArchitectProject:
             },
         )
 
+    def upsert_relationship(
+        self,
+        *,
+        from_entity: str,
+        to_entity: str,
+        columns: list[str],
+        cardinality: str = "many_to_one",
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Relate ``from_entity`` to ``to_entity`` through foreign-key ``columns``.
+
+        ``columns`` are columns of ``from_entity``'s model that hold
+        ``to_entity``'s key, in key order. They go in that model's ``entities``
+        block (as ``expr`` when named differently from the key), which strict
+        packages read as a many-to-one relationship. ``one_to_one``, or an
+        existing ``graph.relationships`` entry for the pair, also records the
+        cardinality there. The project is checked under the transaction lock,
+        after receipt replay and the revision check.
+        """
+        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
+        foreign_key = _as_list(columns)
+        kind = str(cardinality or "").strip().lower()
+        if kind not in {"many_to_one", "one_to_one"}:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"cardinality must be many_to_one or one_to_one (got {cardinality!r}); relate "
+                "one_to_many from the many side, and many_to_many through a bridge model",
+            )
+        if source == target or not all(column.strip() for column in foreign_key):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "from_entity and to_entity must differ, and columns must not be blank",
+            )
+
+        def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
+            raw = self._raw_inventory()
+            source_row = self._find_raw(raw["entities"], source)
+            target_row = self._find_raw(raw["entities"], target)
+            model_row = next(
+                (
+                    row
+                    for row in raw["models"]
+                    if self._primary_entity_for_model(row, raw["entities"]) == source
+                ),
+                None,
+            )
+            if source_row is None or target_row is None or model_row is None:
+                missing = [
+                    name for name, row in ((source, source_row), (target, target_row)) if not row
+                ]
+                raise SemanticLayerError(
+                    "OBJECT_NOT_FOUND",
+                    f"No package entity {missing[0]!r}"
+                    if missing
+                    else f"Entity {source!r} has no model to hold the foreign key",
+                    details={"entities": missing or [source]},
+                )
+            target_key = _as_list(target_row.spec.get("key"))
+            if len(foreign_key) != len(target_key):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"columns {foreign_key} do not match the width of {target}'s key {target_key}",
+                    details={"columns": foreign_key, "key": target_key},
+                )
+            graph_path = source_row.source_path
+            documents = self._load_documents(model_row.source_path, graph_path)
+            model_doc = documents[model_row.source_path]
+            model, wrapper = self._model_for_update(model_doc, model_row, model_slug=model_row.key)
+            entities = dict(model.get("entities", {}) or {})
+            # The loader reads the block's first entity as the model's own.
+            model["entities"] = {
+                source: entities.get(source) or {},
+                **{name: spec for name, spec in entities.items() if name not in {source, target}},
+                target: _foreign_key_entry(foreign_key, target_key),
+            }
+            self._store_model(model_doc, wrapper, model_row.key, model)
+            graph = dict(documents[graph_path].get("graph", {}) or {})
+            relationships = dict(graph.get("relationships", {}) or {})
+            existing = next(
+                (
+                    str(name)
+                    for name, entry in relationships.items()
+                    if isinstance(entry, dict)
+                    and _as_list(entry.get("entities")) == [source, target]
+                ),
+                "",
+            )
+            name = existing or f"{model_row.key}_{target}"
+            if kind == "one_to_one" or existing:
+                if not existing and name in relationships:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"graph.relationships.{name} already relates other entities",
+                        details={"relationship": name},
+                    )
+                # via/target would override the columns written above.
+                entry = {
+                    field_name: value
+                    for field_name, value in dict(relationships.get(name) or {}).items()
+                    if field_name not in {"via", "target"}
+                }
+                relationships[name] = {**entry, "entities": [source, target], "cardinality": kind}
+                documents[graph_path]["graph"] = {**graph, "relationships": relationships}
+            elif graph_path != model_row.source_path:
+                documents.pop(graph_path)
+            return self._file_updates(documents), None
+
+        outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
+            (),
+            expected_revision=expected,
+            idempotency_key=key,
+            intent={
+                "operation": "upsert_relationship",
+                "expected_revision": expected,
+                "from_entity": source,
+                "to_entity": target,
+                "columns": foreign_key,
+                "cardinality": kind,
+            },
+            dry_run=dry_run,
+            validate_after=validate_after,
+            success_status="upserted",
+            metadata={
+                "relationship": {
+                    "from_entity": source,
+                    "to_entity": target,
+                    "columns": foreign_key,
+                    "cardinality": kind,
+                }
+            },
+            prepare_updates=prepare,
+        )
+        return ArchitectMutation(
+            report=outcome.report,
+            project_path=self.project_path,
+            _snapshots=outcome.snapshots,
+            _active=bool(outcome.snapshots),
+        )
+
     def write_file(
         self,
         *,
@@ -1219,23 +1365,11 @@ class ArchitectProject:
         }
         if extra:
             metadata.update(deepcopy(extra))
-        updates = [
-            ProjectFileUpdate(
-                self._relative(path),
-                yaml.safe_dump(
-                    documents[path],
-                    sort_keys=False,
-                    allow_unicode=False,
-                ).encode("utf-8"),
-                (path.stat().st_mode & 0o777) if path.exists() else None,
-            )
-            for path in documents
-        ]
         outcome = ProjectTransaction(
             self.project_path,
             workspace_root=self.workspace_root,
         ).apply(
-            updates,
+            self._file_updates(documents),
             expected_revision=expected_revision,
             idempotency_key=idempotency_key,
             intent={**deepcopy(intent), "expected_revision": expected_revision},
@@ -1251,6 +1385,16 @@ class ArchitectProject:
             _active=bool(outcome.snapshots),
         )
         return mutation
+
+    def _file_updates(self, documents: dict[Path, dict[str, Any]]) -> list[ProjectFileUpdate]:
+        return [
+            ProjectFileUpdate(
+                self._relative(path),
+                yaml.safe_dump(doc, sort_keys=False, allow_unicode=False).encode("utf-8"),
+                (path.stat().st_mode & 0o777) if path.exists() else None,
+            )
+            for path, doc in documents.items()
+        ]
 
     def _raw_inventory(self) -> dict[str, list[_RawObject]]:
         package_path = self._target_path("package.yml")

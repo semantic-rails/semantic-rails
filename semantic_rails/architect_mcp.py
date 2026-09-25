@@ -330,7 +330,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
         "principles": [
             "Start with project_status before editing an existing package.",
             "Use setup_project_dialog for new-package discovery, then create_project when the required fields are known.",
-            "Prefer upsert_model for entity, dimension, time, measure, and join changes so graph.yml stays aligned.",
+            "Prefer upsert_model for entity, dimension, time, and measure changes, and upsert_relationship for foreign keys, so graph.yml stays aligned.",
             "Run validate_project with mode=parse after every structural edit; use mode=runtime before promoting.",
             "Treat runtime validation as operational: DuckDB validation can build a missing package database from its seed but never replaces an existing file; declare seed kind external for a database another tool builds. Snowflake validation can issue live queries.",
             "Use impact_project with compare_path or base_ref before release review; use promotion_check with compare_path or base_ref when an environment gate matters.",
@@ -353,7 +353,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             },
             {
                 "step": "edit",
-                "tool": "upsert_model / upsert_metric / upsert_segment / write_project_file",
+                "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / write_project_file",
                 "result": (
                     "Preview or atomically commit scoped changes with expected_revision "
                     "and a caller-generated idempotency_key."
@@ -1007,6 +1007,43 @@ def create_architect_mcp_server(
                     joins=joins,
                     group=group,
                     description=description,
+                    validate_after=True,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
+    @mcp.tool(annotations=_mutation_annotations("Upsert relationship"))
+    def upsert_relationship(
+        project_path: str,
+        from_entity: str,
+        to_entity: str,
+        columns: list[str],
+        expected_revision: str,
+        idempotency_key: str,
+        cardinality: str = "many_to_one",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        """Preview or atomically relate two entities: columns on from_entity's model hold
+        to_entity's key, in key order. cardinality: many_to_one or one_to_one."""
+        try:
+            return _mutation_result(
+                ArchitectProject(project_path, workspace_root=root)
+                .upsert_relationship(
+                    from_entity=from_entity,
+                    to_entity=to_entity,
+                    columns=columns,
+                    cardinality=cardinality,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
