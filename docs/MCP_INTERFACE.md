@@ -197,6 +197,12 @@ need full diagnostics.
 A draft that validates can still leave out part of the question. `plan` returns
 `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
 
+- doesn't use a metric the question names by its label, an alias or its id, when that name
+  has two words or more and holds every measure the question names ("completed revenue"
+  holds "revenue") (`named_metric_unrealized`). `plan` drafts that metric itself, and the
+  metric's own name isn't read again as a window, a ranking or a value;
+- has no filter on a dimension that a "where <dimension> is <value>" clause names, even
+  when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one
   (`time_window_unrealized`);
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the

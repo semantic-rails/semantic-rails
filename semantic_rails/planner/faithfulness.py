@@ -24,6 +24,7 @@ from ._base import (
     _ORDINALS,
     _TERM_SYNONYMS,
     _TIME_UNITS,
+    _named_metric,
     _object_text,
     _time_bounds_from_text,
     _time_window,
@@ -333,6 +334,24 @@ def intent_faithfulness_why(
     gaps: list[CoverageGap] = []
 
     text = str(question or "")
+    named = _named_metric(runtime._config, text)
+    if named is not None and str(named[0].id) in _referenced_ids(query):
+        # The chosen metric answers its own name ("revenue, trailing 7 days").
+        text = named[1]
+    elif named is not None:
+        gaps.append(
+            CoverageGap(
+                kind="named_metric_unrealized",
+                clause=str(named[0].label),
+                message="The question names a governed metric, but the draft doesn't use it.",
+                expected={"metric": str(named[0].id)},
+                actual={"subjects": _projected_subject_ids(query)},
+                recovery_hint={
+                    "kind": "use_named_metric",
+                    "message": "Select the named metric in Query IR, then validate.",
+                },
+            )
+        )
     partition_match = _PARTITIONED_RANK_RE.search(text)
     if (
         partition_match
@@ -460,6 +479,7 @@ def intent_faithfulness_why(
     ):
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
+    gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
     if contradictions:
         # No row can satisfy the draft. Report that decisive failure once;
@@ -1016,6 +1036,47 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     ]
 
 
+# "where channel is web" filters on a dimension it names, whether or not the
+# catalog declares the value.
+_WHERE_FIELD_RE = re.compile(
+    r"\bwhere\s+(?:the\s+)?(?P<field>[a-z][a-z0-9 _-]*?)\s*"
+    r"(?:\b(?:is|are|was|were|equals?)\b|[!=<>]=?)",
+    re.IGNORECASE,
+)
+
+
+def _where_clause_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """A "where <dimension> is <value>" clause needs a filter on that dimension."""
+
+    predicates = _field_predicates(query)
+    gaps: list[CoverageGap] = []
+    for match in _WHERE_FIELD_RE.finditer(text):
+        said = _singular(_plain(match.group("field")))
+        fields = [
+            str(row.id)
+            for row in runtime._config.dimensions
+            if said in {_singular(_plain(name)) for name in (row.label, *(row.aliases or []))}
+        ]
+        if fields and not any(field in predicates for field in fields):
+            gaps.append(
+                CoverageGap(
+                    kind="dimension_filter_unrealized",
+                    clause=match.group(0),
+                    message="The question filters on a dimension it names, but the draft doesn't.",
+                    expected={"filter_on": fields},
+                    actual={"where": list(query.get("where") or [])},
+                    recovery_hint={
+                        "kind": "provide_dimension_filter",
+                        "message": (
+                            "Add a where filter on the named dimension, with a value from "
+                            "valid_values, then validate."
+                        ),
+                    },
+                )
+            )
+    return gaps
+
+
 def _exclusion_matches(text: str) -> list[re.Match[str]]:
     return sorted(
         (match for pattern in (_NEGATION_RE, _ALL_BUT_RE) for match in pattern.finditer(text)),
@@ -1489,6 +1550,7 @@ def _matches_exact_subject_field(row: Any, piece_tokens: tuple[str, ...]) -> boo
     object_id = str(getattr(row, "id", "") or "")
     id_suffix = object_id.rsplit(".", 1)[-1]
     fields = (
+        object_id,
         id_suffix,
         str(getattr(row, "name", "") or ""),
         str(getattr(row, "label", "") or ""),
