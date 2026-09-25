@@ -103,8 +103,10 @@ class ResourceAccess:
     def _check_policies(self, object_ids: set[str], query: dict[str, Any] | None = None) -> None:
         try:
             references = set(object_ids)
+            binding = None
             if query is not None:
-                references = set(bind_query(self.config, None, query).object_ids)
+                binding = bind_query(self.config, None, query)
+                references = set(binding.object_ids)
             else:
                 references.update(bind_metadata_objects(self.config, object_ids))
             enforce_query_policies(
@@ -114,6 +116,7 @@ class ResourceAccess:
                 audience=self.context.audience,
                 roles=self.context.roles,
                 query=query,
+                binding=binding,
             )
         except SemanticLayerError:
             raise access_denied() from None

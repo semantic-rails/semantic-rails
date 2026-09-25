@@ -39,7 +39,17 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     lift_conditional_aggregates,
 )
-from .compiler_parts.dependencies import binding_dependencies, candidate_planning
+from .compiler_parts.dependencies import (
+    binding_cut,
+    binding_dependencies,
+    candidate_planning,
+    capture_objects,
+    cut_owners,
+    leaf_objects,
+    plan_bindings,
+    recipe_objects,
+    record_temporal_role,
+)
 from .compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from .compiler_parts.indexes import (
     _default_temporal_role,
@@ -1654,7 +1664,9 @@ def _predicate_ctes_and_join(
         mini_query["where"] = predicate_where_items
     if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
         mini_query["time"] = _public_time_spec(scope["time_spec"])
-    predicate_sql = _compile_query_sql_ast(config, mini_query)
+    with binding_cut():
+        _entity_index(config)[predicate.entity]
+    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -2311,9 +2323,11 @@ def _conversion_operand_filters(
                 f"Conversion {side} operand filter clauses require a dimension 'field'",
                 details={"side": side, "clause": clause},
             )
+        with binding_cut():
+            dimension_id = _resolve_filter_dimension(field, config)
         items.append(
             {
-                "dimension": _resolve_filter_dimension(field, config),
+                "dimension": dimension_id,
                 "op": str(clause.get("op", "=") or "="),
                 "value": clause.get("value"),
             }
@@ -2334,7 +2348,8 @@ def _resolve_conversion_source(
         recipe = recipes.get(expr.metric_recipe)
         if recipe is None:
             raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric '{expr.metric_recipe}'")
-        return _resolve_conversion_source(recipe.expression, config, query, side=side)
+        with recipe_objects(recipe.id):
+            return _resolve_conversion_source(recipe.expression, config, query, side=side)
     if isinstance(expr, AggregateExpr):
         if expr.window:
             raise SemanticLayerError(
@@ -2376,7 +2391,11 @@ def _resolve_conversion_source(
                     matching_mode="first_converted_after_base",
                 )
             )
-        return _measure_conversion_source(measure, bound, config, side=side)
+        source = _measure_conversion_source(measure, bound, config, side=side)
+        effective_role = str(source["time_role"])
+        _temporal_role_index(config).get(effective_role)
+        record_temporal_role(measure.id, effective_role)
+        return source
     raise SemanticLayerError(
         "CONVERSION_NOT_SUPPORTED",
         "Conversion execution currently requires base and converted inputs to resolve to event-count measures",
@@ -2699,7 +2718,11 @@ def _conversion_predicate_set_ctes(
     if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
         mini_query["time"] = _public_time_spec(scope["time_spec"])
 
-    predicate_sql = _compile_query_sql_ast(config, mini_query)
+    # Conversion leaves apply only query metric_filters predicates: whole-query cuts.
+    with cut_owners():
+        with binding_cut():
+            _entity_index(config)[predicate.entity]
+        predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -2822,9 +2845,15 @@ def _conversion_leaf_cte(
     temporal_roles = _temporal_role_index(config)
     dialect = dialect_for_warehouse(config.package.warehouse)
     query = normalize_query(plan.query)
-    base_source = _resolve_conversion_source(expr.base, config, query, side="base")
-    converted_source = _resolve_conversion_source(expr.converted, config, query, side="converted")
-    match_entity = str(expr.entity or base_source["root_entity"])
+    with leaf_objects(_expression_alias(expr, config)):
+        base_source = _resolve_conversion_source(expr.base, config, query, side="base")
+        converted_source = _resolve_conversion_source(
+            expr.converted, config, query, side="converted"
+        )
+        match_entity = str(expr.entity or base_source["root_entity"])
+        entities.get(match_entity)
+        for dimension_id in expr.constant_properties or []:
+            dimensions.get(dimension_id)
     if match_entity not in entities:
         raise SemanticLayerError(
             "CONVERSION_ENTITY_REQUIRED", f"Unknown conversion entity '{match_entity}'"
@@ -3721,14 +3750,19 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
     return _lower_to_sql(plan, config)
 
 
-def _compile_query_sql_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
+def _compile_query_sql_ast(
+    config: PackageConfig, payload: dict[str, Any], *, project_cut: bool = False
+) -> SqlSelect:
     plan = plan_query(config, None, payload)
     config = resolve_compile_config(plan, config)
-    _record_bound_plan(plan, config)
-    return attach_relation_ctes(config, lower_to_sql(plan, config))
+    with plan_bindings(plan, project_cut=project_cut) as leaves:
+        _record_bound_plan(plan, config, leaves.leaves)
+        return attach_relation_ctes(config, lower_to_sql(plan, config))
 
 
-def _record_bound_plan(plan: LogicalPlan, config: PackageConfig) -> None:
+def _record_bound_plan(
+    plan: LogicalPlan, config: PackageConfig, leaves: dict[str, set[str]]
+) -> None:
     _entity_index(config).get(plan.root_entity)
     dimensions = _dimension_index(config)
     for dimension in plan.group_by:
@@ -3737,7 +3771,19 @@ def _record_bound_plan(plan: LogicalPlan, config: PackageConfig) -> None:
         dimensions.get(str(clause.get("field", "")))
     _temporal_role_index(config).get(str(plan.time.get("temporal_role", "")))
     for bound in plan.bound_measures:
-        _measure_index(config).get(bound.measure_id)
+        with capture_objects(leaves[bound.alias]):
+            _measure_index(config).get(bound.measure_id)
+            effective_role = _leaf_time_role(bound, normalize_query(plan.query), config)
+            roles = {effective_role} if effective_role else set()
+            if (
+                bound.aggregation in {"first_value", "last_value"}
+                or _measure_index(config)[bound.measure_id].measure_class == "semi_additive"
+            ):
+                roles.add(bound.temporal_role)
+            for role in roles:
+                _temporal_role_index(config).get(role)
+                record_temporal_role(bound.measure_id, role, leaf_alias=bound.alias)
+        # Preserve the complete object-access binding independently of cuts.
         _temporal_role_index(config).get(bound.temporal_role)
     for measure_plan in plan.measure_plans:
         for entity in measure_plan.required_entities:
@@ -3753,6 +3799,28 @@ class BoundQuery:
     config: PackageConfig
     sql_ast: SqlSelect
     object_ids: frozenset[str]
+    cuts: tuple[frozenset[str], ...]
+    temporal_roles: dict[str, frozenset[str]]
+    unresolved_cuts: tuple[str, ...]
+    # Per cut: the root leaves it filters, or None when it filters the whole query.
+    cut_owners: tuple[frozenset[str] | None, ...]
+    # Root leaf alias -> the measures and recipes whose values it computes.
+    leaf_objects: dict[str, frozenset[str]]
+
+    def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
+        """Whole-query cuts plus the cuts of leaves computing ``object_id``.
+
+        An object read inside a cut, or computed by no root leaf (an entity,
+        dimension or nested-only read), has no single owner and sees every cut.
+        """
+        leaves = {alias for alias, ids in self.leaf_objects.items() if object_id in ids}
+        if not leaves or any(object_id in cut for cut in self.cuts):
+            return self.cuts
+        return tuple(
+            cut
+            for cut, owners in zip(self.cuts, self.cut_owners, strict=True)
+            if owners is None or owners & leaves
+        )
 
 
 def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> frozenset[str]:
@@ -3818,13 +3886,28 @@ def _bind_query(
     )
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)
-    with binding_dependencies() as dependencies:
-        # These are selected plan objects, not candidate paths considered by
-        # planning. Nested conversions/predicates resolve through these same
-        # indexes when their SQL AST branches are constructed below.
-        _record_bound_plan(plan, config)
+    # Record selected plans and their real lowering, before SQL rendering.
+    with binding_dependencies() as dependencies, plan_bindings(plan) as leaves:
+        _record_bound_plan(plan, config, leaves.leaves)
         sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
-    return BoundQuery(plan, config, sql_ast, frozenset(dependencies.object_ids))
+    cuts = dependencies.cuts
+    # A leaf read by a whole-query cut (a metric filter) filters the whole query too.
+    shared = set().union(*(cut.leaves for cut in cuts if cut.owners is None))
+    governed = {row.id for row in config.measures} | {row.id for row in config.metric_recipes}
+    return BoundQuery(
+        plan,
+        config,
+        sql_ast,
+        frozenset(dependencies.object_ids),
+        tuple(frozenset(cut.objects) for cut in cuts),
+        {key: frozenset(roles) for key, roles in dependencies.temporal_roles.items()},
+        tuple(sorted(dependencies.unresolved)),
+        tuple(None if cut.owners is None or cut.owners & shared else cut.owners for cut in cuts),
+        {
+            alias: frozenset((ids | leaves.recipe_owners.get(alias, set())) & governed)
+            for alias, ids in leaves.leaves.items()
+        },
+    )
 
 
 def compile_query(

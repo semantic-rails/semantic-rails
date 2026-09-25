@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
@@ -77,6 +78,16 @@ from .bind import (
     _parse_public_expr,
 )
 from .conversion import _conversion_leaf_cte
+from .dependencies import (
+    binding_cut,
+    capture_objects,
+    cut_owners,
+    leaf_predicate_roles,
+    project_is_cut,
+    recipe_objects,
+    record_ids,
+    record_leaf_reference,
+)
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -344,6 +355,7 @@ class AnchoredEntitySetPlan:
     anchor_entity: str
     extra_predicates: list[dict[str, Any]]
     base_predicates: list[dict[str, Any]]
+    projection_objects: set[str]
 
 
 def _slug(value: str, *, fallback: str = "item") -> str:
@@ -368,8 +380,10 @@ def _scoped_aggregate_from_expr(
     expr: SemanticExpr, config: PackageConfig
 ) -> ScopedAggregateExpr | None:
     if isinstance(expr, ScopedAggregateExpr):
+        record_leaf_reference(_expression_alias(expr, config))
         return expr
     if isinstance(expr, MeasureRefExpr):
+        record_leaf_reference(_expression_alias(expr, config))
         return ScopedAggregateExpr(
             measure=expr.measure,
             aggregation=expr.aggregation,
@@ -380,7 +394,8 @@ def _scoped_aggregate_from_expr(
         recipe = _recipe_index(config).get(expr.metric_recipe)
         if recipe is None:
             return None
-        return _scoped_aggregate_from_expr(recipe.expression, config)
+        with recipe_objects(recipe.id):
+            return _scoped_aggregate_from_expr(recipe.expression, config)
     return None
 
 
@@ -668,8 +683,10 @@ def _anchored_entity_set_plan(
     expr = _parse_public_expr(expr_payload)
     if not isinstance(expr, RatioExpr):
         return None
-    numerator = _scoped_aggregate_from_expr(expr.numerator, config)
-    denominator = _scoped_aggregate_from_expr(expr.denominator, config)
+    projection_objects: set[str] = set()
+    with capture_objects(projection_objects):
+        numerator = _scoped_aggregate_from_expr(expr.numerator, config)
+        denominator = _scoped_aggregate_from_expr(expr.denominator, config)
     if numerator is None or denominator is None:
         return None
     if numerator.measure != denominator.measure:
@@ -750,6 +767,7 @@ def _anchored_entity_set_plan(
         anchor_entity=anchor_entity,
         extra_predicates=extra_predicates,
         base_predicates=denominator_predicates,
+        projection_objects=projection_objects,
     )
 
 
@@ -883,7 +901,9 @@ def _distribution_select(
 ) -> SqlSelect:
     from ..compiler import _compile_query_sql_ast
 
-    entity_key_dims = _entity_key_dimension_ids(expr.over.entity, config)
+    # The per-entity grain belongs to this expression, not the outer query.
+    with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
+        entity_key_dims = _entity_key_dimension_ids(expr.over.entity, config)
     value_alias = "__entity_value"
     entity_value_query = _branch_context_query(
         plan,
@@ -891,7 +911,9 @@ def _distribution_select(
         value_alias,
         extra_group_by=entity_key_dims,
     )
-    sql_ast = _compile_query_sql_ast(config, entity_value_query)
+    sql_ast = _compile_query_sql_ast(
+        config, entity_value_query, project_cut=project_is_cut() or bool(expr.over.where)
+    )
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
     value_ref = SqlIdentifier(parts=[source_name, value_alias])
@@ -943,7 +965,9 @@ def _single_expression_branch_select(
 ) -> SqlSelect:
     from ..compiler import _compile_query_sql_ast
 
-    return _compile_query_sql_ast(config, _branch_context_query(plan, expr_to_dict(expr), alias))
+    return _compile_query_sql_ast(
+        config, _branch_context_query(plan, expr_to_dict(expr), alias), project_cut=project_is_cut()
+    )
 
 
 def _lower_agent_dag_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
@@ -1705,6 +1729,8 @@ def _source_rollup_leaf_select(
 def _measure_leaf_select(
     plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
 ) -> SqlSelect:
+    from ..compiler import _bound_metric_predicates
+
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
     measures = _measure_index(config)
@@ -1717,10 +1743,19 @@ def _measure_leaf_select(
 
     predicate_ctes: list[SqlCte] = []
     predicate_joins: list[SqlJoin] = []
+    owned_predicates = _bound_metric_predicates(measure_plan.bound_measure)
+    query_predicates = _query_metric_predicates(plan)
     for index, predicate in enumerate(_all_metric_predicates(plan, measure_plan)):
-        ctes, join = _predicate_ctes_and_join(
-            predicate, index=index, plan=plan, measure_plan=measure_plan, config=config
-        )
+        with (
+            leaf_predicate_roles(measure_plan.bound_measure.alias)
+            if predicate in owned_predicates
+            else nullcontext(),
+            # Query metric_filters predicates filter every leaf: whole-query cuts.
+            cut_owners() if predicate in query_predicates else nullcontext(),
+        ):
+            ctes, join = _predicate_ctes_and_join(
+                predicate, index=index, plan=plan, measure_plan=measure_plan, config=config
+            )
         predicate_ctes.extend(ctes)
         predicate_joins.append(join)
 
@@ -1958,7 +1993,9 @@ def _minimal_predicate_set_ctes(
             str(time_spec["temporal_role"]), str(time_spec["grain"])
         )
 
-    predicate_sql = _compile_query_sql_ast(config, mini_query)
+    with binding_cut():
+        _entity_index(config)[predicate.entity]
+    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True)
     source_name = f"{_semantic_set_name(predicate, index)}_source"
     set_name = _semantic_set_name(predicate, index)
     source_cte = SqlCte(
@@ -2234,15 +2271,26 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     measure_plan = anchored.denominator_measure_plan
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
 
-    predicate_sets = [
-        _minimal_predicate_set_ctes(predicate, index=index, plan=plan, config=config)
-        for index, predicate in enumerate([*anchored.base_predicates, *anchored.extra_predicates])
-    ]
     base_predicate_count = len(anchored.base_predicates)
+    predicate_sets = []
+    for index, predicate in enumerate([*anchored.base_predicates, *anchored.extra_predicates]):
+        owners = [_expression_alias(anchored.numerator, config)]
+        if index < base_predicate_count:
+            owners.append(_expression_alias(anchored.denominator, config))
+        with leaf_predicate_roles(*owners):
+            predicate_sets.append(
+                _minimal_predicate_set_ctes(predicate, index=index, plan=plan, config=config)
+            )
     base_predicate_sets = predicate_sets[:base_predicate_count]
     extra_predicate_sets = predicate_sets[base_predicate_count:]
 
     snapshot_ctes, snapshot_name, time_alias = _anchored_snapshot_ctes(plan, anchored, config)
+    if project_is_cut():
+        # This path returns before the normal projection loop. Both operands
+        # consume the snapshot value; their predicates record separate cuts.
+        with binding_cut():
+            record_ids(anchored.projection_objects)
+            record_leaf_reference(measure_plan.bound_measure.alias)
     anchor_name = f"{_slug(_last_token(anchored.anchor_entity).replace('entity_', ''), fallback='entity')}_entity_set"
     anchor_select_fields: dict[str, Any] = {}
     for predicate_set in predicate_sets:
@@ -4018,18 +4066,17 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         measure_groups = _measure_plan_groups(plan, config)
         for measure_group in measure_groups:
             cte_name = measure_group[0].cte_name
+            # A folded group shares one scan, so its filters cut every leaf in it.
+            with cut_owners(*(row.bound_measure.alias for row in measure_group)):
+                leaf_select = _measure_group_leaf_select(plan, measure_group, config)
             leaf_ctes.append(
-                SqlCte(
-                    name=cte_name,
-                    query=_namespace_sql_select(
-                        _measure_group_leaf_select(plan, measure_group, config), f"{cte_name}__"
-                    ),
-                )
+                SqlCte(name=cte_name, query=_namespace_sql_select(leaf_select, f"{cte_name}__"))
             )
 
         conversion_aliases: list[str] = []
         for index, expr in enumerate(conversion_exprs):
-            conversion_cte = _conversion_leaf_cte(expr, index=index, plan=plan, config=config)
+            with cut_owners(_expression_alias(expr, config)):
+                conversion_cte = _conversion_leaf_cte(expr, index=index, plan=plan, config=config)
             leaf_ctes.append(
                 SqlCte(
                     name=conversion_cte.name,
@@ -4253,19 +4300,20 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         SqlField(SqlIdentifier(parts=["base", alias]), alias) for alias in key_aliases
     ]
     for alias, post_expr in plan.post_aggregation_exprs.items():
-        projected_fields.append(
-            SqlField(
-                _compile_post_expr(
-                    _parse_public_expr(post_expr),
-                    config,
-                    time_alias=time_alias,
-                    group_aliases=group_aliases,
-                    query_grain=str(plan.time.get("grain", "") if plan.time else ""),
-                    table_alias="base",
-                ),
-                alias,
+        with binding_cut() if project_is_cut() else nullcontext():
+            projected_fields.append(
+                SqlField(
+                    _compile_post_expr(
+                        _parse_public_expr(post_expr),
+                        config,
+                        time_alias=time_alias,
+                        group_aliases=group_aliases,
+                        query_grain=str(plan.time.get("grain", "") if plan.time else ""),
+                        table_alias="base",
+                    ),
+                    alias,
+                )
             )
-        )
 
     metric_filter_aliases: list[str] = []
     for index, item in enumerate(list(plan.query.get("metric_filters", []) or [])):
@@ -4274,14 +4322,15 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
             continue
         alias = _metric_filter_alias(index)
         metric_filter_aliases.append(alias)
-        compiled_expr = _compile_post_expr(
-            filter_expr,
-            config,
-            time_alias=time_alias,
-            group_aliases=group_aliases,
-            query_grain=str(plan.time.get("grain", "") if plan.time else ""),
-            table_alias="base",
-        )
+        with binding_cut():
+            compiled_expr = _compile_post_expr(
+                filter_expr,
+                config,
+                time_alias=time_alias,
+                group_aliases=group_aliases,
+                query_grain=str(plan.time.get("grain", "") if plan.time else ""),
+                table_alias="base",
+            )
         # When a metric_filter targets an additive measure that may live in a
         # different leaf than other selected measures, the FULL OUTER JOIN
         # combine yields NULL for groups where that measure has no rows. Without

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import nullcontext
 from typing import Any
 
 from ..ast import NormalizedQuery, normalize_query
@@ -50,6 +51,7 @@ from ..sql_ast import (
     SqlIn,
     SqlLiteral,
 )
+from .dependencies import binding_cut, measure_cut_owners, measure_objects
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -249,16 +251,24 @@ def _measure_required_entities(measure: MeasureConfig, config: PackageConfig) ->
 
 
 def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> Any:
+    with measure_objects(measure.id):
+        return _config_expr_to_sql_inner(expr, measure, config)
+
+
+def _config_expr_to_sql_inner(
+    expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig
+) -> Any:
     entities = _entity_index(config)
     if isinstance(expr, ColumnRefExpr):
         entity_id = _resolve_expr_entity(expr, measure, config)
+        entity = entities[entity_id]
         # For a measure's own entity, prefer source_relation (fact table)
         # over entity.table (which is typically the calendar relation for
         # fact measures that bind to a time entity).
         source = getattr(measure, "source_relation", "") or ""
         if source and entity_id == measure.entity and not expr.table:
             return _column_ref(source, expr.column)
-        return _column_ref(entities[entity_id].table, expr.column)
+        return _column_ref(entity.table, expr.column)
     if isinstance(expr, LiteralExpr):
         return SqlLiteral(expr.value)
     if isinstance(expr, ArithmeticExpr):
@@ -316,14 +326,19 @@ def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: Pack
             _config_expr_to_sql(expr.date, measure, config),
         )
     if isinstance(expr, CaseExpr):
+        # Only the synthetic wrapper selects aggregate rows. Authored CASE
+        # expressions inside its condition or value keep their own ELSE paths.
+        conditional_wrapper = expr is measure.expr and measure.meta.get("source") == "aggregate_if"
+        whens = []
+        for item in expr.whens:
+            with (
+                measure_cut_owners(measure.id) if conditional_wrapper else nullcontext(),
+                binding_cut() if conditional_wrapper else nullcontext(),
+            ):
+                condition = _config_expr_to_sql(item.when, measure, config)
+            whens.append(SqlCaseWhen(condition, _config_expr_to_sql(item.then, measure, config)))
         return SqlCase(
-            whens=[
-                SqlCaseWhen(
-                    _config_expr_to_sql(item.when, measure, config),
-                    _config_expr_to_sql(item.then, measure, config),
-                )
-                for item in expr.whens
-            ],
+            whens=whens,
             else_expr=_config_expr_to_sql(expr.else_expr, measure, config)
             if expr.else_expr is not None
             else None,
@@ -585,9 +600,11 @@ def _bound_filter_clauses(bound: BoundMeasure, config: PackageConfig) -> list[di
         field = str(clause.get("field", "")).strip()
         if not field:
             continue
+        with binding_cut():
+            dimension_id = _resolve_filter_dimension(field, config)
         out.append(
             {
-                "field": _resolve_filter_dimension(field, config),
+                "field": dimension_id,
                 "op": str(clause.get("op", "=")),
                 "value": clause.get("value"),
             }

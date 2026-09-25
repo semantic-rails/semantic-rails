@@ -519,6 +519,24 @@ behavior:
 - **`metric_constraint`** — enforced at query time for scoped callers. It
   restricts how governed metrics or measures may be cut by `group_by`,
   `where`, temporal role, and metric-filter predicates.
+  `allowed_metric_filter_entities` and `allowed_metric_filter_metrics` apply
+  to compiler-resolved cuts in `metric_filters` and inside select or recipe
+  expressions, including aggregate filters and scoped predicates. Measures,
+  columns and dimensions count as their owning entities; referenced recipes
+  count even when nested. The outer query's grouping, where, time axis and
+  attachment joins are excluded from these filter dependency sets. Constant
+  cuts have no object reads; unresolved cut bindings are refused under these
+  allowlists. A cut in `metric_filters` counts for every governed object in
+  the query. A cut inside a select or recipe expression counts only for the
+  measures and recipes whose values it filters, so an unfiltered governed
+  measure may sit beside a separately filtered one. When a cut has no single
+  owner, or the governed object is read inside a cut, every cut in the query
+  counts. `allow_metric_filters: false` refuses any cut that counts for the
+  governed object.
+  `allowed_temporal_roles` checks the query axis and the governed object's
+  effective bucket and ordering roles, including expression roles and overrides.
+  Grouping by a role's dimension remains subject to `allowed_group_by`.
+
 
 Scoping works the same way as caveats: `audiences:`, `environments:`, and
 `roles:` lists restrict when a policy applies, and an empty list means

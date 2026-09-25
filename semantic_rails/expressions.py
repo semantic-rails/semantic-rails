@@ -372,11 +372,12 @@ def validate_expression_shapes(value: Any) -> None:
 def collect_object_references(
     value: Any, config: PackageConfig | None = None, *, owner: str = ""
 ) -> list[str]:
-    """Declared expression references for lineage, caveats and metric constraints.
+    """Declared expression references for lineage and caveats.
 
     This describes reference positions, not a bound dependency closure. Object
-    access gates consume compiler BoundQuery identities. Literal/filter values
-    and scalar parameters remain data, including reference-shaped strings.
+    access gates and metric constraints consume compiler BoundQuery identities.
+    Literal/filter values and scalar parameters remain data, including
+    reference-shaped strings.
     """
     validate_expression_shapes(value)
     references: dict[str, None] = {}
