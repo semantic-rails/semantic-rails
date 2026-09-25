@@ -811,14 +811,21 @@ def _process_identity(pid: int) -> dict[str, str]:
 
     The registry never relies on PID alone: PIDs can be reused after a
     local MCP server exits, and signaling a reused PID could terminate an
-    unrelated process. ``lstart`` is stable for the process lifetime and
+    unrelated process. The start time is fixed for the process lifetime and
     the command guards against a different executable occupying the PID.
+    On Linux, ``ps`` derives ``lstart`` from the boot time in /proc/stat,
+    which moves when the clock is stepped, so one process can report a
+    different second on the next call; the kernel's start tick does not.
     """
 
     if not _pid_alive(pid):
         return {}
     values: dict[str, str] = {}
-    for key, field in (("started", "lstart="), ("command", "command=")):
+    fields = [("started", "lstart="), ("command", "command=")]
+    with contextlib.suppress(OSError, IndexError):  # no /proc (macOS) or the process just exited
+        values["start_ticks"] = _start_ticks(Path(f"/proc/{pid}/stat").read_text())
+        fields.pop(0)
+    for key, field in fields:
         try:
             result = subprocess.run(
                 ["ps", "-p", str(pid), "-o", field],
@@ -835,10 +842,17 @@ def _process_identity(pid: int) -> dict[str, str]:
     return values
 
 
+def _start_ticks(stat: str) -> str:
+    """Field 22 of /proc/<pid>/stat, counted after the parenthesized command name."""
+
+    return stat.rpartition(")")[2].split()[19]
+
+
 def _record_process_matches(record: dict[str, Any]) -> bool:
     pid = int(record.get("pid", 0) or 0)
     expected = dict(record.get("process_identity", {}) or {})
-    if not pid or not expected.get("started") or not expected.get("command"):
+    started = expected.get("start_ticks") or expected.get("started")
+    if not pid or not started or not expected.get("command"):
         return False
     return _process_identity(pid) == expected
 

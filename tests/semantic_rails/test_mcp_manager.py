@@ -359,7 +359,7 @@ def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
         port=port,
     )
     try:
-        assert started["ok"] is True, started
+        assert started["ok"] is True, started["server"]["health"]
         assert started["status"] == "started"
         assert started["server"]["health"]["ok"] is True
         assert started["server"]["process_identity_verified"] is True
@@ -384,6 +384,33 @@ def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
 
     assert stopped["status"] == "stopped"
     assert load_mcp_registry()["servers"] == {}
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="Linux /proc only")
+def test_process_identity_survives_a_shifting_ps_start_time(monkeypatch) -> None:
+    # procps derives lstart from /proc/stat btime, which moves when the clock is stepped.
+    import semantic_rails.mcp_manager as manager
+
+    real_run = manager.subprocess.run
+    second = iter(range(60))
+
+    def run(cmd, **kwargs):
+        if cmd[-1] == "lstart=":
+            stdout = f"Thu Sep 25 19:25:{next(second):02d} 2026\n"
+            return manager.subprocess.CompletedProcess(cmd, 0, stdout=stdout)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(manager.subprocess, "run", run)
+    identity = manager._process_identity(os.getpid())
+    assert manager._record_process_matches({"pid": os.getpid(), "process_identity": identity})
+
+
+@pytest.mark.parametrize("name", ["python", "a) b (c", "two words"])
+def test_start_ticks_reads_field_22_after_any_command_name(name: str) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    stat = f"42 ({name}) S " + " ".join(str(field) for field in range(4, 53))
+    assert manager._start_ticks(stat) == "22"
 
 
 @pytest.mark.parametrize(
