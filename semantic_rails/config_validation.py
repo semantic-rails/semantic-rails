@@ -21,7 +21,12 @@ from typing import Any
 import yaml
 
 from .ast import NormalizedQuery
-from .compiler import _expr_leaf_temporal_role_sets, _requires_query_time, compile_query
+from .compiler import (
+    _collect_conversion_exprs,
+    _expr_leaf_temporal_role_sets,
+    _requires_query_time,
+    compile_query,
+)
 from .config import (
     SEED_KIND_EXTERNAL,
     _merge_package_dir,
@@ -1056,11 +1061,16 @@ def _metric_reference_errors(config, source_path: Path) -> list[str]:
         for key, child in node.items():
             if _opaque_expression_data(node, key):
                 continue
-            kind = "metric" if key == "metric_recipe" else key
-            if kind in known and isinstance(child, str) and child not in known[kind]:
-                hint = object_id_suggestions(config, child, limit=1)
-                message = f"{source_path}: metric {metric_id} references unknown {kind} {child!r}"
-                errors[message + (f"; did you mean {hint[0]!r}?" if hint else "")] = None
+            # An empty reference names nothing; a scoped predicate then reads its `input`.
+            if (
+                key in known
+                and isinstance(child, str)
+                and child.strip()
+                and child not in known[key]
+            ):
+                hints = [row for row in object_id_suggestions(config, child) if row in known[key]]
+                message = f"{source_path}: metric {metric_id} references unknown {key} {child!r}"
+                errors[message + (f"; did you mean {hints[0]!r}?" if hints else "")] = None
             else:
                 visit(child, metric_id)
 
@@ -1105,6 +1115,10 @@ def _metric_time_role_errors(config, source_path: Path) -> list[str]:
                 f"clock and label the result {role!r}. Set temporal_role to one of those.",
             )
             continue
+        conversions: list[ConversionExpr] = []
+        _collect_conversion_exprs(recipe.expression, config, conversions)
+        if conversions:
+            continue  # Conversion operands keep their own clock rules.
         for leaf in dict.fromkeys(frozenset(leaf) for leaf in leaves):
             if len(leaf) > 1 and role not in leaf:
                 add_error(

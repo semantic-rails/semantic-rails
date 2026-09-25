@@ -2834,6 +2834,14 @@ def _add(left: dict, right: dict) -> dict:
 
 _SESSIONS = {"kind": "aggregate", "measure": "measure.jaffle.session_starts"}
 _ORDERS = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
+_SPEND_PREDICATE = {
+    "kind": "metric_predicate",
+    "entity": "entity.jaffle_customer",
+    "scope_mode": "entity_only",
+    "input": {"measure": "lifetime_spend"},
+    "op": ">=",
+    "value": 100,
+}
 
 
 @pytest.mark.parametrize(
@@ -2855,14 +2863,22 @@ def test_validation_accepts_a_mixed_clock_metric_however_it_is_grouped(
     assert validate_runtime_package(package_dir) == []
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        _add(_SESSIONS, _ORDERS),
+        _add(_SESSIONS, _add(_ORDERS, _ORDERS)),
+        _add(_SESSIONS, {"kind": "metric", "metric": "metric.sales.repeat_customer_orders"}),
+    ],
+    ids=["a+b", "a+(b+b)", "a+metric(b)"],
+)
 def test_validation_rejects_a_mixed_clock_metric_whose_measure_has_several_clocks(
-    package_config_factory,
+    package_config_factory, expression
 ):
     # With two clocks of its own, which one the orders should be aligned by is a guess,
-    # so a query on the sessions clock is refused.
-    package_dir = _jaffle_with_sessions_plus_orders(
-        package_config_factory, _add(_SESSIONS, _ORDERS)
-    )
+    # so a query on the sessions clock is refused. The session-to-order conversions read
+    # order_count too, but conversion operands keep their own clock rules.
+    package_dir = _jaffle_with_sessions_plus_orders(package_config_factory, expression)
     path = package_dir / "models" / "core" / "orders.yml"
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     order_clocks = [
@@ -2907,8 +2923,13 @@ def _jaffle_with_sessions_plus_orders(package_config_factory, expression: dict) 
             _add(_ORDERS, {"kind": "metric", "metric": "metric.sales.no_such_metric"}),
             "references unknown metric 'metric.sales.no_such_metric'",
         ),
+        (
+            _add(_SESSIONS, {**_ORDERS, "filter": {"all": [{"expression": _SPEND_PREDICATE}]}}),
+            "references unknown measure 'lifetime_spend'; "
+            "did you mean 'measure.jaffle.lifetime_spend_usd'?",
+        ),
     ],
-    ids=["measure", "metric"],
+    ids=["measure", "metric", "filter-predicate"],
 )
 def test_parse_report_rejects_a_metric_reference_the_package_lacks(
     package_config_factory, expression, error

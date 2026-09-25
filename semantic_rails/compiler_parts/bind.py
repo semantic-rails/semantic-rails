@@ -394,7 +394,11 @@ def _expression_alias(expr: SemanticExpr, config: PackageConfig | None = None) -
 
 
 def _bind_measure(
-    expr: MeasureRefExpr, config: PackageConfig, query: NormalizedQuery
+    expr: MeasureRefExpr,
+    config: PackageConfig,
+    query: NormalizedQuery,
+    *,
+    conversion_operand: bool = False,
 ) -> BoundMeasure:
     measures = _measure_index(config)
     measure_id = expr.measure
@@ -422,7 +426,10 @@ def _bind_measure(
         )
     query_role = query.time.temporal_role if query.time else ""
     compatible = list(measure.compatible_temporal_roles)
-    named = expr.temporal_role or query.temporal_role_overrides.get(measure_id)
+    # Conversion operands keep their own rules (_validate_conversion_temporal_bindings).
+    named = (
+        conversion_operand or expr.temporal_role or query.temporal_role_overrides.get(measure_id)
+    )
     if query_role and query_role not in compatible and len(compatible) > 1 and not named:
         # A measure the query's clock doesn't fit is timed by its own. With several
         # clocks, none of them the query's, the first one would be a guess.

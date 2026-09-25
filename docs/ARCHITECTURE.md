@@ -279,7 +279,9 @@ Core query rules:
 - `temporal_role_overrides` must only reference declared temporal roles
 - when only some measures have the query's clock, each other measure is timed by its own
   clock; one with several clocks, none of them the query's, fails with
-  `INCOMPATIBLE_TEMPORAL_ROLE` unless `temporal_role_overrides` names one
+  `INCOMPATIBLE_TEMPORAL_ROLE` unless its aggregate's `temporal_role` or
+  `temporal_role_overrides` names one (a declared `default_temporal_role` doesn't; conversion
+  operands keep their own clock rules)
 
 ## Expression Surface
 
