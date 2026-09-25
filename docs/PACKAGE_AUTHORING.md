@@ -587,7 +587,7 @@ semantic_policies:
     roles: [sales, csm]
     allowed_group_by: [dimension.shop_store_name]
     allowed_where: [dimension.shop_store_name]
-    allowed_temporal_roles: [temporal_role.shop_order_time]
+    allowed_temporal_roles: [temporal_role.shop_order_ordered_at]
     allow_metric_filters: false
     rationale: Sales and CSM revenue access is limited to store-level cuts.
 ```
@@ -964,11 +964,11 @@ metrics:
 
 A metric over time names its clock by [temporal role ID](#derived-id-grammar), not by
 the model's time key: with `time: ordered_at`, validation passes but a query by month
-fails with `INVALID_TEMPORAL_ROLE`. Give every metric the governance
+fails with `INVALID_TEMPORAL_ROLE`. Give every measure and metric the governance
 [`meta:`](#packageenvironments-and-governance-meta) block too, or `project validate`
-warns. The exception is an `aggregate` metric named after the measure it publishes,
-like `revenue_usd`, whose measure carries the `meta`. Later examples on this page
-leave `meta` out for brevity.
+warns. The exception is an `aggregate` or `semi_additive` metric named after the measure
+it publishes, like `revenue_usd`, whose measure carries the `meta`. Other examples on
+this page leave `meta` out for brevity.
 
 In **direct named fields** (`measure:`, `numerator:`, `denominator:`), references
 use package-relative keys (`revenue_usd`) — the loader resolves them. Inside an
@@ -998,7 +998,7 @@ metrics:
     description: Orders placed by customers who have more than one lifetime order.
     kind: aggregate
     value_type: count
-    temporal_role: temporal_role.shop_order_time
+    temporal_role: temporal_role.shop_order_ordered_at
     expression:
       kind: aggregate
       measure: measure.shop.order_count
