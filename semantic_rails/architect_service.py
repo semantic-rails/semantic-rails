@@ -1774,16 +1774,19 @@ class ArchitectProject:
         graph_doc = self._document(documents, path)
         graph = dict(graph_doc.get("graph", {}) or {})
         relationships = dict(graph.get("relationships", {}) or {})
-        for entry_name, entry in list(relationships.items()):
+        kept = {}
+        for entry_name, entry in relationships.items():
             pair = set(_as_list(dict(entry or {}).get("entities")))
             if pair == {source, entity} if source else entity in pair:
                 removed.append(self._row("relationship", str(entry_name), path, entry))
-                del relationships[entry_name]
-        if relationships:
-            graph["relationships"] = relationships
-        else:
-            graph.pop("relationships", None)
-        graph_doc["graph"] = graph
+            else:
+                kept[entry_name] = entry
+        if kept != relationships:  # else the file stays as it is
+            if kept:
+                graph["relationships"] = kept
+            else:
+                graph.pop("relationships")
+            graph_doc["graph"] = graph
 
     def _removal_impact(
         self, updates: list[ProjectFileUpdate], removed: list[dict[str, Any]], change: str
@@ -1791,11 +1794,17 @@ class ArchitectProject:
         """Refuse a removal that leaves a metric naming what it removes; else its impact.
 
         The parse gate loads such a metric, which fails only when queried.
-        Metrics name measures and metrics by id or key, dimensions and times by
-        id. The impact is ``impact_project``'s, plus files still naming an id.
+        Metrics name anything by id, and measures and metrics by key too (as
+        ``measure:``/``metric:``). The impact is ``impact_project``'s, plus the
+        files still naming a removed id (dotted ids only: a model's is a plain word).
         """
-        ids = sorted({str(row["id"]) for row in removed if row.get("id")})
-        names = {*ids, *(str(r["key"]) for r in removed if r["kind"] in {"measure", "metric"})}
+        ids = sorted({str(row["id"]) for row in removed if "." in str(row.get("id") or "")})
+        quoted = [json.dumps(object_id) for object_id in ids] + [
+            f'"{field}": {json.dumps(row["key"])}'
+            for row in removed
+            if row["kind"] in {"measure", "metric"}
+            for field in ("measure", "metric")
+        ]
         transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
         mention = re.compile(rf"(?<![\w.])({'|'.join(map(re.escape, ids))})(?![\w.])")
         references = [
@@ -1808,12 +1817,14 @@ class ArchitectProject:
                 snapshot = load_package_snapshot(str(proposed))
             except Exception:  # the transaction's parse gate reports it
                 return {"references": references}
-            quoted = [json.dumps(name) for name in names]  # whole JSON strings, not substrings
             broken = sorted(
                 recipe.id
                 for recipe in snapshot.config.metric_recipes
                 if any(
-                    q in json.dumps([recipe.temporal_role, expr_to_dict(recipe.expression)])
+                    q
+                    in json.dumps(  # dates in filters are not JSON types
+                        [recipe.temporal_role, expr_to_dict(recipe.expression)], default=str
+                    )
                     for q in quoted
                 )
             )

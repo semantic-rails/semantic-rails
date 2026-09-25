@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from datetime import date
 from pathlib import Path
 from typing import Any
+from unittest.mock import ANY
 
 import pytest
 import yaml
@@ -37,8 +39,14 @@ def _dump(path: Path, payload: dict[str, Any]) -> None:
 
 @pytest.fixture()
 def workspace(tmp_path: Path) -> Path:
-    """Orders and customers; metrics on both; a segment on order status; an example."""
+    """Orders and customers, related one-to-one in graph.yml; metrics on both; a segment on
+    order status; an example."""
     shop = write_orders_package(tmp_path, seed={"kind": "external"})
+    graph = yaml.safe_load((shop / "graph.yml").read_text(encoding="utf-8"))
+    graph["graph"]["relationships"] = {
+        "orders_customer": {"entities": ["order", "customer"], "cardinality": "one_to_one"}
+    }
+    _dump(shop / "graph.yml", graph)
     metrics = yaml.safe_load((shop / "metrics" / "core.yml").read_text(encoding="utf-8"))
     metrics["metrics"]["gross"] = _metric("order_total")
     _dump(shop / "metrics" / "core.yml", metrics)
@@ -119,8 +127,8 @@ def test_refusals(
             "customer",
             "orders",
             "removed",
-            ["models/orders.yml"],
-            [("relationship", "customer")],
+            ["graph.yml", "models/orders.yml"],
+            [("relationship", "customer"), ("relationship", "orders_customer")],
         ),
         (
             "time",
@@ -157,6 +165,24 @@ def test_removals(
     assert load_package_config(str(workspace / "shop"))
 
 
+def test_a_date_in_a_metric_filter(workspace: Path) -> None:
+    """YAML reads an unquoted date as a date, which the metric check must still read."""
+    metrics = _yaml(workspace, "metrics/core.yml")
+    since = {"field": "temporal_role.shop_order_ordered_at", "op": ">=", "value": date(2024, 1, 1)}
+    metrics["metrics"]["recent"] = {
+        "label": "Recent revenue",
+        "kind": "derived",
+        "value_type": "currency",
+        "expression": {"kind": "aggregate", "measure": "order_total", "filter": {"all": [since]}},
+    }
+    _dump(workspace / "shop" / "metrics" / "core.yml", metrics)
+    project = _project(workspace)
+
+    with pytest.raises(SemanticLayerError, match="metric.shop.recent"):
+        project.remove_object(kind="measure", key="order_total")
+    assert project.remove_object(kind="segment", key="big").report["ok"] is True
+
+
 def test_a_key_on_several_models_needs_model(workspace: Path) -> None:
     customers = _yaml(workspace, "models/customers.yml")
     customers["model"]["dimensions"]["status"] = {"label": "Status", "kind": "categorical"}
@@ -188,10 +214,12 @@ def test_a_model_goes_with_its_entity_and_the_references_to_it(workspace: Path) 
         ("time", "signed_up_on"),
         ("measure", "customer_count"),
         ("entity", "customer"),
+        ("relationship", "orders_customer"),
         ("relationship", "customer"),
     ]
+    assert report["impact"]["references"] == []  # a model's plain id is not scanned
     assert not (workspace / "shop" / "models" / "customers.yml").exists()
-    assert list(_yaml(workspace, "graph.yml")["graph"]["entities"]) == ["order"]
+    assert _yaml(workspace, "graph.yml")["graph"] == {"entities": {"order": ANY}}
     orders = _yaml(workspace, "models/orders.yml")["model"]
     assert orders["entities"] == {"order": {}} and list(orders) == orders_fields
     archived = yaml.safe_load((workspace / "shop" / report["archived_to"]).read_text())
