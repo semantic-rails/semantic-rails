@@ -669,6 +669,8 @@ def test_malloy_counts_the_sql_blocks_its_executed_sql_reads(tmp_path, monkeypat
         '  from comparison_customer_history""") extend {}\n'
         "source: history is segments extend {}\n"
         'source: unused is jaffle.sql("select store_id from comparison_stores")\n'
+        # Only part of the SQL of `segments`, which the query reads; this block isn't read.
+        'source: prefix is jaffle.sql("select customer_id, segment")\n'
         'source: passthrough is jaffle.sql("select * from comparison_customers")\n'
         "source: orders is jaffle.table('comparison_orders') extend {\n"
         "  join_one: history, passthrough on true\n"
@@ -677,7 +679,7 @@ def test_malloy_counts_the_sql_blocks_its_executed_sql_reads(tmp_path, monkeypat
         "query:  q08_x is orders -> { aggregate: n is count() }\n",
         encoding="utf-8",
     )
-    # Malloy compiles each SQL block the query reads into its SQL; `unused` isn't read.
+    # Malloy compiles each SQL block the query reads into its SQL; `unused` and `prefix` aren't.
     (tmp_path / "q08.sql").write_text(
         "SELECT count(1) FROM comparison_orders AS base\n"
         "LEFT JOIN (\n  select customer_id, segment\n  from comparison_customer_history\n) AS h\n"

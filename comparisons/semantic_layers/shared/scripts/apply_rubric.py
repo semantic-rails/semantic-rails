@@ -149,7 +149,8 @@ MALLOY_SQL = re.compile(r"(\w+)\s+is\s+\w+\.sql\(\s*(\"\"\"|\"|')(.*?)\2\s*\)", 
 
 
 def _squash(sql: str) -> str:
-    return " ".join(sql.split()).lower()
+    """Lowercase, single spaces, and no space just inside parentheses."""
+    return re.sub(r"\(\s+|\s+\)", lambda m: m.group().strip(), " ".join(sql.split()).lower())
 
 
 def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -157,13 +158,14 @@ def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     query = rf"^query:\s+{re.escape(entry['question_id'])}\s+is\b"
     _require(re.findall(query, model, flags=re.MULTILINE), "named query", entry)
     executed = _executed_sql(entry)
-    # Malloy compiles a SQL block into the query verbatim wherever the query reads it: as its
-    # source, through a join or alias, or under an `extend`. A block the executed SQL doesn't
-    # contain is one the query doesn't read.
+    # Malloy compiles a SQL block into the query verbatim, as a parenthesized derived table,
+    # wherever the query reads it: as its source, through a join or alias, or under an `extend`.
+    # Matching the whole parenthesized body keeps a block that is only part of another's SQL
+    # from counting.
     helpers = {
         f"SQL source {name}"
         for name, _, body in MALLOY_SQL.findall(model)
-        if not is_passthrough(body) and _squash(body) in _squash(executed)
+        if not is_passthrough(body) and f"({_squash(body)})" in _squash(executed)
     }
     return sorted(helpers), [executed]
 
