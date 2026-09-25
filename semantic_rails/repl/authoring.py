@@ -601,7 +601,7 @@ def _measure_change(
         "aggregate",
     )
     # A saved accumulation (a stock, a population) stays while the kind does.
-    same_kind = str(current.get("kind", "")).lower() == measure_kind
+    same_kind = str(current.get("kind", "")).strip().casefold() == measure_kind
     accumulation = current.get("accumulation") if same_kind else None
     description = _author_prompt(
         "Description", str(current.get("description", f"Governed {label.lower()} primitive."))
@@ -629,7 +629,7 @@ def _measure_change(
                 **dict(current.get("meta", {}) or {}),
             },
         }
-        if current.get("kind") != "entity_count":
+        if not same_kind:
             for stale_key in ("expr", "default_agg", "currency", "rollup"):
                 measure.pop(stale_key, None)
     else:
@@ -655,7 +655,10 @@ def _measure_change(
         value_type = _kept_choice("Result type", _VALUE_TYPES, current.get("value_type"), "number")
         if existing:
             _warn_on_new_aggregation(
-                load_package_config(ref.source_path), _row_id(existing), aggregation
+                load_package_config(ref.source_path),
+                _row_id(existing),
+                aggregation,
+                authored={_row_id(row) for row in _inventory_items(inventory, "metric")},
             )
         measure = {
             **current,
@@ -673,7 +676,7 @@ def _measure_change(
                 **dict(current.get("meta", {}) or {}),
             },
         }
-        if current.get("kind") != "aggregate":
+        if not same_kind:
             measure.pop("entity_key", None)
         if value_type == "currency":
             measure["currency"] = _author_prompt(
@@ -1193,26 +1196,38 @@ def _kept_choice(label: str, options: list[tuple[str, str]], saved: Any, fallbac
     return _author_choice(label, options, default=listed or saved)
 
 
-def _warn_on_new_aggregation(config: PackageConfig, measure_id: str, aggregation: str) -> None:
-    """Warn when an edit changes a measure's default aggregation, naming the metrics it changes."""
+def _warn_on_new_aggregation(
+    config: PackageConfig, measure_id: str, aggregation: str, *, authored: set[str]
+) -> None:
+    """Warn when an edit changes a measure's default aggregation, naming the metrics it changes.
+
+    A loaded metric that isn't ``authored`` was published from a measure by the loader,
+    which spells out the measure's default aggregation.
+    """
 
     measure = next((row for row in config.measures if row.id == measure_id), None)
     if measure is None or measure.default_aggregation == aggregation.lower():
         return
     changed: set[str] = set()
 
-    def uses(node: Any) -> bool:
+    def uses(node: Any, published: bool) -> bool:
         """The node aggregates the measure by its default, or reads a metric that does."""
-        if isinstance(node, AggregateExpr):
-            return node.measure == measure_id and not node.aggregation
         if isinstance(node, MetricRecipeRefExpr):
             return node.metric_recipe in changed
+        if getattr(node, "measure", None) == measure_id:
+            return published or not getattr(node, "aggregation", "")
         if isinstance(node, list | tuple):
-            return any(uses(item) for item in node)
-        return is_dataclass(node) and any(uses(getattr(node, part.name)) for part in fields(node))
+            return any(uses(item, published) for item in node)
+        return is_dataclass(node) and any(
+            uses(getattr(node, part.name), published) for part in fields(node)
+        )
 
     rows = config.metric_recipes
-    while more := {row.id for row in rows if row.id not in changed and uses(row.expression)}:
+    while more := {
+        row.id
+        for row in rows
+        if row.id not in changed and uses(row.expression, row.id not in authored)
+    }:
         changed |= more
     print(
         f"[warning] This changes the default aggregation from "
