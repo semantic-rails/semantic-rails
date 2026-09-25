@@ -120,10 +120,15 @@ def test_any_draft_of_a_tied_measure_the_question_does_not_name_is_flagged(
 
 def test_a_tie_the_question_names_no_side_of_is_low_confidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, {"gross_revenue": "Gross Revenue", "net_revenue": "Net Revenue"})
+    pinned = {"select": [{"as": "value", "expression": {"measure": "measure.shop.gross_revenue"}}]}
     try:
         plan = plan_payload(runtime, intent="What is revenue by month?")
+        # A caller that picks one in the query settles it.
+        chosen = plan_payload(runtime, intent="What is revenue by month?", partial_query=pinned)
     finally:
         runtime.close()
+
+    assert chosen["status"] == "ok", chosen.get("why")
 
     assert plan["status"] == "low_confidence"
     [gap] = plan["why"]["details"]["gaps"]

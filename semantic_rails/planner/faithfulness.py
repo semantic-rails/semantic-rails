@@ -518,10 +518,16 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
 
 
 def intent_subject_why(
-    runtime: Any, *, question: str, intent_ir: IntentIR, query: dict[str, Any]
+    runtime: Any,
+    *,
+    question: str,
+    intent_ir: IntentIR,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """A coverage gap when the ranking tied the draft's one subject with others
-    and the question doesn't name that subject (see ``_base._tied_top``).
+    and neither the question nor the caller's ``partial_query`` names that
+    subject (see ``_base._tied_top``).
 
     ``plan`` reports it after every other reason, which says more.
     """
@@ -530,8 +536,13 @@ def intent_subject_why(
     subjects = _projected_subject_ids(query)
     measure = bool(subjects) and subjects[0].startswith("measure.")
     terms = set(intent_ir.target_measure_terms)
-    canonical = _canonical_measure if measure else _canonical_metric
-    if len(subjects) != 1 or canonical(config, terms) or _named_metric(config, text):
+    canonical = (_canonical_measure if measure else _canonical_metric)(config, terms)
+    if (
+        len(subjects) != 1
+        or subjects[0] in _projected_subject_ids(partial_query or {})
+        or getattr(canonical, "id", None) == subjects[0]
+        or _named_metric(config, text)
+    ):
         return None
     tied, named = _tied_top(
         config.measures if measure else config.metric_recipes,
@@ -546,7 +557,7 @@ def intent_subject_why(
         kind="subject_ambiguous",
         clause=_target_focus_text(text),
         message="The question fits these equally well, and the draft picked one of them.",
-        expected={"candidates": [row.id for row in tied]},
+        expected={"candidates": ids[:5], "candidate_count": len(ids)},
         actual={"subjects": subjects},
         recovery_hint={
             "kind": "name_one_subject",

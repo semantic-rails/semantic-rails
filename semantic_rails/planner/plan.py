@@ -256,7 +256,11 @@ def plan_payload(
     )
     subject_why = (
         intent_subject_why(
-            runtime, question=intent_str, intent_ir=intent_ir, query=best_draft.query
+            runtime,
+            question=intent_str,
+            intent_ir=intent_ir,
+            query=best_draft.query,
+            partial_query=partial_query,
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why)
         else None
