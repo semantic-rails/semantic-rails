@@ -12,7 +12,7 @@ import yaml
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from semantic_rails.architect_mcp import create_architect_mcp_server
-from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.architect_service import ArchitectProject, _replaced
 from semantic_rails.architect_transactions import project_revision
 from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.dbt_warehouse import write_orders_package
@@ -86,6 +86,7 @@ STATUS = {"status": {"label": "Status", "kind": "categorical"}}
     [
         ({"dimensions": STATUS}, ["label"]),
         ({"dimensions": STATUS, "label": "Orders"}, []),
+        ({"dimensions": STATUS, "label": "Orders", "description": "Orders."}, []),
         # The segment filters on status, so the parse gate rolls this one back.
         ({}, ["dimensions.status", "label"]),
     ],
@@ -114,10 +115,37 @@ def test_model_replace_rewrites_it_from_the_arguments(
         "id": "orders",
         "relation": ORDERS["relation"],
         "entities": {"order": {}, "customer": {}},
-        "description": "One row per Order.",
+        "description": "One row per Order.",  # the default, as on create
         **{field: ORDERS[field] for field in ("times", "measures")},
         **arguments,
     }
+
+
+def test_a_replaced_description_is_reported(workspace: Path) -> None:
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    project.upsert_model(**ORDERS, description="Every order, one row each.")
+
+    report = project.upsert_model(**ORDERS, dimensions=STATUS, label="Orders", replace=True).report
+
+    assert report["dropped_fields"] == ["description"]
+
+
+@pytest.mark.parametrize(
+    ("current", "spec", "expected"),
+    [
+        ({"as": "metric.a", "label": "A"}, {"label": "B"}, {"label": "B", "as": "metric.a"}),
+        (
+            {"id": "x", "name": "n", "kind": "k"},
+            {"kind": "j"},
+            {"kind": "j", "id": "x", "name": "n"},
+        ),
+        ({"as": "metric.a"}, {"as": "metric.b"}, {"as": "metric.b"}),  # a restated id wins
+    ],
+)
+def test_replace_keeps_identity_it_does_not_restate(
+    current: dict[str, Any], spec: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    assert _replaced(current, spec) == expected
 
 
 def test_a_merge_reports_nothing_dropped(workspace: Path) -> None:

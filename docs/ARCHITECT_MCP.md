@@ -284,7 +284,8 @@ object. `replace: true` rewrites the object from the arguments instead.
 - A model keeps only its `id`, its `entities` block (the relationships `upsert_relationship`
   wrote) and its `calendar_id`. The report's `dropped_fields` names every field, dimension, time,
   measure and join the rewrite drops, such as `label` or `dimensions.status`; restate what should
-  stay. `upsert_model` refuses fact models.
+  stay. Without a `description` argument the model gets the default one, and `description` is listed
+  too. `upsert_model` refuses fact models.
 - A metric or segment keeps its `id`, `as` and `name` unless the spec restates them, so its public
   id doesn't move.
 

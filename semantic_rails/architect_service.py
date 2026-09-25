@@ -1050,7 +1050,7 @@ class ArchitectProject:
             model_doc, existing_model, model_slug=model_slug
         )
         if str(model.get("kind") or "").strip().lower() == "fact":
-            # A replace would drop kind: fact and silently make it an entity model.
+            # upsert_model manages entity models; a replace would also drop kind: fact.
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"{model_slug!r} is a fact model; upsert_model manages entity models",
@@ -1115,8 +1115,8 @@ class ArchitectProject:
                 if field in _MODEL_BLOCKS and isinstance(value, dict):
                     kept = dict(model.get(field) or {})
                     dropped_fields += [f"{field}.{name}" for name in value if name not in kept]
-                elif field not in model:
-                    dropped_fields.append(field)
+                elif field not in model or (field == "description" and not description):
+                    dropped_fields.append(field)  # an empty description gets the default
             dropped_fields.sort()
 
         graph_doc = documents[graph_path]
