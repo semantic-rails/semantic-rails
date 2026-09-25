@@ -1604,7 +1604,7 @@ def _top_n_intent(text: str) -> tuple[bool, int]:
     time phrase ("in the last 3 months by store", "in 2017") is not a rank.
     """
 
-    lowered = str(text or "")
+    lowered = str(text or "").lower()  # the case the time spans index
     match = _TOP_N_PATTERN.search(lowered)
     if match:
         raw = match.group(1)
