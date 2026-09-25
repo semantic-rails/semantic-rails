@@ -1223,6 +1223,7 @@ class ArchitectProject:
         metric_key: str,
         spec: dict[str, Any],
         group: str = "core",
+        file_name: str = "",
         replace: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
@@ -1245,11 +1246,16 @@ class ArchitectProject:
             existing.source_path
             if existing is not None
             else self._target_path(
-                f"metrics/{_slug(group, fallback='core')}/{_slug(key, fallback='metric')}.yml"
+                # A new metric shares metrics/<file_name> when given.
+                f"metrics/{_slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
+                if file_name
+                else f"metrics/{_slug(group, fallback='core')}/{_slug(key, fallback='metric')}.yml"
             )
         )
         documents = self._load_documents(path)
         doc = documents[path]
+        if existing is None:
+            self._keep_lone_object(doc, path, "metrics")
         current = dict(existing.spec if existing is not None else {})
         merged = _replaced(current, spec) if replace else {**current, **deepcopy(dict(spec or {}))}
         self._store_mapping_object(doc, existing, wrapper="metrics", key=key, spec=merged)
@@ -1269,6 +1275,7 @@ class ArchitectProject:
                 "metric_key": metric_key,
                 "spec": spec,
                 "group": group,
+                "file_name": file_name,
                 "replace": replace,
             },
         )
@@ -1301,9 +1308,21 @@ class ArchitectProject:
         )
         documents = self._load_documents(path)
         doc = documents[path]
+        if existing is None:
+            self._keep_lone_object(doc, path, "segments")
         current = dict(existing.spec if existing is not None else {})
         merged = _replaced(current, spec) if replace else {**current, **deepcopy(dict(spec or {}))}
         self._store_mapping_object(doc, existing, wrapper="segments", key=key, spec=merged)
+        membership = merged.get("membership")
+        if not isinstance(membership, dict) or not any(
+            membership.get(criterion) for criterion in ("where", "metric_filters", "time")
+        ):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"segment {key!r} needs membership: where, metric_filters or time; without one "
+                "it selects the whole population",
+                details={"segment": key},
+            )
         return self._commit(
             documents,
             kind="segment",
@@ -2039,6 +2058,19 @@ class ArchitectProject:
         rows = dict(doc.get(wrapper, {}) or {})
         rows[key] = spec
         doc[wrapper] = rows
+
+    @staticmethod
+    def _keep_lone_object(doc: dict[str, Any], path: Path, wrapper: str) -> None:
+        """Make a file's lone object (``metric:`` or a bare mapping) its plural block's first entry.
+
+        The loaders read only the plural block once there is one, so an object
+        added beside a lone one would hide it. It keeps the key they read it by.
+        """
+        if not doc or wrapper in doc:
+            return
+        lone = dict(doc.get(wrapper.rstrip("s"), doc) or {})
+        doc.clear()
+        doc[wrapper] = {str(lone.get("name") or lone.get("id") or path.stem): lone}
 
     def _load_documents(self, *paths: Path) -> dict[Path, dict[str, Any]]:
         documents: dict[Path, dict[str, Any]] = {}

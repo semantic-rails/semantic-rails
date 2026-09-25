@@ -1091,6 +1091,7 @@ def create_architect_mcp_server(
         spec: dict[str, Any],
         expected_revision: str,
         idempotency_key: str,
+        file_name: str = "",
         group: str = "core",
         replace: bool = False,
         dry_run: bool = False,
@@ -1102,6 +1103,7 @@ def create_architect_mcp_server(
                 .upsert_metric(
                     metric_key=metric_key,
                     spec=spec,
+                    file_name=file_name,
                     group=group,
                     replace=replace,
                     validate_after=True,

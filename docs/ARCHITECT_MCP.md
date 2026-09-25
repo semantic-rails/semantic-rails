@@ -228,6 +228,18 @@ Python callers use `semantic_rails.dbt_artifacts` (`load_dbt_artifacts`,
 `suggest_models_from_dbt`, `dbt_import_models`) and `ArchitectProject.upsert_models`, which stages
 several models and their references in one transaction.
 
+## Metric and Segment Files
+
+`upsert_metric` puts a new metric in `metrics/<group>/<metric_key>.yml`, or in `metrics/<file_name>`
+when you pass `file_name`, so several metrics can share one file. `upsert_segment` puts a new
+segment in `segments/<file_name>` (default `core.yml`). An existing metric or segment stays in its
+file. Adding one to a file that holds a single object (`metric:`, `segment:` or a bare mapping)
+turns the file into a `metrics:` or `segments:` block that keeps that object under its `name`, `id`
+or file name, the key the loader reads it by.
+
+`upsert_segment` refuses a segment whose `membership:` has no `where`, `metric_filters` or `time`
+window, since it would select the whole population.
+
 ## Package Calendar
 
 `upsert_model` with `calendar: true` makes the model's entity the package calendar. The graph
