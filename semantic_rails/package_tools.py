@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -19,6 +20,7 @@ import tarfile
 import tempfile
 import unicodedata
 from collections.abc import Iterable, Iterator
+from decimal import Context, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -1546,5 +1548,25 @@ def _package_file_parts(name: str, prefix: str) -> tuple[str, ...] | None:
 
 
 def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized = [dict(row) for row in rows]
+    normalized = [{key: _canonical_number(value) for key, value in row.items()} for row in rows]
     return sorted(normalized, key=lambda row: json.dumps(row, sort_keys=True, default=str))
+
+
+def _canonical_number(value: Any) -> Any:
+    """One form per number, so a DECIMAL result matches the int or float YAML loads.
+
+    Whole numbers become ints and others Decimals without trailing zeros. A float
+    compares as its shortest repr; Decimals compare exactly, to the last digit.
+    """
+    if isinstance(value, bool) or not isinstance(value, (float, Decimal)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return value
+        value = Decimal(repr(value))
+    elif not value.is_finite():
+        return value
+    if value == value.to_integral_value():
+        return int(value)
+    # A bare normalize() rounds to the default 28 digits; a DECIMAL can hold 38.
+    return value.normalize(Context(prec=len(value.as_tuple().digits)))
