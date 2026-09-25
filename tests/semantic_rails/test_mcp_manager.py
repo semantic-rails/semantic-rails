@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib.metadata
+import json
 import os
 import shutil
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,8 +13,10 @@ import pytest
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp_manager import (
+    _requirement,
     available_mcp_servers,
     load_mcp_registry,
+    mcp_client_config_report,
     mcp_status_report,
     save_mcp_registry,
     start_mcp_http_server,
@@ -230,13 +235,7 @@ def test_available_servers_uses_foreground_http_when_managed_lifecycle_is_unsupp
     rows = available_mcp_servers(PackageReference(source_path="", package_id="jaffle_shop"))
     http = next(row for row in rows if row["name"] == "semantic-rails-query-http")
 
-    assert http["command"] == [
-        "semantic-rails",
-        "mcp",
-        "http",
-        "--package",
-        "jaffle_shop",
-    ]
+    assert http["command"][-4:] == ["mcp", "http", "--package", "jaffle_shop"]
     assert http["managed_by_start_stop"] is False
     assert http["foreground"] is True
 
@@ -283,3 +282,69 @@ def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
 
     assert stopped["status"] == "stopped"
     assert load_mcp_registry()["servers"] == {}
+
+
+@pytest.mark.parametrize("in_cache", [True, False])
+def test_client_config_outlives_a_pruned_uv_cache(
+    tmp_path: Path, monkeypatch, in_cache: bool
+) -> None:
+    cache = tmp_path / "uv-cache"
+    env = cache / "archive-v0" / "abc123"
+    (env / "bin").mkdir(parents=True)
+    (env / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+    if in_cache:
+        (cache / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+    monkeypatch.setattr(sys, "prefix", str(env))
+    monkeypatch.setattr(sys, "executable", str(env / "bin" / "python"))
+    monkeypatch.setenv("UV", "/opt/uv/bin/uv")
+    ref = PackageReference(source_path="", package_id="jaffle_shop")
+
+    servers = mcp_client_config_report(ref, client="claude", workspace_root=str(tmp_path))
+    listed = available_mcp_servers(ref)
+    shutil.rmtree(cache)  # what `uv cache prune` does to a uvx environment
+
+    commands = [[row["command"], *row["args"]] for row in servers["servers"].values()]
+    commands += [row["command"] for row in listed]
+    if in_cache:
+        for command in commands:
+            assert command[:4] == ["/opt/uv/bin/uv", "tool", "run", "--from"]
+            assert command[4].startswith("semantic-rails")
+            assert str(env) not in json.dumps(command)
+    else:
+        assert all(command[:2] == [str(env / "bin" / "python"), "-m"] for command in commands)
+    query = servers["servers"]["semantic-rails"]["args"]
+    assert query[-4:] == ["mcp", "stdio", "--package", "jaffle_shop"]
+
+
+@pytest.mark.parametrize(
+    ("present", "direct_url", "expected"),
+    [
+        (set(), None, "semantic-rails==0.3.0"),
+        ({"psycopg"}, None, "semantic-rails[postgres]==0.3.0"),
+        ({"psycopg", "pyathena"}, None, "semantic-rails[postgres,all]==0.3.0"),
+        (set(), {"url": "file:///src", "dir_info": {}}, "semantic-rails @ file:///src"),
+        (
+            {"psycopg"},
+            {"url": "https://example.com/r.git", "vcs_info": {"vcs": "git", "commit_id": "c0"}},
+            "semantic-rails[postgres] @ git+https://example.com/r.git@c0",
+        ),
+    ],
+)
+def test_requirement_recreates_extras_version_and_source(
+    tmp_path: Path, present: set[str], direct_url: dict | None, expected: str
+) -> None:
+    info = tmp_path / "semantic_rails-0.3.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.4\nName: semantic-rails\nVersion: 0.3.0\n"
+        "Requires-Dist: duckdb>=1.5.3\n"
+        "Provides-Extra: postgres\n"
+        'Requires-Dist: psycopg[binary]>=3.3.4; extra == "postgres"\n'
+        "Provides-Extra: all\n"
+        'Requires-Dist: psycopg[binary]>=3.3.4; extra == "all"\n'
+        'Requires-Dist: pyathena>=3.32.0; extra == "all"\n'
+    )
+    if direct_url:
+        (info / "direct_url.json").write_text(json.dumps(direct_url))
+
+    assert _requirement(importlib.metadata.PathDistribution(info), present) == expected

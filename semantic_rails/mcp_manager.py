@@ -7,6 +7,7 @@ change the MCP protocol server, hosted deployment behavior, or package format.
 from __future__ import annotations
 
 import contextlib
+import importlib.metadata
 import json
 import os
 import re
@@ -394,18 +395,15 @@ def available_mcp_servers(ref: PackageReference | None = None) -> list[dict[str,
             package_arg = ["--path", ref.source_path]
             package_label = ref.source_path
     lifecycle = managed_mcp_lifecycle_report()
-    http_command = (
-        ["semantic-rails", "mcp", "start", *package_arg]
-        if lifecycle["supported"]
-        else ["semantic-rails", "mcp", "http", *package_arg]
-    )
+    cli = _launcher("semantic-rails", "semantic_rails.cli")
+    http_command = [*cli, "mcp", "start" if lifecycle["supported"] else "http", *package_arg]
     return [
         {
             "name": "semantic-rails-query-stdio",
             "kind": "query",
             "transport": "stdio",
             "package": package_label,
-            "command": ["semantic-rails", "mcp", "stdio", *package_arg],
+            "command": [*cli, "mcp", "stdio", *package_arg],
             "managed_by_start_stop": False,
         },
         {
@@ -422,7 +420,11 @@ def available_mcp_servers(ref: PackageReference | None = None) -> list[dict[str,
             "name": "semantic-rails-architect-stdio",
             "kind": "architect",
             "transport": "stdio",
-            "command": ["semantic-rails-architect-mcp", "--transport", "stdio"],
+            "command": [
+                *_launcher("semantic-rails-architect-mcp", "semantic_rails.architect_mcp"),
+                "--transport",
+                "stdio",
+            ],
             "managed_by_start_stop": False,
         },
     ]
@@ -527,29 +529,60 @@ def _client_servers(
 ) -> dict[str, dict[str, Any]]:
     servers: dict[str, dict[str, Any]] = {}
     if "query" in selected_mcp:
+        command, *args = _launcher("semantic-rails", "semantic_rails.cli")
         servers["semantic-rails"] = {
-            "command": sys.executable,
-            "args": [
-                "-m",
-                "semantic_rails.cli",
-                "mcp",
-                "stdio",
-                *(_ref_args(ref)),
-            ],
+            "command": command,
+            "args": [*args, "mcp", "stdio", *(_ref_args(ref))],
         }
     if "architect" in selected_mcp:
+        command, *args = _launcher("semantic-rails-architect-mcp", "semantic_rails.architect_mcp")
         servers["semantic-rails-architect"] = {
-            "command": sys.executable,
-            "args": [
-                "-m",
-                "semantic_rails.architect_mcp",
-                "--transport",
-                "stdio",
-                "--workspace-root",
-                str(workspace_root),
-            ],
+            "command": command,
+            "args": [*args, "--transport", "stdio", "--workspace-root", str(workspace_root)],
         }
     return servers
+
+
+def _launcher(script: str, module: str) -> list[str]:
+    """The command a client config keeps using to start ``script`` from this install.
+
+    ``uvx`` runs this interpreter from uv's cache (a directory above the environment
+    holds a CACHEDIR.TAG), and ``uv cache prune`` deletes it. A config naming it would
+    stop working, so name uv and a requirement that recreates this install instead.
+    """
+
+    prefix = Path(sys.prefix).resolve()
+    if not any((parent / "CACHEDIR.TAG").is_file() for parent in prefix.parents):
+        return [sys.executable, "-m", module]
+    uv = os.environ.get("UV") or shutil.which("uv") or "uv"
+    dist = importlib.metadata.distribution("semantic-rails")
+    present = {
+        _canonical(name)
+        for d in importlib.metadata.distributions()
+        for name in d.metadata.get_all("Name") or []
+    }
+    return [uv, "tool", "run", "--from", _requirement(dist, present), script]
+
+
+def _requirement(dist: importlib.metadata.Distribution, present: set[str]) -> str:
+    """``dist`` as a requirement: the extras whose packages are all ``present``, then the
+    source it came from (PEP 610 ``direct_url.json``) or its exact version."""
+
+    extras = []
+    for extra in dist.metadata.get_all("Provides-Extra") or []:
+        marker = f'extra == "{extra}"'
+        needs = {_canonical(re.split(r"[^\w.-]", r)[0]) for r in dist.requires or [] if marker in r}
+        if needs and needs <= present:
+            extras.append(extra)
+    name = f"semantic-rails[{','.join(extras)}]" if extras else "semantic-rails"
+    origin = json.loads(dist.read_text("direct_url.json") or "{}")
+    if vcs := origin.get("vcs_info"):
+        return f"{name} @ {vcs['vcs']}+{origin['url']}@{vcs['commit_id']}"
+    return f"{name} @ {origin['url']}" if origin.get("url") else f"{name}=={dist.version}"
+
+
+def _canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _ref_args(ref: PackageReference) -> list[str]:
