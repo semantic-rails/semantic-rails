@@ -984,7 +984,9 @@ def create_architect_mcp_server(
             'it the package calendar for calendar_id (default "default", which a package with '
             "calendars needs): time.fill reads its date_day time and week_start, month_start, "
             "quarter_start and year_start kind: date dimensions. calendar: false reverts that. "
-            "On a regular model, calendar_id binds its times to a calendar."
+            "On a regular model, calendar_id binds its times to a calendar. Fields merge into "
+            "an existing model; replace: true rewrites it from the arguments, keeping only its "
+            "id, entities and calendar_id, and lists what it drops in dropped_fields."
         ),
     )
     def upsert_model(
@@ -1001,8 +1003,10 @@ def create_architect_mcp_server(
         joins: dict[str, Any] | None = None,
         group: str = "core",
         description: str = "",
+        label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
         try:
@@ -1019,8 +1023,10 @@ def create_architect_mcp_server(
                     joins=joins,
                     group=group,
                     description=description,
+                    label=label,
                     calendar=calendar,
                     calendar_id=calendar_id,
+                    replace=replace,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1086,9 +1092,10 @@ def create_architect_mcp_server(
         expected_revision: str,
         idempotency_key: str,
         group: str = "core",
+        replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a curated metric recipe."""
+        """Preview or atomically upsert a metric; replace: true rewrites it, keeping its id."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1096,6 +1103,7 @@ def create_architect_mcp_server(
                     metric_key=metric_key,
                     spec=spec,
                     group=group,
+                    replace=replace,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1120,9 +1128,10 @@ def create_architect_mcp_server(
         expected_revision: str,
         idempotency_key: str,
         file_name: str = "core.yml",
+        replace: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Preview or atomically upsert a segment definition."""
+        """Preview or atomically upsert a segment; replace: true rewrites it, keeping its id."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
@@ -1130,6 +1139,7 @@ def create_architect_mcp_server(
                     segment_key=segment_key,
                     spec=spec,
                     file_name=file_name,
+                    replace=replace,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
