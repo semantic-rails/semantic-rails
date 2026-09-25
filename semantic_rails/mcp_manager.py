@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess
@@ -32,7 +33,8 @@ from .local_config import semantic_rails_home
 
 DEFAULT_MCP_HOST = "127.0.0.1"
 DEFAULT_MCP_PORT = 8091
-CLIENTS = ("claude", "codex", "both")
+# "both" stays Claude Desktop and Codex (the first two), as for MCP_KINDS.
+CLIENTS = ("claude", "codex", "claude-code", "cursor", "both")
 MCP_KINDS = ("query", "architect", "both")
 
 
@@ -488,9 +490,35 @@ def codex_config_path() -> Path:
     return Path.home() / ".codex" / "config.toml"
 
 
+def cursor_config_path() -> Path:
+    override = os.environ.get("SEMANTIC_RAILS_CURSOR_CONFIG")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".cursor" / "mcp.json"
+
+
+def claude_code_config_path() -> Path:
+    """Where Claude Code keeps user-scope servers; its CLI writes it, not us."""
+
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()) / ".claude.json"
+
+
+def _claude_code_add(claude: str, servers: dict[str, dict[str, Any]]) -> list[list[str]]:
+    """Claude Code owns its config file, so user-scope servers go through its CLI."""
+
+    return [
+        [claude, "mcp", "add-json", "--scope", "user", name, json.dumps(config)]
+        for name, config in servers.items()
+    ]
+
+
 def _client_preview(client: str, servers: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if client == "claude":
-        return {"path": str(claude_config_path()), "mcpServers": servers}
+    if client in ("claude", "cursor"):
+        path = claude_config_path() if client == "claude" else cursor_config_path()
+        return {"path": str(path), "mcpServers": servers}
+    if client == "claude-code":
+        commands = [shlex.join(command) for command in _claude_code_add("claude", servers)]
+        return {"path": str(claude_code_config_path()), "commands": commands}
     if client == "codex":
         blocks = [_codex_toml_block(name, config) for name, config in servers.items()]
         return {"path": str(codex_config_path()), "toml": "\n".join(blocks).strip() + "\n"}
@@ -498,15 +526,15 @@ def _client_preview(client: str, servers: dict[str, dict[str, Any]]) -> dict[str
 
 
 def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if client == "claude":
-        path = claude_config_path()
+    if client in ("claude", "cursor"):
+        path = claude_config_path() if client == "claude" else cursor_config_path()
         data: dict[str, Any] = {}
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8") or "{}")
             if not isinstance(data, dict):
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
-                    f"Claude config must be a JSON object: {path}",
+                    f"{client.title()} config must be a JSON object: {path}",
                     details={"path": str(path)},
                 )
         mcp_servers = dict(data.get("mcpServers", {}) or {})
@@ -521,6 +549,36 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
             content = _upsert_codex_server(content, name, config)
         _atomic_write_text(path, content)
         return {"ok": True, "path": str(path), "servers": sorted(servers)}
+    if client == "claude-code":
+        claude = shutil.which("claude")
+        if not claude:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "Claude Code's `claude` command is not on PATH. Install Claude Code, "
+                "or run the previewed `claude mcp add-json` commands yourself.",
+            )
+        registered: list[str] = []
+        for name, add in zip(servers, _claude_code_add(claude, servers), strict=True):
+            added = subprocess.run(add, capture_output=True, text=True, check=False)
+            if added.returncode and "already exists" in added.stderr + added.stdout:
+                # Replace only a server Claude Code says exists, as the file clients do.
+                remove = [claude, "mcp", "remove", "--scope", "user", name]
+                subprocess.run(remove, capture_output=True, check=False)
+                added = subprocess.run(add, capture_output=True, text=True, check=False)
+            if added.returncode:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"`claude mcp add-json` failed for {name}: "
+                    f"{(added.stderr or added.stdout).strip()} "
+                    f"(already registered: {', '.join(registered) or 'none'})",
+                    details={
+                        "server": name,
+                        "returncode": added.returncode,
+                        "registered": registered,
+                    },
+                )
+            registered.append(name)
+        return {"ok": True, "path": str(claude_code_config_path()), "servers": sorted(servers)}
     raise SemanticLayerError("INVALID_CONFIG", f"Unsupported MCP client '{client}'")
 
 
@@ -601,7 +659,7 @@ def _selected(value: str, allowed: tuple[str, ...], *, field: str) -> list[str]:
             details={field: value, "allowed": list(allowed)},
         )
     if normalized == "both":
-        return [item for item in allowed if item != "both"]
+        return list(allowed[:2])
     return [normalized]
 
 

@@ -455,11 +455,14 @@ Casual local setup:
 ```bash
 semantic-rails mcp setup --path "$PACKAGE_PATH"
 semantic-rails mcp setup --path "$PACKAGE_PATH" --client both --mcp both --install --yes
+semantic-rails mcp setup --path "$PACKAGE_PATH" --client claude-code --mcp query --install --yes
+semantic-rails mcp setup --path "$PACKAGE_PATH" --client cursor --mcp query --install --yes
 ```
 
 `mcp setup` checks that the package loads, confirms the MCP adapter exposes the
-expected tools, and previews or installs stdio entries for Claude Desktop and
-Codex. Run it from inside the package directory, pass `--path`, or set a local
+expected tools, and previews or installs stdio entries for one client:
+`--client claude` (Claude Desktop), `codex`, `claude-code` or `cursor`. `both`
+means Claude Desktop and Codex. Run it from inside the package directory, pass `--path`, or set a local
 profile with `semantic-rails profile init --package-path ./my_package`.
 
 Lower-level client config helpers:
@@ -471,7 +474,11 @@ semantic-rails mcp client-config --path "$PACKAGE_PATH" --client codex --mcp bot
 ```
 
 `client-config` writes stdio MCP entries. For Claude Desktop it updates
-`claude_desktop_config.json`; for Codex it updates `~/.codex/config.toml`.
+`claude_desktop_config.json`; for Codex, `~/.codex/config.toml`; for Cursor,
+`~/.cursor/mcp.json`. For Claude Code it runs `claude mcp add-json --scope user`
+for each server, replacing a user-scope server of the same name; a local or
+project server with that name still takes precedence in its project. Each
+install keeps the file's other servers.
 Use `--mcp query`, `--mcp architect`, or `--mcp both` depending on whether the
 client should answer governed analytics questions, author packages, or do both.
 
