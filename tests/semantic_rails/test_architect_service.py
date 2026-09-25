@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from semantic_rails import architect_service, architect_transactions, yaml_loader
-from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.architect_service import ArchitectMutation, ArchitectProject
 from semantic_rails.cli.scaffold import create_project_report
 from semantic_rails.errors import SemanticLayerError
 
@@ -26,6 +26,14 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in sorted(root.rglob("*"))
         if path.is_file()
+    }
+
+
+def _authored_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and ".architect" not in path.parts
     }
 
 
@@ -122,6 +130,93 @@ def test_undo_conflict_preserves_external_edit_and_reports_file(tmp_path: Path) 
     assert report["status"] == "undo_conflict"
     assert report["conflicting_files"] == ["metrics/core/conflicted_metric.yml"]
     assert metric_path.read_text(encoding="utf-8").endswith("# external edit\n")
+
+
+@pytest.mark.parametrize("order", ["noop_active", "active_noop", "all_noop"])
+def test_combined_undo_ignores_noop_parts_without_losing_active_changes(
+    tmp_path: Path, order: str
+) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    before = _authored_bytes(project_path)
+
+    def noop() -> ArchitectMutation:
+        return project.write_file(
+            relative_path="package.yml",
+            content=(project_path / "package.yml").read_text(encoding="utf-8"),
+            validate_after=False,
+        )
+
+    if order == "noop_active":
+        parts = [noop(), project.upsert_metric(metric_key="extra", spec=_metric_spec())]
+    elif order == "active_noop":
+        parts = [project.upsert_metric(metric_key="extra", spec=_metric_spec()), noop()]
+    else:
+        parts = [noop(), noop()]
+    assert [bool(part._snapshots) for part in parts] == {
+        "noop_active": [False, True],
+        "active_noop": [True, False],
+        "all_noop": [False, False],
+    }[order]
+
+    report = ArchitectMutation.undo_together(parts)
+
+    assert report["status"] == ("already_undone" if order == "all_noop" else "undone")
+    assert _authored_bytes(project_path) == before
+
+
+def test_combined_undo_rejects_a_previously_undone_part(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    first = project.upsert_metric(metric_key="first", spec=_metric_spec("First"))
+    assert first.undo()["status"] == "undone"
+    assert first.undo()["status"] == "already_undone"
+    second = project.upsert_metric(metric_key="second", spec=_metric_spec("Second"))
+    before = _authored_bytes(project_path)
+
+    report = ArchitectMutation.undo_together([first, second])
+
+    assert report["status"] == "undo_conflict"
+    assert _authored_bytes(project_path) == before
+    assert second._active is True
+
+
+def test_combined_undo_same_file_snapshots_restore_earliest_bytes(
+    tmp_path: Path,
+) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    before = _authored_bytes(project_path)
+    first = project.upsert_metric(metric_key="extra", spec=_metric_spec("First"))
+    second = project.upsert_metric(metric_key="extra", spec=_metric_spec("Second"), replace=True)
+    metric_path = project_path / "metrics" / "core" / "extra.yml"
+    after_second = metric_path.read_bytes()
+    metric_path.write_bytes(after_second + b"\n# external edit\n")
+    after_external_edit = _authored_bytes(project_path)
+
+    assert ArchitectMutation.undo_together([first, second])["status"] == "undo_conflict"
+    assert _authored_bytes(project_path) == after_external_edit
+
+    metric_path.write_bytes(after_second)
+    assert ArchitectMutation.undo_together([first, second])["status"] == "undone"
+    assert _authored_bytes(project_path) == before
+
+
+def test_combined_undo_preserves_an_edit_between_same_file_mutations(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    first = project.upsert_metric(metric_key="extra", spec=_metric_spec("First"))
+    metric_path = project_path / "metrics" / "core" / "extra.yml"
+    metric_path.write_bytes(metric_path.read_bytes() + b"\n# external note\n")
+    second = project.upsert_metric(metric_key="extra", spec=_metric_spec("Second"), replace=True)
+    after_second = _authored_bytes(project_path)
+
+    report = ArchitectMutation.undo_together([first, second])
+
+    assert report["status"] == "undo_conflict"
+    assert report["conflicting_files"] == ["metrics/core/extra.yml"]
+    assert _authored_bytes(project_path) == after_second
+    assert first._active is True and second._active is True
 
 
 def test_undo_reports_restoration_even_when_package_still_has_parse_errors(

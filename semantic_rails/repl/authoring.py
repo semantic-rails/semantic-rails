@@ -5,8 +5,10 @@ metrics and segments.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 
@@ -28,6 +30,39 @@ from .prompts import (
 _AUTHORING_KINDS = ("model", "dimension", "time", "measure", "metric", "segment")
 
 
+class Undoable(Protocol):
+    """What the REPL's `undo` needs from an authoring change."""
+
+    @property
+    def report(self) -> dict[str, Any]: ...
+
+    @property
+    def project_path(self) -> Path: ...
+
+    def undo(self) -> dict[str, Any]: ...
+
+
+@dataclass
+class _Mutations:
+    """Changes one wizard run made (a measure, then the metric that uses it).
+
+    ``undo`` restores both through one project transaction after checking both files.
+    """
+
+    parts: list[ArchitectMutation]
+
+    @property
+    def report(self) -> dict[str, Any]:
+        return self.parts[-1].report
+
+    @property
+    def project_path(self) -> Path:
+        return self.parts[-1].project_path
+
+    def undo(self) -> dict[str, Any]:
+        return ArchitectMutation.undo_together(self.parts)
+
+
 _AUTHORING_ALIASES = {
     "entity": "model",
     "model/entity": "model",
@@ -44,7 +79,7 @@ def _run_authoring_flow(
     current_ref: PackageReference,
     *,
     requested_kind: str = "",
-) -> ArchitectMutation | None:
+) -> Undoable | None:
     try:
         if not sys.stdin.isatty():
             raise SemanticLayerError(
@@ -332,6 +367,19 @@ def _author_measure(
     ref: PackageReference,
     before_warnings: set[str],
 ) -> ArchitectMutation:
+    return _measure_change(project, inventory, ref, before_warnings)[0]
+
+
+def _measure_change(
+    project: ArchitectProject,
+    inventory: dict[str, Any],
+    ref: PackageReference,
+    before_warnings: set[str],
+    *,
+    on_commit: Callable[[ArchitectMutation], None] | None = None,
+) -> tuple[ArchitectMutation, str, str]:
+    """Run the measure wizard; returns the change, the measure key and its model."""
+
     model = _select_model(inventory)
     key, label, existing = _author_identity(
         project, inventory, "measure", "revenue", parent=str(model.get("key", ""))
@@ -416,7 +464,7 @@ def _author_measure(
             measure["currency"] = _author_prompt(
                 "Currency code", str(current.get("currency", "USD"))
             ).upper()
-    return _apply_authoring_change(
+    mutation = _apply_authoring_change(
         project,
         ref,
         before_warnings,
@@ -428,7 +476,9 @@ def _author_measure(
         preview={"measures": {key: measure}},
         apply=lambda: _upsert_nested_model(project, model, measures={key: measure}),
         next_action="Publish this primitive as a stable KPI with `author metric`.",
+        on_commit=on_commit,
     )
+    return mutation, key, str(model.get("key", ""))
 
 
 def _author_metric(
@@ -436,20 +486,62 @@ def _author_metric(
     inventory: dict[str, Any],
     ref: PackageReference,
     before_warnings: set[str],
+) -> Undoable:
+    committed: list[ArchitectMutation] = []
+    try:
+        _metric_change(project, inventory, ref, before_warnings, committed)
+    except BaseException:
+        # Cancellation restores every committed part before the caller reports
+        # "no files changed". A later external edit is a conflict, not a
+        # successful cancellation, and must remain untouched.
+        if committed:
+            rollback = ArchitectMutation.undo_together(committed)
+            if not rollback.get("ok"):
+                raise SemanticLayerError(
+                    "CONFIG_CONFLICT",
+                    "Metric authoring stopped, but a committed file changed afterward and "
+                    "could not be restored. Review the named file before retrying.",
+                    details={"conflicting_files": rollback.get("conflicting_files", [])},
+                ) from None
+        raise
+    return _Mutations(committed) if len(committed) > 1 else committed[0]
+
+
+def _metric_change(
+    project: ArchitectProject,
+    inventory: dict[str, Any],
+    ref: PackageReference,
+    before_warnings: set[str],
+    committed: list[ArchitectMutation],
 ) -> ArchitectMutation:
+    def new_measure() -> dict[str, Any]:
+        mutation, key, model = _measure_change(
+            project, inventory, ref, before_warnings, on_commit=committed.append
+        )
+        before_warnings.update(_authoring_warning_messages(mutation.report.get("parse", {})))
+        inventory.clear()
+        inventory.update(project.inventory())
+        print("Back to the metric.")
+        return next(
+            row
+            for row in _inventory_items(inventory, "measure")
+            if str(row.get("key", "")) == key and str(row.get("model_key", "")) == model
+        )
+
+    create_measure = ("Create a new measure first", new_measure)
     measures = _inventory_items(inventory, "measure")
     metrics = _inventory_items(inventory, "metric")
-    if not measures:
+    if not measures and not _inventory_items(inventory, "model"):
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            "Add a primitive measure first with `author measure`, then create a governed metric.",
+            "Add a model with `author model` first; a metric publishes one of its measures.",
         )
     published_measures = {str((row.get("spec", {}) or {}).get("measure", "")) for row in metrics}
     recommended_measure = next(
         (row for row in measures if str(row.get("key", "")) not in published_measures),
-        measures[0],
+        measures[0] if measures else {},
     )
-    recommended_key = str(recommended_measure.get("key", "metric"))
+    recommended_key = str(recommended_measure.get("key", "metric")) if measures else "metric"
     key, label, existing = _author_identity(project, inventory, "metric", recommended_key)
     current = dict(existing.get("spec", {}) or {}) if existing else {}
     metric_kind = _author_choice(
@@ -524,6 +616,7 @@ def _author_metric(
             "Measure to publish",
             measures,
             default_key=source_default or None,
+            create=create_measure,
         )
         spec["measure"] = str(selected.get("id") or selected.get("key", ""))
         example = f"What is {label.lower()} by month?"
@@ -547,7 +640,7 @@ def _author_metric(
         if not numerator_default and any(str(row.get("key", "")) == key for row in operands):
             numerator_default = key
         numerator = _select_inventory_item(
-            "Numerator", operands, default_key=numerator_default or None
+            "Numerator", operands, default_key=numerator_default or None, create=create_measure
         )
         denominator_options = [
             row
@@ -555,13 +648,8 @@ def _author_metric(
             if str(row.get("id") or row.get("key", ""))
             != str(numerator.get("id") or numerator.get("key", ""))
         ]
-        if not denominator_options:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                "A ratio needs two distinct measures or metrics. Add another primitive first.",
-            )
         denominator_default = str(current.get("denominator", ""))
-        if not any(
+        if denominator_options and not any(
             denominator_default in {str(row.get("key", "")), str(row.get("id", ""))}
             for row in denominator_options
         ):
@@ -569,7 +657,10 @@ def _author_metric(
                 denominator_options[0].get("id") or denominator_options[0].get("key", "")
             )
         denominator = _select_inventory_item(
-            "Denominator", denominator_options, default_key=denominator_default
+            "Denominator",
+            denominator_options,
+            default_key=denominator_default,
+            create=create_measure,
         )
         spec.update(
             {
@@ -604,6 +695,7 @@ def _author_metric(
         preview={"metrics": {key: spec}},
         apply=lambda: project.upsert_metric(metric_key=key, spec=spec, group="core", replace=True),
         next_action=f"Try `ask {example}`.",
+        on_commit=committed.append,
     )
 
 
@@ -760,6 +852,7 @@ def _apply_authoring_change(
     preview: dict[str, Any],
     apply: Any,
     next_action: str,
+    on_commit: Callable[[ArchitectMutation], None] | None = None,
 ) -> ArchitectMutation:
     operation = "update" if existing else "create"
     print()
@@ -798,6 +891,11 @@ def _apply_authoring_change(
         for message in _authoring_error_messages(report)[:5]:
             print(f"  - {message}")
         raise _AuthoringCancelled
+
+    # Record a successful commit before any output can be interrupted. The
+    # metric wizard then restores every committed part on cancellation.
+    if on_commit is not None:
+        on_commit(mutation)
 
     after_warnings = set(_authoring_warning_messages(report.get("parse", {})))
     new_warnings = sorted(after_warnings - before_warnings)
@@ -883,13 +981,19 @@ def _select_model(inventory: dict[str, Any]) -> dict[str, Any]:
     return _select_inventory_item("Model to extend", models)
 
 
+_CREATE = "new"
+
+
 def _select_inventory_item(
     label: str,
     rows: list[dict[str, Any]],
     *,
     default_key: str | None = "",
+    create: tuple[str, Callable[[], dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    if not rows:
+    """Pick one inventory row. ``create`` adds a last option that makes a new one instead."""
+
+    if not rows and create is None:
         raise SemanticLayerError("INVALID_CONFIG", f"No choices are available for {label.lower()}")
     visible = list(rows)
     # Arrow-key pickers filter as you type; plain prompts ask for search words first.
@@ -951,11 +1055,15 @@ def _select_inventory_item(
             description += f" - {row['parent']}"
         options.append((value, f"{key} - {description}"))
         lookup[value] = row
+    if create is not None:
+        options.append((_CREATE, create[0]))
     selected = _author_choice(
         label,
         options,
-        default=str(default_index + 1) if default_index is not None else "",
+        default=str(default_index + 1) if default_index is not None and visible else "",
     )
+    if selected == _CREATE and create is not None:
+        return create[1]()
     return lookup[selected]
 
 
