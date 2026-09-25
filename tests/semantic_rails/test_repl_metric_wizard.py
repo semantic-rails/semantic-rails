@@ -1095,6 +1095,9 @@ def test_author_calendar_unlocks_the_calendar_recipes(tmp_path: Path) -> None:
     _repl(project, "author calendar", script, [])
 
     assert script.offered["Period-start columns on the table (each adds that unit)"] == STARTS
+    model = yaml.safe_load((project / "models/core/calendar.yml").read_text("utf-8"))["model"]
+    assert (model["relation"], list(model["dimensions"])) == ("calendar", STARTS)
+    assert model["times"]["date_day"]["class"] == "calendar_time"
     graph = yaml.safe_load((project / "graph.yml").read_text("utf-8"))["graph"]["entities"]
     assert graph["calendar"]["kind"] == "time"
     rolling = {"Metric recipe": "Rolling", "Measure": "revenue - ", "Window length": "2"}
@@ -1108,6 +1111,7 @@ def test_author_calendar_unlocks_the_calendar_recipes(tmp_path: Path) -> None:
     [
         ({"Model key": "orders", "Manage and update this existing model?": True}, "not a calendar"),
         ({"Warehouse table with one row per day in a `date_day` column": "raw_orders"}, "date_day"),
+        ({"Warehouse table with one row per day in a `date_day` column": "calender"}, "not exist"),
     ],
 )
 def test_author_calendar_refuses_a_model_or_table_that_is_not_one(
@@ -1119,6 +1123,22 @@ def test_author_calendar_refuses_a_model_or_table_that_is_not_one(
     with pytest.raises(SemanticLayerError, match=message):
         _repl(project, "author calendar", _Script(answers), [])
     assert _authored(project) == before
+
+
+def test_author_calendar_keeps_what_an_existing_calendar_says(tmp_path: Path) -> None:
+    project = _shop(tmp_path, calendar=True)
+    path = project / "models" / "core" / "calendar.yml"
+    doc = yaml.safe_load(path.read_text("utf-8"))
+    doc["model"]["times"]["date_day"]["as"] = "temporal_role.shop_day"
+    _write_yaml(path, doc)
+    confirm = {"Manage and update this existing model?": True, "Update this calendar?": True}
+
+    _repl(project, "author calendar", _Script({**confirm, "Business label": "Days"}), [])
+
+    model = yaml.safe_load(path.read_text("utf-8"))["model"]
+    assert model == {**doc["model"], "label": "Days", "description": model["description"]}
+    graph = yaml.safe_load((project / "graph.yml").read_text("utf-8"))["graph"]["entities"]
+    assert set(graph) == {"event", "order", "customer", "time"} and graph["time"]["kind"] == "time"
 
 
 @pytest.mark.parametrize(

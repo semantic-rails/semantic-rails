@@ -262,7 +262,7 @@ def _list_objects(rest: str, ref: PackageReference) -> None:
         _print_json(report)
     elif limit is None and not rest and report["truncated"]:
         counts = report["catalog_counts"]
-        by_kind = ", ".join(f"{counts.get(key, 0)} {name}" for name, key in _LS_KINDS)
+        by_kind = ", ".join(f"{name} {counts.get(key, 0)}" for name, key in _LS_KINDS)
         print(f"{_package_display(report['package'])}: {report['count']} objects ({by_kind})")
         print("List one kind with `ls <kind> [search]`, for example `ls metric revenue`.")
     else:

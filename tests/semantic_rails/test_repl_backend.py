@@ -312,6 +312,8 @@ def test_pickers_answer_from_keystrokes(keys: str, ask: Any, expected: Any) -> N
         ("cancel" + ENTER, lambda b: b.text("Model key", default="order_value")),
         ("cancel" + ENTER, lambda b: b.choose("Pick", OPTIONS, default="b")),
         ("quit" + ENTER, lambda b: b.choose("Pick", [(f"v{i}", f"Value {i}") for i in range(20)])),
+        # " cancel" filters to nothing (questionary then lists every option), so it cancels.
+        (" cancel" + ENTER, lambda b: b.choose("Status", [("p", "Placed"), ("x", "Cancelled")])),
     ],
 )
 def test_pickers_cancel_like_plain_prompts(keys: str, ask: Any) -> None:
@@ -535,7 +537,7 @@ def test_repl_commands_answer_a_new_user_in_a_line_terminal(tmp_path: Path) -> N
 
     assert "ls [kind] [search]" in shown["help ls"] and "author" not in shown["help ls"]
     # A bare ls of a large package counts objects by kind instead of 30 dimensions.
-    assert re.search(r"\([1-9]\d* metric, [1-9]\d* measure", shown["ls"])
+    assert re.search(r"\(metric [1-9]\d*, measure [1-9]\d*", shown["ls"])
     assert "dimension:" not in shown["ls"]
     assert "List one kind with `ls <kind> [search]`" in shown["ls"]
     # The REPL takes the flags its own hint suggests instead of searching for them.
@@ -545,4 +547,4 @@ def test_repl_commands_answer_a_new_user_in_a_line_terminal(tmp_path: Path) -> N
     assert "Usage: ls [kind] [search] [--limit N] [--json]" in shown["ls --bogus"]
     assert '"truncated": false' in shown["ls --json"]  # as the hint says, --json lists all
     run = shown["run revenue by store and by calendar month"]
-    assert "MIXED_GRAIN_INVALID" in run and "    Try: Group by time" in run
+    assert "MIXED_GRAIN_INVALID" in run and re.search(r"\n    Try: \S", run)

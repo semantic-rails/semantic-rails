@@ -249,9 +249,10 @@ def _cancel_keys(app: Any) -> None:
 
     @Condition
     def typed_cancel() -> bool:
-        # A cancel word that filters to a real option, such as "Cancelled orders", picks it.
+        # A cancel word that filters to a real option, such as "Cancelled orders", picks it;
+        # the match is questionary's filter rule.
         return any(
-            (typed := (item.search_filter or "").strip().lower()) in _CANCEL_WORDS
+            (typed := (item.search_filter or "").lower()).strip() in _CANCEL_WORDS
             and not any(typed in str(choice.title).lower() for choice in item.choices)
             for item in lists
         )

@@ -294,8 +294,14 @@ def _author_calendar(
         column: {"label": _title(column), "kind": "date", **dict(saved.get(column) or {})}
         for column in chosen
     }
+    # upsert_model merges: saved columns stay whether or not they are ticked.
     preview = {
-        "model": {"id": key, "relation": relation, "times": times, "dimensions": dimensions},
+        "model": {
+            "id": key,
+            "relation": relation,
+            "times": {**saved_times, **times},
+            "dimensions": {**saved, **dimensions},
+        },
         "graph": {"entities": {entity_key: {"kind": "time", "key": ["date_day"], "model": key}}},
     }
     return _apply_authoring_change(
@@ -325,7 +331,10 @@ def _author_calendar(
 def _relation_columns(
     project: ArchitectProject, ref: PackageReference, relation: str
 ) -> set[str] | None:
-    """The relation's columns in the package's DuckDB file; None when they can't be read."""
+    """The relation's columns in the package's DuckDB file; None when there is no file to read.
+
+    A relation the file doesn't have is refused, not waved through unchecked.
+    """
 
     if _authoring_warehouse(ref) != "duckdb":
         return None
@@ -334,7 +343,10 @@ def _relation_columns(
             introspection.package_duckdb_path(project.project_path)
         ) as warehouse:
             described = introspection.describe_table(warehouse, relation)
-    except SemanticLayerError:
+    except SemanticLayerError as exc:
+        if exc.code in {"OBJECT_NOT_FOUND", "INVALID_QUERY"}:
+            raise
+        print(f"Can't check the table's columns: {exc}")
         return None
     return {str(column["name"]) for column in described["columns"]}
 
