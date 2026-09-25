@@ -528,3 +528,101 @@ def test_a_bootstrap_timeout_removes_the_container(monkeypatch: pytest.MonkeyPat
         quickstart.Container("ubuntu:24.04")
     name = calls[0][calls[0].index("--name") + 1]
     assert calls[-1] == ["docker", "rm", "-f", name]
+
+
+SPEC = "semantic-rails==0.3.0"
+VENV_THEN_VERSION = " && ".join(quickstart.VENV_BLOCK.splitlines()) + " && semantic-rails --version"
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            quickstart.TRY,
+            f'uvx --from {SPEC} semantic-rails ask --package jaffle_shop "revenue by store" --run',
+        ),
+        (quickstart.TOOL_INSTALL, f"uv tool install {SPEC}"),
+        (
+            quickstart.DESKTOP_BLOCK,
+            quickstart.DESKTOP_BLOCK.replace("install semantic-rails\n", f"install {SPEC}\n"),
+        ),
+        (
+            VENV_THEN_VERSION,
+            VENV_THEN_VERSION.replace("pip install semantic-rails", f"pip install {SPEC}"),
+        ),
+        (
+            "uv venv /s/v && uv pip install -q --python /s/v/bin/python semantic-rails",
+            f"uv venv /s/v && uv pip install -q --python /s/v/bin/python {SPEC}",
+        ),
+    ],
+    ids=["uvx", "tool install", "desktop block", "venv block", "bare venv install"],
+)
+def test_spec_replaces_the_package_where_a_command_runs_or_installs_it(
+    command: str, expected: str
+) -> None:
+    assert quickstart.with_spec(command, SPEC) == expected
+    # Without --spec, every command runs exactly as the README shows it.
+    assert quickstart.with_spec(command, quickstart.PACKAGE) == command
+
+
+def test_a_wheel_spec_is_quoted() -> None:
+    wheel = "/my dist/semantic_rails-0.3.0-py3-none-any.whl"
+    assert quickstart.with_spec(quickstart.TOOL_INSTALL, wheel) == f"uv tool install '{wheel}'"
+
+
+def test_mcp_handshake_starts_the_spec(tmp_path: Path) -> None:
+    env = Server(tmp_path, WORKING)
+    env.spec = SPEC
+    assert quickstart.mcp_handshake(env, timeout=10) == ""
+    package = f"{tmp_path}/my_package"
+    assert env.argv == ["uvx", "--from", SPEC, "semantic-rails", "mcp", "stdio", "--path", package]
+
+
+def test_a_container_installs_the_wheel_copied_into_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "semantic_rails-0.3.0-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(quickstart.subprocess, "run", run)
+    env = quickstart.Container("ubuntu:24.04", str(wheel))
+    inside = f"/tmp/{wheel.name}"
+    assert ["docker", "cp", str(wheel), f"{env.id}:{inside}"] in calls
+    env.run(quickstart.TOOL_INSTALL)
+    assert calls[-1][-1] == f"uv tool install {inside}"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the local environment runs /bin/bash")
+def test_local_installs_a_relative_wheel_by_its_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Local commands run from a scratch directory, where a relative wheel path means nothing.
+    (tmp_path / "dist").mkdir()
+    wheel = tmp_path / "dist" / "semantic_rails-0.3.0-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    monkeypatch.chdir(tmp_path)
+    uv = fake_uv(tmp_path)
+    monkeypatch.setattr(quickstart.shutil, "which", lambda name: str(uv))
+    commands: list[str] = []
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        commands.append(argv[-1])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    env = quickstart.Local(f"dist/{wheel.name}")
+    try:
+        monkeypatch.setattr(quickstart.subprocess, "run", run)
+        env.run(quickstart.TOOL_INSTALL)
+    finally:
+        env.close()
+    assert commands == [f"uv tool install {wheel.resolve()}"]
+
+
+def test_a_missing_wheel_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        quickstart.main(["--local", "--spec", str(tmp_path / "missing.whl")])
