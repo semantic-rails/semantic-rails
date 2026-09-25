@@ -1090,7 +1090,7 @@ class ArchitectProject:
                 f"cardinality must be many_to_one or one_to_one (got {cardinality!r}); relate "
                 "one_to_many from the many side, and many_to_many through a bridge model",
             )
-        if source == target or not all(column.strip() for column in foreign_key):
+        if source == target or not foreign_key or not all(c.strip() for c in foreign_key):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 "from_entity and to_entity must differ, and columns must not be blank",

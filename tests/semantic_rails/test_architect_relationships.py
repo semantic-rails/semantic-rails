@@ -86,6 +86,27 @@ def test_one_to_one_is_recorded_in_graph_relationships_and_can_be_reverted(proje
     assert (relationship.source_columns, relationship.cardinality) == (["buyer_id"], "N:1")
 
 
+def test_composite_key_and_an_existing_entry_whose_via_would_override(project):
+    project.upsert_model(
+        model_id="visits", entity_key="visit", relation="raw_visits", primary_key=["shop", "day"]
+    )
+    graph = _file(project, "graph.yml")
+    graph["graph"]["relationships"] = {
+        "event_visit": {"entities": ["event", "visit"], "via": ["a", "b"], "safety": "safe"}
+    }
+    project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph, sort_keys=False))
+
+    project.upsert_relationship(from_entity="event", to_entity="visit", columns=["shop_id", "on"])
+
+    entities = _file(project, "models/core/events.yml")["model"]["entities"]
+    assert entities["visit"] == {"expr": ["shop_id", "on"]}
+    entry = _file(project, "graph.yml")["graph"]["relationships"]["event_visit"]
+    assert entry == {"entities": ["event", "visit"], "safety": "safe", "cardinality": "many_to_one"}
+    _, config = parse_config_report(PackageReference(source_path=str(project.project_path)))
+    relationship = next(rel for rel in config.relationships if rel.id == "relationship.event_visit")
+    assert relationship.source_columns == ["shop_id", "on"]
+
+
 @pytest.mark.parametrize(
     ("arguments", "code"),
     [
@@ -93,6 +114,7 @@ def test_one_to_one_is_recorded_in_graph_relationships_and_can_be_reverted(proje
         ({"columns": ["customer_id", "region"]}, "INVALID_CONFIG"),
         ({"to_entity": "event"}, "INVALID_CONFIG"),
         ({"columns": [" "]}, "INVALID_CONFIG"),
+        ({"columns": []}, "INVALID_CONFIG"),
         ({"cardinality": "one_to_many"}, "INVALID_CONFIG"),
         ({"cardinality": "many_to_many"}, "INVALID_CONFIG"),
     ],
