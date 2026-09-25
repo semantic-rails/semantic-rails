@@ -49,6 +49,7 @@ CONTRACT_NAMES = (
     "query_ir.preview.v2.json",
     "query_ir.v1.json",
     "query_mcp.v1.json",
+    "query_mcp.v2.json",
     "semantic_contract.v1.json",
     "validation_report.v1.json",
 )

@@ -36,8 +36,11 @@ folder refuses a second run on the same machine, so runs never compete for one m
 
 Options: `--max-turns` and `--max-tokens` override the scenario, `--turn-tokens` caps each
 reply (default 8192), `--timeout` bounds the agent loop (default 1800 seconds),
-`--result-chars` truncates results in the transcript (default 2000; `0` keeps them whole;
-the model always gets the whole result). `--server NAME=COMMAND` adds a server or replaces
+`--result-chars` truncates results in the transcript (default 2000; `0` keeps them whole).
+`--host-result-chars` cuts the results the model gets, as MCP hosts do (Claude Code cuts at
+about 25K tokens, 100,000 characters); by default the model gets whole results.
+`--instructions` adds each server's `initialize` instructions to the system prompt, as hosts
+such as Claude Code do; by default the model sees only the harness's own prompt. `--server NAME=COMMAND` adds a server or replaces
 the scenario's server of that name. `--workdir DIR` works in an existing folder instead of a
 fresh one. `--jail PREFIX` starts every server and terminal program under a command prefix,
 such as a namespace wrapper that takes away the network.
@@ -144,3 +147,16 @@ done
 
 Replace `SURFACE_SETTING` with the setting that selects the surface. A model's runs vary, so
 repeat each scenario a few times before drawing a conclusion.
+
+For the query MCP's interfaces, `eval_ab.py` does this over the frozen eval questions
+(`tests/semantic_rails/mcp_context/eval_jaffle.jsonl`): one scenario per question, run once per
+interface (`SEMANTIC_RAILS_MCP_INTERFACE`) and repeat. Like Claude Code, the model gets the
+server's instructions and results cut at 100,000 characters. Each run's check grades the query of the model's last `execute` against the
+question's gold rows and reports `correct`, `silent_wrong` (answered, but wrong) or `declined`;
+`summary` counts them per interface with median tokens and the paired accuracy change.
+
+```bash
+uv run python scripts/agent_harness/eval_ab.py run --out ../agent-runs/ab --model qwen3.8-27b \
+  --reasoning-effort low --repeats 3
+uv run python scripts/agent_harness/eval_ab.py summary ../agent-runs/ab
+```

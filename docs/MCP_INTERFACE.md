@@ -28,8 +28,9 @@ MCP-Protocol-Version: 2025-11-25
 
 To keep MCP context small, stay on the defaults (`minimal` for
 validate/compile/execute, `summary` for catalog) and reach for `compact`/`full`
-only when you need explain plans or descriptive rows. Measured sizes for every
-tier are in the tables below.
+only when you need explain plans or descriptive rows; [interface v2](#interface-v2)
+makes the smallest responses its defaults. Measured sizes for every tier are in the
+tables below.
 
 ## Runtime Adapter
 
@@ -67,13 +68,15 @@ API:
 
 Every `tools/list` definition publishes an `outputSchema` for this envelope and
 MCP-standard annotations (`readOnlyHint`, `destructiveHint`,
-`idempotentHint`, and `openWorldHint`). The complete generated contract is
-packaged as `semantic_rails/contracts/query_mcp.v1.json`; CI compares it with
-the executable definitions so tool/schema drift cannot be merged silently.
+`idempotentHint`, and `openWorldHint`). The complete generated contracts are
+packaged as `semantic_rails/contracts/query_mcp.v1.json` and `query_mcp.v2.json`; CI
+compares them with the executable definitions so tool/schema drift cannot be merged
+silently.
 
 ## Tools
 
-The tool names mirror the public API operations:
+The interface v1 tool names mirror the public API operations ([interface v2](#interface-v2) has
+six tools):
 
 - `capabilities` (compact orientation)
 - `catalog` (counts + IDs at `verbosity=summary`)
@@ -112,10 +115,11 @@ execute(row_format="columns") to answer the question; call validate when editing
 or when diagnostics are needed.
 ```
 
+
 `tools/list` is paid once at connect time, before the first call. To keep that
 cold-start payload bounded, the IR cheat-sheet and the full Query-IR time-block
-schema ship once on the `validate` tool description; `compile`, `execute`, and
-the other IR-accepting tools point at it instead of repeating it. Catalog payload
+schema ship once: on `validate` in v1, where `compile`, `execute`, and the other
+IR-accepting tools point at it instead of repeating it, and on `execute` in v2. Catalog payload
 size varies materially with package size and selected verbosity.
 
 ### Writing Tool Descriptions
@@ -160,10 +164,11 @@ genuinely need descriptions or the alias index.
 
 `discover(verbosity="minimal", limit=5)` returns slim cards: `id`, `kind`, `label`, `score`, a
 `description` trimmed to 120 characters, `default_temporal_role` and `available`, plus
-`blocked_reason` for a candidate that isn't available. Omitted options keep the v1 default of
-10 full cards per kind, with match reasons, starter patches and comparison metadata. When the
-question uses an object's whole name ("revenue by store"), that object ranks above near-duplicates
-that add a qualifier the question doesn't use ("Delivered revenue").
+`blocked_reason` for a candidate that isn't available; interface v2 returns them by default.
+Omitted options keep the v1 default of 10 full cards per kind, with match reasons, starter
+patches and comparison metadata. When the question uses an object's whole name ("revenue by
+store"), that object ranks above near-duplicates that add a qualifier the question doesn't use
+("Delivered revenue").
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
 `available` flag, including when a value is blocked.
 
@@ -375,6 +380,48 @@ Eight rounds of blind-agent probing found that the 13 tools used to apply three 
 | `execute` | warn-and-ignore | `EXECUTE_UNKNOWN_ARG` |
 
 The warn-and-ignore tools cannot reject all unknown keys because callers legitimately add `policy_context` (every warn-tool) and may pass canonical Query-IR keys (`select`, `time`, `version`, etc.) at top level on `validate`, `compile`, and `execute` — those passthroughs are explicitly part of the contract and never trigger an unknown-arg warning. Query-IR shape errors (e.g. an unknown key *inside* `query`) surface separately as `INVALID_QUERY` from the IR validator in `ast.py`.
+
+## Interface v2
+
+Interface v2 serves six tools from the same handlers as v1. It is opt-in; v1 stays the default
+and unchanged. Select an interface per server process:
+
+```bash
+SEMANTIC_RAILS_MCP_INTERFACE=v2 semantic-rails mcp stdio --package jaffle_shop
+```
+
+In MCP client configs, set the variable in the server's `env`. In Python, pass
+`SemanticLayerMCPAdapter(runtime, interface="v2")`; the argument wins over the variable, and an
+unknown value fails with `INVALID_CONFIG`. `initialize` reports the interface as
+`serverInfo.version`, responses carry it as `api_version`, and `mcp doctor` prints it. The
+generated contract is `semantic_rails/contracts/query_mcp.v2.json`.
+
+| v2 tool | Replaces in v1 | Difference from v1 |
+|---|---|---|
+| `discover` | `discover`, `catalog` | `verbosity` defaults to `minimal`, slim cards (v1: `compact`, full cards). Empty `terms` returns the catalog index (counts and ids per kind), limited to `kinds` when given. |
+| `inspect` | `inspect` | `verbosity` defaults to `minimal`, the card without duplicate fields (v1: `compact`). |
+| `valid-values` | `valid-values` | None. |
+| `plan` | `plan` | `detail` defaults to `query` (v1: `best`). |
+| `execute` | `validate`, `compile`, `execute` | `mode`: `run` (default) returns what v1 `execute` returns, `validate` what `validate` returns, `sql` what `compile` returns. In mode `run`, `max_rows` defaults to 200 (v1: no cap). Its Query IR schema says `time.end` is exclusive. |
+| `segment` | `segment-validate`, `segment-explain`, `segment-preview` | A required `action`: `validate`, `explain` or `preview`. `verbosity` defaults to `minimal` (v1: the whole response). |
+
+Every v2 tool returns its smallest response unless asked for more, and the v2 instructions and
+`execute` description point agents at `plan` rather than hand-written Query IR. `capabilities`
+and `build-options` have no v2 tool. Calling a v1-only tool on v2 returns
+`UNKNOWN_MCP_TOOL`, with the v2 call to use in `details.replacement`. Every v2 tool keeps the
+`request_id` and `policy_context` arguments, and resources and prompts keep their v1 names (the
+prompts' text names v2 tools).
+
+To move a v1 client to v2:
+
+- `validate(query)` becomes `execute(query, mode="validate")`, and `compile(query)` becomes
+  `execute(query, mode="sql")`.
+- `execute(query)` returns at most 200 rows; pass `max_rows` (up to 100,000) for more.
+- `segment-validate`, `segment-explain` and `segment-preview` become
+  `segment(segment_id, action=...)`; pass `verbosity="full"` for v1's whole response.
+- `catalog()` becomes `discover(terms="")`. For v1's default responses, pass
+  `verbosity="compact"` to `discover` and `inspect`, and `detail="best"` to `plan`.
+- Clients that need `capabilities` or `build-options` stay on v1.
 
 ## Resources And Prompts
 
@@ -765,7 +812,9 @@ The budgets cover `tools/list`, the `initialize` instructions, the resource and 
 resource read, one compact opt-in call per tool (`plan(detail="query")` and
 `execute(max_rows=200)`, including a time window without a grain), three metadata calls behind
 an authenticated transport, four common mistakes, and two
-scripted three-question sessions. Three of the mistakes fail with a specific error code; the fourth,
+scripted three-question sessions. Budgets named `query.v2.*` cover interface v2 at its defaults:
+`tools/list`, the instructions, one call per tool and mode, and its two sessions. Three of the
+mistakes fail with a specific error code; the fourth,
 a misspelled `discover` argument, succeeds with a warning. A scripted call that fails when it should
 succeed (or the reverse), or that reports a different code, stops the measurement rather than
 counting as a smaller response. A scripted session's queries may only use ids that an earlier call
@@ -793,6 +842,13 @@ When a change is intended, such as a smaller response or a planner fix, run `--w
 commit the updated budgets or outcomes with it. The report lists sizes under budget and cases that
 improved, so savings get locked in. A budget moves only when its size moves beyond the tolerance,
 and `--write-baseline` refuses to run while a gold answer fails or the eval set has changed.
+
+`scripts/agent_harness/eval_ab.py` runs the same eval questions through a real agent instead: the
+agent harness has a model behind any OpenAI-compatible chat endpoint answer each question once per
+interface, and each run's check scores the query the model last ran against the gold rows. It
+reports correct and silent wrong answers, tokens and tool calls per interface (see
+`scripts/agent_harness/README.md`). Its numbers depend on the model, so compare interfaces within
+one set of runs.
 
 The release workflows also run `scripts/benchmark_plan.py --gate` over the blind-agent corpus.
 That gate checks that plans are actionable, carry the expected IDs and Query IR fields, stay

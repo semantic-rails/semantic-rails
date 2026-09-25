@@ -288,7 +288,7 @@ def compare_contract_bundles(
             breaking=breaking,
             additive=additive,
         )
-    for artifact in ("architect_mcp.v1.json", "query_mcp.v1.json"):
+    for artifact in ("architect_mcp.v1.json", "query_mcp.v1.json", "query_mcp.v2.json"):
         if artifact in baseline and artifact in current:
             _mcp_changes(
                 baseline[artifact],

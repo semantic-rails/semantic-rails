@@ -135,12 +135,13 @@ async def connect(
 ):
     routes: dict[str, Route] = {}
     tools: list[dict[str, Any]] = []
+    instructions: list[str] = []
     for server, command in scenario["servers"].items():
         argv = [*jail, *shlex.split(command)]
         params = StdioServerParameters(command=argv[0], args=argv[1:], cwd=str(cwd))
         read, write = await stack.enter_async_context(stdio_client(params, errlog=errlog))
         session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
+        instructions.append((await session.initialize()).instructions or "")
         for tool in (await session.list_tools()).tools:
             name = tool.name if tool.name not in routes else f"{server}__{tool.name}"
             schema = tool.inputSchema or {"type": "object", "properties": {}}
@@ -154,15 +155,22 @@ async def connect(
             function = spec["function"]
             routes[function["name"]] = (function["name"], terminal, function["parameters"])
             tools.append(spec)
-    return routes, tools
+    return routes, tools, instructions
 
 
 class Agent:
     """One conversation: the model's turns, its tool calls, and what each cost."""
 
-    def __init__(self, opts: argparse.Namespace, task: str, routes: dict, events: TextIO):
+    def __init__(
+        self,
+        opts: argparse.Namespace,
+        task: str,
+        routes: dict,
+        events: TextIO,
+        system: str = SYSTEM,
+    ):
         self.opts, self.routes, self.events = opts, routes, events
-        self.messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}]
+        self.messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
         self.deadline = time.monotonic() + opts.timeout
         self.turns: list[dict[str, int]] = []
         self.friction: defaultdict[str, Counter] = defaultdict(Counter)
@@ -253,6 +261,9 @@ class Agent:
             result=self.clip(text),
             seconds=seconds,
         )
+        cap = self.opts.host_result_chars  # a host's cap on what the model gets
+        if cap and len(text) > cap:
+            text = f"{text[:cap]}\n[result cut: {len(text):,} characters]"
         self.messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": text})
 
     def stats(self, stop: str) -> dict[str, Any]:
@@ -286,8 +297,13 @@ async def run(opts: argparse.Namespace, scenario: dict[str, Any], cwd: Path) -> 
         (opts.out / "servers.log").open("w", encoding="utf-8") as errlog,
     ):
         async with AsyncExitStack() as stack:
-            routes, tools = await connect(stack, scenario, cwd, errlog, shlex.split(opts.jail))
-            agent = Agent(opts, scenario["task"], routes, events)
+            jail = shlex.split(opts.jail)
+            routes, tools, instructions = await connect(stack, scenario, cwd, errlog, jail)
+            # Hosts such as Claude Code show the model each server's instructions.
+            system = "\n\n".join([SYSTEM, *filter(None, instructions)])
+            agent = Agent(
+                opts, scenario["task"], routes, events, system if opts.instructions else SYSTEM
+            )
             schema_chars = len(json.dumps(tools))
             agent.log(event="tools", tools=list(routes), schema_chars=schema_chars)
             request = {"model": opts.model, "tools": tools, "max_tokens": opts.turn_tokens}
@@ -315,6 +331,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--turn-tokens", type=int, default=8192, help="max_tokens per request")
     parser.add_argument("--timeout", type=float, default=1800, help="seconds for the agent loop")
     parser.add_argument("--result-chars", type=int, default=2000, help="0 keeps results whole")
+    parser.add_argument(
+        "--host-result-chars", type=int, default=0, help="cut what the model gets; 0: whole"
+    )
+    parser.add_argument(
+        "--instructions", action="store_true", help="add the servers' instructions to the prompt"
+    )
     parser.add_argument("--jail", default="", help="command prefix for servers and programs")
     opts = parser.parse_args(argv)
     if any("=" not in server for server in opts.server):

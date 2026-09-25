@@ -909,11 +909,15 @@ def recovery_hints_for_error(
             )
         return hints
     if code == "UNKNOWN_MCP_TOOL":
+        # Interface v2 names the tool that replaced a v1 one.
+        replacement = str(details.get("replacement") or "")
         return [
             {
                 "kind": "use_available_tool",
                 "message": (
-                    "Call tools/list first and pick a name from "
+                    f"Use {replacement} instead."
+                    if replacement
+                    else "Call tools/list first and pick a name from "
                     "available_tools — common entry points are 'discover', "
                     "'inspect', 'plan', 'validate', 'compile'."
                 ),

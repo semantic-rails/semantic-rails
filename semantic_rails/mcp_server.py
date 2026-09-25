@@ -154,9 +154,13 @@ def handle_jsonrpc_message(
             )
             result: dict[str, Any] = {
                 "protocolVersion": negotiated_version,
-                "serverInfo": {"name": "semantic-rails", "version": "v1"},
+                # An adapter-shaped object without these attributes serves v1.
+                "serverInfo": {
+                    "name": "semantic-rails",
+                    "version": getattr(adapter, "interface", "v1"),
+                },
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
-                "instructions": MCP_SERVER_INSTRUCTIONS,
+                "instructions": getattr(adapter, "instructions", MCP_SERVER_INSTRUCTIONS),
             }
         elif method == "ping":
             result = {}
