@@ -271,7 +271,7 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     top = max((score for score, _row in scored), default=0)
     tied = sorted(
         (row for score, row in scored if score == top > 0),
-        key=lambda row: (getattr(row, "label", ""), row.id),
+        key=lambda row: (row.label, row.id),
     )
     fit = {}
     for row in tied:

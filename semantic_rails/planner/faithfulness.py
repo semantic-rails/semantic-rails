@@ -521,7 +521,7 @@ def intent_subject_why(
     runtime: Any, *, question: str, intent_ir: IntentIR, query: dict[str, Any]
 ) -> dict[str, Any] | None:
     """A coverage gap when the ranking tied the draft's one subject with others
-    and the question names none of them (see ``_base._tied_top``).
+    and the question doesn't name that subject (see ``_base._tied_top``).
 
     ``plan`` reports it after every other reason, which says more.
     """
@@ -538,7 +538,8 @@ def intent_subject_why(
         terms,
         set(_tokens(_target_focus_text(text))) or terms,
     )
-    if len(tied) < 2 or subjects[0] not in {row.id for row in tied} or named is not None:
+    ids = [row.id for row in tied]
+    if len(ids) < 2 or subjects[0] not in ids or getattr(named, "id", None) == subjects[0]:
         return None
     candidates = " or ".join(f"{row.label} ({row.id})" for row in tied[:5])
     gap = CoverageGap(

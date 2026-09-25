@@ -13,6 +13,8 @@ import pytest
 import yaml
 
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner.faithfulness import intent_subject_why
+from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
 
 
@@ -92,6 +94,28 @@ def test_the_named_measure_wins_a_tie(
     assert [
         term for row in plan.get("warnings", []) for term in row["details"]["terms"]
     ] == unmatched
+
+
+@pytest.mark.parametrize(("measure", "flagged"), [("item_revenue_cents", True), ("revenue", False)])
+def test_any_draft_of_a_tied_measure_the_question_does_not_name_is_flagged(
+    tmp_path: Path, measure: str, flagged: bool
+) -> None:
+    """Whichever path drafted it, only the named measure passes the tie check."""
+
+    runtime = _runtime(tmp_path, REVENUE_AND_ITEMS)
+    question = "What is revenue by month?"
+    select = {"as": "value", "expression": {"measure": f"measure.shop.{measure}"}}
+    try:
+        why = intent_subject_why(
+            runtime,
+            question=question,
+            intent_ir=parse_intent(runtime, question),
+            query={"version": 2, "select": [select]},
+        )
+    finally:
+        runtime.close()
+
+    assert (why is not None) is flagged
 
 
 def test_a_tie_the_question_names_no_side_of_is_low_confidence(tmp_path: Path) -> None:
