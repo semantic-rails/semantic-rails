@@ -172,7 +172,7 @@ def plan_payload(
                 "message": (
                     "No built-in pattern realized this intent. Use "
                     "compose_hints to author a Query IR directly, "
-                    "then call validate."
+                    "then validate it (over MCP, execute with mode 'validate')."
                 ),
             },
             "compose_hints": compose_hints(intent_ir),
@@ -936,7 +936,10 @@ def _fallback_semantic_drift(
         "recovery_hints": [
             {
                 "kind": "inspect_primary_failure",
-                "message": "Call validate on best.query_ir to see why the semantically closest draft failed.",
+                "message": (
+                    "Validate best.query_ir (over MCP, execute with mode 'validate') to see "
+                    "why the semantically closest draft failed."
+                ),
             },
             {
                 "kind": "use_explicit_filter_or_segment",
@@ -1342,8 +1345,8 @@ def _trim_why_errors(errors: list[dict[str, Any]]) -> dict[str, Any]:
         why["truncated"] = {
             "dropped": overflow,
             "hint": (
-                f"+{overflow} additional validation errors; call "
-                "validate on best.query_ir for the full list."
+                f"+{overflow} additional validation errors; validate best.query_ir "
+                "(over MCP, execute with mode 'validate') for the full list."
             ),
         }
     return why

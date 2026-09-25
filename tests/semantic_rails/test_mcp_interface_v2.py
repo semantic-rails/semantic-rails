@@ -7,6 +7,7 @@ and defaults every tool to its smallest response.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -276,6 +277,8 @@ def _hint_texts(node: Any, key: str = "") -> Iterator[str]:
     [
         ("discover", {"terms": "unladen swallow"}),
         ("plan", {"intent": "unladen swallow airspeed", "detail": "best"}),
+        # A drafted fallback that failed validation: status low_confidence at the default detail.
+        ("plan", {"intent": "orders by customer status"}),
         ("inspect", {"object_id": "measure.jaffle.airspeed"}),
         ("execute", {"query": {**QUERY, "select": [{"as": "x", "expression": AIRSPEED}]}}),
     ],
@@ -286,9 +289,14 @@ def test_recovery_hints_never_send_the_agent_to_a_removed_tool(
     texts = list(_hint_texts(v2.call_tool(tool, arguments)))
     assert texts, "the call should come back with recovery guidance"
     for text in texts:
+        # "execute with mode 'validate'" and "segment with action 'preview'" are v2 calls.
+        text = re.sub(r"(mode|action) '[a-z]+'", "", text)
+        lowered = text.lower()
         for name in V1_ONLY_TOOLS:
             for mention in (f"`{name}`", f"'{name}'", f"{name} tool", f"or {name} to"):
                 assert mention not in text, (name, text)
+            for verb in ("call", "use", "run", "try"):
+                assert f"{verb} {name} " not in lowered + " ", (name, text)
 
 
 @pytest.mark.parametrize("tool", sorted(V1_ONLY_TOOLS))
