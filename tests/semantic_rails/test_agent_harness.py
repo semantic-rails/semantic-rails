@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from scripts.agent_harness import report, run
+from scripts.agent_harness import report, run, terminal
 
 SERVER = '''
 from typing import Any
@@ -137,3 +137,88 @@ def test_run_records_tokens_friction_and_the_check(
         table.index("| add | 177 |") < table.index("| ghost | 70 |") < table.index("| fail | 37 |")
     )
     assert "Never called in any run: unused" in table
+
+
+PROGRAM = """
+import os, sys
+print("\\x1b[1mready\\x1b[0m", os.environ.get("JAILED", "-"), os.environ.get("AGENT_API_KEY", "-"))
+n = 0
+while (line := input()) != "quit":
+    n += 1
+    print(n, "you said", line, flush=True)
+sys.exit(3)
+"""
+
+
+def test_terminal_tools_drive_a_program_in_a_pty(tmp_path, monkeypatch):
+    (tmp_path / "program.py").write_text(PROGRAM, encoding="utf-8")
+    scenario = {
+        "task": "Say hello.",
+        "terminal": {"echo": f"{sys.executable} {tmp_path / 'program.py'}"},
+    }
+    (tmp_path / "scenario.yml").write_text(json.dumps(scenario), encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(terminal, "QUIET", 0.3)
+    early, unknown = call("term_type", {"text": "early"}), call("term_start", {"program": "sh"})
+    start, hello = call("term_start", {"program": "echo"}), call("term_type", {"text": "hello"})
+    bad_wait, stop = call("term_read", {"wait_ms": "soon"}), call("term_type", {"text": "quit"})
+    enter = call(
+        "term_key", {"key": "enter"}
+    )  # three in a row, as when accepting a wizard's defaults
+    turns = [[early, unknown, start], [hello, bad_wait], [enter], [enter], [enter], [stop], "Done."]
+    model, requests = serve(turns, "full")
+    monkeypatch.setenv("AGENT_API_KEY", "not-for-programs")
+    out, url = tmp_path / "run", f"http://127.0.0.1:{model.server_port}/v1"
+    try:
+        argv = [
+            str(tmp_path / "scenario.yml"),
+            "--out",
+            str(out),
+            "--model",
+            "m",
+            "--base-url",
+            url,
+        ]
+        run.main([*argv, "--jail", "env JAILED=yes"])
+    finally:
+        model.shutdown()
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["stop"] == "final" and summary["unused_tools"] == []
+    assert summary["friction"]["term_key"]["repeats"] == 0  # the output changed each time
+    offered = {tool["function"]["name"] for tool in requests[0]["tools"]}
+    assert offered == {"term_start", "term_type", "term_key", "term_read"}
+    shown = [m["content"] for m in requests[-1]["messages"] if m["role"] == "tool"]
+    assert shown[0].startswith("error: no program is running") and "unknown program" in shown[1]
+    assert shown[2].strip() == "ready yes -"  # escapes removed; the jail ran it; no API key
+    assert "1 you said hello" in shown[3] and "4 you said" in shown[7]
+    assert "[the program exited with code 3]" in shown[8]
+    assert shown[4].startswith("error: invalid literal")  # a bad argument is an error, not a crash
+    friction = summary["friction"]
+    assert friction["term_type"]["errors"] == 1 and friction["term_start"]["errors"] == 1
+    assert friction["term_read"]["errors"] == 1
+
+
+def test_terminal_replaces_its_program_and_keeps_the_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(terminal, "QUIET", 0.3)
+    loud = tmp_path / "loud.py"
+    loud.write_text("import sys\nprint('x' * 7000)\nprint(sys.argv[1:], flush=True)\ninput()\n")
+    shell = terminal.Terminal({"loud": f"{sys.executable} {loud}"}, tmp_path, [])
+    try:
+        text, error = shell.call("term_start", {"program": "loud", "args": "--a 'b c'"})
+        assert error == "" and text.startswith("[1") and "earlier characters]" in text
+        assert text.rstrip().endswith(
+            "['--a', 'b c']"
+        )  # a string of arguments is split, not spelled out
+        assert shell.call("term_read", {"wait_ms": 0}) == ("[no new output]", "")
+        first = shell.proc
+        shell.call("term_start", {"program": "loud"})
+        assert first is not None and first.poll() is not None and shell.proc is not first
+        text, error = shell.call("term_key", {"key": "enter"})
+        assert error == "" and "[the program exited with code 0]" in text
+    finally:
+        shell.close()
+    assert (
+        terminal.clean("abc\rdef\r") == "def"
+        and terminal.clean("\x1b[1mbold\x1b[0m\r\n") == "bold\n"
+    )

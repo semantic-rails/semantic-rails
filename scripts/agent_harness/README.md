@@ -2,7 +2,7 @@
 
 `run.py` lets a model behind any OpenAI-compatible chat API with tool calls (a local
 llama.cpp, vLLM or similar server, or a hosted one) drive the Semantic Rails MCP servers the
-way an MCP host would. It records every turn and tool call, the tokens the server reports, and
+way an MCP host would, or the CLI and REPL through a terminal the way a person would. It records every turn and tool call, the tokens the server reports, and
 where the model struggled. `report.py` ranks that friction across runs.
 
 It answers two questions:
@@ -39,7 +39,8 @@ reply (default 8192), `--timeout` bounds the agent loop (default 1800 seconds),
 `--result-chars` truncates results in the transcript (default 2000; `0` keeps them whole;
 the model always gets the whole result). `--server NAME=COMMAND` adds a server or replaces
 the scenario's server of that name. `--workdir DIR` works in an existing folder instead of a
-fresh one.
+fresh one. `--jail PREFIX` starts every server and terminal program under a command prefix,
+such as a namespace wrapper that takes away the network.
 
 ## Scenario files
 
@@ -52,6 +53,8 @@ setup: ...                   # optional shell command that prepares the workdir
 check: ...                   # shell command; exit 0 means the task succeeded
 max_turns: 20                # default 30
 max_tokens: 300000           # stop once prompt + completion tokens reach this; default 500000
+terminal:                    # optional programs the model may run in a terminal
+  repl: semantic-rails repl
 ```
 
 In `servers`, `setup` and `check`, `{repo}` is this repository, `{here}` the scenario's
@@ -66,6 +69,22 @@ a secret in one.
 | `draft_model.yml` | Architect | which tables a DuckDB file holds, then a project with a model for one of them |
 | `ratio_metric.yml` | Architect | an average-order-value ratio metric in an existing project |
 | `filtered_question.yml` | query | one store's revenue in one quarter of the bundled `jaffle_shop` sample |
+| `repl_revenue.yml` | terminal | each store's monthly revenue for one quarter, through the REPL |
+
+## The terminal
+
+A scenario's `terminal` names the programs the model may start. It then gets four tools:
+`term_start` (a program by name, with extra arguments), `term_type` (text, then Enter unless
+`enter` is false), `term_key` (Enter, Tab, arrows, Escape, Backspace, Ctrl-C, Ctrl-D) and
+`term_read` (wait for more output). The program runs in a pseudo-terminal, started directly
+with no shell, with `TERM=dumb` and `NO_COLOR` so it prints plain text. Each tool returns what
+the program printed since the last call, once output has paused for 1.5 seconds (or after
+`wait_ms`, default 10 seconds, with none), escape sequences removed and at most the last 6,000
+characters. One program runs at a time; starting another stops it. Programs get the same
+minimal environment as the MCP servers (`HOME`, `PATH` and a few more), never the harness's
+own, so `AGENT_API_KEY` can't reach them. Terminal errors and wasted tokens count like any
+tool's; a terminal call is a repeat only if the same call also printed the same output, so
+pressing Enter through a wizard's prompts is not a loop.
 
 ## The run folder
 
