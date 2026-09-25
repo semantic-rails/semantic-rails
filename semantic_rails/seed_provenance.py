@@ -108,21 +108,30 @@ def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
         raise OSError(errno.EIO, "database catalog probe returned invalid data", path) from exc
 
 
-def record_seed_provenance(db_path: str, package_id: str) -> None:
-    """Record which package built a new seed, without authorizing replacement."""
+def record_seed_provenance(db_path: str, package_id: str, seed_digest: str = "") -> None:
+    """Record which package and seed files built a new seed, without authorizing replacement."""
     conn = duckdb.connect(db_path)
     try:
         conn.execute("CREATE SCHEMA IF NOT EXISTS _semantic_rails")
         conn.execute(
-            f"CREATE OR REPLACE TABLE {_PROVENANCE_TABLE} "
-            "(package_id VARCHAR, built_at_utc VARCHAR, duckdb_version VARCHAR)"
+            f"CREATE OR REPLACE TABLE {_PROVENANCE_TABLE} (package_id VARCHAR, "
+            "built_at_utc VARCHAR, duckdb_version VARCHAR, seed_digest VARCHAR)"
         )
         conn.execute(
-            f"INSERT INTO {_PROVENANCE_TABLE} VALUES (?, ?, ?)",
-            [package_id, datetime.now(UTC).isoformat(), duckdb.__version__],
+            f"INSERT INTO {_PROVENANCE_TABLE} VALUES (?, ?, ?, ?)",
+            [package_id, datetime.now(UTC).isoformat(), duckdb.__version__, seed_digest],
         )
     finally:
         conn.close()
+
+
+def recorded_seed_digest(adapter: Any, package_id: str) -> str:
+    """The seed digest recorded when ``package_id``'s seed built the adapter's database, or ''."""
+    try:
+        rows = adapter.query(f"SELECT package_id, seed_digest FROM {_PROVENANCE_TABLE}")
+    except SemanticLayerError:  # built by another tool, or before digests were recorded
+        return ""
+    return next((str(row["seed_digest"]) for row in rows if row["package_id"] == package_id), "")
 
 
 def _appeared(db_path: str) -> SemanticLayerError:

@@ -304,6 +304,7 @@ def project_validation_report(
             "checks": {"runtime": _validate_summary(report)},
             "runtime": report,
             "errors": list(report.get("errors", []) or []),
+            "warnings": list(report.get("warnings", []) or []),
         }
     if selected == "examples":
         report = run_examples_report(ref)
@@ -334,6 +335,7 @@ def project_validation_report(
         "checks": _compact_full_checks(report),
         "check": report,
         "errors": _full_errors(report),
+        "warnings": list(report["checks"]["validate"].get("warnings", []) or []),
         "blockers": list(report.get("blockers", []) or []),
     }
 

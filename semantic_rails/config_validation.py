@@ -1582,6 +1582,7 @@ def validate_config_report(
 
         passed = sum(1 for probe in probes if probe["ok"])
         failed = len(probes) - passed
+        warnings.extend(runtime._seed_warnings)
         return {
             "ok": failed == 0,
             "package": _package_payload(ref, runtime._config),
