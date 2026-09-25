@@ -43,6 +43,12 @@ SYSTEM = (
     "don't ask the user questions. When you are done, reply with a short final answer and no "
     "tool call."
 )
+SUMMARIZE = (
+    "You summarize an agent's earlier work so that it can go on with less context. Write what it "
+    "needs to finish the task: what is done, with the exact names, ids and values it created or "
+    "found; what failed and why; facts from tool results that later steps need; and what is left, "
+    "in order. Be specific and brief. Don't call tools."
+)
 TOKENS = ("prompt_tokens", "completion_tokens", "reasoning_tokens")
 # The tool's own name, the MCP session or terminal that runs it, and its input schema
 Route = tuple[str, ClientSession | Terminal, dict[str, Any]]
@@ -97,6 +103,15 @@ def result_text(result: Any) -> tuple[str, str]:
     if isinstance(detail, dict) and "message" in detail:
         return shown, f"{detail.get('code', 'ERROR')}: {detail['message']}"[:300]
     return shown, (json.dumps(detail, default=str) if detail else text or shown)[:300]
+
+
+def as_text(message: dict[str, Any]) -> str:
+    """One message as the summarizer reads it: who spoke, what it said, the calls it made."""
+    calls = (
+        f"{c['function']['name']}({c['function'].get('arguments') or ''})"
+        for c in message.get("tool_calls") or []
+    )
+    return " ".join([f"{message['role']}:", message.get("content") or "", *calls])
 
 
 def arg_problems(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
@@ -171,8 +186,10 @@ class Agent:
     ):
         self.opts, self.routes, self.events = opts, routes, events
         self.messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
+        self.task, self.summary, self.sent = task, "", 0
         self.deadline = time.monotonic() + opts.timeout
         self.turns: list[dict[str, int]] = []
+        self.compactions: list[dict[str, Any]] = []
         self.friction: defaultdict[str, Counter] = defaultdict(Counter)
         self.errors: defaultdict[str, Counter] = defaultdict(Counter)
         self.seen: Counter[str] = Counter()
@@ -189,17 +206,15 @@ class Agent:
         started = time.monotonic()
         if started >= self.deadline:
             return "timeout"
-        body = {**request, "messages": self.messages}
-        try:
-            reply = await asyncio.to_thread(chat, self.opts.base_url, body, self.deadline - started)
-            choice, usage = reply["choices"][0], reply.get("usage") or {}
-        except Exception as exc:  # noqa: BLE001 - recorded as the stop reason
-            body_text = exc.read()[:300] if isinstance(exc, urllib.error.HTTPError) else b""
-            return f"request failed: {exc!r} {body_text.decode(errors='replace')}".strip()
+        if reason := await self.compact(request):
+            return reason
+        self.sent = len(self.messages)
+        answer = await self.ask({**request, "messages": self.messages})
+        if isinstance(answer, str):
+            return answer
+        choice, tokens = answer
         message, finish = choice["message"], choice.get("finish_reason")
         calls, content = message.get("tool_calls") or [], message.get("content") or ""
-        usage = {**(usage.get("completion_tokens_details") or {}), **usage}
-        tokens = {key: usage.get(key) for key in TOKENS}  # None: the server didn't report it
         self.turns.append(tokens)
         names = [call["function"]["name"] for call in calls]
         seconds = round(time.monotonic() - started, 2)
@@ -223,8 +238,68 @@ class Agent:
             return "loop"
         if None in (tokens["prompt_tokens"], tokens["completion_tokens"]):
             return "no usage reported"  # the token budget can't be enforced
-        spent = sum(turn["prompt_tokens"] + turn["completion_tokens"] for turn in self.turns)
+        spent = sum(turn["prompt_tokens"] + turn["completion_tokens"] for turn in self.requests())
         return "max_tokens" if spent >= max_tokens else ""
+
+    async def ask(self, body: dict[str, Any]) -> tuple[dict, dict] | str:
+        """Send one request; return its choice and token counts, or why it failed."""
+        try:
+            wait = self.deadline - time.monotonic()
+            reply = await asyncio.to_thread(chat, self.opts.base_url, body, wait)
+            choice, usage = reply["choices"][0], reply.get("usage") or {}
+        except Exception as exc:  # noqa: BLE001 - recorded as the stop reason
+            body_text = exc.read()[:300] if isinstance(exc, urllib.error.HTTPError) else b""
+            return f"request failed: {exc!r} {body_text.decode(errors='replace')}".strip()
+        usage = {**(usage.get("completion_tokens_details") or {}), **usage}
+        return choice, {key: usage.get(key) for key in TOKENS}  # None: the server didn't say
+
+    def requests(self) -> list[dict[str, Any]]:
+        """The token counts of every request: the model's turns and its compactions."""
+        return self.turns + self.compactions
+
+    def context(self) -> int:
+        """The next prompt's size: the last one, plus what came since (4 characters a token)."""
+        added = len(json.dumps(self.messages[self.sent :]))
+        return (self.turns[-1]["prompt_tokens"] or 0) + added // 4
+
+    async def compact(self, request: dict[str, Any]) -> str:
+        """Near --compact-at, replace all but the last turns with the model's summary of them."""
+        if not (self.opts.compact_at and self.turns and self.context() >= self.opts.compact_at):
+            return ""
+        starts = [i for i, message in enumerate(self.messages) if message["role"] == "assistant"]
+        if len(starts) <= self.opts.compact_keep:
+            return ""
+        cut, before, started = starts[-self.opts.compact_keep], self.context(), time.monotonic()
+        earlier = f"The summary so far:\n{self.summary}\n\n" if self.summary else ""
+        turns = "\n\n".join(map(as_text, self.messages[2:cut]))
+        prompt = f"The task:\n{self.task}\n\n{earlier}The turns to summarize:\n\n{turns}"
+        body = {key: value for key, value in request.items() if key != "tools"}
+        body["messages"] = [
+            {"role": "system", "content": SUMMARIZE},
+            {"role": "user", "content": prompt},
+        ]
+        answer = await self.ask(body)
+        if isinstance(answer, str):
+            return f"compaction {answer}"
+        choice, tokens = answer
+        self.summary = (choice["message"].get("content") or "").strip()
+        if not self.summary or choice.get("finish_reason") == "length":
+            return "compaction failed: no summary"
+        note = "This session continues from earlier turns, which this summary replaces:"
+        self.messages[1:cut] = [
+            {"role": "user", "content": f"{self.task}\n\n{note}\n\n{self.summary}"}
+        ]
+        record = {
+            "turn": len(self.turns),
+            "context_before": before,
+            "messages_summarized": cut - 2,
+            "summary_chars": len(self.summary),
+            **tokens,
+            "seconds": round(time.monotonic() - started, 2),
+        }
+        self.compactions.append(record)
+        self.log(event="compaction", **record, summary=self.summary)
+        return ""
 
     async def call(self, call: dict[str, Any], share: int) -> None:
         name, started = call["function"]["name"], time.monotonic()
@@ -267,8 +342,8 @@ class Agent:
         self.messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": text})
 
     def stats(self, stop: str) -> dict[str, Any]:
-        unavailable = [key for key in TOKENS if any(turn[key] is None for turn in self.turns)]
-        totals = {key: sum(turn[key] or 0 for turn in self.turns) for key in TOKENS}
+        unavailable = [key for key in TOKENS if any(turn[key] is None for turn in self.requests())]
+        totals = {key: sum(turn[key] or 0 for turn in self.requests()) for key in TOKENS}
         totals.update(dict.fromkeys(unavailable))  # never report a missing category as 0
         both = None not in (totals["prompt_tokens"], totals["completion_tokens"])
         prompts = [turn["prompt_tokens"] for turn in self.turns]
@@ -282,6 +357,7 @@ class Agent:
             "unavailable": unavailable,
             "total_tokens": totals["prompt_tokens"] + totals["completion_tokens"] if both else None,
             "peak_prompt_tokens": None if None in prompts else max(prompts, default=0),
+            "compactions": self.compactions,
             "tools_offered": len(self.routes),
             "unused_tools": sorted(set(self.routes) - set(self.friction)),
             "friction": {
@@ -338,9 +414,15 @@ def main(argv: list[str] | None = None) -> int:
         "--instructions", action="store_true", help="add the servers' instructions to the prompt"
     )
     parser.add_argument("--jail", default="", help="command prefix for servers and programs")
+    parser.add_argument(
+        "--compact-at", type=int, default=0, help="summarize older turns at this prompt size"
+    )
+    parser.add_argument("--compact-keep", type=int, default=2, help="turns kept whole (1 or more)")
     opts = parser.parse_args(argv)
     if any("=" not in server for server in opts.server):
         parser.error("--server takes NAME=COMMAND")
+    if opts.compact_keep < 1:
+        parser.error("--compact-keep keeps at least the last turn")
     scenario = load_scenario(opts.scenario, opts.server)
     for key, default in (("max_turns", 30), ("max_tokens", 500_000)):
         value = getattr(opts, key)

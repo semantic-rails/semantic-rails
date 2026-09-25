@@ -140,6 +140,43 @@ def test_run_records_tokens_friction_and_the_check(
     assert "Never called in any run: unused" in table
 
 
+def test_compaction_replaces_older_turns_with_the_models_summary(tmp_path, monkeypatch):
+    (tmp_path / "server.py").write_text(SERVER, encoding="utf-8")
+    scenario = {"task": "Add 1 and 2.", "servers": {"fixture": f"{sys.executable} server.py"}}
+    (tmp_path / "scenario.yml").write_text(json.dumps(scenario), encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run lock
+    turns = [[call("add", {"a": n, "b": n})] for n in (1, 2, 3)]
+    # requests: turn 1, turn 2, summary, turn 3, summary, final answer
+    model, requests = serve([turns[0], turns[1], "S1", turns[2], "S2", "The sum is 3."], "full")
+    url, out = f"http://127.0.0.1:{model.server_port}/v1", tmp_path / "run"
+    argv = ["--out", str(out), "--model", "m", "--base-url", url, "--workdir", str(tmp_path)]
+    try:  # prompts grow by 100 tokens a request, so the next prompt reaches 230 from turn 3 on
+        run.main(
+            [str(tmp_path / "scenario.yml"), *argv, "--compact-at", "230", "--compact-keep", "1"]
+        )
+    finally:
+        model.shutdown()
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert (summary["stop"], summary["turns"]) == ("final", 4)
+    assert [(c["turn"], c["messages_summarized"]) for c in summary["compactions"]] == [
+        (2, 2),
+        (3, 2),
+    ]
+    assert summary["prompt_tokens"] == 2100  # the summaries' requests count too
+    first, second = requests[2], requests[4]
+    assert "tools" not in first and first["messages"][0]["content"] == run.SUMMARIZE
+    assert "Add 1 and 2." in first["messages"][1]["content"]
+    assert 'add({"a": 1, "b": 1})' in first["messages"][1]["content"]
+    assert "S1" in second["messages"][1]["content"] and '"a": 2' in second["messages"][1]["content"]
+    system, task, kept, result = requests[5]["messages"]  # the last turn is kept whole
+    assert task["content"].startswith("Add 1 and 2.") and task["content"].endswith("S2")
+    assert kept["tool_calls"] == turns[2] and result["content"] == '{"ok":true,"sum":6}'
+    events = [json.loads(line) for line in (out / "transcript.jsonl").read_text().splitlines()]
+    assert [e["summary"] for e in events if e["event"] == "compaction"] == ["S1", "S2"]
+    assert "| 2 |" in report.report([summary]).splitlines()[2]
+
+
 PROGRAM = """
 import os, sys
 print("\\x1b[1mready\\x1b[0m", os.environ.get("JAILED", "-"), os.environ.get("AGENT_API_KEY", "-"))

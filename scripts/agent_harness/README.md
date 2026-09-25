@@ -45,6 +45,14 @@ the scenario's server of that name. `--workdir DIR` works in an existing folder 
 fresh one. `--jail PREFIX` starts every server and terminal program under a command prefix,
 such as a namespace wrapper that takes away the network.
 
+`--compact-at TOKENS` compacts the conversation the way hosts such as Claude Code do when it
+nears the model's window; by default it never does. Before a turn whose prompt would reach
+that size (the last prompt's tokens plus four characters a token for what came since), the
+model is asked, without tools, to summarize every turn but the last `--compact-keep` (default
+2). The summary then replaces them, after the task, which is kept whole along with the system
+prompt. A later compaction summarizes the previous summary with the turns since. Set it
+below the window by at least one turn's growth and one reply.
+
 ## Scenario files
 
 ```yaml
@@ -94,13 +102,16 @@ pressing Enter through a wizard's prompts is not a loop.
 `--out` names a new folder; an existing one is never reused.
 
 - `transcript.jsonl`: a `tools` event (the tool names and the size of their schemas), then one
-  `turn` event per model reply (tokens, finish reason, seconds, text, the tools it called) and
+  `turn` event per model reply (tokens, finish reason, seconds, text, the tools it called),
   one `call` event per tool call (arguments, error, argument problems, whether it repeats an
-  earlier call, the result and its full length, seconds).
+  earlier call, the result and its full length, seconds), and one `compaction` event per
+  compaction (the turn it followed, the estimated prompt before it, the messages it
+  replaced, its tokens and seconds, and the summary).
 - `summary.json`: the scenario, model and servers; `stop` (`final`, `length`, `max_turns`,
-  `max_tokens`, `loop`, `timeout`, `no usage reported` or `request failed: …`); `finished`;
-  `success` (the check passed); turns, tool calls and errors; token totals and
-  `peak_prompt_tokens`; the tools never called; and `friction` per tool.
+  `max_tokens`, `loop`, `timeout`, `no usage reported`, `request failed: …` or `compaction …`);
+  `finished`; `success` (the check passed); turns, tool calls and errors; token totals, which
+  include compactions, and `peak_prompt_tokens`; `compactions`; the tools never called; and
+  `friction` per tool.
 - `final_answer.txt`, `servers.log` (the servers' stderr), and `workdir/`.
 
 Every turn resends the whole conversation, so `prompt_tokens` sums what a client without
