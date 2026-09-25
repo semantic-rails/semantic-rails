@@ -1160,7 +1160,7 @@ def _real_backend(
 
             def confirm(self, label: str, *, default: bool) -> bool:
                 record(label)
-                pipe.send_text("y")
+                pipe.send_text("y\r")
                 return super().confirm(label, default=default)
 
             def choose(
@@ -1280,6 +1280,58 @@ def test_editing_a_metric_keeps_its_authored_examples(tmp_path: Path) -> None:
     _, metric = _author(project, {"Metric key": "m", "Measure to publish": "order_count - "})
 
     assert (metric["measure"], metric["examples"]) == (ORDER_COUNT, examples)
+
+
+def test_growth_offers_the_units_its_calendar_can_fill(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from semantic_rails.cli.reports import ask_report
+
+    project = _shop(tmp_path, calendar=True)
+    calendar = project / "models" / "core" / "calendar.yml"
+    doc = yaml.safe_load(calendar.read_text("utf-8"))
+    del doc["model"]["dimensions"]["month_start"]
+    _write_yaml(calendar, doc)
+
+    script, _ = _author(
+        project, {"Metric key": "g", "Metric recipe": "Growth", "Measure": "revenue - "}
+    )
+
+    assert script.options["Compare with how far back"] == ["Days", "Weeks", "Quarters", "Years"]
+    assert script.offered["Compare with how far back"] == "Days"
+    assert "columns on the calendar model: `month_start`." in capsys.readouterr().out
+    # One written by hand says why it cannot run, instead of returning nothing.
+    growth = {"kind": "derived", "expression": _growth(REVENUE, "sum", "month")}
+    _write_metric(project, "g", {**growth, "value_type": "percent", "temporal_role": ORDERED})
+    report = ask_report(
+        PackageReference(source_path=str(project)), question="g by month", execute=True
+    )
+    assert [error["message"] for error in report["errors"]] == [
+        "time.fill requires calendar dimension 'month_start' on 'entity.shop_time'"
+    ]
+
+
+def test_a_taken_or_similar_key_asks_again_instead_of_ending_the_wizard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _starter(tmp_path)
+    architect = authoring.ArchitectProject(project, workspace_root=tmp_path)
+    replies = iter(
+        [
+            *("total_amount", "n"),  # the measure exists; No: don't update it
+            *("total_amount_2", ""),  # "Total Amount 2" sounds like "Total amount"...
+            "",  # ...so Enter: choose a different key and label
+            *("gross_sales", ""),
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+    backend.set_backend(backend.PlainBackend())
+
+    identity = authoring._author_identity(
+        architect, architect.inventory(), "measure", "revenue", parent="events"
+    )
+
+    assert identity == ("gross_sales", "Gross Sales", None)
 
 
 @pytest.mark.parametrize(

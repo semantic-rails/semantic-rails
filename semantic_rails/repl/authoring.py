@@ -124,7 +124,7 @@ def _run_authoring_flow(
         kind = _resolve_authoring_kind(requested_kind, inventory)
         print()
         print(f"Authoring {_ref_label(current_ref)} - {kind}")
-        print("Type `cancel` at any prompt to return without writing files.")
+        print("Type `cancel` or press Ctrl-C to return without writing files.")
 
         before_warnings = set(_authoring_warning_messages(initial))
         dispatch = {
@@ -381,6 +381,8 @@ def _author_model_from_table(
             '"Type a table name instead" and enter its key.',
         )
     label = _title(model_id)
+    if not _distinct(project, "model", model_id, label):
+        return None  # `author model` then asks for the key and label
     preview = {
         "model": {
             "id": model_id,
@@ -780,23 +782,21 @@ def _metric_change(
         f"metric.{key}" if "." in key else f"metric.{_authoring_namespace(project)}.{key}"
     )
     saved = _saved_metric(current, config, metric_id) if existing else _Saved()
-    has_calendar = any(
-        (row.get("spec", {}) or {}).get("kind") == "time"
-        for row in _inventory_items(inventory, "entity")
-    )
+    units = _calendar_units(config)
     recipes = [
         (recipe, text)
         for recipe, text in _RECIPES.items()
-        if has_calendar or recipe not in _CALENDAR_RECIPES
+        if units or recipe not in _CALENDAR_RECIPES
     ]
     if existing and saved.recipe not in dict(recipes):
         # A shape these recipes cannot write back stays intact unless the
         # person explicitly chooses a different recipe.
         what = "derived expression" if current.get("kind") == "derived" else "expression"
         recipes.insert(0, (_PRESERVE, f"Keep this {what} unchanged"))
-    if not has_calendar:
+    if not units:
         print(
-            "  Rolling windows, prior periods and growth need a calendar table in the package; "
+            "  Rolling windows, prior periods and growth need a calendar table in the package, "
+            f"with a {', '.join(_CALENDAR_COLUMNS.values())} column; "
             "they appear here once it has one."
         )
     recipe = _author_choice(
@@ -916,6 +916,7 @@ def _metric_change(
             saved.params,
             name,
             aggregation or getattr(loaded, "default_aggregation", ""),
+            units,
         )
     if aggregation and "measure" in fields:
         fields["aggregation"] = aggregation
@@ -1002,6 +1003,14 @@ _UNITS = [
     ("quarter", "Quarters"),
     ("year", "Years"),
 ]
+# The calendar column that fills each unit's periods, as the engine's time.fill reads it.
+_CALENDAR_COLUMNS = {
+    "day": "date_day",
+    "week": "week_start",
+    "month": "month_start",
+    "quarter": "quarter_start",
+    "year": "year_start",
+}
 _VALUE_TYPES = [
     ("number", "Number"),
     ("currency", "Currency"),
@@ -1127,7 +1136,12 @@ def _single_value_filter(predicate: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _time_recipe(
-    recipe: str, measure_id: str, saved: dict[str, Any], name: str, aggregation: str
+    recipe: str,
+    measure_id: str,
+    saved: dict[str, Any],
+    name: str,
+    aggregation: str,
+    units: list[tuple[str, str]],
 ) -> tuple[dict[str, Any], str]:
     """Prompt for one recipe over time; returns its fields and an example question."""
 
@@ -1135,7 +1149,7 @@ def _time_recipe(
         return {"measure": measure_id}, f"What is {name} by month?"
     if recipe == "rolling":
         window = dict(saved.get("window", {}))
-        unit = _saved_choice("Window unit", _UNITS, window.get("unit"), "day")
+        unit = _unit_choice("Window unit", units, window.get("unit"), "day")
         length = _author_count(
             "Window length", default=int(window.get("value") or {"day": 7, "week": 4}.get(unit, 3))
         )
@@ -1151,7 +1165,7 @@ def _time_recipe(
         period = _saved_choice("Period", periods, saved.get("period"), "month")
         return {"measure": measure_id, "period": period}, f"What is {name} by day?"
     offset = dict(saved.get("offset", {}))
-    unit = _saved_choice("Compare with how far back", _UNITS, offset.get("unit"), "month")
+    unit = _unit_choice("Compare with how far back", units, offset.get("unit"), "month")
     step = {
         "unit": unit,
         "value": _author_count(f"How many {unit}s back", default=int(offset.get("value") or 1)),
@@ -1168,6 +1182,23 @@ def _time_recipe(
         "right": dict(then),
     }
     return {"expression": growth}, f"How did {name} change by {unit}?"
+
+
+def _calendar_units(config: PackageConfig) -> list[tuple[str, str]]:
+    """The units whose periods the package calendar can fill."""
+
+    calendars = {row.id for row in config.entities if row.kind == "time"}
+    columns = {row.column for row in config.dimensions if row.entity in calendars}
+    return [(unit, text) for unit, text in _UNITS if _CALENDAR_COLUMNS[unit] in columns]
+
+
+def _unit_choice(label: str, units: list[tuple[str, str]], saved: Any, fallback: str) -> str:
+    """A unit for a calendar recipe, naming the calendar columns the others need."""
+
+    missing = [f"`{_CALENDAR_COLUMNS[unit]}`" for unit, _ in _UNITS if unit not in dict(units)]
+    if missing:
+        print(f"  More units need these columns on the calendar model: {', '.join(missing)}.")
+    return _saved_choice(label, units, saved, fallback if fallback in dict(units) else units[0][0])
 
 
 def _saved_choice(label: str, options: list[tuple[str, str]], saved: Any, fallback: str) -> str:
@@ -1586,26 +1617,6 @@ def _apply_authoring_change(
     print(f"  label   {label}")
     print(f"  file    {target}")
     current_backend().show_yaml(preview)
-    similar = project.find_similar(kind=kind, key=key, label=label)
-    if similar:
-        print("\n[warning] This sounds similar to existing definitions:")
-        for row in similar[:3]:
-            reason = str(row.get("reason", "similar wording"))
-            print(
-                f"  - {row.get('kind', kind)} {row.get('id') or row.get('key')} "
-                f"- {row.get('label', '')} ({reason})"
-            )
-        decision = _author_choice(
-            "How should we proceed?",
-            [
-                ("restart", "Cancel and restart with different wording"),
-                ("continue", "Create it as a deliberately distinct definition"),
-                ("cancel", "Cancel without writing"),
-            ],
-            default="restart",
-        )
-        if decision != "continue":
-            raise _AuthoringCancelled
     if not _author_confirm(f"{operation.title()} this {kind}?", default=False):
         raise _AuthoringCancelled
 
@@ -1650,6 +1661,24 @@ def _author_identity(
     *,
     parent: str = "",
 ) -> tuple[str, str, dict[str, Any] | None]:
+    """Ask for a key and label, again when the person declines to update an existing
+    object or wants wording less like another definition's."""
+
+    while True:
+        answer = _author_key_and_label(project, inventory, kind, default_key, parent)
+        if answer is None:
+            print(f"Enter another {kind} key, or type cancel.")
+        elif answer[2] is not None or _distinct(project, kind, answer[0], answer[1]):
+            return answer
+        else:
+            default_key = answer[0]
+
+
+def _author_key_and_label(
+    project: ArchitectProject, inventory: dict[str, Any], kind: str, default_key: str, parent: str
+) -> tuple[str, str, dict[str, Any] | None] | None:
+    """One key and label; None when the key is an existing object the person won't update."""
+
     raw = _author_prompt(f"{kind.title()} key", default_key)
     key = (
         ".".join(_slug(part, fallback="item") for part in raw.split("."))
@@ -1691,10 +1720,37 @@ def _author_identity(
             f"as {existing.get('label') or key}."
         )
         if not _author_confirm(f"Manage and update this existing {kind}?", default=False):
-            raise _AuthoringCancelled
+            return None
     default_label = str(existing.get("label", "")) if existing else _title(key)
     label = _author_prompt("Business label", default_label)
     return key, label, existing
+
+
+def _distinct(project: ArchitectProject, kind: str, key: str, label: str) -> bool:
+    """Show definitions that sound similar; False when the person wants other wording."""
+
+    similar = project.find_similar(kind=kind, key=key, label=label)
+    if not similar:
+        return True
+    print("\n[warning] This sounds similar to existing definitions:")
+    for row in similar[:3]:
+        reason = str(row.get("reason", "similar wording"))
+        print(
+            f"  - {row.get('kind', kind)} {row.get('id') or row.get('key')} "
+            f"- {row.get('label', '')} ({reason})"
+        )
+    decision = _author_choice(
+        "How should we proceed?",
+        [
+            ("restart", "Choose a different key and label"),
+            ("continue", "Create it as a deliberately distinct definition"),
+            ("cancel", "Cancel without writing"),
+        ],
+        default="restart",
+    )
+    if decision == "cancel":
+        raise _AuthoringCancelled
+    return decision == "continue"
 
 
 def _select_model(inventory: dict[str, Any]) -> dict[str, Any]:

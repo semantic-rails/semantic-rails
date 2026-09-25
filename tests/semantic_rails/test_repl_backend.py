@@ -272,9 +272,19 @@ def _picker_within(keys: str, ask: Callable[[PickerBackend], Any], seconds: floa
             "v17",
         ),
         (ENTER, lambda b: b.text("Model key", default="orders"), "orders"),
-        (CLEAR_LINE + "customers" + ENTER, lambda b: b.text("Model key", default="x"), "customers"),
-        ("y", lambda b: b.confirm("Create?", default=False), True),
+        # Typing replaces the default rather than appending to it.
+        ("customers" + ENTER, lambda b: b.text("Model key", default="orders"), "customers"),
+        ("y" + ENTER, lambda b: b.confirm("Create?", default=False), True),
         (ENTER, lambda b: b.confirm("Create?", default=False), False),
+        # The Enter after `y` confirms it; it does not answer the next question.
+        (
+            "y" + ENTER + "y" + ENTER,
+            lambda b: (
+                b.confirm("Default clock?", default=True),
+                b.confirm("Create?", default=False),
+            ),
+            (True, True),
+        ),
         (
             " " + DOWN + " " + ENTER,
             lambda b: b.multi_choose("Cols", OPTIONS, defaults=["c"]),
@@ -293,12 +303,14 @@ def test_pickers_answer_from_keystrokes(keys: str, ask: Any, expected: Any) -> N
         (CTRL_C, lambda b: b.text("Model key")),
         (CTRL_C, lambda b: b.confirm("Create?", default=True)),
         (CTRL_C, lambda b: b.multi_choose("Cols", OPTIONS)),
-        (CLEAR_LINE + "cancel" + ENTER, lambda b: b.text("Model key", default="x")),
+        ("cancel" + ENTER, lambda b: b.text("Model key", default="order_value")),
+        ("cancel" + ENTER, lambda b: b.choose("Pick", OPTIONS, default="b")),
+        ("quit" + ENTER, lambda b: b.choose("Pick", [(f"v{i}", f"Value {i}") for i in range(20)])),
     ],
 )
 def test_pickers_cancel_like_plain_prompts(keys: str, ask: Any) -> None:
     with pytest.raises(Cancelled):
-        _picker(keys, ask)
+        _picker_within(keys, ask)
 
 
 @pytest.mark.parametrize(
@@ -319,8 +331,8 @@ def test_ctrl_d_cancels_every_unedited_picker(ask: Any) -> None:
 
 def test_ctrl_d_edits_text_once_it_is_edited() -> None:
     # With the cursor moved into the text, Ctrl-D deletes the next character.
-    answer = _picker_within(CTRL_A + CTRL_D + ENTER, lambda b: b.text("Key", default="orders"))
-    assert answer == "rders"
+    keys = "orders" + CTRL_A + CTRL_D + ENTER
+    assert _picker_within(keys, lambda b: b.text("Key", default="x")) == "rders"
 
 
 class _Recorder:

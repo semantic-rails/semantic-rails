@@ -18,7 +18,12 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.architect_service import ProjectSpec, ProjectWarehouse, create_project
+from semantic_rails.architect_service import (
+    ArchitectProject,
+    ProjectSpec,
+    ProjectWarehouse,
+    create_project,
+)
 from semantic_rails.cli import scaffold
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
@@ -150,7 +155,8 @@ def test_the_table_list_marks_modeled_tables_and_defaults_to_an_unmodeled_one(sh
         {
             "Table to model": "Type a table name instead",
             "Model key": "orders",
-            "Create this model?": False,
+            "Manage and update this existing model?": True,
+            "Update this model?": False,
         },
     )
 
@@ -237,6 +243,28 @@ def test_type_a_table_name_uses_the_typed_flow(shop: Path) -> None:
     )
 
     assert "Warehouse table or relation (for example raw_orders)" in script.asked
+
+
+def test_other_wording_for_a_similar_table_model_asks_for_its_key(
+    shop: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def similar(self: Any, kind: str, key: str, label: str) -> list[dict[str, Any]]:
+        return [{"kind": kind, "key": "sales", "label": label}] if key == "orders" else []
+
+    monkeypatch.setattr(ArchitectProject, "find_similar", similar)
+    script, _ = _author(
+        shop,
+        {
+            "Table to model": ORDERS,
+            "How should we proceed?": "different key",
+            "Model key": "order_facts",
+            "Create this model?": False,
+        },
+    )
+
+    asked = script.asked
+    assert asked.index("How should we proceed?") < asked.index("Model key")
+    assert "Warehouse table or relation (for example raw_orders)" in asked
 
 
 def test_without_a_database_file_it_says_why_and_types_the_table_in(
