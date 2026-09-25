@@ -46,7 +46,18 @@ if (!apiSecret) {
   process.exit(1);
 }
 
+// Cube turns dev mode (the dev server and its unauthenticated Playground routes) back on with
+// CUBEJS_DEV_MODE, which @cubejs-backend/server also loads from a .env file in the working
+// directory. Refuse both, then load the server.
+if (fs.existsSync(path.join(process.cwd(), ".env"))) {
+  console.error(`Remove ${path.join(process.cwd(), ".env")}; this setup takes no .env file.`);
+  process.exit(1);
+}
 const CubejsServer = require("@cubejs-backend/server");
+if (process.env.CUBEJS_DEV_MODE !== undefined) {
+  console.error("Unset CUBEJS_DEV_MODE; this setup runs Cube in production mode only.");
+  process.exit(1);
+}
 
 const database = path.resolve(
   __dirname,
@@ -55,6 +66,7 @@ const database = path.resolve(
 
 const server = new CubejsServer({
   apiSecret,
+  devServer: false,
   schemaPath: "model",
   telemetry: false,
   // No cross-origin browser access.

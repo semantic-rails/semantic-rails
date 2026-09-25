@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T23:07:10+00:00",
+  "generated_at": "2026-09-25T23:45:53+00:00",
   "headline_findings": [
     "On all 16 questions, the 5 layers checked on the current dataset (Semantic Rails, MetricFlow, Cube, Malloy and KtX) return the independent answer key's normalized outputs, with numbers matching within 1e-6.",
     "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not been re-run, so it is left out of that count. Its capture matches the answer key on 14 questions and differs on: q07, q16.",
@@ -14,7 +14,7 @@
     "Cube answers q08-q16 with declared joins carrying validity and event-window conditions, subquery dimensions and multi-stage measures, and q05 as one multi-fact query.",
     "Malloy answers q08-q16 with arbitrary-condition joins and query-derived sources joined back to orders.",
     "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
-    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack; ktx-sl 0.16.0 joins are equality-only and it has no query-derived sources, and KtX's own guidance directs SQL sources for these per-entity derivations.",
+    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack; the ktx-sl bundled in @kaelio/ktx 0.16.0 has equality-only joins and no query-derived sources. The SQL sources are standalone per-question fact tables rather than bridge sources joined to orders (the q10 and q13 sources differ only in grain), a known gap in this pack's KtX model.",
     "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here."
   ],
   "validation_summary": {
@@ -1924,7 +1924,7 @@
           "query_path": "comparisons/semantic_layers/ktx/queries/q13_daily_orders_from_customers_with_10plus_orders_in_month.json",
           "result_path": "comparisons/semantic_layers/shared/results/ktx/q13_daily_orders_from_customers_with_10plus_orders_in_month/result.json",
           "sql_path": "comparisons/semantic_layers/shared/results/ktx/q13_daily_orders_from_customers_with_10plus_orders_in_month/sql.sql",
-          "notes": "Executed through the SQL-backed qualifying-order source at day grain.",
+          "notes": "Executed through a separate KtX SQL source that duplicates the q10 source at day grain.",
           "row_count": 365,
           "snippet_excerpt": "    group by 1, 2\n  )\n  select\n    o.order_id as qualifying_order_id,\n    date_trunc('day', o.ordered_at) as ordered_day\n  from comparison_orders as o\n  inner join customer_months as c\n    on o.customer_id = c.customer_id\n   and date_trunc('month', o.ordered_at) = c.ordered_month\n  where c.monthly_orders > 10\ngrain: [qualifying_order_id]\ncolumns:\n  - name: qualifying_order_id\n    type: string\n  - name: ordered_day\n    type: time\n    role: time\nmeasures:\n  - name: qualifying_orders\n    expr: count_distinct(qualifying_order_id)",
           "query_excerpt": "{\n  \"dimensions\": [\n    {\n      \"field\": \"daily_orders_from_high_frequency_customers_month.ordered_day\",\n      \"granularity\": \"day\"\n    }\n  ],\n  \"include_empty\": false,\n  \"limit\": 5000,\n  \"measures\": [\n    \"daily_orders_from_high_frequency_customers_month.qualifying_orders\"\n  ]\n}",

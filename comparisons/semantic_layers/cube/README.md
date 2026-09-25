@@ -58,7 +58,8 @@ cd comparisons/semantic_layers/cube && CUBEJS_API_SECRET="$(openssl rand -hex 32
 Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sql`, `/load`).
 `index.js` fixes everything else:
 
-- Production mode: no dev server or Playground, and every request needs an `Authorization`
+- Production mode: no dev server or Playground (it refuses to start with `CUBEJS_DEV_MODE` set or a
+  `.env` file present), and every request needs an `Authorization`
   header carrying an HS256 JWT signed with `CUBEJS_API_SECRET` (`token()` in
   `scripts/run_questions.py` makes one). Cube listens on every interface (it has no bind
   option), so keep the secret private; cross-origin browser requests are refused.

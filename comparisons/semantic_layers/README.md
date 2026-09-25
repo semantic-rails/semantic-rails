@@ -40,8 +40,9 @@ compare latency, token use or cost. It runs without touching the active
   with the features they ship: MetricFlow conversion metrics and metric filters, Cube
   multi-fact queries, multi-stage measures and subquery dimensions, Malloy arbitrary-condition
   joins and query-derived sources. KtX's `ktx-sl` was reviewed for native alternatives: its
-  joins are equality-only and it has no query-derived sources, so its `workaround` labels stand,
-  through SQL sources that KtX's own guidance recommends for these cases. Snowflake range joins
+  joins are equality-only and it has no query-derived sources, so its `workaround` labels stand.
+  Its SQL sources are standalone per-question fact tables rather than bridge sources joined to
+  `orders`, a known gap in this pack's KtX model (see `ktx/README.md`). Snowflake range joins
   aren't modeled, because the capture can't be re-run. A `workaround` label describes this
   pack's model of a layer, not the layer itself. Nothing in this pack claims that any layer,
   Semantic Rails included, is better than another.
@@ -98,7 +99,7 @@ each layer today. It is not a ranking.
 | Cube | 9 native | Declared joins carrying validity and 7-day windows (q08, q09, q15, q16), subquery dimensions (q09, q11, q12, q15), and multi-stage measures at a fixed customer-month or customer-store-month grain (q10, q13, q14) |
 | Malloy | 9 native | Arbitrary-condition joins (q08, q09, q15, q16) and query-derived sources joined back to orders (q10-q14) |
 | Snowflake Semantic Views | 7 workaround, 2 precomputed | Stale capture: SQL on the same tables outside `SEMANTIC_VIEW(...)`; range joins not modeled, since the capture can't be re-run |
-| KtX | 7 workaround, 2 precomputed | SQL-backed sources, as KtX's guidance recommends for per-entity derivations (its joins are equality-only), and query-level filters on the rollup columns for q11 and q12 |
+| KtX | 7 workaround, 2 precomputed | SQL-backed sources (its joins are equality-only; they are standalone per-question fact tables, a known gap described in `ktx/README.md`), and query-level filters on the rollup columns for q11 and q12 |
 
 Output check: 9 of 9 match the answer key across the five layers checked on the current dataset.
 

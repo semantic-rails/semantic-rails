@@ -19,11 +19,18 @@ DuckDB data as the other local comparison layers.
   its joins are equality-only (`on` accepts `=` conditions only), its measures
   reject window functions, and it has no query-derived sources, so the
   temporal-validity joins, the 7-day conversion windows and the per
-  customer-month order counts can't be expressed without SQL. KtX's own
-  authoring guidance directs a `sql:` source for exactly this case (a
-  per-entity derivation such as an `EXISTS` over a time-windowed subset), and
-  asks that each one name the gap that forced it; every SQL source here does,
-  in its `descriptions`.
+  customer-month order counts can't be expressed without SQL. Each SQL source
+  names the gap that forced it in its `descriptions`.
+- Known gap in this pack's KtX model: the SQL sources are standalone
+  per-question fact tables, not small bridge sources joined to `orders` by
+  `order_id` (or to sessions by `session_id`). Three re-derive revenue in SQL,
+  the q14 source joins `comparison_stores` by hand although `stores` is a
+  declared source, the q10 and q13 sources differ only in their `date_trunc`
+  grain, and KtX's validator reports the model as 8 disconnected components
+  (`../shared/results/ktx/validate.json`). An expert would more likely write one
+  bridge source per derivation and query the existing `orders` measures. That
+  wouldn't change a label: the rubric labels any non-passthrough SQL source
+  `workaround`.
 - `q11` and `q12` filter on the precomputed customer rollup columns
   (`lifetime_order_count`, `lifetime_spend_cents`), so the rubric labels them
   `precomputed`. KtX has no construct that computes a per-customer lifetime

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T23:07:10+00:00",
+  "generated_at": "2026-09-25T23:45:53+00:00",
   "claims": [
     "On all 16 questions, the 5 layers checked on the current dataset (Semantic Rails, MetricFlow, Cube, Malloy and KtX) return the independent answer key's normalized outputs, with numbers matching within 1e-6.",
     "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not been re-run, so it is left out of that count. Its capture matches the answer key on 14 questions and differs on: q07, q16.",

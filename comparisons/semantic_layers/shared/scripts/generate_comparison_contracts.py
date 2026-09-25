@@ -871,7 +871,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "q10_orders_from_customers_with_10plus_orders_in_month": "Executed through a KtX SQL source that precomputes qualifying customer-month orders.",
             "q11_repeat_customer_orders_by_store_by_month": "Executed as a query-level filter on the joined, precomputed customer lifetime order count.",
             "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as a query-level filter on the joined, precomputed customer lifetime spend.",
-            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through the SQL-backed qualifying-order source at day grain.",
+            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through a separate KtX SQL source that duplicates the q10 source at day grain.",
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a KtX SQL source that materializes qualifying customer store-month revenue.",
             "q15_same_store_session_to_order_conversion_7d": "Executed through a KtX SQL source that materializes same-store session matches.",
             "q16_revenue_by_customer_segment_as_of_delivered_time": "Executed through a KtX SQL source that bakes the delivered-time temporal join into the model.",
@@ -1041,7 +1041,7 @@ LAYER_FINDINGS = [
     "Cube answers q08-q16 with declared joins carrying validity and event-window conditions, subquery dimensions and multi-stage measures, and q05 as one multi-fact query.",
     "Malloy answers q08-q16 with arbitrary-condition joins and query-derived sources joined back to orders.",
     "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
-    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack; ktx-sl 0.16.0 joins are equality-only and it has no query-derived sources, and KtX's own guidance directs SQL sources for these per-entity derivations.",
+    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack; the ktx-sl bundled in @kaelio/ktx 0.16.0 has equality-only joins and no query-derived sources. The SQL sources are standalone per-question fact tables rather than bridge sources joined to orders (the q10 and q13 sources differ only in grain), a known gap in this pack's KtX model.",
     "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here.",
 ]
 
