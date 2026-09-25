@@ -20,7 +20,7 @@ import tarfile
 import tempfile
 import unicodedata
 from collections.abc import Iterable, Iterator
-from decimal import Decimal
+from decimal import Context, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -1555,8 +1555,8 @@ def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 def _canonical_number(value: Any) -> Any:
     """One form per number, so a DECIMAL result matches the int or float YAML loads.
 
-    Whole numbers become ints; others become normalized Decimals (a float by its
-    shortest repr), so DECIMAL digits beyond a float's precision still count.
+    Whole numbers become ints and others Decimals without trailing zeros. A float
+    compares as its shortest repr; Decimals compare exactly, to the last digit.
     """
     if isinstance(value, bool) or not isinstance(value, (float, Decimal)):
         return value
@@ -1566,4 +1566,7 @@ def _canonical_number(value: Any) -> Any:
         value = Decimal(repr(value))
     elif not value.is_finite():
         return value
-    return int(value) if value == value.to_integral_value() else value.normalize()
+    if value == value.to_integral_value():
+        return int(value)
+    # A bare normalize() rounds to the default 28 digits; a DECIMAL can hold 38.
+    return value.normalize(Context(prec=len(value.as_tuple().digits)))

@@ -49,6 +49,8 @@ def test_decimal_results_match_the_numbers_written_in_yaml(tmp_path: Path) -> No
 def test_numbers_compare_by_value_to_the_last_digit() -> None:
     assert _normalize_rows([{"x": Decimal("0.10")}]) == _normalize_rows([{"x": 0.1}])
     assert _normalize_rows([{"x": Decimal("262.00")}]) == _normalize_rows([{"x": 262}])
+    assert _normalize_rows([{"x": Decimal("-0.10")}]) == _normalize_rows([{"x": -0.1}])
+    assert _normalize_rows([{"x": Decimal("-262.00")}]) == _normalize_rows([{"x": -262}])
     # Rows sort by their JSON text, which put Decimal 3 before 30 but int 30 before 3.
     decimals = [{"x": Decimal("3")}, {"x": Decimal("30")}]
     assert _normalize_rows(decimals) == _normalize_rows([{"x": 30}, {"x": 3}])
@@ -56,4 +58,8 @@ def test_numbers_compare_by_value_to_the_last_digit() -> None:
     assert _normalize_rows([{"x": Decimal("12345678.123456789012")}]) != _normalize_rows(
         [{"x": Decimal("12345678.123456789013")}]
     )
+    # 38 digits, a DECIMAL's maximum, past the default context's 28.
+    wide = Decimal("12345678901234567890.123456789012345678")
+    assert _normalize_rows([{"x": wide}])[0]["x"] == wide
+    assert _normalize_rows([{"x": wide}]) != _normalize_rows([{"x": wide + Decimal("1E-18")}])
     assert _normalize_rows([{"flag": True}])[0]["flag"] is True  # bools stay bools
