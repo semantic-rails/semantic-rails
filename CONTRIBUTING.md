@@ -52,7 +52,7 @@ The package compiles into the runtime's `PackageConfig` via `semantic_rails/conf
 
 ### Metadata and guided builder
 
-Start here when changing catalog, discovery, inspect cards, build-options, valid-values, or plan behavior. HTTP and CLI surfaces call into `semantic_rails/runtime.py`; metadata payload builders live under `semantic_rails/metadata.py` and `semantic_rails/metadata_parts/`. The preferred user flow is `discover -> inspect -> plan/build-options -> valid-values -> validate -> compile -> execute` (relevance/scope screening runs inline on `discover` and `plan`; `compile`'s response includes the `explain` payload).
+Start here when changing catalog, discovery, inspect cards, build-options, valid-values, or plan behavior. HTTP and CLI surfaces call into `semantic_rails/runtime.py`; metadata payload builders live under `semantic_rails/metadata.py` and `semantic_rails/metadata_parts/`. The preferred user flow is `discover -> plan -> execute`; `inspect`, `build-options` and `valid-values` are optional helpers, and `validate` and `compile` are optional dry runs, because `execute` runs the same bind, policy and compile steps (relevance/scope screening runs inline on `discover` and `plan`; `compile`'s response includes the `explain` payload).
 
 ### Query compilation and execution
 
