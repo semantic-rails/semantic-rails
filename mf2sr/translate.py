@@ -88,6 +88,7 @@ def translate(
     warehouse: str = "duckdb",
     default_db: str | None = None,
     description: str | None = None,
+    schema_strict: bool = False,
 ) -> TranslationReport:
     """Translate a MetricFlow input into a Semantic Rails package
     directory and return a :class:`TranslationReport`.
@@ -105,6 +106,11 @@ def translate(
                       shape; DuckDB packages additionally need `default_db`.
         default_db:   File path for DuckDB. Ignored for Snowflake.
         description:  Optional package description.
+        schema_strict: Write a ``schema_strict: true`` package whose relations
+                      keep the schema (and, on a catalog warehouse, the
+                      database) of their ``node_relation``, as dbt's
+                      ``semantic_manifest.json`` records it. The package is
+                      parse-checked, and each strict error is a warning.
     """
     namespace = namespace or package_id
     src = Path(source)
@@ -133,6 +139,7 @@ def translate(
         warehouse=warehouse,
         default_db=default_db,
         description=description,
+        schema_strict=schema_strict,
     )
     _write_graph_yml(out_root, graph)
 
@@ -168,7 +175,11 @@ def translate(
             # Already warned during graph extraction; just skip emit.
             continue
         model_doc, measures_in_model = _build_model(
-            sm, graph, report, suppress_publish=metric_names
+            sm,
+            graph,
+            report,
+            suppress_publish=metric_names,
+            relation=_relation(sm, warehouse=warehouse, keep_schema=schema_strict, report=report),
         )
         (models_dir / f"{name}.yml").write_text(_dump_yaml({"model": model_doc}))
         report.models_emitted.append(name)
@@ -217,6 +228,11 @@ def translate(
             grouped = {name: doc for name, doc in entries}
             (metrics_dir / f"{owner}.yml").write_text(_dump_yaml({"metrics": grouped}))
 
+    if schema_strict:  # semantic_rails loads only here, so mf2sr imports without it
+        from semantic_rails.config_validation import PackageReference, parse_config_report
+
+        parse, _ = parse_config_report(PackageReference(source_path=str(out_root)))
+        report.warnings.extend(f"strict parse: {e.get('message', '')}" for e in parse["errors"])
     report.provenance = {
         "format_version": 1,
         "framework": "metricflow",
@@ -227,6 +243,29 @@ def translate(
         "warnings": list(report.warnings),
     }
     return report
+
+
+# Warehouses whose dbt ``database`` is a catalog that a relation name leads with.
+_CATALOG_WAREHOUSES = frozenset({"bigquery", "databricks", "snowflake"})
+
+
+def _relation(
+    sm: dict[str, Any], *, warehouse: str, keep_schema: bool, report: TranslationReport
+) -> str:
+    """The relation a semantic model reads: its ``node_relation`` alias, and in
+    strict mode also its schema (and a catalog warehouse's database)."""
+    node = dict(sm.get("node_relation") or {})
+    alias = str(node.get("alias") or sm["name"])
+    if not keep_schema:
+        return alias
+    if not node.get("schema_name"):
+        report.warnings.append(
+            f"semantic model `{sm['name']}` names no schema, so its relation stays `{alias}`; "
+            "translate dbt's target/semantic_manifest.json to keep schemas"
+        )
+        return alias
+    database = str(node.get("database") or "") if warehouse in _CATALOG_WAREHOUSES else ""
+    return ".".join(part for part in (database, str(node["schema_name"]), alias) if part)
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +403,7 @@ def _build_model(
     report: TranslationReport,
     *,
     suppress_publish: set[str] | None = None,
+    relation: str,
 ) -> tuple[dict[str, Any], list[tuple[str, str, str]]]:
     """Build the Semantic Rails `model:` body for one MetricFlow
     semantic_model. Returns `(model_doc, measures)` where `measures` is
@@ -372,7 +412,6 @@ def _build_model(
     primary entity and no measures (skipped).
     """
     name = sm["name"]
-    relation = (sm.get("node_relation") or {}).get("alias") or name
     description = sm.get("description") or sm.get("label") or name
 
     doc: dict[str, Any] = {
@@ -1496,18 +1535,16 @@ def _write_package_yml(
     warehouse: str,
     default_db: str | None,
     description: str | None,
+    schema_strict: bool,
 ) -> None:
-    # The translator emits `schema_strict: false` because MetricFlow
-    # measure metadata is too thin to satisfy strict checks out of the
-    # gate (most measures lack a meaningful `value_type:` distinction,
-    # so ratio/derived metrics fall back to `number` and strict mode
-    # rejects them). The author should flip this to `true` after
-    # reviewing measure value_types and adding business meaning.
+    # Without --schema-strict the package is `schema_strict: false`, so a
+    # project whose relations or types need review still loads; strict mode
+    # parse-checks the output instead.
     pkg: dict[str, Any] = {
         "id": package_id,
         "namespace": namespace,
         "warehouse": warehouse,
-        "schema_strict": False,
+        "schema_strict": schema_strict,
         "environments": ["development", "staging", "production"],
     }
     if description:

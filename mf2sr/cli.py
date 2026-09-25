@@ -88,6 +88,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit non-zero if any warnings are emitted.",
     )
+    parser.add_argument(
+        "--schema-strict",
+        action="store_true",
+        help="Write a schema_strict package whose relations keep their schema, parse-checked.",
+    )
     return parser
 
 
@@ -102,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             warehouse=args.warehouse,
             default_db=args.default_db,
             description=args.description,
+            schema_strict=args.schema_strict,
         )
     except FileExistsError as exc:
         print(f"mf2sr: {exc}", file=sys.stderr)

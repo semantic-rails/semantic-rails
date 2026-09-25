@@ -88,12 +88,23 @@ files from authored files; choose a fresh output path for each translation.
   metrics/<group>.yml  # metrics grouped by the source semantic_model
 ```
 
-`schema_strict: false` is emitted by default because MetricFlow
-measure metadata is too thin to satisfy Semantic Rails' strict
-validator (most measures lack a meaningful `value_type:` distinction
-to support ratio/derived metric type inference). Flip it to `true`
-after reviewing measure value_types and adding governance metadata
-(`meta.owner_team`, `meta.review_priority`, `meta.change_risk`).
+By default the package is `schema_strict: false` and each model's `relation`
+is the bare dbt alias (`fct_orders`), so a project that needs review still loads.
+
+`--schema-strict` (`translate(schema_strict=True)`, also on
+`semantic-rails import --from metricflow`) writes a `schema_strict: true`
+package over the tables dbt built:
+
+- Each relation keeps the schema from its `node_relation`
+  (`main_marts.fct_orders`), and on Snowflake, BigQuery and Databricks also the
+  database. dbt's `target/semantic_manifest.json` records them; a MetricFlow YAML
+  directory (`model: ref('fct_orders')`) doesn't, so its relations stay bare, with
+  a warning.
+- The output is parse-checked. Each strict error is a `strict parse:` warning,
+  so `--strict` fails the run.
+
+For a DuckDB warehouse, point `--default-db` at the database file dbt builds,
+inside the package.
 
 DuckDB packages emit a placeholder `seed.source` pointing at
 `data/seed_<package_id>.sql` that the author must create. Snowflake

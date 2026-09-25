@@ -875,6 +875,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional package description.",
     )
+    p_import.add_argument(
+        "--schema-strict",
+        action="store_true",
+        help="Write a schema_strict package whose relations keep their schema, parse-checked.",
+    )
     p_import.set_defaults(func=cmd_import)
 
     p_serve = sub.add_parser(
