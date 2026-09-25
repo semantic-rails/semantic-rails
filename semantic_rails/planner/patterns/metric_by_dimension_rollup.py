@@ -28,6 +28,7 @@ from .._base import (
     _explicit_grain,
     _implied_window_grain,
     _maybe_group_by,
+    _named_metric,
     _object_by_id,
     _preferred_measure,
     _preferred_metric,
@@ -62,6 +63,10 @@ _TIME_SERIES_PHRASES = (
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
     config = runtime._config
+    named = _named_metric(config, text)
+    if named is not None:
+        text = named[1]
+        terms = set(_tokens(text))
     lowered = str(text or "").lower()
     target_focus = _target_focus_text(text)
     target_focus_terms = set(_tokens(target_focus))
@@ -106,8 +111,8 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # target_terms hint first; if the intent doesn't carry one of the
     # canonical concept words (revenue / order / arr / etc.) we just
     # use the raw term set against the catalog.
-    target = None
-    if target_terms:
+    target = named[0] if named is not None else None
+    if target is None and target_terms:
         if metric_first:
             target = _preferred_metric(config, target_terms)
             if target is None:

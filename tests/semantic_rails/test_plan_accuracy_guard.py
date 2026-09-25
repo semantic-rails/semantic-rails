@@ -12,11 +12,13 @@ them depends on what today's planner happens to draft.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import duckdb
 import pytest
+import yaml
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner.faithfulness import (
@@ -26,6 +28,8 @@ from semantic_rails.planner.faithfulness import (
     unmatched_intent_terms,
 )
 from semantic_rails.planner.intent_ir import parse_intent
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
@@ -1380,3 +1384,129 @@ def test_an_unresolved_window_stays_visible_beside_other_gaps(
     kinds = [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     assert "contradictory_filters" in kinds and "time_window_unresolved" in kinds
+
+
+# --- metrics the question names ---------------------------------------------
+
+# A filtered and a rolling metric, as the authoring wizard writes them; the
+# wizard suggests asking "What is <label> by <grain>?".
+NAMED_METRICS = {
+    "sales.large_order_revenue": {
+        "as": "metric.sales.large_order_revenue",
+        "label": "Large order revenue",
+        "kind": "aggregate",
+        "value_type": "currency",
+        "currency": "USD",
+        "temporal_role": ORDER_TIME,
+        "expression": {
+            "kind": "aggregate",
+            "measure": "measure.jaffle.revenue_usd",
+            "aggregation": "sum",
+            "filter": {
+                "all": [
+                    {"field": "dimension.jaffle_order_is_large_order", "op": "IN", "value": [True]}
+                ]
+            },
+        },
+    },
+    "sales.revenue_trailing_7_days": {
+        "as": "metric.sales.revenue_trailing_7_days",
+        "label": "Revenue, trailing 7 days",
+        "kind": "rolling",
+        "measure": "revenue_usd",
+        "aggregation": "sum",
+        "window": {"unit": "day", "value": 7},
+        "value_type": "currency",
+        "currency": "USD",
+        "temporal_role": ORDER_TIME,
+    },
+}
+
+
+@pytest.fixture()
+def named_metrics(tmp_path: Path) -> Iterator[SemanticLayerMCPAdapter]:
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    extra = package / "metrics" / "extensions" / "named_metrics.yml"
+    extra.write_text(yaml.safe_dump({"metrics": NAMED_METRICS}), encoding="utf-8")
+    mcp = SemanticLayerMCPAdapter(Runtime.from_path(str(package)))
+    try:
+        yield mcp
+    finally:
+        mcp.close()
+
+
+@pytest.mark.parametrize(
+    ("text", "subject", "status", "gap"),
+    [
+        # The wizard's questions answer with the metric they name, by label or id,
+        # and the label's own words are not also a window or a top 7.
+        ("What is large order revenue by month?", "metric.sales.large_order_revenue", "ok", None),
+        (
+            "What is revenue, trailing 7 days by day?",
+            "metric.sales.revenue_trailing_7_days",
+            "ok",
+            None,
+        ),
+        (
+            "metric.sales.large_order_revenue by month",
+            "metric.sales.large_order_revenue",
+            "ok",
+            None,
+        ),
+        ("cumulative revenue by month", "metric.sales.cumulative_revenue", "ok", None),
+        # A draft without the named metric, or a second subject, isn't ready.
+        (
+            "large order revenue vs prior month by month",
+            None,
+            "low_confidence",
+            "named_metric_unrealized",
+        ),
+        (
+            "large order revenue and orders by month",
+            None,
+            "low_confidence",
+            "multiple_subjects_unrealized",
+        ),
+        (
+            "revenue and orders by month",
+            "measure.jaffle.revenue_usd",
+            "low_confidence",
+            "multiple_subjects_unrealized",
+        ),
+        # A filter on a named dimension whose value the catalog doesn't declare.
+        (
+            "revenue where customer order number is 1",
+            None,
+            "low_confidence",
+            "dimension_filter_unrealized",
+        ),
+    ],
+)
+def test_plan_answers_or_flags_the_metric_a_question_names(
+    named_metrics: SemanticLayerMCPAdapter,
+    text: str,
+    subject: str | None,
+    status: str,
+    gap: str | None,
+) -> None:
+    payload = named_metrics.call_tool("plan", {"intent": text})
+    query = payload["best"]["query_ir"]
+    assert payload["status"] == status
+    if subject is not None:
+        assert [
+            row["expression"].get("metric") or row["expression"].get("measure")
+            for row in query["select"]
+        ] == [subject]
+    if status == "ok":
+        assert "range" not in query["time"] and "limit" not in query
+    else:
+        assert gap in [row["kind"] for row in payload["why"]["details"]["gaps"]]
+
+
+def test_a_where_clause_is_honored_by_a_filter_on_its_dimension(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    text = "revenue where customer order number is 1"
+    number = "dimension.jaffle_order_customer_order_number"
+    assert _gap_kinds(adapter, text, _query()) == ["dimension_filter_unrealized"]
+    assert _gap_kinds(adapter, text, _query(where=[{"field": number, "op": "=", "value": 1}])) == []

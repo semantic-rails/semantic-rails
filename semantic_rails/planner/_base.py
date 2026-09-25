@@ -312,6 +312,47 @@ def _preferred_metric(config: Any, terms: Iterable[str]) -> Any | None:
     return ranked[0][3] if ranked and ranked[0][0] > 0 else None
 
 
+def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
+    """The metric the question names by its label, an alias or its id, and the
+    question with that name replaced by the id.
+
+    The name has two words or more, and every measure the question names lies
+    inside it, so the metric is the more specific reading: "completed revenue
+    by month" means the Completed Revenue metric, not the Revenue measure. A
+    measure with the same name, or named elsewhere ("revenue and orders"),
+    leaves the question to measure-first resolution. The id stands in for the
+    name so its words ("revenue, trailing 7 days") aren't read again as a
+    window, a count or a value.
+    """
+
+    words = list(re.finditer(r"[^\W_]+", text.lower()))
+    said = [word.group() for word in words]
+
+    def named(rows: Iterable[Any]) -> Iterable[tuple[int, int, Any]]:
+        for row in rows:
+            for name in (row.label, row.id, *(getattr(row, "aliases", None) or [])):
+                parts = re.findall(r"[^\W_]+", str(name or "").lower())
+                start = next(
+                    (i for i in range(len(said)) if parts and said[i : i + len(parts)] == parts),
+                    None,
+                )
+                if start is not None:
+                    yield len(parts), start, row
+
+    size, start, metric = max(
+        (item for item in named(config.metric_recipes) if item[0] > 1),
+        key=lambda item: item[0],
+        default=(0, 0, None),
+    )
+    if metric is None or any(
+        not (start <= begin and begin + length <= start + size and length < size)
+        for length, begin, _row in named(config.measures)
+    ):
+        return None
+    first, last = words[start].start(), words[start + size - 1].end()
+    return metric, f"{text[:first]}{metric.id}{text[last:]}"
+
+
 def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
     allowed = set(getattr(measure, "allowed_aggregations", []) or [])
     if ("sum" in terms or "total" in terms) and "sum" in allowed:
