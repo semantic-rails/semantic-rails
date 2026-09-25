@@ -85,18 +85,39 @@ class PlainBackend:
         return value in {"y", "yes", "true", "1"}
 
     def choose(self, label: str, options: Sequence[Option], *, default: str = "") -> str:
+        values = [value for value, _ in options]
+        if default and default not in values:
+            raise SemanticLayerError(
+                "INVALID_CONFIG", f"{label} default {default!r} is not a choice"
+            )
         print(f"{label}")
         for index, (value, description) in enumerate(options, start=1):
             recommended = " (recommended)" if value == default else ""
             print(f"  {index}. {description}{recommended}")
         aliases = {str(index): value for index, (value, _) in enumerate(options, start=1)}
-        values = {value for value, _ in options}
         while True:
-            raw = self.text("Choose", default=default).lower()
-            selected = aliases.get(raw, raw)
-            if selected in values:
-                return selected
-            print("Choose a number or one of: " + ", ".join(value for value, _ in options))
+            suffix = f" [{default}]" if default else ""
+            try:
+                raw = input(f"Choose{suffix}: ").strip()
+            except (EOFError, KeyboardInterrupt) as exc:
+                raise Cancelled from exc
+            if raw.lower() in _CANCEL_WORDS:
+                raise Cancelled
+            if not raw and default:
+                return default
+            # Numbered menu answers win for typed digits; Enter still picks
+            # the exact default even if its value looks like a menu number.
+            if raw in aliases:
+                return aliases[raw]
+            if raw in values:
+                return raw
+            matches = [value for value in values if value.casefold() == raw.casefold()]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                print("Ambiguous choice; use an exact value or a menu number")
+            else:
+                print("Choose a number or one of: " + ", ".join(values))
 
     def multi_choose(
         self, label: str, options: Sequence[Option], *, defaults: Collection[str] = ()
