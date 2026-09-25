@@ -1569,7 +1569,11 @@ def test_a_named_order_date_is_the_order_clock(
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
     query = plan["best"]["query_ir"]
-    assert (plan["status"], plan["warnings"]) == ("ok", [])
+    assert plan["status"] == "ok"
+    # "At <unit> grain" names no catalog object, so the plan reports "grain" as unmatched.
+    grain_only = [{"code": "PLAN_UNMATCHED_TERMS", "terms": ["grain"]}] if "grain" in intent else []
+    warnings = [{"code": w["code"], "terms": w["details"]["terms"]} for w in plan["warnings"]]
+    assert warnings == grain_only
     assert query.get("group_by", []) == group_by
     assert query["time"] == {"temporal_role": ORDER_TIME, **time}
 
@@ -1595,3 +1599,9 @@ def test_another_clocks_date_is_not_the_order_clock(adapter: SemanticLayerMCPAda
     query = plan["best"]["query_ir"]
     assert "dimension.jaffle_customer_first_order_at" in query["group_by"]
     assert "time" not in query
+    # With a grain, the draft still groups by that raw timestamp, and "grain" stays flagged.
+    intent = "revenue by store and customer first order date at month grain"
+    plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
+    assert "dimension.jaffle_customer_first_order_at" in plan["best"]["query_ir"]["group_by"]
+    codes = {w["code"]: w["details"]["terms"] for w in plan["warnings"]}
+    assert "grain" in codes["PLAN_UNMATCHED_TERMS"]
