@@ -49,7 +49,7 @@ def spec(name: str, description: str, properties: dict, required: list[str]) -> 
 def clean(raw: str) -> str:
     """Plain text as a terminal would leave it: escapes removed, carriage returns applied."""
     lines = ESCAPES.sub("", raw).replace("\r\n", "\n").split("\n")
-    return "\n".join(line.rsplit("\r", 1)[-1] for line in lines)
+    return "\n".join(line.rstrip("\r").rsplit("\r", 1)[-1] for line in lines)
 
 
 class Terminal:
@@ -96,7 +96,8 @@ class Terminal:
 
     def call(self, name: str, args: dict[str, Any]) -> tuple[str, str]:
         """Run one terminal tool; return (text for the model, error)."""
-        wait = min(max(int(args.get("wait_ms") or 10_000), 0), 60_000) / 1000
+        wait_ms = args.get("wait_ms")
+        wait = min(max(int(10_000 if wait_ms is None else wait_ms), 0), 60_000) / 1000
         if name == "term_start":
             if args.get("program") not in self.programs:
                 return (
@@ -104,23 +105,25 @@ class Terminal:
                     "unknown program",
                 )
             self.close()
-            argv = [
-                *self.jail,
-                *shlex.split(self.programs[args["program"]]),
-                *map(str, args.get("args") or []),
-            ]
+            extra = args.get("args") or []  # a string of arguments is split like a command line
+            extra = shlex.split(extra) if isinstance(extra, str) else [str(arg) for arg in extra]
+            argv = [*self.jail, *shlex.split(self.programs[args["program"]]), *extra]
             env = {**os.environ, "TERM": "dumb", "NO_COLOR": "1", "COLUMNS": "100", "LINES": "30"}
             self.fd, child = pty.openpty()
-            self.proc = subprocess.Popen(
-                argv,
-                stdin=child,
-                stdout=child,
-                stderr=child,
-                cwd=self.cwd,
-                env=env,
-                start_new_session=True,
-            )
-            os.close(child)
+            try:
+                self.proc = subprocess.Popen(
+                    argv,
+                    stdin=child,
+                    stdout=child,
+                    stderr=child,
+                    cwd=self.cwd,
+                    env=env,
+                    start_new_session=True,
+                )
+            finally:
+                os.close(child)
+                if self.proc is None:  # it didn't start; the caller reports the error
+                    self.close()
         elif self.proc is None:
             return "error: no program is running; call term_start first", "no program running"
         elif name == "term_type":
@@ -138,8 +141,10 @@ class Terminal:
     def read(self, wait: float) -> str:
         """Output until it has paused for QUIET seconds, or `wait` seconds pass without any."""
         chunks, deadline = [], time.monotonic() + wait
-        while (left := deadline - time.monotonic()) > 0:
-            ready, _, _ = select.select([self.fd], [], [], min(left, QUIET) if chunks else left)
+        while (left := deadline - time.monotonic()) > 0 or not chunks:  # wait 0: one poll
+            ready, _, _ = select.select(
+                [self.fd], [], [], max(0, min(left, QUIET) if chunks else left)
+            )
             if not ready:
                 break
             try:

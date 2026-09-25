@@ -117,14 +117,17 @@ async def dispatch(routes: dict[str, Route], name: str, raw: Any, deadline: floa
         error = f"error: unknown tool {name!r}; the tools are {', '.join(routes)}"
         return args, error, f"unknown tool {name!r}", []
     tool, session, schema = routes[name]
-    if isinstance(session, Terminal):
-        return args, *await asyncio.to_thread(session.call, tool, args), arg_problems(schema, args)
     timeout = timedelta(seconds=max(1.0, deadline - time.monotonic()))
     try:
-        result = await session.call_tool(tool, args, read_timeout_seconds=timeout)
+        if isinstance(session, Terminal):
+            text, error = await asyncio.to_thread(session.call, tool, args)
+        else:
+            text, error = result_text(
+                await session.call_tool(tool, args, read_timeout_seconds=timeout)
+            )
     except Exception as exc:  # noqa: BLE001 - the model sees the failure, as a host would show it
-        return args, f"error: {exc}", f"call failed: {exc}"[:300], arg_problems(schema, args)
-    return args, *result_text(result), arg_problems(schema, args)
+        text, error = f"error: {exc}", f"call failed: {exc}"[:300]
+    return args, text, error, arg_problems(schema, args)
 
 
 async def connect(
