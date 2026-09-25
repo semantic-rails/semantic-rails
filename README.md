@@ -105,9 +105,10 @@ uv tool install semantic-rails
 `uv tool dir --bin` finds the command even when uv's tool directory isn't on your
 `PATH` yet. Run `mcp setup` without `--install --yes` to preview the change.
 `--client codex`, `--client claude-code` (registers the server at user scope),
-`--client cursor` (writes `~/.cursor/mcp.json`) and `--client both` (Claude Desktop and
-Codex) also work, and `--mcp both` adds the Architect MCP, which can edit package files. Don't run `mcp setup --install` through `uvx`: the
-config would point into uv's cache, which `uv cache clean` deletes.
+`--client cursor` (writes `~/.cursor/mcp.json`, so the manual Cursor config below is
+optional) and `--client both` (Claude Desktop and Codex) also work, and `--mcp both`
+adds the Architect MCP, which can edit package files. Don't run `mcp setup --install`
+through `uvx`: the config would point into uv's cache, which `uv cache clean` deletes.
 
 **Cursor.** Install the command and print the two absolute paths the config needs:
 

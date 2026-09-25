@@ -84,8 +84,8 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
   id, replacing `catalog`. `discover` and `inspect` return slim cards, `plan`
   defaults to `detail="query"`, `execute` returns at most 200 rows (with
   `truncated` and `total_row_count` beyond that), and `segment` defaults to
-  minimal responses. the `capabilities` and `build-options` tools are v1-only; calling a
-  v1-only tool on v2 returns `UNKNOWN_MCP_TOOL` naming the v2 call. The contract
+  minimal responses. The `capabilities` and `build-options` tools are v1-only;
+  calling a v1-only tool on v2 returns `UNKNOWN_MCP_TOOL` naming the v2 call. The contract
   is `query_mcp.v2.json`, and `initialize` reports the interface as
   `serverInfo.version`. Interface v1 is unchanged and stays the default.
 - To move a v1 client to v2, call `execute(query, mode="validate")` for
