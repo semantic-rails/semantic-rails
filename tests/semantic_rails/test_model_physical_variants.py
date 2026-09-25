@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import duckdb
+import pytest
 import yaml
 
 from semantic_rails.compiler import compile_query
@@ -213,3 +215,222 @@ def test_missing_variant_dimension_falls_back_to_raw(tmp_path: Path):
     assert "FROM order_fact" in compiled["sql"]
     assert "FROM order_monthly" not in compiled["sql"]
     assert compiled["explain"].performance_plan["aggregate_routing"]["selected"] == []
+
+
+_ROLLUP_SEED = """
+CREATE TABLE order_fact AS SELECT * FROM (VALUES
+ (1, 'c1', 's1', TIMESTAMP '2026-01-10', 10.0), (2, 'c1', 's2', TIMESTAMP '2026-02-10', 20.0),
+ (3, 'c2', 's1', TIMESTAMP '2026-03-30', 30.0), (4, 'c1', 's1', TIMESTAMP '2026-03-31', 40.0),
+ (5, 'c3', 's2', TIMESTAMP '2026-04-02', 50.0), (6, 'c2', 's1', TIMESTAMP '2026-01-20', 60.0),
+ (7, 'c1', 's2', TIMESTAMP '2026-01-25', 5.0)
+) t(order_id, customer_id, store_id, ordered_at, amount);
+CREATE TABLE order_monthly AS SELECT date_trunc('month', ordered_at) AS month_start, store_id,
+ sum(amount) AS revenue, count(DISTINCT order_id) AS order_count,
+ count(DISTINCT customer_id) AS buyers FROM order_fact GROUP BY 1, 2;
+CREATE TABLE order_weekly AS SELECT date_trunc('week', ordered_at) AS week_start, store_id,
+ sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
+CREATE TABLE order_monthly_s1 AS SELECT date_trunc('month', ordered_at) AS month_start,
+ store_id, sum(amount) AS revenue FROM order_fact WHERE store_id = 's1' GROUP BY 1, 2;
+"""
+_ROLLUP_COLUMNS = {"store_id": "store_id", "revenue": "revenue"}
+_MONTHLY = {
+    "relation": "order_monthly",
+    "grain": {"time": "month", "entities": []},
+    "time": {"role": "ordered_at", "column": "month_start"},
+    "excludes": {"entities": ["order"], "dimensions": ["customer_id"]},
+    "columns": {**_ROLLUP_COLUMNS, "order_count": "order_count", "buyers": "buyers"},
+    "eligible_time_grains": ["month", "quarter", "year"],
+    "equivalence": {"kind": "exact"},
+}
+_WEEKLY = {
+    **_MONTHLY,
+    "relation": "order_weekly",
+    "grain": {"time": "week", "entities": []},
+    "time": {"role": "ordered_at", "column": "week_start"},
+    "columns": _ROLLUP_COLUMNS,
+}
+_WEEKLY.pop("eligible_time_grains")  # the loader default applies
+_S1_ONLY = {
+    "id": "aggregate_relation.s1_only",
+    "relation": "order_monthly_s1",
+    "source_entity": "entity.order",
+    "temporal_role": "temporal_role.t",
+    "time_column": "month_start",
+    "grain": "month",
+    "measures": {"measure.revenue": {"column": "revenue", "rollup": "additive"}},
+    "dimensions": {"dimension.store_id": {"column": "store_id"}},
+    "filters": {"store_id": "s1"},
+    "equivalence_kind": "exact",
+}
+_BIG_ORDERS = {
+    "kind": "metric_predicate",
+    "entity": "entity.order",
+    "input": {"kind": "aggregate", "measure": "measure.revenue", "aggregation": "sum"},
+    "op": ">",
+    "value": 25,
+    "scope_mode": "contextual",
+}
+
+
+def _rollup_package(package_dir: Path, variants: dict, aggregate_relations: list) -> None:
+    _write_yaml(
+        package_dir / "package.yml",
+        {
+            "schema_version": 1,
+            "package": {
+                "id": "p",
+                "name": "p",
+                "warehouse": "duckdb",
+                "default_db": "x.duckdb",
+                "seed": {"kind": "external"},
+            },
+            "defaults": {"time": {"timezone": "UTC", "default_query_axis": False}},
+            **({"aggregate_relations": aggregate_relations} if aggregate_relations else {}),
+        },
+    )
+    order = {"id": "entity.order", "key": ["order_id"], "model": "orders"}
+    _write_yaml(package_dir / "graph.yml", {"graph": {"entities": {"order": order}}})
+    dims = {
+        key: {"id": f"dimension.{key}", "column": key, "kind": "categorical"}
+        for key in ("store_id", "customer_id")
+    }
+    time = {"id": "temporal_role.t", "dimension_id": "dimension.ordered_at", "column": "ordered_at"}
+    measure = {"time": "ordered_at", "rollup": "additive"}
+    model = {
+        "id": "orders",
+        "entity": "order",
+        "relation": "order_fact",
+        "grain": ["order_id"],
+        "default_variant": "tx",
+        "times": {
+            "ordered_at": {**time, "kind": "timestamp", "class": "event_time", "default": True}
+        },
+        "dimensions": dims,
+        "measures": {
+            "revenue": {"id": "measure.revenue", "kind": "aggregate", "expr": "amount", **measure},
+            "order_count": {
+                "id": "measure.order_count",
+                "kind": "entity_count",
+                "entity_key": "order_id",
+                **measure,
+            },
+            "buyers": {
+                "id": "measure.buyers",
+                "kind": "entity_count",
+                "entity_key": "customer_id",
+                **measure,
+            },
+        },
+        "variants": {
+            "tx": {
+                "relation": "order_fact",
+                "grain": {"time": "transaction", "entities": ["order"]},
+                "covers": "inherit_all",
+            },
+            **variants,
+        },
+    }
+    _write_yaml(package_dir / "models" / "orders.yml", {"model": model})
+
+
+def _rollup_query(measure: str, aggregation: str, grain: str, **time) -> dict:
+    return {
+        "version": 1,
+        "select": [
+            {
+                "expression": {"kind": "aggregate", "measure": measure, "aggregation": aggregation},
+                "as": "v",
+            }
+        ],
+        "time": {"temporal_role": "temporal_role.t", "grain": grain, **time},
+    }
+
+
+_PREDICATE_QUERY = _rollup_query("measure.revenue", "sum", "month")
+_PREDICATE_QUERY["select"][0]["expression"]["filter"] = {"all": [{"expression": _BIG_ORDERS}]}
+
+
+_MONTHLY_ONLY = ({"monthly": _MONTHLY}, [])
+_BUYERS, _REVENUE = "measure.buyers", "measure.revenue"
+
+
+@pytest.mark.parametrize(
+    ("rollups", "query", "reason"),
+    [
+        # Wrong answers on DuckDB before the guards; each must now run on the base tables.
+        pytest.param(
+            _MONTHLY_ONLY,
+            _rollup_query(_BUYERS, "count_distinct", "quarter"),
+            "aggregation_not_reaggregable",
+            id="distinct-buyers-month-to-quarter",
+        ),
+        pytest.param(
+            _MONTHLY_ONLY,
+            _rollup_query(_BUYERS, "count_distinct", "month"),
+            "aggregation_not_reaggregable",
+            id="distinct-buyers-across-stores",
+        ),
+        pytest.param(
+            ({"weekly": _WEEKLY}, []),
+            _rollup_query(_REVENUE, "sum", "month"),
+            "unsupported_query_grain",
+            id="weekly-rollup-default-grains",
+        ),
+        pytest.param(
+            ({"weekly": {**_WEEKLY, "eligible_time_grains": ["week", "month"]}}, []),
+            _rollup_query(_REVENUE, "sum", "month"),
+            "non_nesting_grain",
+            id="weekly-rollup-declares-month",
+        ),
+        pytest.param(
+            _MONTHLY_ONLY,
+            _rollup_query(_REVENUE, "sum", "month", start="2026-01-15", end="2026-03-31"),
+            "time_bounds_not_aligned",
+            id="bounds-not-on-month-boundaries",
+        ),
+        pytest.param(
+            ({}, [_S1_ONLY]),
+            _rollup_query(_REVENUE, "sum", "month"),
+            "rollup_filter_not_implied",
+            id="rollup-own-filter",
+        ),
+        pytest.param(
+            _MONTHLY_ONLY,
+            _PREDICATE_QUERY,
+            "metric_predicate_filter",
+            id="measure-metric-predicate",
+        ),
+        # Exact rollup answers that must keep routing to the monthly rollup.
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "quarter"), None, id="sum"),
+        pytest.param(
+            _MONTHLY_ONLY,
+            _rollup_query("measure.order_count", "count_distinct", "quarter"),
+            None,
+            id="distinct-fact-key",
+        ),
+        pytest.param(
+            _MONTHLY_ONLY,
+            _rollup_query(_REVENUE, "sum", "quarter", start="2026-02-01", end="2026-04-01"),
+            None,
+            id="aligned-bounds",
+        ),
+    ],
+)
+def test_rollup_routing_matches_base_tables(
+    tmp_path: Path, rollups: tuple, query: dict, reason: str | None
+):
+    connection = duckdb.connect()
+    connection.execute(_ROLLUP_SEED)
+    answers = {}
+    for name, package in {"base": ({}, []), "rollup": rollups}.items():
+        _rollup_package(tmp_path / name, *package)
+        config = load_package_config(str(tmp_path / name))
+        answers[name] = compile_query(config, Registry(config), query)
+    rows = {name: sorted(connection.execute(c["sql"]).fetchall()) for name, c in answers.items()}
+
+    assert rows["rollup"] == rows["base"]
+    compiled = answers["rollup"]
+    selected = compiled["explain"].performance_plan["aggregate_routing"]["selected"]
+    assert selected == ([] if reason else ["aggregate_relation.orders_monthly"])
+    rejections = compiled["logical_plan"].measure_plans[0].aggregate_relation_rejections
+    assert list(rejections.values()) == ([reason] if reason else [])

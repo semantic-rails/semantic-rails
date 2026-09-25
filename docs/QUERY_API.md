@@ -296,11 +296,19 @@ When package authors declare physical rollups with `model.variants:` or explicit
   rollup relation when routing succeeds.
 - `performance_plan.aggregate_routing.selected` lists the aggregate relation IDs
   used by the compiled query.
+- `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rollup
+  of the leaf's entity that wasn't used to a reason code, such as
+  `missing_dimension`, `non_nesting_grain`, `time_bounds_not_aligned`,
+  `rollup_filter_not_implied`, `metric_predicate_filter`, or
+  `aggregation_not_reaggregable`.
 
 Routing is exact-first. If the rollup misses a grouped or filtered dimension,
 uses a non-default source, has non-exact equivalence, lacks the requested time
-grain, or cannot serve the requested measure aggregation, the compiler falls
-back to the raw relation.
+grain, has buckets that don't nest in the query's (a weekly rollup for a month
+query), doesn't align with the query's `start` or `end`, declares its own
+`filters`, or cannot serve the requested measure aggregation (including a
+distinct count of anything but the model's own key), the compiler falls back to
+the raw relation.
 
 `validate`, `compile`, and `query` accept a `verbosity` field (`minimal` | `compact` |
 `full`). The HTTP default is `compact`. The MCP adapter defaults the same three tools to

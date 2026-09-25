@@ -52,6 +52,7 @@ class MeasurePlan:
     rewrite_strategy: str = "direct"
     required_entities: list[str] = field(default_factory=list)
     aggregate_relation_id: str = ""
+    aggregate_relation_rejections: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

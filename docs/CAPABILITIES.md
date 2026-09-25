@@ -172,7 +172,13 @@ Current guardrails:
 - `equivalence.kind` must be `exact`
 - routed measures must be additive or precomputed over the selected rollup
 - grouped and filtered dimensions must exist on the variant
-- query-time `metric_predicate` filters do not route through variants yet
+- weekly rollups answer only week queries, and query bounds must fall on the
+  rollup's bucket boundaries
+- `count_distinct` routes only for the model's own key
+- query-time `metric_predicate` filters, and relations that declare `filters`,
+  do not route yet
+- `logical_plan.measure_plans[].aggregate_relation_rejections` says why each
+  unused rollup was rejected
 
 Surface signals:
 

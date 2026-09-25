@@ -3377,6 +3377,22 @@ def _aggregate_measure_coverage(row: AggregateRelationConfig) -> set[str]:
     return {str(item) for item in [*row.measures, *row.measure_columns]}
 
 
+def _time_bound_on_grain(value: Any, grain: str) -> bool:
+    """Whether a query time bound falls on a bucket boundary of ``grain``, in UTC."""
+    if grain == "transaction":
+        return True
+    try:
+        moment = _parse_time_literal(value)
+        if moment.utcoffset():
+            return False
+        if grain in {"minute", "hour"}:
+            floored = moment.replace(second=0, microsecond=0)
+            return moment == (floored.replace(minute=0) if grain == "hour" else floored)
+        return _is_grain_boundary(moment, grain)
+    except SemanticLayerError:
+        return False
+
+
 def _aggregate_relation_rejection_reason(
     row: AggregateRelationConfig,
     *,
@@ -3384,20 +3400,41 @@ def _aggregate_relation_rejection_reason(
     query: NormalizedQuery,
     leaf_time_role: str,
     required_dimensions: set[str],
+    counts_fact_key: bool,
 ) -> str:
     if row.source != "default":
         return "non_default_source"
     if (row.equivalence_kind or "exact") != "exact":
         return "non_exact_equivalence"
+    if row.filters:
+        # The rollup holds only the rows its filters kept, and no query is proven to imply them.
+        return "rollup_filter_not_implied"
+    if any(
+        isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
+    ) or any(
+        clause.get("expression") is not None
+        for clause in dict(bound.filter_spec or {}).get("all", []) or []
+    ):
+        return "metric_predicate_filter"
     if row.temporal_role and row.temporal_role != leaf_time_role:
         return "temporal_role_mismatch"
-    requested_grain = str((query.time.grain if query.time else "") or "").lower()
-    if not requested_grain:
+    time = query.time
+    requested_grain = str((time.grain if time else "") or "").lower()
+    if time is None or not requested_grain:
         return "missing_query_time_grain"
     if requested_grain not in set(row.eligible_time_grains or [row.grain]):
         return "unsupported_query_grain"
     if _grain_rank(row.grain) < 0 or _grain_rank(row.grain) > _grain_rank(requested_grain):
         return "aggregate_grain_too_coarse"
+    if row.grain == "week" and requested_grain != "week":
+        # Weeks straddle month, quarter and year boundaries.
+        return "non_nesting_grain"
+    if not all(
+        _time_bound_on_grain(value, row.grain)
+        for value in (time.start, time.end)
+        if value is not None
+    ):
+        return "time_bounds_not_aligned"
     if bound.measure_id not in _aggregate_measure_coverage(row):
         return "missing_measure"
     if bound.measure_id not in row.measure_columns:
@@ -3410,8 +3447,12 @@ def _aggregate_relation_rejection_reason(
     aggregation = str(row.measure_aggregations.get(bound.measure_id, "") or "").lower()
     if aggregation and aggregation != "sum":
         return "unsupported_rollup_aggregation"
-    if str(bound.aggregation or "").lower() not in {"sum", "count", "count_distinct"}:
+    query_aggregation = str(bound.aggregation or "").lower()
+    if query_aggregation not in {"sum", "count", "count_distinct"}:
         return "unsupported_query_aggregation"
+    if query_aggregation == "count_distinct" and not counts_fact_key:
+        # Distinct counts can't be added up: one key can sit in several rollup rows.
+        return "aggregation_not_reaggregable"
     return ""
 
 
@@ -3420,13 +3461,13 @@ def _select_aggregate_relation(
     bound: BoundMeasure,
     query: NormalizedQuery,
     config: PackageConfig,
-) -> str:
-    if query.time is None or not query.time.grain:
-        return ""
-    if any(isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters):
-        return ""
-    leaf_time_role = _leaf_time_role(bound, query, config)
+) -> tuple[str, dict[str, str]]:
+    """Pick the rollup that answers a measure leaf exactly, and say why each other one can't."""
     measure = _measure_index(config)[bound.measure_id]
+    rows = [row for row in config.aggregate_relations if row.source_entity == measure.entity]
+    if not rows:
+        return "", {}
+    leaf_time_role = _leaf_time_role(bound, query, config)
     required_dimensions = {str(item) for item in query.group_by if str(item)}
     required_dimensions.update(str(item.field) for item in query.where if str(item.field))
     required_dimensions.update(
@@ -3434,20 +3475,22 @@ def _select_aggregate_relation(
         for field in (str(item.get("field", "")) for item in _bound_filter_clauses(bound, config))
         if field
     )
-    candidates = [
-        row
-        for row in config.aggregate_relations
-        if row.source_entity == measure.entity
-        and not _aggregate_relation_rejection_reason(
-            row,
-            bound=bound,
-            query=query,
-            leaf_time_role=leaf_time_role,
-            required_dimensions=required_dimensions,
+    counts_fact_key = bool(_measure_count_distinct_key_columns(measure, config))
+    rejections = {
+        row.id: reason
+        for row in rows
+        if (
+            reason := _aggregate_relation_rejection_reason(
+                row,
+                bound=bound,
+                query=query,
+                leaf_time_role=leaf_time_role,
+                required_dimensions=required_dimensions,
+                counts_fact_key=counts_fact_key,
+            )
         )
-    ]
-    if not candidates:
-        return ""
+    }
+    candidates = [row for row in rows if row.id not in rejections]
     candidates.sort(
         key=lambda row: (
             _grain_rank(row.grain),
@@ -3457,7 +3500,7 @@ def _select_aggregate_relation(
         ),
         reverse=True,
     )
-    return candidates[0].id
+    return (candidates[0].id if candidates else ""), rejections
 
 
 def plan_query(
@@ -3566,7 +3609,7 @@ def _plan_query(
                 if any(step.measure_id == bound.measure_id for step in rewrite_steps)
                 else "direct"
             )
-            aggregate_relation_id = _select_aggregate_relation(
+            aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(
                 bound=bound,
                 query=query,
                 config=config,
@@ -3583,6 +3626,7 @@ def _plan_query(
                     else rewrite_strategy,
                     required_entities=required_entities,
                     aggregate_relation_id=aggregate_relation_id,
+                    aggregate_relation_rejections=aggregate_relation_rejections,
                 )
             )
     elif conversion_exprs:
