@@ -67,6 +67,15 @@ def _read(relative: str) -> str:
     return (REPO_ROOT / relative).read_text(encoding="utf-8")
 
 
+def _executed_sql(entry: dict[str, Any]) -> str:
+    """Fail closed: an executed answer whose SQL is missing can't be checked for bypass columns."""
+    path = entry.get("sql_path")
+    text = _read(path) if path and (REPO_ROOT / path).is_file() else ""
+    if not text.strip():
+        raise SystemExit(f"{entry['question_id']}: found no executed SQL to check")
+    return text
+
+
 def _require(found: list[str], what: str, entry: dict[str, Any]) -> list[str]:
     """Fail closed: a detector that finds nothing to check can't vouch for an answer."""
     if not found:
@@ -96,14 +105,14 @@ def semantic_rails(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
             or not SHARED_VIEW.fullmatch(relation)
         ):
             helpers.append(f"derived model {model_id}")
-    return helpers, [_read(entry["sql_path"])] if entry.get("sql_path") else []
+    return helpers, [_executed_sql(entry)]
 
 
 MF_MODELS = PACK / "metricflow" / "models"
 
 
 def metricflow(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
-    executed = _read(entry["sql_path"]).split("SQL (remove --explain", 1)[-1]
+    executed = _executed_sql(entry).split("SQL (remove --explain", 1)[-1]
     config = yaml.safe_load((MF_MODELS / "_models.yml").read_text(encoding="utf-8"))
     # MetricFlow requires a time spine model: it's configuration, not logic for this pack.
     time_spines = {model["name"] for model in config.get("models", []) if "time_spine" in model}
@@ -131,33 +140,32 @@ def cube(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
         spec = yaml.safe_load(model.read_text(encoding="utf-8"))["cubes"][0]
         if "sql" in spec and not is_passthrough(spec["sql"]):
             helpers.append(f"cube {name}")
-    executed = json.loads(_read(entry["sql_path"]))["sql"]["sql"][0]
+    executed = json.loads(_executed_sql(entry))["sql"]["sql"][0]
     return helpers, [executed]
 
 
-MALLOY_SOURCE = re.compile(r"^source: (\w+) is jaffle\.(table|sql)\(", re.MULTILINE)
+# `name is jaffle.sql("""...""")`: a SQL source, or a join declared inline.
+MALLOY_SQL = re.compile(r"(\w+)\s+is\s+\w+\.sql\(\s*(\"\"\"|\"|')(.*?)\2\s*\)", re.DOTALL)
+
+
+def _squash(sql: str) -> str:
+    return " ".join(sql.split()).lower()
 
 
 def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     model = (PACK / "malloy" / "models" / "jaffle.malloy").read_text(encoding="utf-8")
-    kinds = dict(MALLOY_SOURCE.findall(model))
-    blocks = dict(
-        re.findall(r"^source: (\w+) is (.*?)(?=^source: |^query: |\Z)", model, re.M | re.S)
-    )
-    query = re.search(rf"^query: {entry['question_id']} is (\w+)", model, flags=re.MULTILINE)
-    pending = _require([query.group(1)] if query else [], "named query", entry)
-    used: set[str] = set()
-    while pending:  # the query's source and every source it joins
-        source = pending.pop()
-        if source not in used:
-            used.add(source)
-            # `join_one: alias is source ...` joins `source`; a bare `join_one: source` joins itself.
-            joins = re.findall(
-                r"join_(?:one|many|cross): (\w+)(?: is (\w+))?", blocks.get(source, "")
-            )
-            pending += [target or alias for alias, target in joins]
-    helpers = [f"SQL source {source}" for source in sorted(used) if kinds.get(source) == "sql"]
-    return helpers, [_read(entry["sql_path"])]
+    query = rf"^query:\s+{re.escape(entry['question_id'])}\s+is\b"
+    _require(re.findall(query, model, flags=re.MULTILINE), "named query", entry)
+    executed = _executed_sql(entry)
+    # Malloy compiles a SQL block into the query verbatim wherever the query reads it: as its
+    # source, through a join or alias, or under an `extend`. A block the executed SQL doesn't
+    # contain is one the query doesn't read.
+    helpers = {
+        f"SQL source {name}"
+        for name, _, body in MALLOY_SQL.findall(model)
+        if not is_passthrough(body) and _squash(body) in _squash(executed)
+    }
+    return sorted(helpers), [executed]
 
 
 def ktx(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -174,11 +182,11 @@ def ktx(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
         )
         if "sql" in spec and not is_passthrough(spec["sql"]):
             helpers.append(f"SQL source {name}")
-    return helpers, [_read(entry["sql_path"])]
+    return helpers, [_executed_sql(entry)]
 
 
 def snowflake(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
-    executed = _read(entry["sql_path"])  # the statement the capture ran
+    executed = _executed_sql(entry)  # the statement the capture ran
     helpers = [] if "SEMANTIC_VIEW(" in executed else ["SQL outside SEMANTIC_VIEW(...)"]
     return helpers, [executed]
 

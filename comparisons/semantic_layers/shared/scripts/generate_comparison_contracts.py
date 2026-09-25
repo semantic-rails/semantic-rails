@@ -1177,19 +1177,21 @@ def claim_findings(
             output_check += f" {summary['not_comparable']} could not be compared."
     claims = [output_check]
     for layer in layers_payload:
-        if layer.get("re_executed"):
+        # A replay on an earlier dataset is reported with the stale captures below instead.
+        if layer.get("re_executed") and layer["dataset"] == "current":
             claims.append(
                 f"{layer['label']} {layer['version']} was not re-run: the SQL it generated on "
                 f"{layer['captured']} was re-executed on the current dataset on "
                 f"{layer['re_executed']}."
             )
+    # The date each layer itself ran; a replay's report records when it was re-executed.
+    captured = {layer["id"]: layer["captured"] for layer in layers_payload}
     for layer_id, checks in validation_report["stale_layers"].items():
-        captured = recorded_capture(layer_id, {"generated_at": checks["captured"]})
         differs = ", ".join(short_id(qid) for qid in checks["mismatched"]) or "none"
         claims.append(
-            f"{label[layer_id]} was captured on {captured} on an earlier dataset and has not been "
-            f"re-run, so it is left out of that count. Its capture matches the answer key on "
-            f"{len(checks['matched'])} questions and differs on: {differs}."
+            f"{label[layer_id]} was captured on {captured[layer_id]} on an earlier dataset and "
+            "has not been re-run, so it is left out of that count. Its capture matches the "
+            f"answer key on {len(checks['matched'])} questions and differs on: {differs}."
         )
 
     # Say who disagrees with whom, so a mismatch isn't read as a competitor's error.
