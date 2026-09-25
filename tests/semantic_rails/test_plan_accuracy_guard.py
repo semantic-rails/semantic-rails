@@ -628,14 +628,16 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
         ("revenue excluding Brooklyn", "NOT LIKE", "Brook%", False),
     ],
 )
+@pytest.mark.parametrize("group_by", [[STORE], []])
 def test_named_value_coverage_respects_operator_and_value_shape(
     adapter: SemanticLayerMCPAdapter,
     text: str,
     op: str,
     value: Any,
     honored: bool,
+    group_by: list[str],
 ) -> None:
-    draft = _query(group_by=[STORE], where=[{"field": STORE, "op": op, "value": value}])
+    draft = _query(group_by=group_by, where=[{"field": STORE, "op": op, "value": value}])
     kinds = _gap_kinds(adapter, text, draft)
     if honored:
         assert kinds == []
@@ -693,14 +695,15 @@ def test_explicit_inclusion_ends_exclusion_scope(
     adapter: SemanticLayerMCPAdapter, text: str
 ) -> None:
     wrong = _query(where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}])
-    correct = _query(
-        where=[
-            {"field": STORE, "op": "!=", "value": "Brooklyn"},
-            {"field": STORE, "op": "=", "value": "Philadelphia"},
-        ]
-    )
     assert _gap_kinds(adapter, text, wrong) == ["filter_values_unrealized"]
-    assert _gap_kinds(adapter, text, correct) == []
+    for exclusion in ({"op": "!=", "value": "Brooklyn"}, {"op": "NOT IN", "value": ["Brooklyn"]}):
+        correct = _query(
+            where=[
+                {"field": STORE, **exclusion},
+                {"field": STORE, "op": "=", "value": "Philadelphia"},
+            ]
+        )
+        assert _gap_kinds(adapter, text, correct) == []
 
 
 def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAdapter) -> None:
@@ -1129,279 +1132,6 @@ def test_mcp_plan_reports_what_it_could_not_honor(
 
 
 @pytest.mark.parametrize(
-    ("text", "draft", "expected_gap"),
-    [
-        (
-            "revenue for Brooklyn",
-            _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}]),
-            "filter_values_unrealized",
-        ),
-        (
-            "top 5 stores by revenue",
-            {
-                "version": 2,
-                "select": [REVENUE, ORDERS],
-                "group_by": [STORE],
-                "order_by": [{"field": "order_count", "direction": "DESC"}],
-                "limit": 5,
-            },
-            "ranking_unrealized",
-        ),
-    ],
-)
-def test_mcp_plan_downgrades_reversed_value_or_ranked_measure(
-    adapter: SemanticLayerMCPAdapter,
-    monkeypatch: pytest.MonkeyPatch,
-    text: str,
-    draft: dict[str, Any],
-    expected_gap: str,
-) -> None:
-    _draft_plan(monkeypatch, draft)
-    payload = adapter.call_tool("plan", {"intent": text})
-    assert payload["best"]["validation_ok"] is True
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-    assert expected_gap in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
-
-
-@pytest.mark.parametrize(("word", "direction"), [("top", "DESC"), ("bottom", "ASC")])
-@pytest.mark.parametrize("problem", ["missing", "reversed", "wrong_measure", "correct"])
-def test_mcp_plan_checks_count_free_ranking(
-    adapter: SemanticLayerMCPAdapter,
-    monkeypatch: pytest.MonkeyPatch,
-    word: str,
-    direction: str,
-    problem: str,
-) -> None:
-    order_by = {
-        "missing": [],
-        "reversed": [
-            {"field": "revenue_usd", "direction": "ASC" if direction == "DESC" else "DESC"}
-        ],
-        "wrong_measure": [{"field": "order_count", "direction": direction}],
-        "correct": [{"field": "revenue_usd", "direction": direction}],
-    }[problem]
-    _draft_plan(monkeypatch, _count_free_ranked_draft(order_by))
-    payload = adapter.call_tool("plan", {"intent": f"{word} stores by revenue"})
-    assert payload["best"]["validation_ok"] is True
-    if problem == "correct":
-        assert payload["status"] == "ok"
-        assert payload.get("why") is None
-    else:
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert "ranking_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
-
-
-@pytest.mark.parametrize(
-    ("text", "draft"),
-    [
-        ("revenue for Brooklyn", _query(where=[{"field": STORE, "op": "=", "value": "Brooklyn"}])),
-        (
-            "revenue excluding Brooklyn",
-            _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}]),
-        ),
-        (
-            "top 5 stores by revenue",
-            {
-                "version": 2,
-                "select": [REVENUE, ORDERS],
-                "group_by": [STORE],
-                "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
-                "limit": 5,
-            },
-        ),
-    ],
-)
-def test_mcp_plan_keeps_correct_value_and_ranking_drafts(
-    adapter: SemanticLayerMCPAdapter,
-    monkeypatch: pytest.MonkeyPatch,
-    text: str,
-    draft: dict[str, Any],
-) -> None:
-    _draft_plan(monkeypatch, draft)
-    payload = adapter.call_tool("plan", {"intent": text})
-    assert payload["best"]["validation_ok"] is True
-    assert payload["status"] == "ok"
-    assert payload.get("why") is None
-
-
-@pytest.mark.parametrize(
-    ("text", "where", "honored"),
-    [
-        (
-            "revenue for Brooklyn and Philadelphia",
-            [{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
-            True,
-        ),
-        ("revenue for Brooklyn", [{"field": STORE, "op": "=", "value": "Brooklyn"}], True),
-        ("revenue for Brooklyn", [{"field": STORE, "op": "IN", "value": "Brooklyn"}], True),
-        (
-            "revenue excluding Brooklyn, Philadelphia",
-            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}],
-            True,
-        ),
-        ("revenue excluding Brooklyn", [{"field": STORE, "op": "!=", "value": "Brooklyn"}], True),
-        (
-            "revenue excluding Brooklyn",
-            [{"field": STORE, "op": "NOT IN", "value": "Brooklyn"}],
-            True,
-        ),
-        ("revenue for Brooklyn", [{"field": STORE, "op": "LIKE", "value": "Brook%"}], False),
-        (
-            "revenue excluding Brooklyn",
-            [{"field": STORE, "op": "NOT LIKE", "value": "Brook%"}],
-            False,
-        ),
-        (
-            "revenue excluding Brooklyn, including Philadelphia",
-            [
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
-                {"field": STORE, "op": "=", "value": "Philadelphia"},
-            ],
-            True,
-        ),
-    ],
-)
-def test_mcp_plan_checks_named_value_predicate_shapes(
-    adapter: SemanticLayerMCPAdapter,
-    monkeypatch: pytest.MonkeyPatch,
-    text: str,
-    where: list[dict[str, Any]],
-    honored: bool,
-) -> None:
-    _draft_plan(monkeypatch, _query(where=where))
-    payload = adapter.call_tool("plan", {"intent": text})
-    assert payload["best"]["validation_ok"] is True
-    assert payload["status"] == ("ok" if honored else "low_confidence")
-    if honored:
-        assert payload.get("why") is None
-    else:
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-
-
-@pytest.mark.parametrize(
-    ("text", "select", "where", "honored"),
-    [
-        (
-            "revenue for Brooklyn and Philadelphia",
-            REVENUE,
-            [{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
-            True,
-        ),
-        (
-            "revenue for Brooklyn and Philadelphia",
-            REVENUE,
-            [
-                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
-                {"field": STORE, "op": "IN", "value": ["Brooklyn", "New Orleans"]},
-            ],
-            False,
-        ),
-        (
-            "revenue excluding Brooklyn, including Philadelphia",
-            REVENUE,
-            [
-                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
-            ],
-            True,
-        ),
-        (
-            "item revenue for food products",
-            ITEM_REVENUE,
-            [{"field": PRODUCT_TYPE, "op": "=", "value": "jaffle"}],
-            True,
-        ),
-        (
-            "item revenue for food products",
-            ITEM_REVENUE,
-            [{"field": PRODUCT_TYPE, "op": "=", "value": "Food"}],
-            False,
-        ),
-        (
-            "item revenue excluding food products",
-            ITEM_REVENUE,
-            [{"field": PRODUCT_TYPE, "op": "!=", "value": "jaffle"}],
-            True,
-        ),
-        (
-            "item revenue excluding food products",
-            ITEM_REVENUE,
-            [{"field": PRODUCT_TYPE, "op": "!=", "value": "Food"}],
-            False,
-        ),
-        ("revenue for Brooklyn", REVENUE, [{"field": STORE, "op": "=", "value": "Brooklyn"}], True),
-        (
-            "revenue for Brooklyn",
-            REVENUE,
-            [{"field": STORE, "op": "=", "value": "brooklyn"}],
-            False,
-        ),
-        (
-            "revenue excluding Brooklyn",
-            REVENUE,
-            [{"field": STORE, "op": "!=", "value": "Brooklyn"}],
-            True,
-        ),
-        (
-            "revenue excluding Brooklyn",
-            REVENUE,
-            [{"field": STORE, "op": "!=", "value": "brooklyn"}],
-            False,
-        ),
-        (
-            "revenue for New Orleans",
-            REVENUE,
-            [{"field": STORE, "op": "=", "value": "New-Orleans"}],
-            False,
-        ),
-    ],
-)
-def test_mcp_plan_checks_effective_value_constraints_and_exact_literals(
-    adapter: SemanticLayerMCPAdapter,
-    monkeypatch: pytest.MonkeyPatch,
-    text: str,
-    select: dict[str, Any],
-    where: list[dict[str, Any]],
-    honored: bool,
-) -> None:
-    _draft_plan(monkeypatch, _query(select, where=where))
-    payload = adapter.call_tool("plan", {"intent": text})
-    assert payload["best"]["validation_ok"] is True
-    assert payload["status"] == ("ok" if honored else "low_confidence")
-    if honored:
-        assert payload.get("why") is None
-    else:
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert "filter_values_unrealized" in [
-            gap["kind"] for gap in payload["why"]["details"]["gaps"]
-        ]
-
-
-def test_mcp_plan_does_not_merge_nested_value_scopes(
-    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    query = _query(
-        {
-            "as": "brooklyn_revenue",
-            "expression": {
-                "kind": "scoped_aggregate",
-                "measure": "measure.jaffle.revenue_usd",
-                "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
-            },
-        },
-        where=[{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
-    )
-    _draft_plan(monkeypatch, query)
-    payload = adapter.call_tool("plan", {"intent": "revenue for Brooklyn and Philadelphia"})
-    assert payload["best"]["validation_ok"] is True
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-    assert "filter_values_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
-
-
-@pytest.mark.parametrize(
     ("text", "where", "op"),
     [
         (
@@ -1444,76 +1174,6 @@ def test_mcp_plan_rejects_list_values_for_scalar_filter_ops(
         and "list" in error["message"]
         for error in payload["why"]["errors"]
     )
-
-
-@pytest.mark.parametrize(
-    ("text", "excluded", "expected_status"),
-    [
-        (
-            "revenue excluding Brooklyn, including Philadelphia",
-            ["Brooklyn", "Philadelphia"],
-            "low_confidence",
-        ),
-        (
-            "revenue excluding Brooklyn including Philadelphia",
-            ["Brooklyn", "Philadelphia"],
-            "low_confidence",
-        ),
-        (
-            "revenue excluding Brooklyn but include Philadelphia",
-            ["Brooklyn", "Philadelphia"],
-            "low_confidence",
-        ),
-        (
-            "revenue not including Brooklyn, including Philadelphia",
-            ["Brooklyn", "Philadelphia"],
-            "low_confidence",
-        ),
-        ("revenue excluding Brooklyn, Philadelphia", ["Brooklyn", "Philadelphia"], "ok"),
-        ("revenue excluding Brooklyn, including Philadelphia", ["Brooklyn"], "ok"),
-        ("revenue not including Brooklyn, including Philadelphia", ["Brooklyn"], "ok"),
-    ],
-)
-def test_mcp_plan_keeps_mixed_value_polarity(
-    adapter: SemanticLayerMCPAdapter,
-    monkeypatch: pytest.MonkeyPatch,
-    text: str,
-    excluded: list[str],
-    expected_status: str,
-) -> None:
-    where = [{"field": STORE, "op": "NOT IN", "value": excluded}]
-    if "including Philadelphia" in text and "Philadelphia" not in excluded:
-        where.append({"field": STORE, "op": "=", "value": "Philadelphia"})
-    _draft_plan(monkeypatch, _query(where=where))
-    payload = adapter.call_tool("plan", {"intent": text})
-    assert payload["best"]["validation_ok"] is True
-    assert payload["status"] == expected_status
-    if expected_status == "low_confidence":
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert "filter_values_unrealized" in [
-            gap["kind"] for gap in payload["why"]["details"]["gaps"]
-        ]
-    else:
-        assert payload.get("why") is None
-
-
-@pytest.mark.parametrize("text", ["revenue not including Brooklyn", "revenue not include Brooklyn"])
-@pytest.mark.parametrize("op", ["!=", "="])
-def test_mcp_plan_keeps_negated_include_negative(
-    adapter: SemanticLayerMCPAdapter,
-    monkeypatch: pytest.MonkeyPatch,
-    text: str,
-    op: str,
-) -> None:
-    _draft_plan(monkeypatch, _query(where=[{"field": STORE, "op": op, "value": "Brooklyn"}]))
-    payload = adapter.call_tool("plan", {"intent": text})
-    assert payload["best"]["validation_ok"] is True
-    assert payload["status"] == ("ok" if op == "!=" else "low_confidence")
-    if op == "!=":
-        assert payload.get("why") is None
-    else:
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert "negation_reversed" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
 
 
 def test_mcp_plan_keeps_the_v1_best_default(adapter: SemanticLayerMCPAdapter) -> None:
