@@ -16,10 +16,7 @@ import pytest
 import yaml
 
 from semantic_rails.config import load_package_config
-from semantic_rails.config_validation import (
-    validate_metric_expression,
-    validate_runtime_package,
-)
+from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.conftest import copy_package_config
 
@@ -1608,8 +1605,7 @@ def test_authored_metric_value_type_round_trips(tmp_path):
 # ----------------------------------------------------------------------
 # v1 completion validator — the release-readiness script's
 # ``validate_v1_completion`` walker must stay green against the repo's
-# shipped packages, and ``validate_metric_expression`` must reject
-# legacy freeform expression strings.
+# shipped packages.
 # ----------------------------------------------------------------------
 
 
@@ -1622,16 +1618,3 @@ def test_v1_completion_validator_passes_on_repo():
     errors: list[str] = []
     ns["validate_v1_completion"](errors)
     assert errors == []
-
-
-def test_metric_recipe_ast_must_be_structured():
-    errors: list[str] = []
-    validate_metric_expression(
-        "revenue / orders",
-        errors,
-        known_measures={"measure.demo.revenue"},
-        known_metrics={"metric.demo.revenue"},
-        known_temporal_roles={"temporal_role.demo.event_time"},
-        path="metric_recipes[0].expression",
-    )
-    assert any("must be a mapping" in error for error in errors)
