@@ -3,3 +3,5 @@
   `last_value` measure became a `sum`, a stock measure lost its `accumulation`, and other
   values fell back to the first option. The aggregation menu now offers every aggregation the
   measure's accumulation allows, except `percentile`, which a measure cannot parameterize.
+  Choosing a different default aggregation prints a warning that names the metrics whose
+  numbers change.

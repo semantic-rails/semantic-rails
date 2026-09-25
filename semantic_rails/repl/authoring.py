@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -651,6 +651,10 @@ def _measure_change(
             default_agg,
         )
         value_type = _kept_choice("Result type", _VALUE_TYPES, current.get("value_type"), "number")
+        if existing:
+            _warn_on_new_aggregation(
+                load_package_config(ref.source_path), _row_id(existing), aggregation
+            )
         measure = {
             **current,
             "label": label,
@@ -1185,6 +1189,35 @@ def _kept_choice(label: str, options: list[tuple[str, str]], saved: Any, fallbac
     if not listed:
         options = [*options, (saved, f"Keep {saved} (the saved value)")]
     return _author_choice(label, options, default=listed or saved)
+
+
+def _warn_on_new_aggregation(config: PackageConfig, measure_id: str, aggregation: str) -> None:
+    """Warn when an edit changes a measure's default aggregation, naming the metrics it changes."""
+
+    measure = next((row for row in config.measures if row.id == measure_id), None)
+    if measure is None or measure.default_aggregation == aggregation.lower():
+        return
+    changed: set[str] = set()
+
+    def uses(node: Any) -> bool:
+        """The node aggregates the measure by its default, or reads a metric that does."""
+        if isinstance(node, AggregateExpr):
+            return node.measure == measure_id and not node.aggregation
+        if isinstance(node, MetricRecipeRefExpr):
+            return node.metric_recipe in changed
+        if isinstance(node, list | tuple):
+            return any(uses(item) for item in node)
+        return is_dataclass(node) and any(uses(getattr(node, part.name)) for part in fields(node))
+
+    rows = config.metric_recipes
+    while more := {row.id for row in rows if row.id not in changed and uses(row.expression)}:
+        changed |= more
+    print(
+        f"[warning] This changes the default aggregation from "
+        f"{measure.default_aggregation} to {aggregation}."
+    )
+    if changed:
+        print("  These metrics will return different numbers: " + ", ".join(sorted(changed)))
 
 
 def _row_filter(

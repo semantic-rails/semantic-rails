@@ -1353,3 +1353,31 @@ def test_enter_keeps_a_saved_choice_the_menu_does_not_list(
         assert path.read_bytes() == original
     else:
         assert spec()[1] == {**before, **written}
+
+
+@pytest.mark.parametrize("aggregation", [None, "Sum"])
+def test_a_new_default_aggregation_names_the_metrics_it_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], aggregation: str | None
+) -> None:
+    project = _starter(tmp_path)
+    events = yaml.safe_load((project / EVENTS).read_text("utf-8"))
+    events["model"]["measures"]["total_amount"]["default_agg"] = "median"
+    _write_yaml(project / EVENTS, events)
+    ratio = {"numerator": "metric.shop.total_amount", "denominator": "measure.shop.event_count"}
+    _write_metric(project, "per_event", {"kind": "ratio", **ratio, "value_type": "ratio"})
+    top = {"kind": "aggregate", "measure": "total_amount", "aggregation": "max"}
+    _write_metric(project, "top", {**top, "value_type": "number"})
+    confirm = ("Manage and update this existing measure?", "Update this measure?")
+    answers = {"Measure key": "total_amount", **dict.fromkeys(confirm, True)}
+    script = _Script({**answers, "Default aggregation": aggregation})
+
+    _repl(project, "author measure", script, [])
+
+    out = capsys.readouterr().out
+    assert script.offered["Default aggregation"] == "Median"
+    if aggregation is None:
+        assert "[warning] This changes the default aggregation" not in out
+    else:
+        assert "[warning] This changes the default aggregation from median to sum." in out
+        # The metric on the measure's default and the ratio built on it; not `top`.
+        assert "different numbers: metric.shop.per_event, metric.shop.total_amount\n" in out

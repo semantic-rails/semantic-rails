@@ -65,7 +65,8 @@ choice, shows the target file and YAML before writing, calls out exact or
 similar existing definitions, and defaults every create/update confirmation to
 No. Managing an existing object starts every prompt at its saved value, even a
 value the menu does not otherwise list, so pressing Enter throughout leaves it
-as it was. Successful edits are parse-validated and can be restored with `undo`
+as it was. Changing a measure's default aggregation warns and names the metrics
+whose numbers change. Successful edits are parse-validated and can be restored with `undo`
 during the same REPL session. A failed parse restores the original files
 automatically.
 
