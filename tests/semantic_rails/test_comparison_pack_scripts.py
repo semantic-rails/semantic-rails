@@ -6,8 +6,10 @@ import copy
 import importlib.util
 import itertools
 import json
+import re
 import subprocess
 import sys
+from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
@@ -77,6 +79,7 @@ def _claims(
     items: list[dict[str, Any]],
     labels: dict[str, str] | None = None,
     stale: dict[str, Any] | None = None,
+    layer_fields: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     questions = [
         {
@@ -91,7 +94,11 @@ def _claims(
         slice_ids.setdefault(item["slice"], []).append(item["question_id"])
     layers = [
         {
+            "id": layer,
             "label": generator.LAYER_META[layer]["label"],
+            "captured": generator.LAYER_META[layer]["captured"],
+            "dataset": "stale" if layer in (stale or {}) else "current",
+            **(layer_fields or {}).get(layer, {}),
             "questions": [
                 {
                     "question_id": item["question_id"],
@@ -240,7 +247,9 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
             "mismatched": differs,
         }
     }
-    claims = _claims(items, stale=stale)
+    claims = _claims(
+        items, stale=stale, layer_fields={"snowflake_semantic_views": {"captured": "2026-04-07"}}
+    )
     assert claims[0] == (
         "On all 16 questions, the 5 layers checked on the current dataset (Semantic Rails, "
         "MetricFlow, Cube, Malloy and KtX) return the independent answer key's normalized "
@@ -250,6 +259,28 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
         "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not "
         "been re-run, so it is left out of that count. Its capture matches the answer key on 14 "
         "questions and differs on: q07, q16."
+    )
+
+
+def test_a_replay_claims_the_current_dataset_only_when_it_ran_on_it() -> None:
+    cube = {"version": "1.6.32", "captured": "2026-04-07", "re_executed": "2026-09-23"}
+    replayed = (
+        "Cube 1.6.32 was not re-run: the SQL it generated on 2026-04-07 was re-executed on the "
+        "current dataset on 2026-09-23."
+    )
+    assert _claims([_question("q01_shared")], layer_fields={"cube": cube})[1] == replayed
+
+    items = [_question(qid) for qid in SHARED]
+    for item in items:
+        item["current_layers"] = [layer for layer in LAYERS if layer != "cube"]
+    # The validator records the replay's own run time, which isn't when Cube ran.
+    stale = {"cube": {"captured": "2026-09-23T02:00:00+00:00", "matched": SHARED, "mismatched": []}}
+    claims = _claims(items, stale=stale, layer_fields={"cube": cube})
+    assert replayed not in claims
+    assert claims[1] == (
+        "Cube was captured on 2026-04-07 on an earlier dataset and has not been re-run, so it is "
+        "left out of that count. Its capture matches the answer key on 7 questions and differs "
+        "on: none."
     )
 
 
@@ -512,6 +543,8 @@ def test_semantic_rails_derived_relations_count_as_hand_written(tmp_path, monkey
         "relations_dir": (view, "", {"relations/derived.yml": "relation:\n  id: derived\n"}),
         "inline_model": (None, "models:\n  orders:\n    relation: jaffle_order\n", {}),
     }
+    (tmp_path / "sql.sql").write_text("select 1", encoding="utf-8")
+    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
     found = {}
     for name, (model, extra, files) in cases.items():
         package = tmp_path / name
@@ -524,7 +557,7 @@ def test_semantic_rails_derived_relations_count_as_hand_written(tmp_path, monkey
             (package / relative).parent.mkdir(parents=True, exist_ok=True)
             (package / relative).write_text(text, encoding="utf-8")
         monkeypatch.setattr(rubric, "SR_PACKAGE", package)
-        found[name] = rubric.semantic_rails({"question_id": "q_x"})[0]
+        found[name] = rubric.semantic_rails({"question_id": "q_x", "sql_path": "sql.sql"})[0]
     derived = ["derived model orders"]
     assert found == {
         "view": [],
@@ -554,6 +587,30 @@ def test_a_detector_that_finds_nothing_fails_closed(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(rubric, "SR_PACKAGE", package)
     with pytest.raises(SystemExit, match="found no models"):
         rubric.semantic_rails({"question_id": "q_x"})
+    monkeypatch.setattr(rubric, "PACK", tmp_path)
+    (tmp_path / "query.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit, match="found no cubes"):
+        rubric.cube({"question_id": "q_x", "query_path": "query.json", "sql_path": "sql.txt"})
+    with pytest.raises(SystemExit, match="found no sources"):
+        rubric.ktx({"question_id": "q_x", "query_path": "query.json", "sql_path": "sql.txt"})
+    (tmp_path / "malloy" / "models").mkdir(parents=True)
+    (tmp_path / "malloy" / "models" / "jaffle.malloy").write_text(
+        "query: q_y is orders -> { aggregate: n is count() }\n", encoding="utf-8"
+    )
+    with pytest.raises(SystemExit, match="found no named query"):
+        rubric.malloy({"question_id": "q_x", "sql_path": "sql.txt"})
+
+
+@pytest.mark.parametrize("sql_path", [None, "", "missing.sql", "empty.sql"])
+def test_an_executed_answer_without_its_sql_fails_closed(tmp_path, monkeypatch, sql_path) -> None:
+    # Without its SQL, Semantic Rails q11 would lose the bypass column that labels it precomputed.
+    (tmp_path / "empty.sql").write_text("\n", encoding="utf-8")
+    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    entry = {"question_id": "q11_repeat_customer_orders_by_store_by_month"}
+    if sql_path is not None:
+        entry["sql_path"] = sql_path
+    with pytest.raises(SystemExit, match="q11_repeat.*found no executed SQL"):
+        rubric.semantic_rails(entry)
 
 
 def test_cube_counts_a_sql_cube_used_only_by_a_filter(tmp_path, monkeypatch) -> None:
@@ -604,24 +661,36 @@ def test_metricflow_counts_helper_models_but_not_passthroughs_or_the_time_spine(
     assert len(texts) == 2
 
 
-def test_malloy_counts_sql_sources_reached_through_joins(tmp_path, monkeypatch) -> None:
+def test_malloy_counts_the_sql_blocks_its_executed_sql_reads(tmp_path, monkeypatch) -> None:
     models = tmp_path / "malloy" / "models"
     models.mkdir(parents=True)
     (models / "jaffle.malloy").write_text(
-        "source: customers is jaffle.table('comparison_customers') extend {}\n"
-        'source: segments is jaffle.sql("""select 1""") extend {}\n'
-        'source: history is jaffle.sql("""select 2""") extend {}\n'
+        'source:  segments is jaffle.sql("""select customer_id, segment\n'
+        '  from comparison_customer_history""") extend {}\n'
+        "source: history is segments extend {}\n"
+        'source: unused is jaffle.sql("select store_id from comparison_stores")\n'
+        # Only part of the SQL of `segments`, which the query reads; this block isn't read.
+        'source: prefix is jaffle.sql("select customer_id, segment")\n'
+        'source: passthrough is jaffle.sql("select * from comparison_customers")\n'
         "source: orders is jaffle.table('comparison_orders') extend {\n"
-        "  join_one: segments on true\n  join_one: customers on true\n"
-        "  join_one: segment_history is history on true\n}\n"
-        "query: q08_x is orders -> { aggregate: n is count() }\n",
+        "  join_one: history, passthrough on true\n"
+        '  join_one: inline is jaffle.sql("""select order_id from comparison_order_items""")\n'
+        "  join_one: unused on true\n}\n"
+        "query:  q08_x is orders -> { aggregate: n is count() }\n",
         encoding="utf-8",
     )
-    (tmp_path / "q08.sql").write_text("select 1", encoding="utf-8")
+    # Malloy compiles each SQL block the query reads into its SQL; `unused` and `prefix` aren't.
+    (tmp_path / "q08.sql").write_text(
+        "SELECT count(1) FROM comparison_orders AS base\n"
+        "LEFT JOIN (\n  select customer_id, segment\n  from comparison_customer_history\n) AS h\n"
+        "LEFT JOIN (select * from comparison_customers) AS p\n"
+        "LEFT JOIN (\nselect order_id from comparison_order_items\n) AS inline",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(rubric, "PACK", tmp_path)
     monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
     helpers, _ = rubric.malloy({"question_id": "q08_x", "sql_path": "q08.sql"})
-    assert helpers == ["SQL source history", "SQL source segments"]
+    assert helpers == ["SQL source inline", "SQL source segments"]
 
 
 def test_a_question_without_an_executed_result_is_unsupported(tmp_path, monkeypatch) -> None:
@@ -687,6 +756,91 @@ def test_every_layer_reading_a_rollup_column_is_labeled_precomputed() -> None:
             "q12_orders_by_month_with_lifetime_spend_500_filter",
         ):
             assert labels[layer][qid]["label"] == "precomputed", (layer, qid)
+
+
+# Hand-written text naming which questions carry which labels: a layer's headline finding, or
+# its README. Each range must name exactly the questions, in its slices, with those labels.
+LABEL_STATEMENTS = [
+    ("finding", "metricflow", "MetricFlow answers q08 and q16 with", {"native"}),
+    ("finding", "metricflow", "answers q09, q10 and q13-q15 through helper", {"workaround"}),
+    ("finding", "metricflow", "and q11-q12 through helper views", {"precomputed"}),
+    ("finding", "cube", "Cube answers q08 through", {"native"}),
+    ("finding", "cube", "answers q05, q09, q10 and q13-q16 through helper", {"workaround"}),
+    ("finding", "cube", "and q11-q12 through filters", {"precomputed"}),
+    ("finding", "malloy", "Malloy answers q08-q16 through", {"workaround", "precomputed"}),
+    ("finding", "snowflake_semantic_views", "Views answers q01-q07 through", {"native"}),
+    ("finding", "snowflake_semantic_views", "and q08-q16 as SQL", {"workaround", "precomputed"}),
+    ("finding", "ktx", "KtX answers q01-q07 through", {"native"}),
+    ("finding", "ktx", "and q08-q16 through SQL-backed", {"workaround", "precomputed"}),
+    ("readme", "metricflow", "q09, q10 and q13-q15 are implemented through", {"workaround"}),
+    ("readme", "metricflow", "q11 and q12 go through helper views", {"precomputed"}),
+    ("readme", "malloy", "(q08-q10, q13-q16) use explicit DuckDB SQL", {"workaround"}),
+    ("readme", "malloy", "q11 and q12 filter on the precomputed", {"precomputed"}),
+    ("readme", "ktx", "`q01`-`q07` use ordinary KtX sources", {"native"}),
+    ("readme", "ktx", "`q08`-`q16` execute through KtX", {"workaround", "precomputed"}),
+]
+
+
+def _numbers(text: str) -> set[int]:
+    ranges = re.findall(r"q(\d\d)(?:-q(\d\d))?", text.replace("`", ""))
+    return {n for start, end in ranges for n in range(int(start), int(end or start) + 1)}
+
+
+def _labels_by_number() -> tuple[dict[str, dict[int, str]], dict[int, str]]:
+    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
+    report = SCRIPTS.parent / "results" / "validation" / "output_consistency.json"
+    items = json.loads(report.read_text(encoding="utf-8"))["questions"]
+    by_layer = {
+        layer: {int(qid[1:3]): label["label"] for qid, label in questions.items()}
+        for layer, questions in labels.items()
+    }
+    return by_layer, {int(item["question_id"][1:3]): item["slice"] for item in items}
+
+
+def _assert_counts(cell: str, labels: dict[int, str]) -> None:
+    found = re.findall(r"(\d+) (\w+)(?: \(([^)]*)\))?", cell.replace("`", ""))
+    assert {label: int(count) for count, label, _ in found} == Counter(labels.values()), cell
+    for _, label, named in found:
+        if named:
+            assert _numbers(named) == {n for n, got in labels.items() if got == label}, cell
+
+
+def test_hand_written_label_statements_match_the_rubric() -> None:
+    labels, slices = _labels_by_number()
+    checked = set()
+    for source, layer, phrase, allowed in LABEL_STATEMENTS:
+        if source == "finding":
+            name = generator.LAYER_META[layer]["label"]
+            text = next(f for f in generator.LAYER_FINDINGS if f.startswith(name))
+            checked.add(text)
+        else:
+            text = (SCRIPTS.parents[1] / layer / "README.md").read_text(encoding="utf-8")
+        assert phrase in " ".join(text.split()), phrase
+        named = _numbers(phrase)
+        scope = {n for n in labels[layer] if slices[n] in {slices[m] for m in named}}
+        assert named == {n for n in scope if labels[layer][n] in allowed}, (layer, phrase)
+    assert checked == {f for f in generator.LAYER_FINDINGS if re.search(r"\bq\d\d", f)}
+
+
+def test_hand_written_label_tables_match_the_rubric() -> None:
+    labels, slices = _labels_by_number()
+    layer_of = {generator.LAYER_META[layer]["label"]: layer for layer in LAYERS}
+    readme = (SCRIPTS.parents[1] / "README.md").read_text(encoding="utf-8")
+    for slice_name, heading in [
+        ("shared", "## Shared Questions"),
+        ("semantic_rails_targeted", "## Semantic-Rails-Targeted Questions"),
+    ]:
+        section = readme.split(heading, 1)[1].split("\n## ", 1)[0]
+        rows = re.findall(r"^\| ([^|]+?) \| ([^|]+?) \|", section, flags=re.MULTILINE)
+        rows = [(layer_of[name], cell) for name, cell in rows if name in layer_of]
+        assert sorted(layer for layer, _ in rows) == sorted(LAYERS)
+        for layer, cell in rows:
+            _assert_counts(
+                cell, {n: got for n, got in labels[layer].items() if slices[n] == slice_name}
+            )
+    snowflake = (SCRIPTS.parents[1] / "snowflake_semantic_views" / "README.md").read_text("utf-8")
+    line = next(line for line in snowflake.splitlines() if line.startswith("- Support labels"))
+    _assert_counts(line.split(":", 1)[1], labels["snowflake_semantic_views"])
 
 
 def _load_semantic_rails_runner() -> ModuleType:

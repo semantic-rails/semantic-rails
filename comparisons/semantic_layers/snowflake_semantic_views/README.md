@@ -24,7 +24,7 @@ This folder is an executed Snowflake Semantic Views pack backed by the default S
 
 ## Executed Outcome
 
-- Captured: `2026-04-06T23:05:57-04:00` (2026-04-07 UTC), on a trial account, on an earlier dataset. It has not been re-run since, so the output check reports it separately from the layers that ran on the current dataset. The captured `create_semantic_view.json` and `describe_semantic_view.json` reflect `jaffle_semantic_view.yaml` as it stood then.
+- Captured: `2026-04-06T23:05:57-04:00` (2026-04-07 UTC), on a trial account, on an earlier dataset. It has not been re-run since, so the output check reports it separately from the layers checked on the current dataset. The captured `create_semantic_view.json` and `describe_semantic_view.json` reflect `jaffle_semantic_view.yaml` as it stood then.
 - Semantic view: `ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON`
 - Connection: `semantic_views_trial`
 - Support labels, from the rubric (`../shared/rubric.md`): `7 native`, `7 workaround`, `2 precomputed` (q11, q12)

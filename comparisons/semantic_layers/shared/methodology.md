@@ -4,7 +4,7 @@
 
 - Use the same source dataset for all runnable layers: the shared DuckDB database built from `data/jaffle_csv` and `data/seed_jaffle.sql` by `shared/scripts/bootstrap_shared_duckdb.py`.
 - Every layer reads only the `comparison_*` views that script creates. They pass the seed tables through unchanged, except that `comparison_order_items` adds each item's order time, store and customer.
-- Each runner records the dataset fingerprint (a hash of the seed files and the view definitions) with its results. The output check reports a capture made on another dataset as stale, separately from the layers that ran on the current one, instead of counting it as a mismatch.
+- Each runner records the dataset fingerprint (a hash of the seed files and the view definitions) with its results. The output check reports a capture made on another dataset as stale, separately from the layers checked on the current dataset, instead of counting it as a mismatch.
 - Keep the semantic scope intentionally small:
   - baseline models: `orders`, `order_items`, `customers`, `stores`
   - stretch models: `customer_history`, `order_lifecycle`, `storefront_sessions`
@@ -16,7 +16,7 @@
 
 ## Support Labels
 
-`shared/scripts/apply_rubric.py` assigns every label from each layer's committed artifacts, with the same rules for every layer, Semantic Rails included. Runners record only whether a question executed. [`rubric.md`](rubric.md) states the rules and how each one is detected.
+`shared/scripts/apply_rubric.py` assigns every label from each layer's committed artifacts, with the same rules for every layer, Semantic Rails included. The runners this pack re-runs record only whether a question executed. [`rubric.md`](rubric.md) states the rules and how each one is detected.
 
 - `unsupported`: the layer didn't execute the question.
 - `precomputed`: the answer reads a rollup column that the question declares in `bypass_columns`.
