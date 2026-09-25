@@ -1462,6 +1462,11 @@ class ArchitectProject:
         stem = _slug(file_name.rsplit(".", 1)[0], fallback="core")
         path = existing.source_path if existing else self._target_path(f"{plural}/{stem}.yml")
         documents = self._load_documents(path)
+        if existing is None and kind in documents[path]:
+            # The runner reads a file's plural block and ignores a single entry beside it.
+            raise SemanticLayerError(
+                "INVALID_CONFIG", f"{self._relative(path)} holds a single {kind}; pick another file"
+            )
         merged = {**(existing.spec if existing else {}), **deepcopy(dict(spec or {}))}
         self._store_mapping_object(documents[path], existing, wrapper=plural, key=name, spec=merged)
         return self._commit(

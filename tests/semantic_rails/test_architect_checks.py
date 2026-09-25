@@ -223,6 +223,8 @@ def test_entries_merge_in_the_file_the_runner_reads_them_from(workspace: Path) -
     project.upsert_check(kind="example", key="orders", spec={"question": "Orders by country?"})
     project.upsert_check(kind="test", key="single", spec={"max_rows": 3})
     project.upsert_check(kind="test", key="unread", spec=bounds)
+    with pytest.raises(SemanticLayerError, match="holds a single test"):
+        project.upsert_check(kind="test", key="other", spec=bounds, file_name="single.yml")
 
     example = _yaml(package / "examples" / "questions.yml")["examples"]["orders"]
     assert example["question"] == "Orders by country?"
