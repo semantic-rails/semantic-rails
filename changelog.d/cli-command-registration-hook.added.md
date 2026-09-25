@@ -1,6 +1,4 @@
-- Packages can add `semantic-rails` commands, or extend existing ones (extra arguments,
-  a wrapped handler, new `import --from` sources and `export-contract --format` formats),
-  through the `semantic_rails.cli` entry-point group and
-  `semantic_rails.cli.registry.CommandRegistry`. A plugin from another distribution that
-  fails to load is skipped with a warning; `SEMANTIC_RAILS_CLI_PLUGINS=0` turns plugins
-  off.
+- Other installed packages can add `semantic-rails` commands: each entry point in the
+  `semantic_rails.cli` group receives the top-level subparsers and adds its commands. A
+  plugin that fails to load or reuses a command name is skipped with a warning;
+  `SEMANTIC_RAILS_CLI_PLUGINS=0` turns plugins off.

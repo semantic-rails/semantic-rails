@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import sys
+from importlib import metadata
 from typing import Any
 
 from ..config import get_package_config, list_package_ids, load_package_config
@@ -65,7 +67,6 @@ from .common import (
     _print_stderr,
 )
 from .output import _print_error_envelope
-from .registry import CommandRegistry, load_extensions
 
 
 def _config_for_error_enrichment(args: argparse.Namespace) -> Any | None:
@@ -86,7 +87,7 @@ def _config_for_error_enrichment(args: argparse.Namespace) -> Any | None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the built-in command tree; :mod:`.registry` applies extensions on top."""
+    """Build the command tree: the built-in commands, then any plugin commands."""
 
     package_choices = list_package_ids()
     parser = argparse.ArgumentParser(
@@ -893,13 +894,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Port to bind (default: 8090).",
     )
     p_serve.set_defaults(func=cmd_serve)
+    _add_plugin_commands(sub)
     return parser
 
 
+def _add_plugin_commands(sub: argparse._SubParsersAction) -> None:
+    """Let other installed packages add top-level commands.
+
+    Each entry point in the ``semantic_rails.cli`` group names a callable that
+    receives the top-level subparsers, adds its commands and sets their
+    ``func`` (plus ``human_cli=True`` for plain-text errors)::
+
+        [project.entry-points."semantic_rails.cli"]
+        acme = "acme_semantic_rails.cli:add_commands"
+
+    It must not print: ``mcp stdio`` speaks its protocol on stdout. A plugin
+    that raises (for example by reusing a command name) gets a warning on
+    stderr and the rest of the CLI still works; ``SEMANTIC_RAILS_CLI_PLUGINS=0``
+    skips every plugin.
+    """
+
+    switch = os.environ.get("SEMANTIC_RAILS_CLI_PLUGINS", "").strip().lower()
+    if switch in {"0", "false", "no", "off"}:
+        return
+    plugins = metadata.entry_points(group="semantic_rails.cli")
+    for entry_point in sorted(plugins, key=lambda ep: ep.name):
+        try:
+            entry_point.load()(sub)
+        except Exception as exc:  # noqa: BLE001 - a broken plugin must not break the CLI
+            _print_stderr(
+                f"semantic-rails: skipped CLI plugin {entry_point.name!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+
 def main() -> None:
-    registry = CommandRegistry()
-    load_extensions(registry)
-    parser = registry.build_parser()
+    parser = build_parser()
     args = parser.parse_args()
     if not getattr(args, "cmd", ""):
         if not sys.stdin.isatty():

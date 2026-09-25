@@ -191,12 +191,7 @@ def cmd_import(args: argparse.Namespace) -> None:
     package directory. Today supports `--from metricflow` (a MetricFlow
     YAML directory or a dbt-emitted `semantic_manifest.json`). No
     MetricFlow runtime is required — the translator reads YAML/JSON
-    files standalone. Extensions add formats through
-    :meth:`~semantic_rails.cli.registry.CommandRegistry.add_import_source`."""
-    extension = dict(getattr(args, "import_sources", {}) or {}).get(args.source_format)
-    if extension is not None:
-        extension(args)
-        return
+    files standalone."""
     if args.source_format == "metricflow":
         from mf2sr import translate
 
@@ -237,16 +232,7 @@ def cmd_parse_config(args: argparse.Namespace) -> None:
 
 
 def cmd_export_contract(args: argparse.Namespace) -> None:
-    """Emit the canonical framework-neutral semantic validation contract.
-
-    Extensions add formats through
-    :meth:`~semantic_rails.cli.registry.CommandRegistry.add_export_format`.
-    """
-
-    extension = dict(getattr(args, "export_formats", {}) or {}).get(getattr(args, "format", ""))
-    if extension is not None:
-        extension(args)
-        return
+    """Emit the canonical framework-neutral semantic validation contract."""
 
     ref = resolve_package_reference(package_id=args.package, path=args.path)
     exporter = (
