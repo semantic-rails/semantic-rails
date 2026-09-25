@@ -194,8 +194,12 @@ def _author_model(
         "Warehouse table or relation (for example raw_orders)",
         str(spec.get("relation", key)),
     )
-    if source is not None:  # a table the database lacks is refused, not written unchecked
-        _relation_columns(project, ref, relation)
+    # A new name must be a table in the listed database or a relation pipeline; a saved
+    # relation kept by pressing Enter stays as it was.
+    if source is not None and not (existing and relation == spec.get("relation")):
+        pipelines = load_package_config(ref.source_path).relations
+        if not any(relation in (row.id, row.name, row.output_name) for row in pipelines):
+            _relation_columns(project, ref, relation)
     entity_key = _author_slug_prompt(
         "Business entity at one row of this model",
         str(existing_entity["key"]),

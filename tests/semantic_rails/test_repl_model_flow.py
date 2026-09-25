@@ -279,6 +279,20 @@ def test_a_seed_file_added_after_the_build_is_flagged_and_its_table_refused(
     assert _files(project) == before
 
 
+def test_a_saved_relation_or_a_relation_pipeline_is_not_checked_as_a_table(shop: Path) -> None:
+    _author(shop, {"Table to model": ORDERS, "Create this model?": True})
+    with duckdb.connect(str(shop / "data" / "shop.duckdb")) as connection:
+        connection.execute("ALTER TABLE main_marts.fct_orders RENAME TO fct_orders_v2")
+    (shop / "relations").mkdir()
+    (shop / "relations" / "recent.yml").write_text(
+        "relations:\n  recent_orders:\n    source: main_marts.fct_orders_v2\n", "utf-8"
+    )
+    typed = {"Table to model": "Type a table name instead", "Update this model?": False}
+
+    _author(shop, {**typed, "Model key": "orders", "Manage and update": True})  # Enter keeps it
+    _author(shop, {**typed, "Model key": "recent", "Warehouse table": "recent_orders"})
+
+
 def test_a_cents_column_is_not_prechecked_as_money(shop: Path) -> None:
     with duckdb.connect(str(shop / "data" / "shop.duckdb")) as connection:
         connection.execute("ALTER TABLE main_marts.fct_orders ADD COLUMN tax_paid_cents BIGINT")
