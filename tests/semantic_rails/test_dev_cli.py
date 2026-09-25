@@ -1226,16 +1226,3 @@ def test_setup_human_output_is_concise_and_actionable() -> None:
     assert "registered_packages" in proc.stdout
     assert "semantic-rails init my_package" in proc.stdout
     assert "semantic-rails init --output" not in proc.stdout
-
-
-def test_dev_cli_shim_re_exports_the_moved_objects() -> None:
-    """``semantic_rails.dev_cli`` keeps its public names for one release."""
-
-    import semantic_rails.dev_cli as dev_cli
-    from semantic_rails.cli import commands, common, interpretation, reports, scaffold, setup_wizard
-    from semantic_rails.repl import shell
-
-    owners = [commands.project, common, interpretation, reports, scaffold, setup_wizard, shell]
-    for name in dev_cli.__all__:
-        moved = next(getattr(owner, name) for owner in owners if hasattr(owner, name))
-        assert getattr(dev_cli, name) is moved, name

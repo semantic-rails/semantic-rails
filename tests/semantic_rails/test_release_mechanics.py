@@ -452,7 +452,7 @@ def test_init_starter_template_ships_as_a_data_file():
 def test_init_produces_a_loadable_single_file_package(tmp_path):
     import argparse
 
-    from semantic_rails.cli import cmd_init
+    from semantic_rails.cli.commands.package import cmd_init
     from semantic_rails.config import load_package_config
 
     target = tmp_path / "myshop"

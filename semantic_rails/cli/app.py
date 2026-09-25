@@ -11,7 +11,6 @@ from ..config import get_package_config, list_package_ids, load_package_config
 from ..diagnostics import exception_issue
 from ..errors import SemanticLayerError
 from ..mcp_manager import CLIENTS, DEFAULT_MCP_HOST, DEFAULT_MCP_PORT, MCP_KINDS
-from ..repl.shell import run_interactive_shell
 from ..runtime import _enrich_runtime_error
 from .commands.mcp import (
     cmd_mcp_client_config,
@@ -907,6 +906,8 @@ def main() -> None:
             return
         # Bare `semantic-rails` opens the REPL; route it through the same
         # error handling so "no package selected" reads as guidance.
+        from ..repl.shell import run_interactive_shell  # the REPL imports this package
+
         args.func = lambda _args: run_interactive_shell()
         args.human_cli = True
     try:

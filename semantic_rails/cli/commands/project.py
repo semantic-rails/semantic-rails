@@ -7,7 +7,6 @@ import sys
 
 from ...errors import SemanticLayerError
 from ...local_config import init_local_profile, local_profile_report
-from ...repl.shell import run_interactive_shell
 from ..common import (
     _add_optional_reference_args,
     _print_json,
@@ -402,6 +401,8 @@ def cmd_ask(args: argparse.Namespace) -> None:
 
 
 def cmd_repl(args: argparse.Namespace) -> None:
+    from ...repl.shell import run_interactive_shell  # the REPL imports this package
+
     run_interactive_shell(package=getattr(args, "package", ""), path=getattr(args, "path", ""))
 
 

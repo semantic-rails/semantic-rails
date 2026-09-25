@@ -5,13 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from semantic_rails import architect_service, architect_transactions, dev_cli
+from semantic_rails import architect_service, architect_transactions
 from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.cli.scaffold import create_project_report
 from semantic_rails.errors import SemanticLayerError
 
 
 def _create_project(tmp_path: Path, package_id: str = "service_core") -> Path:
-    report = dev_cli.create_project_report(
+    report = create_project_report(
         package_id=package_id,
         workspace_root=str(tmp_path),
         run_checks=False,
