@@ -24,7 +24,7 @@ import pytest
 import yaml
 
 from semantic_rails import cli as cli_module
-from semantic_rails.cli import cmd_init
+from semantic_rails.cli.commands.package import cmd_init
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import resolve_package_reference
 from semantic_rails.errors import SemanticLayerError

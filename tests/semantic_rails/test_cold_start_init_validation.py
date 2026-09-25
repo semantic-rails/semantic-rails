@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from semantic_rails.cli import cmd_init
+from semantic_rails.cli.commands.package import cmd_init
 from semantic_rails.config_validation import (
     parse_config_report,
     resolve_package_reference,

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from semantic_rails.cli import cmd_init
+from semantic_rails.cli.commands.package import cmd_init
 from semantic_rails.config_validation import validate_runtime_package
 
 
@@ -146,7 +146,7 @@ def test_doctor_passes_a_valid_standalone_package(
     Dockerfile check that carried no message."""
     import json
 
-    from semantic_rails.cli import cmd_doctor
+    from semantic_rails.cli.commands.package import cmd_doctor
 
     cmd_doctor(argparse.Namespace(package="", path=str(starter_package)))
     payload = json.loads(capsys.readouterr().out)
