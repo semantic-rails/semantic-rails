@@ -795,8 +795,8 @@ def _metric_change(
         recipes.insert(0, (_PRESERVE, f"Keep this {what} unchanged"))
     if not units:
         print(
-            "  Rolling windows, prior periods and growth need a calendar table in the package, "
-            f"with a {', '.join(_CALENDAR_COLUMNS.values())} column; "
+            "  Rolling windows, prior periods and growth need a calendar table in the package "
+            f"with at least one of the columns {', '.join(_CALENDAR_COLUMNS.values())}; "
             "they appear here once it has one."
         )
     recipe = _author_choice(
@@ -1193,12 +1193,18 @@ def _calendar_units(config: PackageConfig) -> list[tuple[str, str]]:
 
 
 def _unit_choice(label: str, units: list[tuple[str, str]], saved: Any, fallback: str) -> str:
-    """A unit for a calendar recipe, naming the calendar columns the others need."""
+    """A unit for a calendar recipe, naming the calendar columns the others need.
+
+    A saved unit stays on offer even when the calendar cannot fill it, so Enter keeps it.
+    """
 
     missing = [f"`{_CALENDAR_COLUMNS[unit]}`" for unit, _ in _UNITS if unit not in dict(units)]
     if missing:
         print(f"  More units need these columns on the calendar model: {', '.join(missing)}.")
-    return _saved_choice(label, units, saved, fallback if fallback in dict(units) else units[0][0])
+    offered = [(unit, text) for unit, text in _UNITS if unit in dict(units) or unit == saved]
+    return _saved_choice(
+        label, offered, saved, fallback if fallback in dict(units) else units[0][0]
+    )
 
 
 def _saved_choice(label: str, options: list[tuple[str, str]], saved: Any, fallback: str) -> str:

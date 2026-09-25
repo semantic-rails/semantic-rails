@@ -1309,6 +1309,10 @@ def test_growth_offers_the_units_its_calendar_can_fill(
     assert [error["message"] for error in report["errors"]] == [
         "time.fill requires calendar dimension 'month_start' on 'entity.shop_time'"
     ]
+    # Its saved unit stays on offer, so an edit that keeps it still goes through.
+    script, metric = _author(project, {"Metric key": "g", "Business definition": "Edited."})
+    assert script.offered["Compare with how far back"] == "Months"
+    assert (metric["description"], metric["expression"]) == ("Edited.", growth["expression"])
 
 
 def test_a_taken_or_similar_key_asks_again_instead_of_ending_the_wizard(
