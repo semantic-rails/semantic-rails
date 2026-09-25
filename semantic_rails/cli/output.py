@@ -169,6 +169,10 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         print("Errors:")
         for error in errors[:5]:
             print(f"  {error.get('code', 'ERROR')}: {error.get('message', error)}")
+            # The engine ranks its recovery hints; --json has them all.
+            hints = [h for h in error.get("recovery_hints", []) or [] if isinstance(h, dict)]
+            if hints and hints[0].get("message"):
+                print(f"    Try: {hints[0]['message']}")
 
 
 def _every_row_command(report: dict[str, Any]) -> str:

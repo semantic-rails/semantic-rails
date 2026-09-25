@@ -1083,7 +1083,42 @@ def test_calendar_recipes_appear_only_with_a_calendar(
         "Running total",
         "Period to date",
     ]
-    assert "need a calendar table in the package" in capsys.readouterr().out
+    assert "add it with `author calendar`" in capsys.readouterr().out
+
+
+STARTS = ["week_start", "month_start", "quarter_start", "year_start"]
+
+
+def test_author_calendar_unlocks_the_calendar_recipes(tmp_path: Path) -> None:
+    project = _shop(tmp_path)  # its warehouse has a `calendar` table; the package has no calendar
+    script = _Script({"Create this calendar?": True})
+    _repl(project, "author calendar", script, [])
+
+    assert script.offered["Period-start columns on the table (each adds that unit)"] == STARTS
+    graph = yaml.safe_load((project / "graph.yml").read_text("utf-8"))["graph"]["entities"]
+    assert graph["calendar"]["kind"] == "time"
+    rolling = {"Metric recipe": "Rolling", "Measure": "revenue - ", "Window length": "2"}
+    script, metric = _author(project, {"Metric key": "r", **rolling})
+    assert metric["kind"] == "rolling" and _values(project, "r") == [10.0, 30.0, 50.0]
+    assert "Months" in script.options["Window unit"]
+
+
+@pytest.mark.parametrize(
+    ("answers", "message"),
+    [
+        ({"Model key": "orders", "Manage and update this existing model?": True}, "not a calendar"),
+        ({"Warehouse table with one row per day in a `date_day` column": "raw_orders"}, "date_day"),
+    ],
+)
+def test_author_calendar_refuses_a_model_or_table_that_is_not_one(
+    tmp_path: Path, answers: dict[str, Any], message: str
+) -> None:
+    project = _shop(tmp_path)
+    before = _authored(project)
+
+    with pytest.raises(SemanticLayerError, match=message):
+        _repl(project, "author calendar", _Script(answers), [])
+    assert _authored(project) == before
 
 
 @pytest.mark.parametrize(
@@ -1290,8 +1325,16 @@ def test_growth_offers_the_units_its_calendar_can_fill(
     project = _shop(tmp_path, calendar=True)
     calendar = project / "models" / "core" / "calendar.yml"
     doc = yaml.safe_load(calendar.read_text("utf-8"))
+    fiscal = {**doc["model"], "id": "fiscal", "calendar_id": "fiscal", "entities": {"fiscal": {}}}
+    fiscal["dimensions"] = dict(fiscal["dimensions"])
     del doc["model"]["dimensions"]["month_start"]
     _write_yaml(calendar, doc)
+    # Another calendar has month_start, but time.fill reads the default one.
+    _write_yaml(project / "models" / "core" / "fiscal.yml", {"model": fiscal})
+    graph = yaml.safe_load((project / "graph.yml").read_text("utf-8"))
+    entity = {**graph["graph"]["entities"]["time"], "label": "Fiscal", "model": "fiscal"}
+    graph["graph"]["entities"]["fiscal"] = entity
+    _write_yaml(project / "graph.yml", graph)
 
     script, _ = _author(
         project, {"Metric key": "g", "Metric recipe": "Growth", "Measure": "revenue - "}
