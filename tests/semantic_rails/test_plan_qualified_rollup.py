@@ -3,9 +3,10 @@
 Phase 5 contracts (see plan ``snoopy-foraging-crescent.md``):
 
 - When ``interpreted_intent.pattern == "qualified_metric_rollup"``, the
-  produced candidate IR MUST contain a non-empty ``metric_filters`` and
-  a ``limit``. If those can't be synthesized, the candidate is dropped
-  to ``blocked`` with code ``QUALIFICATION_NOT_REALIZABLE``.
+  produced candidate IR MUST contain a non-empty ``metric_filters``, and
+  a ``limit`` only when the question asks for the top N. If the filters
+  can't be synthesized, the candidate is dropped to ``blocked`` with code
+  ``QUALIFICATION_NOT_REALIZABLE``.
 
 - ``predicate_metrics`` resolution prefers measures/metrics whose
   label/search_terms match the qualification phrase tokens
@@ -121,10 +122,9 @@ def test_qualified_rollup_synthesizes_metric_filters_order_by_limit(runtime_fact
         runtime.close()
 
 
-def test_qualified_rollup_default_limit_when_no_top_n(runtime_factory) -> None:
-    """When the intent omits a "top N" count but still triggers the
-    qualified rollup, the IR must carry a default limit (phase 5
-    contract: every qualified_metric_rollup IR has a limit).
+def test_qualified_rollup_without_top_n_returns_every_row(runtime_factory) -> None:
+    """Without a "top N" request, a default limit would silently drop
+    every month after the first few, so the IR has none.
     """
     runtime = runtime_factory("jaffle_shop")
     try:
@@ -135,7 +135,8 @@ def test_qualified_rollup_default_limit_when_no_top_n(runtime_factory) -> None:
         )
         assert payload["candidates"]
         query = payload["candidates"][0]["candidate_ir"]
-        assert query.get("limit") is not None
+        assert "limit" not in query
+        assert payload["interpreted_intent"]["limit"] is None
         assert query.get("metric_filters")
         _validate_against_schema(query)
     finally:

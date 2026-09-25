@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 from .._base import (
-    _DEFAULT_TOP_LIMIT,
     RuntimeCompositionDraft,
     _add_order,
     _aggregation_from_text,
@@ -190,7 +189,6 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         query["limit"] = top_n
     else:
         _add_order(query)
-        query["limit"] = _DEFAULT_TOP_LIMIT
 
     resolved = [
         _resolved(target_measure),
@@ -206,7 +204,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         resolved=resolved,
         rationale=[
             "composed qualified metric rollup from target measure, predicate metric/measure, qualifying entity, and query-time grain",
-            "synthesized metric_filters + limit at the top level so the IR explicitly names the qualification cohort",
+            "synthesized metric_filters at the top level so the IR explicitly names the qualification cohort",
         ],
         interpreted_intent={
             "pattern": "qualified_metric_rollup",
@@ -217,7 +215,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             "output_grain": str(time_spec.get("grain", "") or ""),
             "predicate_grain": explicit_predicate_grain or str(time_spec.get("grain", "") or ""),
             "predicate_grain_explicit": bool(explicit_predicate_grain),
-            "limit": query["limit"],
+            "limit": query.get("limit"),
             "is_top_intent": is_top,
         },
     )
