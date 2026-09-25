@@ -329,11 +329,14 @@ def test_cross_process_writers_from_one_base_are_serialized(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
-    ("operation", "refusal"),
-    [("write", "exists and overwrite=false"), ("archive", "does not exist")],
+    ("operation", "reported", "refusal"),
+    [
+        ("write", "created", "exists and overwrite=false"),
+        ("archive", "archived", "does not exist"),
+    ],
 )
 def test_a_retried_file_write_or_archive_replays(
-    tmp_path: Path, operation: str, refusal: str
+    tmp_path: Path, operation: str, reported: str, refusal: str
 ) -> None:
     project_path = _create_project(tmp_path)
     (project_path / "notes.md").write_text("draft\n", encoding="utf-8")
@@ -357,6 +360,7 @@ def test_a_retried_file_write_or_archive_replays(
     retried = call("first", before)
 
     assert first.report["ok"] is True, first.report
+    assert first.report["operation"] == reported  # decided under the transaction lock
     assert retried.report["status"] == "replayed"
     assert retried.report["original_status"] == first.report["status"]
     with pytest.raises(SemanticLayerError, match=refusal):
