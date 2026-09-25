@@ -16,15 +16,16 @@ from pathlib import Path
 
 def report(runs: list[dict]) -> str:
     rows = [
-        "| run | success | stop | turns | calls | errors | tokens |",
-        "|---|---|---|---|---|---|---|",
+        "| run | success | stop | turns | calls | errors | tokens | compactions |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     tools: defaultdict[str, Counter] = defaultdict(Counter)
     errors: defaultdict[str, Counter] = defaultdict(Counter)
     for run in runs:
         rows.append(
             f"| {run['name']} | {run['success']} | {run['stop']} | {run['turns']} "
-            f"| {run['tool_calls']} | {run['tool_errors']} | {run['total_tokens']} |"
+            f"| {run['tool_calls']} | {run['tool_errors']} | {run['total_tokens']} "
+            f"| {len(run.get('compactions') or [])} |"
         )
         for name, counts in run["friction"].items():
             errors[name].update(counts["errors_seen"])

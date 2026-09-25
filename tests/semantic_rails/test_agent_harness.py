@@ -52,20 +52,30 @@ FRICTION = [  # errors, a repeat, bad arguments, an unknown tool, then an answer
 ]
 
 
-def serve(replies: list, usage_kind: str) -> tuple[ThreadingHTTPServer, list[dict]]:
-    """A chat endpoint that answers request n with replies[n] and reports full, partial or no usage."""
+def serve(replies: list, usage_kind: str | list[str]) -> tuple[ThreadingHTTPServer, list[dict]]:
+    """A chat endpoint that answers request n with replies[n] (a text, tool calls, an HTTP
+    status, or {content, finish_reason}) and reports full, partial or no usage, for every
+    request or, given a list, for each."""
     requests: list[dict] = []
 
     class Model(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            reply = replies[len(requests) - 1]
+            reply, finish = replies[len(requests) - 1], "stop"
+            if isinstance(reply, int):  # an HTTP error status
+                self.send_response(reply)
+                self.end_headers()
+                self.wfile.write(b"overloaded")
+                return
+            if isinstance(reply, dict):  # a reply with its own finish reason
+                reply, finish = reply["content"], reply["finish_reason"]
             message = {"content": reply} if isinstance(reply, str) else {"tool_calls": reply}
             usage = {"prompt_tokens": 100 * len(requests), "completion_tokens": 10}
-            if usage_kind == "full":
+            kind = usage_kind[len(requests) - 1] if isinstance(usage_kind, list) else usage_kind
+            if kind == "full":
                 usage["completion_tokens_details"] = {"reasoning_tokens": 4}
-            choice = {"message": {"role": "assistant", **message}, "finish_reason": "stop"}
-            reply = {"choices": [choice], **({"usage": usage} if usage_kind != "none" else {})}
+            choice = {"message": {"role": "assistant", **message}, "finish_reason": finish}
+            reply = {"choices": [choice], **({"usage": usage} if kind != "none" else {})}
             self.send_response(200)
             self.end_headers()
             self.wfile.write(json.dumps(reply).encode())
@@ -138,6 +148,82 @@ def test_run_records_tokens_friction_and_the_check(
         table.index("| add | 177 |") < table.index("| ghost | 70 |") < table.index("| fail | 37 |")
     )
     assert "Never called in any run: unused" in table
+
+
+def test_compaction_replaces_older_turns_with_the_models_summary(tmp_path, monkeypatch):
+    (tmp_path / "server.py").write_text(SERVER, encoding="utf-8")
+    scenario = {"task": "Add 1 and 2.", "servers": {"fixture": f"{sys.executable} server.py"}}
+    (tmp_path / "scenario.yml").write_text(json.dumps(scenario), encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run lock
+    turns = [[call("add", {"a": n, "b": n})] for n in (1, 2, 3)]
+    # requests: turn 1, turn 2, summary, turn 3, summary, final answer
+    model, requests = serve([turns[0], turns[1], "S1", turns[2], "S2", "The sum is 3."], "full")
+    url, out = f"http://127.0.0.1:{model.server_port}/v1", tmp_path / "run"
+    argv = ["--out", str(out), "--model", "m", "--base-url", url, "--workdir", str(tmp_path)]
+    try:  # prompts grow by 100 tokens a request, so the next prompt reaches 230 from turn 3 on
+        run.main(
+            [str(tmp_path / "scenario.yml"), *argv, "--compact-at", "230", "--compact-keep", "1"]
+        )
+    finally:
+        model.shutdown()
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert (summary["stop"], summary["turns"]) == ("final", 4)
+    assert [(c["turn"], c["messages_summarized"]) for c in summary["compactions"]] == [
+        (2, 2),
+        (3, 2),
+    ]
+    assert summary["prompt_tokens"] == 2100  # the summaries' requests count too
+    first, second = requests[2], requests[4]
+    assert "tools" not in first and first["messages"][0]["content"] == run.SUMMARIZE
+    assert "Add 1 and 2." in first["messages"][1]["content"]
+    assert 'add({"a": 1, "b": 1})' in first["messages"][1]["content"]
+    assert "S1" in second["messages"][1]["content"] and '"a": 2' in second["messages"][1]["content"]
+    system, task, kept, result = requests[5]["messages"]  # the last turn is kept whole
+    assert task["content"].startswith("Add 1 and 2.") and task["content"].endswith("S2")
+    assert kept["tool_calls"] == turns[2] and result["content"] == '{"ok":true,"sum":6}'
+    events = [json.loads(line) for line in (out / "transcript.jsonl").read_text().splitlines()]
+    assert [e["summary"] for e in events if e["event"] == "compaction"] == ["S1", "S2"]
+    assert "| 2 |" in report.report([summary]).splitlines()[2]
+
+
+@pytest.mark.parametrize(
+    ("summary", "usage", "stop", "recorded", "prompt_tokens"),
+    [
+        ("", "full", "compaction failed: no summary", 1, 600),
+        (
+            {"content": "S", "finish_reason": "length"},
+            "full",
+            "compaction failed: summary cut",
+            1,
+            600,
+        ),
+        ("S1", "none", "compaction: no usage reported", 1, None),
+        (500, "full", "compaction request failed: <HTTPError 500", 0, 300),
+    ],
+)
+def test_a_failed_compaction_stops_the_run_and_keeps_its_tokens(
+    tmp_path, monkeypatch, summary, usage, stop, recorded, prompt_tokens
+):
+    (tmp_path / "server.py").write_text(SERVER, encoding="utf-8")
+    scenario = {"task": "Add 1 and 2.", "servers": {"fixture": f"{sys.executable} server.py"}}
+    (tmp_path / "scenario.yml").write_text(json.dumps(scenario), encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run lock
+    turns = [[call("add", {"a": n, "b": n})] for n in (1, 2)]
+    model, _ = serve([*turns, summary], ["full", "full", usage])
+    url, out = f"http://127.0.0.1:{model.server_port}/v1", tmp_path / "run"
+    argv = ["--out", str(out), "--model", "m", "--base-url", url, "--workdir", str(tmp_path)]
+    try:
+        run.main(
+            [str(tmp_path / "scenario.yml"), *argv, "--compact-at", "230", "--compact-keep", "1"]
+        )
+    finally:
+        model.shutdown()
+
+    result = json.loads((out / "summary.json").read_text())
+    assert result["stop"].startswith(stop) and result["turns"] == 2
+    assert (len(result["compactions"]), result["prompt_tokens"]) == (recorded, prompt_tokens)
+    assert ("overloaded" in result["stop"]) == (summary == 500)
 
 
 PROGRAM = """
