@@ -597,6 +597,32 @@ def test_a_container_installs_the_wheel_copied_into_it(
     assert calls[-1][-1] == f"uv tool install {inside}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the local environment runs /bin/bash")
+def test_local_installs_a_relative_wheel_by_its_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Local commands run from a scratch directory, where a relative wheel path means nothing.
+    (tmp_path / "dist").mkdir()
+    wheel = tmp_path / "dist" / "semantic_rails-0.3.0-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    monkeypatch.chdir(tmp_path)
+    uv = fake_uv(tmp_path)
+    monkeypatch.setattr(quickstart.shutil, "which", lambda name: str(uv))
+    commands: list[str] = []
+
+    def run(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        commands.append(argv[-1])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    env = quickstart.Local(f"dist/{wheel.name}")
+    try:
+        monkeypatch.setattr(quickstart.subprocess, "run", run)
+        env.run(quickstart.TOOL_INSTALL)
+    finally:
+        env.close()
+    assert commands == [f"uv tool install {wheel.resolve()}"]
+
+
 def test_a_missing_wheel_is_refused(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         quickstart.main(["--local", "--spec", str(tmp_path / "missing.whl")])

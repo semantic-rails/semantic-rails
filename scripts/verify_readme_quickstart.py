@@ -5,8 +5,9 @@ The commands below install the latest release from PyPI, not this checkout, so t
 check shows whether the README works for a new user today. `--spec` installs another
 version or a built wheel in its place, to check a release candidate against the README
 before it is published. Each command must appear verbatim, as whole lines of a README
-code block: editing one without the other fails the check. The Claude Code and Codex registration lines are held to the same rule, and
-the check starts the stdio server they register. The Claude Desktop and Cursor blocks
+code block: editing one without the other fails the check. The Claude Code and Codex
+registration lines are held to the same rule, and the check starts the stdio server
+they register. The Claude Desktop and Cursor blocks
 run as shown too, finding the installed command with `uv tool dir --bin`. The MetricFlow
 import is not run here.
 

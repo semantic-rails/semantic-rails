@@ -121,7 +121,8 @@ discover -> plan -> execute
 - `discover` maps business terms to governed semantic objects.
 - `inspect` (optional) opens an object card with usage, provenance, comparison metadata, and
   starter patches.
-- `plan` returns a validated best Query IR draft for natural-language intents. Use `detail="full"` only when you need alternatives or blocked drafts.
+- `plan` returns the best Query IR draft for natural-language intents, with a `status` that says
+  whether to run it. Use `detail="full"` only when you need alternatives or blocked drafts.
 - `build-options` returns legal next query choices for guided builders.
 - `valid-values` searches categorical values for selected dimensions.
 - `execute` is the MCP tool name (HTTP path `/api/v1/query`, CLI verb `semantic-rails query`). It
