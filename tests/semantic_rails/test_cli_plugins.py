@@ -46,7 +46,8 @@ def test_an_installed_plugin_adds_a_command_and_a_broken_one_is_skipped(tmp_path
 
     hello = _cli(tmp_path, "hello", "--name", "rails")
     assert (hello.returncode, hello.stdout) == (0, "hello rails\n"), hello.stderr
-    assert "skipped CLI plugin 'broken_plugin': ArgumentError" in hello.stderr
+    assert "skipped CLI plugin 'broken_plugin'" in hello.stderr  # the exception type varies
+    assert "conflicting subparser: packages" in hello.stderr
 
     packages = _cli(tmp_path, "packages")  # the built-in command still wins
     assert packages.returncode == 0 and '"packages"' in packages.stdout, packages.stderr
