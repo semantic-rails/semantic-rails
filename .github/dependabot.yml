@@ -11,6 +11,10 @@ updates:
     groups:
       python-deps:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+      python-deps-major:
+        patterns: ["*"]
+        update-types: ["major"]
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -23,3 +27,7 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+      actions-major:
+        patterns: ["*"]
+        update-types: ["major"]
