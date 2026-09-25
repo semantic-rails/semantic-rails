@@ -8,6 +8,29 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.2 — 2026-09-25 — Tie-aware plans and safer model authoring
+
+**Upgrading from 0.3.1:** `plan` can return `low_confidence` where 0.3.1 returned `ok`. When several
+measures or metrics match a question equally well and neither the question nor a `partial_query`
+select names one, it reports a `subject_ambiguous` gap listing the candidates; pin one in
+`partial_query` to get `ok`. A tie the question settles can now pick a different measure than
+0.3.1 did. Details are under Fixed.
+
+### Fixed
+
+- `semantic-rails ls` accepts the REPL's `ls [kind] [search]` form, for example
+  `semantic-rails ls metric revenue`.
+- `author model` warns when the seed files changed after the DuckDB file was built, with
+  the command that rebuilds it, and refuses a typed table name the file lacks.
+- `author model` no longer pre-ticks `_cents` columns as money amounts, which printed cents
+  as dollars.
+- The authoring banner says that typing `cancel` in a list picks an option containing it.
+- When several measures or metrics match a question equally well, `plan` now picks the one
+  the question names: "What is revenue by month?" uses a measure labelled Revenue, not Item
+  Revenue Cents, which used to win on alphabetical order. When the question names none of
+  them (Gross Revenue and Net Revenue for "revenue"), `plan` returns `low_confidence` with a
+  `subject_ambiguous` gap that lists the candidates, and `ask` says which to name.
+
 ## 0.3.1 — 2026-09-25 — Honest plans, clock-safe metrics and a REPL calendar
 
 **Upgrading from 0.3.0:** validation and planning are stricter; run `project validate --mode parse`
