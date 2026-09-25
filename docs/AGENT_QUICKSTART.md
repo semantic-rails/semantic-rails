@@ -164,7 +164,8 @@ Statuses are:
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP` or `TIME_WINDOW_UNRESOLVED`),
   or a validating fallback would drift from the requested target, grouping, qualification,
-  filters, or time scope.
+  filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, name the window once (`Q2 2017` or
+  `April 1 to June 30 2017`, not both) and plan again before writing `time` yourself.
 - `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 

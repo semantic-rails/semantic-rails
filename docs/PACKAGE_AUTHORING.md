@@ -949,7 +949,8 @@ metrics:
     denominator: order_count
     null_behavior: null_if_zero       # default
     value_type: currency
-    time: ordered_at
+    temporal_role: temporal_role.shop_order_ordered_at
+    meta: { owner_team: finance_analytics, review_priority: high, change_risk: medium }
 
   # kind: cumulative — running total over time axis
   cumulative_revenue_usd:
@@ -957,7 +958,17 @@ metrics:
     kind: cumulative
     measure: revenue_usd
     value_type: currency
+    temporal_role: temporal_role.shop_order_ordered_at
+    meta: { owner_team: finance_analytics, review_priority: high, change_risk: medium }
 ```
+
+A metric over time names its clock by [temporal role ID](#derived-id-grammar), not by
+the model's time key: with `time: ordered_at`, validation passes but a query by month
+fails with `INVALID_TEMPORAL_ROLE`. Give every metric the governance
+[`meta:`](#packageenvironments-and-governance-meta) block too, or `project validate`
+warns. The exception is an `aggregate` metric named after the measure it publishes,
+like `revenue_usd`, whose measure carries the `meta`. Later examples on this page
+leave `meta` out for brevity.
 
 In **direct named fields** (`measure:`, `numerator:`, `denominator:`), references
 use package-relative keys (`revenue_usd`) — the loader resolves them. Inside an

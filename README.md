@@ -24,28 +24,18 @@ compatible Python (3.11 or newer) if your system Python is older.
 uvx semantic-rails ask --package jaffle_shop "revenue by store" --run
 ```
 
-This plans the question against the bundled synthetic Jaffle Shop package, then
-validates, compiles and runs the plan on DuckDB. It prints how it interpreted the
-question, the rows and any warnings, then the Query IR.
-To try the same loop without installing anything, use the
-[browser demo](https://semantic-rails.com/try) or the hosted MCP endpoint below.
+`uvx` runs Semantic Rails without installing it; the next section shows how to install it.
+`--package` names a bundled sample package; pass your own package with `--path`.
 
-## Quickstart with your own package
+This plans the question against the synthetic Jaffle Shop sample, then validates,
+compiles and runs the plan on DuckDB. It prints how it interpreted the question, the
+rows and any warnings, then the Query IR. Check that interpretation before you rely on
+the numbers; see
+[Known limitations](https://github.com/semantic-rails/semantic-rails#known-limitations).
+Without uv, try the [browser demo](https://semantic-rails.com/try) or the hosted MCP
+endpoint below.
 
-```bash
-uvx semantic-rails init my_package --yes
-uvx semantic-rails project validate --path ./my_package
-uvx semantic-rails ask --path ./my_package "total amount by event type" --run
-```
-
-`init` writes a runnable starter package (YAML models, metrics, examples, tests and
-CSV data). Edit it to describe your own tables, then rerun `project validate`.
-
-Pass `--path` on commands that use your own package, or run them inside the package
-directory. Without either, and without a saved profile, commands stop with
-`no_package_selected` and list the ways to choose a package; at an interactive terminal,
-`ask` first offers the bundled sample package. (`--package` only names a bundled
-package, such as `jaffle_shop`.)
+## Install
 
 To keep a `semantic-rails` command on your PATH instead of running it through `uvx`:
 
@@ -70,6 +60,22 @@ With pip, run `python -m pip install semantic-rails` inside a Python 3.11+
 environment. On Windows, activate the environment with `.venv\Scripts\activate`; see the
 [agent quickstart](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md#local-mcp)
 for how MCP differs there. CI doesn't cover Windows yet.
+
+## Quickstart with your own package
+
+Pass `--path` on commands that use your own package, or run them inside the package
+directory. Without either, and without a saved profile, commands stop with
+`no_package_selected` and list the ways to choose a package; at an interactive terminal,
+`ask` first offers the bundled sample package.
+
+```bash
+uvx semantic-rails init my_package --yes
+uvx semantic-rails project validate --path ./my_package
+uvx semantic-rails ask --path ./my_package "total amount by event type" --run
+```
+
+`init` writes a runnable starter package (YAML models, metrics, examples, tests and
+CSV data). Edit it to describe your own tables, then rerun `project validate`.
 
 The interactive wizard, `semantic-rails setup --interactive`, walks through the same
 steps and can register the MCP server with Claude Desktop or Codex. Run it from an
@@ -256,7 +262,9 @@ warehouse credentials are exercised on demand, not in every CI run. The
 [agent quickstart](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md#supported-vs-experimental)
 lists what is experimental or out of scope.
 
-Known limitations in the current release:
+### Known limitations
+
+In the current release:
 
 - `plan` reports the parts of a question its draft doesn't honor, as `low_confidence`
   or a `PLAN_UNMATCHED_TERMS` warning, but its checks don't cover every phrasing. For
