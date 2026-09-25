@@ -272,14 +272,9 @@ Known limitations in the current release:
 
 Work in progress, without dates:
 
-- A guided terminal experience that creates and edits a project with pickers and
-  live validation.
-- A leaner MCP interface: smaller default responses, row caps with explicit
-  truncation, and plans that report any part of a question they dropped.
-- Architect MCP for real projects: warehouse introspection and dbt `manifest.json`
-  import.
-- One-step agent setup: Claude Code and Codex plugins, a Claude Desktop bundle and
-  Cursor install links.
+- Query MCP interface v2 as the default, once it answers a held-out question set at
+  least as accurately as v1. In 0.3.0 it is opt-in.
+- One-step agent setup: Claude Code and Codex plugins and a Claude Desktop bundle.
 - A flagship example: a dbt project on an open dataset, modeled end to end.
 - Broader native-model coverage in the comparison pack and a refreshed Snowflake
   capture on the current dataset.
