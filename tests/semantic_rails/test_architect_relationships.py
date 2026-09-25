@@ -5,12 +5,17 @@ from pathlib import Path
 
 import pytest
 import yaml
+from mcp.shared.memory import create_connected_server_and_client_session
 
+from semantic_rails import architect_transactions
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.architect_transactions import project_revision
 from semantic_rails.cli.scaffold import create_project_report
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse, write_orders_package
 
 
 @pytest.fixture
@@ -117,9 +122,14 @@ def test_composite_key_and_an_existing_entry_whose_via_would_override(project):
         ({"columns": []}, "INVALID_CONFIG"),
         ({"cardinality": "one_to_many"}, "INVALID_CONFIG"),
         ({"cardinality": "many_to_many"}, "INVALID_CONFIG"),
+        ({"cardinality": "one_to_one", "taken": ["event", "event"]}, "INVALID_CONFIG"),
     ],
 )
 def test_refusals_write_nothing(project, arguments, code):
+    if "taken" in arguments:  # the default entry name already relates another pair
+        graph = _file(project, "graph.yml")
+        graph["graph"]["relationships"] = {"events_customer": {"entities": arguments.pop("taken")}}
+        (project.project_path / "graph.yml").write_text(yaml.safe_dump(graph, sort_keys=False))
     revision = project.revision()
     call = {"from_entity": "event", "to_entity": "customer", "columns": ["customer_id"]}
 
@@ -148,23 +158,93 @@ def test_checks_run_after_the_revision_check_and_retries_replay(project):
     assert retry["status"] == "replayed"
 
 
-def test_mcp_tool_previews_the_relationship(project):
-    server = create_architect_mcp_server(workspace_root=project.workspace_root)
-    _, result = asyncio.run(
-        server.call_tool(
-            "upsert_relationship",
-            {
-                "project_path": str(project.project_path),
-                "from_entity": "event",
-                "to_entity": "customer",
-                "columns": ["customer_id"],
-                "expected_revision": project.revision(),
-                "idempotency_key": "preview-1",
-                "dry_run": True,
-            },
-        )
-    )
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        {"joins": {"customer": {"via": "customer_id"}}},
+        {"keys": {"primary": ["event_id"], "foreign": {"customer": ["customer_id"]}}},
+    ],
+)
+def test_a_legacy_block_that_would_override_the_columns_is_refused(project, legacy):
+    root = project.project_path
+    for relative in ("metrics/core.yml", "examples/core.yml", "tests/core.yml"):
+        (root / relative).unlink()  # starter metrics clash with auto-published ones
+    package = _file(project, "package.yml")
+    package["package"]["schema_strict"] = False  # strict packages reject both blocks
+    (root / "package.yml").write_text(yaml.safe_dump(package, sort_keys=False))
+    events = _file(project, "models/core/events.yml")
+    events["model"].update(legacy)
+    (root / "models/core/events.yml").write_text(yaml.safe_dump(events, sort_keys=False))
+    assert parse_config_report(PackageReference(source_path=str(root)))[0]["ok"] is True
 
-    assert (result["ok"], result["status"]) == (True, "preview")
-    assert result["changed_files"] == ["models/core/events.yml"]
-    assert result["relationship"]["cardinality"] == "many_to_one"
+    with pytest.raises(SemanticLayerError, match="legacy"):
+        _relate(project, ["buyer_id"])
+
+
+def test_a_parse_failure_rolls_the_files_back(project, monkeypatch):
+    before = {path: path.read_bytes() for path in project.project_path.rglob("*.yml")}
+    failed = ({"ok": False, "errors": [{"code": "INVALID_CONFIG", "message": "x"}]}, None)
+    monkeypatch.setattr(architect_transactions, "parse_config_report", lambda *_, **__: failed)
+
+    report = _relate(project, ["customer_id"], cardinality="one_to_one")
+
+    assert (report["ok"], report["status"]) == (False, "rolled_back_after_parse_error")
+    assert {path: path.read_bytes() for path in project.project_path.rglob("*.yml")} == before
+
+
+def test_mcp_session_relates_dbt_marts_and_queries_across_them(tmp_path):
+    package = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
+    build_dbt_warehouse(package / "data" / "warehouse.duckdb")
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    async def session_calls():
+        async with create_connected_server_and_client_session(server) as session:
+
+            async def call(name, **arguments):
+                result = await session.call_tool(name, {"project_path": "shop", **arguments})
+                return dict(result.structuredContent or {})
+
+            model = await call(
+                "upsert_model",
+                model_id="customers",
+                entity_key="customer",
+                relation="main_marts.dim_customers",
+                primary_key=["customer_id"],
+                dimensions={"customer_country": {"label": "Country", "kind": "categorical"}},
+                expected_revision=project_revision(package),
+                idempotency_key="customers",
+            )
+            relate = {"from_entity": "order", "to_entity": "customer", "columns": ["customer_id"]}
+            revision = model["revision"]
+            preview = await call(
+                "upsert_relationship",
+                **relate,
+                expected_revision=revision,
+                idempotency_key="preview",
+                dry_run=True,
+            )
+            applied = await call(
+                "upsert_relationship", **relate, expected_revision=revision, idempotency_key="apply"
+            )
+            return preview, applied, await call("validate_project", mode="runtime")
+
+    preview, applied, runtime = asyncio.run(session_calls())
+
+    assert (preview["status"], preview["changed_files"]) == ("preview", ["models/orders.yml"])
+    assert (applied["status"], applied["changed_files"]) == ("upserted", ["models/orders.yml"])
+    assert runtime["ok"] is True, runtime
+    engine = Runtime.from_path(str(package))
+    try:
+        rows = engine.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+                "group_by": ["dimension.shop_customer_customer_country"],
+                "order_by": [{"field": "dimension.shop_customer_customer_country"}],
+                "limit": 10,
+            }
+        )["rows"]
+    finally:
+        engine.close()
+    country = "dimension.shop_customer_customer_country"
+    assert [(row[country], row["orders"]) for row in rows] == [("GB", 3), ("NL", 1), ("US", 4)]

@@ -1082,7 +1082,7 @@ class ArchitectProject:
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
-        foreign_key = _as_list(columns)
+        foreign_key = [column.strip() for column in _as_list(columns)]
         kind = str(cardinality or "").strip().lower()
         if kind not in {"many_to_one", "one_to_one"}:
             raise SemanticLayerError(
@@ -1090,7 +1090,7 @@ class ArchitectProject:
                 f"cardinality must be many_to_one or one_to_one (got {cardinality!r}); relate "
                 "one_to_many from the many side, and many_to_many through a bridge model",
             )
-        if source == target or not foreign_key or not all(c.strip() for c in foreign_key):
+        if source == target or not foreign_key or not all(foreign_key):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 "from_entity and to_entity must differ, and columns must not be blank",
@@ -1130,6 +1130,14 @@ class ArchitectProject:
             documents = self._load_documents(model_row.source_path, graph_path)
             model_doc = documents[model_row.source_path]
             model, wrapper = self._model_for_update(model_doc, model_row, model_slug=model_row.key)
+            foreign = dict(dict(model.get("keys") or {}).get("foreign") or {})
+            if target in dict(model.get("joins") or {}) or target in foreign:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"Model {model_row.key!r} relates {target} in a legacy joins: or keys.foreign: "
+                    "block, which overrides the entities block; edit or remove that entry instead",
+                    details={"model": model_row.key},
+                )
             entities = dict(model.get("entities", {}) or {})
             # The loader reads the block's first entity as the model's own.
             model["entities"] = {

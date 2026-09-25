@@ -103,7 +103,9 @@ package test and a `.gitignore` for build outputs.
    model hold `to_entity`'s key, in key order, and go in that model's `entities` block (as
    `expr` when named differently). That is a many-to-one relationship; `cardinality:
    one_to_one` also records it in `graph.relationships`. Relate one-to-many from the many
-   side, and many-to-many through a bridge model related to each side.
+   side, and many-to-many through a bridge model related to each side. A model that already
+   relates `to_entity` in a legacy `joins:` or `keys.foreign:` block is refused, since that
+   block would override the columns.
 6. Run `validate_project` with `mode=parse` after structural edits and `mode=runtime` before
    trusting queries.
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
