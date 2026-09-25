@@ -464,13 +464,6 @@ def _choose_group_dimensions(
     return list(dict.fromkeys(group_dims))
 
 
-def _choose_group_dimension(
-    runtime: Any, query: dict[str, Any], text: str, chosen_group_dim: str = ""
-) -> str:
-    dims = _choose_group_dimensions(runtime, query, text, chosen_group_dim)
-    return dims[0] if dims else ""
-
-
 def _apply_time_from_text(
     runtime: Any, query: dict[str, Any], text: str, chosen_ids: list[str]
 ) -> dict[str, Any]:
