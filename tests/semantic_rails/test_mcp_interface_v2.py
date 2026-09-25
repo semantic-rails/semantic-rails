@@ -257,6 +257,40 @@ def test_unknown_tool_hint_names_only_tools_the_interface_has(
     assert hint.endswith("common entry points are 'discover', 'inspect', 'plan'.")
 
 
+AIRSPEED = {"measure": "measure.jaffle.airspeed", "aggregation": "sum"}
+
+
+def _hint_texts(node: Any, key: str = "") -> Iterator[str]:
+    if isinstance(node, dict):
+        for child_key, value in node.items():
+            yield from _hint_texts(value, child_key)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _hint_texts(item, key)
+    elif isinstance(node, str) and key in {"recovery_hint", "message"}:
+        yield node
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("discover", {"terms": "unladen swallow"}),
+        ("plan", {"intent": "unladen swallow airspeed", "detail": "best"}),
+        ("inspect", {"object_id": "measure.jaffle.airspeed"}),
+        ("execute", {"query": {**QUERY, "select": [{"as": "x", "expression": AIRSPEED}]}}),
+    ],
+)
+def test_recovery_hints_never_send_the_agent_to_a_removed_tool(
+    v2: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
+) -> None:
+    texts = list(_hint_texts(v2.call_tool(tool, arguments)))
+    assert texts, "the call should come back with recovery guidance"
+    for text in texts:
+        for name in V1_ONLY_TOOLS:
+            for mention in (f"`{name}`", f"'{name}'", f"{name} tool", f"or {name} to"):
+                assert mention not in text, (name, text)
+
+
 @pytest.mark.parametrize("tool", sorted(V1_ONLY_TOOLS))
 def test_removed_v1_tools_point_to_their_replacement(
     v2: SemanticLayerMCPAdapter, tool: str

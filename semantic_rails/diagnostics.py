@@ -765,7 +765,7 @@ def recovery_hints_for_error(
                     "message": (
                         "No close matches in the catalog. Call discover with "
                         f"terms={discover_term!r} to find candidates by topic, "
-                        "or catalog to browse the full inventory."
+                        "or browse the full catalog (over MCP, discover with empty terms)."
                     ),
                     "recommended_tool": "discover",
                     "recommended_terms": discover_term,
