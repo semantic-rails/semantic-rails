@@ -909,9 +909,9 @@ def _add_plugin_commands(sub: argparse._SubParsersAction) -> None:
         acme = "acme_semantic_rails.cli:add_commands"
 
     It must not print: ``mcp stdio`` speaks its protocol on stdout. A plugin
-    that raises (for example by reusing a command name) gets a warning on
-    stderr and the rest of the CLI still works; ``SEMANTIC_RAILS_CLI_PLUGINS=0``
-    skips every plugin.
+    that raises (for example by reusing a command name) is skipped: the
+    commands it added are removed, a warning goes to stderr and the rest of
+    the CLI still works. ``SEMANTIC_RAILS_CLI_PLUGINS=0`` skips every plugin.
     """
 
     switch = os.environ.get("SEMANTIC_RAILS_CLI_PLUGINS", "").strip().lower()
@@ -919,9 +919,14 @@ def _add_plugin_commands(sub: argparse._SubParsersAction) -> None:
         return
     plugins = metadata.entry_points(group="semantic_rails.cli")
     for entry_point in sorted(plugins, key=lambda ep: ep.name):
+        parsers, listed = dict(sub._name_parser_map), list(sub._choices_actions)
         try:
             entry_point.load()(sub)
         except Exception as exc:  # noqa: BLE001 - a broken plugin must not break the CLI
+            # Leave no half-built command behind (argparse keeps these two in step).
+            sub._name_parser_map.clear()
+            sub._name_parser_map.update(parsers)
+            sub._choices_actions[:] = listed
             _print_stderr(
                 f"semantic-rails: skipped CLI plugin {entry_point.name!r}: "
                 f"{type(exc).__name__}: {exc}"

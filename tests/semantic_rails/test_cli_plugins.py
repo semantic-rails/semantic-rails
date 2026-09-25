@@ -19,6 +19,9 @@ def add_commands(sub):
     hello.set_defaults(func=lambda args: print(f"hello {args.name}"))
 """
 BROKEN = "def add_commands(sub):\n    sub.add_parser('packages')\n"  # a built-in name
+HALF_BUILT = (
+    "def add_commands(sub):\n    sub.add_parser('halfbuilt')\n    raise RuntimeError('boom')\n"
+)
 
 
 def _install(site: Path, name: str, source: str) -> None:
@@ -43,11 +46,13 @@ def _cli(site: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]
 def test_an_installed_plugin_adds_a_command_and_a_broken_one_is_skipped(tmp_path: Path) -> None:
     _install(tmp_path, "good_plugin", GOOD)
     _install(tmp_path, "broken_plugin", BROKEN)
+    _install(tmp_path, "unimportable_plugin", "import no_such_module_for_this_test\n")
 
     hello = _cli(tmp_path, "hello", "--name", "rails")
     assert (hello.returncode, hello.stdout) == (0, "hello rails\n"), hello.stderr
     assert "skipped CLI plugin 'broken_plugin'" in hello.stderr  # the exception type varies
     assert "conflicting subparser: packages" in hello.stderr
+    assert "skipped CLI plugin 'unimportable_plugin': ModuleNotFoundError" in hello.stderr
 
     packages = _cli(tmp_path, "packages")  # the built-in command still wins
     assert packages.returncode == 0 and '"packages"' in packages.stdout, packages.stderr
@@ -55,3 +60,13 @@ def test_an_installed_plugin_adds_a_command_and_a_broken_one_is_skipped(tmp_path
     off = _cli(tmp_path, "hello", SEMANTIC_RAILS_CLI_PLUGINS="0")
     assert off.returncode == 2 and "invalid choice: 'hello'" in off.stderr
     assert "skipped" not in off.stderr
+
+
+def test_a_plugin_that_fails_midway_leaves_no_half_built_command(tmp_path: Path) -> None:
+    _install(tmp_path, "half_plugin", HALF_BUILT)
+
+    proc = _cli(tmp_path, "halfbuilt")
+
+    assert proc.returncode == 2 and "invalid choice: 'halfbuilt'" in proc.stderr
+    assert "skipped CLI plugin 'half_plugin': RuntimeError: boom" in proc.stderr
+    assert "halfbuilt" not in _cli(tmp_path, "--help").stdout
