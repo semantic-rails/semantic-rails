@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from contextlib import AsyncExitStack, suppress
@@ -74,7 +75,8 @@ def result_text(result: Any) -> tuple[str, str]:
     if isinstance(body, dict) and set(body) == {"result"}:
         body = body["result"]
     text = "".join(getattr(block, "text", "") for block in result.content)
-    shown = json.dumps(body, separators=(",", ":"), default=str) if body is not None else text
+    compact = json.dumps(body, separators=(",", ":"), sort_keys=True, default=str)  # as mcp_context
+    shown = compact if body is not None else text
     if body is None:  # a text-only server may still answer in JSON
         with suppress(ValueError):
             body = json.loads(text)
@@ -96,9 +98,9 @@ def arg_problems(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
 
 async def dispatch(routes: dict[str, Route], name: str, raw: Any, deadline: float) -> tuple:
     """Run one tool call; return (arguments, text for the model, error, argument problems)."""
-    try:
-        args = json.loads(raw or "{}") if isinstance(raw, str) else raw
-    except ValueError:
+    try:  # omitted or null arguments mean none
+        args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+    except (TypeError, ValueError):
         args = None
     if not isinstance(args, dict):
         return {"_raw": raw}, "error: arguments must be a JSON object", "bad JSON", ["bad JSON"]
@@ -161,11 +163,12 @@ class Agent:
             reply = await asyncio.to_thread(chat, self.opts.base_url, body, self.deadline - started)
             choice, usage = reply["choices"][0], reply.get("usage") or {}
         except Exception as exc:  # noqa: BLE001 - recorded as the stop reason
-            return f"request failed: {exc!r}"[:300]
+            body_text = exc.read()[:300] if isinstance(exc, urllib.error.HTTPError) else b""
+            return f"request failed: {exc!r} {body_text.decode(errors='replace')}".strip()
         message, finish = choice["message"], choice.get("finish_reason")
         calls, content = message.get("tool_calls") or [], message.get("content") or ""
         usage = {**(usage.get("completion_tokens_details") or {}), **usage}
-        tokens = {key: usage.get(key) or 0 for key in TOKENS}
+        tokens = {key: usage.get(key) for key in TOKENS}  # None: the server didn't report it
         self.turns.append(tokens)
         names = [call["function"]["name"] for call in calls]
         seconds = round(time.monotonic() - started, 2)
@@ -178,15 +181,19 @@ class Agent:
             content=self.clip(content),
             tool_calls=names,
         )
-        if not calls:
+        if not calls or finish == "length":  # a reply cut off mid-call isn't dispatched
             self.final = content
             return "length" if finish == "length" else "final"
         self.messages.append({"role": "assistant", "content": content, "tool_calls": calls})
-        share = round((tokens["prompt_tokens"] + tokens["completion_tokens"]) / len(calls))
+        spent_now = (tokens["prompt_tokens"] or 0) + (tokens["completion_tokens"] or 0)
         for call in calls:
-            await self.call(call, share)
+            await self.call(call, round(spent_now / len(calls)))
+        if self.streak >= 3:
+            return "loop"
+        if None in (tokens["prompt_tokens"], tokens["completion_tokens"]):
+            return "no usage reported"  # the token budget can't be enforced
         spent = sum(turn["prompt_tokens"] + turn["completion_tokens"] for turn in self.turns)
-        return "loop" if self.streak >= 3 else "max_tokens" if spent >= max_tokens else ""
+        return "max_tokens" if spent >= max_tokens else ""
 
     async def call(self, call: dict[str, Any], share: int) -> None:
         name, started = call["function"]["name"], time.monotonic()
@@ -222,7 +229,11 @@ class Agent:
         self.messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": text})
 
     def stats(self, stop: str) -> dict[str, Any]:
-        totals = {key: sum(turn[key] for turn in self.turns) for key in TOKENS}
+        unavailable = [key for key in TOKENS if any(turn[key] is None for turn in self.turns)]
+        totals = {key: sum(turn[key] or 0 for turn in self.turns) for key in TOKENS}
+        totals.update(dict.fromkeys(unavailable))  # never report a missing category as 0
+        both = None not in (totals["prompt_tokens"], totals["completion_tokens"])
+        prompts = [turn["prompt_tokens"] for turn in self.turns]
         return {
             "stop": stop,
             "finished": stop == "final",
@@ -230,8 +241,9 @@ class Agent:
             "tool_calls": self.seen.total(),
             "tool_errors": sum(counts["errors"] for counts in self.friction.values()),
             **totals,
-            "total_tokens": totals["prompt_tokens"] + totals["completion_tokens"],
-            "peak_prompt_tokens": max((turn["prompt_tokens"] for turn in self.turns), default=0),
+            "unavailable": unavailable,
+            "total_tokens": totals["prompt_tokens"] + totals["completion_tokens"] if both else None,
+            "peak_prompt_tokens": None if None in prompts else max(prompts, default=0),
             "tools_offered": len(self.routes),
             "unused_tools": sorted(set(self.routes) - set(self.friction)),
             "friction": {
@@ -277,14 +289,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=1800, help="seconds for the agent loop")
     parser.add_argument("--result-chars", type=int, default=2000, help="0 keeps results whole")
     opts = parser.parse_args(argv)
+    if any("=" not in server for server in opts.server):
+        parser.error("--server takes NAME=COMMAND")
     scenario = load_scenario(opts.scenario, opts.server)
     for key, default in (("max_turns", 30), ("max_tokens", 500_000)):
-        scenario[key] = getattr(opts, key) or scenario.get(key) or default
-    lock = os.open(Path(tempfile.gettempdir(), "agent-harness.lock"), os.O_CREAT | os.O_WRONLY)
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        sys.exit("another agent-harness run is in progress on this machine")
+        value = getattr(opts, key)
+        scenario[key] = value if value is not None else scenario.get(key, default)
+    with Path(tempfile.gettempdir(), "agent-harness.lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit("another agent-harness run is in progress on this machine")
+        return execute(opts, scenario)
+
+
+def execute(opts: argparse.Namespace, scenario: dict[str, Any]) -> int:
     opts.out.mkdir(parents=True)  # refuses an existing folder
     cwd = (opts.workdir or opts.out / "workdir").resolve()
     cwd.mkdir(exist_ok=True)
@@ -299,8 +318,11 @@ def main(argv: list[str] | None = None) -> int:
     check: dict[str, Any] = {"command": scenario["check"], "exit_code": None}
     if scenario["check"]:
         env = {**os.environ, "AGENT_FINAL_ANSWER": str(answer.resolve())}
-        done = shell(scenario["check"], env=env, capture_output=True, timeout=600)
-        check.update(exit_code=done.returncode, output=(done.stdout + done.stderr)[-2000:])
+        try:
+            done = shell(scenario["check"], env=env, capture_output=True, timeout=600)
+            check.update(exit_code=done.returncode, output=(done.stdout + done.stderr)[-2000:])
+        except subprocess.TimeoutExpired:
+            check["output"] = "the check timed out after 600 seconds"
     summary = {
         **{key: scenario[key] for key in ("name", "servers", "max_turns", "max_tokens")},
         "scenario_sha256": hashlib.sha256(opts.scenario.read_bytes()).hexdigest(),

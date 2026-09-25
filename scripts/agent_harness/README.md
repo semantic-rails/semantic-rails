@@ -58,7 +58,8 @@ In `servers`, `setup` and `check`, `{repo}` is this repository, `{here}` the sce
 folder and `{python}` the harness's Python. The check runs in the workdir after the loop,
 with `AGENT_FINAL_ANSWER` naming a file that holds the model's last reply. Servers get the
 MCP SDK's default environment (`HOME`, `PATH` and a few more); pass anything else as
-`env NAME=value command`.
+`env NAME=value command`. `summary.json` records every server command as written, so never put
+a secret in one.
 
 | Scenario | Server | The user asks |
 |---|---|---|
@@ -75,13 +76,17 @@ MCP SDK's default environment (`HOME`, `PATH` and a few more); pass anything els
   one `call` event per tool call (arguments, error, argument problems, whether it repeats an
   earlier call, the result and its full length, seconds).
 - `summary.json`: the scenario, model and servers; `stop` (`final`, `length`, `max_turns`,
-  `max_tokens`, `loop`, `timeout` or `request failed: …`); `finished`; `success` (the check
-  passed); turns, tool calls and errors; token totals and `peak_prompt_tokens`; the tools
-  never called; and `friction` per tool.
+  `max_tokens`, `loop`, `timeout`, `no usage reported` or `request failed: …`); `finished`;
+  `success` (the check passed); turns, tool calls and errors; token totals and
+  `peak_prompt_tokens`; the tools never called; and `friction` per tool.
 - `final_answer.txt`, `servers.log` (the servers' stderr), and `workdir/`.
 
 Every turn resends the whole conversation, so `prompt_tokens` sums what a client without
-prompt caching pays. The model sees the compact `structuredContent` of each result, as
+prompt caching pays. A token category the server doesn't report is `null` and listed in
+`unavailable`, never counted as 0; a run whose server reports no prompt or completion tokens
+stops after its first tool turn (`no usage reported`), since its token budget can't be
+enforced. A reply cut off by `--turn-tokens` (`length`) ends the run without running its tool
+calls. The model sees the compact `structuredContent` of each result, as
 `mcp_context.py` measures it, or the text blocks when there is none.
 
 **Friction, per tool:**

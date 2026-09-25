@@ -13,18 +13,20 @@ import pytest
 from scripts.agent_harness import report, run
 
 SERVER = '''
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("fixture")
 
 @mcp.tool()
-def add(a: int, b: int) -> dict:
-    """Add two numbers."""
+def add(a: int, b: int) -> dict[str, Any]:
+    """Add two numbers; the result is structuredContent."""
     return {"ok": True, "sum": a + b}
 
 @mcp.tool()
 def fail(reason: str) -> dict:
-    """Refuse, the way Semantic Rails tools report an error."""
+    """Refuse, the way Semantic Rails tools report an error, as JSON text only."""
     return {"ok": False, "error": {"code": "REFUSED", "message": reason}}
 
 @mcp.tool()
@@ -49,8 +51,8 @@ FRICTION = [  # errors, a repeat, bad arguments, an unknown tool, then an answer
 ]
 
 
-def serve(replies: list) -> tuple[ThreadingHTTPServer, list[dict]]:
-    """A chat endpoint that answers request n with replies[n] and reports usage."""
+def serve(replies: list, usage_kind: str) -> tuple[ThreadingHTTPServer, list[dict]]:
+    """A chat endpoint that answers request n with replies[n] and reports full, partial or no usage."""
     requests: list[dict] = []
 
     class Model(BaseHTTPRequestHandler):
@@ -59,11 +61,13 @@ def serve(replies: list) -> tuple[ThreadingHTTPServer, list[dict]]:
             reply = replies[len(requests) - 1]
             message = {"content": reply} if isinstance(reply, str) else {"tool_calls": reply}
             usage = {"prompt_tokens": 100 * len(requests), "completion_tokens": 10}
-            usage["completion_tokens_details"] = {"reasoning_tokens": 4}
+            if usage_kind == "full":
+                usage["completion_tokens_details"] = {"reasoning_tokens": 4}
             choice = {"message": {"role": "assistant", **message}, "finish_reason": "stop"}
+            reply = {"choices": [choice], **({"usage": usage} if usage_kind != "none" else {})}
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(json.dumps({"choices": [choice], "usage": usage}).encode())
+            self.wfile.write(json.dumps(reply).encode())
 
         def log_message(self, *args: object) -> None:
             pass
@@ -74,15 +78,16 @@ def serve(replies: list) -> tuple[ThreadingHTTPServer, list[dict]]:
 
 
 @pytest.mark.parametrize(
-    ("replies", "max_tokens", "stop", "turns"),
+    ("replies", "usage", "max_tokens", "stop", "turns"),
     [
-        (FRICTION, 10_000, "final", 3),
-        ([[ADD]] * 4, 10_000, "loop", 3),
-        ([[ADD]] * 4, 150, "max_tokens", 2),
+        (FRICTION, "full", 10_000, "final", 3),
+        ([[ADD]] * 4, "partial", 10_000, "loop", 3),
+        ([[ADD]] * 4, "full", 150, "max_tokens", 2),
+        ([[ADD]] * 4, "none", 10_000, "no usage reported", 1),
     ],
 )
 def test_run_records_tokens_friction_and_the_check(
-    tmp_path, monkeypatch, replies, max_tokens, stop, turns
+    tmp_path, monkeypatch, replies, usage, max_tokens, stop, turns
 ):
     (tmp_path / "server.py").write_text(SERVER, encoding="utf-8")
     scenario = {
@@ -93,7 +98,7 @@ def test_run_records_tokens_friction_and_the_check(
     }
     (tmp_path / "scenario.yml").write_text(json.dumps(scenario), encoding="utf-8")
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run lock
-    model, requests = serve(replies)
+    model, requests = serve(replies, usage)
     url, out = f"http://127.0.0.1:{model.server_port}/v1", tmp_path / "run"
     try:
         run.main(
@@ -105,7 +110,10 @@ def test_run_records_tokens_friction_and_the_check(
     summary = json.loads((out / "summary.json").read_text())
     assert (summary["stop"], summary["turns"], summary["success"]) == (stop, turns, stop == "final")
     assert requests[0]["model"] == "m" and requests[0]["tools"][0]["function"]["name"] == "add"
-    assert summary["reasoning_tokens"] == 4 * turns
+    # a category the server doesn't report is unavailable, never a measured 0
+    assert summary["reasoning_tokens"] == (4 * turns if usage == "full" else None)
+    assert ("reasoning_tokens" in summary["unavailable"]) == (usage != "full")
+    assert (summary["total_tokens"] is None) == (usage == "none")
     if stop != "final":
         return
     totals = [summary[key] for key in ("prompt_tokens", "completion_tokens", "tool_calls")]
@@ -118,7 +126,9 @@ def test_run_records_tokens_friction_and_the_check(
     assert fail["errors_seen"] == {"REFUSED: no": 1}
     assert ghost["errors"] == 1 and "unknown tool" in next(iter(ghost["errors_seen"]))
     shown = [m["content"] for m in requests[2]["messages"] if m["role"] == "tool"]
-    assert '"sum": 3' in shown[0] and "REFUSED" in shown[1] and "unknown tool" in shown[4]
+    assert (
+        shown[0] == '{"ok":true,"sum":3}' and "REFUSED" in shown[1] and "unknown tool" in shown[4]
+    )
     events = (out / "transcript.jsonl").read_text().splitlines()
     assert [json.loads(line)["event"] for line in events].count("call") == 6
     assert all(type(value) is int for value in add.values() if not isinstance(value, dict))
