@@ -496,7 +496,7 @@ def _suggest(relation: DbtRelation) -> dict[str, Any]:
 
 
 def dbt_import_models(
-    project: DbtProject, select: list[str]
+    project: DbtProject, select: list[str], measure_models: dict[str, str] | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """``ArchitectProject.upsert_models`` items for the selected dbt models.
 
@@ -507,6 +507,12 @@ def dbt_import_models(
     names that model's entity, so another package model reading the same
     relation cannot capture it; one to a selected model that was left out is
     itself left out. Other foreign keys resolve by relation in the package.
+
+    Measure keys are package-wide. ``measure_models`` maps the package's
+    measure keys to their models; a drafted measure whose key another model
+    has there or earlier in the batch gets its entity as a prefix, like the
+    drafted ``<entity>_count``, so a re-imported model keeps its own keys.
+    If the prefixed key is taken too, the key stays and the parse gate reports it.
     """
     if not select:
         raise SemanticLayerError(
@@ -531,7 +537,19 @@ def dbt_import_models(
         if unique_id not in drafts
     ]
     skipped_references: list[dict[str, Any]] = []
+    owners = dict(measure_models or {})
     for unique_id, draft in drafts.items():
+        model, drafted = draft["model_id"], draft["measures"]
+        draft["measures"] = {}
+        for key, spec in drafted.items():
+            prefixed = f"{draft['entity_key']}_{key}"
+            if (
+                owners.setdefault(key, model) != model
+                and owners.setdefault(prefixed, model) == model
+                and prefixed not in drafted
+            ):
+                key = prefixed
+            draft["measures"][key] = spec
         draft["references"] = []
         for link in suggestions[unique_id]["foreign_keys"]:
             target = link["references"]["dbt_unique_id"]
