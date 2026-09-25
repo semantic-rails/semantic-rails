@@ -555,6 +555,7 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
                 "Claude Code's `claude` command is not on PATH. Install Claude Code, "
                 "or run the previewed `claude mcp add-json` commands yourself.",
             )
+        registered: list[str] = []
         for name, add in zip(servers, _claude_code_add(claude, servers), strict=True):
             added = subprocess.run(add, capture_output=True, text=True, check=False)
             if added.returncode and "already exists" in added.stderr + added.stdout:
@@ -566,9 +567,15 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     f"`claude mcp add-json` failed for {name}: "
-                    f"{(added.stderr or added.stdout).strip()}",
-                    details={"server": name, "returncode": added.returncode},
+                    f"{(added.stderr or added.stdout).strip()} "
+                    f"(already registered: {', '.join(registered) or 'none'})",
+                    details={
+                        "server": name,
+                        "returncode": added.returncode,
+                        "registered": registered,
+                    },
                 )
+            registered.append(name)
         return {"ok": True, "path": str(claude_code_config_path()), "servers": sorted(servers)}
     raise SemanticLayerError("INVALID_CONFIG", f"Unsupported MCP client '{client}'")
 

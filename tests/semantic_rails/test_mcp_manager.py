@@ -162,29 +162,39 @@ def test_cursor_and_claude_code_targets_install_and_both_stays_desktop_and_codex
 
 
 @pytest.mark.parametrize(
-    ("claude", "error"),
-    [(None, "not on PATH"), ("/bin/claude", "add-json` failed for semantic-rails: boom")],
+    ("claude", "mcp", "error"),
+    [
+        (None, "query", "not on PATH"),
+        ("/bin/claude", "query", r"for semantic-rails: boom \(already registered: none\)"),
+        (
+            "/bin/claude",
+            "both",  # the query server is added, then Architect fails
+            r"for semantic-rails-architect: boom \(already registered: semantic-rails\)",
+        ),
+    ],
 )
 def test_claude_code_install_reports_a_missing_or_failing_cli(
-    tmp_path: Path, monkeypatch, claude: str | None, error: str
+    tmp_path: Path, monkeypatch, claude: str | None, mcp: str, error: str
 ) -> None:
     import subprocess
 
     import semantic_rails.mcp_manager as manager
 
     calls: list[list[str]] = []
+    failing = "semantic-rails-architect" if mcp == "both" else "semantic-rails"
+
+    def run(args: list[str], **_: object) -> subprocess.CompletedProcess:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, int(args[5] == failing), "", "boom")
+
     monkeypatch.setattr(manager.shutil, "which", lambda _name: claude)
-    monkeypatch.setattr(
-        manager.subprocess,
-        "run",
-        lambda args, **_: calls.append(args) or subprocess.CompletedProcess(args, 1, "", "boom"),
-    )
+    monkeypatch.setattr(manager.subprocess, "run", run)
 
     with pytest.raises(SemanticLayerError, match=error):
         manager.mcp_client_config_report(
             PackageReference(source_path="", package_id="jaffle_shop"),
             client="claude-code",
-            mcp="query",
+            mcp=mcp,
             workspace_root=str(tmp_path),
             install=True,
         )
