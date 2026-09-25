@@ -469,11 +469,13 @@ def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: 
     before = file_digest(db_path)
 
     assert run() == (2, ["STALE_SEED_DATABASE"])
-    report = project_validation_report(PackageReference(source_path=str(project)), mode="runtime")
-    assert report["ok"] and [warning["code"] for warning in report["warnings"]] == [
-        "STALE_SEED_DATABASE"
-    ]
-    assert report["warnings"][0]["message"].endswith(f"rm {db_path}")
+    ref = PackageReference(source_path=str(project))
+    for mode in ("runtime", "full"):
+        report = project_validation_report(ref, mode=mode)
+        assert report["ok"] and [warning["code"] for warning in report["warnings"]] == [
+            "STALE_SEED_DATABASE"
+        ], mode
+        assert report["warnings"][0]["message"].endswith(f"rm {db_path}")
     assert file_digest(db_path) == before  # reported, never replaced
 
     db_path.unlink()  # the fix the warning names

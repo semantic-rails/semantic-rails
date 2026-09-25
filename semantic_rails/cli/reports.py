@@ -335,6 +335,7 @@ def project_validation_report(
         "checks": _compact_full_checks(report),
         "check": report,
         "errors": _full_errors(report),
+        "warnings": list(report["checks"]["validate"].get("warnings", []) or []),
         "blockers": list(report.get("blockers", []) or []),
     }
 
