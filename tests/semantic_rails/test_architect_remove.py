@@ -141,16 +141,35 @@ def test_removals(
     files: list[str],
     removed: list[tuple[str, str]] | None,
 ) -> None:
+    before = project_revision(workspace / "shop")
+
     report = _project(workspace).remove_object(kind=kind, key=key, model=model).report
 
     assert report["status"] == status, report
     archive = report["archived_to"]
     assert sorted(report["changed_files"]) == sorted([*files, archive])
-    if removed is None:
+    if removed is None:  # rolled back: nothing changed, and no archive is left behind
+        assert project_revision(workspace / "shop") == before
+        assert not (workspace / "shop" / archive).exists()
         return
     assert [(row["kind"], row["key"]) for row in report["removed"]] == removed
     assert yaml.safe_load((workspace / "shop" / archive).read_text())["removed"][0]["key"] == key
     assert load_package_config(str(workspace / "shop"))
+
+
+def test_a_key_on_several_models_needs_model(workspace: Path) -> None:
+    customers = _yaml(workspace, "models/customers.yml")
+    customers["model"]["dimensions"]["status"] = {"label": "Status", "kind": "categorical"}
+    _dump(workspace / "shop" / "models" / "customers.yml", customers)
+    project = _project(workspace)
+
+    with pytest.raises(SemanticLayerError, match="on several models; pass model"):
+        project.remove_object(kind="dimension", key="status")
+    report = project.remove_object(kind="dimension", key="status", model="customers").report
+
+    assert report["ok"] is True, report
+    assert [(row["key"], row["model"]) for row in report["removed"]] == [("status", "customers")]
+    assert "status" in _yaml(workspace, "models/orders.yml")["model"]["dimensions"]
 
 
 def test_a_model_goes_with_its_entity_and_the_references_to_it(workspace: Path) -> None:
