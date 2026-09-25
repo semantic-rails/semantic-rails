@@ -21,6 +21,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from .api_keys import api_key_auth_result
 from .catalog_service import resolve_catalog
 from .diagnostics import (
     enrich_expression_ast_error,
@@ -57,7 +58,6 @@ from .metadata_parts.capabilities import _EXPRESSION_SHAPES, capabilities_payloa
 from .planner import plan_payload
 from .request_context import (
     RequestContext,
-    api_key_auth_result,
     get_policy_context_resolver,
     request_context_payload,
 )

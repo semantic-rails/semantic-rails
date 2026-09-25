@@ -24,6 +24,7 @@ from http.server import ThreadingHTTPServer as HTTPServer
 from typing import Any, TextIO, cast
 from urllib.parse import parse_qs, urlparse
 
+from .api_keys import api_key_auth_result
 from .diagnostics import recovery_hints_for_error
 from .errors import SemanticLayerError
 from .http_core import (
@@ -35,7 +36,6 @@ from .http_core import (
 from .mcp import MCP_SERVER_INSTRUCTIONS, SemanticLayerMCPAdapter, json_text
 from .request_context import (
     RequestContext,
-    api_key_auth_result,
     emit_audit_event,
     get_policy_context_resolver,
     request_context_payload,
