@@ -86,10 +86,8 @@ class PlainBackend:
 
     def choose(self, label: str, options: Sequence[Option], *, default: str = "") -> str:
         values = [value for value, _ in options]
-        if default and default not in values:
-            raise SemanticLayerError(
-                "INVALID_CONFIG", f"{label} default {default!r} is not a choice"
-            )
+        if default not in values:
+            default = ""  # as with pickers, a saved value that is not a choice offers no default
         print(f"{label}")
         for index, (value, description) in enumerate(options, start=1):
             recommended = " (recommended)" if value == default else ""

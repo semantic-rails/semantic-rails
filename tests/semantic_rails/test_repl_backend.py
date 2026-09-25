@@ -205,11 +205,12 @@ def test_plain_choice_requires_unique_case_folded_match_and_keeps_exact_default(
     assert PlainBackend().choose("Case collision", choices, default="IN") == "in"
 
 
-def test_plain_choice_rejects_missing_default_and_preserves_numeric_menu_rules(
+def test_plain_choice_offers_no_missing_default_and_preserves_numeric_menu_rules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with pytest.raises(SemanticLayerError, match="default 'missing' is not a choice"):
-        PlainBackend().choose("Pick", OPTIONS, default="missing")
+    prompts = _answers(monkeypatch, "", "2")
+    assert PlainBackend().choose("Pick", OPTIONS, default="missing") == "b"
+    assert prompts == ["Choose: ", "Choose: "]
 
     choices = [("2", "Numeric key at position one"), ("other", "Second choice")]
     _answers(monkeypatch, "")

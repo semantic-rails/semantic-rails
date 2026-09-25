@@ -1300,3 +1300,33 @@ def test_a_new_model_proposes_its_singular_as_the_entity(
 
     assert script.offered["Business entity at one row of this model"] == entity
     assert script.offered["Primary key column(s), comma separated"] == f"{entity}_id"
+
+
+def test_plain_prompts_edit_a_measure_whose_saved_choice_is_not_offered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _starter(tmp_path)
+    events = yaml.safe_load((project / EVENTS).read_text("utf-8"))
+    events["model"]["measures"]["total_amount"]["default_agg"] = "median"
+    _write_yaml(project / EVENTS, events)
+    prompts: list[str] = []
+
+    def reply(prompt: str = "") -> str:
+        prompts.append(prompt)
+        if prompt.startswith("Measure key"):
+            return "total_amount"
+        if prompt.startswith(("Manage and update", "Update this measure?")):
+            return "y"
+        return "max" if prompt == "Choose: " else ""
+
+    monkeypatch.setattr("builtins.input", reply)
+    backend.set_backend(backend.PlainBackend())
+    undo: list[Any] = []
+
+    _repl(project, "author measure", None, undo)
+
+    # The median the menu cannot offer is not a default; the person picks again.
+    assert prompts.count("Choose: ") == 1
+    assert len(undo) == 1 and undo[0].report["parse"]["ok"] is True
+    events = yaml.safe_load((project / EVENTS).read_text("utf-8"))
+    assert events["model"]["measures"]["total_amount"]["default_agg"] == "max"
