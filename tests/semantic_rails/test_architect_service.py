@@ -326,3 +326,42 @@ def test_cross_process_writers_from_one_base_are_serialized(tmp_path: Path) -> N
     conflict = next(report for report in reports if not report["ok"])
     assert conflict["error"]["code"] == "CONFIG_CONFLICT"
     assert conflict["error"]["details"]["conflict_kind"] == "stale_revision"
+
+
+@pytest.mark.parametrize(
+    ("operation", "reported", "refusal"),
+    [
+        ("write", "created", "exists and overwrite=false"),
+        ("archive", "archived", "does not exist"),
+    ],
+)
+def test_a_retried_file_write_or_archive_replays(
+    tmp_path: Path, operation: str, reported: str, refusal: str
+) -> None:
+    project_path = _create_project(tmp_path)
+    (project_path / "notes.md").write_text("draft\n", encoding="utf-8")
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+
+    def call(key: str, revision: str) -> ArchitectMutation:
+        if operation == "write":
+            return project.write_file(
+                relative_path="notes/today.md",
+                content="done\n",
+                overwrite=False,
+                expected_revision=revision,
+                idempotency_key=key,
+            )
+        return project.archive_file(
+            relative_path="notes.md", expected_revision=revision, idempotency_key=key
+        )
+
+    before = project.revision()
+    first = call("first", before)
+    retried = call("first", before)
+
+    assert first.report["ok"] is True, first.report
+    assert first.report["operation"] == reported  # decided under the transaction lock
+    assert retried.report["status"] == "replayed"
+    assert retried.report["original_status"] == first.report["status"]
+    with pytest.raises(SemanticLayerError, match=refusal):
+        call("second", project.revision())
