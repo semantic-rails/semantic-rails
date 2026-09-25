@@ -110,6 +110,114 @@ The terminal REPL exposes the same abstraction upserts through `author model`,
 similar-definition warnings, a pre-write YAML preview, and session-local
 `undo`; use the MCP tools when an MCP client is orchestrating the same work.
 
+## Warehouse Introspection
+
+Four read-only tools look at a DuckDB database before or while you model it. Pass `duckdb_path`
+(a file inside the workspace, for example the one `dbt build` wrote) or `project_path` (a DuckDB
+package: its `default_db`). They open the file read-only with DuckDB external access disabled and
+never create, seed or change it.
+
+- `list_tables`: tables and views, optionally for one `schema`, with column counts. The MCP tool
+  returns at most 200 and sets `truncated` when there are more; narrow with `schema`.
+- `describe_table`: columns with types, nullability and defaults, and declared primary, unique and
+  foreign keys, with referenced relations schema-qualified when needed.
+- `profile_columns`: row, distinct and null counts, min/max and up to 20 sample values per column
+  (`sample_limit`, default 5; `0` returns none). At most one million rows are profiled;
+  `max_rows` can lower that cap. Larger tables use a uniform sample, reported as `sampled`.
+  The full row count and the sample's row count are reported separately; counting the full relation
+  may inspect all its rows.
+- `suggest_model`: a key, time roles, dimensions, measures with an aggregation and foreign-key
+  links, each with a `confidence` (`high`, `medium`, `low`) and a `reason`. Declared keys come first,
+  then uniqueness in the data, then names. For tables above the profile cap, a key that appears
+  unique and non-null in the sample is a low-confidence candidate; the draft includes it for
+  review, and its reason requires full-relation confirmation before applying. Composite-key probes
+  check at most the first one million rows and eight key-like columns. A declared foreign key is
+  authoritative. Otherwise a key-like column (`id`, or ending in `_id`, `_key`, `_code`, `_sk`)
+  links to each other relation whose declared single-column primary key has the same name and a
+  compatible type; values are not compared, so such a link is `medium`, or `low` when several
+  relations declare that key. Single-column links use `column`; composite links use `columns` and
+  preserve the ordered local and referenced columns. Foreign-key links are review evidence, not
+  arguments in the draft `upsert_model` call.
+  Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
+  roles and listed in `unsupported_columns`; model them with an explicit supported extraction
+  expression. Enum labels containing container names or brackets remain scalar dimensions.
+  Declared warehouse keys and foreign keys retain their declared evidence. All
+  suggestions return draft `upsert_model` arguments to review before calling `upsert_model`.
+  Draft measure expressions use structured column references, so a physical column named like an
+  arithmetic expression is read as that column.
+
+Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
+Tables and views backed by data stored in the DuckDB file work normally. A view that needs an
+external file or resource can still appear in metadata-only list/describe results, but cannot be
+profiled or used for a model suggestion; materialize it in the DuckDB file before introspection.
+Warehouse tools spell a relation the way package models do: `table` in the default schema,
+otherwise `schema.table`, with each name as it is (`sales-data.fct"orders`); the runtime quotes
+each part. Pass the listed `relation` to describe, profile or suggest; the draft `upsert_model`
+uses the same spelling. Because the runtime splits relations on dots, a schema or table whose name
+contains a dot is not listed and is never a foreign-key candidate; model an undotted view over it.
+`list_tables.schema` and its returned `schema`/`name` fields are raw names.
+The same functions are available to Python callers in `semantic_rails.architect_introspection`.
+
+## dbt Projects
+
+`suggest_models_from_dbt` reads a dbt project's artifacts; it never runs dbt. Pass `target_dir`
+(dbt's `target/`, inside the workspace) or `manifest_path`, and optionally `catalog_path`; `select`
+narrows the models by name; without it, the MCP tool returns the first 20 models and sets
+`truncated` when there are more. Run `dbt build` first, and `dbt docs generate` for `catalog.json`,
+which carries column types (without it, columns the manifest does not type are reported as
+`untyped_columns`). The final manifest and catalog files must resolve inside the workspace;
+in-workspace links are supported. Container catalog types are also reported in `untyped_columns`
+and excluded from draft scalar measures.
+
+Each dbt model becomes a suggestion in the same shape as `suggest_model`, but the facts come from
+dbt:
+
+- the relation is the model's `schema.alias` (the database too when it is not the database most
+  models are built in), so a model in a custom schema keeps it (`main_marts.fct_orders`); with
+  dbt-duckdb, a model in the default schema `main` is spelled `alias`, as introspection spells it;
+- the key comes from an enforced contract's `primary_key` constraint, a
+  `dbt_utils.unique_combination_of_columns` test, or `unique` + `not_null` tests on one column;
+- foreign keys come from `relationships` tests and model- or column-level contract `foreign_key`
+  constraints. Targets resolve against manifest identities for `ref()`, package-qualified `ref()`,
+  `source()`, and relation names including alias, schema and database; target columns are preserved;
+- `accepted_values` tests become dimension value sets (`domain`);
+- descriptions carry into the draft; times, dimensions and measures come from column types and
+  names.
+
+An ephemeral dbt model is a CTE without a physical warehouse relation. Its suggestion reports
+`physical_relation: false` and `nonphysical_reason`, with no `upsert_model` draft;
+`import_dbt_project` lists it in `skipped_models` even when dbt tests establish a key.
+
+Both dbt tools return `dbt_warnings` for tests whose attachment or relationship target cannot be
+identified uniquely from the manifest. Such tests do not create a foreign key. With no
+`attached_node`, a relationship test uses the resolved `ref()` or `source()` target identity and a
+single remaining relation dependency to identify the child; dependency order is not an identity.
+Singular tests, and generic tests other than those listed above, carry no model facts and are
+ignored.
+
+`import_dbt_project` applies them: `select` names the dbt models, and one parse-gated transaction
+creates or updates a model per dbt model (in `models/<group>/`, `group` defaulting to `dbt`), with
+each resolved foreign key written as an entity reference in the model's `entities:` block (`expr:`
+when the foreign-key column is named differently from the target's key), which the engine reads as
+a many-to-one relationship. It follows the usual mutation contract (`expected_revision`,
+`idempotency_key`, `dry_run`). A model whose target is imported in the same call, or already in the
+package, gets the reference; references elsewhere are listed in `skipped_references`, and dbt models
+without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
+(`fct_orders` and a model `orders` for entity `order`) updates that model.
+A foreign key to a dbt model imported in the same call names that model's entity, even when
+another package model reads the same relation. Any other foreign key resolves only when exactly
+one existing package entity reads its relation; otherwise it is listed in `skipped_references`.
+If a referenced dbt target was explicitly selected but skipped, its child reference is also
+reported in `skipped_references`; an older package model at the same relation cannot replace it.
+References to intentionally unselected targets may still use one eligible existing entity.
+If a model has different foreign-key columns pointing to the same semantic entity, both links
+are reported in `skipped_references` because one entity reference cannot represent both joins.
+Identical links are recorded once.
+
+Python callers use `semantic_rails.dbt_artifacts` (`load_dbt_artifacts`,
+`suggest_models_from_dbt`, `dbt_import_models`) and `ArchitectProject.upsert_models`, which stages
+several models and their references in one transaction.
+
 ## Tool Surface
 
 - `architect_guidance`
@@ -128,6 +236,12 @@ similar-definition warnings, a pre-write YAML preview, and session-local
 - `impact_project`
 - `promotion_check`
 - `mcp_client_config`
+- `list_tables`
+- `describe_table`
+- `profile_columns`
+- `suggest_model`
+- `suggest_models_from_dbt`
+- `import_dbt_project`
 
 ## Safety Model
 

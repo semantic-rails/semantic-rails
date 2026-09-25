@@ -42,6 +42,7 @@ from .architect_transactions import (
 from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
+from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
     "model": "models",
@@ -83,7 +84,7 @@ def _within(path: Path, root: Path) -> bool:
 def _yaml_load(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    payload = yaml_safe_load(path.read_text(encoding="utf-8"))
     if payload is None:
         return {}
     if not isinstance(payload, dict):
@@ -385,7 +386,7 @@ def _guard_and_retire_scaffold_model(
     if graph_path.is_symlink():
         raise SemanticLayerError("INVALID_CONFIG", "Project graph may not be a symlink")
     try:
-        graph = yaml.safe_load(graph_path.read_bytes())
+        graph = yaml_safe_load(graph_path.read_bytes())
         entities = graph["graph"]["entities"]
         if len(entities) != 1:
             return [], trusted
@@ -620,13 +621,236 @@ class ArchitectProject:
         dry_run: bool = False,
     ) -> ArchitectMutation:
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        documents: dict[Path, dict[str, Any]] = {}
+        staged = self._stage_model(
+            self._raw_inventory(),
+            documents,
+            model_id=model_id,
+            entity_key=entity_key,
+            relation=relation,
+            primary_key=primary_key,
+            dimensions=dimensions,
+            times=times,
+            measures=measures,
+            joins=joins,
+            group=group,
+            description=description,
+            label=label,
+        )
+        if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
+            documents.pop(staged["graph_path"])
+        return self._commit(
+            documents,
+            kind="model",
+            key=staged["model"],
+            existed=staged["existed"],
+            source_file=staged["source_file"],
+            target_file=staged["target_file"],
+            validate_after=validate_after,
+            expected_revision=expected,
+            idempotency_key=key,
+            dry_run=dry_run,
+            intent={
+                "operation": "upsert_model",
+                "model_id": model_id,
+                "entity_key": entity_key,
+                "relation": relation,
+                "primary_key": primary_key,
+                "dimensions": dimensions,
+                "times": times,
+                "measures": measures,
+                "joins": joins,
+                "group": group,
+                "description": description,
+                "label": label,
+            },
+            extra={"entity": staged["entity"]},
+        )
+
+    def upsert_models(
+        self,
+        models: list[dict[str, Any]],
+        *,
+        group: str = "core",
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Create or update several models in one parse-gated transaction.
+
+        Each item takes :meth:`upsert_model`'s arguments plus optional
+        ``references``: foreign keys, as ``{"entity": <key>}`` or
+        ``{"relation": <relation>}`` with ``"columns"`` (this model's key
+        columns) and optionally ``"to_columns"`` (the target's). An entity may
+        be in the package or created by this batch; a relation resolves only
+        when exactly one existing package entity reads it. Each becomes
+        an entry in the model's ``entities`` block (``expr`` when the column
+        differs from the target's key), which strict packages read as a
+        many-to-one relationship. A reference whose target is missing or
+        ambiguous, or which points at a column other than the target's key, is
+        reported under ``skipped_references``.
+        """
+        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        if not models:
+            raise SemanticLayerError("INVALID_CONFIG", "upsert_models needs at least one model")
+        for field_name in ("model_id", "entity_key"):
+            names = [_slug(str(item.get(field_name) or ""), fallback="") for item in models]
+            repeated = sorted({name for name in names if names.count(name) > 1})
+            if repeated:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"each model in one batch needs its own {field_name}; repeated: "
+                    + ", ".join(repeated),
+                    details={field_name: repeated},
+                )
+        raw = self._raw_inventory()
+        documents: dict[Path, dict[str, Any]] = {}
+        staged = [
+            self._stage_model(
+                raw,
+                documents,
+                **{"group": group, **{k: v for k, v in item.items() if k != "references"}},
+            )
+            for item in models
+        ]
+        entity_keys: dict[str, list[str]] = {
+            row.key: _as_list(row.spec.get("key")) for row in raw["entities"]
+        }
+        for fact in staged:
+            graph = dict(documents[fact["graph_path"]].get("graph", {}) or {})
+            for name, spec in dict(graph.get("entities", {}) or {}).items():
+                entity_keys[str(name)] = _as_list(dict(spec or {}).get("key"))
+        readers: dict[str, set[str]] = {}
+        for row in raw["models"]:
+            entity = self._primary_entity_for_model(row, raw["entities"])
+            if row.spec.get("relation") and entity in entity_keys:
+                readers.setdefault(str(row.spec["relation"]), set()).add(entity)
+        added: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        pending: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any], list[str]]]] = {}
+        for item, fact in zip(models, staged, strict=True):
+            for reference in list(item.get("references") or []):
+                candidates = readers.get(str(reference.get("relation") or ""), set())
+                target = str(reference.get("entity") or "")
+                if not target and len(candidates) == 1:
+                    target = next(iter(candidates))
+                columns = _as_list(reference.get("columns"))
+                to_columns = _as_list(reference.get("to_columns"))
+                target_key = entity_keys.get(target, [])
+                if not target and len(candidates) > 1:
+                    reason = f"the relation has multiple eligible entities: {', '.join(sorted(candidates))}"
+                elif not target:
+                    reason = (
+                        "no existing package entity reads this relation; name the entity for "
+                        "targets created in this batch"
+                    )
+                elif target not in entity_keys:
+                    reason = "the target is not a model in this package or batch"
+                elif target == fact["entity_key"]:
+                    reason = "a model cannot reference its own entity"
+                elif not columns or len(columns) != len(target_key):
+                    reason = f"the columns do not match the width of {target}'s key {target_key}"
+                elif to_columns and to_columns != target_key:
+                    reason = f"it points at {to_columns}, not {target}'s key {target_key}"
+                else:
+                    pending.setdefault((fact["model"], target), []).append(
+                        (fact, reference, columns)
+                    )
+                    continue
+                skipped.append({"model": fact["model"], **reference, "reason": reason})
+        for (_, target), references in pending.items():
+            if len({tuple(columns) for _, _, columns in references}) > 1:
+                for fact, reference, _ in sorted(
+                    references, key=lambda row: (tuple(row[2]), str(row[1]))
+                ):
+                    skipped.append(
+                        {
+                            "model": fact["model"],
+                            **reference,
+                            "reason": (
+                                f"multiple foreign keys to {target} use different columns; "
+                                "one entity cannot represent both relationships"
+                            ),
+                        }
+                    )
+                continue
+            fact, _, columns = references[0]
+            target_key = entity_keys[target]
+            model = self._staged_model(documents[fact["model_path"]], fact["model"])
+            entry = (
+                {}
+                if columns == target_key
+                else {"expr": columns[0] if len(columns) == 1 else columns}
+            )
+            model["entities"] = {**dict(model.get("entities", {}) or {}), target: entry}
+            added.append({"model": fact["model"], "entity": target, "columns": columns})
+        graph_paths = {fact["graph_path"] for fact in staged}
+        model_paths = {fact["model_path"] for fact in staged}
+        if not any(fact["graph_changed"] for fact in staged):
+            for path in graph_paths - model_paths:
+                documents.pop(path, None)
+        return self._commit(
+            documents,
+            kind="models",
+            key=",".join(fact["model"] for fact in staged),
+            existed=any(fact["existed"] for fact in staged),
+            source_file="",
+            target_file="",
+            validate_after=validate_after,
+            expected_revision=expected,
+            idempotency_key=key,
+            dry_run=dry_run,
+            intent={"operation": "upsert_models", "models": deepcopy(models), "group": group},
+            extra={
+                "models": [
+                    {
+                        "model": fact["model"],
+                        "entity": fact["entity_key"],
+                        "existed": fact["existed"],
+                        "target_file": fact["target_file"],
+                    }
+                    for fact in staged
+                ],
+                "references": added,
+                "skipped_references": skipped,
+            },
+        )
+
+    @staticmethod
+    def _staged_model(doc: dict[str, Any], model_slug: str) -> dict[str, Any]:
+        """The live model mapping inside a staged document."""
+        if "models" in doc:
+            return dict(doc["models"])[model_slug]
+        return doc["model"]
+
+    def _stage_model(
+        self,
+        raw: dict[str, list[_RawObject]],
+        documents: dict[Path, dict[str, Any]],
+        *,
+        model_id: str,
+        entity_key: str,
+        relation: str,
+        primary_key: list[str],
+        dimensions: dict[str, Any] | None = None,
+        times: dict[str, Any] | None = None,
+        measures: dict[str, Any] | None = None,
+        joins: dict[str, Any] | None = None,
+        group: str = "core",
+        description: str = "",
+        label: str = "",
+    ) -> dict[str, Any]:
+        """Apply one model upsert to ``documents`` (files load on first use).
+
+        Several models can be staged into one ``documents`` and committed as a
+        single transaction; the returned facts describe this model's change.
+        """
         keys = _as_list(primary_key)
         if not keys:
             raise SemanticLayerError(
                 "INVALID_CONFIG", "primary_key must contain at least one column"
             )
-
-        raw = self._raw_inventory()
         requested_model = str(model_id or "").strip()
         requested_entity = str(entity_key or "").strip()
         existing_model = self._find_raw(raw["models"], requested_model)
@@ -655,7 +879,9 @@ class ArchitectProject:
                 else self._target_path("graph.yml")
             )
         )
-        documents = self._load_documents(model_path, graph_path)
+        for path in (model_path, graph_path):
+            if path not in documents:
+                documents.update(self._load_documents(path))
 
         model_doc = documents[model_path]
         model, model_wrapper = self._model_for_update(
@@ -705,53 +931,29 @@ class ArchitectProject:
             "key": existing_spec.get("key") if _as_list(existing_spec.get("key")) == keys else keys,
             "model": model_slug,
         }
-        if existing_entity is None:
+        if existing_entity is None and entity_slug not in entities:
             desired_entity.update({"label": _title(entity_slug), "allowed_as_root": True})
         entities[entity_slug] = desired_entity
         graph["entities"] = entities
         graph_doc["graph"] = graph
-        graph_changed = desired_entity != existing_spec
-        if not graph_changed and graph_path != model_path:
-            documents.pop(graph_path)
-
-        source_file = self._relative(existing_model.source_path) if existing_model else ""
-        target_file = self._relative(model_path)
-        return self._commit(
-            documents,
-            kind="model",
-            key=model_slug,
-            existed=existing_model is not None,
-            source_file=source_file,
-            target_file=target_file,
-            validate_after=validate_after,
-            expected_revision=expected,
-            idempotency_key=key,
-            dry_run=dry_run,
-            intent={
-                "operation": "upsert_model",
-                "model_id": model_id,
-                "entity_key": entity_key,
-                "relation": relation,
-                "primary_key": primary_key,
-                "dimensions": dimensions,
-                "times": times,
-                "measures": measures,
-                "joins": joins,
-                "group": group,
-                "description": description,
-                "label": label,
+        return {
+            "model": model_slug,
+            "entity_key": entity_slug,
+            "existed": existing_model is not None,
+            "model_path": model_path,
+            "graph_path": graph_path,
+            "graph_changed": desired_entity != existing_spec,
+            "source_file": self._relative(existing_model.source_path) if existing_model else "",
+            "target_file": self._relative(model_path),
+            "entity": {
+                "key": entity_slug,
+                "existing": existing_entity is not None,
+                "source_file": self._relative(existing_entity.source_path)
+                if existing_entity
+                else "",
+                "target_file": self._relative(graph_path),
             },
-            extra={
-                "entity": {
-                    "key": entity_slug,
-                    "existing": existing_entity is not None,
-                    "source_file": self._relative(existing_entity.source_path)
-                    if existing_entity
-                    else "",
-                    "target_file": self._relative(graph_path),
-                }
-            },
-        )
+        }
 
     def upsert_metric(
         self,

@@ -1994,6 +1994,531 @@
       }
     },
     {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "List warehouse tables"
+      },
+      "description": "List tables and views (read-only) in a DuckDB package's database or a DuckDB file.",
+      "inputSchema": {
+        "properties": {
+          "duckdb_path": {
+            "default": "",
+            "title": "Duckdb Path",
+            "type": "string"
+          },
+          "project_path": {
+            "default": "",
+            "title": "Project Path",
+            "type": "string"
+          },
+          "schema": {
+            "default": "",
+            "title": "Schema",
+            "type": "string"
+          }
+        },
+        "title": "list_tablesArguments",
+        "type": "object"
+      },
+      "name": "list_tables",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "list_tablesDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Describe warehouse table"
+      },
+      "description": "Columns (type, nullability, default) and declared primary, unique and foreign keys.",
+      "inputSchema": {
+        "properties": {
+          "duckdb_path": {
+            "default": "",
+            "title": "Duckdb Path",
+            "type": "string"
+          },
+          "project_path": {
+            "default": "",
+            "title": "Project Path",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "title": "describe_tableArguments",
+        "type": "object"
+      },
+      "name": "describe_table",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "describe_tableDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Profile table columns"
+      },
+      "description": "Per-column counts, min/max and up to 20 samples (sample_limit=0 for none), sampling tables above max_rows (at most one million). Read-only.",
+      "inputSchema": {
+        "properties": {
+          "columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Columns"
+          },
+          "duckdb_path": {
+            "default": "",
+            "title": "Duckdb Path",
+            "type": "string"
+          },
+          "max_rows": {
+            "default": 1000000,
+            "title": "Max Rows",
+            "type": "integer"
+          },
+          "project_path": {
+            "default": "",
+            "title": "Project Path",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          },
+          "sample_limit": {
+            "default": 5,
+            "title": "Sample Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "title": "profile_columnsArguments",
+        "type": "object"
+      },
+      "name": "profile_columns",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "profile_columnsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Suggest a model"
+      },
+      "description": "Propose a key, times, dimensions, measures and foreign keys for a relation, with confidences, reasons and draft upsert_model arguments. Read-only.",
+      "inputSchema": {
+        "properties": {
+          "duckdb_path": {
+            "default": "",
+            "title": "Duckdb Path",
+            "type": "string"
+          },
+          "project_path": {
+            "default": "",
+            "title": "Project Path",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "title": "suggest_modelArguments",
+        "type": "object"
+      },
+      "name": "suggest_model",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "suggest_modelDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Suggest models from dbt"
+      },
+      "description": "suggest_model for each dbt model, from manifest.json and catalog.json (dbt never runs); keys, links and value sets come from dbt tests and contracts. select narrows by model name. Read-only.",
+      "inputSchema": {
+        "properties": {
+          "catalog_path": {
+            "default": "",
+            "title": "Catalog Path",
+            "type": "string"
+          },
+          "manifest_path": {
+            "default": "",
+            "title": "Manifest Path",
+            "type": "string"
+          },
+          "select": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Select"
+          },
+          "target_dir": {
+            "default": "",
+            "title": "Target Dir",
+            "type": "string"
+          }
+        },
+        "title": "suggest_models_from_dbtArguments",
+        "type": "object"
+      },
+      "name": "suggest_models_from_dbt",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "suggest_models_from_dbtDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Import dbt models"
+      },
+      "description": "Create or update package models from the selected dbt models in one transaction, writing their foreign keys as entity references. Review with suggest_models_from_dbt first; dry_run=true previews without writing. skipped_models and skipped_references say what was left out.",
+      "inputSchema": {
+        "properties": {
+          "catalog_path": {
+            "default": "",
+            "title": "Catalog Path",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "group": {
+            "default": "dbt",
+            "title": "Group",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "manifest_path": {
+            "default": "",
+            "title": "Manifest Path",
+            "type": "string"
+          },
+          "project_path": {
+            "title": "Project Path",
+            "type": "string"
+          },
+          "select": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Select",
+            "type": "array"
+          },
+          "target_dir": {
+            "default": "",
+            "title": "Target Dir",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_path",
+          "select",
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "import_dbt_projectArguments",
+        "type": "object"
+      },
+      "name": "import_dbt_project",
+      "outputSchema": {
+        "$defs": {
+          "ArchitectFileChange": {
+            "properties": {
+              "after_bytes": {
+                "default": 0,
+                "title": "After Bytes",
+                "type": "integer"
+              },
+              "after_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "After Sha256"
+              },
+              "before_bytes": {
+                "default": 0,
+                "title": "Before Bytes",
+                "type": "integer"
+              },
+              "before_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Before Sha256"
+              },
+              "content_encoding": {
+                "default": "none",
+                "enum": [
+                  "utf-8",
+                  "base64",
+                  "none"
+                ],
+                "title": "Content Encoding",
+                "type": "string"
+              },
+              "diff": {
+                "default": "",
+                "title": "Diff",
+                "type": "string"
+              },
+              "operation": {
+                "enum": [
+                  "create",
+                  "update",
+                  "delete"
+                ],
+                "title": "Operation",
+                "type": "string"
+              },
+              "path": {
+                "title": "Path",
+                "type": "string"
+              },
+              "proposed_content": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Proposed Content"
+              }
+            },
+            "required": [
+              "path",
+              "operation"
+            ],
+            "title": "ArchitectFileChange",
+            "type": "object"
+          },
+          "ArchitectMutationIssue": {
+            "additionalProperties": true,
+            "properties": {
+              "code": {
+                "title": "Code",
+                "type": "string"
+              },
+              "details": {
+                "additionalProperties": true,
+                "title": "Details",
+                "type": "object"
+              },
+              "message": {
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "title": "ArchitectMutationIssue",
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "description": "Stable structured output shared by every Architect mutation tool.",
+        "properties": {
+          "base_revision": {
+            "title": "Base Revision",
+            "type": "string"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Files",
+            "type": "array"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/$defs/ArchitectFileChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "current_revision": {
+            "title": "Current Revision",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ArchitectMutationIssue"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/$defs/ArchitectMutationIssue"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "expected_revision": {
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "title": "Idempotent Replay",
+            "type": "boolean"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "parse": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parse"
+          },
+          "project_path": {
+            "title": "Project Path",
+            "type": "string"
+          },
+          "proposed_revision": {
+            "title": "Proposed Revision",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "workspace_root": {
+            "default": "",
+            "title": "Workspace Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status",
+          "project_path",
+          "expected_revision",
+          "base_revision",
+          "current_revision",
+          "revision",
+          "proposed_revision",
+          "idempotency_key",
+          "idempotent_replay",
+          "dry_run",
+          "changed_files",
+          "changes"
+        ],
+        "title": "ArchitectMutationResult",
+        "type": "object"
+      }
+    },
+    {
       "description": "Run parse, runtime, examples, tests, impact, or release validation for a project path.",
       "inputSchema": {
         "properties": {

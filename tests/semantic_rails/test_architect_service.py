@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from semantic_rails import architect_service, architect_transactions
+from semantic_rails import architect_service, architect_transactions, yaml_loader
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.cli.scaffold import create_project_report
 from semantic_rails.errors import SemanticLayerError
@@ -174,6 +174,29 @@ def test_nested_model_upsert_does_not_rewrite_unchanged_graph(tmp_path: Path) ->
     assert mutation.report["ok"] is True
     assert mutation.report["changed_files"] == ["models/core/events.yml"]
     assert graph_path.read_bytes() == graph_before
+
+
+def test_model_upsert_reads_yaml_1_2_so_no_and_on_stay_strings(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    model_path = project_path / "models" / "core" / "events.yml"
+    authored = model_path.read_text(encoding="utf-8")
+    categorical = "      kind: categorical\n"
+    assert categorical in authored
+    model_path.write_text(
+        authored.replace(categorical, categorical + "      domain: [no, on]\n", 1)
+    )
+
+    mutation = ArchitectProject(project_path, workspace_root=tmp_path).upsert_model(
+        model_id="events",
+        entity_key="event",
+        relation="raw_events",
+        primary_key=["event_id"],
+        dimensions={"channel": {"kind": "categorical"}},
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+    dimensions = yaml_loader.load_yaml_file(model_path)["model"]["dimensions"]
+    assert dimensions["event_type"]["domain"] == ["no", "on"]
 
 
 def test_cross_process_writers_from_one_base_are_serialized(tmp_path: Path) -> None:

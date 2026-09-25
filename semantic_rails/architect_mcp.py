@@ -24,6 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from . import architect_introspection as introspection
+from . import dbt_artifacts
 from .architect_service import (
     ArchitectProject,
     FirstModel,
@@ -61,6 +63,9 @@ ArchitectTransport = Literal["stdio", "sse", "streamable-http"]
 ARCHITECT_TOKEN_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN"
 ARCHITECT_TOKEN_FILE_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN_FILE"
 MIN_ARCHITECT_TOKEN_LENGTH = 32
+# Response caps for unnarrowed listings: narrow with schema, or with select.
+MAX_LISTED_TABLES = 200
+MAX_UNSELECTED_DBT_SUGGESTIONS = 20
 # RFC 6750 b64token: what a client can send in an Authorization header.
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
 _TOKEN_HINT = (
@@ -140,6 +145,16 @@ class ArchitectMutationResult(BaseModel):
     parse: dict[str, Any] | None = None
     error: ArchitectMutationIssue | None = None
     errors: list[ArchitectMutationIssue] = Field(default_factory=list)
+
+
+def _read_only_annotations(title: str) -> ToolAnnotations:
+    return ToolAnnotations(
+        title=title,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
 
 
 def _mutation_annotations(title: str) -> ToolAnnotations:
@@ -1098,6 +1113,220 @@ def create_architect_mcp_server(
                     dry_run=dry_run,
                 )
                 .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
+    def _warehouse_path(project_path: str, duckdb_path: str) -> str:
+        if bool(str(project_path or "").strip()) == bool(str(duckdb_path or "").strip()):
+            raise SemanticLayerError(
+                "INVALID_MCP_ARGUMENTS",
+                "Pass exactly one of project_path (a DuckDB package) or duckdb_path",
+            )
+        if project_path:
+            project = _resolve_project_path(project_path, workspace_root=root)
+            path = Path(introspection.package_duckdb_path(project)).resolve()
+        else:
+            raw = Path(duckdb_path).expanduser()
+            path = (raw if raw.is_absolute() else root / raw).resolve()
+        if not _within(path, root):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "Architect MCP only reads databases inside its configured workspace root",
+                details={"workspace_root": str(root), "requested_path": str(path)},
+            )
+        return str(path)
+
+    @mcp.tool(annotations=_read_only_annotations("List warehouse tables"))
+    def list_tables(
+        project_path: str = "", duckdb_path: str = "", schema: str = ""
+    ) -> dict[str, Any]:
+        """List tables and views (read-only) in a DuckDB package's database or a DuckDB file."""
+        try:
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                tables = introspection.list_tables(warehouse, schema=schema)
+            return {
+                "ok": True,
+                "tables": tables[:MAX_LISTED_TABLES],
+                "truncated": len(tables) > MAX_LISTED_TABLES,
+                **({"hint": "narrow with schema"} if len(tables) > MAX_LISTED_TABLES else {}),
+            }
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(annotations=_read_only_annotations("Describe warehouse table"))
+    def describe_table(
+        relation: str, project_path: str = "", duckdb_path: str = ""
+    ) -> dict[str, Any]:
+        """Columns (type, nullability, default) and declared primary, unique and foreign keys."""
+        try:
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {"ok": True, **introspection.describe_table(warehouse, relation)}
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Profile table columns"),
+        description=(
+            "Per-column counts, min/max and up to 20 samples (sample_limit=0 for none), sampling "
+            "tables above max_rows (at most one million). Read-only."
+        ),
+    )
+    def profile_columns(
+        relation: str,
+        columns: list[str] | None = None,
+        sample_limit: int = 5,
+        max_rows: int = introspection.DEFAULT_PROFILE_ROWS,
+        project_path: str = "",
+        duckdb_path: str = "",
+    ) -> dict[str, Any]:
+        try:
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {
+                    "ok": True,
+                    **introspection.profile_columns(
+                        warehouse,
+                        relation,
+                        columns,
+                        sample_limit=sample_limit,
+                        max_rows=max_rows,
+                    ),
+                }
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Suggest a model"),
+        description=(
+            "Propose a key, times, dimensions, measures and foreign keys for a relation, with "
+            "confidences, reasons and draft upsert_model arguments. Read-only."
+        ),
+    )
+    def suggest_model(
+        relation: str, project_path: str = "", duckdb_path: str = ""
+    ) -> dict[str, Any]:
+        try:
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {"ok": True, **introspection.suggest_model(warehouse, relation)}
+        except Exception as exc:
+            return _report_error(exc)
+
+    def _workspace_file(value: str, *, argument: str) -> Path:
+        raw = Path(value).expanduser()
+        path = (raw if raw.is_absolute() else root / raw).resolve()
+        if not _within(path, root):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"Architect MCP only reads {argument} inside its configured workspace root",
+                details={"workspace_root": str(root), "requested_path": str(path)},
+            )
+        return path
+
+    def _dbt_project(target_dir: str, manifest_path: str, catalog_path: str) -> Any:
+        if not (target_dir or manifest_path):
+            raise SemanticLayerError(
+                "INVALID_MCP_ARGUMENTS",
+                "Pass target_dir (dbt's target/ directory) or manifest_path",
+            )
+        target = _workspace_file(target_dir, argument="target_dir") if target_dir else None
+        if manifest_path:
+            manifest = _workspace_file(manifest_path, argument="manifest_path")
+        else:
+            assert target is not None  # target_dir or manifest_path is required above
+            manifest = _workspace_file(str(target / "manifest.json"), argument="manifest_path")
+        catalog = None
+        if catalog_path:
+            catalog = _workspace_file(catalog_path, argument="catalog_path")
+        elif target is not None and (target / "catalog.json").exists():
+            catalog = _workspace_file(str(target / "catalog.json"), argument="catalog_path")
+        return dbt_artifacts.load_dbt_artifacts(
+            manifest_path=manifest,
+            catalog_path=catalog,
+        )
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Suggest models from dbt"),
+        description=(
+            "suggest_model for each dbt model, from manifest.json and catalog.json (dbt never "
+            "runs); keys, links and value sets come from dbt tests and contracts. select narrows "
+            "by model name. Read-only."
+        ),
+    )
+    def suggest_models_from_dbt(
+        target_dir: str = "",
+        manifest_path: str = "",
+        catalog_path: str = "",
+        select: list[str] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            project = _dbt_project(target_dir, manifest_path, catalog_path)
+            models = dbt_artifacts.suggest_models_from_dbt(project, list(select or []))
+            limit = len(models) if select else MAX_UNSELECTED_DBT_SUGGESTIONS
+            return {
+                "ok": True,
+                "dbt_project": project.project_name,
+                "adapter_type": project.adapter_type,
+                "models": models[:limit],
+                "truncated": len(models) > limit,
+                **({"hint": "narrow with select"} if len(models) > limit else {}),
+                "dbt_warnings": project.warnings,
+            }
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Import dbt models"),
+        description=(
+            "Create or update package models from the selected dbt models in one transaction, "
+            "writing their foreign keys as entity references. Review with "
+            "suggest_models_from_dbt first; dry_run=true previews without writing. "
+            "skipped_models and skipped_references say what was left out."
+        ),
+    )
+    def import_dbt_project(
+        project_path: str,
+        select: list[str],
+        expected_revision: str,
+        idempotency_key: str,
+        target_dir: str = "",
+        manifest_path: str = "",
+        catalog_path: str = "",
+        group: str = "dbt",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            dbt = _dbt_project(target_dir, manifest_path, catalog_path)
+            items, skipped, unresolved = dbt_artifacts.dbt_import_models(dbt, list(select or []))
+            if not items:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    "none of the selected dbt models has a key to import",
+                    details={"skipped_models": skipped},
+                )
+            report = (
+                ArchitectProject(project_path, workspace_root=root)
+                .upsert_models(
+                    items,
+                    group=group,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+            return _mutation_result(
+                {
+                    **report,
+                    "skipped_references": [*report.get("skipped_references", []), *unresolved],
+                    "skipped_models": skipped,
+                    "dbt_warnings": dbt.warnings,
+                }
             )
         except Exception as exc:
             return _mutation_error_result(

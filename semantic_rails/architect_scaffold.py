@@ -25,6 +25,7 @@ from .config import SEED_KIND_EXTERNAL
 from .config_parts.package_loader import _slug as _id_slug  # the loader's id slug
 from .dialects import supported_warehouses, warehouse_connector
 from .errors import SemanticLayerError
+from .sql_identifiers import relation_parts
 
 DataMode = Literal["starter", "external"]
 
@@ -92,16 +93,10 @@ def _title(value: str) -> str:
 
 def _identifier(value: str, *, field_name: str, dotted: bool = False) -> str:
     text = str(value or "").strip()
-    parts = text.split(".") if dotted else [text]
-    # A relation is a dotted sequence of names, not a SQL fragment or path.
-    # The SQL renderer quotes each component (including names with hyphens)
-    # rather than requiring the warehouse's unquoted-identifier spelling.
-    valid_parts = (
-        all(part and part.isprintable() and not any(ch in "/\\" for ch in part) for part in parts)
-        if dotted
-        else all(_IDENTIFIER.fullmatch(part) for part in parts)
-    )
-    if not text or len(parts) > 3 or not valid_parts:
+    # The SQL renderer quotes each relation component (including names with
+    # hyphens) rather than requiring the warehouse's unquoted spelling.
+    valid = relation_parts(text) is not None if dotted else _IDENTIFIER.fullmatch(text)
+    if not valid:
         shape = "a SQL identifier, optionally schema-qualified" if dotted else "a SQL identifier"
         raise SemanticLayerError(
             "INVALID_CONFIG",

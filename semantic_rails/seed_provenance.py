@@ -21,6 +21,7 @@ from typing import Any
 import duckdb
 
 from .errors import SemanticLayerError
+from .sql_identifiers import quote_relation
 
 _PROVENANCE_TABLE = "_semantic_rails.seed_provenance"
 _NO_HARD_LINK_ERRNOS = frozenset(
@@ -33,16 +34,11 @@ _NO_HARD_LINK_ERRNOS = frozenset(
 )
 
 
-def _quote_relation(relation: str) -> str:
-    # Split as the SQL renderer does; quoted DuckDB names are case-insensitive.
-    return ".".join('"' + part.replace('"', '""') + '"' for part in relation.split("."))
-
-
 def _missing_on_connection(conn: Any, relations: Iterable[str]) -> list[str]:
     missing: list[str] = []
     for relation in sorted(set(relations)):
         try:
-            conn.execute(f"SELECT 1 FROM {_quote_relation(relation)} LIMIT 0")
+            conn.execute(f"SELECT 1 FROM {quote_relation(relation)} LIMIT 0")
         except Exception:  # noqa: BLE001 — a binder/catalog failure is not a usable relation
             missing.append(relation)
     return missing
