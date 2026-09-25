@@ -156,18 +156,12 @@ Profiles and samples show real values from the warehouse; use `sample_limit: 0` 
 Tables and views backed by data stored in the DuckDB file work normally. A view that needs an
 external file or resource can still appear in metadata-only list/describe results, but cannot be
 profiled or used for a model suggestion; materialize it in the DuckDB file before introspection.
-Warehouse tools return one canonical `relation` identity for each table or view. Ordinary names
-remain unquoted (`orders`, `sales.orders`); components with dots, spaces, hyphens or double quotes
-are double-quoted, with embedded quotes doubled. Thus `"sales.orders"` is a table named
-`sales.orders` in the default schema, distinct from `sales.orders` in schema `sales`; a dotted
-schema and table return as `"sales.v1"."orders.2026"`. Pass the listed identity to describe,
-profile or suggest. `list_tables.schema` and its returned `schema`/`name` fields are raw names.
-For components without dots, the suggested `upsert_model` draft uses the package runtime's raw
-relation spelling, preserving existing models over names such as `sales-data.fct"orders`. A draft
-for a physical schema or table name containing a dot keeps the canonical identity, but the current
-package runtime cannot execute it; `suggest_model.warnings` says to use an undotted warehouse view
-alias for that model. Architect mutation validation alone does not test runtime execution of the
-draft.
+Warehouse tools spell a relation the way package models do: `table` in the default schema,
+otherwise `schema.table`, with each name as it is (`sales-data.fct"orders`); the runtime quotes
+each part. Pass the listed `relation` to describe, profile or suggest; the draft `upsert_model`
+uses the same spelling. Because the runtime splits relations on dots, a schema or table whose name
+contains a dot is not listed and is never a foreign-key candidate; model an undotted view over it.
+`list_tables.schema` and its returned `schema`/`name` fields are raw names.
 The same functions are available to Python callers in `semantic_rails.architect_introspection`.
 
 ## dbt Projects
@@ -202,6 +196,8 @@ Both dbt tools return `dbt_warnings` for tests whose attachment or relationship 
 identified uniquely from the manifest. Such tests do not create a foreign key. With no
 `attached_node`, a relationship test uses the resolved `ref()` or `source()` target identity and a
 single remaining relation dependency to identify the child; dependency order is not an identity.
+Singular tests, and generic tests other than those listed above, carry no model facts and are
+ignored.
 
 `import_dbt_project` applies them: `select` names the dbt models, and one parse-gated transaction
 creates or updates a model per dbt model (in `models/<group>/`, `group` defaulting to `dbt`), with
@@ -212,9 +208,9 @@ a many-to-one relationship. It follows the usual mutation contract (`expected_re
 package, gets the reference; references elsewhere are listed in `skipped_references`, and dbt models
 without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
 (`fct_orders` and a model `orders` for entity `order`) updates that model.
-An imported target's dbt manifest identity selects that staged model even when another package
-model reads the same relation. A relation-only reference resolves when exactly one eligible
-semantic entity reads it; ambiguous targets are listed in `skipped_references` for review.
+A foreign key to a dbt model imported in the same call names that model's entity, even when
+another package model reads the same relation. A relation-only reference resolves when exactly
+one eligible semantic entity reads it; ambiguous targets are listed in `skipped_references`.
 If a referenced dbt target was explicitly selected but skipped, its child reference is also
 reported in `skipped_references`; an older package model at the same relation cannot replace it.
 References to intentionally unselected targets may still use one eligible existing entity.

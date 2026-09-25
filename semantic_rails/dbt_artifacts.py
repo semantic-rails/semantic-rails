@@ -22,9 +22,10 @@ from pathlib import Path
 from typing import Any
 
 from .architect_introspection import (
-    classify_column,
+    draft_roles,
     entity_name,
-    measure_aggregation,
+    fk_link,
+    link_columns,
     upsert_model_draft,
 )
 from .errors import SemanticLayerError
@@ -32,6 +33,14 @@ from .errors import SemanticLayerError
 _RELATION_RESOURCES = ("model", "seed", "snapshot", "source")
 _REF = re.compile(r"""ref\(\s*['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?\s*(?:,[^)]*)?\)""")
 _SOURCE = re.compile(r"""source\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)""")
+# The generic tests whose results describe a model; every other test is ignored.
+_FACT_TESTS = {
+    "not_null",
+    "unique",
+    "accepted_values",
+    "unique_combination_of_columns",
+    "relationships",
+}
 
 
 @dataclass
@@ -307,6 +316,8 @@ def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> li
         metadata = dict(node.get("test_metadata", {}) or {})
         kwargs = dict(metadata.get("kwargs", {}) or {})
         test = str(metadata.get("name") or "")
+        if test not in _FACT_TESTS:
+            continue  # singular and other generic tests carry no model facts
         target = (
             _target_of(str(kwargs.get("to") or ""), relations) if test == "relationships" else None
         )
@@ -339,13 +350,7 @@ def _apply_tests(relations: dict[str, DbtRelation], nodes: dict[str, Any]) -> li
             if column_name
             else None
         )
-        if test in {
-            "not_null",
-            "unique",
-            "accepted_values",
-            "unique_combination_of_columns",
-            "relationships",
-        } and _has_test_row_filter(node, kwargs):
+        if _has_test_row_filter(node, kwargs):
             warnings.append(
                 {
                     "test": str(test_id),
@@ -408,99 +413,41 @@ def suggest_models_from_dbt(
         if select
         else [row for row in project.relations.values() if row.resource_type == "model"]
     )
-    return [_suggest(project, relation) for relation in chosen]
+    return [_suggest(relation) for relation in chosen]
 
 
-def _suggest(project: DbtProject, relation: DbtRelation) -> dict[str, Any]:
+def _suggest(relation: DbtRelation) -> dict[str, Any]:
     ephemeral = relation.materialized.lower() == "ephemeral"
     entity = entity_name(relation.alias or relation.name)
     key_columns = list(relation.primary_key)
-    key = (
-        {
-            "columns": key_columns,
-            "confidence": "high",
-            "reason": f"dbt {relation.primary_key_source}",
-        }
-        if key_columns
-        else None
-    )
     links = [
-        {
-            "columns": list(fk["columns"]),
-            **({"column": fk["columns"][0]} if len(fk["columns"]) == 1 else {}),
-            "references": {
+        fk_link(
+            fk["columns"],
+            {
                 "relation": fk.get("to_relation") or fk["to"],
                 "columns": list(fk.get("to_columns") or []),
                 "dbt_unique_id": fk["to"],
             },
-            "confidence": "high",
-            "reason": f"dbt {fk['source']}",
-        }
+            "high",
+            f"dbt {fk['source']}",
+        )
         for fk in relation.foreign_keys
-        if fk["columns"]
     ]
-    linked = {column for link in links for column in link["columns"]}
-    times: list[dict[str, Any]] = []
-    dimensions: list[dict[str, Any]] = []
-    measures: list[dict[str, Any]] = (
+    roles, unmodeled = draft_roles(
+        entity,
+        key_columns,
+        links,
         [
             {
-                "key": f"{entity}_count",
-                "kind": "entity_count",
-                "aggregation": "count_distinct",
-                "confidence": "high",
-                "reason": f"counts {entity} rows by their key",
+                "name": column.name,
+                "type": column.data_type,
+                "null_count": 0 if column.not_null else None,
+                "values": column.accepted_values,
+                "description": column.description,
             }
-        ]
-        if len(key_columns) == 1
-        else []
+            for column in relation.columns.values()
+        ],
     )
-    untyped: list[str] = []
-    for column in relation.columns.values():
-        if column.name in key_columns or column.name in linked:
-            continue
-        role = classify_column(column.name, column.data_type)
-        if role == "unknown":
-            untyped.append(column.name)
-            continue
-        described = {"description": column.description} if column.description else {}
-        if role == "time":
-            times.append(
-                {
-                    "column": column.name,
-                    "kind": "date" if column.data_type.upper().startswith("DATE") else "timestamp",
-                    "confidence": "high" if column.not_null else "medium",
-                    "reason": f"{column.data_type or 'time'} column"
-                    + (" with a not_null test" if column.not_null else ""),
-                    **described,
-                }
-            )
-        elif role == "measure":
-            aggregation, confidence, reason = measure_aggregation(column.name)
-            measures.append(
-                {
-                    "key": column.name,
-                    "kind": "aggregate",
-                    "aggregation": aggregation,
-                    "confidence": confidence,
-                    "reason": reason,
-                    **described,
-                }
-            )
-        elif role == "dimension":
-            dimensions.append(
-                {
-                    "column": column.name,
-                    "confidence": "high" if column.accepted_values else "medium",
-                    "reason": (
-                        f"accepted_values test: {len(column.accepted_values)} values"
-                        if column.accepted_values
-                        else f"{column.data_type or 'text'} column"
-                    ),
-                    **({"values": column.accepted_values} if column.accepted_values else {}),
-                    **described,
-                }
-            )
     return {
         "relation": relation.relation,
         "dbt_unique_id": relation.unique_id,
@@ -513,80 +460,85 @@ def _suggest(project: DbtProject, relation: DbtRelation) -> dict[str, Any]:
         ),
         "entity": entity,
         "description": relation.description,
-        "primary_key": key,
-        "times": times,
-        "dimensions": dimensions,
-        "measures": measures,
+        "primary_key": (
+            {
+                "columns": key_columns,
+                "confidence": "high",
+                "reason": f"dbt {relation.primary_key_source}",
+            }
+            if key_columns
+            else None
+        ),
+        **roles,
         "foreign_keys": links,
-        "untyped_columns": untyped,
-        "upsert_model": (
-            None
-            if ephemeral
-            else upsert_model_draft(
-                entity=entity,
-                relation=relation.relation,
-                key_columns=key_columns,
-                times=times,
-                dimensions=dimensions,
-                measures=measures,
-                description=relation.description,
-            )
+        "untyped_columns": [column["name"] for column in unmodeled],
+        "upsert_model": None
+        if ephemeral
+        else upsert_model_draft(
+            entity=entity,
+            relation=relation.relation,
+            key_columns=key_columns,
+            description=relation.description,
+            **roles,
         ),
     }
 
 
 def dbt_import_models(
     project: DbtProject, select: list[str]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """``ArchitectProject.upsert_models`` items for the selected dbt models, and those left out.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """``ArchitectProject.upsert_models`` items for the selected dbt models.
 
-    Foreign keys retain the selected target's manifest identity where known;
-    otherwise they resolve by relation only when the package has one eligible
-    semantic target. A model without a key in dbt
-    (no contract primary key, uniqueness tests or column-combination test) is
-    left out, with the reason.
+    Returns the items, the selected models left out and the references left
+    out. A model without a key in dbt (no contract primary key, uniqueness
+    tests or column-combination test) or without a physical relation is left
+    out, with the reason. A foreign key to a model imported in the same batch
+    names that model's entity, so another package model reading the same
+    relation cannot capture it; one to a selected model that was left out is
+    itself left out. Other foreign keys resolve by relation in the package.
     """
     if not select:
         raise SemanticLayerError(
             "INVALID_MCP_ARGUMENTS",
             "select the dbt models to import (suggest_models_from_dbt lists them)",
         )
-    items: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    for suggestion in suggest_models_from_dbt(project, select):
-        if not suggestion["physical_relation"]:
-            skipped.append(
-                {
-                    "dbt_model": suggestion["dbt_unique_id"],
-                    "relation": suggestion["relation"],
-                    "reason": suggestion["nonphysical_reason"],
-                }
-            )
-            continue
-        draft = dict(suggestion["upsert_model"])
-        if not draft["primary_key"]:
-            skipped.append(
-                {
-                    "dbt_model": suggestion["dbt_unique_id"],
-                    "relation": suggestion["relation"],
-                    "reason": "no key in dbt: add unique and not_null tests or an enforced "
-                    "contract primary_key, or model it with suggest_model",
-                }
-            )
-            continue
-        draft["dbt_unique_id"] = suggestion["dbt_unique_id"]
-        draft["references"] = [
-            {
+    suggestions = {row["dbt_unique_id"]: row for row in suggest_models_from_dbt(project, select)}
+    drafts = {
+        unique_id: dict(row["upsert_model"])
+        for unique_id, row in suggestions.items()
+        if row["upsert_model"] and row["primary_key"]
+    }
+    skipped_models = [
+        {
+            "dbt_model": unique_id,
+            "relation": row["relation"],
+            "reason": row.get("nonphysical_reason")
+            or "no key in dbt: add unique and not_null tests or an enforced contract "
+            "primary_key, or model it with suggest_model",
+        }
+        for unique_id, row in suggestions.items()
+        if unique_id not in drafts
+    ]
+    skipped_references: list[dict[str, Any]] = []
+    for unique_id, draft in drafts.items():
+        draft["references"] = []
+        for link in suggestions[unique_id]["foreign_keys"]:
+            target = link["references"]["dbt_unique_id"]
+            reference = {
                 "relation": link["references"]["relation"],
-                "columns": list(link["columns"]),
-                "to_columns": list(link["references"].get("columns") or []),
-                **(
-                    {"target_dbt_unique_id": link["references"]["dbt_unique_id"]}
-                    if link["references"].get("dbt_unique_id") in project.relations
-                    else {}
-                ),
+                "columns": link_columns(link),
+                "to_columns": list(link["references"]["columns"]),
+                **({"target_dbt_unique_id": target} if target in project.relations else {}),
+                **({"entity": drafts[target]["entity_key"]} if target in drafts else {}),
             }
-            for link in suggestion["foreign_keys"]
-        ]
-        items.append(draft)
-    return items, skipped
+            if target in suggestions and target not in drafts:
+                skipped_references.append(
+                    {
+                        "model": draft["model_id"],
+                        **reference,
+                        "reason": "the selected dbt target was skipped from this import",
+                    }
+                )
+            else:
+                draft["references"].append(reference)
+    return list(drafts.values()), skipped_models, skipped_references

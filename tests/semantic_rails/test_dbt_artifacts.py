@@ -71,6 +71,31 @@ def test_tests_and_contracts_become_keys_links_and_value_sets(target: Path) -> N
     assert orders.columns["order_total"].data_type.startswith("DECIMAL")
 
 
+def test_singular_tests_over_several_models_are_ignored(target: Path) -> None:
+    path = target / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["nodes"]["test.shop_dbt.order_totals_match_lines"] = {
+        "resource_type": "test",
+        "depends_on": {"nodes": ["model.shop_dbt.fct_orders", "model.shop_dbt.fct_order_lines"]},
+    }
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert load_dbt_artifacts(target).warnings == []
+
+
+@pytest.mark.parametrize(
+    ("data_type", "kind"), [("DATE", "date"), ("DATETIME", "timestamp"), ("TIMESTAMP", "timestamp")]
+)
+def test_time_kind_follows_the_catalog_type(target: Path, data_type: str, kind: str) -> None:
+    path = target / "catalog.json"
+    catalog = json.loads(path.read_text(encoding="utf-8"))
+    catalog["nodes"]["model.shop_dbt.fct_orders"]["columns"]["ordered_at"]["type"] = data_type
+    path.write_text(json.dumps(catalog), encoding="utf-8")
+
+    (orders,) = suggest_models_from_dbt(load_dbt_artifacts(target), ["fct_orders"])
+    assert orders["upsert_model"]["times"]["ordered_at"]["kind"] == kind
+
+
 @pytest.mark.parametrize("location", ["config", "unrendered_config", "kwargs_config", "kwargs"])
 def test_scoped_key_tests_do_not_prove_a_full_relation_key(target: Path, location: str) -> None:
     path = target / "manifest.json"
@@ -89,7 +114,7 @@ def test_scoped_key_tests_do_not_prove_a_full_relation_key(target: Path, locatio
     project = load_dbt_artifacts(target)
     orders = project.find("fct_orders")
     (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
-    items, skipped = dbt_import_models(project, ["fct_orders"])
+    items, skipped, _ = dbt_import_models(project, ["fct_orders"])
 
     assert orders.primary_key == []
     assert suggestion["primary_key"] is None
@@ -369,7 +394,7 @@ def test_dbt_catalog_container_types_stay_unmodeled_in_suggestion_and_import(
 
     project = load_dbt_artifacts(target)
     (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
-    items, skipped = dbt_import_models(project, ["fct_orders"])
+    items, skipped, _ = dbt_import_models(project, ["fct_orders"])
 
     assert {"weights", "attrs", "lookup"} <= set(suggestion["untyped_columns"])
     assert {"weights", "attrs", "lookup"}.isdisjoint(suggestion["upsert_model"]["measures"])
@@ -411,7 +436,7 @@ def test_dbt_catalog_enum_labels_with_container_words_remain_dimensions(target: 
 
     project = load_dbt_artifacts(target)
     (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
-    items, skipped = dbt_import_models(project, ["fct_orders"])
+    items, skipped, _ = dbt_import_models(project, ["fct_orders"])
     server = create_architect_mcp_server(workspace_root=target.parent)
     mcp = _call(
         server,
@@ -445,7 +470,7 @@ def test_ephemeral_model_is_described_but_has_no_physical_import_draft(target: P
 
     project = load_dbt_artifacts(target)
     (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
-    items, skipped = dbt_import_models(project, ["dim_customers", "fct_orders"])
+    items, skipped, _ = dbt_import_models(project, ["dim_customers", "fct_orders"])
 
     assert suggestion["primary_key"]["columns"] == ["order_id"]
     assert suggestion["materialized"] == "ephemeral"
@@ -558,7 +583,7 @@ def test_contract_foreign_keys_resolve_ref_and_keep_target_columns(
     assert foreign_key["to"] == "model.shop_dbt.dim_customers"
     assert foreign_key["to_relation"] == "main_marts.dim_customers"
     assert foreign_key["to_columns"] == ["customer_id"]
-    items, skipped = dbt_import_models(project, ["dim_customers", "fct_orders"])
+    items, skipped, _ = dbt_import_models(project, ["dim_customers", "fct_orders"])
     assert skipped == []
     orders = next(item for item in items if item["model_id"] == "orders")
     assert {
@@ -566,6 +591,7 @@ def test_contract_foreign_keys_resolve_ref_and_keep_target_columns(
         "columns": ["customer_id"],
         "to_columns": ["customer_id"],
         "target_dbt_unique_id": "model.shop_dbt.dim_customers",
+        "entity": "customer",
     } in orders["references"]
 
 
@@ -602,7 +628,7 @@ def test_contract_target_uses_manifest_alias_schema_and_database(target: Path, t
         fk for fk in project.find("fct_orders").foreign_keys if fk["source"] == "contract"
     )
     assert foreign_key["to_relation"] == "analytics.served.customers_v2"
-    items, _ = dbt_import_models(project, ["dim_customers", "fct_orders"])
+    items, _, _ = dbt_import_models(project, ["dim_customers", "fct_orders"])
     orders = next(item for item in items if item["model_id"] == "orders")
     assert any(
         reference["relation"] == "analytics.served.customers_v2"
@@ -633,7 +659,9 @@ def test_contract_source_target_uses_source_manifest_identity(target: Path) -> N
     )
     assert foreign_key["to"] == "source.shop_dbt.raw.customer_feed"
     assert foreign_key["to_relation"] == "main.raw_customers"
-    items, skipped = dbt_import_models(project, ["source.shop_dbt.raw.customer_feed", "fct_orders"])
+    items, skipped, _ = dbt_import_models(
+        project, ["source.shop_dbt.raw.customer_feed", "fct_orders"]
+    )
     assert skipped == []
     orders = next(item for item in items if item["model_id"] == "orders")
     assert any(reference["relation"] == "main.raw_customers" for reference in orders["references"])

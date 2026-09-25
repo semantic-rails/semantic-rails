@@ -1294,7 +1294,7 @@ def create_architect_mcp_server(
     ) -> ArchitectMutationResult:
         try:
             dbt = _dbt_project(target_dir, manifest_path, catalog_path)
-            items, skipped = dbt_artifacts.dbt_import_models(dbt, list(select or []))
+            items, skipped, unresolved = dbt_artifacts.dbt_import_models(dbt, list(select or []))
             if not items:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
@@ -1309,12 +1309,16 @@ def create_architect_mcp_server(
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
-                    skipped_dbt_targets=[row["dbt_model"] for row in skipped],
                 )
                 .report
             )
             return _mutation_result(
-                {**report, "skipped_models": skipped, "dbt_warnings": dbt.warnings}
+                {
+                    **report,
+                    "skipped_references": [*report.get("skipped_references", []), *unresolved],
+                    "skipped_models": skipped,
+                    "dbt_warnings": dbt.warnings,
+                }
             )
         except Exception as exc:
             return _mutation_error_result(

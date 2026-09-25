@@ -732,21 +732,6 @@ def test_explicit_entity_and_staged_update_override_relation_ambiguity(workspace
     assert explicit["references"][0]["entity"] == "customer"
     assert explicit["skipped_references"] == []
 
-    update = project.upsert_models(
-        [
-            _target_model("customer"),
-            _referencing_lines(
-                {
-                    "target_dbt_unique_id": "model.shop_dbt.dim_customers",
-                    "relation": "main_marts.dim_customers",
-                }
-            ),
-        ],
-        dry_run=True,
-    ).report
-    assert update["references"] == []
-    assert "multiple eligible entities" in update["skipped_references"][0]["reason"]
-
     same = project.upsert_models(
         [
             _target_model("customer"),
@@ -776,34 +761,16 @@ def test_staging_an_existing_model_does_not_count_its_old_entity_twice(workspace
     assert preview["skipped_references"] == []
 
 
-def test_selected_dbt_identity_must_match_its_relation(workspace: Path) -> None:
-    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
-    target = {**_target_model("customer"), "dbt_unique_id": "model.shop_dbt.dim_customers"}
-    wrong = _referencing_lines(
-        {
-            "relation": "main_marts.dim_stores",
-            "target_dbt_unique_id": "model.shop_dbt.dim_customers",
-        }
-    )
-
-    preview = project.upsert_models([target, wrong], dry_run=True).report
-
-    assert preview["ok"] is True, preview
-    assert preview["references"] == []
-    assert "does not read the referenced relation" in preview["skipped_references"][0]["reason"]
-
-
 def test_dbt_selected_identity_beats_ambiguous_relation_on_dry_run_and_apply(
     workspace: Path,
 ) -> None:
     project = ArchitectProject(workspace / "shop", workspace_root=workspace)
     assert project.upsert_model(**_target_model("client")).report["ok"] is True
     dbt = load_dbt_artifacts(workspace / "dbt" / "target")
-    items, skipped = dbt_import_models(dbt, ["dim_customers", "fct_orders"])
+    items, skipped, _ = dbt_import_models(dbt, ["dim_customers", "fct_orders"])
     assert skipped == []
-    customers = next(item for item in items if item["dbt_unique_id"].endswith("dim_customers"))
-    orders = next(item for item in items if item["dbt_unique_id"].endswith("fct_orders"))
-    assert customers["dbt_unique_id"] == orders["references"][0]["target_dbt_unique_id"]
+    orders = next(item for item in items if item["model_id"] == "orders")
+    assert orders["references"][0]["entity"] == "customer"
     before = project_revision(workspace / "shop")
 
     preview = project.upsert_models(items, dry_run=True).report
@@ -822,7 +789,7 @@ def test_dbt_unselected_ambiguous_target_is_reported_on_apply(workspace: Path) -
     for entity in ("customer", "client"):
         assert project.upsert_model(**_target_model(entity)).report["ok"] is True
     dbt = load_dbt_artifacts(workspace / "dbt" / "target")
-    items, _ = dbt_import_models(dbt, ["fct_orders"])
+    items, _, _ = dbt_import_models(dbt, ["fct_orders"])
 
     applied = project.upsert_models(items).report
 

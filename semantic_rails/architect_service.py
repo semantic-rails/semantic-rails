@@ -42,6 +42,7 @@ from .architect_transactions import (
 from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
+from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
     "model": "models",
@@ -83,7 +84,7 @@ def _within(path: Path, root: Path) -> bool:
 def _yaml_load(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    payload = yaml_safe_load(path.read_text(encoding="utf-8"))
     if payload is None:
         return {}
     if not isinstance(payload, dict):
@@ -385,7 +386,7 @@ def _guard_and_retire_scaffold_model(
     if graph_path.is_symlink():
         raise SemanticLayerError("INVALID_CONFIG", "Project graph may not be a symlink")
     try:
-        graph = yaml.safe_load(graph_path.read_bytes())
+        graph = yaml_safe_load(graph_path.read_bytes())
         entities = graph["graph"]["entities"]
         if len(entities) != 1:
             return [], trusted
@@ -675,7 +676,6 @@ class ArchitectProject:
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
-        skipped_dbt_targets: list[str] | None = None,
     ) -> ArchitectMutation:
         """Create or update several models in one parse-gated transaction.
 
@@ -684,17 +684,12 @@ class ArchitectProject:
         ``{"relation": <relation>}`` with ``"columns"`` (this model's key
         columns) and optionally ``"to_columns"`` (the target's). A target is an
         entity already in the package or created by this batch; a relation
-        resolves only when exactly one eligible entity reads it. dbt imports may
-        pass a selected model's ``dbt_unique_id`` and a reference's
-        ``target_dbt_unique_id`` to identify that staged target exactly. Each
-        becomes an entry in the model's ``entities`` block (``expr`` when the
-        column differs from the target's key), which strict packages read as a
-        many-to-one relationship.
-        A reference whose target is missing or ambiguous, or which points at a
-        column other than the target's key, is reported under
-        ``skipped_references``.
-        ``skipped_dbt_targets`` prevents a selected but unavailable dbt model
-        from resolving through a stale package relation with the same spelling.
+        resolves only when exactly one eligible entity reads it. Each becomes
+        an entry in the model's ``entities`` block (``expr`` when the column
+        differs from the target's key), which strict packages read as a
+        many-to-one relationship. A reference whose target is missing or
+        ambiguous, or which points at a column other than the target's key, is
+        reported under ``skipped_references``.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         if not models:
@@ -715,10 +710,7 @@ class ArchitectProject:
             self._stage_model(
                 raw,
                 documents,
-                **{
-                    "group": group,
-                    **{k: v for k, v in item.items() if k not in ("references", "dbt_unique_id")},
-                },
+                **{"group": group, **{k: v for k, v in item.items() if k != "references"}},
             )
             for item in models
         ]
@@ -738,54 +730,37 @@ class ArchitectProject:
             entity = self._primary_entity_for_model(row, raw["entities"])
             if relation and entity in entity_keys:
                 relation_entities.setdefault(relation, set()).add(entity)
-        dbt_targets: dict[str, set[tuple[str, str]]] = {}
-        skipped_target_ids = set(skipped_dbt_targets or [])
         for item, fact in zip(models, staged, strict=True):
-            relation = str(item.get("relation") or "")
-            if relation:
-                relation_entities.setdefault(relation, set()).add(fact["entity_key"])
-            dbt_unique_id = str(item.get("dbt_unique_id") or "")
-            if dbt_unique_id:
-                dbt_targets.setdefault(dbt_unique_id, set()).add((relation, fact["entity_key"]))
+            if item.get("relation"):
+                relation_entities.setdefault(str(item["relation"]), set()).add(fact["entity_key"])
         added: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         pending: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any], list[str]]]] = {}
         for item, fact in zip(models, staged, strict=True):
             for reference in list(item.get("references") or []):
+                candidates = relation_entities.get(str(reference.get("relation") or ""), set())
                 target = str(reference.get("entity") or "")
-                relation = str(reference.get("relation") or "")
-                target_identity = str(reference.get("target_dbt_unique_id") or "")
-                candidates = relation_entities.get(relation, set())
-                reason = ""
-                if not target and target_identity in dbt_targets:
-                    identity_candidates = dbt_targets[target_identity]
-                    if len(identity_candidates) > 1:
-                        reason = "the selected dbt target identity is ambiguous"
-                    else:
-                        target_relation, target = next(iter(identity_candidates))
-                        if relation != target_relation:
-                            reason = "the selected dbt target does not read the referenced relation"
-                elif not target and target_identity in skipped_target_ids:
-                    reason = "the selected dbt target was skipped from this import"
-                elif not target and len(candidates) == 1:
+                if not target and len(candidates) == 1:
                     target = next(iter(candidates))
-                elif not target and len(candidates) > 1:
-                    reason = f"the relation has multiple eligible entities: {', '.join(sorted(candidates))}"
                 columns = _as_list(reference.get("columns"))
                 to_columns = _as_list(reference.get("to_columns"))
                 target_key = entity_keys.get(target, [])
-                if not reason and (not target or target not in entity_keys):
+                if not target and len(candidates) > 1:
+                    reason = f"the relation has multiple eligible entities: {', '.join(sorted(candidates))}"
+                elif target not in entity_keys:
                     reason = "the target is not a model in this package or batch"
-                elif not reason and target == fact["entity_key"]:
+                elif target == fact["entity_key"]:
                     reason = "a model cannot reference its own entity"
-                elif not reason and (not columns or len(columns) != len(target_key)):
+                elif not columns or len(columns) != len(target_key):
                     reason = f"the columns do not match the width of {target}'s key {target_key}"
-                elif not reason and to_columns and to_columns != target_key:
+                elif to_columns and to_columns != target_key:
                     reason = f"it points at {to_columns}, not {target}'s key {target_key}"
-                if reason:
-                    skipped.append({"model": fact["model"], **reference, "reason": reason})
+                else:
+                    pending.setdefault((fact["model"], target), []).append(
+                        (fact, reference, columns)
+                    )
                     continue
-                pending.setdefault((fact["model"], target), []).append((fact, reference, columns))
+                skipped.append({"model": fact["model"], **reference, "reason": reason})
         for (_, target), references in pending.items():
             if len({tuple(columns) for _, _, columns in references}) > 1:
                 for fact, reference, _ in sorted(
@@ -828,12 +803,7 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            intent={
-                "operation": "upsert_models",
-                "models": deepcopy(models),
-                "group": group,
-                "skipped_dbt_targets": sorted(skipped_target_ids),
-            },
+            intent={"operation": "upsert_models", "models": deepcopy(models), "group": group},
             extra={
                 "models": [
                     {

@@ -27,12 +27,13 @@ import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import duckdb
 
+from .architect_scaffold import slug
 from .errors import SemanticLayerError
+from .sql_identifiers import quote_identifier, quote_relation, relation_parts
 
 MAX_SAMPLE_VALUES = 20
 MAX_SAMPLE_CHARS = 200
@@ -41,24 +42,6 @@ MAX_PROFILE_ROWS = 1_000_000
 MAX_SUGGESTION_KEY_COLUMNS = 8
 MAX_FK_TARGETS_PER_COLUMN = 8
 
-_IDENTIFIER = re.compile(r'(?:[^\W\d]|_)[\w$" -]*')
-_PLAIN_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
-_TIME_TYPES = ("DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP_S", "TIMESTAMP_MS")
-_NUMERIC_TYPES = (
-    "TINYINT",
-    "SMALLINT",
-    "INTEGER",
-    "BIGINT",
-    "HUGEINT",
-    "UTINYINT",
-    "USMALLINT",
-    "UINTEGER",
-    "UBIGINT",
-    "FLOAT",
-    "DOUBLE",
-    "DECIMAL",
-)
-_TEXT_TYPES = ("VARCHAR", "BOOLEAN", "ENUM")
 _KEY_SUFFIXES = ("_id", "_key", "_code", "_sk")
 _LINE_WORDS = ("line", "line_number", "line_no", "row_number", "seq", "sequence", "position")
 _SUM_WORDS = (
@@ -82,6 +65,8 @@ _SUM_WORDS = (
 )
 _AVERAGE_WORDS = ("price", "rate", "ratio", "pct", "percent", "score", "avg", "average")
 _TABLE_PREFIXES = ("fct_", "fact_", "dim_", "stg_", "int_", "raw_", "mart_", "vw_")
+_BOOKKEEPING_WORDS = ("updated", "modified", "deleted", "loaded", "synced")
+_CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
 
 
 @dataclass(frozen=True)
@@ -136,90 +121,39 @@ def open_duckdb(path: str | os.PathLike[str]) -> Iterator[DuckDBWarehouse]:
 
 
 def package_duckdb_path(project_path: str | os.PathLike[str]) -> str:
-    """The DuckDB file a package reads, without building or seeding it."""
-    from .config import load_package_config
+    """The DuckDB file a package reads, resolved as the runtime does, without building it."""
+    from .runtime import Runtime
 
-    project = Path(project_path)
-    config = load_package_config(str(project))
-    warehouse = str(config.package.warehouse or "duckdb")
-    if warehouse != "duckdb":
+    runtime = Runtime.from_path(str(project_path))
+    if runtime.warehouse != "duckdb":
         raise SemanticLayerError(
             "UNSUPPORTED_PLATFORM",
-            f"introspection reads DuckDB packages today; this package's warehouse is {warehouse!r}",
-            details={"warehouse": warehouse},
+            "introspection reads DuckDB packages today; this package's warehouse is "
+            f"{runtime.warehouse!r}",
+            details={"warehouse": runtime.warehouse},
         )
-    default_db = str(config.package.default_db)
-    return default_db if os.path.isabs(default_db) else str(project / default_db)
-
-
-def _quote(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
+    return runtime.db_path
 
 
 def _split_relation(relation: str) -> tuple[str, str]:
-    text = str(relation or "").strip()
-    parts: list[str] = []
-    index = 0
-    valid = True
-    while index < len(text) and len(parts) < 2:
-        if text[index] == '"':
-            index += 1
-            component = []
-            while index < len(text):
-                char = text[index]
-                if char == '"':
-                    if index + 1 < len(text) and text[index + 1] == '"':
-                        component.append('"')
-                        index += 2
-                        continue
-                    index += 1
-                    break
-                component.append(char)
-                index += 1
-            else:
-                valid = False
-                break
-            part = "".join(component)
-            if not part or "\x00" in part or (index < len(text) and text[index] != "."):
-                valid = False
-                break
-        else:
-            end = text.find(".", index)
-            if end < 0:
-                end = len(text)
-            part = text[index:end]
-            if not _IDENTIFIER.fullmatch(part):
-                valid = False
-                break
-            index = end
-        parts.append(part)
-        if index == len(text):
-            break
-        if index + 1 == len(text):
-            valid = False
-            break
-        index += 1
-    if not valid or not text or index != len(text) or not parts or len(parts) > 2:
+    """``schema.table`` or ``table`` (schema ``main``), spelled as package models spell it."""
+    parts = relation_parts(relation)
+    if parts is None or len(parts) > 2:
         raise SemanticLayerError(
             "INVALID_QUERY",
-            f"relation must be a table or view name, optionally schema-qualified (got {text!r})",
-            details={"relation": text},
+            f"relation must be a table or view name, optionally schema-qualified (got {relation!r})",
+            details={"relation": str(relation)},
         )
     return (parts[0], parts[1]) if len(parts) == 2 else ("main", parts[0])
 
 
 def _relation_name(schema: str, name: str) -> str:
-    def component(value: str) -> str:
-        return value if _PLAIN_IDENTIFIER.fullmatch(value) else _quote(value)
-
-    return component(name) if schema == "main" else f"{component(schema)}.{component(name)}"
+    return name if schema == "main" else f"{schema}.{name}"
 
 
-def _package_relation_name(schema: str, name: str) -> str:
-    """Use the package runtime's legacy raw form when no component has a dot."""
-    if "." not in schema and "." not in name:
-        return name if schema == "main" else f"{schema}.{name}"
-    return _relation_name(schema, name)
+def _dotted(schema: str, name: str) -> bool:
+    """The runtime splits relations on dots, so it cannot read these names."""
+    return "." in schema or "." in name
 
 
 def list_tables(warehouse: DuckDBWarehouse, *, schema: str = "") -> list[dict[str, Any]]:
@@ -245,6 +179,7 @@ def list_tables(warehouse: DuckDBWarehouse, *, schema: str = "") -> list[dict[st
         for row in rows
         if not schema or str(row["schema_name"]) == schema
         if str(row["schema_name"]) != "_semantic_rails"
+        and not _dotted(str(row["schema_name"]), str(row["name"]))
     ]
 
 
@@ -293,7 +228,7 @@ def describe_table(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
             unique.append(names)
         elif kind_name == "NOT NULL":
             not_null.update(names)
-        elif kind_name == "FOREIGN KEY":
+        elif kind_name == "FOREIGN KEY" and not _dotted(schema, str(row["referenced_table"])):
             foreign_keys.append(
                 {
                     "columns": names,
@@ -332,8 +267,7 @@ def _sample_text(value: Any) -> Any:
 
 
 def _orderable(data_type: str) -> bool:
-    base = data_type.split("(")[0].upper()
-    return base in _NUMERIC_TYPES or base in _TIME_TYPES or base in ("VARCHAR", "BOOLEAN", "TIME")
+    return bool(_scalar_family(data_type)) or _type_head(data_type) == "TIME"
 
 
 def profile_columns(
@@ -353,7 +287,7 @@ def profile_columns(
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
-    source = f"{_quote(schema)}.{_quote(name)}"
+    source = quote_relation(f"{schema}.{name}")
     available = {column["name"]: column for column in described["columns"]}
     wanted = list(columns or available)
     unknown = [column for column in wanted if column not in available]
@@ -370,7 +304,7 @@ def profile_columns(
     scan = f"(SELECT * FROM {source} USING SAMPLE {row_cap} ROWS)" if sampled else source
     profiles: list[dict[str, Any]] = []
     for column in wanted:
-        quoted = _quote(column)
+        quoted = quote_identifier(column)
         data_type = str(available[column]["type"])
         extremes = f", min({quoted}), max({quoted})" if _orderable(data_type) else ", NULL, NULL"
         counted, distinct, nulls, low, high = warehouse.execute(
@@ -409,10 +343,6 @@ def profile_columns(
     }
 
 
-def _base_type(data_type: str) -> str:
-    return data_type.split("(")[0].upper()
-
-
 _CONTAINER_CONSTRUCTORS = frozenset(
     {"ARRAY", "LIST", "STRUCT", "MAP", "ROW", "RECORD", "OBJECT", "VARIANT", "JSON"}
 )
@@ -428,12 +358,15 @@ def _is_container_type(data_type: str) -> bool:
     )
 
 
+def _type_head(data_type: str) -> str:
+    return re.split(r"[\s(<]", str(data_type or "").strip().upper(), maxsplit=1)[0]
+
+
 def _scalar_family(data_type: str) -> str:
     """Conservative families for role inference and safe FK equality probes."""
-    upper = str(data_type or "").strip().upper()
-    if not upper or _is_container_type(upper):
+    if not str(data_type or "").strip() or _is_container_type(data_type):
         return ""
-    head = re.split(r"[\s(<]", upper, maxsplit=1)[0]
+    head = _type_head(data_type)
     if head == "INTERVAL":
         return ""
     if head in {"DATE", "DATETIME"} or head.startswith("TIMESTAMP"):
@@ -444,23 +377,9 @@ def _scalar_family(data_type: str) -> str:
         return "text"
     if head == "UUID":
         return "uuid"
-    if head in {"NUMBER", "NUMERIC", "DECIMAL", "BIGNUMERIC", "DOUBLE", "REAL"} or head.startswith(
-        (
-            "INT",
-            "UINT",
-            "UINTEGER",
-            "TINYINT",
-            "SMALLINT",
-            "BIGINT",
-            "HUGEINT",
-            "UTINYINT",
-            "USMALLINT",
-            "UBIGINT",
-            "UHUGEINT",
-            "FLOAT",
-            "BYTEINT",
-        )
-    ):
+    # INT, INTEGER, INT64, (U)TINY/SMALL/BIG/HUGEINT, UINTEGER, BYTEINT, FLOAT, FLOAT64 ...
+    numeric_prefix = re.match(r"U?(?:TINY|SMALL|BIG|HUGE|BYTE)?INT|FLOAT", head)
+    if head in {"NUMBER", "NUMERIC", "DECIMAL", "BIGNUMERIC", "DOUBLE", "REAL"} or numeric_prefix:
         return "numeric"
     return ""
 
@@ -506,6 +425,104 @@ def measure_aggregation(name: str) -> tuple[str, str, str]:
     if summed:
         return "sum", "high", "an additive amount or quantity"
     return "sum", "medium", "numeric; sum is the usual default"
+
+
+def fk_link(
+    columns: list[str], references: dict[str, Any], confidence: str, reason: str
+) -> dict[str, Any]:
+    """A suggested foreign key: ``column`` for one local column, ``columns`` for several."""
+    local = {"column": columns[0]} if len(columns) == 1 else {"columns": list(columns)}
+    return {**local, "references": references, "confidence": confidence, "reason": reason}
+
+
+def link_columns(link: dict[str, Any]) -> list[str]:
+    return list(link.get("columns") or [link["column"]])
+
+
+def draft_roles(
+    entity: str,
+    key_columns: list[str],
+    links: list[dict[str, Any]],
+    columns: list[dict[str, Any]],
+    *,
+    rows: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Suggested ``times``, ``dimensions`` and ``measures``, and the columns no role fits.
+
+    Each column has a ``name`` and ``type`` and, where known, a ``null_count``
+    (0 once a check proves none), a profiled ``distinct_count`` out of ``rows``,
+    declared ``values`` and a ``description``. Key and linked columns are skipped.
+    """
+    roles: dict[str, Any] = {"times": [], "dimensions": [], "measures": []}
+    if len(key_columns) == 1:
+        roles["measures"].append(
+            {
+                "key": f"{entity}_count",
+                "kind": "entity_count",
+                "aggregation": "count_distinct",
+                "confidence": "high",
+                "reason": f"counts {entity} rows by their key",
+            }
+        )
+    skip = set(key_columns) | {column for link in links for column in link_columns(link)}
+    unmodeled: list[dict[str, Any]] = []
+    for column in columns:
+        name, data_type = str(column["name"]), str(column["type"])
+        if name in skip:
+            continue
+        role = classify_column(name, data_type)
+        nulls = column.get("null_count")
+        described = {"description": column["description"]} if column.get("description") else {}
+        if role == "time":
+            late = _has_word(name, _BOOKKEEPING_WORDS)
+            roles["times"].append(
+                {
+                    "column": name,
+                    "kind": "date" if _type_head(data_type) == "DATE" else "timestamp",
+                    "confidence": "low" if late else "high" if nulls == 0 else "medium",
+                    "reason": "bookkeeping timestamp; rarely the time to analyze by"
+                    if late
+                    else f"{data_type.lower()} column" + (f" ({nulls} nulls)" if nulls else ""),
+                    **described,
+                }
+            )
+        elif role == "measure":
+            aggregation, confidence, reason = measure_aggregation(name)
+            roles["measures"].append(
+                {
+                    "key": name,
+                    "kind": "aggregate",
+                    "aggregation": aggregation,
+                    "confidence": confidence,
+                    "reason": reason,
+                    **described,
+                }
+            )
+        elif role == "dimension":
+            values, distinct = list(column.get("values") or []), column.get("distinct_count")
+            if values:
+                confidence, reason = "high", f"accepted_values test: {len(values)} values"
+            elif distinct is None:
+                confidence, reason = "medium", f"{data_type.lower()} column"
+            elif "BOOL" in data_type.upper() or distinct <= 50:
+                confidence, reason = "high", f"{distinct} distinct values"
+            elif rows and distinct <= max(1000, rows // 10):
+                confidence, reason = "medium", f"{distinct} distinct values"
+            else:
+                confidence, reason = "low", f"{distinct} distinct values; likely free text"
+            roles["dimensions"].append(
+                {
+                    "column": name,
+                    "confidence": confidence,
+                    "reason": reason,
+                    **({"values": values} if values else {}),
+                    **described,
+                }
+            )
+        elif role == "unknown":
+            unmodeled.append(column)
+    roles["times"].sort(key=lambda item: _CONFIDENCE_RANK[item["confidence"]])
+    return roles, unmodeled
 
 
 def upsert_model_draft(
@@ -572,7 +589,7 @@ def upsert_model_draft(
 
 def entity_name(table: str) -> str:
     """A singular entity name for a relation: ``fct_order_lines`` -> ``order_line``."""
-    name = table.lower()
+    name = slug(table, fallback="entity")
     for prefix in _TABLE_PREFIXES:
         if name.startswith(prefix):
             name = name[len(prefix) :]
@@ -653,8 +670,8 @@ def _suggest_key(
     for index, first in enumerate(id_like):
         for second in id_like[index + 1 :]:
             checked, present_first, present_second, pairs = warehouse.execute(
-                f"SELECT count(*), count({_quote(first)}), count({_quote(second)}), "
-                f"count(DISTINCT ({_quote(first)}, {_quote(second)})) FROM {probe}"
+                f"SELECT count(*), count({quote_identifier(first)}), count({quote_identifier(second)}), "
+                f"count(DISTINCT ({quote_identifier(first)}, {quote_identifier(second)})) FROM {probe}"
             ).fetchone()
             if checked and checked == present_first == present_second == pairs:
                 return {
@@ -703,10 +720,12 @@ def _key_catalog(warehouse: DuckDBWarehouse) -> dict[str, list[dict[str, Any]]]:
         "AND schema_name <> '_semantic_rails' ORDER BY schema_name, table_name"
     ):
         schema, table, column = str(row["schema_name"]), str(row["table_name"]), row["column_name"]
+        if _dotted(schema, table):
+            continue
         catalog.setdefault(str(column).lower(), []).append(
             {
                 "relation": _relation_name(schema, table),
-                "source": f"{_quote(schema)}.{_quote(table)}",
+                "source": quote_relation(f"{schema}.{table}"),
                 "column": str(column),
                 "type": str(row["data_type"]),
                 "declared_key": keys.get((schema, table)) == [str(column)],
@@ -723,15 +742,8 @@ def _foreign_keys(
     source: str,
     profile: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    links: list[dict[str, Any]] = [
-        {
-            ("column" if len(fk["columns"]) == 1 else "columns"): (
-                fk["columns"][0] if len(fk["columns"]) == 1 else list(fk["columns"])
-            ),
-            "references": fk["references"],
-            "confidence": "high",
-            "reason": "declared FOREIGN KEY",
-        }
+    links = [
+        fk_link(fk["columns"], fk["references"], "high", "declared FOREIGN KEY")
         for fk in described["foreign_keys"]
     ]
     declared = {column for fk in described["foreign_keys"] for column in fk["columns"]}
@@ -779,7 +791,7 @@ def _foreign_keys(
         incomplete = False
         for target in targets[:MAX_FK_TARGETS_PER_COLUMN]:
             try:
-                quoted = _quote(target["column"])
+                quoted = quote_identifier(target["column"])
                 (target_rows,) = warehouse.execute(
                     f"SELECT count(*) FROM (SELECT 1 FROM {target['source']} "
                     f"LIMIT {MAX_PROFILE_ROWS + 1})"
@@ -808,9 +820,9 @@ def _foreign_keys(
                 if not target_large:
                     (orphans,) = warehouse.execute(
                         f"SELECT count(*) FROM {child_probe} AS child "
-                        f"WHERE child.{_quote(column)} IS NOT NULL "
+                        f"WHERE child.{quote_identifier(column)} IS NOT NULL "
                         f"AND NOT EXISTS (SELECT 1 FROM {target['source']} AS parent "
-                        f"WHERE parent.{quoted} = child.{_quote(column)})"
+                        f"WHERE parent.{quoted} = child.{quote_identifier(column)})"
                     ).fetchone()
             except SemanticLayerError as exc:
                 if exc.code != "UNSUPPORTED_PLATFORM":
@@ -856,19 +868,14 @@ def _foreign_keys(
                 evidence += "; full-relation referential integrity must be confirmed"
             proposed.append(
                 (
-                    {
-                        "column": column,
-                        "references": {
-                            "relation": target["relation"],
-                            "columns": [target["column"]],
-                        },
-                        "confidence": confidence,
-                        "reason": (
-                            f"{target['relation']}.{target['column']} is "
-                            + ("its declared key" if target["declared_key"] else "unique there")
-                            + evidence
-                        ),
-                    },
+                    fk_link(
+                        [column],
+                        {"relation": target["relation"], "columns": [target["column"]]},
+                        confidence,
+                        f"{target['relation']}.{target['column']} is "
+                        + ("its declared key" if target["declared_key"] else "unique there")
+                        + evidence,
+                    ),
                     orphans,
                 )
             )
@@ -901,7 +908,7 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
-    source = f"{_quote(schema)}.{_quote(name)}"
+    source = quote_relation(f"{schema}.{name}")
     profile = profile_columns(warehouse, relation, sample_limit=0)
     entity = entity_name(name)
     key = _suggest_key(warehouse, described, profile, entity, source)
@@ -909,111 +916,29 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     links, foreign_key_diagnostics = _foreign_keys(
         warehouse, described, key_columns, source, profile
     )
-    linked = {column for link in links for column in (link.get("columns") or [link["column"]])}
-    rows = profile["row_count"]
-    by_name = {column["name"]: column for column in profile["columns"]}
-
-    times: list[dict[str, Any]] = []
-    dimensions: list[dict[str, Any]] = []
-    measures: list[dict[str, Any]] = (
-        [
-            {
-                "key": f"{entity}_count",
-                "kind": "entity_count",
-                "aggregation": "count_distinct",
-                "confidence": "high",
-                "reason": f"counts {entity} rows by their key",
-            }
-        ]
-        if len(key_columns) == 1
-        else []
+    roles, unmodeled = draft_roles(
+        entity, key_columns, links, profile["columns"], rows=profile["row_count"]
     )
-    unsupported_columns: list[dict[str, str]] = []
-    for column in described["columns"]:
-        column_name = str(column["name"])
-        stats = by_name[column_name]
-        if _is_container_type(str(column["type"])):
-            unsupported_columns.append(
-                {
-                    "column": column_name,
-                    "type": str(column["type"]),
-                    "reason": "container type requires an explicit extraction expression",
-                }
-            )
-            continue
-        if column_name in key_columns or column_name in linked:
-            continue
-        role = classify_column(column_name, str(column["type"]))
-        if role == "time":
-            late = _has_word(column_name, ("updated", "modified", "deleted", "loaded", "synced"))
-            times.append(
-                {
-                    "column": column_name,
-                    "kind": "date" if _base_type(str(column["type"])) == "DATE" else "timestamp",
-                    "confidence": "low"
-                    if late
-                    else "high"
-                    if stats["null_count"] == 0
-                    else "medium",
-                    "reason": (
-                        "bookkeeping timestamp; rarely the time to analyze by"
-                        if late
-                        else f"{str(column['type']).lower()} column"
-                        + ("" if stats["null_count"] == 0 else f" ({stats['null_count']} nulls)")
-                    ),
-                }
-            )
-        elif role == "measure":
-            aggregation, confidence, reason = measure_aggregation(column_name)
-            measures.append(
-                {
-                    "key": column_name,
-                    "kind": "aggregate",
-                    "aggregation": aggregation,
-                    "confidence": confidence,
-                    "reason": reason,
-                }
-            )
-        elif role == "dimension":
-            distinct = stats["distinct_count"]
-            if "BOOL" in str(column["type"]).upper() or distinct <= 50:
-                confidence, reason = "high", f"{distinct} distinct values"
-            elif rows and distinct <= max(1000, rows // 10):
-                confidence, reason = "medium", f"{distinct} distinct values"
-            else:
-                confidence, reason = "low", f"{distinct} distinct values; likely free text"
-            dimensions.append({"column": column_name, "confidence": confidence, "reason": reason})
-    times.sort(key=lambda item: {"high": 0, "medium": 1, "low": 2}[item["confidence"]])
-    draft = upsert_model_draft(
-        entity=entity,
-        relation=_package_relation_name(schema, name),
-        key_columns=key_columns,
-        times=times,
-        dimensions=dimensions,
-        measures=measures,
-    )
+    unsupported_columns = [
+        {
+            "column": column["name"],
+            "type": column["type"],
+            "reason": "container type requires an explicit extraction expression",
+        }
+        for column in unmodeled
+        if _is_container_type(str(column["type"]))
+    ]
     return {
         "relation": described["relation"],
         "entity": entity,
-        "row_count": rows,
+        "row_count": profile["row_count"],
         "sampled": profile["sampled"],
         "primary_key": key,
-        "times": times,
-        "dimensions": dimensions,
-        "measures": measures,
+        **roles,
         "foreign_keys": links,
         **({"foreign_key_diagnostics": foreign_key_diagnostics} if foreign_key_diagnostics else {}),
         **({"unsupported_columns": unsupported_columns} if unsupported_columns else {}),
-        "upsert_model": draft,
-        **(
-            {
-                "warnings": [
-                    "A dot inside this physical schema or table name can be inspected and drafted, "
-                    "but the current package runtime cannot execute that draft. Create a "
-                    "warehouse view with an undotted schema and table name and model the view instead."
-                ]
-            }
-            if "." in schema or "." in name
-            else {}
+        "upsert_model": upsert_model_draft(
+            entity=entity, relation=described["relation"], key_columns=key_columns, **roles
         ),
     }
