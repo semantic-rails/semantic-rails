@@ -379,14 +379,14 @@ def _table_source(
     if not tables:
         print(f"{path} has no tables yet. Enter the table by hand.")
         return None
-    runtime = _runtime_from_ref(ref)
-    try:
-        with contextlib.suppress(Exception):  # only a hint; the tables listed are real
-            runtime._get_adapter()  # notes `validate runtime`'s STALE_SEED_DATABASE rebuild hint
+    with contextlib.suppress(Exception):  # only a hint; the tables listed are real
+        runtime = _runtime_from_ref(ref)
+        try:  # notes `validate runtime`'s STALE_SEED_DATABASE rebuild hint
+            runtime._get_adapter()
+        finally:
+            runtime.close()
         for warning in runtime._seed_warnings:
             print(f"[warning] {warning['message']}")
-    finally:
-        runtime.close()
     return path, tables
 
 
