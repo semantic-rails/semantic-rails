@@ -46,8 +46,11 @@ class _NoAliasDumper(yaml.SafeDumper):
 
 
 def dump_project_yaml(document) -> str:
-    """Render a project document without YAML anchors or aliases."""
-    return yaml.dump(document, Dumper=_NoAliasDumper, sort_keys=False, allow_unicode=False)
+    """Render a project document without YAML anchors or aliases, unless it contains itself."""
+    try:
+        return yaml.dump(document, Dumper=_NoAliasDumper, sort_keys=False, allow_unicode=False)
+    except RecursionError:  # a self-referencing document can only be written with aliases
+        return yaml.safe_dump(document, sort_keys=False, allow_unicode=False)
 
 
 _META = {"owner_team": "analytics", "review_priority": "medium", "change_risk": "low"}
