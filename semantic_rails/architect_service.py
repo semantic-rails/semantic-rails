@@ -28,6 +28,7 @@ from .architect_scaffold import (
     FirstModel,
     ProjectSpec,
     ProjectWarehouse,
+    dump_project_yaml,
     normalized_package_id,
     project_scaffold_files,
     project_setup_questions,
@@ -1722,7 +1723,7 @@ class ArchitectProject:
         return [
             ProjectFileUpdate(
                 self._relative(path),
-                yaml.safe_dump(doc, sort_keys=False, allow_unicode=False).encode("utf-8"),
+                dump_project_yaml(doc).encode("utf-8"),
                 (path.stat().st_mode & 0o777) if path.exists() else None,
             )
             for path, doc in documents.items()

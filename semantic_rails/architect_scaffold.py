@@ -38,6 +38,18 @@ _GITIGNORE = """\
 .compiled/
 .architect/
 """
+
+
+class _NoAliasDumper(yaml.SafeDumper):
+    def ignore_aliases(self, data):
+        return True
+
+
+def dump_project_yaml(document) -> str:
+    """Render a project document without YAML anchors or aliases."""
+    return yaml.dump(document, Dumper=_NoAliasDumper, sort_keys=False, allow_unicode=False)
+
+
 _META = {"owner_team": "analytics", "review_priority": "medium", "change_risk": "low"}
 
 
@@ -497,7 +509,7 @@ def project_scaffold_files(spec: ProjectSpec) -> dict[str, bytes]:
     examples, tests = _examples_and_tests(plan)
 
     def dump(document: dict[str, Any]) -> bytes:
-        return yaml.safe_dump(document, sort_keys=False, allow_unicode=False).encode("utf-8")
+        return dump_project_yaml(document).encode("utf-8")
 
     files = {
         "package.yml": dump(_package_document(plan)),

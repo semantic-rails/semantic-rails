@@ -25,8 +25,7 @@ import sys
 from collections.abc import Collection, Sequence
 from typing import Any, Protocol
 
-import yaml
-
+from ..architect_scaffold import dump_project_yaml
 from ..errors import SemanticLayerError
 
 UI_ENV = "SEMANTIC_RAILS_UI"
@@ -143,7 +142,7 @@ class PlainBackend:
             print("Unknown choice(s): " + ", ".join(unknown))
 
     def show_yaml(self, payload: Any) -> None:
-        rendered = yaml.safe_dump(payload, sort_keys=False, allow_unicode=False).rstrip()
+        rendered = dump_project_yaml(payload).rstrip()
         for line in rendered.splitlines():
             print(f"  {line}")
 
@@ -221,7 +220,7 @@ class PickerBackend:
         from rich.padding import Padding
         from rich.syntax import Syntax
 
-        rendered = yaml.safe_dump(payload, sort_keys=False, allow_unicode=False).rstrip()
+        rendered = dump_project_yaml(payload).rstrip()
         self._console.print(
             Padding(Syntax(rendered, "yaml", background_color="default", word_wrap=True), (0, 2))
         )
