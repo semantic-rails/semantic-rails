@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from scripts.agent_harness import report, run
+from scripts.agent_harness import report, run, terminal
 
 SERVER = '''
 from typing import Any
@@ -137,3 +137,53 @@ def test_run_records_tokens_friction_and_the_check(
         table.index("| add | 177 |") < table.index("| ghost | 70 |") < table.index("| fail | 37 |")
     )
     assert "Never called in any run: unused" in table
+
+
+PROGRAM = """
+import os, sys
+print("\\x1b[1mready\\x1b[0m", os.environ.get("JAILED", "-"), flush=True)
+while (line := input()) != "quit":
+    print("you said", line, flush=True)
+sys.exit(3)
+"""
+
+
+def test_terminal_tools_drive_a_program_in_a_pty(tmp_path, monkeypatch):
+    (tmp_path / "program.py").write_text(PROGRAM, encoding="utf-8")
+    scenario = {
+        "task": "Say hello.",
+        "terminal": {"echo": f"{sys.executable} {tmp_path / 'program.py'}"},
+    }
+    (tmp_path / "scenario.yml").write_text(json.dumps(scenario), encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(terminal, "QUIET", 0.3)
+    early, unknown = call("term_type", {"text": "early"}), call("term_start", {"program": "sh"})
+    start, hello = call("term_start", {"program": "echo"}), call("term_type", {"text": "hello"})
+    model, requests = serve(
+        [[early, unknown, start], [hello, call("term_type", {"text": "quit"})], "Done."], "full"
+    )
+    out = tmp_path / "run"
+    try:
+        argv = [str(tmp_path / "scenario.yml"), "--out", str(out), "--model", "m"]
+        run.main(
+            [
+                *argv,
+                "--base-url",
+                f"http://127.0.0.1:{model.server_port}/v1",
+                "--jail",
+                "env JAILED=yes",
+            ]
+        )
+    finally:
+        model.shutdown()
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["stop"] == "final" and summary["unused_tools"] == ["term_key", "term_read"]
+    offered = {tool["function"]["name"] for tool in requests[0]["tools"]}
+    assert offered == {"term_start", "term_type", "term_key", "term_read"}
+    shown = [m["content"] for m in requests[2]["messages"] if m["role"] == "tool"]
+    assert shown[0].startswith("error: no program is running") and "unknown program" in shown[1]
+    assert shown[2].strip() == "ready yes"  # escapes removed; the jail prefix ran the program
+    assert "you said hello" in shown[3] and "[the program exited with code 3]" in shown[4]
+    friction = summary["friction"]
+    assert friction["term_type"]["errors"] == 1 and friction["term_start"]["errors"] == 1

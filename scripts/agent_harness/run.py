@@ -32,6 +32,11 @@ import yaml
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+try:  # imported as scripts.agent_harness.run (tests), or run as a script from any folder
+    from scripts.agent_harness.terminal import Terminal
+except ImportError:
+    from terminal import Terminal  # type: ignore[no-redef]
+
 REPO = Path(__file__).resolve().parents[2]
 SYSTEM = (
     "You work for the user through the tools provided. Complete the request with the tools; "
@@ -39,7 +44,8 @@ SYSTEM = (
     "tool call."
 )
 TOKENS = ("prompt_tokens", "completion_tokens", "reasoning_tokens")
-Route = tuple[str, ClientSession, dict[str, Any]]  # MCP tool name, its session, its input schema
+# The tool's own name, the MCP session or terminal that runs it, and its input schema
+Route = tuple[str, ClientSession | Terminal, dict[str, Any]]
 
 
 def load_scenario(path: Path, servers: list[str]) -> dict[str, Any]:
@@ -55,6 +61,9 @@ def load_scenario(path: Path, servers: list[str]) -> dict[str, Any]:
     scenario["servers"] = {name: fill(command) for name, command in merged.items()}
     for key in ("setup", "check"):
         scenario[key] = fill(scenario.get(key) or "")
+    scenario["terminal"] = {
+        name: fill(cmd) for name, cmd in (scenario.get("terminal") or {}).items()
+    }
     scenario.setdefault("name", path.stem)
     return scenario
 
@@ -108,6 +117,8 @@ async def dispatch(routes: dict[str, Route], name: str, raw: Any, deadline: floa
         error = f"error: unknown tool {name!r}; the tools are {', '.join(routes)}"
         return args, error, f"unknown tool {name!r}", []
     tool, session, schema = routes[name]
+    if isinstance(session, Terminal):
+        return args, *await asyncio.to_thread(session.call, tool, args), arg_problems(schema, args)
     timeout = timedelta(seconds=max(1.0, deadline - time.monotonic()))
     try:
         result = await session.call_tool(tool, args, read_timeout_seconds=timeout)
@@ -116,11 +127,13 @@ async def dispatch(routes: dict[str, Route], name: str, raw: Any, deadline: floa
     return args, *result_text(result), arg_problems(schema, args)
 
 
-async def connect(stack: AsyncExitStack, servers: dict[str, str], cwd: Path, errlog: TextIO):
+async def connect(
+    stack: AsyncExitStack, scenario: dict, cwd: Path, errlog: TextIO, jail: list[str]
+):
     routes: dict[str, Route] = {}
     tools: list[dict[str, Any]] = []
-    for server, command in servers.items():
-        argv = shlex.split(command)
+    for server, command in scenario["servers"].items():
+        argv = [*jail, *shlex.split(command)]
         params = StdioServerParameters(command=argv[0], args=argv[1:], cwd=str(cwd))
         read, write = await stack.enter_async_context(stdio_client(params, errlog=errlog))
         session = await stack.enter_async_context(ClientSession(read, write))
@@ -131,6 +144,13 @@ async def connect(stack: AsyncExitStack, servers: dict[str, str], cwd: Path, err
             routes[name] = (tool.name, session, schema)
             spec = {"name": name, "description": tool.description or "", "parameters": schema}
             tools.append({"type": "function", "function": spec})
+    if scenario["terminal"]:
+        terminal = Terminal(scenario["terminal"], cwd, jail)
+        stack.callback(terminal.close)
+        for spec in terminal.tools():
+            function = spec["function"]
+            routes[function["name"]] = (function["name"], terminal, function["parameters"])
+            tools.append(spec)
     return routes, tools
 
 
@@ -259,7 +279,7 @@ async def run(opts: argparse.Namespace, scenario: dict[str, Any], cwd: Path) -> 
         (opts.out / "servers.log").open("w", encoding="utf-8") as errlog,
     ):
         async with AsyncExitStack() as stack:
-            routes, tools = await connect(stack, scenario["servers"], cwd, errlog)
+            routes, tools = await connect(stack, scenario, cwd, errlog, shlex.split(opts.jail))
             agent = Agent(opts, scenario["task"], routes, events)
             schema_chars = len(json.dumps(tools))
             agent.log(event="tools", tools=list(routes), schema_chars=schema_chars)
@@ -288,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--turn-tokens", type=int, default=8192, help="max_tokens per request")
     parser.add_argument("--timeout", type=float, default=1800, help="seconds for the agent loop")
     parser.add_argument("--result-chars", type=int, default=2000, help="0 keeps results whole")
+    parser.add_argument("--jail", default="", help="command prefix for servers and programs")
     opts = parser.parse_args(argv)
     if any("=" not in server for server in opts.server):
         parser.error("--server takes NAME=COMMAND")
