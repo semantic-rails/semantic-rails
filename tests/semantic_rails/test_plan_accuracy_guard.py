@@ -618,7 +618,8 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
         ("revenue for Brooklyn", ">", "Brooklyn", False),
         ("revenue excluding Brooklyn", "!=", "Brooklyn", True),
         ("revenue excluding Brooklyn", "NOT IN", "Brooklyn", True),
-        ("revenue excluding Brooklyn", "NOT IN", ["Brooklyn", "Philadelphia"], True),
+        # Dropping Philadelphia too changes the total and removes its row.
+        ("revenue excluding Brooklyn", "NOT IN", ["Brooklyn", "Philadelphia"], False),
         ("revenue excluding Brooklyn", "NOT IN", [], False),
         ("revenue excluding Brooklyn", "NOT IN", [["Brooklyn"]], False),
         ("revenue excluding Brooklyn", "!=", ["Brooklyn", "Philadelphia"], False),
@@ -630,7 +631,6 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
 )
 @pytest.mark.parametrize("group_by", [[STORE], []])
 def test_named_value_coverage_respects_operator_and_value_shape(
-    request: pytest.FixtureRequest,
     adapter: SemanticLayerMCPAdapter,
     text: str,
     op: str,
@@ -638,16 +638,9 @@ def test_named_value_coverage_respects_operator_and_value_shape(
     honored: bool,
     group_by: list[str],
 ) -> None:
-    if not group_by and op in {"IN", "NOT IN"} and value == ["Brooklyn", "Philadelphia"]:
+    if not group_by and op == "IN" and value == ["Brooklyn", "Philadelphia"]:
         # Without a per-store row, the extra store changes the single total.
         honored = False
-        request.applymarker(
-            pytest.mark.xfail(
-                strict=True,
-                reason="accuracy guard does not yet flag over-inclusive IN / over-exclusive "
-                "NOT IN without grouping (semantic-rails/semantic-rails#85)",
-            )
-        )
     draft = _query(group_by=group_by, where=[{"field": STORE, "op": op, "value": value}])
     kinds = _gap_kinds(adapter, text, draft)
     if honored:
@@ -675,6 +668,14 @@ def test_named_value_coverage_respects_operator_and_value_shape(
             False,
         ),
         ([{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}], False),
+        # Dropping New Orleans changes nothing once only Philadelphia is kept.
+        (
+            [
+                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]},
+                {"field": STORE, "op": "=", "value": "Philadelphia"},
+            ],
+            True,
+        ),
         (
             [
                 {"field": STORE, "op": "=", "value": ["Philadelphia"]},
@@ -1164,6 +1165,22 @@ BROOKLYN_REVENUE = {
             "revenue excluding Brooklyn",
             _query(where=[{"field": STORE, "op": "NOT IN", "value": "Brooklyn"}]),
             "ok",
+        ),
+        # One total may keep, or drop, only the values the question names.
+        (
+            "revenue for Brooklyn and Philadelphia",
+            _query(where=[{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}]),
+            "ok",
+        ),
+        (
+            "revenue for Brooklyn",
+            _query(where=[{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}]),
+            "low_confidence",
+        ),
+        (
+            "revenue excluding Brooklyn",
+            _query(where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}]),
+            "low_confidence",
         ),
         (
             "top 5 stores by revenue",

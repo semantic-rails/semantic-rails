@@ -920,10 +920,11 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     A value is honored by a filter with the requested polarity, by
     grouping on its dimension when no filter drops it, or by a chosen object
     whose name carries the question's word for it ("new customer orders"
-    answered by a new-customer measure). Longer values mask the words inside
-    them ("New Orleans" is not "new"). Numbers, and everyday words not tied
-    to their dimension in the question, are left to the unmatched-terms
-    warning.
+    answered by a new-customer measure). A filter that also keeps an unnamed
+    value in an ungrouped total, or drops an unnamed value, is not. Longer
+    values mask the words inside them ("New Orleans" is not "new"). Numbers,
+    and everyday words not tied to their dimension in the question, are left
+    to the unmatched-terms warning.
     """
 
     config = runtime._config
@@ -933,6 +934,13 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     if not matches:
         return []
     predicates = _field_predicates(query)
+    # Every value the question names, in either polarity, by dimension. An
+    # ungrouped total keeps only these, and an exclusion drops only these.
+    named: dict[str, list[Any]] = {}
+    for _span, phrase in matches:
+        for domain, value in phrases[phrase]:
+            for dimension in domain.dimensions:
+                named.setdefault(str(dimension), []).append(value.value)
     # Keep punctuation and explicit inclusion transitions when assigning
     # polarity. _plain removes both, so its offsets cannot define a clause.
     source_words = list(re.finditer(r"[^\W_]+", text.lower()))
@@ -958,7 +966,8 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
         if phrase in _EVERYDAY_WORDS and not _tied_to_dimension(config, plain, span, rows):
             continue
         if any(
-            _value_honored(domain, value, predicates, grouped, negative) for domain, value in rows
+            _value_honored(domain, value, predicates, grouped, negative, named)
+            for domain, value in rows
         ):
             continue
         # The dedicated negation check already reports a missing negative
@@ -1128,31 +1137,55 @@ class _FieldConstraints:
     dropping: list[list[Any]] = field(default_factory=list)
     uncertain: bool = False
 
-    def surviving_literals(self) -> list[Any] | None:
-        """Values admitted by every known top-level predicate, if bounded."""
+    def kept_literals(self) -> list[Any] | None:
+        """Values admitted by every keeping predicate, if bounded."""
 
         if not self.keeping:
             return None
         candidates = list(self.keeping[0])
         for choices in self.keeping[1:]:
             candidates = [item for item in candidates if _contains_literal(choices, item)]
+        return candidates
+
+    def surviving_literals(self) -> list[Any] | None:
+        """Values admitted by every known top-level predicate, if bounded."""
+
+        kept = self.kept_literals()
+        if kept is None:
+            return None
         return [
             item
-            for item in candidates
+            for item in kept
             if not any(_contains_literal(choices, item) for choices in self.dropping)
         ]
 
-    def keeps(self, canonical: Any, *, grouped: bool) -> bool:
+    def keeps(self, canonical: Any, *, grouped: bool, named: list[Any] | None = None) -> bool:
+        """The value survives. Given the question's ``named`` values, an ungrouped
+        draft is one total, so it must keep no other value."""
+
         if self.uncertain:
             return False
         survivors = self.surviving_literals()
-        if survivors is not None:
-            return _contains_literal(survivors, canonical)
-        return grouped and not self.drops(canonical)
+        if survivors is None:
+            return grouped and not self.drops(canonical)
+        return _contains_literal(survivors, canonical) and (
+            named is None or grouped or all(_contains_literal(named, item) for item in survivors)
+        )
 
-    def drops(self, canonical: Any) -> bool:
-        return not self.uncertain and any(
+    def drops(self, canonical: Any, *, named: list[Any] | None = None) -> bool:
+        """The value is dropped. Given the question's ``named`` values, no other
+        value that would otherwise survive is dropped too."""
+
+        if self.uncertain or not any(
             _contains_literal(choices, canonical) for choices in self.dropping
+        ):
+            return False
+        kept = self.kept_literals()
+        return named is None or all(
+            _contains_literal(named, item)
+            or (kept is not None and not _contains_literal(kept, item))
+            for choices in self.dropping
+            for item in choices
         )
 
 
@@ -1212,16 +1245,19 @@ def _value_honored(
     predicates: dict[str, _FieldConstraints],
     grouped: set[str],
     negative: bool,
+    named: dict[str, list[Any]],
 ) -> bool:
-    """A filter has the requested polarity, or grouping keeps a positive value."""
+    """A filter has the requested polarity without keeping or dropping values the
+    question doesn't name, or grouping keeps a positive value."""
 
     canonical = value.value
     for dimension in (str(item) for item in domain.dimensions):
         entry = predicates.get(dimension)
+        names = named.get(dimension, [])
         if entry is not None:
-            if negative and entry.drops(canonical):
+            if negative and entry.drops(canonical, named=names):
                 return True
-            if not negative and entry.keeps(canonical, grouped=dimension in grouped):
+            if not negative and entry.keeps(canonical, grouped=dimension in grouped, named=names):
                 return True
         elif not negative and dimension in grouped:
             return True

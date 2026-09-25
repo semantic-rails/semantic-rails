@@ -208,7 +208,11 @@ A draft that validates can still leave out part of the question. `plan` returns
   lists and pattern filters cannot. The guard intersects top-level filters on the same
   field, accounts for exclusions, and compares draft literals to stored values exactly;
   catalog labels and aliases only identify values named in the question. Nested filter
-  scopes do not prove an outer filter's result. Grouping does not cure an uncertain filter;
+  scopes do not prove an outer filter's result. Grouping does not cure an uncertain filter.
+  Without grouping by the field, the draft returns one total, so its filter must keep only
+  values the question names: "revenue for Brooklyn" filtered to Brooklyn and Philadelphia
+  is a gap, while "revenue for Brooklyn and Philadelphia" is not. An exclusion must drop
+  only values the question names, with or without grouping;
 - combines top-level filters on one field so no value can survive, which returns no rows
   (`contradictory_filters`);
 - misses a negation, a prior-period comparison or one of several named subjects.
