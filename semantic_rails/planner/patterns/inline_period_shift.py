@@ -21,7 +21,9 @@ from .._base import (
     _target_measure_terms,
     _threshold_from_text,
     _time_spec,
+    _tokens,
 )
+from ..generators import _target_focus_text
 from ._protocol import IntentPattern
 
 
@@ -57,7 +59,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     threshold = _threshold_from_text(text)
     if threshold is not None and not _is_implicit_active_threshold(threshold, target_terms):
         return None
-    measure = _preferred_measure(runtime._config, target_terms)
+    measure = _preferred_measure(runtime._config, target_terms, _tokens(_target_focus_text(text)))
     if measure is None or not measure.default_temporal_role:
         return None
 

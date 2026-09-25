@@ -24,12 +24,16 @@ from ._base import (
     _ORDINALS,
     _TERM_SYNONYMS,
     _TIME_UNITS,
+    _canonical_measure,
+    _canonical_metric,
     _named_metric,
     _object_text,
+    _tied_top,
     _time_bounds_from_text,
     _time_window,
     _tokens,
 )
+from .generators import _target_focus_text
 from .intent_ir import IntentIR
 
 
@@ -493,6 +497,10 @@ def intent_faithfulness_why(
     else:
         gaps.extend(_filter_value_gaps(runtime, text, query))
 
+    return _coverage_why(gaps)
+
+
+def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     if not gaps:
         return None
     return {
@@ -507,6 +515,44 @@ def intent_faithfulness_why(
         },
         "recovery_hints": _unique_hints(gaps),
     }
+
+
+def intent_subject_why(
+    runtime: Any, *, question: str, intent_ir: IntentIR, query: dict[str, Any]
+) -> dict[str, Any] | None:
+    """A coverage gap when the ranking tied the draft's one subject with others
+    and the question names none of them (see ``_base._tied_top``).
+
+    ``plan`` reports it after every other reason, which says more.
+    """
+
+    config, text = runtime._config, str(question or "")
+    subjects = _projected_subject_ids(query)
+    measure = bool(subjects) and subjects[0].startswith("measure.")
+    terms = set(intent_ir.target_measure_terms)
+    canonical = _canonical_measure if measure else _canonical_metric
+    if len(subjects) != 1 or canonical(config, terms) or _named_metric(config, text):
+        return None
+    tied, named = _tied_top(
+        config.measures if measure else config.metric_recipes,
+        terms,
+        set(_tokens(_target_focus_text(text))) or terms,
+    )
+    if len(tied) < 2 or subjects[0] not in {row.id for row in tied} or named is not None:
+        return None
+    candidates = " or ".join(f"{row.label} ({row.id})" for row in tied[:5])
+    gap = CoverageGap(
+        kind="subject_ambiguous",
+        clause=_target_focus_text(text),
+        message="The question fits these equally well, and the draft picked one of them.",
+        expected={"candidates": [row.id for row in tied]},
+        actual={"subjects": subjects},
+        recovery_hint={
+            "kind": "name_one_subject",
+            "message": f"Ask again naming the one you mean: {candidates}.",
+        },
+    )
+    return _coverage_why([gap])
 
 
 def _time_block(query: dict[str, Any]) -> dict[str, Any]:
