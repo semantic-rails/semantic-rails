@@ -787,7 +787,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "maximum": MCP_MAX_ROWS_LIMIT,
                     "description": (
                         "Optional row cap; omitted v1 calls keep the caller's query limit. "
-                        "A larger result sets truncated=true and total_row_count."
+                        "A larger result sets truncated=true and total_row_count "
+                        f"(null past {MCP_ROW_COUNT_CEILING:,} rows)."
                     ),
                 },
             },
@@ -1031,7 +1032,7 @@ V2_TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "default": MCP_DEFAULT_MAX_ROWS,
                     "description": (
                         "Rows to return in mode 'run'. A larger result sets truncated=true "
-                        "and total_row_count."
+                        f"and total_row_count (null past {MCP_ROW_COUNT_CEILING:,} rows)."
                     ),
                 },
             },

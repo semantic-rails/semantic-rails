@@ -1455,6 +1455,9 @@ def named_metrics(tmp_path: Path) -> Iterator[SemanticLayerMCPAdapter]:
             None,
         ),
         ("cumulative revenue by month", "metric.sales.cumulative_revenue", "ok", None),
+        # A measure with the metric's own name still means the metric, not plain revenue.
+        ("rolling 28-day revenue by day", "metric.sales.rolling_28d_revenue", "ok", None),
+        ("Revenue QTD by day", "metric.sales.revenue_qtd", "ok", None),
         # A draft without the named metric, or a second subject, isn't ready.
         (
             "large order revenue vs prior month by month",
@@ -1471,6 +1474,19 @@ def named_metrics(tmp_path: Path) -> Iterator[SemanticLayerMCPAdapter]:
         (
             "revenue and orders by month",
             "measure.jaffle.revenue_usd",
+            "low_confidence",
+            "multiple_subjects_unrealized",
+        ),
+        # "Count" and question words are filler on both sides of the match.
+        (
+            "What is order count and revenue by month?",
+            None,
+            "low_confidence",
+            "multiple_subjects_unrealized",
+        ),
+        (
+            "how many orders and revenue by month",
+            None,
             "low_confidence",
             "multiple_subjects_unrealized",
         ),
@@ -1527,6 +1543,24 @@ def test_a_metric_is_named_only_around_every_measure_named(
 ) -> None:
     found = _named_metric(named_metrics.runtime._config, text)
     assert (found[0].id if found else None) == named
+
+
+@pytest.mark.parametrize(
+    ("intent", "limit"),
+    [
+        # A number in a time phrase sizes the window; it doesn't make a top N.
+        ("What is revenue in the last 3 months by store?", None),
+        ("What was revenue from January 1 2017 to March 31 2017 by store?", None),
+        ("What was revenue in 2017 by store?", None),
+        ("which 3 stores have the highest revenue in the last 6 months", 3),
+    ],
+)
+def test_a_number_in_a_time_phrase_is_not_a_ranking(
+    adapter: SemanticLayerMCPAdapter, intent: str, limit: int | None
+) -> None:
+    plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
+    assert plan["status"] == "ok"
+    assert plan["best"]["query_ir"].get("limit") == limit
 
 
 Q1_2017 = {"start": "2017-01-01", "end": "2017-04-01"}

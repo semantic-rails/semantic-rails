@@ -22,6 +22,7 @@ from datetime import date
 
 import pytest
 
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import (
     _time_bounds_from_text,
@@ -195,8 +196,32 @@ def test_plan_unresolved_window_downgrades_instead_of_silently_dropping(
     # The hints must teach the supported window forms.
     assert "last N days" in hint_text
     assert "time.start" in hint_text or "start" in hint_text
-    # The unbounded draft must NOT be flagged ready to execute.
+    # There is no unbounded draft to execute at all.
     assert "ready_for" not in payload["next"]
+    assert "query_ir" not in payload["best"] and "validate" not in payload["next"]
+
+
+@pytest.mark.parametrize(("interface", "detail"), [("v1", "best"), ("v1", "full"), ("v2", None)])
+def test_mcp_plan_offers_no_runnable_draft_without_the_window(
+    runtime_factory, interface: str, detail: str | None
+) -> None:
+    intent = "Revenue by store and month for January, February and March 2017"
+    window = {"start": "2017-01-01", "end": "2017-04-01"}
+    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"), interface=interface)
+    try:
+        plan = mcp.call_tool("plan", {"intent": intent, **({"detail": detail} if detail else {})})
+        bounded = mcp.call_tool("plan", {"intent": intent, "query": {"time": window}})
+    finally:
+        mcp.close()
+    assert (plan["status"], plan["why"]["code"]) == ("low_confidence", "TIME_WINDOW_UNRESOLVED")
+    assert all("query_ir" not in row for row in [plan["best"], *plan.get("alternatives", [])])
+    # The recovery hint's way out: pass the window, and plan fills in the rest.
+    assert bounded["status"] == "ok"
+    assert bounded["best"]["query_ir"]["time"] == {
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "grain": "month",
+        **window,
+    }
 
 
 def test_plan_since_year_downgrades(runtime_factory) -> None:

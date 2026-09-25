@@ -206,7 +206,8 @@ def test_top_n_group_by_phrase_uses_after_by_as_measure_target() -> None:
     assert result.pattern == "metric_by_dimension_rollup"
     assert result.draft is not None
     query = result.draft.query
-    assert query["select"][0]["expression"]["measure"] == "measure.claim_paid_amount"
+    # The metric of the same name is the governed reading of "claim paid amount".
+    assert query["select"][0]["expression"] == {"metric": "metric.claim_paid_amount"}
     assert query["group_by"] == ["dimension.claim_primary_diagnosis_code"]
     assert query["order_by"] == [{"field": "claim_paid_amount", "direction": "DESC"}]
     assert query["limit"] == 5

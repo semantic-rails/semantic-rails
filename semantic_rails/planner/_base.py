@@ -318,9 +318,10 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
 
     The name has two words or more, and every measure the question names lies
     inside it, so the metric is the more specific reading: "completed revenue
-    by month" means the Completed Revenue metric, not the Revenue measure. A
-    measure with the same name, or named elsewhere ("revenue and orders"),
-    leaves the question to measure-first resolution. The id stands in for the
+    by month" means the Completed Revenue metric, not the Revenue measure. So
+    does a measure with the same name ("rolling 28-day revenue" is both). A
+    measure named elsewhere ("revenue and orders") leaves the question to
+    measure-first resolution. The id stands in for the
     name so its words ("revenue, trailing 7 days") aren't read again as a
     window, a count or a value.
     """
@@ -342,7 +343,7 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
         default=(0, 0, None),
     )
     if metric is None or any(
-        not (start <= begin and begin + length <= start + size and length < size)
+        not (start <= begin and begin + length <= start + size)
         for length, begin, _row in named(config.measures)
     ):
         return None
@@ -1599,7 +1600,8 @@ def _top_n_intent(text: str) -> tuple[bool, int]:
 
     Matches both literal "top N" and the looser "which N <noun> …
     highest/most/best/largest/by" phrasing surfaced by blind-agent
-    feedback ("which 3 stores have the highest revenue").
+    feedback ("which 3 stores have the highest revenue"). A number in a
+    time phrase ("in the last 3 months by store", "in 2017") is not a rank.
     """
 
     lowered = str(text or "")
@@ -1612,6 +1614,8 @@ def _top_n_intent(text: str) -> tuple[bool, int]:
             return True, int(raw)
         except ValueError:
             return True, _DEFAULT_TOP_LIMIT
+    for start, end in _time_window(lowered).spans:
+        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     rank_match = _RANK_PATTERN.search(lowered)
     if rank_match:
         try:

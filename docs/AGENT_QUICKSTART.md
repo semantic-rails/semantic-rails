@@ -162,7 +162,8 @@ Statuses are:
 - `ok`: the best draft validated, and no check found part of the question it leaves out.
   `warnings` can still name question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
-  question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP` or `TIME_WINDOW_UNRESOLVED`),
+  question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
+  which returns no `query_ir`: pass the window in `query.time` and plan again),
   or a validating fallback would drift from the requested target, grouping, qualification,
   filters, or time scope.
 - `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
