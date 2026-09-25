@@ -13,6 +13,7 @@ import yaml
 from semantic_rails import cli as cli_module
 from semantic_rails import config as config_module
 from semantic_rails import config_validation as config_validation_module
+from semantic_rails.cli.reports import project_validation_report
 from semantic_rails.config import resolve_repo_path
 from semantic_rails.config_validation import (
     _run_probe,
@@ -1104,6 +1105,64 @@ def test_validate_config_generates_query_time_for_time_required_metrics(tmp_path
         "temporal_role": "temporal_role.demo_order_time",
         "grain": "day",
     }
+
+
+@pytest.mark.parametrize(
+    ("op", "value", "suggestions"),
+    [
+        ("=", "Completed", ["completed"]),
+        ("in", ["Complete", "pending"], ["completed"]),
+        ("!=", "zzz", [None]),
+        ("not in", ["completed"], []),
+    ],
+)
+def test_validation_warns_on_a_filter_value_the_data_lacks(
+    tmp_path: Path, op: str, value: str | list[str], suggestions: list[str | None]
+):
+    package_dir = tmp_path / "status_filter"
+    _write_minimal_package(
+        package_dir,
+        extra_dimensions={
+            "status": {
+                "id": "dimension.demo_order_status",
+                "column": "status",
+                "kind": "categorical",
+            }
+        },
+        extra_metrics={
+            "sales.completed_orders": {
+                "id": "metric.sales.completed_orders",
+                "label": "Completed orders",
+                "kind": "aggregate",
+                "expression": {
+                    "kind": "aggregate",
+                    "measure": "measure.demo.order_count",
+                    "filter": {
+                        "all": [{"field": "dimension.demo_order_status", "op": op, "value": value}]
+                    },
+                },
+            }
+        },
+    )
+    (package_dir / "data" / "seed_example.sql").write_text(
+        "CREATE TABLE order_fact (order_id INTEGER, ordered_at TIMESTAMP, status VARCHAR);\n"
+        "INSERT INTO order_fact VALUES (1, '2024-01-01', 'completed'), (2, '2024-01-02', 'pending');",
+        encoding="utf-8",
+    )
+    ref = resolve_package_reference(path=str(package_dir))
+
+    def suggested(warnings: list) -> list[str | None]:
+        return [
+            w["details"]["suggestion"]
+            for w in warnings
+            if isinstance(w, dict) and w.get("code") == "FILTER_VALUE_NOT_FOUND"
+        ]
+
+    assert suggested(project_validation_report(ref, mode="parse")["warnings"]) == []
+    for mode in ("runtime", "full"):
+        report = project_validation_report(ref, mode=mode)
+        assert report["ok"] is True, report["errors"]
+        assert suggested(report["warnings"]) == suggestions, mode
 
 
 def test_validate_config_continues_after_failures_and_reports_execution_errors(tmp_path: Path):
