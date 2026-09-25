@@ -284,9 +284,12 @@ def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
     assert load_mcp_registry()["servers"] == {}
 
 
-@pytest.mark.parametrize("in_cache", [True, False])
+@pytest.mark.parametrize(
+    ("in_cache", "uv", "via_uv"),
+    [(True, "/opt/uv/bin/uv", True), (False, "/opt/uv/bin/uv", False), (True, None, False)],
+)
 def test_client_config_outlives_a_pruned_uv_cache(
-    tmp_path: Path, monkeypatch, in_cache: bool
+    tmp_path: Path, monkeypatch, in_cache: bool, uv: str | None, via_uv: bool
 ) -> None:
     cache = tmp_path / "uv-cache"
     env = cache / "archive-v0" / "abc123"
@@ -296,7 +299,10 @@ def test_client_config_outlives_a_pruned_uv_cache(
         (cache / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
     monkeypatch.setattr(sys, "prefix", str(env))
     monkeypatch.setattr(sys, "executable", str(env / "bin" / "python"))
-    monkeypatch.setenv("UV", "/opt/uv/bin/uv")
+    if uv:
+        monkeypatch.setenv("UV", uv)
+    else:
+        monkeypatch.delenv("UV", raising=False)
     ref = PackageReference(source_path="", package_id="jaffle_shop")
 
     servers = mcp_client_config_report(ref, client="claude", workspace_root=str(tmp_path))
@@ -305,7 +311,7 @@ def test_client_config_outlives_a_pruned_uv_cache(
 
     commands = [[row["command"], *row["args"]] for row in servers["servers"].values()]
     commands += [row["command"] for row in listed]
-    if in_cache:
+    if via_uv:
         for command in commands:
             assert command[:4] == ["/opt/uv/bin/uv", "tool", "run", "--from"]
             assert command[4].startswith("semantic-rails")

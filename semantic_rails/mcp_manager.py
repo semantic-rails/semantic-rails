@@ -548,13 +548,14 @@ def _launcher(script: str, module: str) -> list[str]:
 
     ``uvx`` runs this interpreter from uv's cache (a directory above the environment
     holds a CACHEDIR.TAG), and ``uv cache prune`` deletes it. A config naming it would
-    stop working, so name uv and a requirement that recreates this install instead.
+    stop working, so name uv (``$UV``, which uv sets for what it runs) and a
+    requirement that recreates this install instead.
     """
 
+    uv = os.environ.get("UV")
     prefix = Path(sys.prefix).resolve()
-    if not any((parent / "CACHEDIR.TAG").is_file() for parent in prefix.parents):
+    if not uv or not any((parent / "CACHEDIR.TAG").is_file() for parent in prefix.parents):
         return [sys.executable, "-m", module]
-    uv = os.environ.get("UV") or shutil.which("uv") or "uv"
     dist = importlib.metadata.distribution("semantic-rails")
     present = {
         _canonical(name)
