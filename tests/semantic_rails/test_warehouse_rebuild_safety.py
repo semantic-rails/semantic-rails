@@ -16,8 +16,10 @@ import yaml
 from semantic_rails import db as db_module
 from semantic_rails import runtime as runtime_module
 from semantic_rails import seed_provenance
+from semantic_rails.cli import scaffold
+from semantic_rails.cli.reports import project_validation_report
 from semantic_rails.config import load_package_config
-from semantic_rails.config_validation import validate_runtime_package
+from semantic_rails.config_validation import PackageReference, validate_runtime_package
 from semantic_rails.db import load_csv_dir_to_duckdb, seed_db
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
@@ -432,3 +434,47 @@ def test_seed_source_needed_only_when_creating_missing_file(tmp_path: Path) -> N
     _ensure_db(package_dir)
     seed.unlink()
     _ensure_db(package_dir)  # a complete existing file needs no seed access
+
+
+def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: Path) -> None:
+    project = Path(
+        scaffold.create_project_report(
+            package_id="shop",
+            workspace_root=str(tmp_path),
+            entity="order",
+            relation="orders",
+            primary_key="order_id",
+            run_checks=False,
+        )["project_path"]
+    )
+    order_count = {
+        "version": 1,
+        "select": [{"expression": {"metric": "metric.shop.order_count"}, "as": "orders"}],
+    }
+
+    def run() -> tuple[int, list[str]]:
+        runtime = Runtime.from_path(str(project))
+        try:
+            result = runtime.query(order_count)
+        finally:
+            runtime.close()
+        return result["rows"][0]["orders"], [warning["code"] for warning in result["warnings"]]
+
+    assert run() == (2, [])
+    seed = project / "data" / "shop_csv" / "orders.csv"
+    header = seed.read_text(encoding="utf-8").splitlines()[0]
+    rows = "".join(f"{i},2026-01-01T09:00:00,starter,1.0\n" for i in range(1, 3001))
+    seed.write_text(f"{header}\n{rows}", encoding="utf-8")
+    db_path = project / "data" / "shop.duckdb"
+    before = file_digest(db_path)
+
+    assert run() == (2, ["STALE_SEED_DATABASE"])
+    report = project_validation_report(PackageReference(source_path=str(project)), mode="runtime")
+    assert report["ok"] and [warning["code"] for warning in report["warnings"]] == [
+        "STALE_SEED_DATABASE"
+    ]
+    assert report["warnings"][0]["message"].endswith(f"rm {db_path}")
+    assert file_digest(db_path) == before  # reported, never replaced
+
+    db_path.unlink()  # the fix the warning names
+    assert run() == (3000, [])

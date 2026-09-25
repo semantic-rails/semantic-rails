@@ -21,6 +21,7 @@ is still re-exported so external callers do not need to change.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib
 import os
 import sqlite3
@@ -72,6 +73,7 @@ __all__ = [
     "create_warehouse_adapter",
     "load_csv_dir_to_duckdb",
     "seed_db",
+    "seed_digest",
 ]
 
 
@@ -263,12 +265,30 @@ def _build_sql_seed(db: Database, seed_sql_path: str) -> None:
         db.execute_script(f.read())
 
 
+def _csv_seed_files(csv_dir: str) -> list[str]:
+    return sorted(name for name in os.listdir(csv_dir) if name.endswith(".csv"))
+
+
+def seed_digest(kind: str, source: str, post_sql: str = "") -> str:
+    """A content hash of the files a seed build reads, to tell when a built database is stale."""
+    paths = [source]
+    if kind == "csv_dir_duckdb":
+        paths = [os.path.join(source, name) for name in _csv_seed_files(source)]
+    digest = hashlib.sha256()
+    # A missing file is left to the build, which reports it with context.
+    for path in (p for p in [*paths, post_sql] if p and os.path.isfile(p)):
+        with open(path, "rb") as f:
+            file_hash = hashlib.file_digest(f, "sha256").digest()
+        digest.update(os.path.basename(path).encode() + b"\0" + file_hash)
+    return digest.hexdigest()
+
+
 def _build_csv_seed(
     db: Database, csv_dir: str, post_sql_path: str, null_strings: Iterable[str] | None
 ) -> None:
     null_values = list(null_strings or [""])
     null_clause = f", NULLSTR={_duckdb_string_list(null_values)}" if null_values else ""
-    for filename in sorted(name for name in os.listdir(csv_dir) if name.endswith(".csv")):
+    for filename in _csv_seed_files(csv_dir):
         table_name = os.path.splitext(filename)[0]
         src = os.path.join(csv_dir, filename).replace("'", "''")
         try:
@@ -310,7 +330,8 @@ def build_seed_database(
 
     ``kind`` is ``sql_script`` (``source`` is a SQL file) or ``csv_dir_duckdb``
     (``source`` is a directory of CSVs, plus optional ``post_sql``). With
-    ``package_id`` the file records that this package's seed built it. The
+    ``package_id`` the file records that this package's seed built it, and a
+    :func:`seed_digest` of the seed files so the runtime can report it stale. The
     runtime callers publish it without replacing an existing target via
     :func:`semantic_rails.seed_provenance.publish_seed_database`; explicit
     seeding helpers retain their operator-invoked replace behavior.
@@ -319,6 +340,8 @@ def build_seed_database(
         raise SemanticLayerError("INVALID_CONFIG", f"Unsupported seed kind '{kind}'")
     if duckdb is None:
         raise RuntimeError("duckdb is not installed. Add it to your environment dependencies.")
+    # Hash before building: a seed edited mid-build then reads as stale, never as current.
+    digest = seed_digest(kind, source, post_sql) if package_id else ""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     tmp_path = _atomic_seed_target(db_path)
     _remove_quietly(tmp_path)
@@ -332,7 +355,7 @@ def build_seed_database(
         finally:
             db.close()
         if package_id:
-            record_seed_provenance(tmp_path, package_id)
+            record_seed_provenance(tmp_path, package_id, digest)
     except BaseException:
         _remove_quietly(tmp_path)
         raise

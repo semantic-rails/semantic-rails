@@ -304,6 +304,7 @@ def project_validation_report(
             "checks": {"runtime": _validate_summary(report)},
             "runtime": report,
             "errors": list(report.get("errors", []) or []),
+            "warnings": list(report.get("warnings", []) or []),
         }
     if selected == "examples":
         report = run_examples_report(ref)

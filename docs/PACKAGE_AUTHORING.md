@@ -380,7 +380,10 @@ defaults:
 
 - `sql_script` (a SQL file) or `csv_dir_duckdb` (a directory of CSVs plus
   optional `post_sql`): the runtime builds the database only when the file is
-  missing. It records package provenance inside the new file. Publication is
+  missing. It records package provenance and a content hash of the seed files
+  inside the new file. When those files change later, queries and runtime
+  validation return a `STALE_SEED_DATABASE` warning with the command that
+  deletes the file; the next run rebuilds it from the current seed. Publication is
   atomic and never overwrites a file another process created in the meantime.
   If the filesystem cannot publish without an overwrite (for example one
   without hard links on POSIX), creation fails with `INVALID_CONFIG`; build the

@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import time
 from collections.abc import Callable
 from copy import deepcopy
@@ -53,6 +54,7 @@ from .db import (
     create_warehouse_adapter,
     load_csv_dir_to_duckdb,
     seed_db,
+    seed_digest,
 )
 from .db_parts.base import query_with_limits
 from .diagnostics import (
@@ -82,7 +84,11 @@ from .runtime_parts.responses import (
     resolve_verbosity,
 )
 from .scope import classify_question
-from .seed_provenance import missing_duckdb_relations, publish_seed_database
+from .seed_provenance import (
+    missing_duckdb_relations,
+    publish_seed_database,
+    recorded_seed_digest,
+)
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
 from .sql_preparation import PreparedQuery
 
@@ -1294,6 +1300,7 @@ class Runtime:
             else ""
         )
         self.adapter: WarehouseAdapter | None = None
+        self._seed_warnings: list[dict[str, Any]] = []
         self._catalog_cache: dict[str, Any] | None = None
         self._catalog_search_index: CatalogSearchIndex | None = None
         self._resolve_cache: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1475,9 +1482,7 @@ class Runtime:
             self.db_path,
             kind=seed.kind,
             source=src,
-            post_sql=(
-                self._resolve_asset_path(seed.post_sql, kind="post_sql") if seed.post_sql else ""
-            ),
+            post_sql=self._resolve_asset_path(seed.post_sql, kind="post_sql"),
             null_strings=seed.null_strings,
             package_id=self._config.package.package_id,
         )
@@ -1486,6 +1491,35 @@ class Runtime:
         finally:
             with contextlib.suppress(OSError):
                 os.remove(tmp_path)
+
+    def _stale_seed_warnings(self) -> list[dict[str, Any]]:
+        """Warn when this package's seed built the open database from other seed files."""
+        seed = self._config.package.seed
+        if self.warehouse != "duckdb" or seed.kind == SEED_KIND_EXTERNAL:
+            return []
+        recorded = recorded_seed_digest(self.adapter, self._config.package.package_id)
+        if not recorded:
+            return []
+        try:
+            post_sql = self._resolve_asset_path(seed.post_sql, kind="post_sql")
+            current = seed_digest(seed.kind, self._seed_source(), post_sql)
+        except (OSError, SemanticLayerError):  # no seed files to compare against
+            return []
+        if current == recorded:
+            return []
+        message = (
+            f"package.default_db '{self.db_path}' was built before its seed files changed, "
+            "so queries return the old data. To rebuild it from the current seed, delete "
+            f"the file and rerun: rm {shlex.quote(self.db_path)}"
+        )
+        return [
+            {
+                "code": "STALE_SEED_DATABASE",
+                "severity": "warning",
+                "message": message,
+                "details": {"default_db": self.db_path, "reason": "seed_files_changed"},
+            }
+        ]
 
     def _unreadable_db_error(self) -> SemanticLayerError:
         return SemanticLayerError(
@@ -1596,6 +1630,7 @@ class Runtime:
                 if self.warehouse == "duckdb":
                     self._ensure_db()
                 self.adapter = create_warehouse_adapter(self._config.package, db_path=self.db_path)
+                self._seed_warnings = self._stale_seed_warnings()
             return self.adapter
 
     def set_adapter(self, adapter: WarehouseAdapter) -> None:
@@ -1621,6 +1656,7 @@ class Runtime:
                 with contextlib.suppress(Exception):
                     self.adapter.close()
             self.adapter = adapter
+            self._seed_warnings = []
 
     @runtime_request_scope
     def manifest_catalog(self, *, view: str, verbosity: str) -> dict[str, Any] | None:
@@ -2038,7 +2074,11 @@ class Runtime:
             "explain": asdict(compiled["explain"]),
             "status": "ok",
             "errors": [],
-            "warnings": [*_compiled_warnings(self._config, compiled, payload), *limits_warnings],
+            "warnings": [
+                *_compiled_warnings(self._config, compiled, payload),
+                *limits_warnings,
+                *self._seed_warnings,
+            ],
             "recovery_hints": [],
             "assumptions": [],
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
