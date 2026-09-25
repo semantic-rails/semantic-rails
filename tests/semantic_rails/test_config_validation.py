@@ -2850,6 +2850,36 @@ def test_validation_accepts_a_mixed_clock_metric_however_it_is_grouped(
 ):
     # Sessions plus orders on the sessions clock: the planner aligns the orders to their
     # own clock on purpose, and the label is right for the sessions.
+    package_dir = _jaffle_with_sessions_plus_orders(package_config_factory, expression)
+
+    assert validate_runtime_package(package_dir) == []
+
+
+def test_validation_rejects_a_mixed_clock_metric_whose_measure_has_several_clocks(
+    package_config_factory,
+):
+    # With two clocks of its own, which one the orders should be aligned by is a guess,
+    # so a query on the sessions clock is refused.
+    package_dir = _jaffle_with_sessions_plus_orders(
+        package_config_factory, _add(_SESSIONS, _ORDERS)
+    )
+    path = package_dir / "models" / "core" / "orders.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    order_clocks = [
+        "temporal_role.jaffle_order_time",
+        "temporal_role.jaffle_customer_first_order_at",
+    ]
+    doc["model"]["measures"]["order_count"]["times"] = order_clocks
+    _write_yaml(path, doc)
+
+    errors = validate_runtime_package(package_dir)
+
+    assert len(errors) == 1, errors
+    assert "metric metric.sales.sessions_plus_orders has temporal_role" in errors[0]
+    assert f"timed by {', '.join(sorted(order_clocks))} instead" in errors[0]
+
+
+def _jaffle_with_sessions_plus_orders(package_config_factory, expression: dict) -> Path:
     _, package_dir = package_config_factory("jaffle_shop")
     path = Path(package_dir) / "metrics" / "extensions" / "derived_metrics.yml"
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -2863,8 +2893,36 @@ def test_validation_accepts_a_mixed_clock_metric_however_it_is_grouped(
         "expression": expression,
     }
     _write_yaml(path, doc)
+    return Path(package_dir)
 
-    assert validate_runtime_package(Path(package_dir)) == []
+
+@pytest.mark.parametrize(
+    ("expression", "error"),
+    [
+        (
+            {"kind": "aggregate", "measure": "order_cnt"},
+            "references unknown measure 'order_cnt'; did you mean 'measure.jaffle.order_count'?",
+        ),
+        (
+            _add(_ORDERS, {"kind": "metric", "metric": "metric.sales.no_such_metric"}),
+            "references unknown metric 'metric.sales.no_such_metric'",
+        ),
+    ],
+    ids=["measure", "metric"],
+)
+def test_parse_report_rejects_a_metric_reference_the_package_lacks(
+    package_config_factory, expression, error
+):
+    # The loader keeps an unresolved reference as written, so only a query failed.
+    package_dir = _jaffle_with_sessions_plus_orders(package_config_factory, expression)
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    messages = [row["message"] for row in report["errors"]]
+    assert report["ok"] is False
+    assert [message.split(": ", 1)[1] for message in messages] == [
+        f"metric metric.sales.sessions_plus_orders {error}"
+    ]
 
 
 @pytest.mark.parametrize("mutual", [False, True], ids=["self-cycle", "mutual-cycle"])
