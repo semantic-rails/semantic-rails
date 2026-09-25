@@ -1299,13 +1299,17 @@ Routing is conservative in the MVP:
   table can answer month, quarter, or year queries, but not day queries.
 - A weekly rollup answers only week queries, because weeks straddle month,
   quarter, and year boundaries. Its default `eligible_time_grains` is `[week]`.
-- The query's `start` and `end` must fall on the rollup's bucket boundaries: a
-  monthly table answers `2026-01-01` to `2026-04-01`, not `2026-01-15` to
-  `2026-03-31`.
-- A `count_distinct` routes only when it counts the model's own single-column key
-  (for example distinct `order_id` on an orders model). Distinct counts of anything
-  else, such as customers or one column of a composite key, can't be added up
-  across rollup rows.
+  Build it on Monday-start (ISO) weeks, the weeks the compiled SQL uses.
+- The query's `start` and `end` must fall on the rollup's bucket boundaries, in
+  UTC: a monthly table answers `2026-01-01` to `2026-04-01`, not `2026-01-15` to
+  `2026-03-31`. A minute or hour rollup answers only queries without bounds.
+- A `count_distinct` routes only when it counts the model's single-column row key
+  (for example distinct `order_id` on an orders model with `grain: [order_id]`).
+  Distinct counts of anything else, such as customers or one column of a
+  composite key, can't be added up across rollup rows.
+- A time role whose `column_timezone` differs from its `timezone`, and a query
+  with a non-default `calendar_id`, run on the base tables: a rollup is bucketed
+  in UTC on the default calendar.
 - Every selected measure must have a column in the variant. Additive and
   precomputed rollups are supported; non-additive rollup semantics fall back to
   raw.
@@ -1318,8 +1322,8 @@ Routing is conservative in the MVP:
   holds only the rows its filters kept.
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
-`logical_plan.measure_plans[].aggregate_relation_rejections` maps each rollup of
-that measure's entity to the reason it wasn't used.
+`logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
+rollup of that measure's entity to the reason.
 
 Strict config validation checks the `variants` shape, nested keys
 (`grain`, `time`, `excludes`, `selection`, `equivalence`), value-list fields,

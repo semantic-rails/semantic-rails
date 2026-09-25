@@ -222,13 +222,16 @@ CREATE TABLE order_fact AS SELECT * FROM (VALUES
  (1, 'c1', 's1', TIMESTAMP '2026-01-10', 10.0), (2, 'c1', 's2', TIMESTAMP '2026-02-10', 20.0),
  (3, 'c2', 's1', TIMESTAMP '2026-03-30', 30.0), (4, 'c1', 's1', TIMESTAMP '2026-03-31', 40.0),
  (5, 'c3', 's2', TIMESTAMP '2026-04-02', 50.0), (6, 'c2', 's1', TIMESTAMP '2026-01-20', 60.0),
- (7, 'c1', 's2', TIMESTAMP '2026-01-25', 5.0)
+ (7, 'c1', 's2', TIMESTAMP '2026-01-25', 5.0), (8, 'c3', 's1', TIMESTAMP '2026-04-01 02:00', 8.0)
 ) t(order_id, customer_id, store_id, ordered_at, amount);
 CREATE TABLE order_monthly AS SELECT date_trunc('month', ordered_at) AS month_start, store_id,
  sum(amount) AS revenue, count(DISTINCT order_id) AS order_count,
  count(DISTINCT customer_id) AS buyers FROM order_fact GROUP BY 1, 2;
 CREATE TABLE order_weekly AS SELECT date_trunc('week', ordered_at) AS week_start, store_id,
  sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
+CREATE TABLE fiscal_days AS SELECT d::DATE AS date_day,
+ (date_trunc('quarter', d - INTERVAL 1 MONTH) + INTERVAL 1 MONTH)::DATE AS quarter_start
+ FROM range(TIMESTAMP '2025-11-01', TIMESTAMP '2026-08-01', INTERVAL 1 DAY) t(d);
 CREATE TABLE order_monthly_s1 AS SELECT date_trunc('month', ordered_at) AS month_start,
  store_id, sum(amount) AS revenue FROM order_fact WHERE store_id = 's1' GROUP BY 1, 2;
 """
@@ -273,8 +276,9 @@ _BIG_ORDERS = {
 
 
 def _rollup_package(
-    package_dir: Path, variants: dict, aggregate_relations: list, entity_key: tuple = ("order_id",)
+    package_dir: Path, variants: dict, aggregate_relations: list, overrides: dict | None = None
 ) -> None:
+    overrides = overrides or {}
     _write_yaml(
         package_dir / "package.yml",
         {
@@ -290,13 +294,27 @@ def _rollup_package(
             **({"aggregate_relations": aggregate_relations} if aggregate_relations else {}),
         },
     )
-    order = {"id": "entity.order", "key": list(entity_key), "model": "orders"}
-    _write_yaml(package_dir / "graph.yml", {"graph": {"entities": {"order": order}}})
+    order = {
+        "id": "entity.order",
+        "key": ["order_id"],
+        "model": "orders",
+        **overrides.get("entity", {}),
+    }
+    entities = {"order": order}
+    if overrides.get("fiscal_calendar"):  # quarters start in February
+        entities["fiscal"] = {"kind": "time", "key": ["date_day"], "model": "fiscal_days"}
+        day = {"column": "date_day", "kind": "date", "class": "calendar_time"}
+        calendar = {"id": "fiscal_days", "relation": "fiscal_days", "calendar_id": "fiscal"}
+        calendar |= {"entities": {"fiscal": {}}, "times": {"date_day": day}}
+        calendar["dimensions"] = {"quarter_start": {"kind": "date"}}
+        _write_yaml(package_dir / "models" / "fiscal_days.yml", {"model": calendar})
+    _write_yaml(package_dir / "graph.yml", {"graph": {"entities": entities}})
     dims = {
         key: {"id": f"dimension.{key}", "column": key, "kind": "categorical"}
         for key in ("store_id", "customer_id")
     }
     time = {"id": "temporal_role.t", "dimension_id": "dimension.ordered_at", "column": "ordered_at"}
+    time.update(overrides.get("time", {}))
     measure = {"time": "ordered_at", "rollup": "additive"}
     model = {
         "id": "orders",
@@ -373,10 +391,32 @@ _BUYERS, _REVENUE = "measure.buyers", "measure.revenue"
             id="distinct-buyers-across-stores",
         ),
         pytest.param(
-            ({"monthly": _MONTHLY}, [], ("customer_id", "order_id")),
+            ({"monthly": _MONTHLY}, [], {"entity": {"key": ["customer_id", "order_id"]}}),
             _rollup_query(_BUYERS, "count_distinct", "quarter"),
             "aggregation_not_reaggregable",
             id="distinct-buyers-composite-key",
+        ),
+        pytest.param(
+            ({"monthly": _MONTHLY}, [], {"entity": {"key": ["customer_id"]}}),
+            _rollup_query(_BUYERS, "count_distinct", "quarter"),
+            "aggregation_not_reaggregable",
+            id="distinct-entity-key-not-row-grain",
+        ),
+        pytest.param(
+            (
+                {"monthly": _MONTHLY},
+                [],
+                {"time": {"timezone": "America/New_York", "column_timezone": "UTC"}},
+            ),
+            _rollup_query(_REVENUE, "sum", "month"),
+            "timezone_mismatch",
+            id="role-converts-timezone",
+        ),
+        pytest.param(
+            ({"monthly": _MONTHLY}, [], {"fiscal_calendar": True}),
+            _rollup_query(_REVENUE, "sum", "quarter", calendar_id="fiscal", fill=True),
+            "calendar_mismatch",
+            id="non-default-calendar",
         ),
         pytest.param(
             ({"weekly": _WEEKLY}, []),
@@ -408,7 +448,16 @@ _BUYERS, _REVENUE = "measure.buyers", "measure.revenue"
             "metric_predicate_filter",
             id="measure-metric-predicate",
         ),
-        # Exact rollup answers that must keep routing to the monthly rollup.
+        pytest.param(
+            _MONTHLY_ONLY,
+            {
+                **_rollup_query(_REVENUE, "sum", "month"),
+                "metric_filters": [{"expression": _BIG_ORDERS, "op": "=", "value": True}],
+            },
+            "metric_predicate_filter",
+            id="query-metric-predicate",
+        ),
+        # Exact rollup answers that must keep routing.
         pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "quarter"), None, id="sum"),
         pytest.param(
             _MONTHLY_ONLY,
@@ -421,6 +470,9 @@ _BUYERS, _REVENUE = "measure.buyers", "measure.revenue"
             _rollup_query(_REVENUE, "sum", "quarter", start="2026-02-01", end="2026-04-01"),
             None,
             id="aligned-bounds",
+        ),
+        pytest.param(
+            ({"weekly": _WEEKLY}, []), _rollup_query(_REVENUE, "sum", "week"), None, id="week"
         ),
     ],
 )
@@ -439,6 +491,6 @@ def test_rollup_routing_matches_base_tables(
     assert rows["rollup"] == rows["base"]
     compiled = answers["rollup"]
     selected = compiled["explain"].performance_plan["aggregate_routing"]["selected"]
-    assert selected == ([] if reason else ["aggregate_relation.orders_monthly"])
+    assert selected == ([] if reason else [f"aggregate_relation.orders_{next(iter(rollups[0]))}"])
     rejections = compiled["logical_plan"].measure_plans[0].aggregate_relation_rejections
     assert list(rejections.values()) == ([reason] if reason else [])

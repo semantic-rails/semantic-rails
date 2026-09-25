@@ -3378,19 +3378,33 @@ def _aggregate_measure_coverage(row: AggregateRelationConfig) -> set[str]:
 
 
 def _time_bound_on_grain(value: Any, grain: str) -> bool:
-    """Whether a query time bound falls on a bucket boundary of ``grain``, in UTC."""
-    if grain == "transaction":
-        return True
+    """Whether a query time bound falls on a UTC bucket boundary of a day-or-coarser ``grain``."""
     try:
         moment = _parse_time_literal(value)
-        if moment.utcoffset():
-            return False
-        if grain in {"minute", "hour"}:
-            floored = moment.replace(second=0, microsecond=0)
-            return moment == (floored.replace(minute=0) if grain == "hour" else floored)
-        return _is_grain_boundary(moment, grain)
-    except SemanticLayerError:
+        return not moment.utcoffset() and _is_grain_boundary(moment, grain)
+    except SemanticLayerError:  # an unparseable bound, or a grain finer than a day
         return False
+
+
+def _leaf_rollup_blocker(
+    bound: BoundMeasure, query: NormalizedQuery, config: PackageConfig, leaf_time_role: str
+) -> str:
+    """Why no rollup can answer this measure leaf exactly, whichever rollup it is."""
+    if any(
+        isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
+    ) or any(
+        clause.get("expression") is not None
+        for clause in dict(bound.filter_spec or {}).get("all", []) or []
+    ):
+        return "metric_predicate_filter"
+    if query.time and (query.time.calendar_id or "default").strip().lower() != "default":
+        return "calendar_mismatch"
+    role = _temporal_role_index(config).get(leaf_time_role)
+    column_tz = str(getattr(role, "column_timezone", "") or "").strip()
+    target_tz = str(getattr(role, "timezone", "") or "").strip()
+    if column_tz and target_tz and column_tz != target_tz:
+        return "timezone_mismatch"  # the base path converts the zone; the rollup path can't
+    return ""
 
 
 def _aggregate_relation_rejection_reason(
@@ -3409,19 +3423,12 @@ def _aggregate_relation_rejection_reason(
     if row.filters:
         # The rollup holds only the rows its filters kept, and no query is proven to imply them.
         return "rollup_filter_not_implied"
-    if any(
-        isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
-    ) or any(
-        clause.get("expression") is not None
-        for clause in dict(bound.filter_spec or {}).get("all", []) or []
-    ):
-        return "metric_predicate_filter"
-    if row.temporal_role and row.temporal_role != leaf_time_role:
-        return "temporal_role_mismatch"
     time = query.time
     requested_grain = str((time.grain if time else "") or "").lower()
     if time is None or not requested_grain:
         return "missing_query_time_grain"
+    if row.temporal_role and row.temporal_role != leaf_time_role:
+        return "temporal_role_mismatch"
     if requested_grain not in set(row.eligible_time_grains or [row.grain]):
         return "unsupported_query_grain"
     if _grain_rank(row.grain) < 0 or _grain_rank(row.grain) > _grain_rank(requested_grain):
@@ -3475,13 +3482,16 @@ def _select_aggregate_relation(
         for field in (str(item.get("field", "")) for item in _bound_filter_clauses(bound, config))
         if field
     )
-    # A whole single-column key sits in one rollup row; part of a composite key can repeat.
-    counts_fact_key = len(_measure_count_distinct_key_columns(measure, config)) == 1
+    key = _measure_count_distinct_key_columns(measure, config)
+    # Each value of a model's single-column row key sits in one rollup row; other keys can repeat.
+    counts_fact_key = len(key) == 1 and measure.row_grain == key and not measure.source_relation
+    blocker = _leaf_rollup_blocker(bound, query, config, leaf_time_role)
     rejections = {
         row.id: reason
         for row in rows
         if (
-            reason := _aggregate_relation_rejection_reason(
+            reason := blocker
+            or _aggregate_relation_rejection_reason(
                 row,
                 bound=bound,
                 query=query,
