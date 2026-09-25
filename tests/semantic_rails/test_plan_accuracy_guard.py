@@ -630,6 +630,7 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
 )
 @pytest.mark.parametrize("group_by", [[STORE], []])
 def test_named_value_coverage_respects_operator_and_value_shape(
+    request: pytest.FixtureRequest,
     adapter: SemanticLayerMCPAdapter,
     text: str,
     op: str,
@@ -637,6 +638,16 @@ def test_named_value_coverage_respects_operator_and_value_shape(
     honored: bool,
     group_by: list[str],
 ) -> None:
+    if not group_by and op in {"IN", "NOT IN"} and value == ["Brooklyn", "Philadelphia"]:
+        # Without a per-store row, the extra store changes the single total.
+        honored = False
+        request.applymarker(
+            pytest.mark.xfail(
+                strict=True,
+                reason="accuracy guard does not yet flag over-inclusive IN / over-exclusive "
+                "NOT IN without grouping (semantic-rails/semantic-rails#85)",
+            )
+        )
     draft = _query(group_by=group_by, where=[{"field": STORE, "op": op, "value": value}])
     kinds = _gap_kinds(adapter, text, draft)
     if honored:
@@ -1129,6 +1140,81 @@ def test_mcp_plan_reports_what_it_could_not_honor(
     assert ranked["best"]["validation_ok"] is True
     assert ranked["status"] == "low_confidence"
     assert ranked["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+
+
+BROOKLYN_REVENUE = {
+    "as": "brooklyn_revenue",
+    "expression": {
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.revenue_usd",
+        "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("text", "draft", "status"),
+    [
+        (
+            "revenue for Brooklyn",
+            _query(where=[{"field": STORE, "op": "IN", "value": "Brooklyn"}]),
+            "ok",
+        ),
+        (
+            "revenue excluding Brooklyn",
+            _query(where=[{"field": STORE, "op": "NOT IN", "value": "Brooklyn"}]),
+            "ok",
+        ),
+        (
+            "top 5 stores by revenue",
+            {
+                "version": 2,
+                "select": [REVENUE, ORDERS],
+                "group_by": [STORE],
+                "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
+                "limit": 5,
+            },
+            "ok",
+        ),
+        (
+            "revenue not include Brooklyn",
+            _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}]),
+            "ok",
+        ),
+        (
+            "revenue excluding Brooklyn but include Philadelphia",
+            _query(
+                where=[
+                    {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                    {"field": STORE, "op": "=", "value": "Philadelphia"},
+                ]
+            ),
+            "ok",
+        ),
+        # A nested scope validates, but doesn't supply query-level membership.
+        (
+            "revenue for Brooklyn and Philadelphia",
+            _query(
+                BROOKLYN_REVENUE,
+                where=[{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
+            ),
+            "low_confidence",
+        ),
+    ],
+)
+def test_mcp_plan_validates_and_gates_guard_drafts(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    draft: dict[str, Any],
+    status: str,
+) -> None:
+    # The direct guard tests assume the draft validates and the question passes
+    # scope gating; this checks both for the shapes and wordings they rely on.
+    _draft_plan(monkeypatch, draft)
+    payload = adapter.call_tool("plan", {"intent": text})
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == status
 
 
 @pytest.mark.parametrize(
