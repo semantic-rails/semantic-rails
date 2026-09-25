@@ -21,7 +21,12 @@ from typing import Any
 import yaml
 
 from .ast import NormalizedQuery
-from .compiler import _expr_leaf_temporal_role_sets, _requires_query_time, compile_query
+from .compiler import (
+    _collect_conversion_exprs,
+    _expr_leaf_temporal_role_sets,
+    _requires_query_time,
+    compile_query,
+)
 from .config import (
     SEED_KIND_EXTERNAL,
     _merge_package_dir,
@@ -37,6 +42,7 @@ from .config_parts.shape_checks import (
     _check_typed_field_enums,
     add_error,
 )
+from .diagnostics import object_id_suggestions
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
@@ -48,6 +54,8 @@ from .expressions import (
     AggregateExpr,
     ConversionExpr,
     MetricPredicateExpr,
+    _opaque_expression_data,
+    expr_to_dict,
     parse_semantic_expression,
     resolve_filter_dimension,
 )
@@ -1024,11 +1032,51 @@ def _check_disallowed_names(config, source_path: Path, errors: list[str]) -> Non
 
 
 def _reference_errors(config, source_path: Path) -> list[str]:
-    """References that resolve but can't be served as written: segments and metric clocks."""
+    """References that don't resolve, or can't be served as written: segments and metrics."""
     return [
         *_segment_reference_errors(config, source_path),
+        *_metric_reference_errors(config, source_path),
         *_metric_time_role_errors(config, source_path),
     ]
+
+
+def _metric_reference_errors(config, source_path: Path) -> list[str]:
+    """Metrics that name a measure or metric the package doesn't define.
+
+    The loader keeps a reference it can't resolve as written, so such a package
+    parsed and every query of the metric failed with ``Unknown measure``.
+    """
+    known = {
+        "measure": {row.id for row in config.measures},
+        "metric": {row.id for row in config.metric_recipes},
+    }
+    errors: dict[str, None] = {}  # A reference repeated in one metric is reported once.
+
+    def visit(node: Any, metric_id: str) -> None:
+        if isinstance(node, list):
+            for child in node:
+                visit(child, metric_id)
+        if not isinstance(node, dict):
+            return
+        for key, child in node.items():
+            if _opaque_expression_data(node, key):
+                continue
+            # An empty reference names nothing; a scoped predicate then reads its `input`.
+            if (
+                key in known
+                and isinstance(child, str)
+                and child.strip()
+                and child not in known[key]
+            ):
+                hints = [row for row in object_id_suggestions(config, child) if row in known[key]]
+                message = f"{source_path}: metric {metric_id} references unknown {key} {child!r}"
+                errors[message + (f"; did you mean {hints[0]!r}?" if hints else "")] = None
+            else:
+                visit(child, metric_id)
+
+    for recipe in config.metric_recipes:
+        visit(expr_to_dict(recipe.expression), recipe.id)
+    return list(errors)
 
 
 def _metric_time_role_errors(config, source_path: Path) -> list[str]:
@@ -1037,7 +1085,8 @@ def _metric_time_role_errors(config, source_path: Path) -> list[str]:
     Such a metric still answers: every leaf falls back to its own clock
     (``REWRITE_APPLIED``, ``metric_time_alignment``), but the result is labeled with
     the declared role. A metric that mixes clocks is fine as long as one of its
-    measures has the declared one; the planner aligns the rest on purpose. A
+    measures has the declared one; the planner aligns a measure with a single clock
+    on purpose, but refuses one with several clocks, none of them the declared one. A
     conversion is timed by its base operand, as at query time.
     """
     errors: list[str] = []
@@ -1065,6 +1114,19 @@ def _metric_time_role_errors(config, source_path: Path) -> list[str]:
                 f"measures are timed by {', '.join(sorted(clocks))}: queries bucket them by that "
                 f"clock and label the result {role!r}. Set temporal_role to one of those.",
             )
+            continue
+        conversions: list[ConversionExpr] = []
+        _collect_conversion_exprs(recipe.expression, config, conversions)
+        if conversions:
+            continue  # Conversion operands keep their own clock rules.
+        for leaf in dict.fromkeys(frozenset(leaf) for leaf in leaves):
+            if len(leaf) > 1 and role not in leaf:
+                add_error(
+                    errors,
+                    f"{source_path}: metric {recipe.id} has temporal_role {role!r}, but one of "
+                    f"its measures is timed by {', '.join(sorted(leaf))} instead, so queries on "
+                    f"{role!r} are refused. Give that measure the clock {role!r}.",
+                )
     return errors
 
 

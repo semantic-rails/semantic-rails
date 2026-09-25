@@ -2294,7 +2294,7 @@ def _resolve_conversion_source(
         source["filters"] = _conversion_operand_filters(expr.filter, config, side=side)
         return source
     if isinstance(expr, MeasureRefExpr):
-        bound = _bind_measure(expr, config, query)
+        bound = _bind_measure(expr, config, query, conversion_operand=True)
         measure = measures[bound.measure_id]
         if (
             measure.measure_class not in {"event_count", "distinct_population"}
