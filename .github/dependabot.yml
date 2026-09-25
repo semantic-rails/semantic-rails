@@ -8,6 +8,10 @@ updates:
       time: "07:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
+    ignore:
+      # A new mcp major breaks the SDK integration; the migration that adopts it sets the bound itself.
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
     groups:
       python-deps:
         patterns: ["*"]
