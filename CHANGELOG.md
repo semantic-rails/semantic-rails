@@ -13,8 +13,10 @@ Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the ne
 **Upgrading from 0.3.1:** `plan` can return `low_confidence` where 0.3.1 returned `ok`. When several
 measures or metrics match a question equally well and neither the question nor a `partial_query`
 select names one, it reports a `subject_ambiguous` gap listing the candidates; pin one in
-`partial_query` to get `ok`. A tie the question settles can now pick a different measure than
-0.3.1 did. Details are under Fixed.
+`partial_query` to get `ok`. `semantic-rails ask` then exits 1 without running the query, and the
+REPL's `run` doesn't run it either: name one candidate in the question instead. The bundled demo's
+"number of customers" is such a question. A tie the question settles can now pick a different
+measure than 0.3.1 did. Details are under Fixed.
 
 ### Fixed
 
