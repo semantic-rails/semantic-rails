@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from semantic_rails import caveats, expressions, policies, resource_access, runtime
+from semantic_rails import caveats, expressions, resource_access, runtime
 from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime_parts import responses
@@ -224,7 +224,6 @@ WALKERS = [
     runtime._collect_expr_object_ids,
     responses._collect_expr_object_ids,
     caveats._collect_expr_object_ids,
-    policies._collect_expr_refs,
     resource_access._references,
 ]
 
@@ -435,8 +434,10 @@ def _alias_query(expression, placement):
     if placement == "nested":
         expression = {"kind": "ratio", "numerator": expression, "denominator": deepcopy(LITERAL)}
     if placement == "metric_filter":
+        # The selected measure reads neither orders nor revenue, so only the
+        # metric filter's alias slot can bind the protected object.
         return {
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "n"}],
+            "select": [{"expression": {"measure": "measure.jaffle.customer_count"}, "as": "n"}],
             "group_by": [DIMENSION],
             "metric_filters": [{"expression": expression, "op": ">", "value": 0}],
         }
@@ -450,19 +451,27 @@ def _alias_segment(config, expression):
     return segment, replace(config, segments=[segment, *config.segments[1:]])
 
 
-def _alias_dependency(alias, slot):
-    """An alias whose ``slot`` holds its only reference to the protected object."""
+CUSTOMER_COLUMN = {"kind": "column", "entity": "entity.jaffle_customer", "column": "customer_id"}
+
+
+def _alias_dependency(alias, slot, *, protected=True):
+    """An alias whose ``slot`` holds its only reference to the protected object.
+
+    With ``protected=False`` the slot holds an unprotected reference instead:
+    the control showing that the slot alone decides whether it is bound.
+    """
     if alias == "nullif":
         expression = {
             "kind": "nullif",
             "value": {"measure": "measure.jaffle.order_count"},
             "null_value": {"kind": "literal", "value": 0},
         }
-        expression[slot] = deepcopy(REF)
+        expression[slot] = deepcopy(REF) if protected else {"measure": "measure.jaffle.order_count"}
         return expression, MEASURE
-    condition = {"kind": "not_in", "expr": deepcopy(LITERAL), "values": [deepcopy(ORDER_COLUMN)]}
+    column = deepcopy(ORDER_COLUMN if protected else CUSTOMER_COLUMN)
+    condition = {"kind": "not_in", "expr": deepcopy(LITERAL), "values": [column]}
     if slot == "expr":
-        condition = {"kind": "not_in", "expr": deepcopy(ORDER_COLUMN), "values": [0, 1]}
+        condition = {"kind": "not_in", "expr": column, "values": [0, 1]}
     expression = {
         "kind": "aggregate_if",
         "aggregation": "sum",
@@ -515,6 +524,8 @@ def test_parser_alias_dependencies_block_before_rendering(
 
     expression, protected = _alias_dependency(alias, slot)
     query = _alias_query(expression, placement)
+    control = _alias_query(_alias_dependency(alias, slot, protected=False)[0], placement)
+    assert protected not in compiler.bind_query(base_config, None, control).object_ids
     unprotected = compiler.bind_query(base_config, None, query)
     assert protected in unprotected.object_ids
     assert compiler.compile_query(base_config, None, query, binding=unprotected)["sql"]
@@ -615,6 +626,70 @@ def test_policy_context_metadata_is_not_an_expression_position(base_config):
             assert exc.value.code == "INVALID_EXPRESSION_AST"
     finally:
         engine.close()
+
+
+def _unknown_kind_request(placement):
+    count = {"measure": "measure.jaffle.order_count"}
+    unknown = {"kind": "future_expression"}
+    query: dict[str, Any] = {"select": [{"expression": count, "as": "n"}]}
+    if placement == "unrecognized_key":
+        query["future_key"] = unknown
+    elif placement == "note_key":
+        query["_note"] = unknown
+    elif placement == "limits":
+        query["limits"] = {"note": unknown}
+    elif placement == "entity_value_where":
+        entity_value = {
+            "kind": "entity_value",
+            "entity": "entity.jaffle_customer",
+            "input": count,
+            "where": [{"kind": "future_filter", "op": ">", "value": 3}],
+        }
+        query["select"] = [
+            {"expression": {"kind": "distribution", "function": "avg", "over": entity_value}}
+        ]
+    elif placement == "select_item_policy_context":
+        query["select"][0]["policy_context"] = unknown
+    elif placement == "expression_policy_context":
+        query["select"][0]["expression"] = {**count, "policy_context": unknown}
+    return query
+
+
+def _assert_shape_refused_before_output(base_config, monkeypatch, query):
+    from semantic_rails import compiler
+
+    engine = runtime.Runtime.from_config(
+        replace(base_config, semantic_policies=[]), source_path="configs/semantic_rails/jaffle_shop"
+    )
+
+    def no_output(*args, **kwargs):
+        pytest.fail("request shape reached rendering or the adapter")
+
+    monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
+    monkeypatch.setattr(engine, "_compile", no_output)
+    monkeypatch.setattr(engine, "_get_adapter", no_output)
+    try:
+        assert engine.validate(query)["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
+        for operation in (engine.compile, engine.query):
+            with pytest.raises(SemanticLayerError) as exc:
+                operation(query)
+            assert exc.value.code == "INVALID_EXPRESSION_AST"
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "placement", ["unrecognized_key", "note_key", "limits", "entity_value_where"]
+)
+def test_request_shapes_are_checked_before_rendering(base_config, monkeypatch, placement):
+    """Binding shape-checks every request key, including ones the IR ignores."""
+    _assert_shape_refused_before_output(base_config, monkeypatch, _unknown_kind_request(placement))
+
+
+@pytest.mark.parametrize("placement", ["select_item_policy_context", "expression_policy_context"])
+def test_policy_context_is_skipped_only_at_the_top_level(base_config, monkeypatch, placement):
+    """A ``policy_context`` key below the request's top level is still shape-checked."""
+    _assert_shape_refused_before_output(base_config, monkeypatch, _unknown_kind_request(placement))
 
 
 @pytest.mark.parametrize("action", ["deny", "redact"])

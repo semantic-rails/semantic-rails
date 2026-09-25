@@ -308,10 +308,22 @@ unknown explicit kinds before lossy normalization. Caller `policy_context` metad
 is not an expression position. Literal/filter values and scalar parameters are
 data: neither nested keys nor reference-shaped strings become expressions or
 semantic references.
-Lineage and caveat helpers retain the common reference collector. Metric constraints
-use its declared reference positions to enforce allowed filter cuts; it never
-supplies the object-access dependency set. Column binding and
-caveat temporal-shape inspection retain their specialized views.
+Lineage and caveat helpers retain the common reference collector; it never
+supplies an authorization dependency set. The same compilation records the
+objects read by cuts: metric filters and filters embedded in aggregate, scoped
+aggregate, conditional aggregate and recipe expressions. An entity-value cut
+includes the entity and key dimensions defining its per-entity grain. Filter allowlists use
+those bindings, including nested recipes and effective temporal dependencies.
+Outer select expressions, grouping, where, time axes and attachment joins do
+not become filter dependencies merely because a cut is evaluated in their
+context. Constant cuts can resolve with no object reads; unresolved cut bindings
+are refused under filter allowlists. Each cut records the leaves it filters; a
+governed object is checked against `metric_filters` cuts plus its own leaves' cuts,
+and against every cut when ownership is ambiguous. `allow_metric_filters: false`
+refuses the cuts that count for it. Temporal-role constraints check the query
+axis and each governed object's effective bucket and ordering roles before
+rendering.
+Column binding and caveat temporal-shape inspection retain their specialized views.
 
 ### Query-Time
 

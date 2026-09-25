@@ -44,6 +44,7 @@ from ..sql_ast import (
     SqlWindow,
 )
 from .bind import _expression_alias
+from .dependencies import recipe_objects, record_leaf_reference
 from .indexes import _recipe_index
 from .namespacing import _namespace_sql_select
 from .temporal import _period_to_date_period, _window_unit_to_rows
@@ -60,6 +61,7 @@ __all__ = [
 
 
 def _base_alias_ref(alias: str, table_alias: str = "base") -> SqlIdentifier:
+    record_leaf_reference(alias)
     return SqlIdentifier(parts=[table_alias, alias])
 
 
@@ -189,14 +191,15 @@ def _compile_post_expr(
             raise SemanticLayerError(
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
-        return _compile_post_expr(
-            recipe.expression,
-            config,
-            time_alias=time_alias,
-            group_aliases=group_aliases,
-            query_grain=query_grain,
-            table_alias=table_alias,
-        )
+        with recipe_objects(recipe.id):
+            return _compile_post_expr(
+                recipe.expression,
+                config,
+                time_alias=time_alias,
+                group_aliases=group_aliases,
+                query_grain=query_grain,
+                table_alias=table_alias,
+            )
     if isinstance(expr, LiteralExpr):
         return SqlLiteral(expr.value)
     if isinstance(expr, ArithmeticExpr):

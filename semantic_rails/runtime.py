@@ -1806,6 +1806,7 @@ class Runtime:
                 audience=str(policy_context.get("audience", "")),
                 roles=policy_context.get("roles", []),
                 query=payload,
+                binding=binding,
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
             report = ValidationReport(
@@ -1908,6 +1909,7 @@ class Runtime:
                 audience=str(policy_context.get("audience", "")),
                 roles=policy_context.get("roles", []),
                 query=payload,
+                binding=binding,
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
@@ -1965,6 +1967,7 @@ class Runtime:
                 audience=str(policy_context.get("audience", "")),
                 roles=policy_context.get("roles", []),
                 query=payload,
+                binding=binding,
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:

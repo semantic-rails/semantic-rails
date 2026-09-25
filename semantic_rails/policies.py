@@ -10,12 +10,13 @@ on ``validate`` / ``compile`` / ``execute``.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from functools import cache
 from typing import Any
 
 from .ast import normalize_query
+from .compiler import BoundQuery, bind_query
 from .errors import SemanticLayerError
-from .expressions import collect_object_references, expr_to_dict
 from .schema import PackageConfig, SemanticPolicyConfig
 
 
@@ -74,8 +75,14 @@ def query_policy_effects(
     audience: str = "",
     roles: Iterable[str] | None = None,
     query: Mapping[str, Any] | None = None,
+    binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
     effects: list[dict[str, Any]] = []
+    # Bound at most once per request, and only for a constraint that needs it.
+    bound = cache(
+        lambda: binding if binding is not None else bind_query(config, None, dict(query or {}))
+    )
+    metric_filter_refs = cache(lambda object_id: _metric_filter_refs(config, bound(), object_id))
     for object_id in list(dict.fromkeys(str(item) for item in object_ids if str(item).strip())):
         for policy in config.semantic_policies:
             if not _policy_matches(
@@ -90,7 +97,9 @@ def query_policy_effects(
             if not action:
                 continue
             if policy.kind == "metric_constraint" and query is not None:
-                effects.append(_metric_constraint_effect(policy, query))
+                effects.append(
+                    _metric_constraint_effect(policy, query, metric_filter_refs, bound, object_id)
+                )
             else:
                 effects.append(_base_policy_effect(policy, action=action))
     # Dedupe by (policy_id, kind, action). Package-wide policies — e.g.
@@ -132,6 +141,7 @@ def enforce_query_policies(
     audience: str = "",
     roles: Iterable[str] | None = None,
     query: Mapping[str, Any] | None = None,
+    binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
     effects = query_policy_effects(
         config,
@@ -140,6 +150,7 @@ def enforce_query_policies(
         audience=audience,
         roles=roles,
         query=query,
+        binding=binding,
     )
     blocking = [row for row in effects if row["action"] in {"deny", "redact", "hidden"}]
     if blocking:
@@ -294,9 +305,15 @@ def _metric_constraint_summary(policy: SemanticPolicyConfig) -> dict[str, Any]:
 
 
 def _metric_constraint_effect(
-    policy: SemanticPolicyConfig, query_payload: Mapping[str, Any]
+    policy: SemanticPolicyConfig,
+    query_payload: Mapping[str, Any],
+    metric_filter_refs: Callable[[str], dict[str, list[str]]],
+    bound: Callable[[], BoundQuery],
+    object_id: str,
 ) -> dict[str, Any]:
-    violations = _metric_constraint_violations(policy, query_payload)
+    violations = _metric_constraint_violations(
+        policy, query_payload, metric_filter_refs, bound, object_id
+    )
     effect = _base_policy_effect(policy, action="deny" if violations else "constrain")
     if violations:
         effect["violations"] = violations
@@ -304,7 +321,11 @@ def _metric_constraint_effect(
 
 
 def _metric_constraint_violations(
-    policy: SemanticPolicyConfig, query_payload: Mapping[str, Any]
+    policy: SemanticPolicyConfig,
+    query_payload: Mapping[str, Any],
+    metric_filter_refs: Callable[[str], dict[str, list[str]]],
+    bound: Callable[[], BoundQuery],
+    object_id: str,
 ) -> list[dict[str, Any]]:
     policy_config = _policy_config(policy)
     query = normalize_query(dict(query_payload or {}))
@@ -361,28 +382,34 @@ def _metric_constraint_violations(
                 {"kind": "disallowed_where", "disallowed": disallowed, "allowed": sorted(allowed)}
             )
 
-    if "allowed_temporal_roles" in policy_config and query.time is not None:
+    if "allowed_temporal_roles" in policy_config:
         allowed = set(_config_str_list(policy_config, "allowed_temporal_roles"))
-        if query.time.temporal_role and query.time.temporal_role not in allowed:
+        effective = set(bound().temporal_roles.get(object_id, ()))
+        if query.time is not None and query.time.temporal_role:
+            effective.add(query.time.temporal_role)
+        for role in sorted(effective - allowed):
             violations.append(
                 {
                     "kind": "disallowed_temporal_role",
-                    "temporal_role": query.time.temporal_role,
+                    "temporal_role": role,
                     "allowed": sorted(allowed),
                 }
             )
 
-    metric_filter_refs = _metric_filter_refs(query)
-    if policy_config.get("allow_metric_filters") is False and metric_filter_refs:
-        violations.append(
-            {
-                "kind": "metric_filters_not_allowed",
-                "metric_filter_refs": metric_filter_refs,
-            }
-        )
+    filters_denied = policy_config.get("allow_metric_filters") is False
+    allowlists = [
+        key
+        for key in ("allowed_metric_filter_entities", "allowed_metric_filter_metrics")
+        if key in policy_config
+    ]
+    refs = metric_filter_refs(object_id) if filters_denied or allowlists else {}
+    if filters_denied and bound().object_cuts(object_id):
+        violations.append({"kind": "metric_filters_not_allowed", "metric_filter_refs": refs})
+    if allowlists and refs.get("unresolved"):
+        violations.append({"kind": "unresolved_metric_filter", "unresolved": refs["unresolved"]})
     if "allowed_metric_filter_entities" in policy_config:
         allowed = set(_config_str_list(policy_config, "allowed_metric_filter_entities"))
-        disallowed = sorted(set(metric_filter_refs.get("entities", [])) - allowed)
+        disallowed = sorted(set(refs.get("entities", [])) - allowed)
         if disallowed:
             violations.append(
                 {
@@ -393,7 +420,7 @@ def _metric_constraint_violations(
             )
     if "allowed_metric_filter_metrics" in policy_config:
         allowed = set(_config_str_list(policy_config, "allowed_metric_filter_metrics"))
-        disallowed = sorted(set(metric_filter_refs.get("metrics", [])) - allowed)
+        disallowed = sorted(set(refs.get("metrics", [])) - allowed)
         if disallowed:
             violations.append(
                 {
@@ -430,20 +457,17 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
     return "value" not in spec or row.get("value") == spec.get("value")
 
 
-def _metric_filter_refs(query: Any) -> dict[str, list[str]]:
-    refs: dict[str, list[str]] = {"entities": [], "metrics": [], "measures": []}
-    for metric_filter in list(getattr(query, "metric_filters", []) or []):
-        if metric_filter.expression is None:
-            continue
-        for object_id in _collect_expr_refs(expr_to_dict(metric_filter.expression)):
-            if object_id.startswith("entity.") and object_id not in refs["entities"]:
-                refs["entities"].append(object_id)
-            elif object_id.startswith("metric.") and object_id not in refs["metrics"]:
-                refs["metrics"].append(object_id)
-            elif object_id.startswith("measure.") and object_id not in refs["measures"]:
-                refs["measures"].append(object_id)
-    return {key: value for key, value in refs.items() if value}
-
-
-def _collect_expr_refs(value: Any) -> list[str]:
-    return collect_object_references(value)
+def _metric_filter_refs(
+    config: PackageConfig, binding: BoundQuery, object_id: str
+) -> dict[str, list[str]]:
+    """Dependencies of the cuts that apply to one governed object in the actual compilation."""
+    kinds = {
+        "entities": {row.id for row in config.entities},
+        "metrics": {row.id for row in config.metric_recipes},
+        "measures": {row.id for row in config.measures},
+    }
+    ids = set().union(*binding.object_cuts(object_id))
+    refs = {key: sorted(ids & members) for key, members in kinds.items() if ids & members}
+    if binding.unresolved_cuts:
+        refs["unresolved"] = list(binding.unresolved_cuts)
+    return refs
