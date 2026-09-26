@@ -29,6 +29,7 @@ from .commands.package import (
     cmd_check,
     cmd_diff_package,
     cmd_doctor,
+    cmd_export,
     cmd_export_contract,
     cmd_impact_report,
     cmd_import,
@@ -268,6 +269,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSON output path. Omit to print the canonical payload to stdout.",
     )
     p_export_contract.set_defaults(func=cmd_export_contract)
+
+    p_export = sub.add_parser(
+        "export",
+        description=(
+            "Export a package to an external semantic-model format. Today supports "
+            "`--format ossie`: an Apache Ossie 0.1.1 document plus a Semantic Rails sidecar "
+            "holding what Ossie can't express, with a counted warning per construct."
+        ),
+    )
+    _add_config_reference_args(p_export, package_choices)
+    p_export.add_argument(
+        "--format",
+        required=True,
+        choices=["ossie"],
+        help="Target format. Today: 'ossie' (Apache Ossie 0.1.1).",
+    )
+    p_export.add_argument(
+        "--output",
+        required=True,
+        help="Directory for <package-id>.ossie.yaml and <package-id>.semantic_rails.json.",
+    )
+    p_export.set_defaults(func=cmd_export)
 
     p_validate_config = sub.add_parser(
         "validate-config",

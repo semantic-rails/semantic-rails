@@ -13,6 +13,7 @@ Start with these canonical docs:
 - [Capabilities](CAPABILITIES.md) for the supported semantic modeling feature set.
 - [Architecture spec](ARCHITECTURE.md) for the runtime architecture and compiler-stage contract.
 - [Public contracts](CONTRACTS.md) for version ownership, semantic validation export, compatibility rules, and cross-repository releases.
+- [Apache Ossie export](OSSIE.md) for writing a package as an Ossie 0.1.1 document plus a sidecar.
 - [Embedding the engine](EMBEDDING.md) for the supported generic hosting facade.
 - [Adding a warehouse dialect](ADDING_A_DIALECT.md) for the dialect/adapter/registry contract and the cross-warehouse conformance suite.
 - [Snowflake showcase runbook](SNOWFLAKE_SHOWCASE_RUNBOOK.md) for the live Snowflake sample package.

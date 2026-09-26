@@ -1,5 +1,5 @@
 """Package lifecycle commands: parse, validate, check, build, examples,
-tests, diff, impact, promote, doctor, init and import.
+tests, diff, impact, promote, doctor, init, import and export.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from ...config_validation import (
 )
 from ...contracts import export_metric_portability, export_semantic_contract
 from ...errors import SemanticLayerError
+from ...interop.ossie import write_ossie_export
 from ...mcp import SemanticLayerMCPAdapter
 from ...package_tools import (
     build_package_artifact_report,
@@ -249,6 +250,12 @@ def cmd_export_contract(args: argparse.Namespace) -> None:
         output.write_text(rendered, encoding="utf-8")
         return
     print(rendered, end="")
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    """Export a package to an external semantic-model format. Today supports `--format ossie`."""
+    ref = resolve_package_reference(package_id=args.package, path=args.path)
+    _print(write_ossie_export(ref.source_path, args.output))
 
 
 def cmd_validate_config(args: argparse.Namespace) -> None:
