@@ -81,6 +81,11 @@ def _relation_pipeline(config):
         # An entity id the loader can't derive from a graph key is written with `as:`, but the
         # loader derives its key dimension from the key, so that comes back under another id.
         ("as: entity.crm_customer", ["dimensions dimension.shop_customer_id"]),
+        # Two rows under one id: the writer keeps one, and the collection is named.
+        (
+            lambda c: {"metric_recipes": [c.metric_recipes[0], *c.metric_recipes]},
+            ["metric_recipes"],
+        ),
     ],
 )
 def test_what_does_not_come_back_is_refused_by_name(changes, refused, tmp_path) -> None:
@@ -95,16 +100,6 @@ def test_what_does_not_come_back_is_refused_by_name(changes, refused, tmp_path) 
         write_package(config, tmp_path / "shop_starter", namespace="shop")
     assert set(refused) <= set(caught.value.details["objects"]), caught.value.details
     assert not (tmp_path / "shop_starter").exists()
-
-
-def test_a_partial_config_keeps_the_loader_defaults_when_not_exact(tmp_path) -> None:
-    config = replace(
-        STARTER.config, measures=[replace(m, topics=[]) for m in STARTER.config.measures]
-    )
-    with pytest.raises(SemanticLayerError):
-        write_package(config, tmp_path / "exact", namespace="shop")
-    directory = write_package(config, tmp_path / "defaults", namespace="shop", exact=False)
-    assert load_package_snapshot(directory).semantic == STARTER.semantic
 
 
 def test_write_package_refuses_an_existing_directory(tmp_path) -> None:

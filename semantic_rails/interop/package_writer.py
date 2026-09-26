@@ -264,7 +264,8 @@ def _differences(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
             assert isinstance(old, list) and isinstance(new, list)
             by_id = [{row["id"]: row for row in side} for side in (old, new)]
             ids = sorted(by_id[0].keys() | by_id[1].keys())
-            out += [f"{name} {i}" for i in ids if by_id[0].get(i) != by_id[1].get(i)]
+            changed = [f"{name} {i}" for i in ids if by_id[0].get(i) != by_id[1].get(i)]
+            out += changed or [name]  # e.g. two rows under one id, one of them lost
         else:
             out.append(name)
     return out
@@ -275,14 +276,10 @@ def package_documents(config: PackageConfig, *, namespace: str) -> dict[str, dic
     return _Writer(config, namespace).documents()
 
 
-def write_package(
-    config: PackageConfig, directory: str | Path, *, namespace: str, exact: bool = True
-) -> Path:
+def write_package(config: PackageConfig, directory: str | Path, *, namespace: str) -> Path:
     """Write ``config`` into ``directory``, which must not exist yet, and load it back. Unless it
-    loads to the same objects, remove the directory and raise INVALID_CONFIG naming them.
-
-    ``exact=False`` is for a config built with only some attributes set: the written package
-    must still load, and keeps the loader's defaults for the rest."""
+    loads to the same objects, remove the directory and raise INVALID_CONFIG naming them. The
+    comparison leaves out deployment settings (connection, seed, default database)."""
     rendered = {
         path: dump_project_yaml(document)
         for path, document in package_documents(config, namespace=namespace).items()
@@ -293,8 +290,7 @@ def write_package(
         for relative, text in rendered.items():
             (root / relative).parent.mkdir(parents=True, exist_ok=True)
             (root / relative).write_text(text, encoding="utf-8")
-        loaded = load_package_snapshot(root).semantic
-        differences = _differences(semantic_payload(config), loaded) if exact else []
+        differences = _differences(semantic_payload(config), load_package_snapshot(root).semantic)
         if differences:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
