@@ -82,7 +82,11 @@ from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
-from .request_context import context_from_policy_context, request_context_payload
+from .request_context import (
+    context_from_policy_context,
+    request_context_payload,
+    without_trusted_attributes,
+)
 from .runtime_parts.responses import (
     apply_response_verbosity,
     compile_response_metadata,
@@ -1875,7 +1879,7 @@ class Runtime:
             out["status"] = "ok"
             out["warnings"] = _compiled_warnings(self._config, compiled, payload)
             out["errors"] = []
-            out["query"] = dict(payload)
+            out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
             out["assumptions"] = []
@@ -1919,7 +1923,7 @@ class Runtime:
             )
             out = asdict(report)
             out["status"] = "error"
-            out["query"] = dict(payload)
+            out["query"] = without_trusted_attributes(payload)
             out["warnings"] = []
             out["recovery_hints"] = list(issue.get("recovery_hints", []))
             out["authoring_hints"] = list(exc.details.get("authoring_hints", []) or [])
@@ -1991,7 +1995,7 @@ class Runtime:
                 selected_paths=compiled["logical_plan"].selected_paths,
                 candidate_paths=compiled["logical_plan"].candidate_paths,
             ),
-            "query": dict(payload),
+            "query": without_trusted_attributes(payload),
             "normalized_query": compiled["explain"].normalized_query,
             "logical_plan": asdict(compiled["logical_plan"]),
             "sql_plan": asdict(compiled["sql_ast"]),
@@ -2112,7 +2116,7 @@ class Runtime:
                 selected_paths=compiled["logical_plan"].selected_paths,
                 candidate_paths=compiled["logical_plan"].candidate_paths,
             ),
-            "query": dict(payload),
+            "query": without_trusted_attributes(payload),
             "normalized_query": compiled["explain"].normalized_query,
         }
         metadata = compile_response_metadata(self, payload, compiled)
@@ -2273,7 +2277,7 @@ class Runtime:
                         "basis_metric": normalized.basis_metric,
                     },
                     "normalized_segment": normalized.to_dict(),
-                    "derived_query": derived_query,
+                    "derived_query": without_trusted_attributes(derived_query),
                     "segment_policy_effects": segment_policy_effects,
                     "request_context": request_context_payload(context),
                 }
@@ -2321,7 +2325,7 @@ class Runtime:
                     "basis_metric": normalized.basis_metric,
                 },
                 "normalized_segment": normalized.to_dict(),
-                "derived_query": derived_query,
+                "derived_query": without_trusted_attributes(derived_query),
                 "segment_policy_effects": segment_policy_effects,
                 "request_context": request_context_payload(context),
             }
@@ -2408,7 +2412,7 @@ class Runtime:
             "member_count": member_count,
             "policy_effects": [*segment_policy_effects, *query_policy_effects],
             "request_context": request_context_payload(context),
-            "derived_query": preview_query,
+            "derived_query": without_trusted_attributes(preview_query),
             "rendered_sql": preview_compiled["sql"],
             "count_sql": count_prepared.sql,
             "semantic_fingerprint": self.snapshot.semantic_fingerprint,
@@ -2416,6 +2420,6 @@ class Runtime:
             "logical_plan": asdict(preview_compiled["logical_plan"]),
             "sql_plan": asdict(preview_compiled["sql_ast"]),
             "explain": asdict(preview_compiled["explain"]),
-            "query": dict(preview_query),
+            "query": without_trusted_attributes(preview_query),
             "normalized_query": preview_compiled["explain"].normalized_query,
         }

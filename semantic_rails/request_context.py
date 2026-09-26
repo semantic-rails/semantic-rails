@@ -1,9 +1,9 @@
 """Request context and the audit sink protocol.
 
 Defines :class:`RequestContext` (actor, tenant, project, roles,
-environment, audience, request_id) and the helpers that resolve it
-from headers, JSON payloads, or a pluggable
-:class:`PolicyContextResolver`. Also owns :func:`emit_audit_event` —
+environment, audience, request_id, host-only :class:`TrustedAttributes`)
+and the helpers that resolve it from headers, JSON payloads, or a
+pluggable :class:`PolicyContextResolver`. Also owns :func:`emit_audit_event` —
 the single hook every governed write/read funnels through so hosts can
 plug in an :class:`AuditSink`. API-key auth lives in
 :mod:`semantic_rails.api_keys`; its names are re-exported here.
@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from types import MappingProxyType
+from typing import Any, NoReturn, Protocol, runtime_checkable
 
 from .api_keys import (  # noqa: F401 — API-key names are re-exported from their old home
     MISSING_API_KEY_FILE_SENTINEL,
@@ -28,6 +30,87 @@ from .api_keys import (  # noqa: F401 — API-key names are re-exported from the
 )
 
 CONTEXT_FIELDS = ("actor", "tenant", "project", "roles", "environment", "audience")
+
+AttributeValue = str | int | bool | tuple[str, ...] | tuple[int, ...] | tuple[bool, ...]
+_ATTRIBUTE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_ATTRIBUTE_SCALARS = frozenset({str, int, bool})
+
+
+def _attribute_value(name: str, value: Any) -> Any:
+    items = tuple(value) if type(value) in (list, tuple) else None
+    kinds = {type(item) for item in items} if items is not None else {type(value)}
+    if len(kinds) != 1 or not kinds <= _ATTRIBUTE_SCALARS or "" in (items or (value,)):
+        raise TypeError(
+            f"Trusted attribute {name!r} must be a non-empty str, an int or a bool, "
+            "or a non-empty list of one of those types."
+        )
+    return items if items is not None else value
+
+
+class TrustedAttributes:
+    """Immutable, typed request attributes that only the embedding host attaches.
+
+    A host builds them from verified identity, never from request input. The
+    engine carries this object through its internal policy-context dicts; JSON
+    cannot produce it, so a request body, header or plan cannot create or
+    replace it. It is left out of the public ``request_context`` and response
+    echoes. It is deliberately not a mapping or iterable, so a serializer that
+    converts mappings cannot expose it, and ``repr`` shows names only.
+    """
+
+    __slots__ = ("_values",)
+    _values: Mapping[str, AttributeValue]
+
+    def __init__(self, values: Mapping[str, Any] | None = None) -> None:
+        values = {} if values is None else values
+        if not isinstance(values, Mapping):
+            raise TypeError("Trusted attributes must be a mapping of names to values.")
+        checked: dict[str, AttributeValue] = {}
+        for name, value in values.items():
+            if type(name) is not str or not _ATTRIBUTE_NAME.fullmatch(name):
+                raise ValueError("Trusted attribute names must match [a-z][a-z0-9_]{0,63}.")
+            checked[name] = _attribute_value(name, value)
+        object.__setattr__(self, "_values", MappingProxyType(checked))
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._values))
+
+    def get(self, name: str) -> AttributeValue | None:
+        return self._values.get(name)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._values
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def _typed_items(self) -> tuple[Any, ...]:
+        # Qualify each value by its types, so that 1 and True stay distinct.
+        return tuple(
+            (name, tuple(type(item).__name__ for item in (v if type(v) is tuple else (v,))), v)
+            for name, v in sorted(self._values.items())
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TrustedAttributes):
+            return NotImplemented
+        return self._typed_items() == other._typed_items()
+
+    def __hash__(self) -> int:
+        return hash(self._typed_items())
+
+    def __repr__(self) -> str:
+        return f"TrustedAttributes(names={list(self.names)!r}, values=<redacted>)"
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (TrustedAttributes, (dict(self._values),))
+
+    def __setattr__(self, name: str, value: Any) -> NoReturn:
+        raise AttributeError("TrustedAttributes is immutable.")
+
+    def __delattr__(self, name: str) -> NoReturn:
+        raise AttributeError("TrustedAttributes is immutable.")
 
 
 @dataclass(frozen=True)
@@ -41,9 +124,15 @@ class RequestContext:
     audience: str = ""
     metric_allowlist: tuple[str, ...] | None = None
     dimension_allowlist: tuple[str, ...] | None = None
+    attributes: TrustedAttributes = field(default_factory=TrustedAttributes)
+
+    def __post_init__(self) -> None:
+        # The constructor is the trusted-host entry point; it validates a plain mapping.
+        if not isinstance(self.attributes, TrustedAttributes):
+            object.__setattr__(self, "attributes", TrustedAttributes(self.attributes))
 
     def to_policy_context(self) -> dict[str, Any]:
-        payload = {
+        payload: dict[str, Any] = {
             "actor": self.actor,
             "tenant": self.tenant,
             "project": self.project,
@@ -56,12 +145,14 @@ class RequestContext:
             value = getattr(self, key)
             if value is not None:
                 payload[key] = list(value)
+        if self.attributes:
+            payload["attributes"] = self.attributes
         return payload
 
     def to_public_dict(self) -> dict[str, Any]:
         payload = {"request_id": self.request_id, **self.to_policy_context()}
-        payload.pop("metric_allowlist", None)
-        payload.pop("dimension_allowlist", None)
+        for key in ("metric_allowlist", "dimension_allowlist", "attributes"):
+            payload.pop(key, None)
         return {key: value for key, value in payload.items() if value not in ("", [], None)}
 
 
@@ -99,7 +190,23 @@ def context_from_policy_context(
         audience=str(raw.get("audience", "") or "").strip(),
         metric_allowlist=_resource_allowlist(raw.get("metric_allowlist")),
         dimension_allowlist=_resource_allowlist(raw.get("dimension_allowlist")),
+        attributes=_carried_attributes(raw.get("attributes")),
     )
+
+
+def _carried_attributes(value: Any) -> TrustedAttributes:
+    # Keep only a host-built object on its way through internal calls. JSON
+    # input cannot produce one, so caller-supplied ``attributes`` are dropped.
+    return value if isinstance(value, TrustedAttributes) else TrustedAttributes()
+
+
+def without_trusted_attributes(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy a request payload for a response echo, minus the host-only attributes."""
+    out = dict(payload)
+    context = out.get("policy_context")
+    if isinstance(context, Mapping) and "attributes" in context:
+        out["policy_context"] = {k: v for k, v in context.items() if k != "attributes"}
+    return out
 
 
 def context_from_headers(
@@ -342,4 +449,5 @@ def request_context_payload(context: RequestContext | Mapping[str, Any] | None) 
 def dataclass_payload(context: RequestContext) -> dict[str, Any]:
     payload = asdict(context)
     payload["roles"] = list(context.roles)
+    payload.pop("attributes")
     return payload

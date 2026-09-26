@@ -254,6 +254,7 @@ def test_embedding_facade_exposes_supported_host_seams() -> None:
         "SemanticLayerMCPAdapter",
         "handle_jsonrpc_message",
         "RequestContext",
+        "TrustedAttributes",
         "PolicyContextResolver",
         "AuditSink",
         "ConnectionCredentialProvider",

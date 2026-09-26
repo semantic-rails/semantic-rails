@@ -39,7 +39,8 @@ response = handle_jsonrpc_message(
 The facade includes:
 
 - Runtime, compile-cache, HTTP service, MCP adapter, and JSON-RPC dispatcher.
-- Request-context resolver and audit-sink protocols/setters.
+- Request context, trusted attributes, and the resolver and audit-sink
+  protocols/setters.
 - Warehouse adapter base/concrete classes, adapter factory, connection-option
   normalization, connector registry functions, and option constants.
 - Package reference, parse/validation, and package-test services.
@@ -48,6 +49,27 @@ A multi-tenant host must derive `RequestContext` from authenticated identity and
 pass it to every remote MCP/HTTP request boundary. It must not trust
 caller-supplied policy context. Custom warehouse credentials remain a host
 concern; the engine receives an adapter through `Runtime.set_adapter`.
+
+The host may also attach typed attributes from verified identity, such as a
+customer ID mapped from a token claim:
+
+```python
+from semantic_rails.embedding import TrustedAttributes
+
+trusted = RequestContext(
+    actor="authenticated-user-id",
+    attributes=TrustedAttributes({"customer_id": "c-123", "regions": ["eu"]}),
+)
+```
+
+Names match `[a-z][a-z0-9_]{0,63}`. A value is a non-empty string, an int or a
+bool, or a non-empty list of one of those types; anything else raises. The
+engine carries the attributes through its internal calls. Request bodies,
+headers and plans can't create or replace them (a caller's
+`policy_context.attributes` is ignored), and they never appear in the public
+`request_context`, echoed queries, errors or audit events. The object is opaque
+and immutable: read it with `names` and `get(name)`. No query behavior reads
+attributes yet.
 
 For in-memory Snowflake credentials, implement the generic
 `ConnectionCredentialProvider` protocol and pass it to the public adapter:
