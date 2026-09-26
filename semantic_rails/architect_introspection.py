@@ -423,6 +423,8 @@ def measure_aggregation(name: str) -> tuple[str, str, str]:
         return "avg", "high", "a per-row price or rate: averaging is safe, summing is not"
     if summed:
         return "sum", "high", "an additive amount or quantity"
+    if re.search(r"(^|_)(number|rank|position|seq|sequence)$", name.lower()):
+        return "sum", "low", "a rank or sequence number; its sum rarely means anything"
     return "sum", "medium", "numeric; sum is the usual default"
 
 
@@ -512,6 +514,8 @@ def draft_roles(
             roles["dimensions"].append(
                 {
                     "column": name,
+                    # A boolean column as `categorical` would type its filter values as strings.
+                    "kind": "boolean" if _scalar_family(data_type) == "boolean" else "categorical",
                     "confidence": confidence,
                     "reason": reason,
                     **({"values": values} if values else {}),
@@ -553,7 +557,7 @@ def upsert_model_draft(
         },
         "dimensions": {
             item["column"]: {
-                "kind": "categorical",
+                "kind": item.get("kind", "categorical"),
                 **({"description": item["description"]} if item.get("description") else {}),
                 **({"domain": list(item["values"])} if item.get("values") else {}),
             }

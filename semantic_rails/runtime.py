@@ -25,6 +25,7 @@ from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
 
+from . import __version__
 from .acceleration.routing import (
     AGGREGATE_ROUTING_ENV,
     aggregate_routing,
@@ -52,6 +53,7 @@ from .config import (
     project_managed_source,
     repo_root,
     resolve_repo_path,
+    semantic_rails_home,
 )
 from .db import (
     Database,
@@ -1414,7 +1416,14 @@ class Runtime:
         package_candidate = os.path.abspath(os.path.join(self.package_root, value))
         repo_candidate = resolve_repo_path(value)
         if kind == "default_db":
-            return package_candidate if self.prefer_package_root_assets else repo_candidate
+            if self.prefer_package_root_assets:
+                return package_candidate
+            if not _is_repo_managed_source(self.package_root):
+                # An installed bundled package builds its database in the user's cache, not
+                # beside the installed code (maybe read-only; uninstall would leave it behind).
+                cache = os.path.join(semantic_rails_home(), "cache", self.package_id, __version__)
+                return os.path.join(cache, value)  # per version: installs may ship other seeds
+            return repo_candidate
         if self.prefer_package_root_assets and os.path.exists(package_candidate):
             return package_candidate
         if not os.path.exists(repo_candidate) and os.path.exists(package_candidate):
@@ -2300,6 +2309,26 @@ class Runtime:
                     "request_context": request_context_payload(context),
                 }
             )
+            # Validation type-checks booleans and numbers only; for text, dates and times only the
+            # warehouse can say a value fits its column (text for a BOOLEAN column fails there).
+            untyped = {"string", "date", "timestamp"}
+            untyped_ids = {row.id for row in self._config.dimensions if row.data_type in untyped}
+            unchecked = sorted({str(item.get("field")) for item in normalized.where} & untyped_ids)
+            if validation.get("ok") and unchecked:
+                validation.setdefault("warnings", []).append(
+                    {
+                        "code": "SEGMENT_VALUES_UNCHECKED",
+                        "severity": "warning",
+                        "message": (
+                            f"Membership values on text, date or time dimensions "
+                            f"({', '.join(unchecked)}) are checked in the warehouse only: preview "
+                            "the segment, or run "
+                            "`semantic-rails project validate --mode runtime` (REPL: "
+                            "`validate runtime`)."
+                        ),
+                        "details": {"segment_id": normalized.id, "dimensions": unchecked},
+                    }
+                )
             validation["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return validation
         except SemanticLayerError as exc:

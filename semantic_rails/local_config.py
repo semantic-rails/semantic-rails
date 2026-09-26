@@ -16,10 +16,11 @@ from typing import Any
 
 import yaml
 
+from .config import LOCAL_CONFIG_DIRNAME as LOCAL_CONFIG_DIRNAME
+from .config import SEMANTIC_RAILS_HOME_ENV as SEMANTIC_RAILS_HOME_ENV
+from .config import semantic_rails_home as semantic_rails_home
 from .errors import SemanticLayerError
 
-SEMANTIC_RAILS_HOME_ENV = "SEMANTIC_RAILS_HOME"
-LOCAL_CONFIG_DIRNAME = ".semantic_rails"
 LOCAL_PROFILES_FILENAME = "profiles.yml"
 
 
@@ -74,13 +75,6 @@ class LocalProfiles:
             return {}
         target_block = targets.get(target_name, {})
         return dict(target_block) if isinstance(target_block, dict) else {}
-
-
-def semantic_rails_home() -> Path:
-    configured = str(os.environ.get(SEMANTIC_RAILS_HOME_ENV, "") or "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return Path.home() / LOCAL_CONFIG_DIRNAME
 
 
 def local_profiles_path() -> Path:

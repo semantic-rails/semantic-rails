@@ -850,3 +850,23 @@ def test_mcp_tools_stay_inside_the_workspace(tmp_path: Path) -> None:
 
     assert escaped["ok"] is False and "workspace root" in escaped["error"]["message"]
     assert both["ok"] is False and both["error"]["code"] == "INVALID_MCP_ARGUMENTS"
+
+
+def test_a_rank_or_sequence_number_is_a_low_confidence_measure() -> None:
+    from semantic_rails.architect_introspection import draft_roles, upsert_model_draft
+
+    columns = [
+        {"name": "customer_order_number", "type": "BIGINT"},
+        {"name": "order_total", "type": "DOUBLE"},
+    ]
+    roles, _ = draft_roles("order", ["order_id"], [], columns)
+    draft = upsert_model_draft(entity="order", relation="orders", key_columns=["order_id"], **roles)
+
+    confidence = {item["key"]: item["confidence"] for item in roles["measures"]}
+    assert confidence == {
+        "order_count": "high",
+        "customer_order_number": "low",
+        "order_total": "high",
+    }
+    # The REPL leaves it unticked; the Architect's and dbt imports' drafts keep every measure.
+    assert set(draft["measures"]) == {"order_count", "customer_order_number", "order_total"}

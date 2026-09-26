@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 import unicodedata
+from datetime import datetime
+from datetime import time as dt_time
 from decimal import Decimal
 from typing import Any
 
@@ -106,8 +108,28 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         print("Resolved:")
         for row in resolved:
             print(f"  {row.get('kind')}: {row.get('id')} ({row.get('label')})")
-    warnings: list[Any] = list(plan.get("warnings", []) or [])
     result = report.get("result")
+    compiled = report.get("compile")
+    warnings: list[Any] = list(plan.get("warnings", []) or [])
+    if isinstance(result, dict):
+        warnings.extend(list(result.get("warnings", []) or []))
+        warnings.extend(list(result.get("assumptions", []) or []))
+    if isinstance(compiled, dict):
+        warnings.extend(list(compiled.get("warnings", []) or []))
+    # Before the rows: a warning can say the numbers answer something else.
+    if warnings:
+        print("Warnings:")
+        lines = []
+        for warning in warnings:
+            if isinstance(warning, dict):
+                code = warning.get("code") or warning.get("kind") or "WARNING"
+                lines.append(f"  {code}: {warning.get('message', '')}")
+            else:
+                lines.append(f"  {warning}")
+        # The engine repeats a planning warning for each measure it applies to (a ratio
+        # has two), and the line doesn't name the measure, so print each line once.
+        for line in dict.fromkeys(lines):
+            print(line)
     if isinstance(result, dict):
         rows = list(result.get("rows", []) or [])
         count = result.get("row_count", len(rows))
@@ -140,26 +162,9 @@ def _print_ask_report(report: dict[str, Any]) -> None:
             if planned_row_limit:
                 hint += f" (the planned query's own {planned_row_limit}-row cap still applies)"
             print(hint)
-        warnings.extend(list(result.get("warnings", []) or []))
-        warnings.extend(list(result.get("assumptions", []) or []))
-    compiled = report.get("compile")
     if isinstance(compiled, dict):
         print("SQL:")
         print(compiled.get("sql", ""))
-        warnings.extend(list(compiled.get("warnings", []) or []))
-    if warnings:
-        print("Warnings:")
-        lines = []
-        for warning in warnings:
-            if isinstance(warning, dict):
-                code = warning.get("code") or warning.get("kind") or "WARNING"
-                lines.append(f"  {code}: {warning.get('message', '')}")
-            else:
-                lines.append(f"  {warning}")
-        # The engine repeats a planning warning for each measure it applies to (a ratio
-        # has two), and the line doesn't name the measure, so print each line once.
-        for line in dict.fromkeys(lines):
-            print(line)
     query = report.get("query")
     if query:
         print("Query IR:")
@@ -263,14 +268,20 @@ def _print_project_validation(report: dict[str, Any]) -> None:
     if errors:
         print("Errors:")
         # Each probe reports a shared failure (a missing seed, say) again: print it once.
-        counts: dict[str, int] = {}
+        counts: dict[tuple[str, str], int] = {}
         for error in errors:
             message = error.get("message") or error if isinstance(error, dict) else error
             check = error.get("check") if isinstance(error, dict) else None
             line = f"  {check}: {message}" if check else f"  {message}"
-            counts[line] = counts.get(line, 0) + 1
-        for line, count in list(counts.items())[:10]:
+            hints = list(error.get("recovery_hints", []) or []) if isinstance(error, dict) else []
+            hint = (
+                str(hints[0].get("message") or "") if hints and isinstance(hints[0], dict) else ""
+            )
+            counts[(line, hint)] = counts.get((line, hint), 0) + 1
+        for (line, hint), count in list(counts.items())[:10]:
             print(line + (f" ({count} times)" if count > 1 else ""))
+            if hint:
+                print(f"    hint: {hint}")
         if len(counts) > 10:
             print(f"  ... {len(counts) - 10} more error(s)")
 
@@ -322,6 +333,9 @@ def _print_rows(
         print(line)
 
 
+_DATE_GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
+
+
 def _table_lines(rows: list[dict[str, Any]], output_columns: list[dict[str, Any]]) -> list[str]:
     """Render result rows as an aligned text table for people.
 
@@ -347,8 +361,15 @@ def _table_lines(rows: list[dict[str, Any]], output_columns: list[dict[str, Any]
     numeric: dict[str, bool] = {}
     for column in columns:
         info = dict(meta.get(column, {}) or {})
+        values = [row.get(column) for row in rows]
+        if info.get("type") == "time" and column.rsplit("__", 1)[-1] in _DATE_GRAINS:
+            # A month bucket is a date, whether the clock is a date or a timestamp column.
+            values = [
+                value.date() if isinstance(value, datetime) and value.time() == dt_time() else value
+                for value in values
+            ]
         cells[column], numeric[column] = _format_column(
-            [row.get(column) for row in rows],
+            values,
             column_type=str(info.get("type", "") or ""),
             as_stored=_is_dimension_column(info),
         )

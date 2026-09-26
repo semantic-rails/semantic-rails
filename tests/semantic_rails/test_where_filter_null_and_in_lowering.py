@@ -366,14 +366,16 @@ def test_numeric_membership_lists_and_scalar_type_diagnostics_stay_intact(runtim
             issue = report["errors"][0]
             assert issue["code"] == "INVALID_QUERY"
             assert "expects a numeric value" in issue["message"]
-            assert issue["recovery_hints"] == []
+            assert [hint["kind"] for hint in issue["recovery_hints"]] == ["fix_filter_value_type"]
         string_report = _validate(
             runtime,
             where=[{"field": "dimension.jaffle_store_name", "op": "=", "value": 1}],
         )
         assert string_report["ok"] is False
         assert "expects a string value" in string_report["errors"][0]["message"]
-        assert string_report["errors"][0]["recovery_hints"] == []
+        hints = string_report["errors"][0]["recovery_hints"]
+        assert [hint["kind"] for hint in hints] == ["fix_filter_value_type"]
+        assert "on text; in YAML, quote text" in hints[0]["message"]
     finally:
         runtime.close()
 

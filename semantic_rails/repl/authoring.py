@@ -29,6 +29,7 @@ from ..expressions import (
     resolve_filter_dimension,
 )
 from ..schema import MeasureConfig, MetricConfig, PackageConfig
+from ..segments import _metric_root_entity
 from .backend import current_backend
 from .prompts import (
     _author_choice,
@@ -378,7 +379,20 @@ def _table_source(
         with introspection.open_duckdb(path) as warehouse:
             tables = introspection.list_tables(warehouse)
     except SemanticLayerError as exc:
-        print(f"Can't list the warehouse tables: {exc}. Enter the table by hand.")
+        seed = dict(_package_block(ref).get("seed") or {})
+        # `external`: dbt (or another tool) builds the file; its message names `dbt build`.
+        if exc.details.get("reason") == "database_missing" and seed.get("kind") not in {
+            None,
+            "",
+            "external",
+        }:
+            print(
+                f"Can't list the warehouse tables: {exc.details['duckdb_path']} isn't built yet. "
+                "Build it from the package's seed files with `validate runtime`, then run "
+                "`author model` again, or enter the table by hand."
+            )
+        else:
+            print(f"Can't list the warehouse tables: {exc}. Enter the table by hand.")
         return None
     if not tables:
         print(f"{path} has no tables yet. Enter the table by hand.")
@@ -414,7 +428,13 @@ def _author_model_from_table(
         detail += f"; modeled by {modeled[relation]}" if relation in modeled else ""
         options.append((relation, f"{relation} ({detail})"))
     options.append((_TYPE_IT, "Type a table name instead"))
-    default = next(value for value, _ in options if value not in modeled)
+    # Facts are usually the largest table; a calendar or lookup sorting first isn't the pick.
+    unmodeled = [table for table in tables if table["relation"] not in modeled]
+    default = (
+        max(unmodeled, key=lambda table: table["rows_estimate"] or 0)["relation"]
+        if unmodeled
+        else _TYPE_IT
+    )
     relation = _author_choice(f"Table to model (from {path})", options, default=default)
     if relation == _TYPE_IT:
         return None
@@ -723,7 +743,7 @@ def _measure_change(
     measure_kind = _kept_choice(
         "What primitive fact is this?",
         [
-            ("aggregate", "Aggregate - sum, average, minimum, or maximum"),
+            ("aggregate", "Aggregate - sum, average, median, minimum, or maximum"),
             ("entity_count", "Entity count - distinct count of business keys"),
         ],
         current.get("kind"),
@@ -1307,7 +1327,7 @@ def _time_recipe(
         "left": {"kind": "binary", "op": "subtract", "left": now, "right": then},
         "right": dict(then),
     }
-    return {"expression": growth}, f"How did {name} change by {unit}?"
+    return {"expression": growth}, f"What is {name} by {unit}?"
 
 
 def _calendar_units(config: PackageConfig) -> list[tuple[str, str]]:
@@ -1450,23 +1470,26 @@ def _row_filter(
         [("IN", "is one of"), ("NOT IN", "is not one of")],
         default=str(saved["op"]) if saved and previous else "IN",
     )
-    domain = next(
-        (item.values for item in config.value_domains if item.id == loaded.value_domain), []
-    )
+    domain = [
+        (value.value, value.label)
+        for item in config.value_domains
+        if item.id == loaded.value_domain
+        for value in item.values
+    ] or ([(True, "true"), (False, "false")] if loaded.data_type == "boolean" else [])
 
     def same(left: Any, right: Any) -> bool:
         return type(left) is type(right) and left == right
 
     while True:
         if domain:
-            choices = [(value.value, value.label) for value in domain]
+            choices = list(domain)
             choices += [
                 (old, f"Existing value {old!r}")
                 for old in previous
                 if not any(same(value, old) for value, _ in choices)
             ]
             options = [
-                (str(index), text if text == str(value) else f"{text} ({value})")
+                (str(index), text if text == _shown(value) else f"{text} ({_shown(value)})")
                 for index, (value, text) in enumerate(choices)
             ]
             defaults = [
@@ -1480,27 +1503,37 @@ def _row_filter(
                 else [choices[int(index)][0] for index in picked]
             )
         else:
-            default_text = ", ".join(
-                str(value).lower() if isinstance(value, bool) else str(value) for value in previous
-            )
+            default_text = ", ".join(_shown(value) for value in previous)
             raw = _author_prompt("Values, comma separated", default_text)
-            values = (
-                previous
-                if previous and raw == default_text
-                else [
-                    _filter_value(part.strip(), loaded.data_type)
-                    for part in raw.split(",")
-                    if part.strip()
-                ]
-            )
+            try:
+                values = (
+                    previous
+                    if previous and raw == default_text
+                    else [
+                        _filter_value(part.strip(), loaded.data_type)
+                        for part in raw.split(",")
+                        if part.strip()
+                    ]
+                )
+            except SemanticLayerError as exc:
+                print(f"{exc}. Enter other values, or type cancel.")
+                continue
         if values:
             return [{"field": field_id, "op": op, "value": values}]
         print("Choose at least one value, or type cancel.")
 
 
+def _shown(value: Any) -> str:
+    """A filter value as the person types it: booleans as true/false, as in YAML."""
+
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
 def _filter_value(value: str, data_type: str) -> Any:
     """Parse free-text filters only when the loaded dimension type calls for it."""
 
+    if len(value) > 1 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1]  # `'true'` means the text true, not a value with quotes in it
     if data_type == "boolean":
         if value.lower() not in {"true", "false"}:
             raise SemanticLayerError(
@@ -1602,62 +1635,62 @@ def _author_segment(
     ref: PackageReference,
     before_warnings: set[str],
 ) -> ArchitectMutation:
-    entities = _inventory_items(inventory, "entity")
+    config = load_package_config(ref.source_path)
+    # The loader requires a basis metric rooted on the segment's entity; offer only those.
+    roots: dict[str, str] = {}
+    for recipe in config.metric_recipes:
+        with contextlib.suppress(SemanticLayerError):
+            roots[recipe.id] = _metric_root_entity(config, recipe.expression)
+    rooted = {entity.id for entity in config.entities if entity.allowed_as_root}
+    entities = [
+        row
+        for row in _inventory_items(inventory, "entity")
+        if _row_id(row) in rooted and _row_id(row) in roots.values()
+    ]
     dimensions = _inventory_items(inventory, "dimension")
-    metrics = _inventory_items(inventory, "metric")
-    if not entities or not dimensions or not metrics:
+    if not entities or not dimensions:
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            "Segments need an entity, a dimension, and a metric. Add those abstractions first.",
+            "Segments need an entity, one of its dimensions, and a metric over its rows. "
+            "Add those abstractions first.",
         )
     key, label, existing = _author_identity(project, inventory, "segment", "active_customers")
     current = dict(existing.get("spec", {}) or {}) if existing else {}
-    entity = _select_inventory_item("Entity whose members this segment contains", entities)
+    entity = _select_inventory_item(
+        "Entity whose members this segment contains",
+        entities,
+        default_key=str(current.get("entity", "")),
+    )
     entity_model = str((entity.get("spec", {}) or {}).get("model", ""))
     entity_dimensions = [row for row in dimensions if str(row.get("parent", "")) == entity_model]
     if not entity_dimensions:
         entity_dimensions = dimensions
     current_preview = list(current.get("preview_dimensions", []) or [])
+    current_where = list((current.get("membership", {}) or {}).get("where", []) or [])
+    current_filter = dict(current_where[0] or {}) if current_where else {}
     dimension = _select_inventory_item(
         "Membership dimension",
         entity_dimensions,
-        default_key=str(current_preview[0]) if current_preview else "",
+        default_key=str(current_filter.get("field") or (current_preview or [""])[0]),
     )
-    model_clock_ids = {
-        str(row.get("id", ""))
-        for row in _inventory_items(inventory, "time")
-        if str(row.get("parent", "")) == entity_model
-    }
-    compatible_metrics = [
-        row
-        for row in metrics
-        if not model_clock_ids
-        or not str((row.get("spec", {}) or {}).get("temporal_role", ""))
-        or str((row.get("spec", {}) or {}).get("temporal_role", "")) in model_clock_ids
-    ]
-    if not compatible_metrics:
-        compatible_metrics = metrics
+    if current_filter.get("field") != _row_id(dimension):
+        current_filter.pop("value", None)  # a saved value belongs to its own field
     basis = _select_inventory_item(
         "Metric used when previewing segment size",
-        compatible_metrics,
+        [
+            row
+            for row in _inventory_items(inventory, "metric")
+            if roots.get(_row_id(row)) == _row_id(entity)
+        ],
         default_key=str(current.get("basis_metric", "")),
     )
-    dimension_kind = str((dimension.get("spec", {}) or {}).get("kind", "categorical"))
+    loaded = next((item for item in config.dimensions if item.id == _row_id(dimension)), None)
+    data_type = loaded.data_type if loaded else "string"
     comparison_options = [("=", "Equals"), ("!=", "Does not equal")]
-    if dimension_kind in {
-        "integer",
-        "continuous",
-        "number",
-        "percent",
-        "currency",
-        "date",
-        "timestamp",
-    }:
+    if data_type in {"integer", "number", "date", "timestamp"}:
         comparison_options.extend(
             [(">=", "At least"), (">", "Greater than"), ("<=", "At most"), ("<", "Less than")]
         )
-    current_where = list((current.get("membership", {}) or {}).get("where", []) or [])
-    current_filter = dict(current_where[0] or {}) if current_where else {}
     current_op = str(current_filter.get("op", "="))
     op = _author_choice(
         "Membership comparison",
@@ -1665,25 +1698,46 @@ def _author_segment(
         default=current_op if current_op in {value for value, _ in comparison_options} else "=",
     )
     domain = list((dimension.get("spec", {}) or {}).get("domain", []) or [])
-    domain_default: Any = "true" if dimension_kind == "boolean" else ""
+    domain_default: Any = ""
     if domain:
         first_domain = domain[0]
         domain_default = (
             first_domain.get("value", "") if isinstance(first_domain, dict) else first_domain
         )
-    value_default = current_filter.get("value", domain_default)
-    value = _author_scalar(
-        _author_prompt(
-            "Comparison value (use a value from the authored domain when available)",
-            str(value_default),
+    value_default = str(current_filter.get("value", domain_default))
+    if data_type == "boolean":
+        value: Any = (
+            _author_choice(
+                "Comparison value",
+                [("true", "true"), ("false", "false")],
+                default="false" if value_default.lower() == "false" else "true",
+            )
+            == "true"
         )
-    )
+    else:
+        while True:
+            raw = _author_prompt(
+                "Comparison value (use a value from the authored domain when available)",
+                value_default,
+            )
+            if "value" in current_filter and raw == value_default:
+                value = current_filter["value"]  # Enter keeps it as saved
+                break
+            try:
+                value = _filter_value(raw, data_type)
+            except SemanticLayerError as exc:
+                print(f"{exc}. Enter another value, or type cancel.")
+                continue
+            if value != "":
+                break
+            print("Enter a value, or type cancel.")
     description = _author_prompt(
         "Description",
         str(
             current.get(
                 "description",
-                f"{label} where {dimension.get('label') or dimension.get('key')} {op} {value}.",
+                f"{label} where {dimension.get('label') or dimension.get('key')} {op} "
+                f"{_shown(value)}.",
             )
         ),
     )
@@ -1903,6 +1957,13 @@ def _select_model(inventory: dict[str, Any]) -> dict[str, Any]:
             "INVALID_CONFIG",
             "Create a model/entity first with `author model`.",
         )
+    calendars = {
+        str((row.get("spec") or {}).get("model", ""))
+        for row in _inventory_items(inventory, "entity")
+        if (row.get("spec") or {}).get("kind") == "time"
+    }
+    # A calendar is a date spine; recommend a model that holds facts first.
+    models.sort(key=lambda row: str(row.get("key", "")) in calendars)
     return _select_inventory_item("Model to extend", models)
 
 
@@ -2031,24 +2092,16 @@ def _authoring_namespace(project: ArchitectProject) -> str:
     )
 
 
-def _authoring_warehouse(ref: PackageReference) -> str:
+def _package_block(ref: PackageReference) -> dict[str, Any]:
+    """The ``package:`` block of package.yml, or {} when it can't be read."""
     source = Path(ref.source_path)
     package_path = source / "package.yml" if source.is_dir() else source
     try:
         raw = dict(yaml.safe_load(package_path.read_text(encoding="utf-8")) or {})
     except (OSError, yaml.YAMLError):
-        return "configured"
-    return str((raw.get("package", {}) or {}).get("warehouse", "configured") or "configured")
+        return {}
+    return dict(raw.get("package", {}) or {})
 
 
-def _author_scalar(value: str) -> Any:
-    lowered = value.strip().lower()
-    if lowered in {"true", "false"}:
-        return lowered == "true"
-    try:
-        return int(value)
-    except ValueError:
-        try:
-            return float(value)
-        except ValueError:
-            return value
+def _authoring_warehouse(ref: PackageReference) -> str:
+    return str(_package_block(ref).get("warehouse", "configured") or "configured")

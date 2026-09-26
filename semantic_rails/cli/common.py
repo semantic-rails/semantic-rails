@@ -284,8 +284,15 @@ def _slug(value: str, *, fallback: str = "semantic_project") -> str:
     return out or fallback
 
 
+_TITLE_ACRONYMS = {"mom": "MoM", "qoq": "QoQ", "wow": "WoW", "yoy": "YoY"}
+_TITLE_ACRONYMS |= {word: word.upper() for word in ("mtd", "qtd", "ytd")}
+
+
 def _title(value: str) -> str:
-    return " ".join(part.capitalize() for part in str(value or "").replace("_", " ").split())
+    return " ".join(
+        _TITLE_ACRONYMS.get(part.lower(), part.capitalize())
+        for part in str(value or "").replace("_", " ").split()
+    )
 
 
 def _print_json(payload: dict[str, Any]) -> None:

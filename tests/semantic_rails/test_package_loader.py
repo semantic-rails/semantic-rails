@@ -389,6 +389,53 @@ def test_package_registry_falls_back_to_installed_data_root(
         config_module.list_package_paths.cache_clear()
 
 
+def test_an_installed_bundled_package_builds_its_database_in_the_user_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import semantic_rails.runtime as runtime_module
+    from semantic_rails.cli import scaffold
+    from semantic_rails.package_snapshot import load_package_snapshot
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(home))
+    snapshot = load_package_snapshot(config_module.get_package_path("jaffle_shop"))
+    checkout = runtime_module.Runtime.from_snapshot(snapshot, package_id="jaffle_shop")
+    assert checkout.db_path == config_module.resolve_repo_path("data/jaffle_shop.duckdb")
+
+    # Installed: code in site-packages, bundled packages under <prefix>/share/semantic-rails.
+    site_packages, installed = tmp_path / "site-packages", tmp_path / "share" / "semantic-rails"
+    scaffold.create_project_report(
+        package_id="mini",
+        workspace_root=str(installed / "configs" / "semantic_rails"),
+        run_checks=False,
+    )
+    for module in (config_module, runtime_module):
+        monkeypatch.setattr(module, "repo_root", lambda: str(site_packages))
+    monkeypatch.setattr(
+        config_module.sysconfig, "get_path", lambda name: str(tmp_path) if name == "data" else ""
+    )
+    config_module.list_package_paths.cache_clear()
+    before = sorted(path for path in installed.rglob("*"))
+    try:
+        runtime = runtime_module.Runtime("mini")
+        try:
+            query = {
+                "version": 1,
+                "select": [{"expression": {"metric": "metric.mini.event_count"}}],
+            }
+            assert runtime.query(query)["rows"]  # builds the database from the seed files
+        finally:
+            runtime.close()
+    finally:
+        config_module.list_package_paths.cache_clear()
+
+    version = runtime_module.__version__
+    assert runtime.db_path == str(home / "cache" / "mini" / version / "data" / "mini.duckdb")
+    assert Path(runtime.db_path).is_file()
+    assert sorted(path for path in installed.rglob("*")) == before
+    assert not site_packages.exists()
+
+
 def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
     package_dir = tmp_path / "snowflake_loader_demo"
 

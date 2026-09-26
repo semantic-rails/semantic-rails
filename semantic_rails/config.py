@@ -15,6 +15,7 @@ import re
 import sysconfig
 from datetime import date
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from .config_parts.package_loader import normalize_package
@@ -111,11 +112,24 @@ __all__ = [
     "project_managed_source",
     "repo_root",
     "resolve_repo_path",
+    "semantic_rails_home",
     "snowflake_native_direct_connect_errors",
     "supported_warehouses",
     "validate_operational_payload",
     "warehouse_connector",
 ]
+
+
+SEMANTIC_RAILS_HOME_ENV = "SEMANTIC_RAILS_HOME"
+LOCAL_CONFIG_DIRNAME = ".semantic_rails"
+
+
+def semantic_rails_home() -> Path:
+    """The user's Semantic Rails folder: profiles, MCP state and generated caches."""
+    configured = str(os.environ.get(SEMANTIC_RAILS_HOME_ENV, "") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / LOCAL_CONFIG_DIRNAME
 
 
 def repo_root() -> str:

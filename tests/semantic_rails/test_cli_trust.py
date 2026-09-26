@@ -450,12 +450,14 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
         "To lift the 5-row cap, run: semantic-rails ask --path /nowhere orders --run --limit 0\n"
         in output
     )
-    # The plan's own warnings come first: they say the draft may answer something else.
+    # The plan's own warnings come first, and before the rows: they say the draft may
+    # answer something else.
     assert report["plan"]["warnings"] == [unmatched]
     assert (
         "Warnings:\n  PLAN_UNMATCHED_TERMS: The draft doesn't use: rolling.\n"
         "  EMPTY_RESULT_WINDOW: No data in window.\n" in output
     )
+    assert output.index("Warnings:") < output.index("Rows: 1")
     assert "  Treated a blank grain as month.\n" in output
 
 
@@ -670,6 +672,47 @@ def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str
     proc = _run(nowhere, "ask", "--path", bundled, "monthly revenue by store", "--json")
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["package"]["bundled"] is True
+
+
+def test_day_or_coarser_time_buckets_print_as_dates_and_labels_keep_acronyms() -> None:
+    from datetime import datetime
+
+    midnight, noon = datetime(2016, 9, 1), datetime(2016, 9, 1, 12)
+    rows = [{"t__month": midnight, "t__hour": midnight}, {"t__month": midnight, "t__hour": noon}]
+    columns = [{"field": field, "type": "time"} for field in ("t__month", "t__hour")]
+
+    _header, _rule, *cells = cli_output._table_lines(rows, columns)
+
+    assert [row.split(" | ")[0].strip() for row in cells] == ["2016-09-01"] * 2
+    assert cells[1].endswith("2016-09-01 12:00:00")
+    assert common._title("revenue_mom_growth") == "Revenue MoM Growth"
+    assert common._title("orders_ytd") == "Orders YTD"
+
+
+def test_a_failed_validation_probe_carries_the_recovery_hint_of_its_error() -> None:
+    from semantic_rails.config_validation import _probe_failure
+
+    error = {"dimension": "dimension.status", "data_type": "string", "value": 1}
+    probe = {
+        "kind": "metric",
+        "object_id": "metric.m",
+        "error": {"code": "INVALID_QUERY", "message": "expects a string", "details": error},
+    }
+
+    failure = _probe_failure(probe)
+
+    assert failure["details"]["object_id"] == "metric.m"
+    assert [hint["kind"] for hint in failure["recovery_hints"]] == ["fix_filter_value_type"]
+
+
+def test_a_repeated_validation_error_prints_its_count_then_its_hint(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    error = {"message": "Boom.", "recovery_hints": [{"message": "Do this."}]}
+
+    cli_output._print_project_validation({"package": {"id": "p"}, "errors": [error, error]})
+
+    assert "  Boom. (2 times)\n    hint: Do this.\n" in capsys.readouterr().out
 
 
 def test_dimension_columns_print_ids_and_years_as_stored() -> None:

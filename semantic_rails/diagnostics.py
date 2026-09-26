@@ -152,6 +152,14 @@ def semantic_issue(
     return issue
 
 
+_FILTER_VALUE_FORMS = {
+    "boolean": "true or false, unquoted (YAML `value: true`)",
+    "string": "text; in YAML, quote text that looks like a number or boolean (`value: 'true'`)",
+    "integer": "a whole number",
+    "number": "a number",
+}
+
+
 def recovery_hints_for_error(
     code: str, details: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
@@ -976,7 +984,33 @@ def recovery_hints_for_error(
                     }
                 )
             return grain_hints
+        data_type = str(details.get("data_type", "") or "")
+        if data_type and details.get("dimension") and "value" in details:
+            # A where value of the wrong type for its dimension (see compiler).
+            dimension = details["dimension"]
+            message = (
+                f"Filter {dimension} on {_FILTER_VALUE_FORMS.get(data_type, 'a ' + data_type)}. "
+                "If its column holds another type, set the dimension's `kind` to match."
+            )
+            return [
+                {
+                    "kind": "fix_filter_value_type",
+                    "message": message,
+                    "dimension": dimension,
+                    "data_type": data_type,
+                }
+            ]
         return list(details.get("recovery_hints", []) or [])
+    if code == "QUERY_EXECUTION_ERROR" and details.get("segment_id"):
+        segment = details["segment_id"]
+        message = (
+            f"If the warehouse refused a membership value of {segment} (a type or conversion "
+            "error), make each value fit its column, and each dimension's `kind` match it (a "
+            "true/false column is `kind: boolean`, compared with `value: true`)."
+        )
+        return [
+            {"kind": "check_segment_membership_values", "message": message, "segment_id": segment}
+        ]
     if code == "UNKNOWN_MCP_RESOURCE":
         return [
             {
