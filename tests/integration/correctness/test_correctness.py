@@ -47,6 +47,7 @@ CLOCK = {
 STEP = {"day": "1 day", "week": "7 day", "month": "1 month", "quarter": "3 month", "year": "1 year"}
 
 # Known wrong answers.
+ISSUES = "https://github.com/semantic-rails/semantic-rails/issues/"
 DUPLICATE_PERIODS = (
     "duplicate periods: a distribution beside a rolling or prior_period sibling returns every"
     " period twice on Postgres (the DATE calendar key and the TIMESTAMP bucket miss each other"
@@ -55,14 +56,17 @@ DUPLICATE_PERIODS = (
 ZONE_AWARE = (
     "zone-aware column: a TIMESTAMP WITH TIME ZONE column is bucketed in the session's time"
     " zone instead of the role's (UTC), so the answer follows the server's setting"
+    f" ({ISSUES}168)"
 )
 NULL_SUM_TO_ZERO = (
     "NULL sum filled as zero: once the series is dense (fill, or a window beside it), a bucket"
     " whose only amounts are NULL reads 0, where the same question unfilled reads NULL"
+    f" ({ISSUES}169)"
 )
 GAP_NULL = (
     "gap reads NULL: beside a distribution, revenue in a month without orders reads NULL"
-    " instead of 0 (the same query without the distribution reads 0)"
+    " instead of 0, where the same query without the distribution reads 0"
+    f" ({ISSUES}170)"
 )
 
 
