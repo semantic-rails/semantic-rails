@@ -505,6 +505,73 @@ def _time_spec(role: str, text: str, clock: str = "") -> dict[str, Any]:
     return {"temporal_role": role, "grain": grain or "month", **window.bounds}
 
 
+def _fiscal_calendar(config: Any) -> Any | None:
+    """The package's one non-default calendar that names itself fiscal, else ``None``."""
+
+    rows = [
+        row
+        for row in config.entities
+        if row.kind == "time"
+        and (row.calendar_id or "default") != "default"
+        and "fiscal" in _tokens(f"{row.calendar_id} {row.id} {row.name} {row.label}")
+    ]
+    return rows[0] if len(rows) == 1 else None
+
+
+# The calendar column a filled series buckets each grain on.
+_CALENDAR_BUCKET_COLUMNS = {
+    "day": "date_day",
+    "week": "week_start",
+    "month": "month_start",
+    "quarter": "quarter_start",
+    "year": "year_start",
+}
+
+
+def _with_fiscal_calendar(config: Any, text: str, query: dict[str, Any]) -> dict[str, Any]:
+    """Bucket a fiscal question's draft on the package's fiscal calendar.
+
+    ``fill`` routes the buckets through the calendar (the engine refuses a
+    non-default ``calendar_id`` without it). A ``group_by`` on that calendar's
+    bucket for the same grain ("by fiscal quarter" read as a dimension) is what
+    the time bucket now holds, so it goes. The draft is unchanged, and plan
+    reports the gap, without a fiscal calendar, or when the planner chose the
+    grain to hold a window in one Gregorian bucket: a fiscal bucket of that
+    grain may split the window in two.
+    """
+
+    time = query.get("time")
+    calendar = _fiscal_calendar(config)
+    if (
+        calendar is None
+        or not isinstance(time, dict)
+        or not time.get("grain")
+        or time.get("calendar_id")
+        or not _FISCAL_RE.search(str(text or "").lower())
+        or (time.get("start") and time["grain"] != "day" and not _explicit_grain(text))
+    ):
+        return query
+    column = _CALENDAR_BUCKET_COLUMNS.get(str(time["grain"]))
+    bucket = {
+        row.id for row in config.dimensions if row.entity == calendar.id and row.column == column
+    }
+    out = {**query, "time": {**time, "calendar_id": calendar.calendar_id, "fill": True}}
+    kept = {
+        "group_by": [item for item in query.get("group_by") or [] if item not in bucket],
+        "order_by": [
+            item
+            for item in query.get("order_by") or []
+            if not (isinstance(item, dict) and item.get("field") in bucket)
+        ],
+    }
+    for key, items in kept.items():
+        if items:
+            out[key] = items
+        else:
+            out.pop(key, None)
+    return out
+
+
 def _first_day_of_next_month(value: date) -> date:
     return (value.replace(day=28) + timedelta(days=4)).replace(day=1)
 
@@ -690,7 +757,19 @@ _OTHER_TIME_CUE_RES = (
     re.compile(
         r"\b(?:q[1-4]|h[12])\b|\b(?:first|second|third|fourth|1st|2nd|3rd|4th)\s+(?:quarter|half)\b"
     ),
+    # A fiscal period ("last fiscal quarter", "this fiscal year", "FY2017"):
+    # its dates come from the package's fiscal calendar.
+    re.compile(
+        rf"{_COMPARISON_GUARD}\b(?:last|past|previous|prior|trailing|this|current|next)\s+"
+        rf"(?:(?:\d+|{_NUMBER_WORD_ALT})\s+)?fiscal\s+[a-z]+"
+    ),
+    re.compile(r"\bfy\s*'?\d{2}(?:\d{2})?\b"),
 )
+# "fiscal quarter", "FY2017": the question counts time on a fiscal calendar,
+# so a window resolves only from exact days, never as the Gregorian period of
+# the same name ("fiscal Q2 2017" is not April to June).
+_FISCAL_RE = re.compile(r"\bfiscal\b|\bfy(?:\s*'?\d{2}(?:\d{2})?)?\b")
+_DAY_EXACT_FORMS = (_ISO_RANGE_RE, _ISO_DAY_RE, _DAY_RANGE_RE, _MONTH_DAY_RE, _DAY_MONTH_RE)
 # A 20xx number that counts rather than dates ("top 2000 customers", "$2000",
 # "2000 or more orders") is not a time cue.
 _QUANTITY_BEFORE_RE = re.compile(
@@ -897,6 +976,7 @@ def _calendar_windows(
 
     accepted: list[tuple[tuple[int, int], dict[str, str]]] = []
     rejected: list[tuple[int, int]] = []
+    fiscal = _FISCAL_RE.search(lowered) is not None
     for pattern, to_bounds in _CALENDAR_FORMS:
         for match in pattern.finditer(lowered):
             span = match.span()
@@ -918,6 +998,7 @@ def _calendar_windows(
             if (
                 not bounds
                 or boundary
+                or (fiscal and pattern not in _DAY_EXACT_FORMS)
                 or _UNPARSED_RANGE_BEFORE_RE.search(before)
                 or _UNPARSED_RANGE_AFTER_RE.search(after)
             ):
@@ -1007,6 +1088,10 @@ _MAX_TIME_TEXT = 2000
 def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     accepted, rejected = _calendar_windows(lowered)
     relative = _relative_window(lowered, today)
+    if _FISCAL_RE.search(lowered):
+        # A fiscal question's "last quarter" or "this year" is a fiscal period.
+        rejected += [row[0] for row in relative if row[2] != "day"]
+        relative = [row for row in relative if row[2] == "day"]
     windows: list[tuple[tuple[int, int], dict[str, Any], str]] = [
         (span, bounds, "") for span, bounds in accepted
     ]
@@ -1615,15 +1700,15 @@ _DEFAULT_TOP_LIMIT = 5
 _PERIOD_SHIFT_TRIGGERS = (
     (r"\byoy\b", "year"),
     (r"\byear[\s\-]?over[\s\-]?year\b", "year"),
-    (r"\bvs\.?\s+(?:last|prior|previous)\s+year\b", "year"),
-    (r"\bversus\s+(?:last|prior|previous)\s+year\b", "year"),
-    (r"\bcompared\s+to\s+(?:last|prior|previous)\s+year\b", "year"),
+    (r"\bvs\.?\s+(?:last|prior|previous)\s+(?:fiscal\s+)?year\b", "year"),
+    (r"\bversus\s+(?:last|prior|previous)\s+(?:fiscal\s+)?year\b", "year"),
+    (r"\bcompared\s+to\s+(?:last|prior|previous)\s+(?:fiscal\s+)?year\b", "year"),
     (r"\bmom\b", "month"),
     (r"\bmonth[\s\-]?over[\s\-]?month\b", "month"),
-    (r"\bvs\.?\s+(?:last|prior|previous)\s+month\b", "month"),
+    (r"\bvs\.?\s+(?:last|prior|previous)\s+(?:fiscal\s+)?month\b", "month"),
     (r"\bwow\b", "week"),
     (r"\bweek[\s\-]?over[\s\-]?week\b", "week"),
-    (r"\bvs\.?\s+(?:last|prior|previous)\s+week\b", "week"),
+    (r"\bvs\.?\s+(?:last|prior|previous)\s+(?:fiscal\s+)?week\b", "week"),
     (r"\bqoq\b", "quarter"),
     (r"\bquarter[\s\-]?over[\s\-]?quarter\b", "quarter"),
 )

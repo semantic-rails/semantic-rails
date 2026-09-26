@@ -182,7 +182,12 @@ A draft that validates can still leave out part of the question. `plan` returns
   only values the question names, with or without grouping;
 - combines top-level filters on one field so no value can survive, which returns no rows
   (`contradictory_filters`);
-- misses a negation, a prior-period comparison or one of several named subjects;
+- misses a negation, a prior-period comparison ("vs prior fiscal quarter" included) or one of
+  several named subjects;
+- counts time in fiscal periods ("fiscal quarter", "FY") on the Gregorian calendar
+  (`fiscal_calendar_unrealized`). When the package has one calendar whose name says fiscal,
+  `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`); otherwise
+  the recovery hint names the package's calendars;
 - picked its subject from several that match the question equally well, when neither the
   question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
@@ -209,7 +214,9 @@ bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a compari
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
 windows at once (such as "last month and this month"), return `low_confidence` with
 `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases they couldn't resolve, rather than the
-nearest parsed window. That response has no `best.query_ir` to execute, since a query without
+nearest parsed window. In a question that names fiscal periods, only days with a year and ISO
+dates resolve: "fiscal Q2 2017", "FY2017", "last fiscal quarter" and even "in 2017" are
+unresolved, since only the package's fiscal calendar can date them. That response has no `best.query_ir` to execute, since a query without
 the window answers a different question: pass the window in `query.time`, with the temporal
 role and grain, and plan again. **Qualified relative periods remain a limitation:** for phrases such as
 "before today", "after last month", or "until this week", `plan` may return `status="ok"`
@@ -227,6 +234,9 @@ provides a complete window in `query.time` (both `start` and `end`, or a relativ
 they return `TIME_WINDOW_UNRESOLVED` with a request to shorten the question or supply those
 bounds. Include the selected `temporal_role` and `grain` in that time block. A date or
 qualifier beyond the limit therefore cannot silently disappear from an otherwise ready draft.
+A select item the caller passes in `query` appears once, under the caller's alias (the draft's
+`order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
+dimension id, returns `INVALID_QUERY` with the path and a recovery hint.
 Use `detail="full"` only when you need alternatives or blocked drafts.
 
 ### Query Verbosity Tiers (execute modes)

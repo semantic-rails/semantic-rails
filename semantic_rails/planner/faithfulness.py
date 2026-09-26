@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ._base import (
+    _FISCAL_RE,
     _MONTH_NUMBERS,
     _NUMBER_WORDS,
     _ORDINALS,
@@ -26,6 +27,7 @@ from ._base import (
     _TIME_UNITS,
     _canonical_measure,
     _canonical_metric,
+    _fiscal_calendar,
     _named_metric,
     _object_text,
     _tied_top,
@@ -73,7 +75,7 @@ _RANK_RE = re.compile(
 )
 _PRIOR_PERIOD_RE = re.compile(
     r"\b(?:compared\s+(?:with|to)|vs\.?|versus|against|alongside|along\s+with|next\s+to)\s+"
-    r"(?:the\s+)?(?:last|prior|previous)\s+(?:day|week|month|quarter|year|period)\b",
+    r"(?:the\s+)?(?:last|prior|previous)\s+(?:fiscal\s+)?(?:day|week|month|quarter|year|period)\b",
     re.IGNORECASE,
 )
 _EXCLUSION_VALUE_RE = (
@@ -487,6 +489,7 @@ def intent_faithfulness_why(
         and any(caller_time.get(key) for key in ("start", "end", "range"))
     ):
         gaps.extend(_time_window_gaps(runtime, text, query))
+    gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
@@ -611,6 +614,54 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
                 "message": (
                     "Add the window to Query IR time (start inclusive, end exclusive) with a grain "
                     "that yields the buckets the question asks for, then validate."
+                ),
+            },
+        )
+    ]
+
+
+def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """The question counts time in fiscal periods, but the draft counts Gregorian ones.
+
+    A draft honors it by bucketing on a non-default calendar (the planner picks
+    only the fiscal one; a caller may name another), or by grouping or filtering
+    on a dimension whose name says fiscal (a fiscal-period column on the fact).
+    """
+
+    fiscal = _FISCAL_RE.search(text.lower())
+    if fiscal is None:
+        return []
+    time = _time_block(query)
+    if str(time.get("calendar_id") or "default").lower() != "default":
+        return []
+    referenced = set(_referenced_ids(query))
+    for row in config.dimensions:
+        if row.id in referenced and "fiscal" in _tokens(f"{row.id} {row.name} {row.label}"):
+            return []
+    calendar = _fiscal_calendar(config)
+    calendars = sorted(
+        {row.calendar_id for row in config.entities if row.kind == "time" and row.calendar_id}
+    )
+    return [
+        CoverageGap(
+            kind="fiscal_calendar_unrealized",
+            clause=fiscal.group(0),
+            message=(
+                "The question counts time in fiscal periods, but the draft buckets and bounds "
+                "time on the Gregorian calendar."
+            ),
+            expected={"calendar_id": calendar.calendar_id if calendar else "fiscal"},
+            actual={"calendar_id": time.get("calendar_id") or "default"},
+            recovery_hint={
+                "kind": "use_fiscal_calendar",
+                "message": (
+                    f"Set query.time.calendar_id to {calendar.calendar_id!r} and time.fill to "
+                    "true, then validate."
+                    if calendar
+                    else "plan found no single calendar named fiscal in this package"
+                    + (f" (its calendars: {', '.join(calendars)})" if calendars else "")
+                    + ": set query.time.calendar_id to the one you mean with time.fill true, "
+                    "author a fiscal calendar, or ask in calendar-year terms."
                 ),
             },
         )
@@ -1802,9 +1853,12 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
     referenced = set(_referenced_ids(query))
+    calendar_id = str(_time_block(query).get("calendar_id") or "default")
     vocabulary: set[str] = set()
     for row in _catalog_rows(runtime._config):
-        if str(getattr(row, "id", "")) in referenced:
+        if str(getattr(row, "id", "")) in referenced or (
+            calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
+        ):
             vocabulary.update(_tokens(_object_text(row)))
     labels = _value_phrases(runtime._config)
     for node in _dict_nodes(query):

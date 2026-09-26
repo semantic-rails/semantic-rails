@@ -25,6 +25,7 @@ from typing import Any
 
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
+from ._base import _with_fiscal_calendar
 from .faithfulness import intent_faithfulness_why, intent_subject_why, unmatched_intent_terms
 from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
@@ -92,6 +93,7 @@ def plan_payload(
             },
         )
 
+    partial_query = _checked_partial_query(partial_query)
     intent_str = intent.strip()
     detail_level = str(detail or "best").lower()
     if detail_level not in {"query", "best", "full", "debug"}:
@@ -185,7 +187,7 @@ def plan_payload(
 
     planned: list[dict[str, Any]] = []
     for draft, pattern in draft_rows:
-        planned.append(_planned_row(runtime, draft, pattern, partial_query, blocked))
+        planned.append(_planned_row(runtime, draft, pattern, partial_query, blocked, intent_str))
 
     if (
         detail_level in {"query", "best"}
@@ -207,7 +209,7 @@ def plan_payload(
             limit=limit,
             excluded_query_keys=primary_query_keys,
         ):
-            row = _planned_row(runtime, draft, pattern, partial_query, blocked)
+            row = _planned_row(runtime, draft, pattern, partial_query, blocked, intent_str)
             planned.append(row)
             if bool(row.get("validation", {}).get("ok")):
                 break
@@ -399,8 +401,12 @@ def _planned_row(
     pattern: str,
     partial_query: dict[str, Any] | None,
     blocked: list[dict[str, Any]],
+    intent: str,
 ) -> dict[str, Any]:
-    merged_draft = replace(draft, query=_merge_partial_query(draft.query, partial_query))
+    fiscal_query = _with_fiscal_calendar(runtime._config, intent, draft.query)
+    merged_draft = replace(
+        draft, query=_merge_partial_query(runtime._config, fiscal_query, partial_query)
+    )
     if merged_draft.blocked_reason:
         why = dict(merged_draft.blocked_reason)
         blocked.append(
@@ -543,6 +549,7 @@ def _start_dropped_why(start: Any) -> dict[str, Any] | None:
 
 
 def _merge_partial_query(
+    config: Any,
     draft_query: dict[str, Any],
     partial_query: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -564,6 +571,8 @@ def _merge_partial_query(
     partial.pop("request_context", None)
     partial.pop("request_id", None)
     merged = dict(draft_query or {})
+    if partial.get("select"):
+        merged, partial["select"] = _without_caller_selects(config, merged, partial["select"])
     for key, value in partial.items():
         if value in (None, "", [], {}):
             continue
@@ -579,6 +588,105 @@ def _merge_partial_query(
         else:
             merged[key] = value
     return merged
+
+
+def _checked_partial_query(partial_query: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The caller's partial query with ``group_by`` as dimension ids.
+
+    The merge reads its list fields as lists, so a shape it can't read
+    (``group_by: [["dimension.x"]]``) fails here as the validation error the
+    engine gives, not as an internal error.
+    """
+
+    if not partial_query:
+        return partial_query
+    for key in ("select", "where", "metric_filters", "order_by", "group_by"):
+        value = partial_query.get(key)
+        if value in (None, "", [], {}) or isinstance(value, list):
+            continue
+        raise _invalid_partial(
+            f"query.{key}",
+            type(value).__name__,
+            f"query.{key} must be a list; got {type(value).__name__}.",
+            f"Pass query.{key} as a list.",
+        )
+    group_by: list[str] = []
+    for index, item in enumerate(partial_query.get("group_by") or []):
+        dimension = item.get("dimension", item.get("field")) if isinstance(item, dict) else item
+        if not isinstance(dimension, str):
+            raise _invalid_partial(
+                f"query.group_by[{index}]",
+                type(item).__name__,
+                f"query.group_by[{index}] must be a dimension id string; "
+                f"got {type(item).__name__}.",
+                "Pass group_by as a flat list of dimension ids, e.g. "
+                '["dimension.store_name"], not [["dimension.store_name"]].',
+            )
+        group_by.append(dimension)
+    return {**partial_query, "group_by": group_by} if group_by else partial_query
+
+
+def _invalid_partial(path: str, received: str, message: str, hint: str) -> SemanticLayerError:
+    return SemanticLayerError(
+        "INVALID_QUERY",
+        message,
+        details={
+            "path": path,
+            "received_type": received,
+            "recovery_hints": [{"kind": "fix_query_shape", "message": hint}],
+        },
+    )
+
+
+def _without_caller_selects(
+    config: Any, query: dict[str, Any], caller_select: list[Any]
+) -> tuple[dict[str, Any], list[Any]]:
+    """Drop generated select items that compute one of the caller's.
+
+    The caller's alias names the column: the generated ``order_by`` follows
+    it, and a caller item without an alias takes the generated one.
+    """
+
+    caller = list(caller_select)
+    positions = {_select_key(config, item): index for index, item in enumerate(caller)}
+    kept: list[Any] = []
+    renamed: dict[str, str] = {}
+    for item in query.get("select") or []:
+        index = positions.get(_select_key(config, item))
+        if index is None:
+            kept.append(item)
+            continue
+        alias, mine = item.get("as") if isinstance(item, dict) else None, caller[index]
+        if alias and isinstance(mine, dict) and mine.get("as"):
+            renamed[str(alias)] = str(mine["as"])
+        elif alias and isinstance(mine, dict):
+            caller[index] = {**mine, "as": alias}
+    out = {**query, "select": kept}
+    if renamed and query.get("order_by"):
+        out["order_by"] = [
+            {**row, "field": renamed.get(str(row.get("field")), row.get("field"))}
+            if isinstance(row, dict)
+            else row
+            for row in query["order_by"]
+        ]
+    return out, caller
+
+
+def _select_key(config: Any, item: Any) -> str:
+    """What a select item computes: its expression, with a measure's default
+    aggregation spelled out or left implicit alike."""
+
+    import json
+
+    expression = item.get("expression") if isinstance(item, dict) else item
+    if isinstance(expression, dict) and set(expression) <= {"measure", "aggregation"}:
+        measure = next(
+            (row for row in config.measures if row.id == expression.get("measure")), None
+        )
+        if measure is not None:
+            aggregation = expression.get("aggregation") or measure.default_aggregation
+            expression = {"measure": measure.id, "aggregation": aggregation}
+    return json.dumps(expression, sort_keys=True, default=str)
 
 
 def _append_unique_dicts(
@@ -1124,6 +1232,7 @@ def _unresolved_time_why(
     """
 
     from ._base import (  # noqa: WPS433
+        _FISCAL_RE,
         _MAX_TIME_TEXT,
         _SUPPORTED_WINDOW_FORMS,
         _unresolved_time_phrases,
@@ -1161,6 +1270,9 @@ def _unresolved_time_why(
                 "message": (
                     f"Shorten the question to at most {_MAX_TIME_TEXT} characters."
                     if too_long
+                    else "A fiscal question's window resolves only from exact days: name the "
+                    "period's first and last day (e.g. 'from 2017-02-01 to 2018-01-31')."
+                    if _FISCAL_RE.search(intent.lower())
                     else "Rephrase the window using a supported form: "
                     + "; ".join(_SUPPORTED_WINDOW_FORMS)
                     + "."

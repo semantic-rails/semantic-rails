@@ -134,6 +134,83 @@ def test_plan_preserves_partial_query_state(runtime_factory) -> None:
     assert payload["status"] == "ok"
 
 
+@pytest.mark.parametrize(
+    ("partial", "path"),
+    [
+        ({"group_by": [["dimension.jaffle_store_name"]]}, "query.group_by[0]"),
+        ({"group_by": [{"label": "store"}]}, "query.group_by[0]"),
+        ({"group_by": "dimension.jaffle_store_name"}, "query.group_by"),
+        ({"select": {"measure": "measure.jaffle.revenue_usd"}}, "query.select"),
+    ],
+)
+def test_plan_rejects_a_partial_query_it_cannot_read(runtime_factory, partial, path) -> None:
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+    try:
+        response = mcp.call_tool("plan", {"intent": "revenue by store", "query": partial})
+    finally:
+        mcp.close()
+
+    assert response["ok"] is False
+    error = response["error"]
+    assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
+    assert error["recovery_hints"][0]["kind"] == "fix_query_shape"
+
+
+def test_plan_reads_a_dimension_object_in_the_partial_group_by(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    partial = {"group_by": [{"dimension": "dimension.jaffle_store_name"}]}
+    try:
+        payload = plan_payload(runtime, intent="revenue by store", partial_query=partial)
+    finally:
+        runtime.close()
+    assert payload["status"] == "ok"
+    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_store_name"]
+
+
+REVENUE_SUM = {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
+
+
+@pytest.mark.parametrize(
+    ("caller", "alias"),
+    [
+        ({"as": "rev", "expression": {"measure": "measure.jaffle.revenue_usd"}}, "rev"),
+        ({"as": "rev", "expression": REVENUE_SUM}, "rev"),
+        # Without an alias of its own, the caller's item takes the draft's.
+        ({"expression": {"measure": "measure.jaffle.revenue_usd"}}, "revenue_usd"),
+    ],
+)
+def test_plan_keeps_a_caller_select_item_once(runtime_factory, caller, alias) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime, intent="top 3 stores by revenue", partial_query={"select": [caller]}
+        )
+        query = payload["best"]["query_ir"]
+        rows = runtime.query(query)["rows"]
+    finally:
+        runtime.close()
+
+    assert payload["status"] == "ok"
+    assert query["select"] == [{**caller, "as": alias}]
+    assert query["order_by"] == [{"field": alias, "direction": "DESC"}]
+    assert sorted(rows[0]) == ["dimension.jaffle_store_name", alias]
+
+
+def test_plan_keeps_a_different_computation_beside_the_caller_one(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    average = {"as": "avg_rev", "expression": {**REVENUE_SUM, "aggregation": "avg"}}
+    try:
+        payload = plan_payload(
+            runtime, intent="revenue by store", partial_query={"select": [average]}
+        )
+    finally:
+        runtime.close()
+    expressions = [row["expression"] for row in payload["best"]["query_ir"]["select"]]
+    assert expressions == [average["expression"], REVENUE_SUM]
+
+
 def test_plan_demotes_to_low_confidence_on_validation_failure(runtime_factory, monkeypatch) -> None:
     runtime = runtime_factory("jaffle_shop")
     real_validate = runtime.validate
@@ -256,9 +333,9 @@ def test_plan_compact_detail_discovers_fallback_after_invalid_primary(
         events.append("discover_fallback")
         return [(valid_fallback, "catalog_fallback")]
 
-    def _tracking_planned_row(runtime, draft, pattern, partial_query, blocked):
+    def _tracking_planned_row(runtime, draft, pattern, *args):
         events.append(f"validate:{pattern}")
-        return real_planned_row(runtime, draft, pattern, partial_query, blocked)
+        return real_planned_row(runtime, draft, pattern, *args)
 
     monkeypatch.setattr(plan_module, "compose", _compose)
     monkeypatch.setattr(plan_module, "fallback_drafts", _fallback_drafts)
