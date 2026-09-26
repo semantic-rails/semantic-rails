@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .ast import QUERY_INPUT_KEYS
+from .audit import emit_audit_event
 from .catalog_service import resolve_catalog
 from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
 from .errors import SemanticLayerError
@@ -37,7 +38,6 @@ from .planner import plan_payload
 from .request_context import (
     RequestContext,
     context_from_policy_context,
-    emit_audit_event,
     request_context_payload,
 )
 from .request_payload import (

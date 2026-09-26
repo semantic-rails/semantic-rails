@@ -140,7 +140,7 @@ can route the same events into a structured pipeline (Kafka, an HTTP
 collector, OpenTelemetry, etc.) by installing a custom `AuditSink`:
 
 ```python
-from semantic_rails.request_context import AuditSink, set_audit_sink
+from semantic_rails.embedding import AuditSink, set_audit_sink
 
 class KafkaAuditSink:
     def __init__(self, producer):

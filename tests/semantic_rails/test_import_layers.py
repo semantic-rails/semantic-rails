@@ -24,7 +24,7 @@ LAYERS = [
     "planner",
     "metadata metadata_parts catalog_service",
     "runtime runtime_parts manifest segments caveats resource_access policies cache"
-    " request_context api_keys",
+    " request_context api_keys audit",
     "compiler compiler_parts fanout relation_pipelines renderer ir registry diagnostics"
     " acceleration",
     "db db_parts seed_provenance",
