@@ -59,10 +59,11 @@ Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sq
 `index.js` fixes everything else:
 
 - Production mode: no dev server or Playground (it refuses to start with `CUBEJS_DEV_MODE` set or a
-  `.env` file present), and every request needs an `Authorization`
-  header carrying an HS256 JWT signed with `CUBEJS_API_SECRET` (`token()` in
-  `scripts/run_questions.py` makes one). Cube listens on every interface (it has no bind
-  option), so keep the secret private; cross-origin browser requests are refused.
+  `.env` file present), and every request needs an `Authorization` header carrying an HS256 JWT
+  signed with `CUBEJS_API_SECRET` (`token()` in `scripts/run_questions.py` makes one). Cube
+  listens on every interface (it has no bind option), so keep the secret private; cross-origin
+  browser requests are refused. `scripts/verify_evidence.py` fails CI if `index.js` loses any
+  of these dev-server guards.
 - `TZ=UTC` and DuckDB `SET TimeZone = 'UTC'`: Cube's SQL casts time dimensions through
   `timestamptz`, so results would otherwise depend on the machine's time zone.
 - DuckDB opens `:memory:` and attaches `../shared/data/jaffle_comparison.duckdb` read-only
@@ -70,7 +71,7 @@ Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sq
   While Cube runs, other processes can open the file read-only, but not read-write.
 - An in-memory cache and queue, no Cube Store and no pre-aggregations. Cube caches each result
   in memory and re-checks it every 10 seconds; pass `cache=no-cache` on `/load` to skip it.
-- Overrides: `PORT` and `CUBE_DUCKDB_PATH` (another DuckDB file).
+- Overrides when started by hand: `PORT` and `CUBE_DUCKDB_PATH` (another DuckDB file).
 
 ## Run the pack
 
@@ -78,8 +79,11 @@ Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sq
 uv run python comparisons/semantic_layers/cube/scripts/run_questions.py
 ```
 
-The runner starts `node index.js` with a fresh random API secret, waits for `/meta`, saves `/sql` and `/load` for each query
-under `shared/results/cube/`, and stops Cube. `summary.json` records the versions, the dataset
+The runner starts `node index.js` with a fresh random API secret and no other environment than
+`PATH`, `HOME` and `TMPDIR`, so no inherited `CUBEJS_*`, `PORT` or `CUBE_DUCKDB_PATH` setting
+changes the run. It waits for `/meta`, saves `/sql` and `/load` for each query under
+`shared/results/cube/`, and stops Cube, killing it if it hasn't exited 30 seconds after the
+stop signal. `summary.json` records the versions, the dataset
 fingerprint and whether each question executed; the rubric assigns the labels.
 
 ## Modeling

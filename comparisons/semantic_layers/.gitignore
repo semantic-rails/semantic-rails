@@ -1,6 +1,7 @@
 # Local runtime and install state
 cube/.cubestore/
 cube/node_modules/
+ktx/.cache/
 malloy/node_modules/
 malloy/.cache/
 malloy/.home/

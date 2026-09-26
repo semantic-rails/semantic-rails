@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -27,29 +28,31 @@ DB_PATH = (
 # the runner imports it from that wheel, pinned by the hash in the package's manifest.
 KTX_VERSION = "0.16.0"
 KTX_WHEEL_SHA256 = "60c7240bd7b66ec27f9d95b47315d6e41bc1fd2da2660b381800553a8eea7a9d"
-KTX_DIR = Path(os.environ.get("KTX_DIR", "/tmp/ktx-compare"))
-KTX_WHEEL = KTX_DIR / f"kaelio_ktx-{KTX_VERSION}-py3-none-any.whl"
+KTX_WHEEL_NAME = f"kaelio_ktx-{KTX_VERSION}-py3-none-any.whl"
+# A git-ignored cache in this checkout, not a shared directory such as /tmp.
+KTX_DIR = Path(os.environ.get("KTX_DIR", PROJECT_DIR / ".cache"))
 
 
-def _ktx_wheel() -> Path:
-    """Fetch @kaelio/ktx from the npm registry once, and check the wheel it bundles."""
-    if not KTX_WHEEL.is_file():
+def _ktx_wheel(private_dir: Path) -> Path:
+    """Fetch @kaelio/ktx from the npm registry once, and copy the wheel it bundles into
+    `private_dir` only if it matches the pin, so the import reads the bytes that were checked."""
+    cached = KTX_DIR / KTX_WHEEL_NAME
+    if not cached.is_file():
         KTX_DIR.mkdir(parents=True, exist_ok=True)
         package = f"@kaelio/ktx@{KTX_VERSION}"
         subprocess.run(["npm", "pack", package, "--pack-destination", str(KTX_DIR)], check=True)
         with tarfile.open(KTX_DIR / f"kaelio-ktx-{KTX_VERSION}.tgz") as tar:
-            wheel = tar.extractfile(f"package/assets/python/{KTX_WHEEL.name}")
+            wheel = tar.extractfile(f"package/assets/python/{KTX_WHEEL_NAME}")
             if wheel is None:
-                raise SystemExit(f"{package} doesn't bundle {KTX_WHEEL.name}")
-            KTX_WHEEL.write_bytes(wheel.read())
-    if hashlib.sha256(KTX_WHEEL.read_bytes()).hexdigest() != KTX_WHEEL_SHA256:
-        raise SystemExit(f"{KTX_WHEEL} doesn't match the pinned sha256 {KTX_WHEEL_SHA256}")
-    return KTX_WHEEL
+                raise SystemExit(f"{package} doesn't bundle {KTX_WHEEL_NAME}")
+            cached.write_bytes(wheel.read())
+    data = cached.read_bytes()
+    if hashlib.sha256(data).hexdigest() != KTX_WHEEL_SHA256:
+        raise SystemExit(f"{cached} doesn't match the pinned sha256 {KTX_WHEEL_SHA256}")
+    checked = private_dir / KTX_WHEEL_NAME
+    checked.write_bytes(data)
+    return checked
 
-
-sys.path.insert(0, str(_ktx_wheel()))  # a pure-Python wheel imports as a zip archive
-from semantic_layer.engine import SemanticEngine  # noqa: E402
-from semantic_layer.loader import SourceLoader  # noqa: E402
 
 QUERIES: dict[str, dict[str, Any]] = {
     "q01_orders_by_month": {
@@ -184,6 +187,19 @@ def main() -> None:
             "Shared DuckDB file is missing. Run "
             "`PYTHONPATH=. uv run python comparisons/semantic_layers/shared/scripts/bootstrap_shared_duckdb.py`."
         )
+    with tempfile.TemporaryDirectory() as private_dir:  # created mode 0700
+        wheel = _ktx_wheel(Path(private_dir))
+        sys.path.insert(0, str(wheel))  # a pure-Python wheel imports as a zip archive
+        import semantic_layer
+
+        if not Path(semantic_layer.__file__).is_relative_to(wheel):
+            raise SystemExit(f"Imported {semantic_layer.__file__}, not the checked {wheel}")
+        _run()
+
+
+def _run() -> None:
+    from semantic_layer.engine import SemanticEngine
+    from semantic_layer.loader import SourceLoader
 
     if RESULTS_DIR.exists():
         shutil.rmtree(RESULTS_DIR)

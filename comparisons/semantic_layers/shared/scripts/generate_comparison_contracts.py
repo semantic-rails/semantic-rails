@@ -133,6 +133,15 @@ def marker_loc(path: Path, marker: str) -> int:
     return count
 
 
+def loc_outside_blocks(path: Path, marker: str) -> int:
+    """Nonempty lines, skipping each block from a line containing `marker` to the next blank."""
+    count, skipping = 0, False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        skipping = marker in line or (skipping and bool(line.strip()))
+        count += bool(line.strip()) and not skipping
+    return count
+
+
 # Captures made before the runners recorded a timestamp predate the consistency report generated
 # at 2026-06-24T03:47:13Z. Dates here are UTC.
 UNRECORDED_CAPTURE = "by 2026-06-24 (exact date not recorded)"
@@ -321,6 +330,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "weaknesses": [
             "A metric filter groups by one entity, so the per customer-month and customer-store-month predicates (q10, q13, q14) use surrogate entities defined with `expr`.",
             "Conversion metrics credit each order to the latest session before it, so q09 and q15 count sessions credited with a conversion; that matches the stated rule only when no two sessions of a customer share a window, as in this data.",
+            "The q09 and q15 conversion window is [session minute, session minute + 7 days) at minute grain, where the stated rule is (started_at, started_at + 7 days]: an order in the session's own minute counts and one exactly 7 days later doesn't. No order in this data falls on either boundary, so matching the answer key doesn't test them.",
         ],
         "scale": {
             "baseline_files": [
@@ -457,8 +467,9 @@ LAYER_META: dict[str, dict[str, Any]] = {
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "storefront_sessions.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "same_store_orders.yml",
             ],
-            "baseline_relationships": 4,
+            "baseline_relationships": 3,
             "stretch_relationships": 9,
+            "stretch_block_marker": "# Stretch scope",
         },
         "snippets": {
             "q01_orders_by_month": (
@@ -924,6 +935,10 @@ def layer_scale(layer_id: str) -> dict[str, Any]:
 
     if "baseline_marker" in meta:
         baseline_loc = marker_loc(baseline_files[0], meta["baseline_marker"])
+    elif "stretch_block_marker" in meta:  # stretch-only members inside baseline files
+        baseline_loc = sum(
+            loc_outside_blocks(p, meta["stretch_block_marker"]) for p in baseline_files
+        )
     else:
         baseline_loc = loc_for_paths(baseline_files)
 
@@ -980,11 +995,7 @@ def entry_for_question(
         if layer_id == "metricflow":
             sql_text = clean_metricflow_sql(sql_text)
         elif layer_id == "cube":
-            try:
-                payload = json.loads(sql_text)
-                sql_text = payload["sql"]["sql"][0][0]
-            except Exception:  # noqa: BLE001
-                pass
+            sql_text = json.loads(sql_text)["sql"]["sql"][0]  # [sql, params]
         # Excerpts show the SQL itself; captured comments are commentary, not evidence.
         sql_lines = [line for line in sql_text.splitlines() if not line.lstrip().startswith("--")]
         sql_excerpt = "\n".join(sql_lines[:36])
@@ -1327,6 +1338,8 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
         "summary": {
             "output_consistency": validation_report["summary"],
             "output_consistency_by_slice": validation_report["summary_by_slice"],
+            # Layers captured on an earlier dataset, checked apart from the count above.
+            "stale_layers": validation_report["stale_layers"],
             "scale_up_caveat": SCALE_UP_CAVEAT,
             "scale_up": [
                 {

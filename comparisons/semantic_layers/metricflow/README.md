@@ -67,6 +67,13 @@ The rubric (`../shared/rubric.md`) labels all 16 answers (q01-q16) `native`.
 - Conversion attribution is last-touch. If a customer had two sessions within 7 days before
   one order, only the later session is credited, although the stated rule converts both. No
   customer here has more than one session.
+- The conversion window's boundaries differ from the stated rule. The executed SQL
+  (`../shared/results/metricflow/q09_session_to_order_conversion_7d/sql.txt`) counts an order when
+  `session_minute <= order_minute` and `session_minute > order_minute - 7 days`: the window
+  [session minute, + 7 days) at minute grain. The rule is `started_at < ordered_at <= started_at
+  + 7 days`. So an order in the session's own minute counts for MetricFlow but not under the rule,
+  and an order exactly 7 days later counts under the rule but not for MetricFlow. No order in this
+  data falls on either boundary, so q09 and q15 matching the answer key doesn't test them.
 - Event timestamps (`ordered_at`, `started_at`, `delivered_at`) are declared at `minute`, their
   grain in the data, so the conversion window and the as-of joins compare exact times, not
   days. `mf validate-configs` then warns that a time spine at or below minute grain is

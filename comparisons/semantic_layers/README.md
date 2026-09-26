@@ -21,9 +21,10 @@ compare latency, token use or cost. It runs without touching the active
   [`shared/results/validation/output_consistency.md`](shared/results/validation/output_consistency.md).
 - **This data can't test every intended semantic.** Delivered time never moves an order into
   another month, no customer orders at two stores, all 10 sessions are at one store on one day,
-  and customer history covers 4 customers. On q07, q14, q15 and q16 in particular, matching the
-  answer key is weak evidence that a layer implements the intended rule; see
-  [`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md).
+  and customer history covers 4 customers. No order falls on a 7-day conversion-window boundary,
+  where MetricFlow's window differs from the rule (`metricflow/README.md`). On q07, q09, q14, q15
+  and q16 in particular, matching the answer key is weak evidence that a layer implements the
+  intended rule; see [`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md).
 - **9 of the 16 questions target Semantic Rails features.** q08-q16 (`scope_level: stretch`) were
   chosen to exercise primitives Semantic Rails ships: metric predicates, temporal-validity joins,
   event-pair and same-store conversion, and contextual entity-graph inheritance. They are a

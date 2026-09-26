@@ -405,32 +405,61 @@ def _first_locked(lock: dict) -> dict:
     return next(meta for path, meta in lock["packages"].items() if path)
 
 
+def _json_edit(edit):
+    def apply(text: str) -> str:
+        data = json.loads(text)
+        edit(data)
+        return json.dumps(data)
+
+    return apply
+
+
+_LOAD_SERVER = 'const CubejsServer = require("@cubejs-backend/server");\n'
+
+
 @pytest.mark.parametrize(
     ("name", "edit", "error"),
     [
-        ("package.json", lambda d: d["dependencies"].update(x="^1.0.0"), "isn't an exact version"),
-        ("package-lock.json", lambda d: d.update(name="changed"), "audits another package-lock"),
+        (
+            "package.json",
+            _json_edit(lambda d: d["dependencies"].update(x="^1.0.0")),
+            "isn't an exact version",
+        ),
+        # One more byte, every field unchanged: only the audit's lockfile hash can catch it.
+        ("package-lock.json", lambda text: text + "\n", "audits another package-lock"),
         (
             "package-lock.json",
-            lambda d: _first_locked(d).update(resolved="https://example.com/x.tgz"),
+            _json_edit(lambda d: _first_locked(d).update(resolved="https://example.com/x.tgz")),
             "doesn't resolve from",
         ),
-        ("package-lock.json", lambda d: _first_locked(d).pop("integrity"), "no sha512 integrity"),
+        (
+            "package-lock.json",
+            _json_edit(lambda d: _first_locked(d).pop("integrity")),
+            "no sha512 integrity",
+        ),
         (
             "npm-audit.json",
-            lambda d: d["report"]["metadata"]["vulnerabilities"].update(high=1),
+            _json_edit(lambda d: d["report"]["metadata"]["vulnerabilities"].update(high=1)),
             "reports 1 high advisories",
+        ),
+        # Cube's dev server and Playground stay off (index.js).
+        ("index.js", lambda text: text.replace("devServer: false,", ""), "devServer: false"),
+        ("index.js", lambda text: _LOAD_SERVER + text.replace(_LOAD_SERVER, ""), "a .env file"),
+        (
+            "index.js",
+            lambda text: text.replace("process.env.CUBEJS_DEV_MODE !== undefined", "false"),
+            "CUBEJS_DEV_MODE",
         ),
     ],
 )
 def test_the_cube_install_check_refuses_a_loose_or_unaudited_install(tmp_path, name, edit, error):
     cube = REPO_ROOT / "comparisons" / "semantic_layers" / "cube"
-    for path in ("package.json", "package-lock.json", "npm-audit.json"):
+    for path in ("package.json", "package-lock.json", "npm-audit.json", "index.js"):
         shutil.copy(cube / path, tmp_path / path)
-    data = json.loads((tmp_path / name).read_text(encoding="utf-8"))
-    edit(data)
-    (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
-    found = runpy.run_path(str(cube / "scripts" / "verify_evidence.py"))["errors"](tmp_path)
+    errors = runpy.run_path(str(cube / "scripts" / "verify_evidence.py"))["errors"]
+    assert errors(tmp_path) == []
+    (tmp_path / name).write_text(edit((tmp_path / name).read_text(encoding="utf-8")), "utf-8")
+    found = errors(tmp_path)
     assert any(error in message for message in found), found
 
 

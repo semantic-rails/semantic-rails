@@ -46,7 +46,7 @@ The UI compares two model sets:
 
 The scale-up view counts authored files, authored LOC and relationships/joins. It doesn't count questions or labels; those are scored per question slice.
 
-The scale-up counts intentionally focus on authored semantic model/config files and omit runners, generated artifacts, and setup logs. For single-file layers, the baseline count is the baseline section of that authored model and the stretch count is the full file.
+The scale-up counts intentionally focus on authored semantic model/config files and omit runners, generated artifacts, and setup logs. For single-file layers, the baseline count is the baseline section of that authored model and the stretch count is the full file. Cube's baseline files also hold stretch-only members; each block under a `# Stretch scope` comment, up to the next blank line, is left out of its baseline count.
 
 **Caveat:** the counts are not yet uniform across layers. The Semantic Rails count omits `graph.yml`, `core_metrics.yml` and `package.yml`. Don't compare sizes until one script counts every layer's authored files the same way.
 

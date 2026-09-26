@@ -2,7 +2,7 @@ cubes:
   - name: customers
     sql_table: comparison_customers
 
-    joins:
+    joins:  # Stretch scope: back to orders, for the subquery dimensions (q11, q12).
       - name: orders
         relationship: one_to_many
         sql: "{CUBE}.customer_id = {orders.customer_id}"
@@ -21,12 +21,11 @@ cubes:
         sql: customer_type
         type: string
 
-      # Subquery dimensions: each customer's orders measures over all their orders (q11, q12).
+      # Stretch scope: subquery dimensions over each customer's orders (q11, q12).
       - name: lifetime_orders
         sql: "{orders.order_count}"
         type: number
         sub_query: true
-
       - name: lifetime_spend_usd
         sql: "{orders.revenue_usd}"
         type: number
