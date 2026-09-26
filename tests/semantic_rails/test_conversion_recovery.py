@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.expressions import CONVERSION_MATCHING_MODES
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -21,7 +22,10 @@ CONVERSION_METRICS = [
     "metric.adoption.signup_to_send_conversion_rate_28d",
     "metric.sales.session_to_order_conversion_rate_7d",
     "metric.sales.session_to_order_conversion_rate_7d_same_store",
+    "metric.sales.adele_then_chai_28d",  # added below: operand filters
 ]
+PRODUCT = "dimension.jaffle_product_name"
+STORE = "dimension.jaffle_store_name"
 SESSION_TO_ORDER = {
     "kind": "conversion",
     "base": {"measure": "measure.jaffle.session_starts"},
@@ -34,6 +38,29 @@ SESSION_TO_ORDER = {
 @pytest.fixture(scope="module")
 def adapter(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SemanticLayerMCPAdapter]:
     path = copy_package_config(tmp_path_factory.mktemp("conv"), "jaffle_shop", preseed_db=True)
+    metrics = path / "metrics" / "extensions" / "advanced_metrics.yml"
+    raw = yaml.safe_load(metrics.read_text(encoding="utf-8"))
+    raw["metrics"]["sales.adele_then_chai_28d"] = {
+        "as": "metric.sales.adele_then_chai_28d",
+        "label": "Adele-ade then chai (28d)",
+        "kind": "conversion",
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "expression": {
+            "kind": "conversion",
+            "entity": "entity.jaffle_customer",
+            "window": {"unit": "day", "value": 28},
+            "matching_mode": "first_converted_after_base",
+            **{
+                side: {
+                    "kind": "aggregate",
+                    "measure": "order_count",
+                    "filter": {"all": [{"field": PRODUCT, "op": "=", "value": product}]},
+                }
+                for side, product in (("base", "adele-ade"), ("converted", "chai and mighty"))
+            },
+        },
+    }
+    metrics.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     runtime = Runtime.from_path(str(path))
     try:
         yield SemanticLayerMCPAdapter(runtime)
@@ -96,7 +123,8 @@ def test_conversion_card_expression_answers_like_the_metric_and_rewindows(adapte
     assert card["conversion"]["matching_modes"] == list(CONVERSION_MATCHING_MODES)
 
     metric = {"kind": "metric", "metric": metric_id}
-    for extra in ({}, {"group_by": ["dimension.jaffle_store_name"]}):
+    by_store = {"group_by": [STORE], "order_by": [{"field": STORE, "direction": "ASC"}]}
+    for extra in ({}, by_store):
         assert _run(adapter, expression, **extra) == _run(adapter, metric, **extra)
 
     thirty_minutes = {**expression, "window": {"unit": "minute", "value": 30}}

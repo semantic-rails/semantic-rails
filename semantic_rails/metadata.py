@@ -767,14 +767,13 @@ def _predicate_exprs_from_expr(
     return []
 
 
-def _without_empty(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _without_empty(item)
-            for key, item in value.items()
-            if item not in (None, "", [], {})
-        }
-    return value
+def _without_empty_defaults(expr: dict[str, Any]) -> dict[str, Any]:
+    """Drop the empty defaults ``expr_to_dict`` writes on a conversion and its operands."""
+    return {
+        key: _without_empty_defaults(item) if key in {"base", "converted"} else item
+        for key, item in expr.items()
+        if not (key in {"aggregation", "temporal_role", "constant_properties"} and not item)
+    }
 
 
 def _conversion_metadata(expr: SemanticExpr) -> dict[str, Any]:
@@ -783,7 +782,7 @@ def _conversion_metadata(expr: SemanticExpr) -> dict[str, Any]:
         return {}
     return {
         "conversion": {
-            "expression": _without_empty(expr_to_dict(expr)),
+            "expression": _without_empty_defaults(expr_to_dict(expr)),
             "matching_modes": list(CONVERSION_MATCHING_MODES),
             "rewindow": "select this expression with another window {unit: "
             "minute|hour|day|week|month|quarter|year, value: positive integer}",
