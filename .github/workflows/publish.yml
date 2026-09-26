@@ -133,11 +133,18 @@ jobs:
           # resolved server-side, so GH_REPO is all that is needed.
           GH_REPO: ${{ github.repository }}
         run: |
+          # Only a final or post-release tag can become "Latest"; any other tag, such as
+          # v0.3.2rc1, is a GitHub pre-release.
+          prerelease=true
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.post[0-9]+)?$ ]]; then
+            prerelease=false
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             release-assets/github/*.whl \
             release-assets/github/*.tar.gz \
             release-assets/github/*.json \
             release-assets/github/SHA256SUMS \
             --verify-tag \
+            --prerelease="${prerelease}" \
             --title "Semantic Rails ${GITHUB_REF_NAME}" \
             --generate-notes
