@@ -349,18 +349,29 @@ def test_other_wording_for_a_similar_table_model_asks_for_its_key(
     assert "Warehouse table or relation (for example raw_orders)" in asked
 
 
-def test_without_a_database_file_it_says_why_and_types_the_table_in(
-    shop: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("seed", "names"),
+    [
+        # The starter builds its database from seed files: name the command that does it.
+        (None, "Build it from the package's seed files with `validate runtime`, then run"),
+        # A dbt import reads a file dbt builds; validate runtime would only refuse.
+        ({"kind": "external"}, "build it first (for example with `dbt build`"),
+    ],
+)
+def test_without_a_database_file_it_says_how_to_build_it_and_types_the_table_in(
+    shop: Path, capsys: pytest.CaptureFixture[str], seed: dict[str, str] | None, names: str
 ) -> None:
     (shop / "data" / "shop.duckdb").unlink()
+    if seed is not None:
+        package = yaml.safe_load((shop / "package.yml").read_text("utf-8"))
+        package["package"]["seed"] = seed
+        (shop / "package.yml").write_text(yaml.safe_dump(package), "utf-8")
 
     script, _ = _author(shop, {"Model key": "orders", "Create this model?": False})
 
-    # The starter builds its database from seed files: name the command that does it.
-    assert (
-        "data/shop.duckdb isn't built yet. Build it from the package's seed files with "
-        "`validate runtime`, then run `author model` again, or enter the table by hand."
-    ) in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Can't list the warehouse tables: " in output and names in output
+    assert ("validate runtime" in output) is (seed is None)
     assert script.asked[0] == "Model key"
 
 

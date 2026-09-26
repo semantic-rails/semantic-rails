@@ -689,6 +689,16 @@ def test_day_or_coarser_time_buckets_print_as_dates_and_labels_keep_acronyms() -
     assert common._title("orders_ytd") == "Orders YTD"
 
 
+def test_a_repeated_validation_error_prints_its_count_then_its_hint(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    error = {"message": "Boom.", "recovery_hints": [{"message": "Do this."}]}
+
+    cli_output._print_project_validation({"package": {"id": "p"}, "errors": [error, error]})
+
+    assert "  Boom. (2 times)\n    hint: Do this.\n" in capsys.readouterr().out
+
+
 def test_dimension_columns_print_ids_and_years_as_stored() -> None:
     rows = [{"store_id": 1234567, "fiscal_year": 2024, "revenue": 1234.5}]
     columns = [

@@ -268,17 +268,20 @@ def _print_project_validation(report: dict[str, Any]) -> None:
     if errors:
         print("Errors:")
         # Each probe reports a shared failure (a missing seed, say) again: print it once.
-        counts: dict[str, int] = {}
+        counts: dict[tuple[str, str], int] = {}
         for error in errors:
             message = error.get("message") or error if isinstance(error, dict) else error
             check = error.get("check") if isinstance(error, dict) else None
             line = f"  {check}: {message}" if check else f"  {message}"
             hints = list(error.get("recovery_hints", []) or []) if isinstance(error, dict) else []
-            if hints and isinstance(hints[0], dict) and hints[0].get("message"):
-                line += f"\n    hint: {hints[0]['message']}"
-            counts[line] = counts.get(line, 0) + 1
-        for line, count in list(counts.items())[:10]:
+            hint = (
+                str(hints[0].get("message") or "") if hints and isinstance(hints[0], dict) else ""
+            )
+            counts[(line, hint)] = counts.get((line, hint), 0) + 1
+        for (line, hint), count in list(counts.items())[:10]:
             print(line + (f" ({count} times)" if count > 1 else ""))
+            if hint:
+                print(f"    hint: {hint}")
         if len(counts) > 10:
             print(f"  ... {len(counts) - 10} more error(s)")
 

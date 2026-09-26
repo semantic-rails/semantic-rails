@@ -379,7 +379,13 @@ def _table_source(
         with introspection.open_duckdb(path) as warehouse:
             tables = introspection.list_tables(warehouse)
     except SemanticLayerError as exc:
-        if exc.details.get("reason") == "database_missing" and _package_block(ref).get("seed"):
+        seed = dict(_package_block(ref).get("seed") or {})
+        # `external`: dbt (or another tool) builds the file; its message names `dbt build`.
+        if exc.details.get("reason") == "database_missing" and seed.get("kind") not in {
+            None,
+            "",
+            "external",
+        }:
             print(
                 f"Can't list the warehouse tables: {exc.details['duckdb_path']} isn't built yet. "
                 "Build it from the package's seed files with `validate runtime`, then run "
@@ -1635,8 +1641,11 @@ def _author_segment(
     for recipe in config.metric_recipes:
         with contextlib.suppress(SemanticLayerError):
             roots[recipe.id] = _metric_root_entity(config, recipe.expression)
+    rooted = {entity.id for entity in config.entities if entity.allowed_as_root}
     entities = [
-        row for row in _inventory_items(inventory, "entity") if _row_id(row) in roots.values()
+        row
+        for row in _inventory_items(inventory, "entity")
+        if _row_id(row) in rooted and _row_id(row) in roots.values()
     ]
     dimensions = _inventory_items(inventory, "dimension")
     if not entities or not dimensions:
@@ -1709,6 +1718,9 @@ def _author_segment(
                 "Comparison value (use a value from the authored domain when available)",
                 value_default,
             )
+            if "value" in current_filter and raw == value_default:
+                value = current_filter["value"]  # Enter keeps it as saved
+                break
             try:
                 value = _filter_value(raw, data_type)
             except SemanticLayerError as exc:

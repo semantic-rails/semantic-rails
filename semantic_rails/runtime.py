@@ -2289,6 +2289,28 @@ class Runtime:
                     "request_context": request_context_payload(context),
                 }
             )
+            # A text dimension takes any text, so only the warehouse can say a value fits its
+            # column (text for a BOOLEAN column fails there); say so rather than a clean ok.
+            text_dimensions = {
+                row.id for row in self._config.dimensions if row.data_type == "string"
+            }
+            unchecked = sorted(
+                {str(item.get("field")) for item in normalized.where} & text_dimensions
+            )
+            if validation.get("ok") and unchecked:
+                validation.setdefault("warnings", []).append(
+                    {
+                        "code": "SEGMENT_VALUES_UNCHECKED",
+                        "severity": "warning",
+                        "message": (
+                            f"Membership values on text dimensions ({', '.join(unchecked)}) are "
+                            "checked in the warehouse only: preview the segment, or run "
+                            "`semantic-rails project validate --mode runtime` (REPL: "
+                            "`validate runtime`)."
+                        ),
+                        "details": {"segment_id": normalized.id, "dimensions": unchecked},
+                    }
+                )
             validation["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return validation
         except SemanticLayerError as exc:

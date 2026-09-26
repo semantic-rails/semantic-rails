@@ -1572,7 +1572,9 @@ SEGMENT_VALUES = [
     ("is_priority", {"Comparison value": "false"}, False, 1),  # a true/false picker
     ("status", {COMPARISON_VALUE: "'completed'"}, "completed", 1),  # quotes are not the value
     ("tier", {COMPARISON_VALUE: iter(["high", "2"])}, 2, 1),  # a mistyped number is asked again
+    ("amount", {COMPARISON_VALUE: "10"}, 10.0, 1),  # a number
 ]
+AMOUNT = "    amount: {label: Amount, kind: continuous, column: subtotal}\n"
 
 
 def _segment_metrics(project: Path) -> None:
@@ -1590,6 +1592,9 @@ def test_segment_values_keep_their_type_from_the_wizard_to_preview(
 
     project = _shop(tmp_path, calendar=True)
     _segment_metrics(project)
+    orders = project / "models" / "core" / "orders.yml"
+    text = orders.read_text("utf-8")
+    orders.write_text(text.replace("  measures:\n", AMOUNT + "  measures:\n", 1), "utf-8")
     script = _Script(
         {
             "Segment key": "s",
@@ -1617,18 +1622,34 @@ def test_segment_values_keep_their_type_from_the_wizard_to_preview(
     assert type(where[0]["value"]) is type(stored)
     runtime = Runtime.from_path(str(project))
     try:
-        assert runtime.segment_validate("segment.shop.s")["ok"] is True
+        validated = runtime.segment_validate("segment.shop.s")
         assert runtime.segment_preview("segment.shop.s")["member_count"] == members
     finally:
         runtime.close()
+    # Validation can type-check every value but text; for text it says only the warehouse can.
+    assert validated["ok"] is True
+    warned = [warning["code"] for warning in validated["warnings"]]
+    assert warned == (["SEGMENT_VALUES_UNCHECKED"] if dimension == "status" else [])
 
-    # Enter at every prompt keeps the saved segment, byte for byte.
-    created = (project / "segments" / "core.yml").read_bytes()
+    # Enter at every prompt keeps the saved segment byte for byte, a hand-written 10 included.
+    path = project / "segments" / "core.yml"
+    path.write_text(path.read_text("utf-8").replace("value: 10.0", "value: 10"), "utf-8")
+    created = path.read_bytes()
     update = ("Segment key", "Manage and update this existing segment?", "Update this segment?")
     _repl(
         project, "author segment", _Script({**dict.fromkeys(update, True), "Segment key": "s"}), []
     )
-    assert (project / "segments" / "core.yml").read_bytes() == created
+    assert path.read_bytes() == created
+
+    # An entity that can't be a query root can't hold a segment.
+    graph = yaml.safe_load((project / "graph.yml").read_text("utf-8"))
+    graph["graph"]["entities"]["customer"]["allowed_as_root"] = False
+    _write_yaml(project / "graph.yml", graph)
+    script = _Script({"Segment key": "t", COMPARISON_VALUE: "web", "Create this segment?": False})
+    _repl(project, "author segment", script, [])
+    offered = script.options["Entity whose members this segment contains"]
+    assert any(text.startswith("order - ") for text in offered)
+    assert not any(text.startswith("customer - ") for text in offered)
 
 
 @pytest.mark.parametrize("kind", ["boolean", "categorical"])
@@ -1657,8 +1678,12 @@ def test_a_membership_value_its_column_cannot_hold_fails_validation_with_a_hint(
             assert validated["ok"] is False
             assert validated["recovery_hints"][0]["kind"] == "fix_filter_value_type"
             return
-        # A text dimension can't know its column is BOOLEAN; the warehouse rejects the value.
+        # A text dimension can't know its column is BOOLEAN; validation says so, and the
+        # warehouse rejects the value.
         assert validated["ok"] is True
+        unchecked = validated["warnings"][-1]
+        assert unchecked["code"] == "SEGMENT_VALUES_UNCHECKED"
+        assert "`semantic-rails project validate --mode runtime`" in unchecked["message"]
         with pytest.raises(SemanticLayerError) as preview:
             runtime.segment_preview("segment.shop.s")
     finally:
@@ -1670,4 +1695,4 @@ def test_a_membership_value_its_column_cannot_hold_fails_validation_with_a_hint(
 
     output = capsys.readouterr().out
     assert "failed=1" in output
-    assert "hint: The warehouse rejected segment segment.shop.s's query" in output
+    assert "hint: If the warehouse refused a membership value of segment.shop.s" in output
