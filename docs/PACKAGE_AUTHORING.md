@@ -1437,8 +1437,11 @@ Routing is conservative in the MVP:
   rollup under a role that starts at day) isn't certifiable. A runtime doesn't
   use its compile cache for a package with such a rollup: every request compiles
   again, which costs compile time, so that a revoked certification applies to the
-  next request. A rollup under a role whose `timezone:` isn't UTC isn't certifiable
-  yet (`timezone_not_utc`), so its queries use the base tables.
+  next request. A rollup under a role whose `timezone:` isn't `UTC` or `Etc/UTC`
+  isn't certifiable yet (`timezone_not_utc`), so its queries use the base tables.
+  On DuckDB, MotherDuck, DuckLake and Postgres, which run each query in its role's
+  zone, build the rollup and run each pair with the session time zone set to UTC
+  (`SET TimeZone = 'UTC'`).
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected

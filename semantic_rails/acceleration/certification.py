@@ -32,9 +32,10 @@ def certify_aggregate_relation(config: PackageConfig, relation_id: str) -> dict[
     ``rollup_sql`` reads the rollup and ``base_sql`` the base tables. A rollup whose own grain its
     time role can't be queried at (an hour rollup under a role that starts at day) isn't
     certifiable. The caller's routing switch applies, so with routing off every measure fails
-    with ``aggregate_routing_off``. A rollup under a role whose ``timezone`` isn't UTC isn't
-    certifiable either (``timezone_not_utc``): a query runs in that zone, which the paired queries
-    don't carry, so a zone-aware column's buckets could differ from the host's run.
+    with ``aggregate_routing_off``. The paired queries don't carry the zone a query runs in. On
+    DuckDB, MotherDuck, DuckLake and Postgres that is its role's zone, so a host builds the rollup
+    and runs each pair with the session time zone set to UTC, and a rollup under a role whose
+    ``timezone`` isn't ``UTC`` or ``Etc/UTC`` isn't certifiable (``timezone_not_utc``).
     """
     relation = next((row for row in config.aggregate_relations if row.id == relation_id), None)
     if relation is None:

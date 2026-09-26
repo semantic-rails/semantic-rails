@@ -10,4 +10,6 @@
   `TIMESTAMP` and `DATE` columns are unaffected, and other warehouses are unchanged; see
   "`times:` — temporal roles" in [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).
   On every warehouse, `certify_aggregate_relation` no longer certifies a rollup under a role
-  whose `timezone` isn't UTC (`timezone_not_utc`), so those queries use the base tables.
+  whose `timezone` isn't UTC (`timezone_not_utc`), so those queries use the base tables. On
+  DuckDB, MotherDuck, DuckLake and Postgres, a host builds a rollup it certifies, and runs the
+  paired queries, with the session time zone set to UTC.
