@@ -1024,8 +1024,9 @@ visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages 
   series' last snapshots, so there each series must be one output row.
 - An output row holds one row when every column of the row key (for a stock, the key
   without its clock) is grouped by, pinned with a top-level `=` filter or a one-value
-  `in`, or reached through the key of a many-to-one relationship on that column; a
-  `date` clock also counts at `grain: day`. Metric and segment filters don't count.
+  `in`, or reached through the key of a many-to-one relationship on that column (when
+  it's the only relationship between the two entities); a `date` clock also counts at
+  `grain: day`. Metric and segment filters don't count.
   The refusal names the dimensions to group by.
 - `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
   visitors is a real question), and so does `prior_period`. Cumulative, rolling and
