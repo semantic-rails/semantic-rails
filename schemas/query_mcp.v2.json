@@ -207,7 +207,6 @@
       },
       "description": "Rank measures, metrics, dimensions, entities and segments against business terms ('revenue by store'), first, to find ids: slim cards, up to limit per kind. Empty terms list every id, 100 per kind per page (offset). verbosity='compact' adds root entities, match reasons and starter patches. Gotcha: unknown terms return status out_of_scope or low_relevance; don't treat a weak candidate as a match.",
       "inputSchema": {
-        "additionalProperties": true,
         "properties": {
           "kinds": {
             "description": "Such as measure or metric; default all.",
@@ -234,7 +233,6 @@
             "type": "integer"
           },
           "policy_context": {
-            "additionalProperties": true,
             "properties": {
               "audience": {
                 "type": "string"
@@ -246,7 +244,6 @@
             "type": "object"
           },
           "query": {
-            "additionalProperties": true,
             "description": "Query IR so far, as context (shape: see execute).",
             "type": "object"
           },
@@ -317,13 +314,11 @@
       },
       "description": "Return one object's card (aggregations or values, time roles, related objects, policy) after discover, when its slim card isn't enough; verbosity='compact' returns the whole card. Gotcha: object_id must be a full id such as measure.jaffle.revenue_usd, not a label.",
       "inputSchema": {
-        "additionalProperties": true,
         "properties": {
           "object_id": {
             "type": "string"
           },
           "policy_context": {
-            "additionalProperties": true,
             "properties": {
               "audience": {
                 "type": "string"
@@ -335,7 +330,6 @@
             "type": "object"
           },
           "query": {
-            "additionalProperties": true,
             "description": "Query IR so far, as context (shape: see execute).",
             "type": "object"
           },
@@ -402,7 +396,6 @@
       },
       "description": "Return a dimension's governed values, before writing a where filter on it. Gotcha: dimension_id must be a full id such as dimension.jaffle_store_name; allow_live_query probes the warehouse, so use it only when no value domain is declared.",
       "inputSchema": {
-        "additionalProperties": true,
         "properties": {
           "allow_live_query": {
             "default": false,
@@ -427,7 +420,6 @@
             "type": "integer"
           },
           "policy_context": {
-            "additionalProperties": true,
             "properties": {
               "audience": {
                 "type": "string"
@@ -439,7 +431,6 @@
             "type": "object"
           },
           "query": {
-            "additionalProperties": true,
             "description": "Query IR so far, as context (shape: see execute).",
             "type": "object"
           },
@@ -500,7 +491,6 @@
       },
       "description": "Draft Query IR from the question; call it before 'execute' instead of writing Query IR from scratch. Returns status (ok, low_confidence, unrealizable or out_of_scope), best.query_ir, and why or warnings naming what the draft doesn't honor. detail 'best' adds intent_ir and the trace, 'full' alternatives and blocked drafts, 'debug' compose_hints. Gotcha: execute best.query_ir only when status is ok and there are no warnings.",
       "inputSchema": {
-        "additionalProperties": true,
         "properties": {
           "detail": {
             "default": "query",
@@ -522,7 +512,6 @@
             "type": "integer"
           },
           "policy_context": {
-            "additionalProperties": true,
             "properties": {
               "audience": {
                 "type": "string"
@@ -534,7 +523,6 @@
             "type": "object"
           },
           "query": {
-            "additionalProperties": true,
             "description": "Query IR so far, as context (shape: see execute).",
             "type": "object"
           },
@@ -592,7 +580,6 @@
       },
       "description": "Validate, compile and run the best.query_ir that plan drafted (call plan first), or Query IR fixed from it. mode 'validate' only checks it; 'sql' adds the SQL without running it. Gotcha: time.end is exclusive, and query must be a JSON object. IR: select[]={expression,as}, group_by[]=[<dim id>,...], where[]={field,op,value}, metric_filters[]={expression:{kind:metric_predicate,entity,input,op,value},op:'=',value:true}, order_by[]={field,direction}. select.expression composes variants at query time: {metric} | {aggregation, measure} (any allowed aggregation) | {kind:aggregate, measure, aggregation, filter:{all:[{field,op,value}]}} | {kind:rolling, input, window:{unit,value}} | {kind:prior_period, input, offset:{unit,value}} | {kind:period_to_date, input, period} | {kind:cumulative, input} | {kind:conversion, base, converted, entity, window, matching_mode} | {kind:ratio|scoped_aggregate|aggregate_if|between|...}; the windowed kinds take no time.start. E.g. revenue from large orders: {kind:'aggregate', measure:'measure.jaffle.revenue_usd', aggregation:'sum', filter:{all:[{field:'dimension.jaffle_order_is_large_order', op:'=', value:true}]}}.",
       "inputSchema": {
-        "additionalProperties": true,
         "properties": {
           "max_rows": {
             "default": 200,
@@ -611,7 +598,6 @@
             "type": "string"
           },
           "policy_context": {
-            "additionalProperties": true,
             "properties": {
               "audience": {
                 "type": "string"
@@ -623,11 +609,9 @@
             "type": "object"
           },
           "query": {
-            "additionalProperties": true,
             "description": "Query IR (schemas/query_ir.v1.json); unknown keys are rejected.",
             "properties": {
               "time": {
-                "additionalProperties": true,
                 "description": "Omit for an all-time total.",
                 "properties": {
                   "calendar_id": {
@@ -661,7 +645,6 @@
                     "type": "string"
                   },
                   "range": {
-                    "additionalProperties": true,
                     "description": "{last: {unit, value}}: the last N completed periods, not with start/end.",
                     "properties": {
                       "last": {
@@ -810,7 +793,6 @@
             "type": "integer"
           },
           "policy_context": {
-            "additionalProperties": true,
             "properties": {
               "audience": {
                 "type": "string"

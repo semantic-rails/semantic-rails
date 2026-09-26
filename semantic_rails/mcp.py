@@ -154,18 +154,15 @@ POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
         "environment": {"type": "string"},
         "audience": {"type": "string"},
     },
-    "additionalProperties": True,
 }
 
 QUERY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": "Query IR (schemas/query_ir.v1.json); unknown keys are rejected.",
-    "additionalProperties": True,
     "properties": {
         "time": {
             "type": ["object", "null"],
             "description": "Omit for an all-time total.",
-            "additionalProperties": True,
             "properties": {
                 "temporal_role": {
                     "type": "string",
@@ -184,7 +181,6 @@ QUERY_SCHEMA: dict[str, Any] = {
                 "range": {
                     "type": "object",
                     "description": "{last: {unit, value}}: the last N completed periods, not with start/end.",
-                    "additionalProperties": True,
                     "properties": {
                         "last": {
                             "type": "object",
@@ -225,10 +221,9 @@ QUERY_SCHEMA: dict[str, Any] = {
 # Slim Query-IR schema for tools/list dedupe. The full QUERY_SCHEMA
 # (with the detailed time-block spec) ships once, on 'execute', and the
 # other tools point there. Runtime acceptance is unchanged: both schemas are
-# `additionalProperties: true` documentation hints, not validators.
+# open-object documentation hints, not validators.
 QUERY_SCHEMA_SLIM: dict[str, Any] = {
     "type": "object",
-    "additionalProperties": True,
     "description": "Query IR so far, as context (shape: see execute).",
 }
 
@@ -349,11 +344,10 @@ def _schema(
     schema_properties = copy.deepcopy(dict(properties))
     schema_properties.setdefault("request_id", {"type": "string"})
     schema_properties.setdefault("policy_context", copy.deepcopy(POLICY_CONTEXT_SCHEMA))
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": schema_properties,
-        "additionalProperties": additional_properties,
-    }
+    schema: dict[str, Any] = {"type": "object", "properties": schema_properties}
+    # JSON Schema objects are open by default; say so only when a schema is closed.
+    if not additional_properties:
+        schema["additionalProperties"] = False
     if required:
         schema["required"] = list(required)
     return schema

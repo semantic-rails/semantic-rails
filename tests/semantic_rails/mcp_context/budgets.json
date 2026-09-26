@@ -10,7 +10,7 @@
   "query.hosted.inspect_tokens": 962,
   "query.prompts_list_tokens": 225,
   "query.resource.capabilities-summary_tokens": 545,
-  "query.resource.capabilities_tokens": 3317,
+  "query.resource.capabilities_tokens": 3191,
   "query.resource.catalog-full_tokens": 207164,
   "query.resource.catalog-index_tokens": 2344,
   "query.resource.catalog-summary_tokens": 44596,
@@ -36,10 +36,10 @@
   "query.v2.session.lean.max_step_structured_tokens": 1033,
   "query.v2.session.lean.structured_tokens": 4520,
   "query.v2.session.lean.text_tokens": 4520,
-  "query.v2.tools_list.largest_tool_tokens": 876,
-  "query.v2.tools_list.model_visible_tokens": 2207,
+  "query.v2.tools_list.largest_tool_tokens": 838,
+  "query.v2.tools_list.model_visible_tokens": 2071,
   "query.v2.tools_list.tools": 6,
-  "query.v2.tools_list.wire_tokens": 3011
+  "query.v2.tools_list.wire_tokens": 2876
  },
  "tracked": {
   "architect.instructions_tokens": 274,
