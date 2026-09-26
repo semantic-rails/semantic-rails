@@ -1476,16 +1476,18 @@ with a structured `INVALID_CONFIG` error (`details.missing_assets` +
 
 ### Segment references
 
-`parse-config`, `validate-config` and `check` reject a segment that `catalog`,
-`inspect` and the `segment-*` commands could not serve:
+`parse-config`, `validate-config` and `check` reject a segment that the catalog,
+`inspect` and segment validate, explain and preview (the MCP `segment` tool, or the
+CLI `segment-*` commands) could not serve:
 
 - Its `entity:` names no graph entity. It may be a graph entity key, name or id.
   An `entity:` inside a membership `metric_predicate` must be an entity id. When
   one is close, the error suggests its id.
-- `catalog` cannot describe it: its entity is not allowed as a query root or has
+- The catalog cannot describe it: its entity is not allowed as a query root or has
   no key dimensions, the `basis_metric` is unknown or rooted on another entity,
   or a preview dimension is unknown, not groupable, or belongs to another entity.
-- The query that `segment-validate` derives from it does not compile.
+- The query that segment validation (MCP `segment` with `action: "validate"`, CLI
+  `segment-validate`) derives from it does not compile.
 
 ### Unknown keys
 

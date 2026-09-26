@@ -7,6 +7,8 @@ and defaults every tool to its smallest response.
 
 from __future__ import annotations
 
+import argparse
+import io
 import json
 import re
 from collections.abc import Iterator
@@ -96,6 +98,30 @@ def test_asking_for_the_removed_v1_interface_fails(
     # mcp stdio, http and doctor build their adapter from the environment.
     with pytest.raises(SemanticLayerError, match="was removed; v2 is the only interface"):
         _mcp_tool_check(runtime)
+
+
+def test_a_stdio_client_pinned_to_v1_gets_the_refusal(
+    runtime: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Not a closed connection: the refusal answers initialize and goes to stderr."""
+
+    from semantic_rails.cli.commands import mcp as mcp_commands
+
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_INTERFACE", "v1")
+    monkeypatch.setattr(mcp_commands, "_runtime_from_package_or_path", lambda _args: runtime)
+    initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO(f"{json.dumps(initialize)}\n{json.dumps(initialized)}\n")
+    )
+    with pytest.raises(SystemExit):
+        mcp_commands.cmd_mcp_stdio(argparse.Namespace())
+    out, err = capsys.readouterr()
+    [reply] = [json.loads(line) for line in out.splitlines()]
+    assert reply["id"] == 1
+    assert reply["error"]["data"] == {"code": "INVALID_CONFIG"}
+    assert "v1 MCP interface was removed" in reply["error"]["message"]
+    assert "v1 MCP interface was removed" in err
 
 
 def test_the_adapter_serves_the_frozen_contract(v2: SemanticLayerMCPAdapter) -> None:

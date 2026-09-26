@@ -193,10 +193,10 @@ def main(argv: list[str] | None = None) -> int:
             "--arms takes two name=command arms, baseline first; names are letters, digits, _"
         )
     order = args.out / "arms.json"
-    if order.exists() and json.loads(order.read_text(encoding="utf-8")) != list(arms):
+    if order.exists() and json.loads(order.read_text(encoding="utf-8")) != arms:
         parser.error(f"{args.out} was run with other arms ({order.read_text(encoding='utf-8')})")
     (args.out / "scenarios").mkdir(parents=True, exist_ok=True)
-    order.write_text(json.dumps(list(arms)), encoding="utf-8")
+    order.write_text(json.dumps(arms), encoding="utf-8")
     for index, case_id in enumerate(wanted):
         for repeat in range(args.repeats):
             for arm in list(arms) if index % 2 == 0 else list(arms)[::-1]:

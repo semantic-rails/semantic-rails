@@ -300,6 +300,33 @@ def serve_stdio(
             output_stream.flush()
 
 
+def refuse_stdio(
+    error: SemanticLayerError,
+    *,
+    input_stream: TextIO | None = None,
+    output_stream: TextIO | None = None,
+) -> None:
+    """Answer every stdio request with ``error``, for a server that can't start.
+
+    stdout is the protocol channel, so a client shows an error printed there
+    as a closed connection. This logs it to stderr and returns it as the
+    JSON-RPC error of each request (``initialize`` first) until the client
+    disconnects.
+    """
+
+    print(f"semantic-rails mcp stdio: {error}", file=sys.stderr, flush=True)
+    output_stream = output_stream or sys.stdout
+    for line in input_stream or sys.stdin:
+        try:
+            message_id = json.loads(line).get("id")
+        except (AttributeError, json.JSONDecodeError):
+            continue
+        if message_id is not None:
+            reply = _jsonrpc_error(message_id, -32603, str(error), data={"code": error.code})
+            output_stream.write(json.dumps(reply, sort_keys=True) + "\n")
+            output_stream.flush()
+
+
 def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any] | list[Any]:
     try:
         length = int(handler.headers.get("Content-Length", "0") or "0")

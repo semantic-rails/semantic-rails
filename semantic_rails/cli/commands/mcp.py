@@ -15,6 +15,7 @@ from ...mcp_manager import (
     start_mcp_http_server,
     stop_mcp_http_server,
 )
+from ...mcp_server import refuse_stdio
 from ...mcp_server import serve_http as serve_mcp_http
 from ...mcp_server import serve_stdio as serve_mcp_stdio
 from ...runtime import Runtime
@@ -53,7 +54,12 @@ def _mcp_tool_check(runtime: Runtime) -> dict[str, Any]:
 
 def cmd_mcp_stdio(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
-    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        adapter = SemanticLayerMCPAdapter(runtime)
+    except SemanticLayerError as exc:  # e.g. SEMANTIC_RAILS_MCP_INTERFACE=v1
+        runtime.close()
+        refuse_stdio(exc)
+        raise SystemExit(1) from exc
     try:
         adapter.list_tools()
         serve_mcp_stdio(adapter)

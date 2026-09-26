@@ -221,7 +221,6 @@ _SUBJECT_STOPWORDS: frozenset[str] = frozenset(
         "much",
         "no",
         "not",
-        "number",  # "number of customers" asks for a count, like "how many".
         "of",
         "on",
         "one",
@@ -264,6 +263,9 @@ _SUBJECT_STOPWORDS: frozenset[str] = frozenset(
         "yearly",
     }
 )
+# The measure words a question falls back to also skip "number": "number of
+# customers" asks for a count, like "how many".
+_FALLBACK_STOPWORDS = _SUBJECT_STOPWORDS | {"number"}
 
 
 def _subject_candidates(
@@ -485,7 +487,7 @@ def parse_intent(runtime: Any, intent: str) -> IntentIR:
     target_terms = tuple(
         _target_measure_terms(target_focus, target_focus_terms)
         or _target_measure_terms(text, terms)
-        or sorted(target_focus_terms - _SUBJECT_STOPWORDS)
+        or sorted(target_focus_terms - _FALLBACK_STOPWORDS)
     )
     qualification = _qualification_phrase(text)
     threshold = _threshold_from_text(text)

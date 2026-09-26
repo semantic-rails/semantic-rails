@@ -318,7 +318,8 @@ No tool silently accepts unknown keys. `segment` **rejects** them with `INVALID_
 Interface v1 (thirteen tools) was removed; v2 serves the same handlers as six tools.
 Setting `SEMANTIC_RAILS_MCP_INTERFACE=v1` or passing `SemanticLayerMCPAdapter(runtime,
 interface="v1")` fails with `INVALID_CONFIG`: "The v1 MCP interface was removed; v2 is the only
-interface (see docs/MCP_INTERFACE.md)." Remove the setting (`v2` is still accepted). Calling a v1-only tool
+interface (see docs/MCP_INTERFACE.md)." (`mcp stdio` returns it as the error of the client's
+`initialize` request and logs it to stderr.) Remove the setting (`v2` is still accepted). Calling a v1-only tool
 returns `UNKNOWN_MCP_TOOL`, whose message and `details.replacement` name the call to use.
 `initialize` reports `v2` as `serverInfo.version`, responses carry it as `api_version`, and
 `mcp doctor` prints it.
