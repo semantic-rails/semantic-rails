@@ -290,6 +290,7 @@ def test_overrides_written_before_parameters_fail_closed(ledger):
     assert _adapter_query(wrapped, plain, limits={}) == [{"n": len(LEDGER)}]
     assert calls == [plain.sql]
     for adapter in (object.__new__(ClaimsSupport), wrapped):
-        with pytest.raises(TypeError):
+        with pytest.raises(SemanticLayerError) as caught:  # the TypeError, unchained
             _adapter_query(adapter, TOTALS, limits={}, policy_context=_context(customer_id="c-a"))
+        assert caught.value.code == "QUERY_EXECUTION_ERROR"
     assert calls == [plain.sql]

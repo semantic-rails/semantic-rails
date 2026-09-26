@@ -35,6 +35,7 @@ from .operational import (
     validate_operational_payload,
 )
 from .package_snapshot import CapturedSource, LoadedPackageSnapshot, load_package_snapshot
+from .row_filters import validate_row_filters
 from .schema import (
     DEFAULT_PATH_HOP_LIMIT,
     MAX_PATH_HOP_LIMIT,
@@ -3060,6 +3061,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     )
     _ensure_unique_object_ids(config, path=path)
     _validate_caveat_refs(config, path=path)
+    validate_row_filters(config)
     return config
 
 

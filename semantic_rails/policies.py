@@ -17,7 +17,10 @@ from typing import Any
 from .ast import normalize_query
 from .compiler import BoundQuery, bind_query
 from .errors import SemanticLayerError
+from .request_context import context_from_policy_context
+from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import PackageConfig, SemanticPolicyConfig
+from .sql_preparation import checked_slot_value
 
 
 def policy_effects_for_object(
@@ -170,6 +173,32 @@ def enforce_query_policies(
             },
         )
     return effects
+
+
+def row_filters_for_context(
+    config: PackageConfig, policy_context: Mapping[str, Any]
+) -> tuple[RowFilter, ...]:
+    """The row filters that apply to this request; each needs its attribute, correctly typed.
+
+    Checked before binding, so every surface (validate, compile, plan, execute,
+    segment preview) denies a missing attribute instead of compiling unfiltered.
+    """
+    context = context_from_policy_context(policy_context)
+    filters = []
+    for policy in config.semantic_policies:
+        if not is_row_filter(policy):
+            continue
+        row = row_filter(config, policy)  # checked first: an unenforceable one is never skipped
+        if _policy_matches(
+            policy,
+            object_id="",
+            environment=context.environment,
+            audience=context.audience,
+            roles=context.roles,
+        ):
+            checked_slot_value(row.slot, context.attributes.get(row.slot.attribute))
+            filters.append(row)
+    return tuple(filters)
 
 
 def package_release_labels(config: PackageConfig) -> list[str]:

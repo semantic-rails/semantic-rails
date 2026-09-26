@@ -539,8 +539,8 @@ The runtime does not care which — it only reads the env vars named by
 ## `policies.yml`
 
 `policies.yml` is the governance surface: a list of `semantic_policies:` rows,
-each with an `id`, a `kind`, and (except for `package_release`) the
-`object_ids` it governs. Five kinds exist, each driving a different runtime
+each with an `id`, a `kind`, and (except for `package_release` and `row_filter`)
+the `object_ids` it governs. Six kinds exist, each driving a different runtime
 behavior:
 
 - **`package_release`** — labels the package's release status. `config.label`
@@ -576,6 +576,27 @@ behavior:
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.
   Grouping by a role's dimension remains subject to `allowed_group_by`.
+- **`row_filter`** — limits a relation's rows to one customer (or other
+  principal) by comparing a `dimension` with a trusted request `attribute`
+  that the embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The
+  compiler adds `<column> = ?` to the relation's scan and the runtime binds the
+  attribute's value as a parameter; values never enter SQL text. The dimension
+  must be a plain `string`, `integer` or `boolean` column; an id-kind dimension
+  needs `type:`. The policy takes no `object_ids`, `action` or operator. A request
+  it applies to is denied if the attribute is missing or of another type, and
+  so is any query outside the qualified family: the compiled statement must
+  read the filtered relation exactly once, as its only relation. Joins, metric
+  filters, calendar spines (prior-period comparisons, fill) and other second
+  scans are refused, and rollups are not routed to. The zero-row
+  data-coverage probe is skipped. Such a policy loads for any warehouse, but only
+  DuckDB executes these statements today; every other adapter refuses them.
+  An unscoped row filter applies to every request. A scoped one applies only
+  when the request context carries the listed audience, environment or role,
+  so a request without it is not filtered: scope by them only when the host
+  always sets them from verified identity for end-user requests. A policy of
+  another kind that carries `attribute:`, or a kind that is a near miss of
+  `row_filter` (`row-filter`, `row_filters`, ...), fails to load rather than
+  being ignored.
 
 
 Scoping works the same way as caveats: `audiences:`, `environments:`, and
@@ -606,6 +627,12 @@ semantic_policies:
     allowed_temporal_roles: [temporal_role.shop_order_ordered_at]
     allow_metric_filters: false
     rationale: Sales and CSM revenue access is limited to store-level cuts.
+
+  - id: policy.shop.own_orders
+    kind: row_filter
+    dimension: dimension.shop_order_customer_id
+    attribute: customer_id
+    rationale: Each customer sees only their own orders.
 ```
 
 The annotated policy example lives in
@@ -1123,7 +1150,7 @@ checks (which is why the `init` starter can author `grain:` alongside `entities:
 | `dimension.preferred_filter_ops` | Drop — metadata-only, no planner gating |
 | `measure.clock_variants`, `comparison_peers`, `preferred_companion_metrics` | Drop on measures — metadata-only, no planner gating. (`preferred_companion_metrics` is allowed on metrics as advisory governance metadata; companion-metric relationships are too volatile to lock in at the measure layer.) |
 | `topics:` on any object | Drop — no validation, no scaling pattern |
-| `policy.kind: plan_constraint` | Drop — runtime no-op (the real kinds are `package_release`, `object_visibility`, `object_access`, `protected_object`, `metric_constraint`) |
+| `policy.kind: plan_constraint` | Drop — runtime no-op (the real kinds are `package_release`, `object_visibility`, `object_access`, `protected_object`, `metric_constraint`, `row_filter`) |
 
 Warnings (advisory only):
 

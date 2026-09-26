@@ -14,12 +14,12 @@ layer.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from collections.abc import Iterable, Sequence
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from .acceleration.routing import recording_rollup_scans
+from .acceleration.routing import aggregate_routing, recording_rollup_scans
 from .acceleration.selection import _select_aggregate_relation
 from .ast import NormalizedQuery, _time_output_alias, normalize_query
 from .compiler_parts.bind import (
@@ -140,6 +140,7 @@ from .ir import (
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
 from .renderer import render_select_for_profile
+from .row_filters import RowFilter, apply_row_filters
 from .schema import (
     DimensionConfig,
     MeasureConfig,
@@ -170,6 +171,7 @@ from .sql_ast import (
     build_filter_condition,
     validate_single_value_filter_shape,
 )
+from .sql_preparation import ParameterSlot
 
 __all__ = [
     "AggregateExpr",
@@ -3566,6 +3568,8 @@ class BoundQuery:
     leaf_objects: dict[str, frozenset[str]]
     # Every rollup the SQL reads, including separately compiled branches.
     rollup_scans: frozenset[str] = frozenset()
+    # The statement's ``?`` placeholders, in order: one per applied row filter.
+    parameters: tuple[ParameterSlot, ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``.
@@ -3625,15 +3629,27 @@ def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> f
 
 
 def bind_query(
-    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    *,
+    row_filters: Sequence[RowFilter] = (),
 ) -> BoundQuery:
-    """Prepare all bound branches without rendering SQL or accessing an adapter."""
+    """Prepare all bound branches without rendering SQL or accessing an adapter.
+
+    ``row_filters`` are the filters the request's context applies; with any, the
+    statement must read one filtered relation, and rollups are not routed to.
+    """
     try:
-        return _bind_query(config, registry, payload)
+        # A rollup may not hold the filter column, so a row-filtered query reads its base relation.
+        with aggregate_routing(not row_filters):
+            bound = _bind_query(config, registry, payload)
     except RecursionError as exc:
         raise SemanticLayerError(
             "INVALID_CONFIG", "Expression dependencies are cyclic or too deep."
         ) from exc
+    sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters)
+    return replace(bound, sql_ast=sql_ast, parameters=parameters)
 
 
 def _bind_query(
@@ -3681,9 +3697,16 @@ def compile_query(
     payload: dict[str, Any],
     *,
     binding: BoundQuery | None = None,
+    row_filters: Sequence[RowFilter] = (),
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    bound = binding if binding is not None else bind_query(config, registry, payload)
+    if binding is not None and row_filters:
+        raise ValueError("Pass row_filters to bind_query, not with an existing binding.")
+    bound = (
+        binding
+        if binding is not None
+        else bind_query(config, registry, payload, row_filters=row_filters)
+    )
     plan, config, sql_ast = bound.plan, bound.config, bound.sql_ast
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
@@ -3691,7 +3714,7 @@ def compile_query(
         str(payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"),
         dialect=dialect,
     )
-    prepared = dialect.prepare_query(rendered)
+    prepared = replace(dialect.prepare_query(rendered), parameters=bound.parameters)
     rendered = prepared.sql
     from .compiler_parts.sql_lowering import build_performance_plan, build_physical_plan
 

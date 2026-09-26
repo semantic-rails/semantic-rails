@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import SemanticLayerError
+from .sql_preparation import ParameterSlot
 
 SQL_BINARY_OPERATORS = frozenset(
     {
@@ -274,6 +275,13 @@ class SqlLiteral:
 
 
 @dataclass(frozen=True)
+class SqlParameter:
+    """A positional ``?`` that the runtime binds per request; never a value."""
+
+    slot: ParameterSlot
+
+
+@dataclass(frozen=True)
 class SqlStar:
     qualifier: str = ""
 
@@ -446,6 +454,7 @@ class SqlNamedArg:
 SqlExpr = (
     SqlIdentifier
     | SqlLiteral
+    | SqlParameter
     | SqlStar
     | SqlCall
     | SqlBinary
