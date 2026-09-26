@@ -36,7 +36,8 @@ Names are the object id without its type prefix, with other characters replaced 
 its Semantic Rails id, and its `package` block carries the package id and namespace that identify
 metrics in the [metric portability contract](CONTRACTS.md#metric-portability-for-bi-consumers).
 Expressions use the `SNOWFLAKE` or `DATABRICKS` dialect for those warehouses and `ANSI_SQL`
-otherwise; functions an author wrote pass through unchanged.
+otherwise. Functions an author wrote pass through unchanged, and date arithmetic uses the package
+warehouse's syntax, so an `ANSI_SQL` expression can still contain engine-specific SQL.
 
 ## What stays in the sidecar
 
@@ -51,9 +52,12 @@ affected ids. Nothing is dropped silently.
   - cumulative, rolling, prior-period, period-to-date, conversion and semi-additive metrics;
     filtered or windowed metrics; metrics that pin a clock; metrics using an aggregation other
     than `SUM`, `COUNT`, `COUNT DISTINCT`, `AVG`, `MIN` or `MAX`; metrics over a semi-additive
-    measure; and metrics built on anything left out;
+    measure or one rolled up to another entity; and metrics built on anything left out;
+  - entities built by a relation pipeline (their table is a query the engine builds, not one a
+    consumer can read), with their dimensions, measures and relationships;
   - measures read from another relation or entity;
-  - M:N, time-valid and unsafe relationships, and N:1 or 1:1 relationships that need a rewrite.
+  - M:N, time-valid and unsafe relationships, N:1 or 1:1 relationships that need a rewrite, and
+    relationships whose `allowed_directions` exclude the many-to-one direction.
 - **Exported, with extra attributes in the sidecar.** For example a dimension's data type and
   semantic kind, a measure's default aggregation and accumulation, or a metric's temporal role.
 

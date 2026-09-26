@@ -79,21 +79,25 @@ def test_cli_export_passes_the_spec_validator(package, tmp_path, monkeypatch, ca
     assert f"Validation PASSED: {document.name}" in result.stdout
 
 
-@pytest.mark.parametrize("package", PACKAGES, ids=IDS)
-def test_every_object_is_exported_or_kept_and_warned(package) -> None:
-    snapshot = load_package_snapshot(package)
-    document, sidecar = export_ossie(snapshot)
+def _assert_nothing_dropped(config: PackageConfig, sidecar: dict) -> None:
     named = {sr_id for names in sidecar["names"].values() for sr_id in names.values()}
     warned = {row_id for warning in sidecar["warnings"] for row_id in warning["ids"]}
     assert all(w["count"] == len(w["ids"]) for w in sidecar["warnings"])
     for item in fields(PackageConfig):
-        rows = getattr(snapshot.config, item.name)
+        rows = getattr(config, item.name)
         for row in rows if isinstance(rows, list) else []:
             if not hasattr(row, "id"):
                 continue
             kept = sidecar["objects"].get(item.name, {})
             assert row.id in named or row.id in kept, row.id
             assert row.id in warned or (row.id in named and row.id not in kept), row.id
+
+
+@pytest.mark.parametrize("package", PACKAGES, ids=IDS)
+def test_every_object_is_exported_or_kept_and_warned(package) -> None:
+    snapshot = load_package_snapshot(package)
+    document, sidecar = export_ossie(snapshot)
+    _assert_nothing_dropped(snapshot.config, sidecar)
     model = document["semantic_model"][0]
     assert len(sidecar["names"]["datasets"]) == len(model["datasets"])
     assert len(sidecar["names"]["metrics"]) == len(model["metrics"])
@@ -164,10 +168,15 @@ def test_jaffle_mapping_and_warning_counts_are_golden() -> None:
     }
 
 
-def test_snowflake_packages_export_the_snowflake_dialect() -> None:
-    document, _ = export_ossie(ROOT / "configs/semantic_rails/tpch_sf1_showcase")
-    metrics = document["semantic_model"][0]["metrics"]
-    assert {metric["expression"]["dialects"][0]["dialect"] for metric in metrics} == {"SNOWFLAKE"}
+@pytest.mark.parametrize(
+    ("warehouse", "dialect"),
+    [("snowflake", "SNOWFLAKE"), ("databricks", "DATABRICKS"), ("postgres", "ANSI_SQL")],
+)
+def test_expressions_use_the_warehouse_dialect_ossie_names(warehouse, dialect) -> None:
+    config = load_package_snapshot(JAFFLE).config
+    model, _ = _export_with(package=replace(config.package, warehouse=warehouse))
+    labels = {m["expression"]["dialects"][0]["dialect"] for m in model["metrics"]}
+    assert labels == {dialect}
 
 
 def test_exported_metrics_compute_the_engine_numbers(runtime_factory) -> None:
@@ -204,6 +213,12 @@ def _export_with(**changes) -> tuple[dict, _Exporter]:
         ({"cardinality": "1:1"}, ("jaffle_order", "jaffle_customer"), ""),
         ({"cardinality": "M:N", "safety": "requires_rewrite"}, None, "M:N relationships"),
         ({"safety": "unsafe"}, None, "unsafe relationships"),
+        ({"allowed_directions": ["reverse"]}, None, "relationships closed to many-to-one joins"),
+        (
+            {"cardinality": "1:N", "allowed_directions": ["forward"]},
+            None,
+            "relationships closed to many-to-one joins",
+        ),
     ],
 )
 def test_relationships_export_only_as_safe_many_to_one_joins(change, exported, construct) -> None:
@@ -268,14 +283,59 @@ def test_metrics_export_their_sql_or_stay_in_the_sidecar(expression, expected) -
         assert exporter.objects["metric_recipes"]["metric.test.probe"]["kind"] == "derived"
 
 
-def test_measures_reading_another_entity_stay_in_the_sidecar() -> None:
+@pytest.mark.parametrize(
+    ("change", "measure_gap", "metric_gap"),
+    [
+        (
+            {"expr": ColumnRefExpr(column="customer_id", entity="entity.jaffle_customer")},
+            "measures reading other entities",
+            "metrics built on omitted objects",
+        ),
+        (
+            {"aggregation_entity": "entity.jaffle_customer"},
+            None,
+            "metrics rolled up to another entity",
+        ),
+    ],
+)
+def test_measure_gaps_keep_their_metrics_in_the_sidecar(change, measure_gap, metric_gap) -> None:
     config = load_package_snapshot(JAFFLE).config
-    foreign = ColumnRefExpr(column="customer_id", entity="entity.jaffle_customer")
     measures = [
-        replace(row, expr=foreign) if row.id == "measure.jaffle.revenue_usd" else row
+        replace(row, **change) if row.id == "measure.jaffle.revenue_usd" else row
         for row in config.measures
     ]
     model, exporter = _export_with(measures=measures)
-    assert exporter.lost["measures reading other entities"] == ["measure.jaffle.revenue_usd"]
-    assert "metric.sales.aov_usd" in exporter.lost["metrics built on omitted objects"]
+    if measure_gap:
+        assert exporter.lost[measure_gap] == ["measure.jaffle.revenue_usd"]
+    assert "metric.sales.aov_usd" in exporter.lost[metric_gap]
     assert "sales_aov_usd" not in {metric["name"] for metric in model["metrics"]}
+
+
+def test_entities_over_relation_pipelines_stay_in_the_sidecar_with_their_objects() -> None:
+    config = load_package_snapshot(JAFFLE).config
+    entities = [
+        replace(row, relation_id="relation.orders", table="rel_orders")
+        if row.id == "entity.jaffle_order"
+        else replace(row, key=[], primary_key="")
+        if row.id == "entity.jaffle_supply"
+        else row
+        for row in config.entities
+    ]
+    changed = replace(config, entities=entities)
+    exporter = _Exporter(changed)
+    model = exporter.model()
+    sidecar = {
+        "names": exporter.names,
+        "objects": exporter.objects,
+        "warnings": exporter.warnings(),
+    }
+    _assert_nothing_dropped(changed, sidecar)
+    assert exporter.lost["entities over relation pipelines"] == ["entity.jaffle_order"]
+    order_rows = {row.id for row in config.dimensions if row.entity == "entity.jaffle_order"}
+    assert set(exporter.lost["dimensions over relation pipelines"]) == order_rows
+    assert "measure.jaffle.revenue_usd" in exporter.lost["measures over relation pipelines"]
+    assert "relationship.orders_customer" in exporter.lost["relationships to relation pipelines"]
+    assert "metric.sales.aov_usd" in exporter.lost["metrics built on omitted objects"]
+    datasets = {dataset["name"]: dataset for dataset in model["datasets"]}
+    assert "jaffle_order" not in datasets and "primary_key" not in datasets["jaffle_supply"]
+    assert all("jaffle_order" not in (r["from"], r["to"]) for r in model["relationships"])

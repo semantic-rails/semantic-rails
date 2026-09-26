@@ -145,6 +145,8 @@ def _relationship_gap(relationship: RelationshipConfig) -> str:
     # A 1:N join is exported reversed, where its default requires_rewrite no longer applies.
     if safety == "unsafe" or (safety != "safe" and cardinality != "1:N"):
         return f"{safety} relationships"
+    if ("reverse" if cardinality == "1:N" else "forward") not in relationship.allowed_directions:
+        return "relationships closed to many-to-one joins"
     return ""
 
 
@@ -206,11 +208,19 @@ class _Exporter:
     def datasets(self) -> list[dict[str, Any]]:
         config = self.config
         taken: set[str] = set()
-        dataset_names = {entity.id: _name(entity.id, taken) for entity in config.entities}
+        # A relation pipeline's output is a CTE the compiler builds, not a table a consumer can read.
+        dataset_names = {
+            entity.id: _name(entity.id, taken)
+            for entity in config.entities
+            if not entity.relation_id
+        }
         field_names: dict[str, set[str]] = defaultdict(set)
         entity_fields: dict[str, list[dict[str, Any]]] = defaultdict(list)
         role_dimensions = {role.dimension for role in config.temporal_roles}
         for dimension in config.dimensions:
+            if dimension.entity not in dataset_names:
+                self.omit("dimensions", dimension, "dimensions over relation pipelines")
+                continue
             dataset = dataset_names[dimension.entity]
             name = _name(dimension.id, field_names[dataset])
             is_time = dimension.data_type in _TIME_TYPES or dimension.id in role_dimensions
@@ -240,12 +250,14 @@ class _Exporter:
             self.keep("measures", measure, f"{dataset}.{name}", {"entity", "expr", *_LABELLED})
         datasets: list[dict[str, Any]] = []
         for entity in config.entities:
-            row = {
-                "name": dataset_names[entity.id],
-                "source": entity.table,
-                "primary_key": list(entity.key or [entity.primary_key]),
-                **_described(entity, ("description", "aliases")),
-            }
+            if entity.id not in dataset_names:
+                self.omit("entities", entity, "entities over relation pipelines")
+                continue
+            row: dict[str, Any] = {"name": dataset_names[entity.id], "source": entity.table}
+            key = [column for column in entity.key or [entity.primary_key] if column]
+            if key:
+                row["primary_key"] = key
+            row.update(_described(entity, ("description", "aliases")))
             if entity_fields[entity.id]:
                 row["fields"] = entity_fields[entity.id]
             datasets.append(row)
@@ -255,6 +267,8 @@ class _Exporter:
 
     def measure_sql(self, measure: MeasureConfig) -> SqlExpr:
         entity = self.entities[measure.entity]
+        if entity.relation_id:
+            raise _Unsupported("measures over relation pipelines")
         if measure.source_relation not in ("", entity.table):
             raise _Unsupported("measures on other relations")
         refs = collect_column_refs(measure.expr)
@@ -271,6 +285,8 @@ class _Exporter:
         relationships = []
         for row in self.config.relationships:
             gap = _relationship_gap(row)
+            if not gap and not {row.source_entity, row.target_entity} <= by_entity.keys():
+                gap = "relationships to relation pipelines"
             if gap:
                 self.omit("relationships", row, gap)
                 continue
@@ -372,6 +388,9 @@ class _Exporter:
         # The engine aggregates a semi-additive measure over each key's latest snapshot row.
         if measure.measure_class == "semi_additive":
             raise _Unsupported("metrics on semi-additive measures")
+        # ...and re-aggregates (or refuses) a measure rolled up to another entity.
+        if measure.aggregation_entity not in ("", measure.entity):
+            raise _Unsupported("metrics rolled up to another entity")
         aggregation = (expr.aggregation or measure.default_aggregation).lower()
         if aggregation not in _AGGREGATES:
             raise _Unsupported(f"metrics using {aggregation}")

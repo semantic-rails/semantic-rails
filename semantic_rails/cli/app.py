@@ -275,7 +275,12 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Export a package to an external semantic-model format. Today supports "
             "`--format ossie`: an Apache Ossie 0.1.1 document plus a Semantic Rails sidecar "
-            "holding what Ossie can't express, with a counted warning per construct."
+            "file. The sidecar keeps what Ossie 0.1.1 can't express: temporal roles, value "
+            "domains, segments, policies, caveats, rollups and relation pipelines; cumulative, "
+            "rolling, period, conversion, semi-additive and filtered metrics; M:N, time-valid "
+            "and unsafe joins; and attributes such as data types and default aggregations. "
+            "Each construct gets a counted warning; policies also warn that Ossie consumers "
+            "won't enforce them. See docs/OSSIE.md."
         ),
     )
     _add_config_reference_args(p_export, package_choices)
