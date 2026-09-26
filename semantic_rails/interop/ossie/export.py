@@ -292,8 +292,9 @@ class _Exporter:
                     **_described(row, ("aliases",)),
                 }
             )
+            # The sidecar keeps a 1:1 or reversed 1:N cardinality, and any safety but "safe".
             carried = set(_JOIN_FIELDS)
-            if row.cardinality != "1:1":
+            if row.cardinality == "N:1":
                 carried.add("cardinality")
             if row.safety == "safe":
                 carried.add("safety")
@@ -316,8 +317,7 @@ class _Exporter:
                     **_described(metric, ("description", "aliases")),
                 }
             )
-            carried = {"kind", "expression", "description", "aliases"}
-            self.keep("metric_recipes", metric, name, carried)
+            self.keep("metric_recipes", metric, name, {"expression", "description", "aliases"})
         return metrics
 
     def metric_expression(self, metric_id: str) -> SqlExpr | _Unsupported:

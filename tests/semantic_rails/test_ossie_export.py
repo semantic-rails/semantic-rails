@@ -219,7 +219,7 @@ def test_relationships_export_only_as_safe_many_to_one_joins(change, exported, c
         return
     assert (found[0]["from"], found[0]["to"]) == exported
     kept = exporter.objects["relationships"]["relationship.orders_customer"]
-    assert ("cardinality" in kept) == (change["cardinality"] == "1:1")
+    assert kept["cardinality"] == change["cardinality"]
 
 
 REVENUE = AggregateExpr(measure="measure.jaffle.revenue_usd", aggregation="sum")
