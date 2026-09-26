@@ -114,6 +114,15 @@ def test_values_are_data_never_statement_text(ledger, monkeypatch, value, rows):
     assert ledger.query('SELECT COUNT(*) AS "n" FROM ledger') == [{"n": len(LEDGER)}]
 
 
+def test_a_stray_placeholder_fails_instead_of_moving_a_value(ledger):
+    stray = PreparedQuery(
+        'SELECT ? AS "leak" FROM ledger WHERE customer_id = ?', parameters=TOTALS.parameters
+    )
+    with pytest.raises(SemanticLayerError) as caught:
+        _adapter_query(ledger, stray, limits={}, policy_context=_context(customer_id="c-a"))
+    assert caught.value.code == "QUERY_EXECUTION_ERROR"
+
+
 @pytest.mark.parametrize(
     ("slot_type", "attributes", "reason"),
     [
