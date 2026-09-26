@@ -186,8 +186,9 @@ A draft that validates can still leave out part of the question. `plan` returns
   several named subjects;
 - counts time in fiscal periods ("fiscal quarter", "FY") on the Gregorian calendar
   (`fiscal_calendar_unrealized`). When the package has one calendar whose name says fiscal,
-  `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`); otherwise
-  the recovery hint names the package's calendars;
+  `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`), except for
+  a to-date or rolling question (period-to-date resets on Gregorian periods); otherwise the
+  recovery hint names the package's calendars;
 - picked its subject from several that match the question equally well, when neither the
   question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
