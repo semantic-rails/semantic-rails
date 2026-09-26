@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
+from .acceleration.routing import recording_rollup_scans
 from .acceleration.selection import _select_aggregate_relation
 from .ast import NormalizedQuery, _time_output_alias, normalize_query
 from .compiler_parts.bind import (
@@ -3421,6 +3422,7 @@ def _plan_query(
                 bound=bound,
                 query=query,
                 config=config,
+                path_selections=path_selections,
             )
             measure_plans.append(
                 MeasurePlan(
@@ -3577,6 +3579,8 @@ class BoundQuery:
     cut_owners: tuple[frozenset[str] | None, ...]
     # Root leaf alias -> the measures and recipes whose values it computes.
     leaf_objects: dict[str, frozenset[str]]
+    # Every rollup the SQL reads, including separately compiled branches.
+    rollup_scans: frozenset[str] = frozenset()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``.
@@ -3658,7 +3662,11 @@ def _bind_query(
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)
     # Record selected plans and their real lowering, before SQL rendering.
-    with binding_dependencies() as dependencies, plan_bindings(plan) as leaves:
+    with (
+        binding_dependencies() as dependencies,
+        plan_bindings(plan) as leaves,
+        recording_rollup_scans() as rollup_scans,
+    ):
         _record_bound_plan(plan, config, leaves.leaves)
         sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
     cuts = dependencies.cuts
@@ -3678,6 +3686,7 @@ def _bind_query(
             alias: frozenset((ids | leaves.recipe_owners.get(alias, set())) & governed)
             for alias, ids in leaves.leaves.items()
         },
+        frozenset(rollup_scans),
     )
 
 
@@ -3702,7 +3711,9 @@ def compile_query(
     from .compiler_parts.sql_lowering import build_performance_plan, build_physical_plan
 
     physical_plan = build_physical_plan(plan, config)
-    performance_plan = build_performance_plan(plan, config, physical_plan, rendered)
+    performance_plan = build_performance_plan(
+        plan, config, physical_plan, rendered, bound.rollup_scans
+    )
     compile_stats = {
         "compile_ms": round((time.perf_counter() - started) * 1000, 3),
         "cache_hit": False,

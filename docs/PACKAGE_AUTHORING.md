@@ -1305,20 +1305,36 @@ Routing is conservative in the MVP:
   no UTC offset (or a zero one): a monthly table answers `2026-01-01` to
   `2026-04-01`, not `2026-01-15` to `2026-03-31`. A minute or hour rollup needs
   bounds on day boundaries.
-- A `count_distinct` routes only when it counts the single-column row key of a
-  model that isn't a fact model (for example distinct `order_id` on an orders
-  model with `grain: [order_id]`). Distinct counts of anything else, such as
-  customers or one column of a composite key, can't be added up across rollup
-  rows.
+- Each measure column holds one aggregate per rollup row, and the query must ask
+  for that aggregation: a `sum` column answers `sum` queries (re-added with
+  `SUM`), a `min` or `max` column answers `min` or `max` (re-aggregated with
+  `MIN` or `MAX`). Declare it with `holds:` (`sum`, `min`, `max` or
+  `count_distinct`), as in `revenue: {column: max_amount, holds: max}`. A column
+  without `holds:` needs `rollup: additive` (the variant default) or
+  `precomputed`, and holds a sum for an `aggregate` measure or a distinct count
+  for an `entity_count` measure. `avg`, `median` and `percentile` queries, and
+  stock (semi-additive) measures, run on the base tables.
+- A `count_distinct` routes across rollup rows only when it counts the
+  single-column row key of a model that isn't a fact model (for example distinct
+  `order_id` on an orders model with `grain: [order_id]`). Distinct counts of
+  anything else, such as customers or one column of a composite key, can't be
+  added up across rollup rows. A column declared `holds: count_distinct` still
+  answers them at the rollup's own time grain when every rollup dimension is
+  grouped or pinned to one value by an `=` filter, so each result row is one
+  rollup row. The rollup must have one row per time bucket and dimension columns
+  (and per key of any `grain.entities`); an `IN` list or a range on a rollup
+  dimension that isn't grouped runs on the base tables.
 - A time role whose `column_timezone` differs from its `timezone`, and a query
   with a non-default `calendar_id`, run on the base tables: the rollup path
   buckets the stored column's clock, without the role's zone conversion, on the
   default calendar.
-- A rollup column pre-joined from another model must be built along the join
-  path the query would use; the engine doesn't check this either.
-- Every selected measure must have a column in the variant. Additive and
-  precomputed rollups are supported; non-additive rollup semantics fall back to
-  raw.
+- A dimension column pre-joined from another model (in an `aggregate_relations:`
+  entry, for example `region` from customers) declares the relationships it was
+  built along: `dimensions: {dimension.region: {column: region, path:
+  [relationship.orders_customer]}}`. It routes only when the query joins that
+  model along the same path, and only if every hop is many-to-one (or one-to-one)
+  with no `temporal_validity`. A pre-joined column without a `path` doesn't route.
+- Every selected measure must have a column in the variant.
 - Every grouped or filtered dimension must be covered by the variant. If a
   query groups by `customer_id` and the monthly table excludes that dimension,
   the planner scans the raw relation.
@@ -1331,7 +1347,12 @@ When a rollup can't answer a query exactly, the query runs on the base tables, a
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
 rollup of that measure's entity to the reason.
 `performance_plan.aggregate_routing.candidates` lists every rollup considered for
-each measure leaf as `selected`, `eligible` or `rejected`, with its reason. Set
+each measure leaf as `selected`, `eligible`, `rejected` or `unknown`, with its
+reason (at most 200 rows; `candidates_omitted` counts the rest). A leaf lowered as
+separate queries, such as a `distribution`'s branches, reports a rollup it didn't
+reject with reason `lowered_separately`: `unknown` if some branch reads it,
+`eligible` if none does. `aggregate_routing.selected` lists every rollup the
+compiled SQL reads, branches included. Set
 `SEMANTIC_RAILS_AGGREGATE_ROUTING=off` to run every query on the base tables (see
 [QUERY_API.md](QUERY_API.md)).
 

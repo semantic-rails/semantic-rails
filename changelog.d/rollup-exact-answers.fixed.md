@@ -4,8 +4,10 @@
   for months, quarters or years, time ranges that don't start and end on the
   rollup's bucket boundaries (day boundaries for minute and hour rollups), time
   roles that convert time zones, non-default calendars, rollups that declare their
-  own `filters`, and aggregates filtered by a `metric_predicate`. The logical
-  plan's `aggregate_relation_rejections` says why each rejected rollup wasn't
-  used. The engine still trusts the rollup's author on two points: a weekly rollup
-  must be built on Monday-start weeks, and a column pre-joined from another model
-  must follow the query's join path.
+  own `filters`, aggregates filtered by a `metric_predicate`, stock
+  (semi-additive) measures, aggregations other than the one a rollup column holds,
+  and dimensions pre-joined into a rollup along a join path other than the
+  query's (or with no declared `path`). The logical plan's
+  `aggregate_relation_rejections` says why each rejected rollup wasn't used. The
+  engine still trusts the rollup's author that a weekly rollup is built on
+  Monday-start weeks.

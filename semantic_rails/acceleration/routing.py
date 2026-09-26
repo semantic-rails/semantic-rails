@@ -9,6 +9,7 @@ the plan is cached.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -23,7 +24,9 @@ if TYPE_CHECKING:
 AGGREGATE_ROUTING_ENV = "SEMANTIC_RAILS_AGGREGATE_ROUTING"
 ROUTING_OFF = "aggregate_routing_off"
 LOWERED_SEPARATELY = "lowered_separately"  # a distribution branch or an entity-set plan
+MAX_CANDIDATES = 200  # report rows; the rest are counted in `candidates_omitted`
 _enabled: ContextVar[bool] = ContextVar("semantic_rails_aggregate_routing", default=True)
+_scans: ContextVar[set[str] | None] = ContextVar("semantic_rails_rollup_scans", default=None)
 
 
 def parse_aggregate_routing(value: str) -> bool:
@@ -50,16 +53,33 @@ def aggregate_routing_enabled() -> bool:
     return _enabled.get()
 
 
-def routing_candidates(
-    plan: LogicalPlan, physical: PhysicalPlan, config: PackageConfig
-) -> list[dict[str, str]]:
-    """Each rollup considered for each measure leaf: ``selected``, ``eligible``, ``rejected``
-    or ``unknown``.
+@contextmanager
+def recording_rollup_scans() -> Iterator[set[str]]:
+    """Collect every rollup the SQL lowered inside this block reads, nested compiles included."""
+    scans: set[str] = set()
+    token = _scans.set(scans)
+    try:
+        yield scans
+    finally:
+        _scans.reset(token)
+
+
+def record_rollup_scan(relation_id: str) -> None:
+    scans = _scans.get()
+    if scans is not None:
+        scans.add(relation_id)
+
+
+def aggregate_routing_report(
+    plan: LogicalPlan, physical: PhysicalPlan, config: PackageConfig, scans: frozenset[str]
+) -> dict[str, object]:
+    """``selected``: every rollup the compiled SQL reads (``scans``); ``candidates``: each rollup
+    considered for each measure leaf, ``selected``, ``eligible``, ``rejected`` or ``unknown``.
 
     A leaf's pick counts as ``selected`` only if the physical plan scans that rollup for it. A
-    leaf lowered some other way (a distribution compiles each branch as its own query) reports
-    each rollup its planner didn't reject as ``unknown``, :data:`LOWERED_SEPARATELY`: the branch
-    re-plans it, and may or may not read the rollup.
+    leaf lowered some other way (a distribution compiles each branch as its own query) reports,
+    with reason :data:`LOWERED_SEPARATELY`, each rollup its planner didn't reject as ``unknown``
+    when some branch reads it, and as ``eligible`` when none does.
     """
     scanned = {
         (str(item.get("alias", "")), str(node.details.get("aggregate_relation_id", "")))
@@ -68,18 +88,20 @@ def routing_candidates(
         and node.details.get("selected_relation_type") == "aggregate_relation"
         for item in node.details.get("measures", []) or []
     }
+    by_entity = defaultdict(list)
+    for relation in config.aggregate_relations:
+        by_entity[relation.source_entity].append(relation)
     rows: list[dict[str, str]] = []
     for leaf in plan.measure_plans:
         chosen = leaf.aggregate_relation_id
         unverified = chosen and (leaf.bound_measure.alias, chosen) not in scanned
-        for relation in config.aggregate_relations:
-            if relation.source_entity != leaf.source_entity:
-                continue
+        for relation in by_entity[leaf.source_entity]:
             reason = leaf.aggregate_relation_rejections.get(relation.id, "")
             if reason:
                 decision = "rejected"
             elif unverified:
-                decision, reason = "unknown", LOWERED_SEPARATELY
+                reason = LOWERED_SEPARATELY
+                decision = "unknown" if relation.id in scans else "eligible"
             else:
                 decision = "selected" if relation.id == chosen else "eligible"
             rows.append(
@@ -91,4 +113,11 @@ def routing_candidates(
                     "reason": reason,
                 }
             )
-    return rows
+    report: dict[str, object] = {
+        "selected": sorted(scans),
+        "selected_count": len(scans),
+        "candidates": rows[:MAX_CANDIDATES],
+    }
+    if len(rows) > MAX_CANDIDATES:
+        report["candidates_omitted"] = len(rows) - MAX_CANDIDATES
+    return report

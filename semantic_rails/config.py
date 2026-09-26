@@ -215,6 +215,8 @@ def _ensure_dict_list(value: Any) -> list[dict[str, Any]]:
 
 
 _TIME_GRAIN_ORDER = ["transaction", "minute", "hour", "day", "week", "month", "quarter", "year"]
+# What a rollup's measure column may hold per row (`holds:`); see acceleration/selection.py.
+_ROLLUP_HOLDS = frozenset({"sum", "min", "max", "count_distinct"})
 
 
 def _coarser_time_grains(grain: str) -> list[str]:
@@ -2640,6 +2642,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     measure_ids = {measure.id for measure in measures}
     dimension_ids = {dimension.id for dimension in dimensions}
     temporal_role_ids = {role.id for role in temporal_roles}
+    relationship_ids = {row.id for row in relationships}
     model_measure_keys: dict[str, set[str]] = {
         model_id: set(dict(model.get("measures", {}) or {}))
         for model_id, model in model_rows.items()
@@ -2687,6 +2690,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         measure_columns: dict[str, str] = {}
         measure_rollups: dict[str, str] = {}
         measure_aggregations: dict[str, str] = {}
+        measure_holds: dict[str, str] = {}
         if isinstance(raw_measure_bindings, dict):
             measures_list: list[str] = []
             for measure_ref, binding_raw in raw_measure_bindings.items():
@@ -2701,6 +2705,15 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     measure_columns[measure_id] = column
                 measure_rollups[measure_id] = str(binding.get("rollup", "") or "").strip()
                 measure_aggregations[measure_id] = str(binding.get("aggregation", "") or "").strip()
+                holds = str(binding.get("holds", "") or "").strip().lower()
+                if holds and holds not in _ROLLUP_HOLDS:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"{path}: aggregate relation measure '{measure_id}' declares holds '{holds}';"
+                        f" use one of {sorted(_ROLLUP_HOLDS)}",
+                    )
+                if holds:
+                    measure_holds[measure_id] = holds
         else:
             measures_list = [
                 _resolve_measure_ref(item, model_id=model_id)
@@ -2708,6 +2721,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             ]
         raw_dimension_bindings = row_dict.get("dimensions")
         dimension_columns: dict[str, str] = {}
+        dimension_paths: dict[str, list[str]] = {}
         if isinstance(raw_dimension_bindings, dict):
             dimensions_list: list[str] = []
             for dim_ref, binding_raw in raw_dimension_bindings.items():
@@ -2720,6 +2734,16 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 ).strip()
                 if column:
                     dimension_columns[dim_id] = column
+                join_path = [str(item).strip() for item in _ensure_list(binding.get("path"))]
+                unknown_relationships = sorted(set(join_path) - relationship_ids)
+                if unknown_relationships:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"{path}: aggregate relation dimension '{dim_id}' path names unknown"
+                        f" relationships {unknown_relationships}",
+                    )
+                if join_path:
+                    dimension_paths[dim_id] = join_path
         else:
             dimensions_list = [
                 _resolve_dimension_ref(item, model_id=model_id)
@@ -2796,7 +2820,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             measure_columns=measure_columns,
             measure_rollups=measure_rollups,
             measure_aggregations=measure_aggregations,
+            measure_holds=measure_holds,
             dimension_columns=dimension_columns,
+            dimension_paths=dimension_paths,
             excluded_entities=[
                 _resolve_entity_ref(item)
                 for item in _ensure_list(row_dict.get("excluded_entities"))
@@ -2869,8 +2895,12 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         rollup = str(
                             raw_column.get("rollup", raw_measure_spec.get("rollup", "")) or ""
                         ).strip()
-                        aggregation = str(raw_column.get("aggregation", "sum") or "sum").strip()
+                        holds = str(raw_column.get("holds", "") or "").strip()
+                        aggregation = str(
+                            raw_column.get("aggregation", "" if holds else "sum") or ""
+                        ).strip()
                     else:
+                        holds = ""
                         column = str(raw_column or "").strip()
                         rollup = str(
                             raw_measure_spec.get("rollup", "additive") or "additive"
@@ -2880,6 +2910,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         "column": column,
                         "rollup": rollup,
                         "aggregation": aggregation,
+                        "holds": holds,
                     }
                 dimension_bindings: dict[str, dict[str, str]] = {}
                 for dim_key in sorted(model_dimension_keys.get(model_id, set())):
