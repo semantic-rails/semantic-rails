@@ -1,0 +1,11 @@
+model:
+  id: signups
+  label: Signups
+  relation: signups
+  entities: {customer: {}}
+  times:
+    signed_up_at: {label: Signup time, column: signed_up_at, kind: timestamp, class: event_time,
+      supported_grains: [day, week, month, quarter, year], default: true}
+  measures:
+    signup_count: {label: Signups, kind: entity_count, entity_key: customer_id,
+      accumulation: {kind: flow}}

@@ -1,0 +1,23 @@
+metrics:
+  shop.average_order_value:
+    as: metric.shop.average_order_value
+    label: Average order value
+    kind: ratio
+    numerator: revenue
+    denominator: order_count
+    null_behavior: null_if_zero
+    value_type: currency
+    temporal_role: temporal_role.shop_order_ordered_at
+  shop.signup_to_order_7d:
+    as: metric.shop.signup_to_order_7d
+    label: Signup to order within 7 days
+    kind: conversion
+    temporal_role: temporal_role.shop_customer_signed_up_at
+    value_type: percent
+    expression:
+      kind: conversion
+      entity: entity.shop_customer
+      window: {unit: day, value: 7}
+      matching_mode: first_converted_after_base
+      base: {kind: aggregate, measure: signup_count}
+      converted: {kind: aggregate, measure: order_count}

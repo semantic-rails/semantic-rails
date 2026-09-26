@@ -1,0 +1,8 @@
+graph:
+  entities:
+    order: {label: Order, key: [order_id], model: orders}
+    customer: {label: Customer, key: [customer_id], model: signups}
+    default_calendar: {label: Calendar, kind: time, key: [date_day], model: default_calendar,
+      allowed_as_root: false}
+    fiscal_calendar: {label: Fiscal calendar, kind: time, key: [date_day],
+      model: fiscal_calendar, allowed_as_root: false}

@@ -1,0 +1,9 @@
+model:
+  id: fiscal_calendar
+  label: Fiscal calendar
+  relation: dim_fiscal
+  calendar_id: fiscal
+  entities: {fiscal_calendar: {}}
+  times: {date_day: {label: Day, column: date_day, kind: date, class: calendar_time}}
+  dimensions: {week_start: {label: Week, kind: date}, month_start: {label: Month, kind: date},
+    quarter_start: {label: Quarter, kind: date}, year_start: {label: Year, kind: date}}
