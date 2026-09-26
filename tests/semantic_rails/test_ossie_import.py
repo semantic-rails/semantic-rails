@@ -199,6 +199,8 @@ def test_a_foreign_0_2_document_imports_what_it_can_and_counts_the_rest(tmp_path
         "metric.shop.revenue": "aggregate",
     }
     assert validate_runtime_package(Path(report["package_dir"])) == []
+    with pytest.raises(SemanticLayerError, match="can't name a directory"):
+        import_ossie(document, tmp_path / "other", package_id="../escaped")
 
 
 def _aggregate(measure: str, aggregation: str) -> dict:

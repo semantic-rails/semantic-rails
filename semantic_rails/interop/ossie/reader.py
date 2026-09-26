@@ -481,6 +481,8 @@ def import_ossie(
         for sr_id in ids:
             importer.skip(f"{collection.replace('_', ' ')} not written back yet", sr_id)
     package, pid = documents["package.yml"]["package"], config.package.package_id
+    if not re.fullmatch(r"\w[\w.-]*", pid):  # it names the output directory
+        raise SemanticLayerError("INVALID_CONFIG", f"Package id {pid!r} can't name a directory")
     if config.package.warehouse == "duckdb":  # another tool built the data the document describes
         package.update(default_db=default_db or f"data/{pid}.duckdb", seed={"kind": "external"})
     elif config.package.warehouse == "snowflake":
