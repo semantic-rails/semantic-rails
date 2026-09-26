@@ -7,7 +7,7 @@
 # under the old names, and installing a `semantic_layer` top-level package
 # would collide with the unrelated project that owns it.)
 name = "semantic-rails"
-version = "0.3.1"
+version = "0.3.2rc1"
 description = "Agent-first semantic layer for governed analytics over DuckDB, Snowflake, Postgres, BigQuery, Databricks, Athena, ClickHouse, MotherDuck, and DuckLake"
 readme = "README.md"
 requires-python = ">=3.11"
