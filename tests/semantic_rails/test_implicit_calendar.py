@@ -464,23 +464,120 @@ LARGE_ORDER = {
 }
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        _ask("month", DISTRIBUTION, _rolling("month", 3)),
-        _ask("month", DISTRIBUTION, NOW, fill=True),
-        _ask("month", DISTRIBUTION, NOW, fill=True, start="2023-10-15", end="2024-08-01"),
-    ],
-)
 def test_a_query_compiled_as_sub_queries_refuses_the_implicit_calendar(
-    packages: dict[str, Path], query: dict[str, Any]
+    packages: dict[str, Path],
 ) -> None:
+    query = _ask("month", DISTRIBUTION, _rolling("month", 3))
     with pytest.raises(SemanticLayerError) as refused:
         _query(packages["none"], query)
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     assert "calendar entity" in str(refused.value)
     _query(packages["authored"], query)  # an authored calendar still answers
+
+
+def _distribution(function: str, input_: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    over = {"kind": "entity_value", "entity": "entity.cal_order", "input": input_, **extra}
+    expression = {"kind": "distribution", "function": function, "over": over}
+    return {"expression": {**expression, "p": 0.8} if function == "percentile" else expression}
+
+
+def _per_order(aggregate: str) -> str:
+    """``aggregate`` over the bucket's orders (one row per order); NULL when it has none."""
+    return f"(SELECT {aggregate} FROM orders WHERE date_trunc('month', ordered_at) = s.bucket)"
+
+
+LARGE_REVENUE = {"kind": "aggregate", "measure": "measure.cal.revenue"}
+LARGE_REVENUE["filter"] = {"all": [{"expression": LARGE_ORDER}]}
+
+
+# Regression: fill densified the per-order grain, so every order entered every month as a 0
+# (p80 read 3.0, 0, 0 for 9, 7, 20). A filled distribution is refused.
+@pytest.mark.parametrize(
+    ("package", "select", "time", "metric_filters"),
+    [
+        ("authored", [DISTRIBUTION], {}, []),
+        ("authored", [NOW, DISTRIBUTION], {"start": "2023-10-15", "end": "2024-08-01"}, []),
+        ("authored", [DISTRIBUTION], {}, [{"expression": LARGE_ORDER, "op": "=", "value": True}]),
+        ("authored", [{**_distribution("median", LARGE_REVENUE), "as": "median"}], {}, []),
+        ("none", [DISTRIBUTION], {}, []),
+        ("none", [DISTRIBUTION, NOW], {}, []),
+        ("fiscal_only", [DISTRIBUTION], {"calendar_id": "fiscal"}, []),
+    ],
+    ids=[
+        "authored",
+        "beside",
+        "metric_predicate",
+        "input_predicate",
+        "none",
+        "none_beside",
+        "fiscal",
+    ],
+)
+def test_a_filled_distribution_refuses(
+    packages: dict[str, Path],
+    package: str,
+    select: list[dict[str, Any]],
+    time: dict[str, Any],
+    metric_filters: list[dict[str, Any]],
+) -> None:
+    query = {**_ask("month", *select, fill=True, **time), "metric_filters": metric_filters}
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages[package], query)
+
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert "time.fill isn't supported for distributions" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("function", "aggregate"),
+    [
+        ("median", "median(amount)"),
+        ("percentile", "quantile_cont(amount, 0.8)"),
+        ("avg", "avg(amount)"),
+        ("sum", "sum(amount)"),
+        ("min", "min(amount)"),
+        ("max", "max(amount)"),
+    ],
+)
+def test_an_unfilled_distribution_matches_the_key(
+    packages: dict[str, Path], function: str, aggregate: str
+) -> None:
+    select = {**_distribution(function, REVENUE), "as": "value"}
+    key = _key(packages["authored"], _series_key("month", _per_order(aggregate)))
+
+    assert _query(packages["authored"], _ask("month", select))[0] == [
+        row for row in key if row[1] is not None
+    ]
+    # A prior-period sibling fills its own branch; the distribution reads NULL in February.
+    beside = _ask("month", _prior("month"), select)
+    assert _query(packages["authored"], beside)[0] == _key(
+        packages["authored"],
+        _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
+    )
+
+
+PRIOR_REVENUE = _prior("month")["expression"]
+MEDIAN_OF = {
+    "rolling": _distribution("median", _rolling("month", 3)["expression"]),
+    "prior_period": _distribution("median", PRIOR_REVENUE),
+    "prior_period_filter": _distribution("median", REVENUE),
+}
+
+
+@pytest.mark.parametrize("shape", MEDIAN_OF)
+def test_a_distribution_over_a_per_entity_window_refuses(
+    packages: dict[str, Path], shape: str
+) -> None:
+    """Its dense series held every order in every month: November's median read 0, not 7.5."""
+    query = _ask("month", {**MEDIAN_OF[shape], "as": "value"})
+    if shape == "prior_period_filter":
+        query["metric_filters"] = [{"expression": PRIOR_REVENUE, "op": ">=", "value": 0}]
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages["authored"], query)
+
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert "prior-period window" in str(refused.value)
 
 
 @pytest.mark.parametrize(

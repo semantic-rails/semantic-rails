@@ -903,6 +903,16 @@ def _distribution_select(
 ) -> SqlSelect:
     from ..compiler import _compile_query_sql_ast
 
+    # A dense per-entity series holds every entity in every period, so an entity with no rows
+    # in a period (not yet created, or long gone) would enter that period's distribution.
+    if _expr_requires_dense_series(expr.over.input, config) or _metric_filters_require_dense_series(
+        plan, config
+    ):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "A distribution is not supported when its input or a metric filter has a rolling or "
+            "prior-period window: it would count entities in periods where they have no rows.",
+        )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
         entity_key_dims = _entity_key_dimension_ids(expr.over.entity, config)
@@ -973,6 +983,13 @@ def _single_expression_branch_select(
 
 
 def _lower_agent_dag_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
+    # Filling a distribution's per-entity values put every entity in every period as a 0.
+    if plan.time and plan.time.get("fill"):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "time.fill isn't supported for distributions; query without fill (periods with no "
+            "data are omitted).",
+        )
     key_aliases = _query_key_aliases(plan)
     branch_ctes: list[SqlCte] = []
     output_aliases: list[str] = []
@@ -3650,11 +3667,13 @@ def _query_requires_dense_series(plan: LogicalPlan, config: PackageConfig) -> bo
         for expr in plan.post_aggregation_exprs.values()
     ):
         return True
+    return _metric_filters_require_dense_series(plan, config)
+
+
+def _metric_filters_require_dense_series(plan: LogicalPlan, config: PackageConfig) -> bool:
     for item in list(plan.query.get("metric_filters", []) or []):
         expr = _parse_public_expr(dict(item["expression"]))
-        if isinstance(expr, MetricPredicateExpr):
-            continue
-        if _expr_requires_dense_series(expr, config):
+        if not isinstance(expr, MetricPredicateExpr) and _expr_requires_dense_series(expr, config):
             return True
     return False
 

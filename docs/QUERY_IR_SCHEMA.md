@@ -433,6 +433,11 @@ is that measure's honest value for "no rows contributed":
 | semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
 | ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |
 
+A query with a `distribution` refuses `fill: true`; without fill, periods with no data are
+omitted. A `distribution` is also refused when its input or a metric filter has a `rolling`
+or `prior_period` window, whose dense per-entity series would count entities in periods where
+they have no rows.
+
 `fill: true` requires a `grain` — the calendar spine needs a step
 size — and it is engaged automatically by features that depend on
 dense rows (for example, the inline `prior_period` LAG window in the
