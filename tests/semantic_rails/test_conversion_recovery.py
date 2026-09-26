@@ -15,6 +15,7 @@ import yaml
 
 from semantic_rails.expressions import CONVERSION_MATCHING_MODES
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.metadata import _conversion_metadata
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
@@ -135,3 +136,10 @@ def test_conversion_card_expression_answers_like_the_metric_and_rewindows(adapte
 def test_only_conversion_metric_cards_carry_the_conversion_block(adapter):
     card = adapter.call_tool("inspect", {"object_id": "metric.sales.aov_usd"})["card"]
     assert "conversion" not in card
+
+
+def test_conversion_block_is_omitted_when_it_names_a_hidden_object(adapter):
+    config = adapter.runtime._config
+    (recipe,) = [m for m in config.metric_recipes if m.id == "metric.sales.adele_then_chai_28d"]
+    assert _conversion_metadata(recipe.expression, set())
+    assert _conversion_metadata(recipe.expression, {PRODUCT}) == {}

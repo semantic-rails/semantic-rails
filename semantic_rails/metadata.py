@@ -52,6 +52,7 @@ from .expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    collect_object_references,
     expr_to_dict,
     parse_semantic_expression,
 )
@@ -776,13 +777,18 @@ def _without_empty_defaults(expr: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _conversion_metadata(expr: SemanticExpr) -> dict[str, Any]:
-    """A conversion metric's own expression, so a caller can re-run it over another window."""
+def _conversion_metadata(expr: SemanticExpr, hidden_ids: set[str]) -> dict[str, Any]:
+    """A conversion metric's own expression, so a caller can re-run it over another window.
+
+    Omitted when it names an object the caller's policy context hides."""
     if not isinstance(expr, ConversionExpr):
+        return {}
+    expression = _without_empty_defaults(expr_to_dict(expr))
+    if hidden_ids.intersection(collect_object_references(expression)):
         return {}
     return {
         "conversion": {
-            "expression": _without_empty_defaults(expr_to_dict(expr)),
+            "expression": expression,
             "matching_modes": list(CONVERSION_MATCHING_MODES),
             "rewindow": "select this expression with another window {unit: "
             "minute|hour|day|week|month|quarter|year, value: positive integer}",
@@ -937,7 +943,7 @@ def _object_card(
                 **_example_test_metadata(recipe),
                 **predicate_meta,
                 **_comparison_metadata(recipe),
-                **_conversion_metadata(recipe.expression),
+                **_conversion_metadata(recipe.expression, hidden_ids),
             }
         )
     elif obj.kind == "dimension":
