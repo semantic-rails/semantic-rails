@@ -164,6 +164,8 @@ class _Exporter:
         self.partial: dict[str, list[str]] = defaultdict(list)
         self.columns: dict[str, list[str]] = {}
         self.metric_sql: dict[str, SqlExpr | _Unsupported] = {}
+        # The exact AST behind each exported expression, so an import gets it back unchanged.
+        self.expressions: dict[str, dict[str, Any]] = defaultdict(dict)
 
     def omit(self, collection: str, row: Any, construct: str) -> None:
         self.objects[collection][row.id] = _attributes(row)
@@ -248,6 +250,7 @@ class _Exporter:
                 {"name": name, "expression": self.expression(sql), **_described(measure, _LABELLED)}
             )
             self.keep("measures", measure, f"{dataset}.{name}", {"entity", "expr", *_LABELLED})
+            self.expressions["measures"][measure.id] = expr_to_dict(measure.expr)
         datasets: list[dict[str, Any]] = []
         for entity in config.entities:
             if entity.id not in dataset_names:
@@ -334,6 +337,7 @@ class _Exporter:
                 }
             )
             self.keep("metric_recipes", metric, name, {"expression", "description", "aliases"})
+            self.expressions["metric_recipes"][metric.id] = expr_to_dict(metric.expression)
         return metrics
 
     def metric_expression(self, metric_id: str) -> SqlExpr | _Unsupported:
@@ -432,6 +436,7 @@ def export_ossie(
         "package": export_metric_portability(snapshot)["package"],
         "names": dict(exporter.names),
         "objects": dict(exporter.objects),
+        "expressions": canonicalize_semantics(dict(exporter.expressions)),
         "warnings": exporter.warnings(),
     }
     return document, sidecar

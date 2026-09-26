@@ -1,4 +1,4 @@
-# Apache Ossie export
+# Apache Ossie export and import
 
 `semantic-rails export --format ossie` writes a package as an
 [Apache Ossie](https://github.com/apache/ossie) 0.1.1 semantic model, the spec's only tagged
@@ -17,7 +17,8 @@ It writes two files and prints a JSON report with the counts and warnings:
   Ossie 0.1.1 accepts `custom_extensions` only from six named vendors, so Semantic Rails data can't
   ride inside the document itself.
 
-Importing Ossie documents (`import --from ossie`) and writing Ossie 0.2 are not supported yet.
+`semantic-rails import --from ossie` reads a document back ([Import](#import)). Writing Ossie 0.2 is
+not supported yet.
 
 ## Mapping
 
@@ -60,9 +61,61 @@ affected ids. Nothing is dropped silently.
     relationships whose `allowed_directions` exclude the many-to-one direction.
 - **Exported, with extra attributes in the sidecar.** For example a dimension's data type and
   semantic kind, a measure's default aggregation and accumulation, or a metric's temporal role.
+  The sidecar's `expressions` also keep the exact expression behind each exported measure and
+  metric, which the SQL alone can't give back.
 
 Semantic policies also get a separate `policy enforcement` warning: Ossie consumers don't read
 the sidecar and won't enforce them, so anyone given the document sees every exported object.
 
 The export covers the semantic model only. Deployment settings (`connection`, `seed`,
 `default_db`) and the package's examples and tests are not part of it.
+
+## Import
+
+```bash
+uv run semantic-rails import --from ossie --source dist/ossie/jaffle_shop.ossie.yaml \
+  --output dist/imported --package-id jaffle_shop
+```
+
+It reads documents written by `export --format ossie`, writes the package to
+`<output>/<package-id>/`, and prints a JSON report with the counts and warnings. Like the export,
+it never drops anything silently: every construct it skips or fills with a default gets one
+warning with the affected names. Other Ossie 0.1.x documents (the first model in
+`semantic_model`) and 0.2 documents (one model at the root) are read the same way, but that is
+experimental: the spec's own examples and the dbt and Snowflake converters' output aren't in the
+tests yet. Input it can't read, such as a malformed document or a sidecar of another format
+version, is refused with `INVALID_CONFIG`.
+
+- **With the sidecar** (`<name>.semantic_rails.json` beside the document, as the export writes
+  it), every object comes back exactly: the document supplies what it carries and the sidecar
+  the rest, including the objects the export left out. The package keeps the sidecar's package
+  id and namespace. The import then exports what it wrote and compares that with the document
+  and sidecar it read, and reports `round_trip: exact`. A document edited after the export (an
+  element added, removed or renamed, or its SQL changed) no longer matches its sidecar, so the
+  import is refused and names the differences; import the document alone, or export again. A
+  package that uses relation pipelines, aggregate relations or path preferences is refused too,
+  naming those objects, because they can't be written back as package files yet.
+- **Without it**, the import keeps what the document states and uses defaults for the rest:
+  - datasets with a table `source` and a `primary_key` become entities;
+  - fields that name a column become dimensions, typed as categories, or as timestamps when
+    `dimension.is_time` or the 0.2 `datatype` says so. Time fields get a temporal role with day
+    to year grains;
+  - fields without `dimension` become measures when their SQL is a column or simple arithmetic,
+    aggregated the way the metrics use them, and counted distinct if any metric does;
+  - relationships become many-to-one joins;
+  - metrics are imported when their SQL is the aggregate SQL the export writes:
+    - `SUM`, `AVG`, `MIN`, `MAX` or `COUNT(DISTINCT ...)` over `dataset.field`;
+    - numbers, parentheses, and `+`, `-` and `*`;
+    - division by `NULLIF(denominator, 0)`;
+    - `COALESCE(x, 0)` on both sides of `+` or `-`.
+
+  Anything else is skipped with a warning: computed dimensions, other SQL, datasets defined by a
+  query, `unique_keys`, `custom_extensions`, `ai_context` beyond `synonyms`, and elements whose
+  names only differ by case or punctuation from one already imported.
+
+The imported package reads data another tool built: `--default-db` names the DuckDB file
+(default `data/<package-id>.duckdb`, with `seed: {kind: external}`). A document written for
+Snowflake gets a `snowflake_cli` connection named after the package; other warehouses are
+refused. `--warehouse`,
+`--description` and `--schema-strict` apply to `--from metricflow` only. With a sidecar,
+`--package-id` must name the sidecar's package, and `--namespace` is left out.
