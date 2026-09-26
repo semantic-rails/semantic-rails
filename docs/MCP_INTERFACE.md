@@ -80,14 +80,11 @@ tool/schema drift cannot be merged silently.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
 `discover`, draft Query IR with `plan`, and run it with `execute` only when the draft's status is
-`ok` with no warnings. The instructions also name every variant Query IR composes at query time
-without a model change (an aggregation override, a filtered aggregate, rolling windows,
-prior-period offsets, period-to-date, cumulative, ratios, conversion windows,
-`scoped_aggregate`, `aggregate_if`, and `metric_filters` predicates), the rules that prevent
-wrong answers (exclusive `time.end`, a grain for a time window, `op "in"` for several values),
-recovery hints and `policy_context`. Their wording is measured: rewording the workflow steps
-("don't write Query IR from scratch") or inviting a "Query IR so far" made models hand their
-own drafts to `plan` far more often, so the steps keep their tested wording. Each tool description says what the tool does, when to use it, and its one
+`ok` with no warnings. The instructions also carry the rules that prevent wrong answers
+(exclusive `time.end`, a grain for a time window, `op "in"` for several values), recovery hints
+and `policy_context`. Their wording is measured: rewording the workflow steps ("don't write
+Query IR from scratch") or inviting a "Query IR so far" made models hand their own drafts to
+`plan` far more often, so the steps keep their tested wording. Each tool description says what the tool does, when to use it, and its one
 gotcha; `plan` and `execute` repeat the plan-first rule and the exclusive end for hosts that don't
 forward instructions. Every tool returns its smallest response by default (`verbosity="minimal"`,
 `plan` `detail="query"`).
@@ -109,8 +106,7 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
   up front.
 - **One description, three parts.** Say what the tool returns, when to use it (relative to
   other tools: "after `discover`", "before writing a `where` filter"), and its one gotcha,
-  introduced with "Gotcha:". Aim for 200–700 characters; `execute` carries the one Query IR
-  cheat-sheet, with the shape of every query-time variant and one example, in up to 1,200.
+  introduced with "Gotcha:". Aim for 200–700 characters.
 - **No contradictions.** A description never tells the agent to call a tool that another
   description calls optional. If a step is optional, say so everywhere.
 - **Real examples.** Example ids must exist in the bundled `jaffle_shop` package

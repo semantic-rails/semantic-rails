@@ -59,12 +59,11 @@ def test_every_tool_description_is_non_trivial():
 
 
 def test_every_tool_description_under_700_chars():
-    """Upper bound so descriptions stay scannable in tools/list. execute carries the one
-    Query IR cheat-sheet, including every query-time variant, so it gets more room."""
+    """Upper bound so descriptions stay scannable in tools/list."""
     tools = list_tool_definitions()
     for tool in tools:
         desc = tool["description"]
-        assert len(desc) <= (1200 if tool["name"] == "execute" else 700), (
+        assert len(desc) <= 700, (
             f"tool {tool['name']!r} description is too long ({len(desc)} chars); "
             f"keep agent-rated descriptions scannable."
         )
@@ -92,42 +91,6 @@ def test_ir_accepting_tool_descriptions_enumerate_select_expression_shapes():
         assert shape in execute_desc, (
             f"execute description must enumerate {shape}; got {execute_desc!r}"
         )
-
-
-def test_execute_description_names_every_query_time_variant(runtime_factory):
-    """Define a measure once, vary it per question: the shipped text must name each variant
-    the Query IR composes at query time, and its example must validate."""
-    import json
-    import re
-
-    from semantic_rails.mcp import MCP_SERVER_INSTRUCTIONS, SemanticLayerMCPAdapter
-
-    execute_desc = next(t["description"] for t in list_tool_definitions() if t["name"] == "execute")
-    for variant in (
-        "{aggregation, measure}",
-        "filter:{all:[{field,op,value}]}",
-        "kind:rolling",
-        "kind:prior_period",
-        "kind:period_to_date",
-        "kind:cumulative",
-        "kind:conversion",
-        "scoped_aggregate",
-        "aggregate_if",
-        "metric_filters[]",
-        "kind:metric_predicate",
-    ):
-        assert variant in execute_desc, variant
-    assert "composes at query time with no model change" in MCP_SERVER_INSTRUCTIONS
-    example = re.search(r"large orders: (\{.*\})\.$", execute_desc)
-    assert example, execute_desc
-    expression = json.loads(re.sub(r"(\w+):", r'"\1":', example.group(1)).replace("'", '"'))
-    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
-    try:
-        query = {"version": 2, "select": [{"as": "large", "expression": expression}]}
-        response = adapter.call_tool("execute", {"query": query, "mode": "validate"})
-    finally:
-        adapter.close()
-    assert response["ok"], response["errors"]
 
 
 def test_no_orphan_explain_tool_references():
