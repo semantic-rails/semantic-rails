@@ -588,7 +588,8 @@ behavior:
   read the filtered relation exactly once, as its only relation. Joins, metric
   filters, calendar spines (prior-period comparisons, fill) and other second
   scans are refused, and rollups are not routed to. The zero-row
-  data-coverage probe is skipped. Only DuckDB executes these statements today.
+  data-coverage probe is skipped. Such a policy loads for any warehouse, but only
+  DuckDB executes these statements today; every other adapter refuses them.
   An unscoped row filter applies to every request. A scoped one applies only
   when the request context carries the listed audience, environment or role,
   so a request without it is not filtered: scope by them only when the host
@@ -631,7 +632,6 @@ semantic_policies:
     kind: row_filter
     dimension: dimension.shop_order_customer_id
     attribute: customer_id
-    audiences: [customer_app]
     rationale: Each customer sees only their own orders.
 ```
 

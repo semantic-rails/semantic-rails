@@ -3700,6 +3700,8 @@ def compile_query(
     row_filters: Sequence[RowFilter] = (),
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    if binding is not None and row_filters:
+        raise ValueError("Pass row_filters to bind_query, not with an existing binding.")
     bound = (
         binding
         if binding is not None

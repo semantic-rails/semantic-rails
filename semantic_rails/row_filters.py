@@ -29,7 +29,7 @@ from .sql_ast import (
 from .sql_preparation import ParameterSlot
 
 ROW_FILTER = "row_filter"
-_KEYS = frozenset({"dimension", "attribute", "type", "rule"})  # rule: the rationale alias
+_KEYS = frozenset({"dimension", "attribute", "type", "rule", "description"})  # rationale aliases
 _SLOT_TYPES = frozenset({"string", "integer", "boolean"})
 _COLUMN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -86,10 +86,10 @@ def is_row_filter(policy: SemanticPolicyConfig) -> bool:
     """Whether ``policy`` is a row filter; a near miss is an error, never an ignored policy."""
     if policy.kind == ROW_FILTER:
         return True
-    kind = str(policy.kind).strip().lower().replace("-", "_").replace(" ", "_").rstrip("s")
+    kind = re.sub(r"[^a-z]", "", str(policy.kind).lower()).rstrip("s")
     nested = policy.config.get("config")
     if (
-        kind == ROW_FILTER
+        kind == "rowfilter"
         or "attribute" in policy.config
         or (isinstance(nested, dict) and "attribute" in nested)
     ):
@@ -125,9 +125,9 @@ def apply_row_filters(
     scan = next(
         (node for node in nodes if isinstance(node, SqlSelect) and node.from_table is read), None
     )
-    # A read is never a CTE name, so a filtered relation shadowed by a CTE is never applied.
     applied = [row for row in filters if read is not None and row.table == read.name]
-    if read is None or scan is None or not applied:
+    # A filtered relation named like a CTE would be read through the CTE: deny, don't guess.
+    if read is None or scan is None or not applied or any(row.table in ctes for row in filters):
         raise _unsupported(filters)
     qualifier = (read.alias or read.name).split(".")
     condition = _conjunction(

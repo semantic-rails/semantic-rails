@@ -13,6 +13,7 @@ import httpx
 import pytest
 import yaml
 
+from semantic_rails import row_filters as row_filters_module
 from semantic_rails import runtime as runtime_module
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.audit import get_audit_sink, set_audit_sink
@@ -28,11 +29,14 @@ from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from semantic_rails.sql_ast import (
     SqlBinary,
+    SqlCte,
+    SqlExists,
     SqlField,
     SqlIdentifier,
     SqlJoin,
     SqlLiteral,
     SqlSelect,
+    SqlSetQuery,
     SqlTableFunction,
     SqlTableRef,
 )
@@ -81,6 +85,7 @@ MISTYPED["dimension"] = "dimension.rf_order_order_ref"
 # A second filter on the same relation for callers with this role; id dimensions declare a type.
 OWN_STORE = {**OWN_ORDERS, "id": "policy.rf.own_store", "attribute": "store_id", "type": "string"}
 OWN_STORE.update(dimension="dimension.rf_order_store_id", audiences=[], roles=["store_scoped"])
+DROP = object()  # a key a test case removes
 
 
 def _package(root, policies):
@@ -312,22 +317,11 @@ def test_zero_rows_skip_the_whole_relation_coverage_probe(runtime, monkeypatch):
 
 
 def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
-    events = []
-
-    class Sink:
-        def emit(self, payload):
-            events.append(payload)
-
-    previous = get_audit_sink()
-    set_audit_sink(Sink())
-    try:
-        with (
-            caplog.at_level(logging.DEBUG, logger="semantic_rails"),
-            pytest.raises(SemanticLayerError) as caught,
-        ):
-            runtime.query(_q(audience="mistyped", customer_id=A))
-    finally:
-        set_audit_sink(previous)
+    with (
+        caplog.at_level(logging.DEBUG, logger="semantic_rails"),
+        pytest.raises(SemanticLayerError) as caught,
+    ):
+        runtime.query(_q(audience="mistyped", customer_id=A))
     error, chain = caught.value, []
     while error is not None:
         chain.append(error)
@@ -335,7 +329,7 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
     assert chain[0].code == "QUERY_EXECUTION_ERROR"
     assert "ConversionException" in caplog.text
     assert A not in json.dumps([[str(e), getattr(e, "details", {})] for e in chain], default=str)
-    assert A not in caplog.text + json.dumps(events, default=str)
+    assert A not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -350,16 +344,22 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
         ({"type": "integer"}, "has type 'string'"),
         ({"kind": "row_filters"}, "looks like a row filter"),
         ({"kind": "Row-Filter"}, "looks like a row filter"),
+        (
+            {"kind": "RowFilter", "attribute": DROP, "attr": "customer_id"},
+            "looks like a row filter",
+        ),
         ({"kind": "object_access"}, "looks like a row filter"),  # a stray attribute
     ],
 )
 def test_the_package_rejects_a_row_filter_it_cannot_enforce(tmp_path, change, problem):
+    policy = {key: value for key, value in {**OWN_ORDERS, **change}.items() if value is not DROP}
     with pytest.raises(SemanticLayerError, match=re.escape(problem)):
-        load_package_config(str(_package(tmp_path / "rf", [{**OWN_ORDERS, **change}])))
+        load_package_config(str(_package(tmp_path / "rf", [policy])))
 
 
 def test_an_id_dimension_takes_an_explicit_type(tmp_path):
-    policy = {**OWN_ORDERS, "dimension": "dimension.rf_order_store_id", "type": "string"}
+    policy = {**OWN_ORDERS, "dimension": "dimension.rf_order_store_id", "type": "string",
+              "description": "Accepted as the rationale, as for other kinds."}  # fmt: skip
     load_package_config(str(_package(tmp_path / "rf", [policy])))
 
 
@@ -386,8 +386,12 @@ def test_two_filters_on_one_relation_bind_in_placeholder_order(runtime):
     assert "order_fact.customer_id = ? AND order_fact.store_id = ?" in result["rendered_sql"]
 
 
-def _scan(source, joins=()):
-    return SqlSelect([SqlField(SqlIdentifier(["v"]), "v")], source, joins=list(joins))
+ROW = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string"))
+
+
+def _scan(source, joins=(), where=(), ctes=()):
+    return SqlSelect([SqlField(SqlIdentifier(["v"]), "v")], source, list(joins), list(where),
+                     ctes=list(ctes))  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -396,24 +400,42 @@ def _scan(source, joins=()):
         _scan(SqlTableFunction("UNNEST", alias="t")),
         _scan(SqlTableRef("other")),  # reads only a relation no filter covers
         _scan(SqlTableRef("other"), [SqlJoin("INNER", SqlTableRef("t"), SqlLiteral(True))]),
+        _scan(SqlTableRef("t"), where=[SqlExists(_scan(SqlTableRef("t")))]),
+        _scan(SqlTableRef("u"), ctes=[SqlCte("u", SqlSetQuery("UNION ALL", [_scan(SqlTableRef("t"))] * 2))]),
+        _scan(SqlTableRef("t"), ctes=[SqlCte("t", _scan(SqlTableRef("raw")))]),
     ],
-    ids=["table_function", "unfiltered_relation", "filtered_relation_joined"],
-)
-def test_only_a_filtered_from_is_filterable(statement):
-    row = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string"))
+    ids=["table_function", "unfiltered_relation", "filtered_relation_joined",
+         "second_read_in_exists", "second_read_in_set_query", "filtered_name_is_a_cte"],
+)  # fmt: skip
+def test_only_one_filtered_from_is_filterable(statement):
     with pytest.raises(SemanticLayerError, match="only a query that reads"):
-        apply_row_filters(statement, [row])
+        apply_row_filters(statement, [ROW])
 
 
-def test_every_mcp_surface_shows_each_customer_only_their_rows(package, monkeypatch):
-    """Plan, execute, segment preview and live valid-values through the MCP transport."""
-    customer = {}
+def test_a_read_inside_a_cte_is_filtered_there():
+    statement = _scan(SqlTableRef("c"), ctes=[SqlCte("c", _scan(SqlTableRef("t")))])
+    filtered, slots = apply_row_filters(statement, [ROW])
+    assert slots == (ROW.slot,)
+    assert "FROM t\nWHERE\n  t.c = ?\n)" in render_select(filtered)
+    shadowed = RowFilter("p2", "c", "c", ROW.slot)  # its relation's name is the CTE's
+    with pytest.raises(SemanticLayerError, match="only a query that reads"):
+        apply_row_filters(statement, [ROW, shadowed])
+
+
+def test_a_rewrite_that_misses_the_scan_is_denied(monkeypatch):
+    monkeypatch.setattr(row_filters_module, "_rewrite", lambda node, target, new: node)
+    with pytest.raises(SemanticLayerError, match="only a query that reads"):
+        apply_row_filters(_scan(SqlTableRef("t")), [ROW])
+
+
+@pytest.fixture
+def mcp(package, monkeypatch):
+    """Call MCP tools as an embedding host whose resolver supplies each request's context."""
+    context, events = {}, []
 
     class HostResolver:
         def resolve(self, headers, *, payload=None, request_id=""):
-            return _ctx(customer_id=customer["id"])
-
-    events = []
+            return context["value"]
 
     class Sink:
         def emit(self, payload):
@@ -426,7 +448,7 @@ def test_every_mcp_surface_shows_each_customer_only_their_rows(package, monkeypa
     set_audit_sink(Sink())
     app = SemanticLayerASGIApp(path=str(package), max_workers=1)
 
-    async def call(tool, arguments):
+    async def request(tool, arguments):
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": {"name": tool, "arguments": arguments}}  # fmt: skip
         headers = {
@@ -440,27 +462,48 @@ def test_every_mcp_surface_shows_each_customer_only_their_rows(package, monkeypa
             response = await client.post("/mcp", json=body, headers=headers)
         return response.json()["result"]["structuredContent"]
 
+    def call(request_context, tool, arguments):
+        context["value"] = request_context
+        return asyncio.run(request(tool, arguments))
+
+    yield call, events
+    asyncio.run(app.aclose())
+    set_policy_context_resolver(previous[0])
+    set_audit_sink(previous[1])
+
+
+RUN = {"query": {key: value for key, value in BY_STORE.items() if key != "order_by"}, "mode": "run"}
+
+
+def test_every_mcp_surface_shows_each_customer_only_their_rows(mcp):
+    """Plan, execute, segment preview and live valid-values through the MCP transport."""
+    call, events = mcp
+
     def surfaces(customer_id):
-        customer["id"] = customer_id
-        out = {"plan": asyncio.run(call("plan", {"intent": "revenue by store"}))}
-        query = {key: value for key, value in BY_STORE.items() if key != "order_by"}
+        context = _ctx(customer_id=customer_id)
+        out = {"plan": call(context, "plan", {"intent": "revenue by store"})}
         for mode in ("validate", "sql", "run"):
-            out[mode] = asyncio.run(call("execute", {"query": query, "mode": mode}))
+            out[mode] = call(context, "execute", {**RUN, "mode": mode})
         preview = {"action": "preview", "segment_id": "segment.rf.in_s1"}
-        out["preview"] = asyncio.run(call("segment", preview))
+        out["preview"] = call(context, "segment", preview)
         values = {"dimension_id": "dimension.rf_order_order_ref", "allow_live_query": True}
-        out["values"] = asyncio.run(call("valid-values", values))
+        out["values"] = call(context, "valid-values", values)
         return out
 
-    try:
-        a, b = surfaces(A), surfaces(B)
-    finally:
-        asyncio.run(app.aclose())
-        set_policy_context_resolver(previous[0])
-        set_audit_sink(previous[1])
+    a, b = surfaces(A), surfaces(B)
     assert all(response["ok"] is True for response in [*a.values(), *b.values()]), (a, b)
     assert a["run"]["rows"] != b["run"]["rows"] and a["preview"]["rows"] != b["preview"]["rows"]
     assert [row["value"] for row in a["values"]["values"]] == [1, 2]
     assert [row["value"] for row in b["values"]["values"]] == [3, 4]
     assert B not in json.dumps(a, default=str) and A not in json.dumps(b, default=str)
     assert A not in json.dumps(events, default=str) and B not in json.dumps(events, default=str)
+
+
+def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
+    call, events = mcp
+    missing = call(_ctx(), "execute", RUN)
+    failed = call(_ctx(audience="mistyped", customer_id=A), "execute", RUN)
+    assert (missing["ok"], failed["ok"]) == (False, False)
+    codes = [code for event in events for code in event.get("error_codes", [])]
+    assert codes == ["POLICY_DENIED", "QUERY_EXECUTION_ERROR"]
+    assert A not in json.dumps([missing, failed, events], default=str)
