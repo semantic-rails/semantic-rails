@@ -896,7 +896,21 @@ buckets, and a query's `start`/`end` bounds, are in that zone:
   MotherDuck, DuckLake and Postgres, each query runs with the session time zone
   set to its time role's zone (UTC for a query without one), and only for that
   query. So these columns bucket and filter in the role's zone whatever the
-  server's or machine's default. Leave `column_timezone:` off them.
+  server's or machine's default. Leave `column_timezone:` off them. (MotherDuck
+  gets the setting on its client connection; this hasn't been checked against
+  the service.)
+- Everything else zone-dependent in the query follows that zone too:
+  - an authored `call` over a zone-aware value, such as `date_part('hour', …)`
+    or a cast to `DATE`;
+  - `now()` and `current_date`;
+  - zone-aware values returned in rows, which are the same instants shown with
+    that zone's offset.
+
+  The rendered SQL doesn't show the zone. To reproduce an answer in a SQL
+  console, set the session's `TimeZone` to it first.
+- A query whose measures are bucketed on time roles in different zones runs in
+  the zone of its `time.temporal_role`. It returns a `TIME_ZONE_NOT_APPLIED`
+  warning that names the roles whose own zone it didn't use.
 - The other warehouses don't do this yet, so there a zone-aware column follows
   the warehouse's own rules:
   - Snowflake `TIMESTAMP_LTZ` and Databricks `TIMESTAMP` use the session time zone.

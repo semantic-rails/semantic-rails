@@ -172,7 +172,10 @@ class PostgresAdapter(DbApiAdapter):
         owner's zone is put back before its transaction goes on.
         """
         info = self._connection().info
-        current = info.parameter_status("TimeZone") or ""
+        current = info.parameter_status("TimeZone")
+        if not current:  # a proxy that doesn't report it: ask the server
+            cursor.execute("SELECT current_setting('TimeZone')")
+            current = cursor.fetchone()[0]
         if _same_zone(current, zone):
             yield
             return

@@ -2,7 +2,10 @@
   buckets and filters in its time role's `timezone` (UTC by default) at every grain. Before,
   day and week answers, and month answers from the base table, followed the server's or
   machine's session time zone, so they could disagree with each other and with a rollup built
-  in UTC. The engine sets the session zone for each query only, and never leaves it changed on
-  its own or a host's connection. Naive `TIMESTAMP` and `DATE` columns are unaffected. Other
-  warehouses are unchanged; see "`times:` — temporal roles" in
-  [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).
+  in UTC. Each query now runs with the session time zone set to its time role's zone (UTC
+  without one), only for that query, on the engine's connection or a host's. Everything
+  zone-dependent in the query follows that zone: authored `call` expressions over zone-aware
+  values, `now()` and `current_date`, and the offset shown on zone-aware values in rows. A query
+  whose measures use time roles in other zones returns a `TIME_ZONE_NOT_APPLIED` warning. Naive
+  `TIMESTAMP` and `DATE` columns are unaffected, and other warehouses are unchanged; see
+  "`times:` — temporal roles" in [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).

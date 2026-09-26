@@ -27,6 +27,8 @@ import yaml
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.db import DuckDBAdapter, WarehouseAdapter
+from semantic_rails.db_parts.ducklake import DuckLakeAdapter
+from semantic_rails.db_parts.motherduck import MotherDuckAdapter
 from semantic_rails.db_parts.postgres import PostgresAdapter
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
@@ -230,8 +232,15 @@ model:
   entities: {order: {}}
   times:
     ordered_at: {column: %s, kind: timestamp, class: event_time, default: true%s}
+    tokyo_at: {column: ordered_at_tz, kind: timestamp, class: event_time, timezone: Asia/Tokyo}
   measures:
     revenue: {kind: aggregate, expr: amount, accumulation: {kind: flow}}
+    tokyo_revenue: {kind: aggregate, expr: amount, accumulation: {kind: flow}, times: [tokyo_at]}
+    hours:
+      kind: aggregate
+      accumulation: {kind: flow}
+      expr: {kind: call, name: date_part, args: [{kind: literal, value: hour},
+        {kind: column, column: ordered_at_tz}]}
 """
 
 
@@ -312,6 +321,44 @@ def test_answers_do_not_follow_the_session_time_zone(
     assert answers == [days, months], result["rendered_sql"]
 
 
+def test_the_whole_query_runs_in_its_zone(tmp_path: Path) -> None:
+    """Authored SQL over zone-aware values follows the query's zone, not the machine's.
+
+    A query whose measures use a role in another zone runs in its own role's zone, and says so.
+    """
+    runtime = _zone_runtime(tmp_path, "ordered_at_tz", "")
+    hours = [{"expression": {"measure": "measure.zones.hours"}, "as": "hours"}]
+    tokyo = [{"expression": {"measure": "measure.zones.tokyo_revenue"}, "as": "tokyo"}]
+    time = {"temporal_role": ZONE_ROLE, "grain": "month"}
+    try:
+        # The UTC hours 2, 6, 23 and 4, where Los Angeles would read 18, 22, 15 and 20.
+        assert runtime.query({"version": 1, "select": hours})["rows"] == [{"hours": 35}]
+        codes = [
+            [item["code"] for item in runtime.query(query).get("warnings", [])]
+            for query in (
+                {"version": 1, "select": ZONE_REVENUE, "time": time},
+                {"version": 1, "select": ZONE_REVENUE + tokyo, "time": time},
+            )
+        ]
+    finally:
+        runtime.close()
+    assert ["TIME_ZONE_NOT_APPLIED" in row for row in codes] == [False, True]
+
+
+@pytest.mark.parametrize("adapter_class", [DuckLakeAdapter, MotherDuckAdapter])
+def test_duckdb_family_adapters_set_the_zone_on_the_query_cursor(adapter_class: type) -> None:
+    import duckdb
+
+    adapter = adapter_class.__new__(adapter_class)
+    adapter._conn = duckdb.connect()  # noqa: SLF001
+    zone = "SELECT current_setting('TimeZone') AS zone"
+    before = adapter._conn.execute(zone).fetchone()  # noqa: SLF001
+    assert adapter.query(zone, limits={"time_zone": "Asia/Tokyo"}) == [{"zone": "Asia/Tokyo"}]
+    assert adapter._conn.execute(zone).fetchone() == before  # noqa: SLF001
+    assert adapter.query(zone) == [{"zone": before[0]}]
+    adapter.close()
+
+
 class _CapturingAdapter(WarehouseAdapter):
     """A host's own adapter: it gets the zone as ``limits["time_zone"]`` and nothing else."""
 
@@ -322,7 +369,7 @@ class _CapturingAdapter(WarehouseAdapter):
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         self.limits.append(dict(limits or {}))
-        return []
+        return [{"member_count": 0}] if "member_count" in sql else []
 
     def close(self) -> None:
         pass
@@ -330,10 +377,10 @@ class _CapturingAdapter(WarehouseAdapter):
 
 @pytest.mark.parametrize(
     ("zones", "expected"),
-    [("", "UTC"), (", timezone: America/New_York", "America/New_York"), (", timezone: Mars", "")],
+    [("", "UTC"), (", timezone: America/New_York", "America/New_York"), (", timezone: Mars", None)],
 )
 def test_an_injected_adapter_receives_the_role_zone(
-    tmp_path: Path, zones: str, expected: str
+    tmp_path: Path, zones: str, expected: str | None
 ) -> None:
     runtime = _zone_runtime(tmp_path, "ordered_at_tz", zones)
     adapter = _CapturingAdapter()
@@ -345,6 +392,18 @@ def test_an_injected_adapter_receives_the_role_zone(
         runtime.close()
     assert adapter.limits
     assert {limits.get("time_zone") for limits in adapter.limits} == {expected}
+
+
+def test_a_segment_preview_runs_in_its_zone(package_config_factory) -> None:
+    _, package_path = package_config_factory("jaffle_shop")
+    runtime = Runtime.from_path(str(package_path))
+    adapter = _CapturingAdapter()
+    runtime.set_adapter(adapter)
+    try:
+        runtime.segment_preview("segment.jaffle.high_value_customers")
+    finally:
+        runtime.close()
+    assert [limits.get("time_zone") for limits in adapter.limits] == ["UTC", "UTC"]
 
 
 def test_a_database_from_before_time_zone_still_runs() -> None:
@@ -389,16 +448,24 @@ def _postgres_with(connection: Any) -> PostgresAdapter:
         # Already in the zone, under any of its names: no transaction and no SET.
         ("IDLE", "UTC", ["SQL"]),
         ("IDLE", "Etc/UTC", ["SQL"]),
+        # A connection that doesn't report its zone: the server is asked first.
+        ("INTRANS", None, ["ASK", "BEGIN", "UTC", "SQL", "Europe/Paris", "COMMIT"]),
     ],
 )
-def test_postgres_scopes_the_zone_to_the_query(status: str, current: str, expected: list) -> None:
+def test_postgres_scopes_the_zone_to_the_query(
+    status: str, current: str | None, expected: list
+) -> None:
     log: list[str] = []
 
     class Cursor:
         description = [("n",)]
 
         def execute(self, sql: str, params: tuple[str, ...] = ()) -> None:
-            log.append(params[0] if "set_config" in sql else "SQL")
+            asks = "current_setting" in sql
+            log.append(params[0] if "set_config" in sql else "ASK" if asks else "SQL")
+
+        def fetchone(self) -> tuple[str]:
+            return ("Europe/Paris",)
 
         def fetchall(self) -> list[tuple[int]]:
             return [(1,)]

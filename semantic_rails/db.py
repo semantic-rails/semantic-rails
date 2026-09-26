@@ -154,7 +154,8 @@ class Database:
         time_zone: str = "",
     ) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
-        set_duckdb_time_zone(cur, time_zone)
+        if self.engine == "duckdb":
+            set_duckdb_time_zone(cur, time_zone)
         cur.execute(sql, list(params or []))
         fetched = cur.fetchmany(max_rows + 1) if max_rows is not None else cur.fetchall()
         truncated = max_rows is not None and len(fetched) > max_rows

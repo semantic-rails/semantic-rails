@@ -221,8 +221,9 @@ would silently exclude December 31. Half-open bounds make adjacent
 windows compose without overlap or gaps.
 
 Buckets and bounds are in the temporal role's `timezone` (UTC by default).
-On DuckDB and Postgres that holds for zone-aware (`TIMESTAMP WITH TIME ZONE`)
-columns too: the query runs with the session time zone set to the role's zone.
+On DuckDB, MotherDuck, DuckLake and Postgres that holds for zone-aware
+(`TIMESTAMP WITH TIME ZONE`) columns too: the query runs with the session time
+zone set to the role's zone.
 For other warehouses, see "`times:` — temporal roles" in
 [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
 

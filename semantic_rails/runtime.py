@@ -25,7 +25,7 @@ from dataclasses import asdict, replace
 from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from . import __version__
 from .acceleration.routing import (
@@ -45,6 +45,7 @@ from .cache import (
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
 from .compiler import BoundQuery, bind_query, compile_query
+from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
@@ -539,7 +540,7 @@ def _query_execution_error_details(
     return details
 
 
-def _normalize_query_limits(raw: Any) -> dict[str, Any]:
+def _normalize_query_limits(raw: Any, time_zone: str = "") -> dict[str, Any]:
     """Normalize the request envelope's optional `limits` block.
 
     Recognized keys:
@@ -548,11 +549,12 @@ def _normalize_query_limits(raw: Any) -> dict[str, Any]:
 
     Unrecognized keys are dropped silently so a future addition does not
     break existing clients. Missing or invalid values yield an empty dict
-    (no enforcement).
+    (no enforcement). `time_zone` is not a request key: the runtime adds the
+    zone the query runs in (see `_time_zone`) for the adapter.
     """
+    normalized: dict[str, Any] = {"time_zone": time_zone} if time_zone else {}
     if not isinstance(raw, dict):
-        return {}
-    normalized: dict[str, Any] = {}
+        return normalized
     for key in ("statement_timeout_ms", "max_rows"):
         value = raw.get(key)
         if value is None:
@@ -566,22 +568,57 @@ def _normalize_query_limits(raw: Any) -> dict[str, Any]:
     return normalized
 
 
-def _query_time_zone(config: Any, plan: Any) -> str:
+# Warehouses whose adapters run each query in the zone `_time_zone` picks.
+_SESSION_ZONE_WAREHOUSES = frozenset({"duckdb", "motherduck", "ducklake", "postgres"})
+
+
+def _time_zone(config: Any, compiled: dict[str, Any]) -> str:
     """The zone a query runs in: its time role's, else UTC ("" if the name isn't a zone).
 
-    DuckDB and Postgres read a ``TIMESTAMP WITH TIME ZONE`` column's clock, and compare it
-    with a plain timestamp, in the session's zone. The adapters run the query in this one,
-    so a zone-aware column buckets and filters in the role's zone at every grain. Naive
-    ``TIMESTAMP`` and ``DATE`` columns don't depend on the session zone.
+    DuckDB and Postgres evaluate zone-dependent SQL in the session's zone: the clock of a
+    ``TIMESTAMP WITH TIME ZONE`` value, its comparison with a plain timestamp, ``now()``.
+    Their adapters run each query in this zone, so a zone-aware column buckets and filters
+    in the role's zone at every grain. Naive ``TIMESTAMP`` and ``DATE`` values don't
+    depend on the session zone.
     """
-    role_id = str((getattr(plan, "time", None) or {}).get("temporal_role") or "")
+    role_id = (compiled["logical_plan"].time or {}).get("temporal_role")
     zone = next((role.timezone for role in config.temporal_roles if role.id == role_id), "")
     zone = str(zone or "UTC").strip()
     try:
         ZoneInfo(zone)
-    except (ValueError, ZoneInfoNotFoundError):
+    except (ValueError, KeyError, OSError):  # an unknown or malformed name
         return ""
     return zone
+
+
+def _time_zone_warnings(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]]:
+    """Name the measures bucketed on a time role whose zone the query doesn't run in."""
+    plan = compiled["logical_plan"]
+    zone = _time_zone(config, compiled)
+    warehouse = str(config.package.warehouse or "duckdb").lower()
+    if not zone or not plan.time or warehouse not in _SESSION_ZONE_WAREHOUSES:
+        return []
+    query = normalize_query(plan.query)
+    zones = {role.id: str(role.timezone or "UTC").strip() for role in config.temporal_roles}
+    roles = sorted(
+        {_leaf_time_role(item.bound_measure, query, config) for item in plan.measure_plans}
+    )
+    others = {role: zones[role] for role in roles if zones.get(role, zone) != zone}
+    if not others:
+        return []
+    message = (
+        f"The query runs in {zone}, its time role's zone, so a TIMESTAMP WITH TIME ZONE"
+        f" column on {', '.join(others)} buckets and filters in {zone}, not in its own zone."
+    )
+    details = {"time_zone": zone, "role_zones": others}
+    return [
+        {
+            "code": "TIME_ZONE_NOT_APPLIED",
+            "severity": "warning",
+            "message": message,
+            "details": details,
+        }
+    ]
 
 
 def _adapter_query(
@@ -715,6 +752,7 @@ def _compiled_warnings(
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
         *_path_alternates_warnings(config, compiled["logical_plan"]),
+        *_time_zone_warnings(config, compiled),
     ]
     if payload is not None:
         warnings.extend(caveat_warnings(config, compiled, payload))
@@ -2105,8 +2143,7 @@ class Runtime:
         # from the request envelope through to the warehouse adapter. Hosted
         # operators use this to enforce per-tenant policies without forking;
         # local users typically leave `limits` unset.
-        limits = _normalize_query_limits(payload.get("limits"))
-        limits["time_zone"] = _query_time_zone(self._config, compiled["logical_plan"])
+        limits = _normalize_query_limits(payload.get("limits"), _time_zone(self._config, compiled))
         # If the caller asked for a statement_timeout_ms but the adapter
         # can't honor it at the warehouse boundary, surface a warning so
         # the caller learns the limit was best-effort. Without this, the
@@ -2486,21 +2523,19 @@ class Runtime:
             count_shell.sql.replace("__SR_MEMBERSHIP__", membership_compiled["sql"]),
             parameters=membership_compiled["prepared_query"].parameters,
         )
-        preview_plan = preview_compiled["logical_plan"]
-        membership_plan = membership_compiled["logical_plan"]
         adapter = self._get_adapter()
         try:
             with self._query_lock:
                 rows = _adapter_query(
                     adapter,
                     preview_compiled["prepared_query"],
-                    limits={"time_zone": _query_time_zone(self._config, preview_plan)},
+                    limits={"time_zone": _time_zone(self._config, preview_compiled)},
                     policy_context=context,
                 )
                 count_rows = _adapter_query(
                     adapter,
                     count_prepared,
-                    limits={"time_zone": _query_time_zone(self._config, membership_plan)},
+                    limits={"time_zone": _time_zone(self._config, membership_compiled)},
                     policy_context=context,
                 )
         except Exception as exc:
