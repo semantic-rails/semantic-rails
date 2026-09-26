@@ -52,6 +52,7 @@ from .config import (
     project_managed_source,
     repo_root,
     resolve_repo_path,
+    semantic_rails_home,
 )
 from .db import (
     Database,
@@ -78,7 +79,6 @@ from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
 from .fanout import build_hop_profile
 from .ir import ValidationReport
-from .local_config import semantic_rails_home
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects
 from .registry import Registry
