@@ -657,7 +657,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "weaknesses": [
             "This pack's semantic view defines its time dimensions at timestamp grain, so month-grain questions apply `DATE_TRUNC(...)` in the query; the view could define month-grain dimensions instead.",
             "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, announced in preview on 2026-02-25, have not been modeled yet.",
-            "This pack's q09 and q15 SQL counts orders in [started_at, started_at + 7 days), where the stated rule is (started_at, started_at + 7 days]; no order in this data falls on either boundary.",
+            "This pack's q09 and q15 SQL counts orders in [started_at, started_at + 7 days), where the stated rule is (started_at, started_at + 7 days]; the earlier dataset it ran on wasn't checked for orders on those boundaries.",
         ],
         "capture_notes": [
             "A stale April capture: it ran on 2026-04-07 (UTC) in a trial account, on an earlier dataset, and can't be re-run or re-authored with range joins without a live Snowflake account.",
@@ -1030,10 +1030,11 @@ SLICE_LABELS = {
 }
 SCALE_UP_CAVEAT = (
     "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits "
-    "graph.yml, core_metrics.yml and package.yml, and a baseline count takes whole baseline files, "
-    "including members only the stretch questions use. Do not compare sizes until one script "
-    "counts every layer's authored files the same way. 'baseline' and 'stretch' here are the "
-    "4-model and 7-model sets, not question slices."
+    "graph.yml, core_metrics.yml and package.yml. Malloy and Snowflake Semantic Views count their "
+    "one model file only up to a stretch marker, while the other layers count whole baseline "
+    "files, including members only the stretch questions use. Do not compare sizes until one "
+    "script counts every layer's authored files the same way. 'baseline' and 'stretch' here are "
+    "the 4-model and 7-model sets, not question slices."
 )
 
 # Findings that describe how this pack models each layer. They must not rank the layers on the

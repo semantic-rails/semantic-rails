@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-26T00:43:13+00:00",
+  "generated_at": "2026-09-26T00:54:21+00:00",
   "headline_findings": [
     "On all 16 questions, the 5 layers checked on the current dataset (Semantic Rails, MetricFlow, Cube, Malloy and KtX) return the independent answer key's normalized outputs, with numbers matching within 1e-6.",
     "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not been re-run, so it is left out of that count. Its capture matches the answer key on 14 questions and differs on: q07, q16.",
@@ -38,7 +38,7 @@
       "questions": 7
     }
   },
-  "scale_up_caveat": "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits graph.yml, core_metrics.yml and package.yml, and a baseline count takes whole baseline files, including members only the stretch questions use. Do not compare sizes until one script counts every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model and 7-model sets, not question slices.",
+  "scale_up_caveat": "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits graph.yml, core_metrics.yml and package.yml. Malloy and Snowflake Semantic Views count their one model file only up to a stretch marker, while the other layers count whole baseline files, including members only the stretch questions use. Do not compare sizes until one script counts every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model and 7-model sets, not question slices.",
   "questions": [
     {
       "id": "q01_orders_by_month",
@@ -1375,7 +1375,7 @@
       "weaknesses": [
         "This pack's semantic view defines its time dimensions at timestamp grain, so month-grain questions apply `DATE_TRUNC(...)` in the query; the view could define month-grain dimensions instead.",
         "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, announced in preview on 2026-02-25, have not been modeled yet.",
-        "This pack's q09 and q15 SQL counts orders in [started_at, started_at + 7 days), where the stated rule is (started_at, started_at + 7 days]; no order in this data falls on either boundary."
+        "This pack's q09 and q15 SQL counts orders in [started_at, started_at + 7 days), where the stated rule is (started_at, started_at + 7 days]; the earlier dataset it ran on wasn't checked for orders on those boundaries."
       ],
       "capture_notes": [
         "A stale April capture: it ran on 2026-04-07 (UTC) in a trial account, on an earlier dataset, and can't be re-run or re-authored with range joins without a live Snowflake account."
