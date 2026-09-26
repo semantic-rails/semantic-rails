@@ -2,7 +2,7 @@
   period as a `0`, so a monthly median or percentile read 0 or too low (for example
   3.0 instead of 9.0). Fill now only adds the missing periods, which read `NULL`; the other
   periods match the unfilled answer. Refused now instead of answering wrong: a `distribution`
-  with a `rolling` or `prior_period` window in its input or in a metric filter, which counted
+  whose input or metric filter has a `rolling` or `prior_period` window, which counted
   entities in periods where they had no rows, and a filled `distribution` on a non-default
-  calendar (for example fiscal quarters) or with a metric filter on a value. See
+  calendar (for example fiscal quarters) or with any metric filter. See
   [docs/QUERY_IR_SCHEMA.md](docs/QUERY_IR_SCHEMA.md).

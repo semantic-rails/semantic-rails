@@ -910,8 +910,8 @@ def _distribution_select(
     ):
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
-            "A distribution is not supported with a rolling or prior-period window in its input "
-            "or a metric filter: it would count entities in periods where they have no rows.",
+            "A distribution is not supported when its input or a metric filter has a rolling or "
+            "prior-period window: it would count entities in periods where they have no rows.",
         )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
@@ -925,11 +925,11 @@ def _distribution_select(
     )
     # Never fill the per-entity grain, for the same reason; `_fill_distribution` adds the periods.
     filled = bool(entity_value_query.get("time", {}).pop("fill", False))
-    if filled and _value_metric_filters(plan):  # it applies per entity, the periods per period
+    if filled and plan.query.get("metric_filters"):  # per entity here, per period in the fill
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
-            "time.fill is not supported for a distribution in a query with a metric filter on a "
-            "value: the filter would keep different periods for the distribution and the fill.",
+            "time.fill is not supported for a distribution in a query with a metric filter: "
+            "the filter would keep different periods for the distribution and the fill.",
         )
     sql_ast = _compile_query_sql_ast(
         config, entity_value_query, project_cut=project_is_cut() or bool(expr.over.where)
@@ -1035,15 +1035,12 @@ def _fill_distribution(
     )
 
 
-def _value_metric_filters(plan: LogicalPlan) -> list[SemanticExpr]:
-    """The query's metric filters on a value (a metric predicate filters entities instead)."""
-    filters = list(plan.query.get("metric_filters", []) or [])
-    exprs = [_parse_public_expr(dict(item["expression"])) for item in filters]
-    return [expr for expr in exprs if not isinstance(expr, MetricPredicateExpr)]
-
-
 def _metric_filters_require_dense_series(plan: LogicalPlan, config: PackageConfig) -> bool:
-    return any(_expr_requires_dense_series(expr, config) for expr in _value_metric_filters(plan))
+    for item in list(plan.query.get("metric_filters", []) or []):
+        expr = _parse_public_expr(dict(item["expression"]))
+        if not isinstance(expr, MetricPredicateExpr) and _expr_requires_dense_series(expr, config):
+            return True
+    return False
 
 
 def _single_expression_branch_select(

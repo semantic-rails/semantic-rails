@@ -583,26 +583,29 @@ def test_a_distribution_over_a_per_entity_window_refuses(
         _query(packages["authored"], query)
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert "rolling or prior-period window" in str(refused.value)
+    assert "prior-period window" in str(refused.value)
 
 
-def test_a_filled_distribution_refuses_a_value_metric_filter(packages: dict[str, Path]) -> None:
-    """It kept orders under 8, the filled periods months under 8: November (10 + 5) vanished."""
+@pytest.mark.parametrize(
+    "metric_filter",
+    [
+        {"expression": REVENUE, "op": "<", "value": 8},
+        {"expression": LARGE_ORDER, "op": "=", "value": True},
+    ],
+    ids=["value", "predicate"],
+)
+def test_a_filled_distribution_with_a_metric_filter_refuses(
+    packages: dict[str, Path], metric_filter: dict[str, Any]
+) -> None:
+    """The fill applied `< 8` per month, the distribution per order: November (10 + 5) vanished."""
     select = {**_distribution("median", REVENUE), "as": "value"}
-    small = [{"expression": REVENUE, "op": "<", "value": 8}]
+    query = {**_ask("month", select, fill=True), "metric_filters": [metric_filter]}
     with pytest.raises(SemanticLayerError) as refused:
-        _query(packages["authored"], {**_ask("month", select, fill=True), "metric_filters": small})
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert "metric filter on a value" in str(refused.value)
+        _query(packages["authored"], query)
 
-    large = [{"expression": LARGE_ORDER, "op": "=", "value": True}]  # an entity filter still fills
-    filled = _answers(
-        packages["authored"], {**_ask("month", select, fill=True), "metric_filters": large}
-    )
-    unfilled = _query(packages["authored"], {**_ask("month", select), "metric_filters": large})[0]
-    assert filled[0] == filled[1]
-    assert [row for row in filled[0] if row[1] is not None] == unfilled
-    assert [row[0] for row in filled[0] if row[1] is None] == [date(2024, 2, 1), date(2024, 4, 1)]
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert "metric filter" in str(refused.value)
+    _query(packages["authored"], {**query, "time": _time("month")})  # unfilled still answers
 
 
 def test_a_filled_distribution_on_a_fiscal_calendar_refuses(packages: dict[str, Path]) -> None:
