@@ -16,19 +16,20 @@ from ..compiler_parts.indexes import _measure_index, _temporal_role_index
 from ..errors import SemanticLayerError
 from ..schema import PackageConfig
 from .routing import LOWERED_SEPARATELY, aggregate_routing
-from .selection import _aggregate_dimension_coverage, _column_holds, _grain_rank
+from .selection import _aggregate_dimension_coverage, _column_holds
 
 
 def certify_aggregate_relation(config: PackageConfig, relation_id: str) -> dict[str, Any]:
     """Judge one declared rollup, as if certified, against the routing rules (R1-R8).
 
-    Each measure column gets one query: what the column holds, grouped by every rollup
-    dimension, over all time, at the finest grain the rollup may answer (the finest of its
-    eligible grains that its time role supports). ``reason`` is the rule that query fails, or
-    ``""`` when the rollup answers it; ``rollup_sql`` reads the rollup and ``base_sql`` the base
-    tables. Every other query the rules let the rollup answer re-aggregates these rows: coarser
-    grains, fewer of its own dimensions, filters; a pre-joined column routes only for queries
-    that use it. The caller's routing switch applies, so with routing off every measure fails
+    Each measure column gets one query at the rollup's own time grain: what the column holds,
+    grouped by every rollup dimension, over all time. Its rows are the rollup's own buckets, and
+    every other query the rules let the rollup answer re-aggregates them exactly: coarser grains
+    that nest, fewer of its own dimensions, filters (a pre-joined column routes only for queries
+    that use it). ``reason`` is the rule that query fails, or ``""`` when the rollup answers it;
+    ``rollup_sql`` reads the rollup and ``base_sql`` the base tables. A rollup whose own grain its
+    time role can't be queried at (an hour rollup under a role that starts at day) isn't
+    certifiable. The caller's routing switch applies, so with routing off every measure fails
     with ``aggregate_routing_off``.
     """
     relation = next((row for row in config.aggregate_relations if row.id == relation_id), None)
@@ -37,38 +38,40 @@ def certify_aggregate_relation(config: PackageConfig, relation_id: str) -> dict[
     alone = replace(config, aggregate_relations=[replace(relation, requires_certification=False)])
     measures = _measure_index(config)
     role = _temporal_role_index(config).get(relation.temporal_role)
-    supported = set(getattr(role, "supported_grains", []) or [])
-    grains = [
-        grain for grain in relation.eligible_time_grains or [relation.grain] if grain in supported
-    ]
     results: list[dict[str, Any]] = []
     for measure_id in relation.measure_columns:
-        if role is None or not grains:  # routing needs a declared role and a grain it can ask
-            reason = "temporal_role_mismatch" if role is None else "unsupported_query_grain"
-            results.append(
-                {"measure_id": measure_id, "query": None, "base_sql": "", "reason": reason}
-            )
+        result: dict[str, Any] = {
+            "measure_id": measure_id,
+            "query": None,
+            "reason": "",
+            "error": "",
+            "base_sql": "",
+            "rollup_sql": "",
+        }
+        if role is None:  # an undeclared role could be any of the measure's
+            results.append({**result, "reason": "temporal_role_mismatch"})
             continue
-        time = {"temporal_role": relation.temporal_role, "grain": min(grains, key=_grain_rank)}
+        if relation.grain not in set(role.supported_grains or []):
+            results.append({**result, "reason": "unsupported_query_grain"})
+            continue
         holds, _ = _column_holds(relation, measures[measure_id])
         aggregation = holds or measures[measure_id].default_aggregation
         expression = {"kind": "aggregate", "measure": measure_id, "aggregation": aggregation}
-        query = {
+        result["query"] = {
             "version": 1,
             "select": [{"expression": expression, "as": "value"}],
             "group_by": sorted(_aggregate_dimension_coverage(relation)),
-            "time": time,
+            "time": {"temporal_role": relation.temporal_role, "grain": relation.grain},
         }
-        result: dict[str, Any] = {"measure_id": measure_id, "query": query, "base_sql": ""}
         try:
-            routed = compile_query(alone, None, query)
+            routed = compile_query(alone, None, result["query"])
             with aggregate_routing(False):
-                result["base_sql"] = compile_query(config, None, query)["sql"]
+                result["base_sql"] = compile_query(config, None, result["query"])["sql"]
         except SemanticLayerError as exc:
             results.append({**result, "reason": "query_not_compiled", "error": exc.code})
             continue
-        leaf = routed["logical_plan"].measure_plans[0]
-        reason = leaf.aggregate_relation_rejections.get(relation.id, "")
+        leaves = routed["logical_plan"].measure_plans
+        reason = leaves[0].aggregate_relation_rejections.get(relation.id, "") if leaves else ""
         if (
             not reason
             and relation.id not in routed["performance_plan"].aggregate_routing["selected"]

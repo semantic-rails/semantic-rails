@@ -1362,8 +1362,10 @@ Routing is conservative in the MVP:
   `semantic_rails.acceleration.certification.certify_aggregate_relation(config,
   relation_id)`. For each measure column it gets the rule the rollup fails (or none)
   and a query's `base_sql` and `rollup_sql` to run and compare: over all time,
-  grouped by every rollup dimension, at the finest grain the rollup answers. Every
-  other query the rules let it answer re-aggregates those rows. A runtime doesn't
+  grouped by every rollup dimension, at the rollup's own grain, so its rows are the
+  rollup's buckets. Every other query the rules let it answer re-aggregates those
+  buckets. A rollup whose own grain its time role can't be queried at (an hour
+  rollup under a role that starts at day) isn't certifiable. A runtime doesn't
   use its compile cache for a package with such a rollup: every request compiles
   again, which costs compile time, so that a revoked certification applies to the
   next request.

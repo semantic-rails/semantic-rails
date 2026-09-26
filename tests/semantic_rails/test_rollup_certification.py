@@ -104,20 +104,21 @@ def test_revoked_certification_applies_to_the_next_request(tmp_path: Path, insta
     assert ungated.compile(payload)["compile_stats"]["cache_hit"]  # other packages still cache
 
 
-@pytest.mark.parametrize("value", [True, "yes"])
-def test_an_aggregate_relation_entry_can_require_certification(tmp_path: Path, value: object):
+def _entry(**fields) -> tuple:
+    return ({}, [{**_NO_ROLE, "temporal_role": "temporal_role.t", **fields}])
+
+
+def test_an_aggregate_relation_entry_can_require_certification(tmp_path: Path):
     """The shape a host's managed rollups take: an `aggregate_relations:` entry."""
-    rollups = (
-        {},
-        [{**_NO_ROLE, "temporal_role": "temporal_role.t", "requires_certification": value}],
-    )
-    if value is not True:
-        _rollup_package(tmp_path / "p", *rollups)
-        with pytest.raises(SemanticLayerError, match="must be true or false"):
-            load_package_config(str(tmp_path / "p"))
-        return
+    rollups = _entry(requires_certification=True)
     routing = _routed_answers(tmp_path, rollups, _rollup_query(_REVENUE, "sum", "quarter"))
     assert _decisions(routing) == {"leaf_1:aggregate_relation.no_role": "not_certified"}
+
+
+def test_an_aggregate_relation_entry_checks_the_setting(tmp_path: Path):
+    _rollup_package(tmp_path / "p", *_entry(requires_certification="yes"))
+    with pytest.raises(SemanticLayerError, match="must be true or false"):
+        load_package_config(str(tmp_path / "p"))
 
 
 def test_certification_settings_are_checked(tmp_path: Path):
@@ -175,13 +176,13 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
         pytest.param(
             ({"hourly": _revenue_only(_HOURLY)}, []),
             "aggregate_relation.orders_hourly",
-            {_REVENUE: ""},
-            id="hourly",
+            {_REVENUE: "unsupported_query_grain"},
+            id="hourly",  # the time role can't be queried by the hour, so no pair checks the hours
         ),
         pytest.param(
             ({"minutely": _revenue_only(_MINUTELY)}, []),
             "aggregate_relation.orders_minutely",
-            {_REVENUE: ""},
+            {_REVENUE: "unsupported_query_grain"},
             id="minutely",
         ),
         pytest.param(
@@ -226,14 +227,8 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
         pytest.param(
             ({"monthly": _revenue_only({**_MONTHLY, "eligible_time_grains": ["quarter"]})}, []),
             _MONTHLY_ID,
-            {_REVENUE: ""},
-            id="own-grain-not-eligible",  # checked at the finest grain it answers
-        ),
-        pytest.param(
-            ({"hourly": _revenue_only({**_HOURLY, "eligible_time_grains": ["hour"]})}, []),
-            "aggregate_relation.orders_hourly",
             {_REVENUE: "unsupported_query_grain"},
-            id="no-grain-the-role-supports",
+            id="own-grain-not-eligible",  # its own buckets are never compared
         ),
         pytest.param(({}, [_REGION], {"ship_to": False}), _REGION["id"], {_REVENUE: ""}, id="path"),
         pytest.param(
@@ -293,12 +288,29 @@ def test_certify_pairs_answer_alike(tmp_path: Path, rollups: tuple, relation_id:
     assert {measure: got[measure] for measure in reasons} == reasons
     assert verdict["certifiable"] == (not any(got.values()))
     for item in verdict["measures"]:
+        assert set(item) == {"measure_id", "query", "reason", "error", "base_sql", "rollup_sql"}
         assert not re.search(rf"\b{table}\b", item["base_sql"])
-        assert ("error" in item) == (item["reason"] == "query_not_compiled")
+        assert bool(item["error"]) == (item["reason"] == "query_not_compiled")
         if not item["reason"]:  # the pair a host compares before certifying
             assert re.search(rf"\b{table}\b", item["rollup_sql"])
             rollup = sorted(connection.execute(item["rollup_sql"]).fetchall())
             assert rollup == sorted(connection.execute(item["base_sql"]).fetchall())
+
+
+def test_certify_pair_tells_a_mis_built_rollup_apart(tmp_path: Path):
+    """A region rollup built with an outer join keeps order 13 (no such customer) under a null
+    region; the base path's inner join leaves it out. The rules pass; the rows don't."""
+    left = {**_REGION, "id": "aggregate_relation.region_left"}
+    left["relation"] = "order_region_left_monthly"
+    _rollup_package(tmp_path / "p", {}, [left], {"ship_to": False})
+    verdict = certify_aggregate_relation(load_package_config(str(tmp_path / "p")), left["id"])
+    (item,) = verdict["measures"]
+    connection = duckdb.connect()
+    connection.execute(_ROLLUP_SEED)
+
+    assert item["reason"] == ""
+    rollup = sorted(connection.execute(item["rollup_sql"]).fetchall(), key=str)
+    assert rollup != sorted(connection.execute(item["base_sql"]).fetchall(), key=str)
 
 
 def test_certify_names_an_unknown_relation(tmp_path: Path):
