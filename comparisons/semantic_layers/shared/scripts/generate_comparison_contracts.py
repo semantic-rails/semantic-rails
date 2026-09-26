@@ -133,15 +133,6 @@ def marker_loc(path: Path, marker: str) -> int:
     return count
 
 
-def loc_outside_blocks(path: Path, marker: str) -> int:
-    """Nonempty lines, skipping each block from a line containing `marker` to the next blank."""
-    count, skipping = 0, False
-    for line in path.read_text(encoding="utf-8").splitlines():
-        skipping = marker in line or (skipping and bool(line.strip()))
-        count += bool(line.strip()) and not skipping
-    return count
-
-
 # Captures made before the runners recorded a timestamp predate the consistency report generated
 # at 2026-06-24T03:47:13Z. Dates here are UTC.
 UNRECORDED_CAPTURE = "by 2026-06-24 (exact date not recorded)"
@@ -163,6 +154,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "weaknesses": [
             "This is a project-specific runtime rather than a broadly adopted external ecosystem.",
             "The DSL is specific to Semantic Rails.",
+            "The q09 and q15 conversion window counts an order at or after the session start with `DATE_DIFF('day', started_at, ordered_at) <= 7`: it includes an order at the session's own time and runs to the end of the 7th calendar day, where the stated rule is (started_at, started_at + 7 days]. 5 orders in this data fall in that extra time, each for a session that had already converted within 7 days, so the answers don't change.",
         ],
         "scale": {
             "baseline_files": [
@@ -467,9 +459,9 @@ LAYER_META: dict[str, dict[str, Any]] = {
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "storefront_sessions.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "same_store_orders.yml",
             ],
-            "baseline_relationships": 3,
+            # The joins declared in the baseline files, like the line count.
+            "baseline_relationships": 5,
             "stretch_relationships": 9,
-            "stretch_block_marker": "# Stretch scope",
         },
         "snippets": {
             "q01_orders_by_month": (
@@ -665,6 +657,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "weaknesses": [
             "This pack's semantic view defines its time dimensions at timestamp grain, so month-grain questions apply `DATE_TRUNC(...)` in the query; the view could define month-grain dimensions instead.",
             "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, announced in preview on 2026-02-25, have not been modeled yet.",
+            "This pack's q09 and q15 SQL counts orders in [started_at, started_at + 7 days), where the stated rule is (started_at, started_at + 7 days]; no order in this data falls on either boundary.",
         ],
         "capture_notes": [
             "A stale April capture: it ran on 2026-04-07 (UTC) in a trial account, on an earlier dataset, and can't be re-run or re-authored with range joins without a live Snowflake account.",
@@ -774,6 +767,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "weaknesses": [
             "In this pack, q08-q16 run through SQL-backed sources or query-level filters: ktx-sl joins are equality-only, its measures reject window functions, and it has no query-derived sources.",
             "This pack exercises ktx-sl directly, not the broader KtX context ingestion, wiki/search, daemon, and MCP stack.",
+            "This pack's q09 and q15 SQL sources count orders in [started_at, started_at + 7 days), where the stated rule is (started_at, started_at + 7 days]; no order in this data falls on either boundary.",
         ],
         "scale": {
             "baseline_files": [
@@ -935,10 +929,6 @@ def layer_scale(layer_id: str) -> dict[str, Any]:
 
     if "baseline_marker" in meta:
         baseline_loc = marker_loc(baseline_files[0], meta["baseline_marker"])
-    elif "stretch_block_marker" in meta:  # stretch-only members inside baseline files
-        baseline_loc = sum(
-            loc_outside_blocks(p, meta["stretch_block_marker"]) for p in baseline_files
-        )
     else:
         baseline_loc = loc_for_paths(baseline_files)
 
@@ -1040,9 +1030,10 @@ SLICE_LABELS = {
 }
 SCALE_UP_CAVEAT = (
     "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits "
-    "graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts "
-    "every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model "
-    "and 7-model sets, not question slices."
+    "graph.yml, core_metrics.yml and package.yml, and a baseline count takes whole baseline files, "
+    "including members only the stretch questions use. Do not compare sizes until one script "
+    "counts every layer's authored files the same way. 'baseline' and 'stretch' here are the "
+    "4-model and 7-model sets, not question slices."
 )
 
 # Findings that describe how this pack models each layer. They must not rank the layers on the
@@ -1339,7 +1330,10 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
             "output_consistency": validation_report["summary"],
             "output_consistency_by_slice": validation_report["summary_by_slice"],
             # Layers captured on an earlier dataset, checked apart from the count above.
-            "stale_layers": validation_report["stale_layers"],
+            "stale_layers": {
+                layer: {key: capture[key] for key in ("matched", "mismatched")}
+                for layer, capture in validation_report["stale_layers"].items()
+            },
             "scale_up_caveat": SCALE_UP_CAVEAT,
             "scale_up": [
                 {

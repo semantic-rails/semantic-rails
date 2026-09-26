@@ -21,10 +21,14 @@ compare latency, token use or cost. It runs without touching the active
   [`shared/results/validation/output_consistency.md`](shared/results/validation/output_consistency.md).
 - **This data can't test every intended semantic.** Delivered time never moves an order into
   another month, no customer orders at two stores, all 10 sessions are at one store on one day,
-  and customer history covers 4 customers. No order falls on a 7-day conversion-window boundary,
-  where MetricFlow's window differs from the rule (`metricflow/README.md`). On q07, q09, q14, q15
-  and q16 in particular, matching the answer key is weak evidence that a layer implements the
-  intended rule; see [`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md).
+  and customer history covers 4 customers. Only Cube and Malloy apply q09's and q15's 7-day
+  window boundaries exactly as the rule states. MetricFlow (at minute grain), KtX and Snowflake
+  Semantic Views count `[started_at, started_at + 7 days)`, and no order falls on either
+  boundary. Semantic Rails counts through the end of the 7th calendar day, and the 5 orders in
+  that extra time belong to sessions that had already converted. Each layer's weaknesses in
+  `shared/comparison_data.json` say so. On q07, q09, q14, q15 and q16 in particular, matching the
+  answer key is weak evidence that a layer implements the intended rule; see
+  [`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md).
 - **9 of the 16 questions target Semantic Rails features.** q08-q16 (`scope_level: stretch`) were
   chosen to exercise primitives Semantic Rails ships: metric predicates, temporal-validity joins,
   event-pair and same-store conversion, and contextual entity-graph inheritance. They are a

@@ -444,6 +444,11 @@ _LOAD_SERVER = 'const CubejsServer = require("@cubejs-backend/server");\n'
         ),
         # Cube's dev server and Playground stay off (index.js).
         ("index.js", lambda text: text.replace("devServer: false,", ""), "devServer: false"),
+        (
+            "index.js",
+            lambda text: text.replace("devServer: false,", "// devServer: false,"),
+            "devServer",
+        ),
         ("index.js", lambda text: _LOAD_SERVER + text.replace(_LOAD_SERVER, ""), "a .env file"),
         (
             "index.js",

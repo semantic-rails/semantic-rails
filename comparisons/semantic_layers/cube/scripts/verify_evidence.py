@@ -32,8 +32,10 @@ def _dependencies(manifest: dict) -> dict[str, str]:
 
 
 def _server_errors(project: Path) -> list[str]:
-    """index.js refuses a .env file before Cube loads it, and CUBEJS_DEV_MODE after."""
-    source = (project / "index.js").read_text(encoding="utf-8")
+    """A tripwire, not a parser: index.js's code (comment lines aside) keeps `devServer: false`,
+    checks for a .env file before loading Cube's server, and refuses CUBEJS_DEV_MODE after it."""
+    lines = (project / "index.js").read_text(encoding="utf-8").splitlines()
+    source = "\n".join(line for line in lines if not line.lstrip().startswith("//"))
     load = source.find('require("@cubejs-backend/server")')
     dotenv = source.find('fs.existsSync(path.join(process.cwd(), ".env"))')
     dev_mode = source.find("process.env.CUBEJS_DEV_MODE !== undefined")

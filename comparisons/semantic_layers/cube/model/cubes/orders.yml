@@ -11,7 +11,7 @@ cubes:
         relationship: many_to_one
         sql: "{CUBE}.customer_id = {customers.customer_id}"
 
-      # Stretch scope: the customer-history row valid when the order was placed (q08).
+      # The customer-history row valid when the order was placed (q08).
       - name: customer_history
         relationship: many_to_one
         sql: >
@@ -37,7 +37,7 @@ cubes:
         sql: ordered_at
         type: time
 
-      # Stretch scope: the order's calendar month, a fixed grain for customer-month predicates.
+      # The calendar month of the order, a fixed grain for the customer-month predicates.
       - name: ordered_month
         sql: "date_trunc('month', {CUBE}.ordered_at)"
         type: time
@@ -51,9 +51,9 @@ cubes:
         sql: order_id
         type: count_distinct
 
-      # Stretch scope: the same count under another name, for customers.lifetime_orders: a
-      # query that counts orders.orders and filters on a subquery dimension over that same
-      # measure renders the measure as the subquery's column (Cube 1.7.45 Tesseract).
+      # The same count under another name, for customers.lifetime_orders: a query that counts
+      # orders.orders and filters on a subquery dimension over that same measure renders the
+      # measure as the subquery's column (Cube 1.7.45 Tesseract).
       - name: order_count
         type: count
 
@@ -71,7 +71,7 @@ cubes:
         sql: "{CUBE.revenue_usd} / NULLIF({CUBE.orders}, 0)"
         type: number
 
-      # Stretch scope: orders per (customer, calendar month) at any query grain (q10, q13).
+      # Orders per (customer, calendar month), whatever the query's own grain (q10, q13).
       - name: customer_month_orders
         multi_stage: true
         sql: "{CUBE.orders}"
@@ -80,6 +80,7 @@ cubes:
           keep_only:
             - customer_id
             - ordered_month
+
       - name: orders_from_customers_with_10plus_orders_in_month
         multi_stage: true
         sql: "CASE WHEN {CUBE.customer_month_orders} > 10 THEN {CUBE.orders} END"
@@ -89,7 +90,7 @@ cubes:
             - customer_id
             - ordered_month
 
-      # Stretch scope: orders per (customer, store, calendar month) (q14).
+      # Orders per (customer, store, calendar month) (q14).
       - name: customer_store_month_orders
         multi_stage: true
         sql: "{CUBE.orders}"
@@ -99,6 +100,7 @@ cubes:
             - customer_id
             - store_id
             - ordered_month
+
       - name: revenue_from_customers_with_10plus_orders_in_store_month
         multi_stage: true
         sql: "CASE WHEN {CUBE.customer_store_month_orders} > 10 THEN {CUBE.revenue_usd} END"

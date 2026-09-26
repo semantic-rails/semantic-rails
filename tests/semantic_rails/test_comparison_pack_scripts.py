@@ -7,6 +7,7 @@ import importlib.util
 import io
 import itertools
 import json
+import os
 import re
 import subprocess
 import sys
@@ -431,6 +432,7 @@ def test_cube_runs_with_only_the_environment_node_needs(monkeypatch) -> None:
         monkeypatch.setenv(key, "x")
     env = cube._server_environment()
     assert set(env) <= {"PATH", "HOME", "TMPDIR", "CUBEJS_API_SECRET"}
+    assert env["PATH"] == os.environ["PATH"]  # Popen finds `node` through the child's PATH
     assert env["CUBEJS_API_SECRET"] == cube.API_SECRET
 
 
@@ -482,17 +484,6 @@ def test_cube_sql_excerpts_are_the_generated_sql() -> None:
     [cube] = [layer for layer in data["layers"] if layer["id"] == "cube"]
     for entry in cube["questions"]:
         assert entry["sql_excerpt"].lstrip().upper().startswith(("SELECT", "WITH")), entry
-
-
-def test_baseline_counts_skip_stretch_blocks(tmp_path) -> None:
-    model = tmp_path / "orders.yml"
-    model.write_text(
-        "cubes:\n  - name: orders\n    joins:  # Stretch scope: q08\n      - name: history\n\n"
-        "    measures:\n      # Stretch scope: q10\n      - name: a\n      - name: b\n\n"
-        "      - name: orders\n",
-        encoding="utf-8",
-    )
-    assert generator.loc_outside_blocks(model, "# Stretch scope") == 4
 
 
 def test_a_missing_mapped_column_fails_instead_of_being_guessed() -> None:
