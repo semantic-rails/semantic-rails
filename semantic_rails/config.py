@@ -223,7 +223,7 @@ _DIMENSION_BINDING_KEYS = frozenset({"column", "path"})
 
 def _check_binding_keys(binding: dict[str, Any], allowed: frozenset[str], *, label: str) -> None:
     """A misspelled key would silently change what a rollup column is trusted to hold."""
-    unknown = sorted(set(binding) - allowed)
+    unknown = sorted(key for key in set(binding) - allowed if not str(key).startswith("_"))
     if unknown:
         raise SemanticLayerError(
             "INVALID_CONFIG", f"{label} has unknown keys {unknown}; use {sorted(allowed)}"

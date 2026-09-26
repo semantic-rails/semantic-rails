@@ -249,14 +249,20 @@ CREATE TABLE fiscal_days AS SELECT d::DATE AS date_day,
  FROM range(TIMESTAMP '2025-11-01', TIMESTAMP '2026-08-01', INTERVAL 1 DAY) t(d);
 CREATE TABLE order_monthly_s1 AS SELECT date_trunc('month', ordered_at) AS month_start,
  store_id, sum(amount) AS revenue FROM order_fact WHERE store_id = 's1' GROUP BY 1, 2;
-CREATE TABLE customers AS SELECT * FROM (VALUES ('c1', 'east'), ('c2', 'west'), ('c3', 'east'))
- t(customer_id, region);
+CREATE TABLE customers AS SELECT * FROM (VALUES ('c1', 'east', 1), ('c2', 'west', 2),
+ ('c3', 'east', 3)) t(customer_id, region, weight);
 ALTER TABLE order_fact ADD COLUMN ship_to_id VARCHAR;
 UPDATE order_fact SET ship_to_id = CASE customer_id WHEN 'c1' THEN 'c2' ELSE 'c1' END;
 CREATE TABLE order_region_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  region, sum(amount) AS revenue FROM order_fact JOIN customers USING (customer_id) GROUP BY 1, 2;
 CREATE TABLE order_ship_to_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  ship_to_id AS customer_key, sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
+CREATE TABLE order_buyer_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
+ customer_id AS customer_key, sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
+CREATE TABLE order_lines AS SELECT * FROM (VALUES (1, 1, 'a'), (2, 1, 'b'), (3, 3, 'a'),
+ (4, 5, 'b')) t(line_id, order_id, product);
+CREATE TABLE order_product_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
+ product, sum(amount) AS revenue FROM order_fact JOIN order_lines USING (order_id) GROUP BY 1, 2;
 """
 _ROLLUP_COLUMNS = {"store_id": "store_id", "revenue": "revenue"}
 _MONTHLY = {
@@ -313,6 +319,7 @@ _DAYS_MONTHLY = {
     "equivalence_kind": "exact",
 }
 _SHIP_TO, _BUYER = "relationship.orders_ship_to", "relationship.orders_customer"
+_LINE_ORDER = "relationship.order_lines_order"
 _BIG_ORDERS = {
     "kind": "metric_predicate",
     "entity": "entity.order",
@@ -368,7 +375,14 @@ def _rollup_package(
         }
         _write_yaml(package_dir / "models" / "order_days.yml", {"model": fact})
     graph: dict = {"entities": entities}
-    if "ship_to" in overrides:  # orders reach customers by the buyer or by the ship-to
+    if overrides.get("lines"):  # an order has many lines
+        entities["line"] = {"id": "entity.line", "key": ["line_id"], "model": "order_lines"}
+        product = {"id": "dimension.product", "column": "product", "kind": "categorical"}
+        lines = {"id": "order_lines", "entity": "line", "relation": "order_lines"}
+        lines |= {"grain": ["line_id"], "dimensions": {"product": product}}
+        lines["joins"] = {"order": {"id": _LINE_ORDER, "to": "order", "via": ["order_id"]}}
+        _write_yaml(package_dir / "models" / "order_lines.yml", {"model": lines})
+    if "ship_to" in overrides:  # orders reach customers by the buyer, or also by the ship-to
         entities["customer"] = {
             "id": "entity.customer",
             "key": ["customer_id"],
@@ -378,9 +392,10 @@ def _rollup_package(
         customers = {"id": "customers", "entity": "customer", "relation": "customers"}
         customers |= {"grain": ["customer_id"], "dimensions": {"region": region}}
         _write_yaml(package_dir / "models" / "customers.yml", {"model": customers})
-        route = [_SHIP_TO] if overrides["ship_to"] else [_BUYER]
-        pin = {"source_entity": "order", "target_entity": "customer", "relationship_path": route}
-        graph["path_preferences"] = [pin]
+        if overrides["ship_to"] is not None:  # None: the buyer relationship only
+            route = [_SHIP_TO] if overrides["ship_to"] else [_BUYER]
+            pin = {"source_entity": "order", "target_entity": "customer"}
+            graph["path_preferences"] = [pin | {"relationship_path": route}]
     _write_yaml(package_dir / "graph.yml", {"graph": graph})
     dims = {
         key: {"id": f"dimension.{key}", "column": key, "kind": "categorical"}
@@ -395,7 +410,7 @@ def _rollup_package(
         "entity": "order",
         "joins": {
             key: {"id": f"relationship.orders_{key}", "to": "customer", "via": [key + "_id"]}
-            for key in ("customer", "ship_to")
+            for key in ("customer", "ship_to")[: 1 if overrides.get("ship_to") is None else 2]
         }
         if "ship_to" in overrides
         else {},
@@ -422,6 +437,17 @@ def _rollup_package(
             },
             "balance": {"id": "measure.balance", "kind": "aggregate", "expr": "amount", **measure}
             | stock,
+            **(
+                {
+                    "weight": {
+                        "id": "measure.weight",
+                        "kind": "aggregate",
+                        "expr": "customers.weight",
+                    }
+                }
+                if "ship_to" in overrides
+                else {}
+            ),
         },
         "variants": {
             "tx": {
@@ -505,6 +531,18 @@ _REGION = {
 _NO_PATH = {**_REGION, "dimensions": {"dimension.region": {"column": "region"}}}
 _BY_REGION = _grouped(_rollup_query(_REVENUE, "sum", "month"), "dimension.region")
 _CUSTOMER_KEY = "dimension.p_customer_id"  # the customer entity's key, read from a foreign key
+_BUYER_KEY = {
+    **_REGION,
+    "id": "aggregate_relation.buyer",
+    "relation": "order_buyer_monthly",
+    "dimensions": {"dimension.p_customer_id": {"column": "customer_key", "path": [_BUYER]}},
+}
+_PRODUCT = {
+    **_REGION,
+    "id": "aggregate_relation.product",
+    "relation": "order_product_monthly",
+    "dimensions": {"dimension.product": {"column": "product", "path": [_LINE_ORDER]}},
+}
 _SHIP_TO_KEY = {
     **_REGION,
     "id": "aggregate_relation.ship_to",
@@ -760,6 +798,24 @@ _SHIP_TO_KEY = {
             _grouped(_rollup_query(_REVENUE, "sum", "month"), _CUSTOMER_KEY),
             "join_path_mismatch",
             id="foreign-key-with-two-relationships",  # the base reads the buyer's key
+        ),
+        pytest.param(
+            ({}, [_BUYER_KEY], {"ship_to": None}),
+            _grouped(_rollup_query(_REVENUE, "sum", "month"), _CUSTOMER_KEY),
+            None,
+            id="foreign-key-with-one-relationship",
+        ),
+        pytest.param(
+            ({}, [_PRODUCT], {"lines": True}),
+            _rollup_query(_REVENUE, "sum", "month"),
+            "join_path_mismatch",
+            id="rollup-pre-joined-one-to-many",  # each order's revenue once per line
+        ),
+        pytest.param(
+            ({"monthly": _MONTHLY}, [], {"ship_to": None}),
+            _rollup_query("measure.weight", "sum", "month"),
+            "join_path_mismatch",
+            id="measure-read-from-another-model",
         ),
         # Reason codes that predate the rollup guards.
         pytest.param(

@@ -1333,7 +1333,9 @@ Routing is conservative in the MVP:
   built along: `dimensions: {dimension.region: {column: region, path:
   [relationship.orders_customer]}}`. It routes only when the query joins that
   model along the same path, and only if every hop is many-to-one (or one-to-one)
-  with no `temporal_validity`. A pre-joined column without a `path` doesn't route.
+  with no `temporal_validity`. A rollup holding a pre-joined column without such a
+  `path` never routes, even for queries that don't use that column: a one-to-many
+  join would have repeated fact rows in every other column.
   Another model's key read from a foreign key (such as the customer key) needs a
   `path` of the one relationship between the two models, and doesn't route when
   two relationships link them. Build pre-joined columns with the base path's join

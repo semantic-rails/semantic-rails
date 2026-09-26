@@ -1,7 +1,8 @@
 """Which declared rollup answers a measure leaf exactly, and why each other one can't.
 
 The planner asks :func:`_select_aggregate_relation` once per measure leaf. Every rollup it
-rejects gets a stable reason code, which the routing report (:mod:`.routing`) shows.
+rejects gets a stable reason code, which the routing report (:mod:`.routing`) shows. It runs
+inside the planner's ``candidate_planning()``, so its lookups record no objects the query reads.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from ..compiler_parts.bind import (
     _bound_metric_predicates,
     _measure_count_distinct_key_columns,
 )
-from ..compiler_parts.dependencies import binding_cut
 from ..compiler_parts.indexes import _dimension_index, _measure_index, _temporal_role_index
 from ..compiler_parts.paths import (
     _direct_dimension_source_expr,
@@ -26,6 +26,7 @@ from ..compiler_parts.paths import (
 from ..compiler_parts.temporal import _fractional_second, _is_grain_boundary, _parse_time_literal
 from ..errors import SemanticLayerError
 from ..expressions import MetricPredicateExpr
+from ..fanout import analyze_fanout
 from ..ir import BoundMeasure, PathSelection
 from ..schema import AggregateRelationConfig, MeasureConfig, PackageConfig
 from .routing import ROUTING_OFF, aggregate_routing_enabled
@@ -147,12 +148,9 @@ def _one_row_per_group(row: AggregateRelationConfig, leaf: _Leaf, config: Packag
     """Whether each output row is exactly one rollup row: the query's grain is the rollup's,
     and every rollup dimension, including the keys of its entity grain, is single-valued."""
     try:
-        with binding_cut():  # the rollup's keys aren't objects the query reads
-            keys = {
-                dim
-                for entity in row.entity_grain
-                for dim in _entity_key_dimension_ids(entity, config)
-            }
+        keys = {
+            dim for entity in row.entity_grain for dim in _entity_key_dimension_ids(entity, config)
+        }
     except SemanticLayerError:  # an entity without a key dimension can't be grouped
         return False
     dimensions = _aggregate_dimension_coverage(row)
@@ -162,6 +160,36 @@ def _one_row_per_group(row: AggregateRelationConfig, leaf: _Leaf, config: Packag
         and keys <= dimensions
         and dimensions <= leaf.single_valued
     )
+
+
+def _prejoined_safely(row: AggregateRelationConfig, config: PackageConfig) -> bool:
+    """Whether every column the rollup pre-joined from another model was joined along a declared
+    many-to-one path to that model, so that no fact row was repeated or dropped for it."""
+    relationships = {rel.id: rel for rel in config.relationships}
+    for dim_id in _aggregate_dimension_coverage(row):
+        entity = _dimension_index(config)[dim_id].entity
+        if entity == row.source_entity or _direct_dimension_source_expr(
+            row.source_entity, dim_id, config
+        ):
+            continue
+        path, current = row.dimension_paths.get(dim_id, []), row.source_entity
+        for rel_id in path:
+            rel = relationships[rel_id]
+            if current not in {rel.source_entity, rel.target_entity}:
+                return False
+            current = rel.target_entity if current == rel.source_entity else rel.source_entity
+        try:
+            analysis = analyze_fanout(config, row.source_entity, path)
+        except SemanticLayerError:  # an unsafe hop
+            return False
+        if (
+            not path
+            or current != entity
+            or analysis["status"] != "ok"
+            or any(join.get("temporal_validity") for join in analysis["relationships"])
+        ):
+            return False
+    return True
 
 
 def _aggregate_relation_rejection_reason(
@@ -200,9 +228,13 @@ def _aggregate_relation_rejection_reason(
         return "missing_measure_column"
     if leaf.dimensions - _aggregate_dimension_coverage(row):
         return "missing_dimension"
-    if leaf.joins_undeclared or any(
-        path is None or row.dimension_paths.get(dim) != path
-        for dim, path in leaf.join_paths.items()
+    if (
+        leaf.joins_undeclared
+        or any(
+            path is None or row.dimension_paths.get(dim) != path
+            for dim, path in leaf.join_paths.items()
+        )
+        or not _prejoined_safely(row, config)  # also for dimensions the query doesn't use
     ):
         # A pre-joined column is right only along the query's own many-to-one path.
         return "join_path_mismatch"
