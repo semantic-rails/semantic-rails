@@ -1,0 +1,1 @@
+SELECT DATE_TRUNC('MONTH', orders.ordered_at) AS ordered_at_month, SUM(orders.order_total_cents / 100.0) AS revenue_usd, SUM(CASE WHEN orders.order_total_cents >= 5000 THEN orders.order_total_cents / 100.0 ELSE 0 END) AS large_order_revenue_usd FROM comparison_orders AS orders GROUP BY DATE_TRUNC('MONTH', orders.ordered_at) ORDER BY 1 LIMIT 5000

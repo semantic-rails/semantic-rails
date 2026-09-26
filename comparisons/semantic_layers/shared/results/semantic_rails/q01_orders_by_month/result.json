@@ -20,8 +20,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.403,
-      "compile_ms": 0.154,
+      "cache_lookup_ms": 0.409,
+      "compile_ms": 0.155,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -278,6 +278,7 @@
     },
     "performance_plan": {
       "aggregate_routing": {
+        "candidates": [],
         "selected": [],
         "selected_count": 0
       },
@@ -969,8 +970,8 @@
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
-  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
+  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
+  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
   "sql_plan": {
     "ctes": [
       {

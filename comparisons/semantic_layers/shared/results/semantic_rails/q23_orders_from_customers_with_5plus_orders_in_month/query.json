@@ -1,0 +1,38 @@
+{
+  "metric_filters": [
+    {
+      "expression": {
+        "entity": "entity.jaffle_customer",
+        "input": {
+          "measure": "measure.jaffle.order_count"
+        },
+        "kind": "metric_predicate",
+        "op": ">",
+        "scope_mode": "contextual",
+        "time_grain": "month",
+        "value": 5
+      },
+      "op": "=",
+      "value": true
+    }
+  ],
+  "order_by": [
+    {
+      "direction": "ASC",
+      "field": "temporal_role.jaffle_order_time__month"
+    }
+  ],
+  "select": [
+    {
+      "as": "qualifying_orders",
+      "expression": {
+        "metric": "metric.jaffle.orders"
+      }
+    }
+  ],
+  "time": {
+    "grain": "month",
+    "temporal_role": "temporal_role.jaffle_order_time"
+  },
+  "version": 1
+}

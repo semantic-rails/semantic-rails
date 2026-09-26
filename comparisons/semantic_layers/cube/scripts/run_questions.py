@@ -1,4 +1,8 @@
-"""Run the Cube pack live: start Cube Core, then save /meta and each query's /sql and /load."""
+"""Run the Cube pack live: start Cube Core, then save /meta and each query's /sql and /load.
+
+A `queries/*.json` file is a REST query. A `queries/*.sql` file is an SQL API query, sent to
+/cubesql; its /load result is saved in the same shape as a REST query's.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +31,9 @@ PROJECT_DIR = PACK / "cube"
 RESULTS_DIR = PACK / "shared" / "results" / "cube"
 DATABASE = PACK / "shared" / "data" / "jaffle_comparison.duckdb"
 BASE_URL = "http://127.0.0.1:4000/cubejs-api/v1"
+# Cube's SQL API returns at most this many rows (CUBESQL_NON_STREAMING_QUERY_MAX_ROW_LIMIT's
+# default), so a result that reaches it may be cut off.
+SQL_API_ROW_LIMIT = 50000
 PACKAGES = ["@cubejs-backend/server", "@cubejs-backend/duckdb-driver", "@duckdb/node-api"]
 # A fresh API secret per run: Cube accepts only requests carrying a JWT signed with it.
 API_SECRET = secrets.token_hex(32)
@@ -43,8 +50,9 @@ def token(secret: str) -> str:
     return f"{signed}.{encode(signature)}"
 
 
-def _request(path: str, query: str | None = None) -> str:
-    url = BASE_URL + path + (f"?{urllib.parse.urlencode({'query': query})}" if query else "")
+def _request(path: str, query: str | None = None, **params: str) -> str:
+    params = {"query": query, **params} if query else params
+    url = BASE_URL + path + (f"?{urllib.parse.urlencode(params)}" if params else "")
     request = urllib.request.Request(url, headers={"Authorization": token(API_SECRET)})
     for _ in range(60):
         with urllib.request.urlopen(request, timeout=120) as response:
@@ -52,6 +60,29 @@ def _request(path: str, query: str | None = None) -> str:
         if json.loads(body).get("error") != "Continue wait":  # a long query: ask again
             return body
     raise SystemExit(f"Cube still answered 'Continue wait' to {path} after 60 tries")
+
+
+class SqlApiError(Exception):
+    """Cube refused an SQL API query."""
+
+
+def _cubesql(sql: str) -> str:
+    """Run an SQL API query through /cubesql and return its rows the way /load returns them."""
+    request = urllib.request.Request(
+        BASE_URL + "/cubesql",
+        data=json.dumps({"query": sql}).encode(),
+        headers={"Authorization": token(API_SECRET), "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        chunks = [json.loads(line) for line in response.read().decode("utf-8").splitlines() if line]
+    errors = [chunk["error"] for chunk in chunks if "error" in chunk]
+    if errors or not chunks or "schema" not in chunks[0]:
+        raise SqlApiError("; ".join(errors) or "no schema in the response")
+    names = [column["name"] for column in chunks[0]["schema"]]
+    rows = [dict(zip(names, row, strict=True)) for chunk in chunks[1:] for row in chunk["data"]]
+    if len(rows) >= SQL_API_ROW_LIMIT:
+        raise SqlApiError(f"{len(rows)} rows reach the SQL API's row limit, so it may be cut off")
+    return json.dumps({"schema": chunks[0]["schema"], "data": rows}, indent=2)
 
 
 def _wait_for_meta(server: subprocess.Popen[bytes], log: IO[bytes]) -> str:
@@ -113,16 +144,32 @@ def main() -> None:
         )
         try:
             _write(RESULTS_DIR / "meta.json", _wait_for_meta(server, log))
-            for query_file in sorted((PROJECT_DIR / "queries").glob("q*.json")):
+            queries = sorted(
+                path
+                for path in (PROJECT_DIR / "queries").glob("q*")
+                if path.suffix in {".json", ".sql"}
+            )
+            stems = [path.stem for path in queries]
+            if len(stems) != len(set(stems)):
+                raise SystemExit(f"Two query files answer one question: {sorted(stems)}")
+            for query_file in queries:
                 target = RESULTS_DIR / query_file.stem
                 query = query_file.read_text(encoding="utf-8")
+                sql_api = query_file.suffix == ".sql"
                 try:
-                    _write(target / "sql.json", _request("/sql", query))
-                    _write(target / "load.json", _request("/load", query))
+                    if sql_api:
+                        _write(target / "sql.json", _request("/sql", query, format="sql"))
+                        _write(target / "load.json", _cubesql(query))
+                    else:
+                        _write(target / "sql.json", _request("/sql", query))
+                        _write(target / "load.json", _request("/load", query))
                     status = "executed"
-                except urllib.error.HTTPError as exc:
-                    _write(target / "error.txt", exc.read().decode("utf-8"))
-                    reason = f"HTTP {exc.code}"
+                except (urllib.error.HTTPError, SqlApiError) as exc:
+                    is_http = isinstance(exc, urllib.error.HTTPError)
+                    _write(
+                        target / "error.txt", exc.read().decode("utf-8") if is_http else str(exc)
+                    )
+                    reason = f"HTTP {exc.code}" if is_http else "SQL API error"
                     unsupported[query_file.stem] = {"status": "unsupported", "reason": reason}
                     status = "unsupported"
                 questions.append(

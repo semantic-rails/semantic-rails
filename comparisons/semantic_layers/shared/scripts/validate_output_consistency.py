@@ -34,8 +34,13 @@ RESULT_DIRS = {layer: layer for layer in RUNNABLE_LAYERS} | {ANSWER_KEY: "oracle
 DECIMAL_TOLERANCE = Decimal("0.000001")
 NUMERIC_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 # Published scoring keeps the 7 shared questions apart from the 9 that were chosen to
-# exercise Semantic Rails features (questions.yml `scope_level`).
-SLICE_BY_SCOPE = {"required": "shared", "stretch": "semantic_rails_targeted"}
+# exercise Semantic Rails features, and both apart from the 8 frozen-model variants
+# (questions.yml `scope_level`).
+SLICE_BY_SCOPE = {
+    "required": "shared",
+    "stretch": "semantic_rails_targeted",
+    "variant": "frozen_model",
+}
 
 QUESTION_FIELDS = {
     "q01_orders_by_month": ["month", "orders"],
@@ -75,7 +80,30 @@ QUESTION_FIELDS = {
         "customer_segment",
         "delivered_revenue",
     ],
+    "q17_session_to_order_conversion_14d": ["month", "session_to_order_conversion_rate_14d"],
+    "q18_same_store_session_to_order_conversion_50m": ["month", "same_store_conversion_rate_50m"],
+    "q19_trailing_3_month_revenue_by_month": ["month", "trailing_3_month_revenue_usd"],
+    "q20_revenue_and_prior_month_revenue_by_month": [
+        "month",
+        "revenue_usd",
+        "prior_month_revenue_usd",
+    ],
+    "q21_revenue_and_large_order_revenue_by_month": [
+        "month",
+        "revenue_usd",
+        "large_order_revenue_usd",
+    ],
+    "q22_average_and_max_item_revenue_by_product_type_by_month": [
+        "month",
+        "product_type",
+        "avg_item_revenue_usd",
+        "max_item_revenue_usd",
+    ],
+    "q23_orders_from_customers_with_5plus_orders_in_month": ["month", "qualifying_orders"],
+    "q24_orders_by_month_with_lifetime_spend_1000_filter": ["month", "filtered_orders"],
 }
+# Fields that aren't numbers: everything else is compared as a number.
+TEXT_FIELDS = {"month", "day", "store_name", "product_type", "customer_segment"}
 
 
 def _read_json(path: Path) -> Any:
@@ -119,16 +147,25 @@ def _rows_for(layer: str, result_path: str) -> list[dict[str, Any]]:
 
 
 def _load_column_maps() -> dict[str, dict[str, dict[str, str]]]:
-    """Which result column holds each field, per layer and question (no name guessing)."""
+    """Which result column holds each field, per layer and question (no name guessing).
+
+    A layer maps each question it answers; a question it executed without a map fails the check."""
     maps = yaml.safe_load(COLUMN_MAPS_PATH.read_text(encoding="utf-8"))
     for layer in RUNNABLE_LAYERS:
-        for question_id, fields in QUESTION_FIELDS.items():
-            mapped = sorted(maps.get(layer, {}).get(question_id, {}))
-            if mapped != sorted(fields):
+        for question_id, columns in maps.get(layer, {}).items():
+            fields = sorted(QUESTION_FIELDS.get(question_id, []))
+            if sorted(columns) != fields:
                 raise SystemExit(
-                    f"column_maps.yml: {layer} {question_id} maps {mapped}, expected {sorted(fields)}"
+                    f"column_maps.yml: {layer} {question_id} maps {sorted(columns)}, expected {fields}"
                 )
     return maps
+
+
+def _columns(maps: dict[str, dict[str, dict[str, str]]], layer: str, question_id: str) -> dict:
+    columns = maps.get(layer, {}).get(question_id)
+    if columns is None:
+        raise SystemExit(f"column_maps.yml has no map for {layer} {question_id}, which it executed")
+    return columns
 
 
 def _normalize_month(value: Any) -> str | None:
@@ -171,20 +208,7 @@ def _normalize_number(value: Any) -> int | float | Decimal | None:
 def _normalize_scalar(field: str, value: Any) -> Any:
     if field in {"month", "day"}:
         return _normalize_month(value)
-    if field in {
-        "orders",
-        "new_customer_orders",
-        "revenue_usd",
-        "item_revenue_usd",
-        "aov_usd",
-        "delivered_revenue",
-        "session_to_order_conversion_rate_7d",
-        "qualifying_orders",
-        "repeat_customer_orders",
-        "filtered_orders",
-        "qualifying_revenue_usd",
-        "same_store_conversion_rate_7d",
-    }:
+    if field not in TEXT_FIELDS:
         number = _normalize_number(value)
         return number if number is not None else value
     if value == "":
@@ -306,19 +330,30 @@ def main() -> None:
 
         for layer in RUNNABLE_LAYERS:
             entry = next(
-                item for item in summaries[layer]["questions"] if item["question_id"] == question_id
+                (
+                    item
+                    for item in summaries[layer]["questions"]
+                    if item["question_id"] == question_id
+                ),
+                None,
             )
             # Only whether it ran: support labels come from the rubric, and a pinned capture's
-            # summary may still carry old hand labels.
-            status = "unsupported" if entry["status"] == "unsupported" else "executed"
+            # summary may still carry old hand labels. Only a frozen-model variant may be missing:
+            # a layer leaves out one it can't express, or a capture that can't re-run all of them.
+            if entry is None and SLICE_BY_SCOPE[metadata["scope_level"]] != "frozen_model":
+                raise SystemExit(f"{layer} has no result for {question_id}")
+            if entry is None:
+                status = "not_run"
+            else:
+                status = "unsupported" if entry["status"] == "unsupported" else "executed"
             layer_statuses[layer] = status
-            if status == "unsupported":
+            if status != "executed":
                 continue
             comparable_layers.append(layer)
             normalized_rows_by_layer[layer] = _normalize_rows(
                 question_id,
                 _rows_for(layer, entry["result_path"]),
-                column_maps[layer][question_id],
+                _columns(column_maps, layer, question_id),
             )
 
         question_result: dict[str, Any] = {

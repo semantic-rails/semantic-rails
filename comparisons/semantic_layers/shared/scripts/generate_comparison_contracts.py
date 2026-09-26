@@ -154,7 +154,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "weaknesses": [
             "This is a project-specific runtime rather than a broadly adopted external ecosystem.",
             "The DSL is specific to Semantic Rails.",
-            "The q09 and q15 conversion window counts an order at or after the session start with `DATE_DIFF('day', started_at, ordered_at) <= 7`: it includes an order at the session's own time and runs to the end of the 7th calendar day, where the stated rule is (started_at, started_at + 7 days]. 5 orders in this data fall in that extra time, each for a session that had already converted within 7 days, so the answers don't change.",
+            "The q09 and q15 conversion window is [started_at, started_at + 7 days), a duration after the session start, where the stated rule is (started_at, started_at + 7 days]: an order at the session's own time counts and one exactly 7 days later doesn't. No order in this data falls on either boundary, so matching the answer key doesn't test them.",
         ],
         "scale": {
             "baseline_files": [
@@ -531,6 +531,9 @@ LAYER_META: dict[str, dict[str, Any]] = {
         },
         "notes": {
             "q05_orders_and_item_revenue_by_store_by_month": "One query for the order count and item revenue: Cube aggregates each measure on its own cube and joins the results, so neither fans out.",
+            "q19_trailing_3_month_revenue_by_month": "An SQL API moving sum (`ROWS BETWEEN 2 PRECEDING`) over monthly revenue; it steps over month rows, which equals the rule's calendar months only because every month in this data has orders.",
+            "q20_revenue_and_prior_month_revenue_by_month": "An SQL API `LAG` over monthly revenue; it steps over month rows, which equals the rule's calendar months only because every month in this data has orders.",
+            "q22_average_and_max_item_revenue_by_product_type_by_month": "An SQL API query of `AVG` and `MAX` over the `item_revenue_usd` sum measure. Cube pushes it down as the average and maximum of the measure's row expression (`query_type: pushdown` in its `sql.json`), and it only selects and aggregates members, so the rubric labels it native; q21's answer differs only in its derived table. See https://docs.cube.dev/reference/core-data-apis/sql-api/query-format.",
             "q08_revenue_by_customer_segment_as_of_order_time": "Modeled as a declared join from orders to customer history whose `sql` carries the validity condition.",
             "q09_session_to_order_conversion_7d": "Sessions join the same customer's orders within 7 days after the session start; a subquery dimension counts each session's matches, and the rate is converted sessions over all sessions.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "Multi-stage measures count orders at a fixed customer and calendar-month grain, then sum the orders of groups with more than 10.",
@@ -631,6 +634,10 @@ LAYER_META: dict[str, dict[str, Any]] = {
         },
         "notes": {
             "q05_orders_and_item_revenue_by_store_by_month": "Malloy's join-tree aggregation keeps the mixed-grain query native and compact.",
+            "q17_session_to_order_conversion_14d": "The query extends the model's session source with its own 14-day `join_many` (a query-level source extension; the model file is unchanged).",
+            "q18_same_store_session_to_order_conversion_50m": "The query extends the model's session source with its own 50-minute `join_many` (a query-level source extension; the model file is unchanged).",
+            "q19_trailing_3_month_revenue_by_month": "`sum_moving(revenue_usd, 2)` steps over month rows, which equals the rule's calendar months only because every month in this data has orders.",
+            "q20_revenue_and_prior_month_revenue_by_month": "`lag(revenue_usd)` steps over month rows, which equals the rule's calendar months only because every month in this data has orders.",
             "q08_revenue_by_customer_segment_as_of_order_time": "An arbitrary-condition `join_one` picks the customer-history row valid at the order time.",
             "q09_session_to_order_conversion_7d": "A `join_many` to the same customer's orders within 7 days after the session; `count()` counts each session once across the join.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "A query-derived source counts each customer-month's orders and is joined back to filter on more than 10.",
@@ -892,6 +899,7 @@ def default_note(status: str) -> str:
         "precomputed": "Executed by reading a rollup column that the question declares.",
         "doc_backed": "Represented from the public spec/docs, but not executed locally in this repo.",
         "unsupported": "Not executed in this pack.",
+        "not_assessed": "Not assessed: this capture can't be re-run on the frozen-model questions.",
     }.get(status, f"Labeled {status}.")
 
 
@@ -954,13 +962,20 @@ def entry_for_question(
     qid = question["id"]
     meta = LAYER_META[layer_id]
     status = entry["status"]
-    note = meta["notes"].get(qid) or entry.get("reason") or default_note(status)
+    evidence = entry.get("label_evidence", [])
+    if status == "requires_model_change":  # the reason, then its documentation
+        note = f"Requires a model change: {evidence[0]} See {evidence[1]}"
+    else:
+        note = meta["notes"].get(qid) or entry.get("reason") or default_note(status)
 
-    snippet_path, search = meta["snippets"][qid]
+    # A frozen-model question's evidence is its query, since the model is unchanged.
+    snippet_path, search = meta["snippets"].get(qid, (entry.get("query_path"), None))
     query_path = entry.get("query_path")
     result_path = entry.get("result_path")
     sql_path = entry.get("sql_path")
-    if query_path is None:
+    if status == "not_assessed":  # nothing ran, so there is no evidence to excerpt
+        query_path = snippet_path = None
+    elif query_path is None:
         if layer_id == "snowflake_semantic_views":
             query_path = "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql"
         else:
@@ -985,11 +1000,14 @@ def entry_for_question(
         if layer_id == "metricflow":
             sql_text = clean_metricflow_sql(sql_text)
         elif layer_id == "cube":
-            sql_text = json.loads(sql_text)["sql"]["sql"][0]  # [sql, params]
+            generated = json.loads(sql_text)["sql"]  # [sql, params], or an SQL API query's error
+            sql_text = (
+                generated["sql"][0] if "sql" in generated else read_text(abs_path(query_path))
+            )
         # Excerpts show the SQL itself; captured comments are commentary, not evidence.
         sql_lines = [line for line in sql_text.splitlines() if not line.lstrip().startswith("--")]
         sql_excerpt = "\n".join(sql_lines[:36])
-    elif layer_id == "snowflake_semantic_views":
+    elif layer_id == "snowflake_semantic_views" and status != "not_assessed":
         sql_excerpt = excerpt_text(
             COMPARISON_ROOT / "snowflake_semantic_views" / "query_examples.sql",
             around=qid,
@@ -1013,7 +1031,17 @@ def entry_for_question(
     }
 
 
-SUPPORT_STATUSES = ("native", "workaround", "precomputed", "doc_backed", "unsupported")
+SUPPORT_STATUSES = (
+    "native",
+    "workaround",
+    "precomputed",
+    "doc_backed",
+    "unsupported",
+    "requires_model_change",
+    "not_assessed",
+)
+# The labels of an answer a layer gave with its model frozen.
+ANSWERED = ("native", "workaround", "precomputed")
 ANSWER_KEY = "answer_key"
 ANSWER_KEY_DISCLOSURES = [
     "The answer key is SQL written directly against the shared views, not generated by any layer. "
@@ -1024,9 +1052,11 @@ ANSWER_KEY_DISCLOSURES = [
     "are at one store on one day, and customer history covers 4 customers. Matching the answer "
     "key there is weak evidence of the intended semantics (shared/oracle/SEMANTICS.md).",
 ]
+FROZEN = "frozen_model"
 SLICE_LABELS = {
     "shared": "Shared questions",
     "semantic_rails_targeted": "Semantic-Rails-targeted questions",
+    FROZEN: "Frozen-model questions",
 }
 SCALE_UP_CAVEAT = (
     "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits "
@@ -1111,9 +1141,14 @@ def claim_findings(
             "The validation report doesn't check the layers against the answer key; "
             "run validate_output_consistency.py first."
         )
-    summary = validation_report["summary"]
-    items = validation_report["questions"]
-    total = len(questions)
+    # q01-q16 first; the frozen-model questions get their own sentence below.
+    all_items = validation_report["questions"]
+    items = [item for item in all_items if item["slice"] != FROZEN]
+    summary = {
+        status: sum(1 for item in items if item["comparison_status"] == status)
+        for status in validation_report["summary"]
+    }
+    total = len(items)
     title_by_id = {question["id"]: question["title"] for question in questions}
     label = {layer_id: LAYER_META[layer_id]["label"] for layer_id in LAYER_ORDER}
     label[ANSWER_KEY] = "the answer key"
@@ -1144,6 +1179,34 @@ def claim_findings(
             output_check += f" On {len(mismatched)}, at least one layer differs: {listed}."
         if summary["not_comparable"]:
             output_check += f" {summary['not_comparable']} could not be compared."
+    variants = [item for item in all_items if item["slice"] == FROZEN]
+    if variants:
+        answers = sum(len(item["current_layers"]) for item in variants)
+        by_status = {
+            status: [
+                short_id(item["question_id"])
+                for item in variants
+                if item["comparison_status"] == status
+            ]
+            for status in ("mismatched", "not_comparable")
+        }
+        output_check += (
+            f" On the {len(variants)} frozen-model questions, all {answers} answers the layers "
+            "executed on the current dataset match it too."
+            if not any(by_status.values())
+            else f" On the frozen-model questions, {answers} answers were executed"
+            + (
+                f"; at least one differs on {', '.join(by_status['mismatched'])}"
+                if by_status["mismatched"]
+                else ""
+            )
+            + (
+                f"; none on {', '.join(by_status['not_comparable'])}"
+                if by_status["not_comparable"]
+                else ""
+            )
+            + "."
+        )
     claims = [output_check]
     captured = {layer["id"]: layer["captured"] for layer in layers_payload}
     for layer_id, checks in validation_report["stale_layers"].items():
@@ -1170,7 +1233,7 @@ def claim_findings(
     claims += ANSWER_KEY_DISCLOSURES
 
     unsupported: dict[str, list[str]] = {}
-    for item in items:
+    for item in items:  # q01-q16; the frozen-model claim covers the variants
         for layer_id, status in item["layer_statuses"].items():
             if status == "unsupported":
                 unsupported.setdefault(layer_id, []).append(item["question_id"])
@@ -1185,6 +1248,7 @@ def claim_findings(
             f"{SLICE_LABELS[name]} ({id_range(ids)}): {by_slice[name]['matched']} of "
             f"{by_slice[name]['questions']} match."
             for name, ids in slice_ids.items()
+            if name != FROZEN
         )
     )
     targeted = slice_ids.get("semantic_rails_targeted", [])
@@ -1200,7 +1264,9 @@ def claim_findings(
         "Every support label comes from one executable rubric applied to every layer, Semantic "
         "Rails included (shared/rubric.md): unsupported when a layer didn't execute the question, "
         "precomputed when its answer reads a rollup column the question declares, workaround "
-        "when the answer depends on SQL written by hand for this pack, and native otherwise."
+        "when the answer depends on SQL written by hand for this pack, and native otherwise. On "
+        "the frozen-model questions, requires_model_change comes first, when the layer's "
+        "query-time interface can't express the question with its model unchanged."
     )
     for question in questions:
         columns = question.get("bypass_columns") or []
@@ -1213,7 +1279,8 @@ def claim_findings(
                 for item in layer["questions"]
                 if item["question_id"] == question["id"]
             )
-            by_label.setdefault(label_of, []).append(layer["label"])
+            if label_of not in ("requires_model_change", "not_assessed"):  # nothing was read
+                by_label.setdefault(label_of, []).append(layer["label"])
         described = "; ".join(
             f"{label_of} for {join_names(names)}" for label_of, names in by_label.items()
         )
@@ -1222,6 +1289,71 @@ def claim_findings(
             f"{join_names([f'`{c}`' for c in columns])}; it is labeled {described}."
         )
     return claims
+
+
+def answered_with_model_frozen(statuses: list[str]) -> dict[str, int] | None:
+    """How many frozen-model questions a layer answered, and how; None if it wasn't assessed."""
+    if not statuses or "not_assessed" in statuses:
+        return None
+    counts = status_totals(statuses)
+    return {
+        "answered": sum(counts[label] for label in ANSWERED),
+        "questions": len(statuses),
+        **{label: count for label, count in counts.items() if count},
+    }
+
+
+def frozen_model_claims(
+    slice_ids: dict[str, list[str]], layers_payload: list[dict[str, Any]]
+) -> list[str]:
+    """The lead claims: what each layer answered with the model it uses for q01-q16 unchanged."""
+    variants = slice_ids.get(FROZEN, [])
+    if not variants:
+        return []
+    written = id_range([qid for name, ids in slice_ids.items() if name != FROZEN for qid in ids])
+    # In the pack's fixed layer order: the counts aren't a ranking.
+    assessed = [layer for layer in layers_payload if layer["answered_with_model_frozen"]]
+    parts = []
+    for layer in assessed:
+        frozen = layer["answered_with_model_frozen"]
+        how = ", ".join(f"{frozen[label]} {label}" for label in ANSWERED if frozen.get(label))
+        parts.append(f"{layer['label']} {frozen['answered']}" + (f" ({how})" if how else ""))
+    skipped = [
+        layer["label"] for layer in layers_payload if not layer["answered_with_model_frozen"]
+    ]
+    failed = [
+        f"{layer['label']} ({id_range(ids)})"
+        for layer in assessed
+        if (
+            ids := [
+                item["question_id"]
+                for item in layer["questions"]
+                if item["question_id"] in variants and item["support_status"] == "unsupported"
+            ]
+        )
+    ]
+    lead = (
+        f"The {len(variants)} frozen-model questions ({id_range(variants)}) each change one "
+        f"parameter of a metric that {written} already use: a window, an offset, a filter, an "
+        "aggregation or a threshold. No layer's model defines the variant. With each layer's "
+        f"model left exactly as written for {written}, answered through the layer's query-time "
+        f"interface, out of {len(variants)}: {join_names(parts)}. Each other answer is labeled "
+        "requires_model_change, with the reason and the documentation in "
+        "shared/frozen_model.yml"
+        + (f", except those that failed to run: {join_names(failed)}." if failed else ".")
+    )
+    if skipped:
+        lead += f" {join_names(skipped)} wasn't assessed: its capture can't be re-run."
+    return [
+        lead,
+        f"The {len(variants)} frozen-model questions are few, and the Semantic Rails authors chose "
+        "them knowing which parameters Semantic Rails composes at query time and which some "
+        "other layers set in the model. They probe where each layer's frozen-model boundary lies; "
+        "they aren't a ranking, and they don't weigh what a model change costs in each layer.",
+        f"Every layer's model was written with {written} in view, so a {written} label says where "
+        "an answer's logic lives, not whether the layer could answer a question its model "
+        "wasn't written for; the frozen-model questions test that.",
+    ]
 
 
 def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1245,7 +1377,10 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                 "status": rubric[layer_id][qid]["label"],
                 "label_evidence": rubric[layer_id][qid]["evidence"],
             }
-            for qid, entry in load_summary_entries(layer_id).items()
+            for qid, entry in (
+                {qid: {"question_id": qid} for qid in question_by_id}
+                | load_summary_entries(layer_id)
+            ).items()
         }
         status_map = {qid: entry["status"] for qid, entry in entries.items()}
 
@@ -1272,12 +1407,17 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                     slice_name: status_totals([status_map[qid] for qid in ids])
                     for slice_name, ids in slice_ids.items()
                 },
+                "answered_with_model_frozen": answered_with_model_frozen(
+                    [status_map[qid] for qid in slice_ids.get(FROZEN, [])]
+                ),
                 "scale": layer_scale(layer_id),
                 "questions": question_entries,
             }
         )
 
-    findings = claim_findings(validation_report, questions, slice_ids, layers_payload)
+    findings = frozen_model_claims(slice_ids, layers_payload) + claim_findings(
+        validation_report, questions, slice_ids, layers_payload
+    )
     comparison_data = {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "headline_findings": findings + LAYER_FINDINGS,
@@ -1299,6 +1439,7 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
             "slice": validation_by_question[qid]["slice"],
             "business_question": question["business_question"],
             "expected_semantics": question["expected_semantics"],
+            "variant_of": question.get("variant_of"),
             "consistency_status": validation_by_question[qid]["comparison_status"],
             "statuses": {
                 layer["id"]: next(
@@ -1307,6 +1448,12 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                 for layer in layers_payload
             },
         }
+        if row["slice"] == FROZEN:  # why each layer got its label: the reason for a model change
+            row["label_evidence"] = {
+                layer_id: rubric[layer_id][qid]["evidence"]
+                for layer_id in LAYER_ORDER
+                if rubric[layer_id][qid]["evidence"]
+            }
         matrix_rows.append(row)
 
     capability_matrix = {
@@ -1323,6 +1470,7 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                 "environment": layer["environment"],
                 "setup_status": layer["setup_status"],
                 "status_totals_by_slice": layer["status_totals_by_slice"],
+                "answered_with_model_frozen": layer["answered_with_model_frozen"],
             }
             for layer in layers_payload
         ],

@@ -1,0 +1,138 @@
+# The frozen-model questions (questions.yml `scope_level: variant`, q17-q24) are answered with
+# each layer's model for q01-q16 unchanged, through the layer's documented query-time interface
+# only. See rubric.md, "Frozen-model questions".
+#
+# - `model`: the files that are the layer's model, relative to comparisons/semantic_layers/.
+#   `sha256` pins them as they were when the variants were answered, the same files that answer
+#   q01-q16. apply_rubric.py refuses to label anything if they differ, so a variant can't be
+#   answered by editing the model.
+# - `interface`: the query-time interface the variants use.
+# - `requires_model_change`: the variants that interface can't express, each with the reason and
+#   the documentation (or the executed refusal) behind it. The rubric labels these first.
+# - `workaround`: why an answer that runs is labeled workaround, where one is. The rubric adds it
+#   to the label's evidence, and refuses a workaround on these questions that has none.
+# A layer not listed here isn't assessed on the variants.
+semantic_rails:
+  model: [semantic_rails/package]
+  sha256: 0cb15a8c4e73df9e1f2ce418f9d4c5a581c784d96371f7765db6944cb8b0bc9d
+  interface: The Query API (conversion, rolling, prior_period, aggregate overrides, scoped aggregates and metric_filters).
+  requires_model_change:
+    q19_trailing_3_month_revenue_by_month: &sr_calendar
+      reason: >-
+        `rolling` and `prior_period` are query-time expressions, but they run over a dense
+        calendar, and this package declares no calendar entity. The engine refuses the query
+        ("time.fill requires a calendar entity in the package"; the refused query and its
+        validation errors are in the Semantic Rails results), so the package needs a calendar
+        entity first.
+      doc: https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md#quickstart-init-a-directory-package
+    q20_revenue_and_prior_month_revenue_by_month: *sr_calendar
+
+metricflow:
+  model: [metricflow/models, metricflow/dbt_project.yml]
+  sha256: 5abc5437c0ea3c8131762a824b6efcf71dbaa9aac409002270e18cf3eb91d7ec
+  interface: "`mf query`: metrics, group-by, where (including metric filters), time bounds, order and limit."
+  requires_model_change:
+    q17_session_to_order_conversion_14d:
+      reason: >-
+        The conversion window is part of the conversion metric's definition (`window: 7 days`).
+        No query option changes it, so a 14-day window needs a new conversion metric.
+      doc: https://docs.getdbt.com/docs/build/conversion
+    q18_same_store_session_to_order_conversion_50m:
+      reason: >-
+        The window and the same-store constant property are part of the conversion metric's
+        definition. No query option changes the window, so a 50-minute window needs a new
+        conversion metric.
+      doc: https://docs.getdbt.com/docs/build/conversion
+    q19_trailing_3_month_revenue_by_month:
+      reason: >-
+        A trailing window is a cumulative metric's `window`, set in its definition. The query
+        interface has no window option, so it needs a new cumulative metric.
+      doc: https://docs.getdbt.com/docs/build/cumulative
+    q20_revenue_and_prior_month_revenue_by_month:
+      reason: >-
+        A prior-period value is a derived metric with an `offset_window`, set in its definition.
+        The query interface has no offset option, so it needs a new derived metric.
+      doc: https://docs.getdbt.com/docs/build/derived
+    q21_revenue_and_large_order_revenue_by_month:
+      reason: >-
+        A query's `--where` filters every metric in the query, so one query can't return total
+        revenue beside the revenue of large orders; that needs a metric with its own `filter:`.
+      doc: https://docs.getdbt.com/docs/build/metricflow-commands
+    q22_average_and_max_item_revenue_by_product_type_by_month:
+      reason: >-
+        A simple metric's aggregation is part of its definition (`agg: sum` for
+        `item_revenue_usd`). The query interface can't choose another aggregation, so the average
+        and the maximum each need a new simple metric.
+      doc: https://docs.getdbt.com/docs/build/simple
+
+cube:
+  model: [cube/model]
+  sha256: eff21c7eaa5b7233b32c922dc051f1bf3db7ff40e5ecd377e81b333e868aa138
+  interface: >-
+    REST queries (members, filters and time dimensions), and SQL API queries sent to /v1/cubesql,
+    which can wrap a Cube query in SQL (post-processing or pushdown).
+  requires_model_change:
+    q17_session_to_order_conversion_14d:
+      reason: >-
+        The model's session-to-order join carries the 7-day window, and a query can't change a
+        join's condition. The SQL API joins cubes only along the model's declared joins
+        (`__cubeJoinField` or CROSS JOIN), so it can narrow that join (q18) but can't reach orders
+        more than 7 days after a session. A 14-day window needs a new join in the model.
+      doc: https://docs.cube.dev/reference/core-data-apis/sql-api/joins
+  workaround:
+    q19_trailing_3_month_revenue_by_month: &cube_sql_api
+      reason: >-
+        An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table:
+        with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23,
+        a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and
+        for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each
+        group's session count. (Cube's join excludes an order at the session's start minute, which
+        the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000
+        rows; no order in this data falls on the start minute, and that result holds only the
+        10 sessions' same-store orders within 7 days. It has no ORDER BY, because Cube refuses to
+        post-process the sorted query.)
+        The rubric counts SQL written around a layer's members as hand-written, as it does SQL
+        outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query
+        has no such option: its filters apply to the whole query, and compareDateRange returns
+        each date range as a separate result set, not the prior month beside each month. In the
+        model these would be a rolling_window or time_shift measure, a measure with filters, or a
+        multi-stage measure with the new threshold.
+      doc: https://docs.cube.dev/reference/core-data-apis/sql-api/query-format
+    q18_same_store_session_to_order_conversion_50m: *cube_sql_api
+    q20_revenue_and_prior_month_revenue_by_month: *cube_sql_api
+    q21_revenue_and_large_order_revenue_by_month: *cube_sql_api
+    q23_orders_from_customers_with_5plus_orders_in_month: *cube_sql_api
+
+malloy:
+  model: [malloy/models]
+  sha256: f915065cc95d53fc7970c61168a317e2fada0202d1ec49efb8898aba89bee9fa
+  interface: >-
+    Malloy queries in their own files that import the model: filtered and ad hoc aggregates,
+    calculations (window functions), and query-level source extensions.
+  requires_model_change: {}
+
+ktx:
+  model: [ktx/sources]
+  sha256: e693a2ad08ad312dd237f70ad64b97e1d8dc348f3f53993fbb84ff82e686afc4
+  interface: "ktx-sl semantic queries: predefined or inline measure expressions, dimensions, filters and segments."
+  requires_model_change:
+    q17_session_to_order_conversion_14d: &ktx_window
+      reason: >-
+        The 7-day window is inside the pack's conversion SQL sources. ktx-sl joins are
+        equality-only, and a semantic query has no join or window option, so a different window
+        needs a new SQL source.
+      doc: https://github.com/Kaelio/ktx/blob/main/docs-site/content/docs/concepts/semantic-layer-internals.mdx
+    q18_same_store_session_to_order_conversion_50m: *ktx_window
+    q19_trailing_3_month_revenue_by_month: &ktx_over
+      reason: >-
+        ktx-sl rejects window functions in measures, inline query measures included ("Window
+        functions (OVER clause) are not supported in measures"; the refused queries are in the
+        KtX results), so a trailing or prior-period value needs a SQL source.
+      doc: https://github.com/Kaelio/ktx/blob/main/docs-site/content/docs/concepts/semantic-layer-internals.mdx
+    q20_revenue_and_prior_month_revenue_by_month: *ktx_over
+    q23_orders_from_customers_with_5plus_orders_in_month:
+      reason: >-
+        The more-than-10 threshold is inside the pack's customer-month SQL source. A query filter
+        is row-level or applies at the query's own grain, so it can't count each customer-month's
+        orders; a new threshold needs a new SQL source.
+      doc: https://github.com/Kaelio/ktx/blob/main/docs-site/content/docs/concepts/semantic-layer-internals.mdx

@@ -1,0 +1,11 @@
+// Query-time only: the model (../models/jaffle.malloy) is unchanged.
+import "../models/jaffle.malloy"
+
+// A moving sum over the month rows: this row and the 2 before it.
+query: q19_trailing_3_month_revenue_by_month is orders -> {
+  group_by: ordered_month
+  aggregate: revenue_usd
+  calculate: trailing_3_month_revenue_usd is sum_moving(revenue_usd, 2)
+  order_by: ordered_month asc
+  limit: 5000
+}

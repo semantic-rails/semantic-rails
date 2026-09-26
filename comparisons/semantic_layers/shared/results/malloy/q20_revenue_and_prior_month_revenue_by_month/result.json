@@ -1,0 +1,62 @@
+[
+  {
+    "ordered_month": "2016-09-01 00:00:00",
+    "revenue_usd": 18053.28,
+    "prior_month_revenue_usd": null
+  },
+  {
+    "ordered_month": "2016-10-01 00:00:00",
+    "revenue_usd": 21923.95,
+    "prior_month_revenue_usd": 18053.28
+  },
+  {
+    "ordered_month": "2016-11-01 00:00:00",
+    "revenue_usd": 27916.82,
+    "prior_month_revenue_usd": 21923.95
+  },
+  {
+    "ordered_month": "2016-12-01 00:00:00",
+    "revenue_usd": 35677.6,
+    "prior_month_revenue_usd": 27916.82
+  },
+  {
+    "ordered_month": "2017-01-01 00:00:00",
+    "revenue_usd": 45017.95,
+    "prior_month_revenue_usd": 35677.6
+  },
+  {
+    "ordered_month": "2017-02-01 00:00:00",
+    "revenue_usd": 43358.12,
+    "prior_month_revenue_usd": 45017.95
+  },
+  {
+    "ordered_month": "2017-03-01 00:00:00",
+    "revenue_usd": 73950.32,
+    "prior_month_revenue_usd": 43358.12
+  },
+  {
+    "ordered_month": "2017-04-01 00:00:00",
+    "revenue_usd": 83316.99,
+    "prior_month_revenue_usd": 73950.32
+  },
+  {
+    "ordered_month": "2017-05-01 00:00:00",
+    "revenue_usd": 96070.35,
+    "prior_month_revenue_usd": 83316.99
+  },
+  {
+    "ordered_month": "2017-06-01 00:00:00",
+    "revenue_usd": 98378.87,
+    "prior_month_revenue_usd": 96070.35
+  },
+  {
+    "ordered_month": "2017-07-01 00:00:00",
+    "revenue_usd": 94857.19,
+    "prior_month_revenue_usd": 98378.87
+  },
+  {
+    "ordered_month": "2017-08-01 00:00:00",
+    "revenue_usd": 107371.59,
+    "prior_month_revenue_usd": 94857.19
+  }
+]

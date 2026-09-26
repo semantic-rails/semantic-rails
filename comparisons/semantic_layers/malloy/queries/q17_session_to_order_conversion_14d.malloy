@@ -1,0 +1,15 @@
+// Query-time only: the model (../models/jaffle.malloy) is unchanged.
+import "../models/jaffle.malloy"
+
+// The model joins sessions to orders within 7 days; this query declares a 14-day join itself.
+query: q17_session_to_order_conversion_14d is storefront_sessions extend {
+  join_many: orders_within_14d is orders on customer_id = orders_within_14d.customer_id
+    and orders_within_14d.ordered_at >= started_at
+    and orders_within_14d.ordered_at < started_at + 14 days
+} -> {
+  group_by: session_month
+  aggregate: session_to_order_conversion_rate_14d is
+    count() { where: orders_within_14d.order_id is not null } / sessions
+  order_by: session_month asc
+  limit: 5000
+}

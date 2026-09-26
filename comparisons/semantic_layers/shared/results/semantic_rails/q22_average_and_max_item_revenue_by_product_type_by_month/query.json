@@ -1,0 +1,34 @@
+{
+  "group_by": [
+    "dimension.jaffle_item_product_type"
+  ],
+  "order_by": [
+    {
+      "direction": "ASC",
+      "field": "temporal_role.jaffle_order_time__month"
+    }
+  ],
+  "select": [
+    {
+      "as": "avg_item_revenue_usd",
+      "expression": {
+        "aggregation": "avg",
+        "kind": "aggregate",
+        "measure": "measure.jaffle.item_revenue_usd"
+      }
+    },
+    {
+      "as": "max_item_revenue_usd",
+      "expression": {
+        "aggregation": "max",
+        "kind": "aggregate",
+        "measure": "measure.jaffle.item_revenue_usd"
+      }
+    }
+  ],
+  "time": {
+    "grain": "month",
+    "temporal_role": "temporal_role.jaffle_order_time"
+  },
+  "version": 1
+}

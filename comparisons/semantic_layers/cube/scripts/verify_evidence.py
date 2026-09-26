@@ -33,7 +33,8 @@ def _dependencies(manifest: dict) -> dict[str, str]:
 
 def _server_errors(project: Path) -> list[str]:
     """A tripwire, not a parser: index.js's code (comment lines aside) keeps `devServer: false`,
-    checks for a .env file before loading Cube's server, and refuses CUBEJS_DEV_MODE after it."""
+    checks for a .env file before loading Cube's server, refuses CUBEJS_DEV_MODE after it, and
+    gives the SQL API's Postgres port a random password."""
     lines = (project / "index.js").read_text(encoding="utf-8").splitlines()
     source = "\n".join(line for line in lines if not line.lstrip().startswith("//"))
     load = source.find('require("@cubejs-backend/server")')
@@ -44,6 +45,8 @@ def _server_errors(project: Path) -> list[str]:
         found.append("index.js doesn't refuse a .env file before loading @cubejs-backend/server")
     if not -1 < load < dev_mode:
         found.append("index.js doesn't refuse CUBEJS_DEV_MODE after loading @cubejs-backend/server")
+    if "sqlPassword: crypto.randomBytes(" not in source:
+        found.append("index.js doesn't give the SQL API port a random password")
     return found
 
 

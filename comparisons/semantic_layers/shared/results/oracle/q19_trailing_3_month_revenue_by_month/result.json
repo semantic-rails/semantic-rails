@@ -1,0 +1,50 @@
+[
+  {
+    "month": "2016-09-01",
+    "trailing_3_month_revenue_usd": 18053.28
+  },
+  {
+    "month": "2016-10-01",
+    "trailing_3_month_revenue_usd": 39977.23
+  },
+  {
+    "month": "2016-11-01",
+    "trailing_3_month_revenue_usd": 67894.05
+  },
+  {
+    "month": "2016-12-01",
+    "trailing_3_month_revenue_usd": 85518.37
+  },
+  {
+    "month": "2017-01-01",
+    "trailing_3_month_revenue_usd": 108612.37
+  },
+  {
+    "month": "2017-02-01",
+    "trailing_3_month_revenue_usd": 124053.67
+  },
+  {
+    "month": "2017-03-01",
+    "trailing_3_month_revenue_usd": 162326.39
+  },
+  {
+    "month": "2017-04-01",
+    "trailing_3_month_revenue_usd": 200625.43
+  },
+  {
+    "month": "2017-05-01",
+    "trailing_3_month_revenue_usd": 253337.66
+  },
+  {
+    "month": "2017-06-01",
+    "trailing_3_month_revenue_usd": 277766.21
+  },
+  {
+    "month": "2017-07-01",
+    "trailing_3_month_revenue_usd": 289306.41
+  },
+  {
+    "month": "2017-08-01",
+    "trailing_3_month_revenue_usd": 300607.65
+  }
+]

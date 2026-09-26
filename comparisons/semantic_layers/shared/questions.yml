@@ -118,3 +118,72 @@ questions:
     scope_level: stretch
     business_question: What was delivered revenue by customer segment as of delivered time?
     expected_semantics: Use delivered time as the business clock for the measure and for the temporal-valid join into customer history.
+
+  # Frozen-model variants (q17-q24). Each changes one parameter of a metric that q01-q16 already
+  # model: a window, an offset, a filter, an aggregation or a threshold. No layer's model defines
+  # the variant, and every layer answers it with the model it uses for q01-q16 unchanged, through
+  # its query-time interface only (shared/rubric.md, "Frozen-model questions").
+  - id: q17_session_to_order_conversion_14d
+    title: Session To Order Conversion Within 14 Days
+    category: variant
+    scope_level: variant
+    variant_of: q09_session_to_order_conversion_7d
+    business_question: What share of sessions converted to an order within 14 days?
+    expected_semantics: The q09 rule with a 14 day window, counted as a duration. A session converted if the same customer placed an order in [session start, session start + 14 x 24 hours).
+
+  - id: q18_same_store_session_to_order_conversion_50m
+    title: Same Store Session To Order Conversion Within 50 Minutes
+    category: variant
+    scope_level: variant
+    variant_of: q15_same_store_session_to_order_conversion_7d
+    business_question: What share of sessions converted to an order at the same store within 50 minutes?
+    expected_semantics: The q15 rule with a 50 minute window, counted as a duration. A session converted if the same customer placed an order at the session's store in [session start, session start + 50 minutes).
+
+  - id: q19_trailing_3_month_revenue_by_month
+    title: Trailing 3 Month Revenue By Month
+    category: variant
+    scope_level: variant
+    variant_of: q02_revenue_by_store_by_month
+    business_question: What was revenue over the trailing 3 months, by month?
+    expected_semantics: For each ordered month, across all stores, sum the revenue of orders placed in that calendar month and the two calendar months before it.
+
+  - id: q20_revenue_and_prior_month_revenue_by_month
+    title: Revenue And Prior Month Revenue By Month
+    category: variant
+    scope_level: variant
+    variant_of: q02_revenue_by_store_by_month
+    business_question: What was revenue by month, beside the revenue of the month before?
+    expected_semantics: For each ordered month, across all stores, revenue and the revenue of the preceding calendar month, side by side in one row. The first month has no preceding month in the data, so its prior value is null.
+
+  - id: q21_revenue_and_large_order_revenue_by_month
+    title: Revenue And Large Order Revenue By Month
+    category: variant
+    scope_level: variant
+    variant_of: q02_revenue_by_store_by_month
+    business_question: What was revenue by month, and how much of it came from orders of 50 USD or more?
+    expected_semantics: For each ordered month, across all stores, total revenue beside the revenue of orders whose total is at least 50 USD, in one result.
+
+  - id: q22_average_and_max_item_revenue_by_product_type_by_month
+    title: Average And Largest Item Revenue By Product Type By Month
+    category: variant
+    scope_level: variant
+    variant_of: q03_item_revenue_by_product_type_by_month
+    business_question: What were the average and the largest item revenue per item, by product type by month?
+    expected_semantics: The q03 grouping, with the average and the maximum of item revenue over item rows instead of the sum.
+
+  - id: q23_orders_from_customers_with_5plus_orders_in_month
+    title: Orders From Customers With 5 Plus Orders In Month
+    category: variant
+    scope_level: variant
+    variant_of: q10_orders_from_customers_with_10plus_orders_in_month
+    business_question: What was order volume from customers with more than 5 orders in the same month?
+    expected_semantics: The q10 rule with the threshold at more than 5 orders in the customer-month instead of more than 10.
+
+  - id: q24_orders_by_month_with_lifetime_spend_1000_filter
+    title: Orders By Month With Lifetime Spend 1000 Filter
+    category: variant
+    scope_level: variant
+    variant_of: q12_orders_by_month_with_lifetime_spend_500_filter
+    business_question: How many orders did we have by month from customers with lifetime spend of at least 1000 USD?
+    expected_semantics: The q12 rule with the threshold at 1000 USD instead of 500 USD.
+    bypass_columns: [lifetime_spend_cents]

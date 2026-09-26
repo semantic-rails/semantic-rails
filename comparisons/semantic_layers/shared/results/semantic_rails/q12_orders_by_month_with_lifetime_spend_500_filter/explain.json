@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.911,
-      "compile_ms": 0.238,
+      "cache_lookup_ms": 1.017,
+      "compile_ms": 0.24,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -312,6 +312,7 @@
     },
     "performance_plan": {
       "aggregate_routing": {
+        "candidates": [],
         "selected": [],
         "selected_count": 0
       },
@@ -1491,8 +1492,8 @@
   "recovery_hints": [],
   "rendered_sql": "WITH leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  comparison_customers.customer_id AS __snapshot_key_1,\n  comparison_customers.first_order_at AS __snapshot_order,\n  comparison_customers.lifetime_spend_cents / 100.0 AS __snapshot_value\nFROM comparison_customers\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 AS __snapshot_key_1,\n  MAX(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1 AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  SUM(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_value) AS m1\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nINNER JOIN leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete ON leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.g1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_key_1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order = leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_order\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1\n),\nleaf_1__lifetime_spend_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_spend_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_spend_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 500\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS filtered_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
-  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
+  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
+  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
   "sql_plan": {
     "ctes": [
       {

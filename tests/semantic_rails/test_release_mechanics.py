@@ -455,6 +455,12 @@ _LOAD_SERVER = 'const CubejsServer = require("@cubejs-backend/server");\n'
             lambda text: text.replace("process.env.CUBEJS_DEV_MODE !== undefined", "false"),
             "CUBEJS_DEV_MODE",
         ),
+        # The SQL API's Postgres port gets a password no client knows.
+        (
+            "index.js",
+            lambda text: text.replace('crypto.randomBytes(32).toString("hex")', '"cube"'),
+            "random password",
+        ),
     ],
 )
 def test_the_cube_install_check_refuses_a_loose_or_unaudited_install(tmp_path, name, edit, error):

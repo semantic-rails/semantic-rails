@@ -16,7 +16,7 @@ metrics:
 
   revenue_usd:
     label: Revenue (USD)
-    description: Stable contract for net order revenue.
+    description: Stable contract for order revenue, the order total including tax.
     kind: aggregate
     measure: revenue_usd
     value_type: currency

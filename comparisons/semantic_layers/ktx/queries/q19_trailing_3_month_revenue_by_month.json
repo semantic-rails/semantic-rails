@@ -1,0 +1,16 @@
+{
+  "dimensions": [
+    {
+      "field": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    {
+      "expr": "sum(sum(orders.order_total_cents / 100.0)) over (order by date_trunc('month', orders.ordered_at) rows 2 preceding)",
+      "name": "trailing_3_month_revenue_usd"
+    }
+  ]
+}

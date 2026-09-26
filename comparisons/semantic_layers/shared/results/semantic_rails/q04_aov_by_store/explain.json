@@ -101,8 +101,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.911,
-      "compile_ms": 0.166,
+      "cache_lookup_ms": 1.009,
+      "compile_ms": 0.157,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -1213,6 +1213,7 @@
     },
     "performance_plan": {
       "aggregate_routing": {
+        "candidates": [],
         "selected": [],
         "selected_count": 0
       },
@@ -2807,8 +2808,8 @@
   "recovery_hints": [],
   "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(DISTINCT comparison_orders.order_id) AS m2\nFROM comparison_orders\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.m1 / NULLIF(base.m2, 0) AS aov_usd\nFROM leaf_1 AS base\nORDER BY\n  aov_usd DESC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
-  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
+  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
+  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
   "sql_plan": {
     "ctes": [
       {

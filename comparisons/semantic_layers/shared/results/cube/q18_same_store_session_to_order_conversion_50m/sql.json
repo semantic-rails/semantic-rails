@@ -1,0 +1,1 @@
+{"sql":{"status":"error","error":"Provided query can not be executed without post-processing.","query_type":"post_processing"}}

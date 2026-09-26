@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "measure": "measure.jaffle.revenue_usd"
+      },
+      "as": "revenue_usd"
+    },
+    {
+      "expression": {
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.revenue_usd",
+        "aggregation": "sum",
+        "predicates": [
+          {
+            "measure": "measure.jaffle.revenue_usd",
+            "entity": "entity.jaffle_order",
+            "op": ">=",
+            "value": 50
+          }
+        ]
+      },
+      "as": "large_order_revenue_usd"
+    }
+  ],
+  "time": {
+    "temporal_role": "temporal_role.jaffle_order_time",
+    "grain": "month"
+  },
+  "order_by": [
+    {
+      "field": "temporal_role.jaffle_order_time__month",
+      "direction": "ASC"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "measures": ["orders.orders"],
+  "timeDimensions": [
+    { "dimension": "orders.ordered_at", "granularity": "month" }
+  ],
+  "filters": [
+    { "member": "customers.lifetime_spend_usd", "operator": "gte", "values": ["1000"] }
+  ],
+  "order": { "orders.ordered_at": "asc" }
+}

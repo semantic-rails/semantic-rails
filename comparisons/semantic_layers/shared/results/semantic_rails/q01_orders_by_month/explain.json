@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.429,
-      "compile_ms": 0.154,
+      "cache_lookup_ms": 0.422,
+      "compile_ms": 0.155,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -279,6 +279,7 @@
     },
     "performance_plan": {
       "aggregate_routing": {
+        "candidates": [],
         "selected": [],
         "selected_count": 0
       },
@@ -920,8 +921,8 @@
   "recovery_hints": [],
   "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
-  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
+  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
+  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
   "sql_plan": {
     "ctes": [
       {

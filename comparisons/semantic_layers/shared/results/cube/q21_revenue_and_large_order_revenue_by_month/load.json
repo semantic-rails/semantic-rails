@@ -1,0 +1,78 @@
+{
+  "schema": [
+    {
+      "name": "month",
+      "column_type": "Timestamp"
+    },
+    {
+      "name": "revenue_usd",
+      "column_type": "Double"
+    },
+    {
+      "name": "large_order_revenue_usd",
+      "column_type": "Double"
+    }
+  ],
+  "data": [
+    {
+      "month": "2016-09-01T00:00:00.000",
+      "revenue_usd": "18053.280000000006",
+      "large_order_revenue_usd": "2376.5"
+    },
+    {
+      "month": "2016-10-01T00:00:00.000",
+      "revenue_usd": "21923.950000000033",
+      "large_order_revenue_usd": "2642.5699999999997"
+    },
+    {
+      "month": "2016-11-01T00:00:00.000",
+      "revenue_usd": "27916.81999999998",
+      "large_order_revenue_usd": "2192.04"
+    },
+    {
+      "month": "2016-12-01T00:00:00.000",
+      "revenue_usd": "35677.60000000001",
+      "large_order_revenue_usd": "3549.919999999999"
+    },
+    {
+      "month": "2017-01-01T00:00:00.000",
+      "revenue_usd": "45017.94999999983",
+      "large_order_revenue_usd": "5175.9"
+    },
+    {
+      "month": "2017-02-01T00:00:00.000",
+      "revenue_usd": "43358.11999999978",
+      "large_order_revenue_usd": "4959.689999999999"
+    },
+    {
+      "month": "2017-03-01T00:00:00.000",
+      "revenue_usd": "73950.32000000068",
+      "large_order_revenue_usd": "6553.2400000000025"
+    },
+    {
+      "month": "2017-04-01T00:00:00.000",
+      "revenue_usd": "83316.99000000172",
+      "large_order_revenue_usd": "9694.399999999998"
+    },
+    {
+      "month": "2017-05-01T00:00:00.000",
+      "revenue_usd": "96070.35000000297",
+      "large_order_revenue_usd": "7801.520000000004"
+    },
+    {
+      "month": "2017-06-01T00:00:00.000",
+      "revenue_usd": "98378.87000000292",
+      "large_order_revenue_usd": "10121.240000000002"
+    },
+    {
+      "month": "2017-07-01T00:00:00.000",
+      "revenue_usd": "94857.19000000243",
+      "large_order_revenue_usd": "12161.109999999997"
+    },
+    {
+      "month": "2017-08-01T00:00:00.000",
+      "revenue_usd": "107371.59000000378",
+      "large_order_revenue_usd": "10629.820000000002"
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "schema": [
+    {
+      "name": "month",
+      "column_type": "Timestamp"
+    },
+    {
+      "name": "revenue_usd",
+      "column_type": "Double"
+    },
+    {
+      "name": "prior_month_revenue_usd",
+      "column_type": "Double"
+    }
+  ],
+  "data": [
+    {
+      "month": "2016-09-01T00:00:00.000",
+      "revenue_usd": "18053.280000000006",
+      "prior_month_revenue_usd": null
+    },
+    {
+      "month": "2016-10-01T00:00:00.000",
+      "revenue_usd": "21923.950000000033",
+      "prior_month_revenue_usd": "18053.280000000006"
+    },
+    {
+      "month": "2016-11-01T00:00:00.000",
+      "revenue_usd": "27916.81999999998",
+      "prior_month_revenue_usd": "21923.950000000033"
+    },
+    {
+      "month": "2016-12-01T00:00:00.000",
+      "revenue_usd": "35677.60000000001",
+      "prior_month_revenue_usd": "27916.81999999998"
+    },
+    {
+      "month": "2017-01-01T00:00:00.000",
+      "revenue_usd": "45017.94999999983",
+      "prior_month_revenue_usd": "35677.60000000001"
+    },
+    {
+      "month": "2017-02-01T00:00:00.000",
+      "revenue_usd": "43358.11999999978",
+      "prior_month_revenue_usd": "45017.94999999983"
+    },
+    {
+      "month": "2017-03-01T00:00:00.000",
+      "revenue_usd": "73950.32000000068",
+      "prior_month_revenue_usd": "43358.11999999978"
+    },
+    {
+      "month": "2017-04-01T00:00:00.000",
+      "revenue_usd": "83316.99000000172",
+      "prior_month_revenue_usd": "73950.32000000068"
+    },
+    {
+      "month": "2017-05-01T00:00:00.000",
+      "revenue_usd": "96070.35000000297",
+      "prior_month_revenue_usd": "83316.99000000172"
+    },
+    {
+      "month": "2017-06-01T00:00:00.000",
+      "revenue_usd": "98378.87000000292",
+      "prior_month_revenue_usd": "96070.35000000297"
+    },
+    {
+      "month": "2017-07-01T00:00:00.000",
+      "revenue_usd": "94857.19000000243",
+      "prior_month_revenue_usd": "98378.87000000292"
+    },
+    {
+      "month": "2017-08-01T00:00:00.000",
+      "revenue_usd": "107371.59000000378",
+      "prior_month_revenue_usd": "94857.19000000243"
+    }
+  ]
+}

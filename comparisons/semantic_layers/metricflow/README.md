@@ -62,6 +62,16 @@ precomputed customer rollups.
 
 The rubric (`../shared/rubric.md`) labels all 16 answers (q01-q16) `native`.
 
+The frozen-model questions (q17-q24) run with these models unchanged, through `mf query` only.
+q23 and q24 change q10's and q12's thresholds, and a query-time `--where` metric filter over an
+existing entity expresses each: `{{ Metric("orders", group_by=["customer_month"]) }} > 5` and
+`{{ Metric("revenue_usd", group_by=["customer"]) }} >= 1000`. The other six need a model change,
+because the parameter they change is part of a metric's definition: a conversion metric's window
+(q17, q18), a cumulative metric's window (q19), a derived metric's `offset_window` (q20), a
+metric's own `filter:` (q21: `--where` filters every metric in the query, so it can't return
+large-order revenue beside total revenue) and a simple metric's `agg` (q22).
+`../shared/frozen_model.yml` gives each reason with its dbt documentation link.
+
 ## Caveats
 
 - Conversion attribution is last-touch. If a customer had two sessions within 7 days before

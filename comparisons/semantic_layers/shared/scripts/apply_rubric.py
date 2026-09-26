@@ -6,6 +6,7 @@ and its evidence, so a reader can check it against the artifacts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -20,10 +21,22 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 PACK = REPO_ROOT / "comparisons" / "semantic_layers"
 RESULTS = PACK / "shared" / "results"
 OUTPUT_PATH = RESULTS / "rubric" / "labels.json"
+FROZEN_MODEL_PATH = PACK / "shared" / "frozen_model.yml"
 
 # A trivial passthrough of one shared view isn't hand-written logic.
 PASSTHROUGH = re.compile(r"^\s*select\s+\*\s+from\s+comparison_\w+\s*;?\s*$", re.IGNORECASE)
 RULES = [
+    (
+        "not_assessed",
+        "Frozen-model questions only: the layer isn't listed in frozen_model.yml, because this "
+        "pack can't run it on them.",
+    ),
+    (
+        "requires_model_change",
+        "Frozen-model questions only: the layer's documented query-time interface can't express "
+        "the question with its model unchanged; frozen_model.yml gives the reason and the "
+        "documentation.",
+    ),
     ("unsupported", "The layer didn't execute the question."),
     (
         "precomputed",
@@ -129,18 +142,40 @@ def metricflow(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     return helpers, texts
 
 
+# SQL an SQL API query writes around Cube's members, beyond selecting and aggregating them.
+SQL_AROUND_MEMBERS = {
+    "SQL API query over a derived table": r"\(\s*select\b",
+    "SQL API window function": r"\bover\s*\(",
+    "SQL API CASE expression": r"\bcase\b",
+    "SQL API HAVING, FILTER or UNION": r"\bhaving\b|\bfilter\s*\(|\bunion\b",
+}
+
+
 def cube(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
-    query = json.loads(_read(entry["query_path"]))
-    members = [*query.get("measures", []), *query.get("dimensions", [])]
-    members += [item["dimension"] for item in query.get("timeDimensions", [])]
-    members += [item["member"] for item in query.get("filters", []) if "member" in item]
-    helpers = []
-    for name in _require(sorted({member.split(".")[0] for member in members}), "cubes", entry):
-        model = PACK / "cube" / "model" / "cubes" / f"{name}.yml"
-        spec = yaml.safe_load(model.read_text(encoding="utf-8"))["cubes"][0]
+    cubes, helpers = PACK / "cube" / "model" / "cubes", []
+    sql_api = entry["query_path"].endswith(".sql")
+    if sql_api:
+        # An SQL API query. Anything beyond selecting and aggregating members (and filtering on
+        # them) is SQL written by hand, whether Cube post-processes it or pushes it down.
+        sql = _read(entry["query_path"])
+        names = re.findall(r"\b(?:from|join)\s+([a-z_]\w*)", sql, flags=re.IGNORECASE)
+        names = [name for name in names if (cubes / f"{name}.yml").is_file()]
+        helpers += [
+            what for what, found in SQL_AROUND_MEMBERS.items() if re.search(found, sql, re.I)
+        ]
+    else:
+        query = json.loads(_read(entry["query_path"]))
+        members = [*query.get("measures", []), *query.get("dimensions", [])]
+        members += [item["dimension"] for item in query.get("timeDimensions", [])]
+        members += [item["member"] for item in query.get("filters", []) if "member" in item]
+        names = [member.split(".")[0] for member in members]
+    for name in _require(sorted(set(names)), "cubes", entry):
+        spec = yaml.safe_load((cubes / f"{name}.yml").read_text(encoding="utf-8"))["cubes"][0]
         if "sql" in spec and not is_passthrough(spec["sql"]):
             helpers.append(f"cube {name}")
-    executed = json.loads(_executed_sql(entry))["sql"]["sql"][0]
+    generated = json.loads(_executed_sql(entry))["sql"]
+    # Cube has no single SQL for an SQL API query it post-processes; its own statement is what ran.
+    executed = generated["sql"][0] if "sql" in generated or not sql_api else sql
     return helpers, [executed]
 
 
@@ -155,6 +190,17 @@ def _squash(sql: str) -> str:
 
 def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     model = (PACK / "malloy" / "models" / "jaffle.malloy").read_text(encoding="utf-8")
+    # A frozen-model question's query is its own file, which imports the model.
+    query_file = PACK / "malloy" / "queries" / f"{entry['question_id']}.malloy"
+    if query_file.is_file():
+        text = query_file.read_text(encoding="utf-8")
+        # Only the model's import and the question's own query: another import, a source or a
+        # run here would be model authoring outside the pinned model.
+        imports = re.findall(r"^\s*import\b.*$", text, flags=re.MULTILINE)
+        declared = re.findall(r"^\s*(source|query|run)\s*:", text, flags=re.MULTILINE)
+        if imports != ['import "../models/jaffle.malloy"'] or declared != ["query"]:
+            raise SystemExit(f"{query_file.name} must hold one import of the model and one query")
+        model += "\n" + text
     query = rf"^query:\s+{re.escape(entry['question_id'])}\s+is\b"
     _require(re.findall(query, model, flags=re.MULTILINE), "named query", entry)
     executed = _executed_sql(entry)
@@ -167,17 +213,31 @@ def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
         for name, _, body in MALLOY_SQL.findall(model)
         if not is_passthrough(body) and f"({_squash(body)})" in _squash(executed)
     }
+    # A raw SQL expression (sql_number, sql_string, ...) in a variant's query is hand-written.
+    if query_file.is_file() and re.search(r"\bsql_\w+\s*\(", query_file.read_text("utf-8")):
+        helpers.add("raw SQL expression in the query")
     return sorted(helpers), [executed]
 
 
 def ktx(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     payload = json.loads(_read(entry["query_path"]))
-    fields = [*payload.get("measures", [])]
+    fields = [item for item in payload.get("measures", []) if isinstance(item, str)]
+    # An inline measure expression reads `source.column` references.
+    fields += [
+        ref
+        for item in payload.get("measures", [])
+        if isinstance(item, dict)
+        for ref in re.findall(r"\b[A-Za-z_]\w*\.\w+", item["expr"])
+    ]
     fields += [
         item if isinstance(item, str) else item["field"] for item in payload.get("dimensions", [])
     ]
+    helpers = [
+        f"SQL subquery in the inline measure {item['name']}"
+        for item in payload.get("measures", [])
+        if isinstance(item, dict) and re.search(r"\(\s*select\b", item["expr"], re.IGNORECASE)
+    ]
     fields += [re.split(r"\s", item)[0] for item in payload.get("filters", [])]
-    helpers = []
     for name in _require(sorted({field.split(".")[0] for field in fields}), "sources", entry):
         spec = yaml.safe_load(
             (PACK / "ktx" / "sources" / f"{name}.yaml").read_text(encoding="utf-8")
@@ -203,8 +263,61 @@ DETECTORS = {
 }
 
 
+def model_digest(paths: list[str]) -> str:
+    """Identify a layer's model: every file under its model paths, by path and content."""
+    files = []
+    for relative in paths:
+        root = PACK / relative
+        found = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+        # A dotfile (.DS_Store, an editor's swap file) isn't part of the model.
+        files += [
+            p for p in found if not any(part.startswith(".") for part in p.relative_to(PACK).parts)
+        ]
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        data = path.read_bytes().replace(b"\r\n", b"\n")  # the same text on a CRLF checkout
+        digest.update(f"{path.relative_to(PACK).as_posix()}\0{len(data)}\0".encode())
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def load_frozen_models() -> dict[str, Any]:
+    """Fail closed: a frozen-model answer can't be vouched for once its model has changed."""
+    frozen = yaml.safe_load(FROZEN_MODEL_PATH.read_text(encoding="utf-8"))
+    for layer, spec in frozen.items():
+        if model_digest(spec["model"]) != spec["sha256"]:
+            raise SystemExit(
+                f"{layer}: its model ({', '.join(spec['model'])}) changed since the frozen-model "
+                "questions were answered; answer them again before re-pinning frozen_model.yml"
+            )
+    return frozen
+
+
+def frozen_label(spec: dict[str, Any] | None, qid: str, executed: bool) -> dict[str, Any] | None:
+    """The labels only a frozen-model question can get, checked before the others."""
+    if spec is None:
+        return {"label": "not_assessed", "evidence": []}
+    declared = spec["requires_model_change"].get(qid)
+    if declared is None:
+        return None
+    if executed:
+        raise SystemExit(f"{qid} is declared requires_model_change but the layer executed it")
+    return {"label": "requires_model_change", "evidence": [declared["reason"], declared["doc"]]}
+
+
+def explain_workaround(spec: dict[str, Any], qid: str, label: dict[str, Any]) -> None:
+    """A frozen-model answer labeled workaround says why, with the documentation behind it."""
+    if label["label"] != "workaround":
+        return
+    why = spec.get("workaround", {}).get(qid)
+    if why is None:
+        raise SystemExit(f"{qid} is a workaround, but frozen_model.yml doesn't say why")
+    label["evidence"] += [why["reason"], why["doc"]]
+
+
 def build_labels() -> dict[str, Any]:
     questions = yaml.safe_load((PACK / "shared" / "questions.yml").read_text(encoding="utf-8"))
+    frozen = load_frozen_models()
     labels: dict[str, dict[str, Any]] = {}
     for layer, (results_dir, detect) in DETECTORS.items():
         directory = RESULTS / results_dir
@@ -221,10 +334,17 @@ def build_labels() -> dict[str, Any]:
                 and entry["status"] != "unsupported"
                 and question["id"] not in failed
             )
+            if question.get("scope_level") == "variant":
+                label = frozen_label(frozen.get(layer), question["id"], executed)
+                if label is not None:
+                    labels[layer][question["id"]] = label
+                    continue
             helpers, texts = detect(entry) if executed else ([], [])
             labels[layer][question["id"]] = decide(
                 executed, helpers, texts, list(question.get("bypass_columns", []))
             )
+            if question.get("scope_level") == "variant":
+                explain_workaround(frozen[layer], question["id"], labels[layer][question["id"]])
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "rules": [{"label": label, "rule": rule} for label, rule in RULES],

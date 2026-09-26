@@ -4,7 +4,7 @@
     "@malloydata/cli": "0.0.57",
     "duckdb": "1.5.3"
   },
-  "generated_at": "2026-09-25T22:37:47+00:00",
+  "generated_at": "2026-09-26T01:52:07+00:00",
   "layer": "malloy",
   "questions": [
     {
@@ -149,6 +149,78 @@
       "result_path": "comparisons/semantic_layers/shared/results/malloy/q16_revenue_by_customer_segment_as_of_delivered_time/result.json",
       "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q16_revenue_by_customer_segment_as_of_delivered_time/run.stderr.txt",
       "sql_path": "comparisons/semantic_layers/shared/results/malloy/q16_revenue_by_customer_segment_as_of_delivered_time/sql.sql",
+      "status": "executed"
+    },
+    {
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q17_session_to_order_conversion_14d/compile.stderr.txt",
+      "query_path": "comparisons/semantic_layers/malloy/queries/q17_session_to_order_conversion_14d.malloy",
+      "question_id": "q17_session_to_order_conversion_14d",
+      "result_path": "comparisons/semantic_layers/shared/results/malloy/q17_session_to_order_conversion_14d/result.json",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q17_session_to_order_conversion_14d/run.stderr.txt",
+      "sql_path": "comparisons/semantic_layers/shared/results/malloy/q17_session_to_order_conversion_14d/sql.sql",
+      "status": "executed"
+    },
+    {
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q18_same_store_session_to_order_conversion_50m/compile.stderr.txt",
+      "query_path": "comparisons/semantic_layers/malloy/queries/q18_same_store_session_to_order_conversion_50m.malloy",
+      "question_id": "q18_same_store_session_to_order_conversion_50m",
+      "result_path": "comparisons/semantic_layers/shared/results/malloy/q18_same_store_session_to_order_conversion_50m/result.json",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q18_same_store_session_to_order_conversion_50m/run.stderr.txt",
+      "sql_path": "comparisons/semantic_layers/shared/results/malloy/q18_same_store_session_to_order_conversion_50m/sql.sql",
+      "status": "executed"
+    },
+    {
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q19_trailing_3_month_revenue_by_month/compile.stderr.txt",
+      "query_path": "comparisons/semantic_layers/malloy/queries/q19_trailing_3_month_revenue_by_month.malloy",
+      "question_id": "q19_trailing_3_month_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/malloy/q19_trailing_3_month_revenue_by_month/result.json",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q19_trailing_3_month_revenue_by_month/run.stderr.txt",
+      "sql_path": "comparisons/semantic_layers/shared/results/malloy/q19_trailing_3_month_revenue_by_month/sql.sql",
+      "status": "executed"
+    },
+    {
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q20_revenue_and_prior_month_revenue_by_month/compile.stderr.txt",
+      "query_path": "comparisons/semantic_layers/malloy/queries/q20_revenue_and_prior_month_revenue_by_month.malloy",
+      "question_id": "q20_revenue_and_prior_month_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/malloy/q20_revenue_and_prior_month_revenue_by_month/result.json",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q20_revenue_and_prior_month_revenue_by_month/run.stderr.txt",
+      "sql_path": "comparisons/semantic_layers/shared/results/malloy/q20_revenue_and_prior_month_revenue_by_month/sql.sql",
+      "status": "executed"
+    },
+    {
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q21_revenue_and_large_order_revenue_by_month/compile.stderr.txt",
+      "query_path": "comparisons/semantic_layers/malloy/queries/q21_revenue_and_large_order_revenue_by_month.malloy",
+      "question_id": "q21_revenue_and_large_order_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/malloy/q21_revenue_and_large_order_revenue_by_month/result.json",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q21_revenue_and_large_order_revenue_by_month/run.stderr.txt",
+      "sql_path": "comparisons/semantic_layers/shared/results/malloy/q21_revenue_and_large_order_revenue_by_month/sql.sql",
+      "status": "executed"
+    },
+    {
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q22_average_and_max_item_revenue_by_product_type_by_month/compile.stderr.txt",
+      "query_path": "comparisons/semantic_layers/malloy/queries/q22_average_and_max_item_revenue_by_product_type_by_month.malloy",
+      "question_id": "q22_average_and_max_item_revenue_by_product_type_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/malloy/q22_average_and_max_item_revenue_by_product_type_by_month/result.json",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q22_average_and_max_item_revenue_by_product_type_by_month/run.stderr.txt",
+      "sql_path": "comparisons/semantic_layers/shared/results/malloy/q22_average_and_max_item_revenue_by_product_type_by_month/sql.sql",
+      "status": "executed"
+    },
+    {
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q23_orders_from_customers_with_5plus_orders_in_month/compile.stderr.txt",
+      "query_path": "comparisons/semantic_layers/malloy/queries/q23_orders_from_customers_with_5plus_orders_in_month.malloy",
+      "question_id": "q23_orders_from_customers_with_5plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/malloy/q23_orders_from_customers_with_5plus_orders_in_month/result.json",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q23_orders_from_customers_with_5plus_orders_in_month/run.stderr.txt",
+      "sql_path": "comparisons/semantic_layers/shared/results/malloy/q23_orders_from_customers_with_5plus_orders_in_month/sql.sql",
+      "status": "executed"
+    },
+    {
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q24_orders_by_month_with_lifetime_spend_1000_filter/compile.stderr.txt",
+      "query_path": "comparisons/semantic_layers/malloy/queries/q24_orders_by_month_with_lifetime_spend_1000_filter.malloy",
+      "question_id": "q24_orders_by_month_with_lifetime_spend_1000_filter",
+      "result_path": "comparisons/semantic_layers/shared/results/malloy/q24_orders_by_month_with_lifetime_spend_1000_filter/result.json",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/malloy/q24_orders_by_month_with_lifetime_spend_1000_filter/run.stderr.txt",
+      "sql_path": "comparisons/semantic_layers/shared/results/malloy/q24_orders_by_month_with_lifetime_spend_1000_filter/sql.sql",
       "status": "executed"
     }
   ]

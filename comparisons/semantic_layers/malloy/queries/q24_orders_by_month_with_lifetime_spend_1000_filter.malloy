@@ -1,0 +1,10 @@
+// Query-time only: the model (../models/jaffle.malloy) is unchanged.
+import "../models/jaffle.malloy"
+
+query: q24_orders_by_month_with_lifetime_spend_1000_filter is orders_with_customer_context -> {
+  where: customer_order_facts.lifetime_spend_usd >= 1000
+  group_by: ordered_month
+  aggregate: orders
+  order_by: ordered_month asc
+  limit: 5000
+}

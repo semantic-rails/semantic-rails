@@ -1,0 +1,1 @@
+ValueError: Window functions (OVER clause) are not supported in measures: 'sum(sum(orders.order_total_cents / 100.0)) over (order by date_trunc('month', orders.ordered_at) rows 2 preceding)'. Window functions require row-level context and cannot be combined with GROUP BY aggregation.

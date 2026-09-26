@@ -1,0 +1,30 @@
+{
+  "query": {
+    "order_by": [
+      {
+        "direction": "ASC",
+        "field": "temporal_role.jaffle_order_time__month"
+      }
+    ],
+    "select": [
+      {
+        "as": "trailing_3_month_revenue_usd",
+        "expression": {
+          "input": {
+            "measure": "measure.jaffle.revenue_usd"
+          },
+          "kind": "rolling",
+          "window": {
+            "unit": "month",
+            "value": 3
+          }
+        }
+      }
+    ],
+    "time": {
+      "grain": "month",
+      "temporal_role": "temporal_role.jaffle_order_time"
+    },
+    "version": 1
+  }
+}

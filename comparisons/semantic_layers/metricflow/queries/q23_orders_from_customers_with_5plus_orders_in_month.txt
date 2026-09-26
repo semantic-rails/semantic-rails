@@ -1,0 +1,1 @@
+query --metrics orders --group-by metric_time__month --where '{{ Metric("orders", group_by=["customer_month"]) }} > 5' --order metric_time__month
