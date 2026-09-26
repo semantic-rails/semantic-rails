@@ -48,12 +48,6 @@ STEP = {"day": "1 day", "week": "7 day", "month": "1 month", "quarter": "3 month
 
 # Known wrong answers.
 ISSUES = "https://github.com/semantic-rails/semantic-rails/issues/"
-DUPLICATE_PERIODS = (
-    "duplicate periods: a distribution beside a rolling or prior_period sibling returns every"
-    " period twice on Postgres (the DATE calendar key and the TIMESTAMP bucket miss each other"
-    " in the text-cast branch combine; fixed by"
-    " https://github.com/semantic-rails/semantic-rails/pull/166)"
-)
 ZONE_AWARE = (
     "zone-aware column: a TIMESTAMP WITH TIME ZONE column is bucketed in the session's time"
     " zone instead of the role's (UTC), so the answer follows the server's setting"
@@ -464,24 +458,19 @@ def _cases() -> Iterator[Case]:
         yield Case(f"distribution_{function}", "utc_authored", query, _by("month", reference))
     query = _ask("quarter", p80, group_by=[STORE])
     yield Case("distribution_p80_by_store", "utc_authored", query, _by("quarter", P80, store=True))
-    duplicates = {"postgres": DUPLICATE_PERIODS, "agree": DUPLICATE_PERIODS}
     for name, select, value in (
         ("distribution_and_rolling", [p80, trailing_3], f"{MONTH_P80}, {TRAILING_3}"),
         ("distribution_and_prior", [median, prior_month], f"{MONTH_MEDIAN}, {PRIOR_MONTH}"),
         ("rolling_and_distribution", [trailing_3, p80], f"{TRAILING_3}, {MONTH_P80}"),
     ):
-        yield _dense(name, "utc_authored", "month", select, value, duplicates)
+        yield _dense(name, "utc_authored", "month", select, value)
     yield _dense(
         "distribution_revenue_and_prior",
         "utc_authored",
         "month",
         [revenue, median, prior_month],
         f"{NOW}, {MONTH_MEDIAN}, {PRIOR_MONTH}",
-        {
-            "duckdb": GAP_NULL,
-            "postgres": f"{DUPLICATE_PERIODS}, then {GAP_NULL}",
-            "agree": DUPLICATE_PERIODS,
-        },
+        BOTH(GAP_NULL),
     )
     for name, select, value in (
         ("cumulative_and_quarter_to_date", [cumulative, qtd], f"{CUMULATIVE}, {QUARTER_TO_DATE}"),
