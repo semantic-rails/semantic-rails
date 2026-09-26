@@ -29,4 +29,4 @@ uv run python scripts/changelog_fragments.py release --version 0.3.0 --date 2026
 `### Added`, `### Changed`, … subsections in the order above, then deletes the folded
 fragments. Bullets keep file-name order compared as text (`142-…` sorts before `99-…`), so
 zero-pad a numeric prefix if the order matters. `--version` also takes a pre-release such as
-`0.3.2rc1`; the final `0.3.2` release then folds the fragments merged since into its own section.
+`0.3.2rc1`.

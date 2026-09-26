@@ -133,10 +133,11 @@ jobs:
           # resolved server-side, so GH_REPO is all that is needed.
           GH_REPO: ${{ github.repository }}
         run: |
-          # A PEP 440 pre-release tag such as v0.3.2rc1 becomes a GitHub pre-release, never "Latest".
-          prerelease=false
-          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(a|b|rc)[0-9]+$ ]]; then
-            prerelease=true
+          # Only a final or post-release tag can become "Latest"; any other tag, such as
+          # v0.3.2rc1, is a GitHub pre-release.
+          prerelease=true
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.post[0-9]+)?$ ]]; then
+            prerelease=false
           fi
           gh release create "${GITHUB_REF_NAME}" \
             release-assets/github/*.whl \

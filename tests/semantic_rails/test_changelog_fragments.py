@@ -115,8 +115,9 @@ def test_release_folds_edge_cases_exactly(root, top, rest, args, heading):
     [
         (CHANGELOG, OK, ["--version", "0.1.0"], "already has a ## 0.1.0 section"),
         (CHANGELOG, OK, ["--version", "0.2"], "is not X.Y.Z"),
-        (CHANGELOG, OK, ["--version", "0.2.0-rc1"], "is not X.Y.Z"),
-        (CHANGELOG, OK, ["--version", "0.2.0.dev1"], "is not X.Y.Z"),
+        (CHANGELOG, OK, ["--version", "0.2.0-rc1"], "or a pre-release such as X.Y.Zrc1"),
+        (CHANGELOG, OK, ["--version", "0.2.0.dev1"], "or a pre-release such as X.Y.Zrc1"),
+        (CHANGELOG, OK, ["--version", "0.1.0rc1"], "## 0.1.0 section; 0.1.0rc1 precedes it"),
         (CHANGELOG, OK, ["--date", "2026-9-1"], "is not a YYYY-MM-DD date"),
         (CHANGELOG, OK, ["--date", "2026-02-30"], "is not a YYYY-MM-DD date"),
         (CHANGELOG, OK, ["--date", "20261001"], "is not a YYYY-MM-DD date"),

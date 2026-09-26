@@ -301,8 +301,8 @@ def test_publish_builds_once_and_transfers_exact_artifacts_through_post_publish(
 
 @pytest.mark.parametrize(
     ("tag", "prerelease"),
-    [("v0.3.2", "false"), ("v0.3.2rc1", "true"), ("v1.0.0a1", "true"), ("v1.0.0b2", "true")]
-    + [("v0.3.2.post1", "false"), ("v0.3.2rc1-x", "false")],
+    [("v0.3.2", "false"), ("v0.3.2.post1", "false"), ("v0.3.2rc1", "true"), ("v1.0.0a1", "true")]
+    + [("v1.0.0b2", "true"), ("v0.3.2.dev1", "true"), ("v0.3.2rc1.post1", "true")],
 )
 def test_release_marks_only_pre_release_tags_as_github_pre_releases(tmp_path, tag, prerelease):
     """Run the release step with a stub `gh`: a failure there lands after PyPI took the upload."""

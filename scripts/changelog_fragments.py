@@ -107,8 +107,11 @@ def release(root: Path, version: str, day: str, title: str | None) -> list[str]:
     problems += changelog_problems
     if not fragments:
         problems.append("changelog.d/ has no fragments to fold")
+    final = re.match(r"\d+\.\d+\.\d+", version)
     if not VERSION.fullmatch(version):
         problems.append(f"--version {version!r} is not X.Y.Z or a pre-release such as X.Y.Zrc1")
+    elif final[0] != version and re.search(rf"^## {re.escape(final[0])}(?:\s|$)", text, re.M):
+        problems.append(f"CHANGELOG.md already has a ## {final[0]} section; {version} precedes it")
     if not is_iso_date(day):
         problems.append(f"--date {day!r} is not a YYYY-MM-DD date")
     if title and ("\n" in title or "\r" in title):
