@@ -483,14 +483,7 @@ def _measures_under_summing_wrappers(
     if wrapper and isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         yield expr.measure, wrapper
     if isinstance(expr, ScopedAggregateExpr):
-        for kind, object_id in _payload_object_ids(expr.predicates):
-            if kind == "measure":
-                yield object_id, "metric_predicate"
-            elif (recipe := _recipe_index(config).get(object_id)) is not None:
-                yield from _measures_under_summing_wrappers(
-                    recipe.expression, config, "metric_predicate"
-                )
-        return
+        return  # its predicates reach the check through the bound measure's filter_spec
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         if recipe is not None:
@@ -503,19 +496,6 @@ def _measures_under_summing_wrappers(
         for child in value if isinstance(value, list) else [value]:
             if is_dataclass(child):
                 yield from _measures_under_summing_wrappers(child, config, wrapper)
-
-
-def _payload_object_ids(payload: Any) -> Iterable[tuple[str, str]]:
-    """Every ``measure`` and ``metric`` id named anywhere in a raw expression payload."""
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            if key in {"measure", "metric"} and isinstance(value, str):
-                yield key, value
-            else:
-                yield from _payload_object_ids(value)
-    elif isinstance(payload, list):
-        for value in payload:
-            yield from _payload_object_ids(value)
 
 
 def _single_valued_columns(
@@ -545,16 +525,21 @@ def _single_valued_columns(
         if dimension.entity == measure.entity:
             columns.add(dimension.column)
             continue
-        for rel in config.relationships:
-            sources = list(rel.source_columns or [rel.source_column])
-            targets = list(rel.target_columns or [rel.target_column])
-            if (
-                rel.source_entity == measure.entity
-                and rel.target_entity == dimension.entity
-                and rel.cardinality in {"N:1", "1:1"}
-                and targets == [dimension.column]
-            ):
-                columns.update(sources)
+        # The base path reads a target key through the first relationship between the two
+        # entities, so credit it only when there is just one (no role-playing keys).
+        links = [
+            rel
+            for rel in config.relationships
+            if {rel.source_entity, rel.target_entity} == {measure.entity, dimension.entity}
+        ]
+        rel = links[0] if len(links) == 1 else None
+        if (
+            rel is not None
+            and rel.source_entity == measure.entity
+            and rel.cardinality in {"N:1", "1:1"}
+            and list(rel.target_columns or [rel.target_column]) == [dimension.column]
+        ):
+            columns.update(rel.source_columns or [rel.source_column])
     role_id = _leaf_time_role(bound, query, config)
     role = _temporal_role_index(config).get(role_id) if role_id else None
     clock = dimensions.get(role.dimension) if role is not None else None
@@ -600,22 +585,16 @@ def _validate_non_additive_sums(
             continue
         aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
         key = list(measure.row_grain or []) or list(_entity_index(config)[measure.entity].key or [])
-        if measure.measure_class == "semi_additive" and aggregation in {
-            "last_value",
-            "first_value",
-        }:
+        if aggregation not in {"sum", "last_value", "first_value"}:
+            continue
+        required = key
+        if measure.measure_class == "semi_additive":
+            # A stock takes one snapshot per series per bucket, then sums the series.
             role = _temporal_role_index(config).get(bound.temporal_role)
             clock = _dimension_index(config).get(role.dimension) if role is not None else None
             required = [column for column in key if clock is None or column != clock.column]
-        elif aggregation == "sum":
-            required = key
-        else:
-            continue
-        missing = [
-            column
-            for column in required
-            if column not in _single_valued_columns(measure, bound, query, config)
-        ]
+        single_valued = _single_valued_columns(measure, bound, query, config)
+        missing = [column for column in required if column not in single_valued]
         if missing:
             _raise_non_additive_sum(measure, aggregation, missing, config)
 
@@ -629,15 +608,15 @@ def _raise_non_additive_sum(
         if dimension.entity == measure.entity and dimension.column in missing
     ]
     if missing:
+        statistics = [
+            name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
+        ]
+        instead = f", or use aggregation {' / '.join(statistics)}" if statistics else ""
         message = (
             f"Measure '{measure.id}' is additive: false, and this query would sum more than one "
-            f"of its rows into an output row: group by or filter (=) each of {missing}, or ask "
-            "for avg, min or max."
+            f"of its rows into an output row: group by or filter (=) each of {missing}{instead}."
         )
-        hint = (
-            f"Group by, or filter with = to one value, the dimensions {dimensions or missing}; "
-            "or use aggregation avg, min or max."
-        )
+        hint = f"Group by, or filter with = to one value, {dimensions or missing}{instead}."
     else:
         message = (
             f"Measure '{measure.id}' is additive: false, so it can't feed a {construct}: that "

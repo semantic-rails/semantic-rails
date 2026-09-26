@@ -5,3 +5,5 @@
   dimensions to group by; cumulative, rolling and period-to-date metrics over it are refused, and
   `avg`, `min`, `max`, `median`, `percentile` and `prior_period` stay available. `ROLLUP_UNSAFE`
   previously meant only a parent-entity rollup; check `unsupported_construct` to tell them apart.
+  The new field is part of each measure's semantic payload, so every package's
+  `semantic_fingerprint` changes once on upgrade.

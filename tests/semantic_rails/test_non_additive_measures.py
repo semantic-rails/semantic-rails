@@ -183,15 +183,17 @@ BY_DAY_SNAP = {"temporal_role": SNAP, "grain": "day"}
         (_query("daily_visitors", where=[_eq(REPO_DAY, "a")], time=BY_DAY), [2, 3]),
         (_query("daily_visitors", where=[_eq(REPO_DAY, ["a"], "in")], time=BY_DAY), [2, 3]),
         (_query("daily_visitors", group_by=[REPO_KEY], time=BY_DAY), [2, 3, 5]),
+        (_query("daily_visitors", where=[_eq(REPO_KEY, "a")], time=BY_DAY), [2, 3]),
         # Statistics of the stored values, not sums.
         (_query("daily_visitors", aggregation="max"), [5]),
         (_query("daily_visitors", aggregation="avg", group_by=[REPO_DAY]), [2.5, 5]),
         (_query("visitors_14d", group_by=[REPO_SNAP], time=BY_WEEK_SNAP), [4, 6]),
         (_query("visitors_14d", where=[_eq(REPO_SNAP, "a")], time=BY_WEEK_SNAP), [4]),
         (_query("visitors_14d", where=[_eq(REPO_SNAP, "a")]), [4]),
+        # A stock's sum takes one snapshot per series per bucket too, then adds series.
         (
-            _query("visitors_14d", aggregation="sum", group_by=[REPO_SNAP], time=BY_DAY_SNAP),
-            [4, 4, 6],
+            _query("visitors_14d", aggregation="sum", group_by=[REPO_SNAP], time=BY_WEEK_SNAP),
+            [4, 6],
         ),
         (_query("path_visitors_14d", group_by=[PATH], where=[_eq(PATH_REPO, "a")]), [2, 2, 3]),
         # An additive stock beside them is untouched.
@@ -231,11 +233,7 @@ def test_one_row_per_output_row_answers(runtime: Runtime, payload, expected) -> 
             },
             ["repo"],
         ),
-        # An explicit sum over a stock adds snapshots too, so the clock must be pinned.
-        (
-            _query("visitors_14d", aggregation="sum", group_by=[REPO_SNAP], time=BY_WEEK_SNAP),
-            ["snapshot_date"],
-        ),
+        (_query("visitors_14d", aggregation="sum", time=BY_WEEK_SNAP), ["repo"]),
     ],
 )
 def test_summing_rows_is_refused(runtime: Runtime, payload, missing) -> None:
@@ -342,3 +340,36 @@ def test_validation_probes_each_measure_at_its_stored_grain(package_dir: Path) -
     failed = sorted(row["details"]["object_id"] for row in report["errors"])
     # Only the metrics that add the measure up across days can never be answered.
     assert failed == [f"metric.{NS}.cumulative_visitors", f"metric.{NS}.rolling_visitors"]
+
+
+def test_a_role_playing_key_pins_nothing(runtime: Runtime) -> None:
+    # With two foreign keys to one entity, which one a target-key grouping reads is a
+    # choice the check can't see, so neither counts as single-valued.
+    from dataclasses import replace
+
+    from semantic_rails.compiler import compile_query
+
+    config = runtime.config
+    link = next(
+        rel
+        for rel in config.relationships
+        if rel.source_entity.endswith("traffic_day") and rel.target_entity.endswith("repository")
+    )
+    second = replace(
+        link, id="relationship.test.forked_from", source_column="forked", source_columns=["forked"]
+    )
+    config = replace(config, relationships=[*config.relationships, second])
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, None, _query("daily_visitors", group_by=[REPO_KEY], time=BY_DAY))
+    assert raised.value.details["missing_columns"] == ["repo"]
+
+
+def test_refusal_hints_reach_the_error_envelope(runtime: Runtime) -> None:
+    from semantic_rails.diagnostics import recovery_hints_for_error
+
+    details = _refused(runtime, _query("daily_visitors"))
+    assert recovery_hints_for_error("ROLLUP_UNSAFE", details)[0]["kind"] == "stay_at_stored_grain"
+    assert "avg / min / max / median" in details["recovery_hints"][0]["message"]
+    # A parent-entity rollup refusal carries no hints of its own and keeps the generic one.
+    legacy = {"unsupported_construct": "non_additive_parent_rollup"}
+    assert recovery_hints_for_error("ROLLUP_UNSAFE", legacy)[0]["kind"] == "change_aggregation"
