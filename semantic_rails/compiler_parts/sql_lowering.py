@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -9,7 +8,8 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..acceleration.routing import routing_candidates
+from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
+from ..acceleration.selection import recombine_aggregation
 from ..ast import normalize_query
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -117,7 +117,7 @@ from .predicate import (
     _predicate_time_spec,
     _scoped_predicate_expr_payload,
 )
-from .temporal import _time_bound_relationship_ids
+from .temporal import _fractional_second, _time_bound_relationship_ids
 
 
 def _dialect(config: PackageConfig):
@@ -810,6 +810,7 @@ def _aggregate_relation_leaf_select(
     aggregate: AggregateRelationConfig,
     config: PackageConfig,
 ) -> SqlSelect:
+    record_rollup_scan(aggregate.id)
     select_fields: list[SqlField] = []
     group_fields: list[Any] = []
     for dim_id in plan.group_by:
@@ -851,7 +852,7 @@ def _aggregate_relation_leaf_select(
             where_clauses.append(
                 _aggregate_relation_filter_expr(aggregate, dict(item), path="measure_filter")
             )
-        aggregation = str(aggregate.measure_aggregations.get(measure_id, "") or "sum")
+        aggregation = recombine_aggregation(aggregate, measure_id)
         select_fields.append(
             SqlField(
                 _aggregation_expr(
@@ -3340,7 +3341,11 @@ def _join_payload(
 
 
 def build_performance_plan(
-    plan: LogicalPlan, config: PackageConfig, physical_plan: PhysicalPlan, rendered_sql: str
+    plan: LogicalPlan,
+    config: PackageConfig,
+    physical_plan: PhysicalPlan,
+    rendered_sql: str,
+    rollup_scans: frozenset[str],
 ) -> PerformancePlan:
     nodes = _physical_node_index(physical_plan)
     scans = [node for node in physical_plan.nodes if node.kind == "Scan"]
@@ -3437,13 +3442,6 @@ def build_performance_plan(
         and dict(node.details.get("aggregate_placement", {}) or {}).get("strategy")
         == "source_preaggregate"
     ]
-    routed_aggregates = [
-        str(node.details.get("aggregate_relation_id") or "")
-        for node in physical_plan.nodes
-        if node.kind == "Scan"
-        and str(node.details.get("selected_relation_type") or "") == "aggregate_relation"
-    ]
-    routed_aggregates = [item for item in routed_aggregates if item]
     multi_fact_raw_alignment = raw_fact_count >= 2 and full_outer_alignments > 0
     expensive_parent_or_multihop = multi_hop_after_aggregate or any(
         "parent" in dim.lower() or "geo" in dim.lower() for dim in plan.group_by
@@ -3511,11 +3509,7 @@ def build_performance_plan(
         execution_recommendation=execution_recommendation,
         semantic_equivalence="exact_primitives",
         notes=notes,
-        aggregate_routing={
-            "selected": sorted(set(routed_aggregates)),
-            "selected_count": len(routed_aggregates),
-            "candidates": routing_candidates(plan, physical_plan, config),
-        },
+        aggregate_routing=aggregate_routing_report(plan, physical_plan, config, rollup_scans),
     )
 
 
@@ -3853,12 +3847,6 @@ def _calendar_bound(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-
-
-def _fractional_second(value: Any) -> Decimal:
-    """Keep digits beyond ``datetime``'s microsecond limit for bound decisions."""
-    match = re.match(r"^\d{4}(?:-?\d{2}){2}.\d{2}:?\d{2}:?\d{2}[.,](\d+)", str(value).strip())
-    return Decimal(f"0.{match[1]}") if match else Decimal(0)
 
 
 def _offset_microseconds(offset: timedelta) -> int:

@@ -370,7 +370,11 @@ class AggregateRelationConfig:
     measure_columns: dict[str, str] = field(default_factory=dict)
     measure_rollups: dict[str, str] = field(default_factory=dict)
     measure_aggregations: dict[str, str] = field(default_factory=dict)
+    # What each measure column holds per row (`holds:`); empty when not declared.
+    measure_holds: dict[str, str] = field(default_factory=dict)
     dimension_columns: dict[str, str] = field(default_factory=dict)
+    # The relationship path a pre-joined dimension column was built along (`path:`).
+    dimension_paths: dict[str, list[str]] = field(default_factory=dict)
     excluded_entities: list[str] = field(default_factory=list)
     excluded_dimensions: list[str] = field(default_factory=list)
     selection_priority: int = 0

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import difflib
+import re
 from collections.abc import Iterable
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from ..ast import NormalizedQuery
@@ -948,3 +950,9 @@ def _add_grain(dt: datetime, grain: str) -> datetime:
 
 def _is_grain_boundary(dt: datetime, grain: str) -> bool:
     return dt == _floor_to_grain(dt, grain)
+
+
+def _fractional_second(value: Any) -> Decimal:
+    """Keep digits beyond ``datetime``'s microsecond limit for bound decisions."""
+    match = re.match(r"^\d{4}(?:-?\d{2}){2}.\d{2}:?\d{2}:?\d{2}[.,](\d+)", str(value).strip())
+    return Decimal(f"0.{match[1]}") if match else Decimal(0)

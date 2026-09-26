@@ -170,12 +170,17 @@ Current guardrails:
 - only `source: default` is supported; different warehouse/source routing is
   intentionally future work
 - `equivalence.kind` must be `exact`
-- routed measures must be additive or precomputed over the selected rollup
-- grouped and filtered dimensions must exist on the variant
+- the query must ask for what the measure column holds (`holds:` `sum`, `min`,
+  `max` or `count_distinct`; a column without it holds a sum, or a distinct
+  count for an `entity_count` measure); stock measures don't route
+- grouped and filtered dimensions must exist on the variant, and a column
+  pre-joined from another model must declare the query's join `path`
 - weekly rollups answer only week queries, and query bounds must fall on the
   rollup's bucket boundaries
-- `count_distinct` routes only for the single-column row key of a model that
-  isn't a fact model
+- `count_distinct` routes across rollup rows only for the single-column row key
+  of a model that isn't a fact model; a declared `holds: count_distinct` column
+  also answers at the rollup's own grain when every rollup dimension is grouped
+  or pinned by `=`
 - query-time `metric_predicate` filters, relations that declare `filters`, roles
   that convert time zones and non-default calendars do not route yet
 - `logical_plan.measure_plans[].aggregate_relation_rejections` gives the reason

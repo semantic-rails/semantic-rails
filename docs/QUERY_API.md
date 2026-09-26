@@ -297,19 +297,23 @@ When package authors declare physical rollups with `model.variants:` or explicit
 - `physical_plan.nodes[].details.aggregate_relation_id` names the selected
   rollup relation when routing succeeds.
 - `performance_plan.aggregate_routing.selected` lists the aggregate relation IDs
-  used by the compiled query.
+  the compiled SQL reads, including branches compiled as separate queries.
 - `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
   rollup of the leaf's entity to a reason code, such as `missing_dimension`,
   `non_nesting_grain`, `time_bounds_not_aligned`, `timezone_mismatch`,
   `calendar_mismatch`, `rollup_filter_not_implied`, `metric_predicate_filter`,
-  or `aggregation_not_reaggregable`. It is empty for a package without rollups.
+  `join_path_mismatch` or `aggregation_not_reaggregable`. It is empty for a
+  package without rollups.
 - `performance_plan.aggregate_routing.candidates` lists every rollup considered
   for each measure leaf: `{leaf_id, measure_id, relation_id, decision, reason}`,
-  where `decision` is `selected`, `eligible` (it could answer, but another rollup
-  ranked higher), `rejected` (with the reason code) or `unknown`. A leaf the plan
+  where `decision` is `selected`, `eligible` (it passed every rule but wasn't
+  read: another rollup ranked higher, or, with reason `lowered_separately`, no
+  branch read it), `rejected` (with the reason code) or `unknown`. A leaf the plan
   lowers separately (a `distribution` compiles each branch as its own query)
-  reports each rollup its planner didn't reject as `unknown`, reason
-  `lowered_separately`: the branch may or may not read it.
+  reports each rollup its planner didn't reject with reason `lowered_separately`:
+  `unknown` when some branch reads it (the report can't say which leaf's), and
+  `eligible` when none does. The list stops at 200 rows, and
+  `candidates_omitted` counts any rows left out.
 
 Routing is on by default. An operator turns it off with the environment variable
 `SEMANTIC_RAILS_AGGREGATE_ROUTING=off` (read when the runtime starts; `on` or
