@@ -557,6 +557,15 @@ def test_a_distribution_over_a_per_entity_window_refuses(
     assert "per entity" in str(refused.value)
 
 
+def test_a_filled_distribution_on_a_fiscal_calendar_refuses(packages: dict[str, Path]) -> None:
+    """Unfilled, the per-order values can't take fiscal quarters (it read 2.5, 0, 0)."""
+    select = {**_distribution("median", REVENUE), "as": "value"}
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages["fiscal_only"], _ask("quarter", select, calendar_id="fiscal", fill=True))
+
+    assert refused.value.code == "INCOMPATIBLE_CALENDAR"
+
+
 @pytest.mark.parametrize(
     "query",
     [
