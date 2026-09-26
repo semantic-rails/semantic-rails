@@ -142,67 +142,53 @@ MCP_SERVER_INSTRUCTIONS = (
     "\n"
     'Query IR: select measures or metrics, group_by dimension ids, where filters (op "in"'
     " for several values), and time {temporal_role, grain, start, end}, where end is "
-    "exclusive. A window without a grain groups by the raw timestamp. The execute tool "
-    "schema lists expression shapes.\n"
+    "exclusive. A window without a grain groups by the raw timestamp; a grain whose bucket "
+    "covers the window returns one total. The execute tool schema lists expression shapes.\n"
     "\n"
     "segment(segment_id, action) validates, explains or previews a package-authored "
     "segment.\n"
     "\n"
-    'Every tool returns its smallest response by default (verbosity "minimal", plan detail '
-    '"query"); pass verbosity "compact" or "full", or detail "best", for more. Errors carry '
-    "recovery_hints and closest_matches; follow them before retrying. For local testing, "
-    "any tool accepts policy_context {environment, audience, roles}; hosted servers set it "
-    "for you."
+    "Errors carry recovery_hints and closest_matches; follow them before retrying. For local "
+    "testing, any tool accepts policy_context {environment, audience, roles}; hosted servers "
+    "set it for you."
 )
 
 POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "description": "Optional visibility/access policy context.",
     "properties": {
         "environment": {"type": "string"},
         "audience": {"type": "string"},
     },
-    "additionalProperties": True,
 }
 
 QUERY_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "description": (
-        "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; "
-        "narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as "
-        "INVALID_QUERY (offenders under details.unsupported_keys)."
-    ),
-    "additionalProperties": True,
+    "description": "Query IR (schemas/query_ir.v1.json); unknown keys are rejected.",
     "properties": {
         "time": {
             "type": ["object", "null"],
-            "description": "Time anchor: temporal_role + grain + start|end|range + fill + calendar_id. Omit entirely for an all-time scalar aggregate.",
-            "additionalProperties": True,
+            "description": "Omit for an all-time total.",
             "properties": {
                 "temporal_role": {
                     "type": "string",
-                    "description": "Clock id, e.g. 'temporal_role.<x>'. Must match the metric's anchor; mismatch fails as INVALID_TEMPORAL_BINDING.",
+                    "description": "Clock id (temporal_role.<x>) of the measure or metric.",
                 },
                 "grain": {
                     "type": "string",
                     "enum": ["", "day", "week", "month", "quarter", "year", "hour", "minute"],
-                    "description": "Bucket size. Required when fill=true or for inline prior_period.",
+                    "description": "Bucket size; required by fill and inline prior_period.",
                 },
-                "start": {"type": ["string", "null"], "description": "ISO-8601."},
+                "start": {"type": ["string", "null"]},
                 "end": {
                     "type": ["string", "null"],
-                    "description": (
-                        "ISO-8601, exclusive: March 2017 is start 2017-03-01, end 2017-04-01."
-                    ),
+                    "description": "exclusive: March 2017 is start 2017-03-01, end 2017-04-01.",
                 },
                 "range": {
                     "type": "object",
-                    "description": "Relative window {last: {unit, value}}: window ends at the floor of now (start of current period) — covers the last N completed periods, NOT a rolling-to-today window. Mutually exclusive with start/end; string shorthand rejected as USE_OBJECT_SHAPE.",
-                    "additionalProperties": True,
+                    "description": "{last: {unit, value}}: the last N completed periods, not with start/end.",
                     "properties": {
                         "last": {
                             "type": "object",
-                            "description": "{unit, value} — e.g. {unit: 'day', value: 90}.",
                             "additionalProperties": False,
                             "required": ["unit", "value"],
                             "properties": {
@@ -226,12 +212,11 @@ QUERY_SCHEMA: dict[str, Any] = {
                 "fill": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Dense calendar spine for grain buckets (0 / NULL fill). Requires grain; otherwise fails as INVALID_QUERY.",
+                    "description": "Return every grain bucket, empty ones too.",
                 },
                 "calendar_id": {
                     "type": "string",
                     "default": "default",
-                    "description": "Calendar for dense spine (Gregorian or authored fiscal).",
                 },
             },
         },
@@ -241,10 +226,11 @@ QUERY_SCHEMA: dict[str, Any] = {
 # Slim Query-IR schema for tools/list dedupe. The full QUERY_SCHEMA
 # (with the detailed time-block spec) ships once, on 'execute', and the
 # other tools point there. Runtime acceptance is unchanged: both schemas are
-# `additionalProperties: true` documentation hints, not validators.
+# open-object documentation hints, not validators.
 QUERY_SCHEMA_SLIM: dict[str, Any] = {
     "type": "object",
-    "additionalProperties": True,
+    # Keep this neutral: "Query IR so far, as context" made models pass their drafts to plan,
+    # which then drafted a second copy of the same select item.
     "description": (
         "Semantic Layer Query IR (JSON object). IR + time-block shape: "
         "see the 'execute' tool schema, or schemas/query_ir.v1.json."
@@ -255,32 +241,21 @@ VERBOSITY_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["minimal", "compact", "full"],
     "default": "minimal",
-    "description": (
-        "Response detail. 'minimal' (default)={ok,errors,warnings}, "
-        "+rendered_sql on compile, +rows/row_count on execute — a few KB. "
-        "'compact' adds rendered_sql/sql_plan/explain/normalized query. "
-        "'full' = legacy maximal envelope (~100KB)."
-    ),
+    "description": "'compact' adds explain and the plans (large); 'full' is larger still.",
 }
 
 SQL_PROFILE_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["audit", "compact", "debug", "off"],
     "default": "audit",
-    "description": (
-        "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; "
-        "'off' suppresses rendered_sql + sql_plan entirely."
-    ),
+    "description": "SQL formatting; 'off' leaves the SQL out.",
 }
 
 ROW_FORMAT_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["records", "columns"],
     "default": "records",
-    "description": (
-        "Execute row shape. 'records' (default)=rows as objects; "
-        "'columns'=columns plus array rows, avoiding repeated field names."
-    ),
+    "description": "'columns' returns column names once, rows as arrays.",
 }
 
 MCP_RESULT_SCHEMA: dict[str, Any] = {
@@ -379,11 +354,10 @@ def _schema(
     schema_properties = copy.deepcopy(dict(properties))
     schema_properties.setdefault("request_id", {"type": "string"})
     schema_properties.setdefault("policy_context", copy.deepcopy(POLICY_CONTEXT_SCHEMA))
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": schema_properties,
-        "additionalProperties": additional_properties,
-    }
+    schema: dict[str, Any] = {"type": "object", "properties": schema_properties}
+    # JSON Schema objects are open by default; say so only when a schema is closed.
+    if not additional_properties:
+        schema["additionalProperties"] = False
     if required:
         schema["required"] = list(required)
     return schema
@@ -472,15 +446,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "terms": {"type": "string"},
                 "kinds": {
                     "oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
-                    "description": "Object kinds to rank, such as measure or metric. Default: all.",
+                    "description": "Such as measure or metric; default all.",
                 },
                 "query": QUERY_SCHEMA_SLIM,
                 "stage": {
                     "type": "string",
-                    "description": (
-                        "Builder stage that tunes ranking: initial, post_measure, "
-                        "post_dimension or comparison. Inferred when omitted."
-                    ),
+                    "description": "initial, post_measure, post_dimension or comparison; inferred.",
                 },
                 "verbosity": _VERBOSITY_MINIMAL,
                 # No schema default: clients that fill defaults in would cap
@@ -488,16 +459,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": (
-                        "Per kind (default 10); with empty terms, ids per kind "
-                        f"(default {_DISCOVER_ID_PAGE})."
-                    ),
+                    "description": f"Per kind: 10, or {_DISCOVER_ID_PAGE} ids with empty terms.",
                 },
                 "offset": {
                     "type": "integer",
                     "default": 0,
                     "minimum": 0,
-                    "description": "With empty terms, ids to skip per kind.",
                 },
             },
             additional_properties=True,
@@ -506,11 +473,10 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="inspect",
         description=(
-            "Return one object's card: label, description, aggregations or values, temporal "
-            "roles, related objects, policy. Default: the card without duplicate fields; "
-            "verbosity='compact' returns the full card. Gotcha: 'object_id' must be a full "
-            "id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you "
-            "only have a phrase."
+            "Return one object's card (aggregations or values, time roles, related objects, "
+            "policy) after discover, when its slim card isn't enough; verbosity='compact' "
+            "returns the whole card. Gotcha: object_id must be a full id such as "
+            "measure.jaffle.revenue_usd, not a label."
         ),
         input_schema=_schema(
             {
@@ -525,12 +491,10 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="valid-values",
         description=(
-            "Return a dimension's governed values: from its declared value "
-            "domain, or from a constrained warehouse probe with allow_live_query:"
-            " true. Use it before writing a 'where' filter on a categorical "
-            "dimension. Gotcha: 'dimension_id' must be a full id like "
-            "'dimension.jaffle_store_name'; allow_live_query costs a warehouse "
-            "round-trip, so use it only when no domain is declared."
+            "Return a dimension's governed values, before writing a where filter on it. "
+            "Gotcha: dimension_id must be a full id such as dimension.jaffle_store_name; "
+            "allow_live_query probes the warehouse, so use it only when no value domain is "
+            "declared."
         ),
         input_schema=_schema(
             {
@@ -542,7 +506,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "include_counts": {
                     "type": "boolean",
                     "default": False,
-                    "description": "With allow_live_query, add each value's row count.",
+                    "description": "Row counts, with allow_live_query.",
                 },
                 "allow_live_query": {"type": "boolean", "default": False},
             },
@@ -553,14 +517,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="plan",
         description=(
-            "Draft one best Query IR from a natural-language intent; call it before 'execute' "
-            "instead of writing Query IR from scratch. Returns 'status' ('ok' | "
-            "'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' "
-            "or 'warnings' naming any part of the question the draft doesn't honor. "
-            "detail='query' (default) is compact; 'best' adds intent_ir, trace and next "
-            "steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. "
-            "Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are "
-            "no warnings."
+            "Draft Query IR from the question; call it before 'execute' instead of writing "
+            "Query IR from scratch. Returns status (ok, low_confidence, unrealizable or "
+            "out_of_scope), best.query_ir, and why or warnings naming what the draft doesn't "
+            "honor. detail 'best' adds intent_ir and the trace, 'full' alternatives and blocked "
+            "drafts, 'debug' compose_hints. Gotcha: execute "
+            "best.query_ir only when status is ok and there are no warnings."
         ),
         input_schema=_schema(
             {
@@ -575,7 +537,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "type": "integer",
                     "default": 3,
                     "minimum": 1,
-                    "description": "Drafts to consider; detail='full' returns the runners-up.",
+                    "description": "Drafts to consider.",
                 },
             },
             required=["intent"],
@@ -585,13 +547,10 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Validate, compile and run Query IR against the warehouse: the best.query_ir that "
-            "'plan' drafted (call plan first), or Query IR you fixed from it. time.end is "
-            "exclusive. Returns at most "
-            "max_rows rows; a capped result reports truncated and total_row_count. "
-            "mode='validate' only checks the query; mode='sql' also returns rendered_sql; "
-            "neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs "
-            "warehouse time. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), "
+            "Validate, compile and run the best.query_ir that plan drafted (call plan first), "
+            "or Query IR fixed from it. mode 'validate' only checks it; 'sql' adds the SQL "
+            "without running it. Gotcha: time.end is exclusive, and query must be a JSON object. "
+            "IR: select[]={expression,as}, group_by[]=[<dim id>,...], "
             "where[]={field,op,value}, order_by[]={field,direction}. select.expression: "
             "{aggregation, measure} | {metric} | "
             "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}."
@@ -603,20 +562,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "type": "string",
                     "enum": list(_EXECUTE_MODES),
                     "default": "run",
-                    "description": (
-                        "'run' returns rows; 'validate' only checks the query; 'sql' also "
-                        "returns rendered_sql. Only 'run' queries the warehouse."
-                    ),
                 },
-                "verbosity": {
-                    **VERBOSITY_SCHEMA,
-                    "description": (
-                        "Response detail. 'minimal' (default)={ok,errors,warnings}, plus "
-                        "rendered_sql in mode 'sql' and rows in mode 'run'. 'compact' adds "
-                        "sql_plan, explain and the normalized query; 'full' is the maximal "
-                        "envelope (~100KB)."
-                    ),
-                },
+                "verbosity": VERBOSITY_SCHEMA,
                 "sql_profile": SQL_PROFILE_SCHEMA,
                 "row_format": ROW_FORMAT_SCHEMA,
                 "max_rows": {
@@ -625,8 +572,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "maximum": MCP_MAX_ROWS_LIMIT,
                     "default": MCP_DEFAULT_MAX_ROWS,
                     "description": (
-                        "Rows to return in mode 'run'. A larger result sets truncated=true "
-                        f"and total_row_count (null past {MCP_ROW_COUNT_CEILING:,} rows)."
+                        "A larger result sets truncated and total_row_count (null past "
+                        f"{MCP_ROW_COUNT_CEILING:,} rows)."
                     ),
                 },
             },
@@ -636,13 +583,10 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="segment",
         description=(
-            "Work with a package-authored segment, after discover finds its id: "
-            "action='validate' checks it and the Query IR"
-            " derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows"
-            " and the total member count. Default verbosity='minimal' leaves out compiler "
-            "plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like "
-            "'segment.jaffle.high_value_customers' (discover with empty terms lists them); "
-            "'preview' queries the warehouse."
+            "Work with a package-authored segment after discover finds its id: action "
+            "'validate' checks it and its derived Query IR, 'explain' adds the SQL, 'preview' "
+            "returns sample members and the member count. Gotcha: segment_id must be a full id "
+            "such as segment.jaffle.high_value_customers; preview queries the warehouse."
         ),
         input_schema=_schema(
             {
@@ -652,7 +596,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "type": "integer",
                     "default": 50,
                     "minimum": 1,
-                    "description": "Sample rows for action 'preview'.",
+                    "description": "Preview rows.",
                 },
                 "verbosity": SEGMENT_VERBOSITY_SCHEMA,
             },
@@ -1477,6 +1421,10 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
 def _coerce_kinds(value: Any) -> list[str]:
     if value is None or value == "":
         return []
+    if isinstance(value, str) and value.strip().startswith("["):
+        # A JSON array sent as a string ('["measure", "metric"]'), as some models encode it.
+        with contextlib.suppress(ValueError):
+            value = json.loads(value)
     if isinstance(value, str):
         return [part.strip() for part in value.split(",") if part.strip()]
     if isinstance(value, (list, tuple, set)):
@@ -1513,6 +1461,74 @@ def _status_label(payload: Mapping[str, Any]) -> str:
     if "status" in payload:
         return str(payload["status"])
     return "ok" if bool(payload.get("ok", True)) else "error"
+
+
+_EMPTY: tuple[Any, ...] = (None, "", [], {})
+_DISCOVER_BUCKETS = (
+    "measures",
+    "metrics",
+    "segments",
+    "dimensions",
+    "entities",
+    "dimension_values",
+    "blocked",
+)
+
+
+def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
+    """State each fact of a minimal discover response once.
+
+    A card in a kind's bucket leaves out its kind, ``available: true`` and empty fields; blocked
+    and dimension-value cards keep their explicit fields. The terms and verbosity echoes and an
+    empty query state or selection context go too. "compact" and "full" keep the whole cards.
+    """
+
+    if payload.get("verbosity") != "minimal":
+        return payload
+
+    def lean(row: Any, bucket: str) -> Any:
+        if not isinstance(row, dict) or bucket in ("blocked", "dimension_values"):
+            return row
+        repeats = {"kind": row.get("kind"), "available": True}
+        return {
+            key: value
+            for key, value in row.items()
+            if value not in _EMPTY and not (key in repeats and value == repeats[key])
+        }
+
+    for key in ("terms", "verbosity"):
+        payload.pop(key, None)
+    for key in ("query_state", "selection_context"):
+        if isinstance(payload.get(key), dict) and not any(payload[key].values()):
+            payload.pop(key)
+    for key in _DISCOVER_BUCKETS:
+        if isinstance(payload.get(key), list):
+            payload[key] = [lean(row, key) for row in payload[key]]
+    return payload
+
+
+def _lean_issue(issue: Any) -> Any:
+    """State an issue's facts once: drop empty optional fields and echoes of code or message."""
+
+    if not isinstance(issue, dict):
+        return issue
+    echoes = {"why_invalid": issue.get("message"), "unsupported_construct": issue.get("code")}
+    lean = {
+        key: value
+        for key, value in issue.items()
+        if key in ("code", "message")
+        or not (value in _EMPTY or (key in echoes and value == echoes[key]))
+    }
+    if isinstance(lean.get("recovery_hints"), list):
+        lean["recovery_hints"] = [
+            _lean_issue(
+                {k: v for k, v in hint.items() if (k, v) != ("details", issue.get("details"))}
+            )
+            if isinstance(hint, dict)
+            else hint
+            for hint in lean["recovery_hints"]
+        ]
+    return lean
 
 
 def _internal_issue(message: str, *, exception_type: str = "") -> dict[str, Any]:
@@ -1692,7 +1708,7 @@ class SemanticLayerMCPAdapter:
                 if warning["details"]["received"] not in handler_warned_keys
             ]
             if deduped:
-                response["warnings"] = existing + deduped
+                response["warnings"] = existing + [_lean_issue(warning) for warning in deduped]
         return finish(response)
 
     def read_resource(
@@ -1758,13 +1774,7 @@ class SemanticLayerMCPAdapter:
                 stage="mcp",
             )
             payload = self._envelope(
-                {
-                    "ok": False,
-                    "status": "error",
-                    "error": issue,
-                    "errors": [issue],
-                    "recovery_hints": list(issue.get("recovery_hints", [])),
-                },
+                {"ok": False, "status": "error", "error": issue, "errors": [issue]},
                 request_id=request_id,
                 started_at=time.perf_counter(),
             )
@@ -1851,13 +1861,34 @@ class SemanticLayerMCPAdapter:
             )
             if first is not None:
                 out["error"] = first
-        if "recovery_hints" not in out:
-            hints: list[Any] = []
-            for error in list(out.get("errors", []) or []):
-                if isinstance(error, dict):
-                    hints.extend(list(error.get("recovery_hints", []) or []))
-            out["recovery_hints"] = hints
+        for key in ("errors", "warnings"):
+            out[key] = [_lean_issue(issue) for issue in out[key] or []]
+        if isinstance(out.get("error"), dict):
+            out["error"] = _lean_issue(out["error"])
+        # The errors' hints, repeated at the top level: agents' loop-repair signal.
+        hints = out.pop("recovery_hints", None)
+        if hints is None:
+            hints = [
+                hint
+                for issue in out["errors"]
+                if isinstance(issue, dict)
+                for hint in issue.get("recovery_hints") or []
+            ]
+        if hints:
+            out["recovery_hints"] = [_lean_issue(hint) for hint in hints]
         out.setdefault("timing_ms", round((time.perf_counter() - started_at) * 1000, 3))
+        return out
+
+    def _with_request_context(
+        self, out: dict[str, Any], arguments: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        # Echo the resolved request context only when there is one (hosted or policy_context).
+        if "request_context" not in out:
+            context = request_context_payload(
+                _resolved_tool_request_context(arguments, request_id=str(out.get("request_id", "")))
+            )
+            if context:
+                out["request_context"] = context
         return out
 
     def _success(
@@ -1868,13 +1899,7 @@ class SemanticLayerMCPAdapter:
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at,
         )
-        out.setdefault(
-            "request_context",
-            request_context_payload(
-                _resolved_tool_request_context(arguments, request_id=str(out.get("request_id", "")))
-            ),
-        )
-        return out
+        return self._with_request_context(out, arguments)
 
     def _error_response(
         self,
@@ -1892,23 +1917,11 @@ class SemanticLayerMCPAdapter:
             exc = enrich_object_not_found(exc, self.runtime._config)
         issue = exception_issue(exc, stage="mcp")
         out = self._envelope(
-            {
-                "ok": False,
-                "status": "error",
-                "error": issue,
-                "errors": [issue],
-                "recovery_hints": list(issue.get("recovery_hints", [])),
-            },
+            {"ok": False, "status": "error", "error": issue, "errors": [issue]},
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at or time.perf_counter(),
         )
-        out.setdefault(
-            "request_context",
-            request_context_payload(
-                _resolved_tool_request_context(arguments, request_id=str(out.get("request_id", "")))
-            ),
-        )
-        return out
+        return self._with_request_context(out, arguments)
 
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]
@@ -1943,25 +1956,11 @@ class SemanticLayerMCPAdapter:
                 exception_type=type(exc).__name__,
             )
             out = self._envelope(
-                {
-                    "ok": False,
-                    "status": "error",
-                    "error": issue,
-                    "errors": [issue],
-                    "recovery_hints": list(issue.get("recovery_hints", [])),
-                },
+                {"ok": False, "status": "error", "error": issue, "errors": [issue]},
                 request_id=_clean_request_id(arguments.get("request_id")),
                 started_at=started,
             )
-            out.setdefault(
-                "request_context",
-                request_context_payload(
-                    _resolved_tool_request_context(
-                        arguments, request_id=str(out.get("request_id", ""))
-                    )
-                ),
-            )
-            return out
+            return self._with_request_context(out, arguments)
         finally:
             if token is not None:
                 _TOOL_REQUEST_CONTEXT.reset(token)
@@ -2109,7 +2108,7 @@ class SemanticLayerMCPAdapter:
                     }
                 )
                 payload["recovery_hints"] = existing_hints
-            return payload
+            return _lean_discover(payload)
 
         return self._guarded(arguments, _build)
 

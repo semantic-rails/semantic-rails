@@ -465,3 +465,45 @@ def test_every_v2_call_works_behind_an_authenticated_transport(
     assert payload["request_id"] == "trusted"
     assert payload["request_context"]["roles"] == ["analyst"]
     assert not [w for w in payload["warnings"] if str(w.get("code", "")).endswith("_UNKNOWN_ARG")]
+
+
+def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
+    ok = v2.call_tool("plan", {"intent": "revenue by store"})
+    assert "request_context" not in ok and "recovery_hints" not in ok
+    assert {"ok", "status", "api_version", "request_id", "package_id", "warnings", "errors"} <= set(
+        ok
+    )
+    # A select item without its "expression" wrapper names the shape to use.
+    bad = {"version": 2, "select": [{"metric": "metric.sales.aov_usd", "as": "aov"}]}
+    failed = v2.call_tool("execute", {"query": bad})
+    issue = failed["errors"][0]
+    assert failed["error"] == issue
+    assert issue["code"] == "INVALID_EXPRESSION_AST"
+    assert "under 'expression'" in issue["message"] and "['as', 'metric']" in issue["message"]
+    assert failed["recovery_hints"] == issue["recovery_hints"]
+    empty = [key for key, value in issue.items() if value in (None, "", [], {})]
+    assert empty == [] and "why_invalid" not in issue and "unsupported_construct" not in issue
+
+
+def test_lean_issues_drop_only_empty_fields_and_echoes() -> None:
+    from semantic_rails.mcp import _lean_issue
+
+    details = {"path": "select[0]"}
+    issue = {
+        "code": "C",
+        "message": "m",
+        "why_invalid": "m",
+        "unsupported_construct": "C",
+        "details": details,
+        "path": "",
+        "object_ids": [],
+        "recovery_hints": [{"kind": "k", "message": "h", "details": details, "shape": {}}],
+    }
+    assert _lean_issue(issue) == {
+        "code": "C",
+        "message": "m",
+        "details": details,
+        "recovery_hints": [{"kind": "k", "message": "h"}],
+    }
+    kept = {"code": "C", "message": "m", "why_invalid": "w", "unsupported_construct": "U"}
+    assert _lean_issue(kept) == kept

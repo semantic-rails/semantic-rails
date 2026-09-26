@@ -55,8 +55,12 @@ API:
 - `package_id`
 - `warnings`
 - `errors`
-- `recovery_hints`
+- `recovery_hints` (the errors' hints, and other next steps; left out when there are none)
 - `timing_ms`
+
+MCP responses state each fact once: an issue leaves out empty optional fields and a
+`why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
+`request_context` appears only when a transport or `policy_context` set one.
 
 Every `tools/list` definition publishes an `outputSchema` for this envelope and
 MCP-standard annotations (`readOnlyHint`, `destructiveHint`,
@@ -75,12 +79,15 @@ tool/schema drift cannot be merged silently.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
-`discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
-first, so its `validate` and `sql` modes are optional dry runs. The instructions also carry the
-conventions every tool shares: full ids, response detail controls, recovery hints, and
-`policy_context`. Each tool description then says what the tool does, when to use it, and its
-one gotcha. Every tool returns its smallest response by default (`verbosity="minimal"`, `plan`
-`detail="query"`); ask for more only when you need it.
+`discover`, draft Query IR with `plan`, and run it with `execute` only when the draft's status is
+`ok` with no warnings. The instructions also carry the rules that prevent wrong answers
+(exclusive `time.end`, a grain for a time window, `op "in"` for several values), recovery hints
+and `policy_context`. Their wording is measured: rewording the workflow steps ("don't write
+Query IR from scratch") or inviting a "Query IR so far" made models hand their own drafts to
+`plan` far more often, so the steps keep their tested wording. Each tool description says what the tool does, when to use it, and its one
+gotcha; `plan` and `execute` repeat the plan-first rule and the exclusive end for hosts that don't
+forward instructions. Every tool returns its smallest response by default (`verbosity="minimal"`,
+`plan` `detail="query"`).
 
 Every tool schema advertises and accepts optional `request_id` and `policy_context`.
 `policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
@@ -109,6 +116,11 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
 - **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
   meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Keep
   the shared `request_id` and `policy_context` properties on every tool.
+- **Each fact once.** Every token of `tools/list` and the instructions is resent on every turn.
+  Cut prose that doesn't change what a model does, not properties, enums or types: the
+  contract checker treats a removed property as breaking. Keep a rule that prevents a wrong
+  answer (plan first, the exclusive end) in the description of the tool it concerns, even when
+  the instructions state it too.
 - **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
   and the instructions (see "Measuring Context Cost").
 
@@ -121,12 +133,14 @@ ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning giv
 and `catalog/full` resources return the whole index, descriptive rows, or every card with the
 alias index (see [Resources And Prompts](#resources-and-prompts)).
 
-`discover` returns slim cards by default: `id`, `kind`, `label`, `score`, a `description`
-trimmed to 120 characters, `default_temporal_role` and `available`, plus `blocked_reason` for a
-candidate that isn't available. `verbosity="compact"` returns full cards with match reasons,
-starter patches and comparison metadata. When the question uses an object's whole name ("revenue by
-store"), that object ranks above near-duplicates that add a qualifier the question doesn't use
-("Delivered revenue").
+`discover` returns slim cards by default: `id`, `label`, `score`, a `description` trimmed to 120
+characters (left out when it only repeats the label) and `default_temporal_role`, plus
+`available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
+bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
+with. `verbosity="compact"` returns full cards with match reasons, starter patches and comparison
+metadata. When the question uses an object's whole name ("revenue by store"), that object ranks
+above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
+`kinds` takes an array or a comma-separated string, and also a JSON array sent as a string.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
 `available` flag, including when a value is blocked.
 
@@ -632,7 +646,7 @@ Every error surfaced through the MCP or HTTP transport is wrapped in a structure
 }
 ```
 
-Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out, and so is a hint's `details` when it only repeats the issue's. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
 
 ### Error Code Catalog
 
