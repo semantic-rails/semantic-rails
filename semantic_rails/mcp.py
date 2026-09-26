@@ -1579,17 +1579,16 @@ class SemanticLayerMCPAdapter:
 
     def replace_tool_handler(
         self, name: str, handler: Callable[[dict[str, Any]], dict[str, Any]]
-    ) -> Callable[[dict[str, Any]], dict[str, Any]]:
-        """Serve the listed tool ``name`` with ``handler`` on this adapter; return the old one.
+    ) -> None:
+        """Serve the listed tool ``name`` with ``handler`` on this adapter only.
 
         ``call_tool`` still validates the arguments, merges the trusted request context and
-        audits the call around ``handler``. Other adapter instances are unaffected.
+        audits the call. Like the built-in tools, ``handler`` runs inside the adapter's
+        response envelope, which turns an exception into a tool error response.
         """
         if name not in self._tool_handlers:
             raise ValueError(f"Unknown MCP tool {name!r}; tools: {sorted(self._tool_handlers)}")
-        previous = self._tool_handlers[name]
-        self._tool_handlers[name] = handler
-        return previous
+        self._tool_handlers[name] = lambda arguments: self._guarded(arguments, handler)
 
     def close(self) -> None:
         self.runtime.close()

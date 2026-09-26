@@ -113,8 +113,10 @@ it applies the transport rules: a request with an `Origin` must match
 `SEMANTIC_RAILS_CORS_ORIGINS`; only `POST` is served (`OPTIONS` gets 204); the body must
 be `application/json` of at most 64 KiB; `Accept` must list both `application/json` and
 `text/event-stream`; and an `MCP-Protocol-Version` header must name a supported version.
-A multi-tenant host passes the `request_context` it derived from authenticated identity.
-Without one, the process's policy context resolver reads `headers`.
+The function does not authenticate the caller: the host does that first. A multi-tenant
+host passes the `request_context` it derived from authenticated identity. Without one, the
+process's policy context resolver reads `headers`, and the default resolver trusts
+caller-sent identity headers such as `X-Semantic-Tenant` and `X-Semantic-Roles`.
 
 `handle_jsonrpc_message` and `handle_streamable_http_request` accept any object that
 satisfies the `MCPAdapter` protocol (`package_id`, `list_tools`, `call_tool`,
@@ -124,9 +126,11 @@ own tools through the engine's JSON-RPC envelope, errors, and audit events. Opti
 
 To swap the body of one tool, for a test or a host's own implementation, call
 `replace_tool_handler(name, handler)` on a `SemanticLayerMCPAdapter`. It accepts only a
-tool the adapter lists, returns the previous handler, and changes that adapter instance
-only. `call_tool` still validates the arguments, replaces caller-supplied policy context
-with the trusted one, and emits the audit event around the handler.
+tool the adapter lists and changes that adapter instance only. `call_tool` still validates
+the arguments, replaces caller-supplied policy context with the trusted one, and emits the
+audit event. Like the built-in tools, `handler` runs inside the adapter's response
+envelope, so an exception it raises becomes a tool error response. The private
+`_tool_handlers` mapping keeps working through the 0.3 series.
 
 ## Package authoring
 
@@ -136,6 +140,7 @@ session behind the Architect MCP and the REPL. It edits a package directory on d
 `upsert_segment`, `remove_object`, `write_file`, and `archive_file`. Each change returns an
 `ArchitectMutation`: `report` is the result the Architect MCP returns, `changed_files`
 lists the files written, and `undo()` restores them unless a later edit changed them.
+Hosts receive `ArchitectMutation` objects and never construct them.
 
 - **Containment.** A relative `project_path` resolves against `workspace_root`. The
   project must resolve inside `workspace_root` and contain `package.yml`, symlinked
@@ -190,8 +195,8 @@ in `inspect.signature(...)`, rather than compare engine versions.
 ## Facade reference
 
 Every name `semantic_rails.embedding` exports, with its call shape: parameters in order,
-`=` marking one with a default, `*` starting the keyword-only ones, and `{…}` listing a
-protocol's members. `test_embedding_consumer_contract.py` compares this list with the
+`=` marking one with a default, `/` ending the positional-only ones, `*` starting the
+keyword-only ones, and `{…}` listing a protocol's members. `test_embedding_consumer_contract.py` compares this list with the
 facade, so a pull request that adds or changes a name updates it too.
 
 ```text
@@ -213,7 +218,7 @@ DuckDBAdapter(db_path)
 HeaderPolicyContextResolver()
 LoadedPackageSnapshot(source_path, source_fingerprint, semantic_fingerprint, provenance, source_kind, _config, _authored, _normalized, _semantic)
 LruCompiledSqlCache(maxsize=)
-MCPAdapter{call_tool(self, name, arguments, *, request_context); get_prompt(self, name, arguments); list_prompts(self); list_resources(self); list_tools(self); package_id; read_resource(self, uri, *, request_context)}
+MCPAdapter{call_tool(self, name, arguments, /, *, request_context); get_prompt(self, name, arguments, /); list_prompts(self); list_resources(self); list_tools(self); package_id; read_resource(self, uri, /, *, request_context)}
 MCPHTTPResponse(status, payload=, headers=)
 MCP_PROTOCOL_VERSION
 MOTHERDUCK_CONNECTION_OPTIONS

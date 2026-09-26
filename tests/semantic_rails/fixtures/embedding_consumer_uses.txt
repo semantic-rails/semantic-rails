@@ -5,7 +5,7 @@ CompiledSqlCache{get(self, key); put(self, key, value)}
 ConnectionCredentialProvider{credentials_for(self, *, warehouse, connection_kind, connection_name)}
 DuckDBAdapter(_)
 LruCompiledSqlCache(maxsize=)
-MCPAdapter{call_tool(self, name, arguments, *, request_context); get_prompt(self, name, arguments); list_prompts(self); list_resources(self); list_tools(self); package_id; read_resource(self, uri, *, request_context)}
+MCPAdapter{call_tool(self, name, arguments, /, *, request_context); get_prompt(self, name, arguments, /); list_prompts(self); list_resources(self); list_tools(self); package_id; read_resource(self, uri, /, *, request_context)}
 MCP_PROTOCOL_VERSION
 PUBLIC_V1_ROUTES
 PackageReference(package_id=, source_path=)

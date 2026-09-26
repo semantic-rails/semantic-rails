@@ -131,7 +131,9 @@ def _instance_attributes(cls: type) -> set[str]:
 def _parameters(function: Any) -> str:
     parts: list[str] = []
     keyword_only = False
-    for parameter in inspect.signature(function).parameters.values():
+    parameters = list(inspect.signature(function).parameters.values())
+    positional_only = sum(parameter.kind is parameter.POSITIONAL_ONLY for parameter in parameters)
+    for index, parameter in enumerate(parameters, start=1):
         if parameter.kind is parameter.KEYWORD_ONLY and not keyword_only:
             parts.append("*")
         keyword_only |= parameter.kind in (parameter.KEYWORD_ONLY, parameter.VAR_POSITIONAL)
@@ -139,6 +141,7 @@ def _parameters(function: Any) -> str:
         stars = "*" if parameter.kind is parameter.VAR_POSITIONAL else stars
         default = "" if parameter.default is parameter.empty else "="
         parts.append(f"{stars}{parameter.name}{default}")
+        parts += ["/"] * (index == positional_only)
     return ", ".join(parts)
 
 

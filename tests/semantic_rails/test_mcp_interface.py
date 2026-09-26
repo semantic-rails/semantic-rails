@@ -12,6 +12,7 @@ from io import StringIO
 
 import pytest
 
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import (
     MCP_PROMPT_DEFINITIONS,
     MCP_RESOURCE_DEFINITIONS,
@@ -20,6 +21,7 @@ from semantic_rails.mcp import (
     create_optional_fastmcp_server,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message, make_mcp_http_handler, serve_stdio
+from semantic_rails.mcp_streamable_http import handle_streamable_http_request
 from semantic_rails.request_context import (
     HeaderPolicyContextResolver,
     RequestContext,
@@ -174,31 +176,116 @@ def test_mcp_output_schema_matches_real_success_and_error_envelopes(runtime_fact
         adapter.close()
 
 
-def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary():
+def _raise(error: Exception):
+    def handler(arguments: dict) -> dict:
+        raise error
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    ("handler", "code"),
+    [
+        (lambda arguments: {"object_id": arguments["object_id"]}, None),
+        (_raise(SemanticLayerError("ACCESS_DENIED", "denied")), "ACCESS_DENIED"),
+        (_raise(KeyError("missing")), "INTERNAL_ERROR"),
+    ],
+)
+def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary(
+    monkeypatch, handler, code
+):
+    audited: list[dict] = []
+    monkeypatch.setattr(
+        "semantic_rails.mcp.emit_audit_event", lambda event, **fields: audited.append(fields)
+    )
     runtime = types.SimpleNamespace(package_id="host-test", close=lambda: None)
     adapter, other = SemanticLayerMCPAdapter(runtime), SemanticLayerMCPAdapter(runtime)
     seen: list[dict] = []
 
-    def handler(arguments: dict) -> dict:
+    def recording(arguments: dict) -> dict:
         seen.append(arguments)
-        return {"ok": True}
+        return handler(arguments)
 
-    original = adapter.tool_handlers["inspect"]
-    assert adapter.replace_tool_handler("inspect", handler) == original
+    adapter.replace_tool_handler("inspect", recording)
     trusted = RequestContext(request_id="trusted", tenant="tenant-a", roles=("analyst",))
     spoofed = {"object_id": "measure.x", "policy_context": {"tenant": "tenant-b"}}
+
     response = adapter.call_tool("inspect", spoofed, request_context=trusted)
     missing = adapter.call_tool("inspect", {}, request_context=trusted)
 
     assert [(args["object_id"], args["policy_context"]) for args in seen] == [
         ("measure.x", trusted.to_policy_context())
     ]
+    assert response["ok"] is (code is None)
+    assert [issue["code"] for issue in response.get("errors", [])] == ([code] if code else [])
     assert response["request_context"]["tenant"] == "tenant-a"
+    assert [(row["tool"], row["request_context"]["tenant"]) for row in audited] == [
+        ("inspect", "tenant-a"),
+        ("inspect", "tenant-a"),
+    ]
+    assert audited[0]["error_codes"] == ([code] if code else [])
     assert missing["errors"][0]["code"] == "INVALID_MCP_ARGUMENTS"
     assert other.tool_handlers["inspect"] == other._handle_inspect  # noqa: SLF001
     with pytest.raises(ValueError, match="Unknown MCP tool 'no-such-tool'"):
         adapter.replace_tool_handler("no-such-tool", handler)
     assert set(adapter.tool_handlers) == REQUIRED_TOOL_NAMES
+
+
+class _HostAdapter:
+    """A host's own adapter: its own parameter names, no ``interface`` or ``instructions``."""
+
+    package_id = "host-package"
+
+    def list_tools(self):
+        return [{"name": "echo", "inputSchema": {"type": "object"}}]
+
+    def call_tool(self, tool, args, *, request_context=None):
+        return {"ok": True, "tool": tool, "args": args, "tenant": request_context.tenant}
+
+    def list_resources(self):
+        return []
+
+    def read_resource(self, uri, *, request_context=None):
+        return {"uri": uri, "mimeType": "application/json", "text": "{}"}
+
+    def list_prompts(self):
+        return []
+
+    def get_prompt(self, name, arguments):
+        return {"messages": []}
+
+
+def test_a_host_adapter_serves_through_the_dispatcher_and_the_http_handler():
+    trusted = RequestContext(request_id="r", tenant="tenant-a")
+    call = {"name": "echo", "arguments": {"x": 1}}
+    initialized = handle_jsonrpc_message(
+        _HostAdapter(), {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    listed = handle_jsonrpc_message(
+        _HostAdapter(), {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+    )
+    over_http = handle_streamable_http_request(
+        _HostAdapter(),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        body=json.dumps(
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": call}
+        ).encode(),
+        request_context=trusted,
+    )
+
+    assert initialized["result"]["serverInfo"]["version"] == "v2"
+    assert [tool["name"] for tool in listed["result"]["tools"]] == ["echo"]
+    assert over_http.status == 200
+    assert over_http.payload["result"]["structuredContent"] == {
+        "ok": True,
+        "tool": "echo",
+        "args": {"x": 1},
+        "tenant": "tenant-a",
+    }
 
 
 def test_mcp_adapter_metadata_tools_match_public_v1_payloads(runtime_factory):

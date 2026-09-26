@@ -370,6 +370,13 @@ def test_in_process_project_lock_excludes_threads_across_collection(
 
     assert len(seen) == 600 and max(seen) == 1
     assert locks.created > 1  # the entry was collected and recreated while threads contended
+    impatient = architect_transactions.ProjectTransaction(
+        project_path, workspace_root=tmp_path, lock_timeout_seconds=0.1
+    )
+    with transaction._exclusive_lock():  # noqa: SLF001
+        for _ in range(2):  # a waiter that times out leaves the holder's entry in place
+            with pytest.raises(SemanticLayerError, match="Timed out"), impatient._exclusive_lock():  # noqa: SLF001
+                pass
     assert str(transaction._lock_path) not in locks  # noqa: SLF001
 
 
