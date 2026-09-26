@@ -13,12 +13,14 @@ layer.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from .acceleration.routing import ROUTING_OFF, aggregate_routing_enabled
 from .ast import NormalizedQuery, _time_output_alias, normalize_query
 from .compiler_parts.bind import (
     _aggregation_expr,
@@ -3424,11 +3426,17 @@ def _aggregate_measure_coverage(row: AggregateRelationConfig) -> set[str]:
 
 
 def _time_bound_on_grain(value: Any, grain: str) -> bool:
-    """Whether a query time bound falls on a UTC bucket boundary of a day-or-coarser ``grain``."""
+    """Whether a query time bound, without a UTC offset (or a zero one), starts a ``grain`` bucket.
+
+    A day boundary is also an hour and minute boundary, so finer rollups check the day.
+    """
+    if re.search(r"[.,]\d{7}", str(value)):  # datetime drops digits past the microsecond
+        return False
     try:
         moment = _parse_time_literal(value)
+        grain = grain if _grain_rank(grain) >= _grain_rank("day") else "day"
         return not moment.utcoffset() and _is_grain_boundary(moment, grain)
-    except SemanticLayerError:  # an unparseable bound, or a grain finer than a day
+    except SemanticLayerError:  # an unparseable bound
         return False
 
 
@@ -3436,11 +3444,10 @@ def _leaf_rollup_blocker(
     bound: BoundMeasure, query: NormalizedQuery, config: PackageConfig, leaf_time_role: str
 ) -> str:
     """Why no rollup can answer this measure leaf exactly, whichever rollup it is."""
-    if any(
+    if not aggregate_routing_enabled():
+        return ROUTING_OFF
+    if _bound_metric_predicates(bound) or any(
         isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
-    ) or any(
-        clause.get("expression") is not None
-        for clause in dict(bound.filter_spec or {}).get("all", []) or []
     ):
         return "metric_predicate_filter"
     if query.time and (query.time.calendar_id or "default").strip().lower() != "default":
