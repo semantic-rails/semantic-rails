@@ -11,12 +11,9 @@ import hashlib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from .errors import SemanticLayerError
-
-if TYPE_CHECKING:
-    from .request_context import TrustedAttributes
 
 ParameterValue = str | int | bool
 _SLOT_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool}
@@ -62,14 +59,6 @@ def parameters_denied(reason: str, **details: str) -> SemanticLayerError:
         "Query parameters could not be bound safely for this request.",
         details={"reason": reason, **details},
     )
-
-
-def bind_parameters(
-    prepared: PreparedQuery, attributes: TrustedAttributes
-) -> tuple[ParameterValue, ...]:
-    """This request's values for the statement's slots, from its trusted attributes."""
-    values = [attributes.get(slot.attribute) for slot in prepared.parameters]
-    return checked_parameter_values(prepared, values)
 
 
 def checked_parameter_values(

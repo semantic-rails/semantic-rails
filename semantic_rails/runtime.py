@@ -100,7 +100,7 @@ from .seed_provenance import (
     recorded_seed_digest,
 )
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
-from .sql_preparation import PreparedQuery, bind_parameters
+from .sql_preparation import PreparedQuery, checked_parameter_values
 
 __all__ = [
     "CachedCompilation",
@@ -575,7 +575,8 @@ def _adapter_query(
             if getattr(adapter, "supports_parameters", False) is not True:
                 reject_parameters(query, adapter)
             attributes = context_from_policy_context(policy_context).attributes
-            values = bind_parameters(query, attributes)
+            slot_values = [attributes.get(slot.attribute) for slot in query.parameters]
+            values = checked_parameter_values(query, slot_values)
             return adapter.query_prepared(query, limits=limits, parameters=values)
         execute = getattr(adapter, "query_prepared", None)
         if execute is not None:
