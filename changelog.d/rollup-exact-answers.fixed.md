@@ -7,9 +7,11 @@
   own `filters`, aggregates filtered by a `metric_predicate`, stock
   (semi-additive) measures, aggregations other than the one a rollup column holds,
   dimensions pre-joined into a rollup along a join path other than the query's (or
-  with no declared `path`), and measures or time roles read from another model.
+  with no declared `path`), rollups with a pre-joined column asked a query that
+  doesn't use it, `aggregate_relations:` entries without a `temporal_role`, and
+  measures or time roles read from another model.
   The logical plan's `aggregate_relation_rejections` says why each rejected rollup
   wasn't used. The engine still trusts the rollup's author on what it can't see
   in the tables: a weekly rollup is built on Monday-start weeks, a pre-joined
-  column keeps unmatched rows as the base path's outer join does, and a declared
+  column is built with an inner join as the base path joins it, and a declared
   distinct count has one row per time bucket and dimension.

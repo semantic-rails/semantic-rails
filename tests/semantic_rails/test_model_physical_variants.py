@@ -229,7 +229,8 @@ CREATE TABLE order_fact AS SELECT * FROM (VALUES
  (5, 'c3', 's2', TIMESTAMP '2026-04-02', 50.0), (6, 'c2', 's1', TIMESTAMP '2026-01-20', 60.0),
  (7, 'c1', 's2', TIMESTAMP '2026-01-25', 5.0), (8, 'c3', 's1', TIMESTAMP '2026-04-01 02:00', 8.0),
  (9, 'c2', 's2', TIMESTAMP '2026-03-31 12:00', 7.0), (10, 'c3', 's1', TIMESTAMP '2026-01-01 00:30', 3.0),
- (11, 'c2', 's2', TIMESTAMP '2026-03-31 23:30', 4.0), (12, 'c1', 's1', TIMESTAMP '2026-04-01 00:30', 2.0)
+ (11, 'c2', 's2', TIMESTAMP '2026-03-31 23:30', 4.0), (12, 'c1', 's1', TIMESTAMP '2026-04-01 00:30', 2.0),
+ (13, 'c9', 's1', TIMESTAMP '2026-02-15', 9.0)
 ) t(order_id, customer_id, store_id, ordered_at, amount);
 CREATE TABLE order_monthly AS SELECT date_trunc('month', ordered_at) AS month_start, store_id,
  sum(amount) AS revenue, count(DISTINCT order_id) AS order_count,
@@ -255,6 +256,9 @@ ALTER TABLE order_fact ADD COLUMN ship_to_id VARCHAR;
 UPDATE order_fact SET ship_to_id = CASE customer_id WHEN 'c1' THEN 'c2' ELSE 'c1' END;
 CREATE TABLE order_region_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  region, sum(amount) AS revenue FROM order_fact JOIN customers USING (customer_id) GROUP BY 1, 2;
+CREATE TABLE order_region_left_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
+ region, sum(amount) AS revenue FROM order_fact LEFT JOIN customers USING (customer_id)
+ GROUP BY 1, 2;
 CREATE TABLE order_ship_to_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  ship_to_id AS customer_key, sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
 CREATE TABLE order_buyer_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
@@ -529,6 +533,11 @@ _REGION = {
     "dimensions": {"dimension.region": {"column": "region", "path": [_BUYER]}},
 }
 _NO_PATH = {**_REGION, "dimensions": {"dimension.region": {"column": "region"}}}
+_NO_ROLE = {
+    **{key: value for key, value in _S1_ONLY.items() if key not in {"temporal_role", "filters"}},
+    "id": "aggregate_relation.no_role",
+    "relation": "order_monthly",
+}
 _BY_REGION = _grouped(_rollup_query(_REVENUE, "sum", "month"), "dimension.region")
 _CUSTOMER_KEY = "dimension.p_customer_id"  # the customer entity's key, read from a foreign key
 _BUYER_KEY = {
@@ -772,6 +781,18 @@ _SHIP_TO_KEY = {
         ),
         # A column pre-joined from another model routes only along the query's join path.
         pytest.param(({}, [_REGION], {"ship_to": False}), _BY_REGION, None, id="pre-joined-path"),
+        pytest.param(
+            ({}, [_REGION], {"ship_to": False}),
+            _rollup_query(_REVENUE, "sum", "month"),
+            "join_path_mismatch",
+            id="pre-joined-column-unused",  # its inner join left out order 13 (no such customer)
+        ),
+        pytest.param(
+            ({}, [_NO_ROLE], {"ship_to": False}),
+            _rollup_query(_REVENUE, "sum", "month"),
+            "temporal_role_mismatch",
+            id="rollup-without-a-time-role",
+        ),
         pytest.param(
             ({}, [_REGION], {"ship_to": True}),
             _BY_REGION,

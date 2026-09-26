@@ -180,6 +180,7 @@ _MODEL_VARIANT_KEYS: frozenset[str] = frozenset(
         "freshness_source",
         "freshness_sla_seconds",
         "freshness_as_of",
+        "requires_certification",
     }
 )
 _MODEL_VARIANT_GRAIN_KEYS: frozenset[str] = frozenset({"time", "entities"})

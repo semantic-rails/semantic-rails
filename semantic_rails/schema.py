@@ -379,6 +379,8 @@ class AggregateRelationConfig:
     excluded_dimensions: list[str] = field(default_factory=list)
     selection_priority: int = 0
     equivalence_kind: str = ""
+    # Routes only while the installed certification provider says it is certified.
+    requires_certification: bool = False
 
 
 @dataclass(frozen=True)

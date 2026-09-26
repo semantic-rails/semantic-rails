@@ -2818,6 +2818,13 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 "INVALID_CONFIG",
                 f"{path}: aggregate relation '{relation_id}' references unknown temporal_role '{temporal_role}'",
             )
+        requires_certification = row_dict.get("requires_certification", False)
+        if not isinstance(requires_certification, bool):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: aggregate relation '{relation_id}' requires_certification must be true or"
+                " false",
+            )
         entity_grain = [
             _resolve_entity_ref(item) for item in _ensure_list(row_dict.get("entity_grain"))
         ]
@@ -2866,6 +2873,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             ],
             selection_priority=int(row_dict.get("selection_priority", 0) or 0),
             equivalence_kind=str(row_dict.get("equivalence_kind", "") or ""),
+            requires_certification=requires_certification,
         )
 
     def _aggregate_rows_from_model_variants() -> list[AggregateRelationConfig]:
@@ -3016,6 +3024,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                             "freshness_source": str(variant.get("freshness_source", "") or ""),
                             "freshness_sla_seconds": variant.get("freshness_sla_seconds"),
                             "freshness_as_of": str(variant.get("freshness_as_of", "") or ""),
+                            "requires_certification": variant.get("requires_certification", False),
                         },
                         model_id=model_id,
                     )
