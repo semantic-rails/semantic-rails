@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-26T02:35:05+00:00",
+  "generated_at": "2026-09-26T02:35:22+00:00",
   "headline_findings": [
     "The 8 frozen-model questions (q17-q24) each change one parameter of a metric that q01-q16 already use: a window, an offset, a filter, an aggregation or a threshold. No layer's model defines the variant. With each layer's model left exactly as written for q01-q16, answered through the layer's query-time interface, out of 8: Semantic Rails 6 (6 native), MetricFlow 2 (2 native), Cube 7 (2 native, 5 workaround), Malloy 8 (8 native) and KtX 3 (2 native, 1 precomputed). Each other answer is labeled requires_model_change, with the reason and the documentation in shared/frozen_model.yml. Snowflake Semantic Views wasn't assessed: its capture can't be re-run.",
     "The 8 frozen-model questions are few, and the Semantic Rails authors chose them knowing which parameters Semantic Rails composes at query time and which some other layers set in the model. They probe where each layer's frozen-model boundary lies; they aren't a ranking, and they don't weigh what a model change costs in each layer.",

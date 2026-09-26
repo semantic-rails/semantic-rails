@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.821,
-      "compile_ms": 0.19,
+      "cache_lookup_ms": 0.911,
+      "compile_ms": 0.187,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
