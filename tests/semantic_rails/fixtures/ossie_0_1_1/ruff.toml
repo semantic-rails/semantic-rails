@@ -1,0 +1,3 @@
+extend = "../../../../pyproject.toml"
+# Vendored upstream files stay byte-identical (their hashes are pinned in the tests).
+exclude = ["validation"]
