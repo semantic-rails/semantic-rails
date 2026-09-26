@@ -130,7 +130,7 @@ shorthands for the most common cases:
 | Rolling | `{ "kind": "rolling", "input": {...}, "window": {"unit": "day", "value": 28} }` |
 | Cumulative | `{ "kind": "cumulative", "input": {...} }` |
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
-| Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` |
+| Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
 ## MetricFilter expressions
 

@@ -328,5 +328,5 @@ def test_jaffle_shop_compiles_all_probes_and_edge_cases_for_duckdb_and_snowflake
     assert "QUANTILE_CONT(" in compiled["duckdb"]["percentile"]
     assert "QUALIFY" in compiled["snowflake"]["snapshot_last_value"]
     assert "QUALIFY" not in compiled["duckdb"]["snapshot_last_value"]
-    assert "DATEDIFF(" in compiled["snowflake"]["conversion"]
-    assert "DATE_DIFF(" in compiled["duckdb"]["conversion"]
+    assert "DATEADD(DAY, 7, " in compiled["snowflake"]["conversion"]
+    assert "INTERVAL (7) DAY)" in compiled["duckdb"]["conversion"]

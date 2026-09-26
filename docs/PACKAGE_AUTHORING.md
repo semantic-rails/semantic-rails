@@ -1073,7 +1073,7 @@ metrics:
 | `rolling` | `measure: <key>`, `window:` | trailing window |
 | `semi_additive` | `measure: <key>`, kind-specific options | applies measure's snapshot policy |
 | `derived` | `expression: <AST>` | long-tail case; full AST |
-| `conversion` | kind-specific options | event-pair conversion with windows |
+| `conversion` | kind-specific options | event-pair conversion; converted events count within `window` of the base event, `base <= converted < base + window` |
 
 The expression AST stays the runtime representation — the loader translates
 direct named fields into the equivalent AST shape. You only write the AST for

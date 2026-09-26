@@ -680,6 +680,14 @@ Entity-only lifetime example:
 }
 ```
 
+The `window` is a duration measured from the base event: a converted event counts when
+`base <= converted < base + window`, on every warehouse. A 7-day window ends exactly 7 × 24 hours
+after the base event, not at the end of the 7th calendar day, and `month`, `quarter` and `year`
+windows add calendar months (January 31 plus one month is the last day of February). An event at
+the base instant counts and one exactly at the end does not, like the half-open `time` range. When
+the event times are dates, a 7-day window covers the base date and the 6 dates after it. These are
+MetricFlow's conversion bounds.
+
 Current limit:
 
 - enriched conversion expressions are executable for the supported event-count model
