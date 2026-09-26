@@ -870,3 +870,39 @@ def test_a_rank_or_sequence_number_is_a_low_confidence_measure() -> None:
     }
     # The REPL leaves it unticked; the Architect's and dbt imports' drafts keep every measure.
     assert set(draft["measures"]) == {"order_count", "customer_order_number", "order_total"}
+
+
+def test_a_pre_counted_distinct_column_is_drafted_non_additive(tmp_path) -> None:
+    from semantic_rails.architect_introspection import draft_roles, upsert_model_draft
+    from semantic_rails.architect_service import ArchitectProject
+    from semantic_rails.cli.scaffold import create_project_report
+
+    columns = [
+        {"name": "daily_visitors", "type": "BIGINT"},
+        {"name": "uniques", "type": "BIGINT"},
+        {"name": "views", "type": "BIGINT"},
+    ]
+    roles, _ = draft_roles("traffic_day", ["traffic_day_id"], [], columns)
+    draft = upsert_model_draft(
+        entity="traffic_day", relation="raw_events", key_columns=["traffic_day_id"], **roles
+    )
+
+    flagged = {item["key"]: item for item in roles["measures"] if item.get("additive") is False}
+    assert set(flagged) == {"daily_visitors", "uniques"}
+    assert {item["confidence"] for item in flagged.values()} == {"low"}
+    assert draft["measures"]["uniques"]["additive"] is False
+    assert "additive" not in draft["measures"]["views"]
+    # The drafted key parses: the package accepts it as written.
+    report = create_project_report(
+        package_id="drafted", workspace_root=str(tmp_path), run_checks=False
+    )
+    project = ArchitectProject(report["project_path"], workspace_root=tmp_path)
+    measures = {"uniques": draft["measures"]["uniques"]}
+    mutation = project.upsert_model(
+        model_id="events",
+        entity_key="event",
+        relation="raw_events",
+        primary_key=["event_id"],
+        measures=measures,
+    )
+    assert mutation.report["ok"] is True, mutation.report

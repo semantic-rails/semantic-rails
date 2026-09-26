@@ -63,6 +63,9 @@ _SUM_WORDS = (
     "fee",
 )
 _AVERAGE_WORDS = ("price", "rate", "ratio", "pct", "percent", "score", "avg", "average")
+# A vendor's count of distinct people per row (GitHub's daily "uniques"): adding rows counts a
+# person once per day or page, so such a column is drafted `additive: false`.
+_DISTINCT_COUNT_WORDS = ("unique", "uniques", "distinct", "visitors", "users", "cloners")
 _TABLE_PREFIXES = ("fct_", "fact_", "dim_", "stg_", "int_", "raw_", "mart_", "vw_")
 _BOOKKEEPING_WORDS = ("updated", "modified", "deleted", "loaded", "synced")
 _CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -417,6 +420,13 @@ def classify_column(name: str, data_type: str) -> str:
 
 def measure_aggregation(name: str) -> tuple[str, str, str]:
     """(aggregation, confidence, reason) for a numeric column, from its name."""
+    if _has_word(name, _DISTINCT_COUNT_WORDS):
+        return (
+            "sum",
+            "low",
+            "may be a pre-counted distinct count; adding rows counts a person more than once, "
+            "so it is drafted additive: false",
+        )
     average = _has_word(name, _AVERAGE_WORDS)
     summed = _has_word(name, _SUM_WORDS)
     if average and not summed:
@@ -496,6 +506,7 @@ def draft_roles(
                     "aggregation": aggregation,
                     "confidence": confidence,
                     "reason": reason,
+                    **({"additive": False} if _has_word(name, _DISTINCT_COUNT_WORDS) else {}),
                     **described,
                 }
             )
@@ -578,6 +589,7 @@ def upsert_model_draft(
                     "expr": {"kind": "column", "column": item["key"]},
                     "default_agg": item["aggregation"],
                     "accumulation": {"kind": "flow"},
+                    **({"additive": False} if item.get("additive") is False else {}),
                     "value_type": "number",
                     **({"description": item["description"]} if item.get("description") else {}),
                 }
