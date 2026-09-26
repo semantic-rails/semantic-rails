@@ -18,7 +18,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import asdict, replace
 from functools import wraps
@@ -62,7 +62,7 @@ from .db import (
     seed_db,
     seed_digest,
 )
-from .db_parts.base import query_with_limits
+from .db_parts.base import query_with_limits, reject_parameters
 from .diagnostics import (
     enrich_expression_ast_error,
     enrich_object_not_found,
@@ -100,7 +100,7 @@ from .seed_provenance import (
     recorded_seed_digest,
 )
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
-from .sql_preparation import PreparedQuery
+from .sql_preparation import PreparedQuery, checked_parameter_values
 
 __all__ = [
     "CachedCompilation",
@@ -562,9 +562,22 @@ def _normalize_query_limits(raw: Any) -> dict[str, Any]:
 
 
 def _adapter_query(
-    adapter: Any, query: str | PreparedQuery, *, limits: dict[str, Any]
+    adapter: Any,
+    query: str | PreparedQuery,
+    *,
+    limits: dict[str, Any],
+    policy_context: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if isinstance(query, PreparedQuery):
+        if query.parameters:
+            # No fallback: an adapter without separate value binding never
+            # receives the statement, and values never enter the SQL text.
+            if getattr(adapter, "supports_parameters", False) is not True:
+                reject_parameters(query, adapter)
+            attributes = context_from_policy_context(policy_context).attributes
+            slot_values = [attributes.get(slot.attribute) for slot in query.parameters]
+            values = checked_parameter_values(query, slot_values)
+            return adapter.query_prepared(query, limits=limits, parameters=values)
         execute = getattr(adapter, "query_prepared", None)
         if execute is not None:
             return execute(query, limits=limits)
@@ -2071,7 +2084,12 @@ class Runtime:
                             },
                         }
                     )
-                rows = _adapter_query(adapter, compiled["prepared_query"], limits=limits)
+                rows = _adapter_query(
+                    adapter,
+                    compiled["prepared_query"],
+                    limits=limits,
+                    policy_context=policy_context,
+                )
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -2374,13 +2392,18 @@ class Runtime:
             'SELECT COUNT(*) AS "member_count" FROM (__SR_MEMBERSHIP__) AS "segment_members"'
         )
         count_prepared = PreparedQuery(
-            count_shell.sql.replace("__SR_MEMBERSHIP__", membership_compiled["sql"])
+            count_shell.sql.replace("__SR_MEMBERSHIP__", membership_compiled["sql"]),
+            parameters=membership_compiled["prepared_query"].parameters,
         )
         adapter = self._get_adapter()
         try:
             with self._query_lock:
-                rows = _adapter_query(adapter, preview_compiled["prepared_query"], limits={})
-                count_rows = _adapter_query(adapter, count_prepared, limits={})
+                rows = _adapter_query(
+                    adapter, preview_compiled["prepared_query"], limits={}, policy_context=context
+                )
+                count_rows = _adapter_query(
+                    adapter, count_prepared, limits={}, policy_context=context
+                )
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise

@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
-from ..sql_preparation import PreparedQuery
+from ..sql_preparation import PreparedQuery, parameters_denied
 
 
 @runtime_checkable
@@ -63,6 +63,10 @@ class WarehouseAdapter(ABC):
     # explicitly opt in. (DuckDB: False; SnowflakeCliAdapter: True via
     # session-level ALTER SESSION.)
     supports_statement_timeout: bool = False
+    # Whether ``query_prepared`` accepts ``parameters=`` and sends those values
+    # to the driver separately from the SQL. Every other adapter denies a
+    # statement with parameter slots before reaching its driver.
+    supports_parameters: bool = False
 
     @abstractmethod
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -89,12 +93,21 @@ class WarehouseAdapter(ABC):
         Built-in adapters with SQL compatibility rules override this method to
         send the prepared SQL directly to their driver without rewriting it.
         """
+        reject_parameters(prepared, self)
         rows = _clip_rows(query_with_limits(self, prepared.sql, limits=limits), limits)
         return restore_column_names(rows, prepared)
 
     @abstractmethod
     def close(self) -> None:
         raise NotImplementedError
+
+
+def reject_parameters(prepared: PreparedQuery, adapter: Any) -> None:
+    """Deny a parameterized statement on a path that has no separate value binding."""
+    if prepared.parameters:
+        raise parameters_denied(
+            "parameters_unsupported", engine=str(getattr(adapter, "engine", "") or "")
+        )
 
 
 def query_with_limits(

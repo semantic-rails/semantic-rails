@@ -68,8 +68,10 @@ engine carries the attributes through its internal calls. Request bodies,
 headers and plans can't create or replace them (a caller's
 `policy_context.attributes` is ignored), and they never appear in the public
 `request_context`, echoed queries, errors or audit events. The object is opaque
-and immutable: read it with `names` and `get(name)`. No query behavior reads
-attributes yet.
+and immutable: read it with `names` and `get(name)`. Attribute values partition
+the compile cache and bind to prepared-statement parameters at execution
+(DuckDB only; other adapters deny such statements). No package policy produces
+parameters yet.
 
 For in-memory Snowflake credentials, implement the generic
 `ConnectionCredentialProvider` protocol and pass it to the public adapter:

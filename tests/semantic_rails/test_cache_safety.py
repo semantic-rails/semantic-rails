@@ -4,7 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from semantic_rails.cache import CachedCompilation, CompiledSqlCache, LruCompiledSqlCache
+from semantic_rails.cache import (
+    CachedCompilation,
+    CompiledSqlCache,
+    LruCompiledSqlCache,
+    compilation_cache_key,
+)
+from semantic_rails.request_context import RequestContext
 
 
 def test_lru_compiled_sql_cache_returns_defensive_copies():
@@ -123,3 +129,52 @@ def test_compiled_sql_cache_protocol_runtime_checkable():
     assert isinstance(LruCompiledSqlCache(), CompiledSqlCache)
     assert isinstance(_RecordingCache(), CompiledSqlCache)
     assert not isinstance(object(), CompiledSqlCache)
+
+
+def _key(policy_context):
+    return compilation_cache_key(
+        package_hash="package",
+        normalized_query={"select": ["metric.m"]},
+        warehouse="duckdb",
+        relation_profile="default",
+        policy_context=policy_context,
+        aggregate_routing=False,
+    )
+
+
+def _host_context(**attributes):
+    return RequestContext(actor="host-user", attributes=attributes).to_policy_context()
+
+
+def test_compile_cache_key_is_partitioned_by_trusted_attribute_values():
+    # The attributes' repr names keys only; the key must still see each typed value.
+    variants = [{}, {"customer_id": "1"}, {"customer_id": "2"}, {"customer_id": 1}]
+    variants += [{"customer_id": True}, {"customer_id": ["1"]}, {"account_id": "1"}]
+    keys = [_key(_host_context(**attributes)) for attributes in variants]
+    assert len(set(keys)) == len(variants)
+    assert _key(_host_context(a="x", b=2)) == _key(_host_context(b=2, a="x"))
+    # Caller JSON never chooses a partition; it is dropped like any untrusted attribute.
+    spoofed = {**_host_context(), "attributes": {"customer_id": "1"}}
+    assert _key(spoofed) == _key(_host_context())
+
+
+def test_runtime_compile_cache_never_serves_one_attribute_value_to_another(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    recording = _RecordingCache()
+    runtime.set_compile_cache(recording)
+    request = {"version": 1, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
+    try:
+        compiled = [
+            runtime.compile({**request, "policy_context": _host_context(customer_id=customer)})
+            for customer in ("c-a", "c-b", "c-a", "c-b")
+        ]
+        key_a, key_b = recording.get_calls[:2]
+        assert key_a != key_b
+        assert recording.get_calls == [key_a, key_b, key_a, key_b]
+        assert recording.put_calls == [
+            key_a,
+            key_b,
+        ]  # the repeats were hits, in their own partition
+        assert len({result["rendered_sql"] for result in compiled}) == 1
+    finally:
+        runtime.close()

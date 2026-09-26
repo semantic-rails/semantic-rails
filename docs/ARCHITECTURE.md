@@ -434,6 +434,9 @@ executable SQL and physical-to-semantic column mappings. Compile and explain exp
 that SQL; built-in adapters execute it unchanged through `query_prepared`, restoring
 semantic aliases in result rows. Session timeout commands and row-fetch limits remain
 adapter concerns. Legacy direct `query(sql)` calls use the same preparation once.
+A statement may carry typed parameter slots that the runtime binds per request
+from trusted attributes; only adapters that bind values separately execute it
+(see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)).
 Segment preview and count execute their prepared statements independently; the
 preview response includes both statements. Live valid-values uses the ordinary
 query path and includes the loaded semantic identity in its provenance.
@@ -442,7 +445,9 @@ query path and includes the loaded semantic identity in its provenance.
 
 The runtime memoizes compiled plans behind a cache keyed on a sha256 of the
 normalized query, package fingerprint, warehouse, render profile, policy
-context, and aggregate-routing switch (`semantic_rails.cache.compilation_cache_key`).
+context, trusted attribute values, and aggregate-routing switch
+(`semantic_rails.cache.compilation_cache_key`). Requests whose attribute values
+differ never share a cached plan.
 The default backend is
 `LruCompiledSqlCache` — an in-process LRU sized via the
 `SEMANTIC_RAILS_COMPILE_CACHE_SIZE` env var (default 512). For the OSS

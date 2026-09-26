@@ -9,16 +9,70 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any, Literal
+
+from .errors import SemanticLayerError
+
+ParameterValue = str | int | bool
+_SLOT_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool}
+
+
+@dataclass(frozen=True)
+class ParameterSlot:
+    """One positional ``?`` placeholder, bound per request from a trusted attribute.
+
+    The value must have exactly the declared type: ``string``, ``integer`` or
+    ``boolean``. A compiled statement holds only slots, never their values.
+    """
+
+    attribute: str
+    type: Literal["string", "integer", "boolean"]
+
+    def __post_init__(self) -> None:
+        if self.type not in _SLOT_TYPES:
+            raise ValueError(f"Unsupported parameter type {self.type!r}.")
 
 
 @dataclass(frozen=True)
 class PreparedQuery:
-    """Executable SQL with physical-to-semantic result column names."""
+    """Executable SQL with physical-to-semantic result column names.
+
+    ``parameters`` lists the statement's ``?`` placeholders in order. Only an
+    adapter that sends values to its driver separately may execute such a
+    statement; values are never rendered into the SQL text.
+    """
 
     sql: str
     column_mapping: tuple[tuple[str, str], ...] = ()
+    parameters: tuple[ParameterSlot, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parameters", tuple(self.parameters))
+
+
+def parameters_denied(reason: str, **details: str) -> SemanticLayerError:
+    # Names the reason and attribute only; bound values never enter errors.
+    return SemanticLayerError(
+        "POLICY_DENIED",
+        "Query parameters could not be bound safely for this request.",
+        details={"reason": reason, **details},
+    )
+
+
+def checked_parameter_values(
+    prepared: PreparedQuery, values: Sequence[Any]
+) -> tuple[ParameterValue, ...]:
+    """Values matching the slots exactly: no NULL, no coercion, no extra or missing value."""
+    if len(values) != len(prepared.parameters):
+        raise parameters_denied("parameter_count_mismatch")
+    for slot, value in zip(prepared.parameters, values, strict=True):
+        if value is None:
+            raise parameters_denied("missing_attribute", attribute=slot.attribute)
+        if type(value) is not _SLOT_TYPES[slot.type]:
+            raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
+    return tuple(values)
 
 
 def prepare_query(sql: str, warehouse: str) -> PreparedQuery:
