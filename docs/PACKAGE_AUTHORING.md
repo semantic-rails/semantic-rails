@@ -1002,8 +1002,9 @@ A `stock` measure answers with each series' last snapshot in each period (its fi
 with `snapshot: start_of_period`), then adds up the series. A series is the row key
 without the clock's column, so a snapshot table's entity key is the series columns plus
 the snapshot time: `key: [store_id, date_day]` for inventory per store per day, not a
-surrogate such as `inventory_row_id` that is unique per snapshot row. Give the snapshot
-time `class: as_of_time`.
+surrogate such as `inventory_row_id` that is unique per snapshot row, and the series
+columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
+check below but still sums). Give the snapshot time `class: as_of_time`.
 
 - A stock whose key doesn't contain its clock's column gets a
   `STOCK_SNAPSHOT_KEY_MISSING_CLOCK` parse warning: each key value counts as its own

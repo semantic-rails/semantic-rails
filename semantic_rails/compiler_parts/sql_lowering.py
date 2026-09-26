@@ -202,6 +202,17 @@ def _measure_owned_key_columns(measure, entities, temporal_roles, dimensions) ->
     return list(entity.key or [entity.primary_key])
 
 
+def _stock_row_key(measure, config: PackageConfig) -> list[str]:
+    """The row key a stock's series come from: its declared grain, else its entity's key."""
+    return [column for column in list(measure.row_grain or []) if column] or [
+        column
+        for column in _measure_owned_key_columns(
+            measure, _entity_index(config), _temporal_role_index(config), _dimension_index(config)
+        )
+        if column
+    ]
+
+
 def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) -> dict[str, Any]:
     """Why a stock measure's row key can't tell its snapshots apart on this clock, or ``{}``.
 
@@ -218,13 +229,7 @@ def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) 
     clock = _dimension_index(config).get(role.dimension) if role is not None else None
     if role is None or clock is None or clock.entity != measure.entity:
         return {}
-    key = [column for column in list(measure.row_grain or []) if column] or [
-        column
-        for column in _measure_owned_key_columns(
-            measure, _entity_index(config), _temporal_role_index(config), _dimension_index(config)
-        )
-        if column
-    ]
+    key = _stock_row_key(measure, config)
     if not key or clock.column in key:
         return {}
     return {
@@ -247,22 +252,12 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
     sums a stock across periods. An empty result means the series is keyed by time
     alone (one snapshot per day), a valid singleton series.
     """
-    entities = _entity_index(config)
-    temporal_roles = _temporal_role_index(config)
-    dimensions = _dimension_index(config)
     order_column = ""
     if temporal_role_id:
-        order_column = dimensions[temporal_roles[temporal_role_id].dimension].column
-    declared = [column for column in list(measure.row_grain or []) if column]
-    fallback = [
-        column
-        for column in _measure_owned_key_columns(measure, entities, temporal_roles, dimensions)
-        if column
-    ]
-    series = [column for column in declared if column != order_column]
-    if not series:
-        series = [column for column in fallback if column != order_column]
-    if not series and not declared and not fallback:
+        role = _temporal_role_index(config)[temporal_role_id]
+        order_column = _dimension_index(config)[role.dimension].column
+    key = _stock_row_key(measure, config)
+    if not key:
         raise SemanticLayerError(
             "INVALID_CONFIG", f"Semi-additive measure '{measure.id}' requires a row grain"
         )
@@ -278,7 +273,7 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
             f"{gap['fix']}",
             details=gap,
         )
-    return series
+    return [column for column in key if column != order_column]
 
 
 def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:

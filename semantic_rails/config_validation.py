@@ -1306,14 +1306,13 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
             )
         for warning in list(getattr(measure, "authoring_warnings", []) or []):
             warnings.append(f"{prefix}: {warning}")
-        gap = next(
-            (
-                gap
-                for role_id in dict.fromkeys(measure.compatible_temporal_roles or [])
-                if (gap := _stock_clock_key_gap(measure, role_id, config))
-            ),
-            {},
-        )
+        # One warning per stock; an as-of gap (the one whose queries refuse) wins.
+        gaps = [
+            gap
+            for role_id in dict.fromkeys(measure.compatible_temporal_roles or [])
+            if (gap := _stock_clock_key_gap(measure, role_id, config))
+        ]
+        gap = min(gaps, key=lambda row: row["clock_class"] != "as_of_time", default={})
         if gap:
             refusal = (
                 "Its queries on that clock are refused."
