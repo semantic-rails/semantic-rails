@@ -77,18 +77,24 @@ uv run semantic-rails import --from ossie --source dist/ossie/jaffle_shop.ossie.
   --output dist/imported --package-id jaffle_shop
 ```
 
-It reads an Ossie 0.1.x document (the first model in `semantic_model`) or a 0.2 document (one
-model at the root), writes the package to `<output>/<package-id>/`, and prints a JSON report
-with the counts and warnings. Like the export, it never drops anything silently: every construct
-it skips or fills with a default gets one warning with the affected names.
+It reads documents written by `export --format ossie`, writes the package to
+`<output>/<package-id>/`, and prints a JSON report with the counts and warnings. Like the export,
+it never drops anything silently: every construct it skips or fills with a default gets one
+warning with the affected names. Other Ossie 0.1.x documents (the first model in
+`semantic_model`) and 0.2 documents (one model at the root) are read the same way, but that is
+experimental: the spec's own examples and the dbt and Snowflake converters' output aren't in the
+tests yet. Input it can't read, such as a malformed document or a sidecar of another format
+version, is refused with `INVALID_CONFIG`.
 
 - **With the sidecar** (`<name>.semantic_rails.json` beside the document, as the export writes
   it), every object comes back exactly: the document supplies what it carries and the sidecar
   the rest, including the objects the export left out. The import then exports what it wrote and
   compares that with the document and sidecar it read. The report says `round_trip: exact`, or
-  lists each difference, for example a metric whose SQL was edited after the export. A package
-  that uses relation pipelines, aggregate relations or path preferences is refused, naming those
-  objects, because they can't be written back as package files yet.
+  lists each difference, for example a metric whose SQL was edited, or a metric or field removed
+  or renamed, after the export. An import under another `--package-id` lists the package
+  identity as a difference. A package that uses relation pipelines, aggregate relations or path
+  preferences is refused, naming those objects, because they can't be written back as package
+  files yet.
 - **Without it**, the import keeps what the document states and uses defaults for the rest:
   - datasets with a table `source` and a `primary_key` become entities;
   - fields that name a column become dimensions, typed as categories, or as timestamps when
@@ -104,9 +110,11 @@ it skips or fills with a default gets one warning with the affected names.
     - `COALESCE(x, 0)` on both sides of `+` or `-`.
 
   Anything else is skipped with a warning: computed dimensions, other SQL, datasets defined by a
-  query, `unique_keys`, `custom_extensions`, and `ai_context` beyond `synonyms`.
+  query, `unique_keys`, `custom_extensions`, `ai_context` beyond `synonyms`, and elements whose
+  names only differ by case or punctuation from one already imported.
 
 The imported package reads data another tool built: `--default-db` names the DuckDB file
 (default `data/<package-id>.duckdb`, with `seed: {kind: external}`). A document written for
-Snowflake gets a `snowflake_cli` connection named after the package. `--warehouse`,
+Snowflake gets a `snowflake_cli` connection named after the package; other warehouses are
+refused. `--warehouse`,
 `--description` and `--schema-strict` apply to `--from metricflow` only.

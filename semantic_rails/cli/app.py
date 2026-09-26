@@ -858,8 +858,8 @@ def build_parser() -> argparse.ArgumentParser:
             "directory or a dbt-emitted semantic_manifest.json). No "
             "MetricFlow runtime is required — the translator reads "
             "YAML/JSON files standalone. `--from ossie` reads an Apache "
-            "Ossie 0.1.x or 0.2 document, plus the Semantic Rails sidecar "
-            "that `export --format ossie` writes beside it, when present; "
+            "Ossie document written by `export --format ossie` (other 0.1.x "
+            "and 0.2 documents: experimental), plus the sidecar beside it; "
             "--warehouse, --description and --schema-strict apply to metricflow "
             "only. See docs/OSSIE.md."
         ),

@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from collections import defaultdict
 from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, get_args, get_origin, get_type_hints
 
-from ...config import load_package_snapshot
+from ...config import (
+    _default_topics,
+    _derive_measure_semantics,
+    _suggested_aggregations,
+    load_package_snapshot,
+)
+from ...config_parts.package_loader import _slug, _titleize
 from ...errors import SemanticLayerError
 from ...expressions import (
     AggregateExpr,
@@ -31,11 +38,19 @@ from ...renderer import render_expr
 from ...schema import ConnectionSpec, PackageConfig, PackageMeta, SeedSpec
 from ...yaml_loader import load_yaml_file
 from ..package_writer import write_package
-from .export import export_ossie
+from .export import SIDECAR_FORMAT_VERSION, export_ossie
 
 # The keys each element may carry; any other key is counted as not imported.
 _READ = {
-    "model": {"name", "description", "datasets", "relationships", "metrics", "version"},
+    "model": {
+        "name",
+        "description",
+        "datasets",
+        "relationships",
+        "metrics",
+        "version",
+        "ai_context",
+    },
     "dataset": {"name", "source", "primary_key", "description", "ai_context", "fields"},
     "field": {"name", "expression", "dimension", "label", "description", "ai_context", "datatype"},
     "relationship": {"name", "from", "to", "from_columns", "to_columns", "ai_context"},
@@ -47,18 +62,14 @@ _MESSAGES = {
     "measures given defaults": f"{_DEFAULTED} (aggregation from their metrics, time from their dataset)",
     "temporal roles with default grains": _DEFAULTED,
     "round-trip differences": "exporting the imported package differs from the input here",
+    "names that collide once normalized": "not imported: another element already has that id",
+    "sidecar objects missing from the document": (
+        "not imported: the sidecar describes them but the document no longer names them"
+    ),
 }
 _AGGREGATES = {"SUM": "sum", "AVG": "avg", "MIN": "min", "MAX": "max", "COUNT": "count_distinct"}
 _TOKEN = re.compile(r"\s*(?:(\d+(?:\.\d+)?)|([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)|(\S))")
 _IDENTIFIER = re.compile(r'([A-Za-z_][\w$]*)|"((?:[^"]|"")+)"|`([^`]+)`')
-
-
-def _slug(value: str) -> str:
-    return "_".join(part for part in re.split(r"[^a-z0-9]+", str(value).lower()) if part)
-
-
-def _title(value: str) -> str:
-    return " ".join(part.capitalize() for part in str(value).replace("_", " ").split())
 
 
 def _build(cls: Any, data: dict[str, Any]) -> Any:
@@ -87,7 +98,8 @@ def _sql(node: dict[str, Any]) -> str:
 
 def _synonyms(node: dict[str, Any]) -> list[str]:
     context = node.get("ai_context")
-    return list(context.get("synonyms") or []) if isinstance(context, dict) else []
+    synonyms = context.get("synonyms") if isinstance(context, dict) else None
+    return [str(item) for item in synonyms] if isinstance(synonyms, list) else []
 
 
 def _fact(sql: str) -> SemanticExpr | None:
@@ -214,10 +226,15 @@ class _Importer:
     def residual(self, collection: str, sr_id: str) -> dict[str, Any] | None:
         return dict(self.objects.get(collection) or {}).get(sr_id)
 
-    def row(self, collection: str, sr_id: str, attributes: dict, **defaults: Any) -> None:
-        """The document's ``attributes``, overlaid with the sidecar's, or else ``defaults``."""
+    def row(self, collection: str, sr_id: str, attributes: dict, **defaults: Any) -> bool:
+        """The document's ``attributes``, overlaid with the sidecar's, or else ``defaults``;
+        false (and counted) when another element already took ``sr_id``."""
+        if sr_id in self.rows[collection]:
+            self.skip("names that collide once normalized", sr_id)
+            return False
         extra = self.residual(collection, sr_id)
         self.rows[collection][sr_id] = {"id": sr_id, **attributes, **(extra or defaults)}
+        return True
 
     def node(self, kind: str, node: dict[str, Any]) -> str:
         """``node``'s name, counting the keys and ``ai_context`` text this import doesn't read."""
@@ -241,15 +258,15 @@ class _Importer:
                 self.skip("datasets without a primary key or defined by a query", name)
                 continue
             entity_id = self.sr_id("datasets", name, f"entity.{self.ns}_{_slug(name)}")
-            self.datasets[name] = entity_id
             document = {"table": source, "primary_key": key[0], "key": key}
             document.update(
                 description=str(dataset.get("description") or ""), aliases=_synonyms(dataset)
             )
-            defaults = {"name": name, "label": _title(name), "identifiers": key}
-            self.row(
-                "entities", entity_id, document, **defaults, key_roles=dict.fromkeys(key, "primary")
-            )
+            defaults = {"name": name, "label": _titleize(name), "identifiers": key}
+            roles = dict.fromkeys(key, "primary")
+            if not self.row("entities", entity_id, document, **defaults, key_roles=roles):
+                continue
+            self.datasets[name] = entity_id
             for field in dataset.get("fields") or []:
                 self.read_field(name, entity_id, key, field)
 
@@ -259,16 +276,16 @@ class _Importer:
         document = {"entity": entity_id, "label": label, "aliases": _synonyms(field)}
         document["description"] = str(field.get("description") or "")
         if "dimension" not in field:
-            measure_id = self.sr_id("fields", ref, f"measure.{self.ns}.{_slug(name)}")
-            if measure_id in self.rows["measures"]:
-                measure_id = f"measure.{self.ns}.{_slug(dataset)}_{_slug(name)}"
+            measure_id = self.sr_id(
+                "fields", ref, f"measure.{self.ns}.{_slug(dataset)}_{_slug(name)}"
+            )
             exact = dict(self.exact.get("measures") or {}).get(measure_id)
             expr = _value(None, exact, "expr") if exact else _fact(sql)
             if expr is None:
                 self.skip("facts outside the supported expression grammar", ref)
                 return
-            self.fields[ref] = measure_id
-            self.row("measures", measure_id, {**document, "expr": expr}, row_grain=key)
+            if self.row("measures", measure_id, {**document, "expr": expr}, row_grain=key):
+                self.fields[ref] = measure_id
             return
         match = _IDENTIFIER.fullmatch(sql)
         if match is None:
@@ -280,13 +297,16 @@ class _Importer:
             self.row("dimensions", dim_id, document)
             return
         datatype = str(field.get("datatype", "")).lower()  # 0.2 only
-        is_time = datatype in {"date", "timestamp"} or dict(field["dimension"] or {}).get("is_time")
+        marker = field["dimension"] if isinstance(field["dimension"], dict) else {}
+        is_time = datatype in {"date", "timestamp"} or bool(marker.get("is_time"))
         kind = (datatype if datatype == "date" else "timestamp") if is_time else "categorical"
-        document["label"] = label = label or _title(name)
+        document["label"] = label = label or _titleize(name)
         document["description"] = document["description"] or label
-        self.skip("dimensions typed by default", dim_id)
         data_type = "string" if kind == "categorical" else kind
-        self.row("dimensions", dim_id, document, name=name, data_type=data_type, semantic_kind=kind)
+        typed = {"name": name, "data_type": data_type, "semantic_kind": kind}
+        if not self.row("dimensions", dim_id, document, **typed):
+            return
+        self.skip("dimensions typed by default", dim_id)
         if is_time:
             role_id = f"temporal_role.{self.ns}_{_slug(dataset)}_{_slug(name)}"
             self.skip("temporal roles with default grains", role_id)
@@ -306,7 +326,7 @@ class _Importer:
     def read_relationships(self) -> None:
         for node in self.model.get("relationships") or []:
             name = self.node("relationship", node)
-            ends = [self.datasets.get(str(node.get(side, ""))) for side in ("from", "to")]
+            ends = [self.datasets.get(str(node.get(side, ""))) or "" for side in ("from", "to")]
             columns = [list(node.get(f"{side}_columns") or []) for side in ("from", "to")]
             if not all(ends) or not all(columns):
                 self.skip("relationships to datasets not imported", name)
@@ -314,15 +334,16 @@ class _Importer:
             rel_id = self.sr_id("relationships", name, f"relationship.{_slug(name)}")
             if (self.residual("relationships", rel_id) or {}).get("cardinality") == "1:N":
                 ends, columns = ends[::-1], columns[::-1]  # the export writes 1:N joins reversed
-            document = {
-                "source_entity": ends[0],
-                "target_entity": ends[1],
-                "aliases": _synonyms(node),
-            }
+            document: dict[str, Any] = {"source_entity": ends[0], "target_entity": ends[1]}
+            document["aliases"] = _synonyms(node)
             document.update(source_column=columns[0][0], source_columns=columns[0])
             document.update(target_column=columns[1][0], target_columns=columns[1])
             document.update(cardinality="N:1", safety="safe")
-            self.row("relationships", rel_id, document, name=name, label=_title(name))
+            # The key roles the loader derives: a join on the source's own key is primary.
+            key = self.rows["entities"][ends[0]]["key"]
+            source_role = "primary" if set(columns[0]) <= set(key) else "foreign"
+            defaults = {"name": name, "label": _titleize(name), "source_key_role": source_role}
+            self.row("relationships", rel_id, document, **defaults, target_key_role="primary")
 
     def read_metrics(self) -> None:
         parsed = []
@@ -345,41 +366,37 @@ class _Importer:
             if any(agg != "count_distinct" and measure in counted for measure, agg in used):
                 self.skip("metrics summing a field other metrics count distinct", name)
                 continue
-            for measure, agg in used:
-                summed[measure].add(agg)
             ratio = isinstance(expr, ArithmeticExpr) and expr.op == "divide" and len(used) == 2
             kind = (
                 "aggregate" if isinstance(expr, AggregateExpr) else "ratio" if ratio else "derived"
             )
             description = str(node.get("description") or "")
             document = {"expression": expr, "description": description, "aliases": _synonyms(node)}
-            defaults = {"kind": kind, "name": name, "label": _title(name)}
-            self.row(
-                "metric_recipes",
-                metric_id,
-                document,
-                **defaults,
-                description=description or _title(name),
+            defaults: dict[str, Any] = {"kind": kind, "name": name, "label": _titleize(name)}
+            defaults.update(
+                description=description or _titleize(name), topics=_default_topics(name)
             )
+            if self.row("metric_recipes", metric_id, document, **defaults):
+                for measure, agg in used:
+                    summed[measure].add(agg)
+        # What the loader derives for each defaulted measure, so it loads back as built.
         for measure_id, row in self.rows["measures"].items():
-            if self.residual("measures", measure_id) is None:
-                self.skip("measures given defaults", measure_id)
-                distinct = measure_id in counted
-                aggregation = "count_distinct" if distinct else min(summed[measure_id] or {"sum"})
-                row.update(subject_entity=row["entity"], aggregation_entity=row["entity"])
-                row.update(name=measure_id.split(".", 1)[-1], default_aggregation=aggregation)
-                row["label"] = row["label"] or _title(measure_id.rsplit(".", 1)[-1])
-                row["description"] = row["description"] or row["label"]
-                row["measure_class"] = "event_count" if distinct else "additive"
-                roles = [r for r, entity in self.role_entities.items() if entity == row["entity"]]
-                row.update(
-                    compatible_temporal_roles=roles, default_temporal_role=(roles or [""])[0]
-                )
-                row["allowed_aggregations"] = (
-                    [aggregation]
-                    if distinct
-                    else ["sum", "avg", "min", "max", "median", "percentile"]
-                )
+            if self.residual("measures", measure_id) is not None:
+                continue
+            self.skip("measures given defaults", measure_id)
+            spec = {"kind": "entity_count"} if measure_id in counted else {}
+            default, allowed, invalid, measure_class = _derive_measure_semantics(spec)
+            default = default if spec else min(summed[measure_id] or {"sum"})
+            name = measure_id.split(".", 1)[-1]
+            roles = [r for r, entity in self.role_entities.items() if entity == row["entity"]]
+            row.update(subject_entity=row["entity"], aggregation_entity=row["entity"], name=name)
+            row.update(default_aggregation=default, allowed_aggregations=allowed)
+            row.update(invalid_aggregations=invalid, measure_class=measure_class)
+            row["suggested_aggregations"] = _suggested_aggregations(default, allowed, measure_class)
+            row.update(topics=_default_topics(name), compatible_temporal_roles=roles)
+            row["default_temporal_role"] = (roles or [""])[0]
+            row["label"] = row["label"] or _titleize(name.rsplit(".", 1)[-1])
+            row["description"] = row["description"] or row["label"]
 
     def package(self, package_id: str, namespace: str) -> PackageConfig:
         identity = dict(self.sidecar.get("package") or {})
@@ -390,6 +407,10 @@ class _Importer:
         self.read_metrics()
         objects = dict(self.objects)
         residual = dict(objects.pop("package", None) or {}).get(identity.get("id")) or {}
+        # Deployment isn't part of the export; the import sets it, never the sidecar.
+        residual = {
+            k: v for k, v in residual.items() if k not in {"connection", "seed", "default_db"}
+        }
         document = {
             "package_id": package_id,
             "name": package_id,
@@ -405,14 +426,23 @@ class _Importer:
             found = sorted(dialects & {"SNOWFLAKE", "DATABRICKS"})
             meta = replace(meta, warehouse=found[0].lower() if len(found) == 1 else "duckdb")
         hints, built = get_type_hints(PackageConfig), dict[str, Any]()
-        for item in fields(PackageConfig)[2:]:  # after version and package
+        for item in fields(PackageConfig):
+            if item.name in {"version", "package"}:
+                continue
             value, hint = objects.pop(item.name, None), hints[item.name]
             args = get_args(hint)
             if get_origin(hint) is list and args and is_dataclass(args[0]):
                 rows: dict[Any, dict[str, Any]] = dict(self.rows.get(item.name) or {})
-                # Objects the export left out of the document come whole from the sidecar.
-                left_out = value.items() if isinstance(value, dict) else enumerate(value or [])
-                rows.update({i: row for i, row in left_out if i not in rows})
+                # Objects the export left out of the document come whole from the sidecar; the
+                # rest of the sidecar's rows add to objects the document should still name.
+                sidecar_rows = value.items() if isinstance(value, dict) else enumerate(value or [])
+                for i, row in sidecar_rows:
+                    if i in rows:
+                        continue
+                    if "id" in row:
+                        rows[i] = row
+                    else:
+                        self.skip("sidecar objects missing from the document", str(i))
                 built[item.name] = [_build(args[0], row) for row in rows.values()]
             elif value is not None:
                 built[item.name] = _value(hint, value, item.name)
@@ -471,13 +501,17 @@ def import_ossie(
     sidecar_path = source.with_name(
         re.sub(r"(\.ossie)?\.ya?ml$", "", source.name) + ".semantic_rails.json"
     )
-    sidecar = (
-        json.loads(sidecar_path.read_text(encoding="utf-8")) if sidecar_path.is_file() else None
-    )
-    if sidecar is not None and sidecar.get("format") != "semantic_rails.ossie_sidecar":
-        raise SemanticLayerError("INVALID_CONFIG", f"{sidecar_path}: not a Semantic Rails sidecar")
-    importer = _Importer(document, sidecar)
-    config = importer.package(package_id, namespace)
+    try:
+        sidecar = json.loads(sidecar_path.read_text("utf-8")) if sidecar_path.is_file() else None
+        if sidecar is not None and (
+            sidecar.get("format"),
+            sidecar.get("format_version"),
+        ) != ("semantic_rails.ossie_sidecar", SIDECAR_FORMAT_VERSION):
+            raise ValueError(f"{sidecar_path} is not a version-1 Semantic Rails sidecar")
+        importer = _Importer(document, sidecar)
+        config = importer.package(package_id, namespace)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:  # a malformed input shape
+        raise SemanticLayerError("INVALID_CONFIG", f"{source}: can't read it ({exc})") from exc
     meta, pid = config.package, config.package.package_id
     if not re.fullmatch(r"\w[\w.-]*", pid):  # it names the output directory
         raise SemanticLayerError("INVALID_CONFIG", f"Package id {pid!r} can't name a directory")
@@ -490,10 +524,8 @@ def import_ossie(
     else:
         message = f"Importing a {meta.warehouse} package isn't supported yet"
         raise SemanticLayerError("INVALID_CONFIG", message)
-    # Without the sidecar the document leaves attributes unset; the loader's defaults fill them.
     config = replace(config, package=meta)
-    target = Path(output_dir).expanduser() / pid
-    directory = write_package(config, target, namespace=importer.ns, exact=sidecar is not None)
+    directory = write_package(config, Path(output_dir).expanduser() / pid, namespace=importer.ns)
     report: dict[str, Any] = {
         "ok": True,
         "format": "ossie",
@@ -504,7 +536,12 @@ def import_ossie(
     collections = ("entities", "dimensions", "measures", "relationships", "metric_recipes")
     report["imported"] = {name: len(getattr(config, name)) for name in collections}
     if sidecar is not None:
-        for path in _round_trip(directory, importer.model, sidecar):
+        try:
+            differences = _round_trip(directory, importer.model, sidecar)
+        except Exception:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
+        for path in differences:
             importer.skip("round-trip differences", path)
         report["round_trip"] = "differs" if importer.warnings["round-trip differences"] else "exact"
     report["warnings"] = [

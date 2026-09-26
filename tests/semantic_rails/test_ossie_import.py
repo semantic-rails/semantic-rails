@@ -74,7 +74,7 @@ def test_export_import_export_is_exact(package_id, tmp_path) -> None:
 @pytest.mark.parametrize("package_id", PACKAGES)
 def test_import_without_the_sidecar_validates_with_counted_defaults(package_id, tmp_path) -> None:
     document = _export(PACKAGES[package_id], tmp_path / "ossie")
-    document.with_name(f"{document.name.split('.')[0]}.semantic_rails.json").unlink()
+    _sidecar(document).unlink()
     report = import_ossie(document, tmp_path / "imported")
     assert report["sidecar"] is None and "round_trip" not in report
     assert {w["construct"]: w["count"] for w in report["warnings"]} == WITHOUT_SIDECAR[package_id]
@@ -116,19 +116,100 @@ def test_imported_jaffle_answers_every_example_like_the_original(tmp_path) -> No
     assert actual == expected
 
 
-def test_an_edited_document_is_reported_against_its_stale_sidecar(tmp_path) -> None:
+def _without_metric(document: dict, name: str) -> None:
+    [model] = document["semantic_model"]
+    model["metrics"] = [m for m in model["metrics"] if m["name"] != name]
+
+
+def _renamed_field(document: dict, old: str, new: str) -> None:
+    for dataset in document["semantic_model"][0]["datasets"]:
+        for field in dataset.get("fields") or []:
+            field["name"] = new if field["name"] == old else field["name"]
+
+
+@pytest.mark.parametrize(
+    ("edit", "differences", "missing"),
+    [
+        (
+            lambda text: text.replace(
+                "SUM(tpch_order.tpch_revenue)", "MAX(tpch_order.tpch_revenue)"
+            ),
+            ["document.metrics.sales_average_order_value", "document.metrics.sales_revenue"],
+            None,
+        ),
+        (
+            lambda text: _edited(text, lambda d: _without_metric(d, "sales_orders")),
+            [
+                "sidecar.names.metrics.sales_orders",
+                "sidecar.objects.metric_recipes.metric.sales.orders",
+            ],
+            ["metric.sales.orders"],
+        ),
+        (
+            lambda text: _edited(
+                text, lambda d: _renamed_field(d, "tpch_customer_market_segment", "segment")
+            ),
+            [
+                "document.datasets.tpch_customer",
+                "sidecar.names.fields.tpch_customer.tpch_customer_market_segment",
+            ],
+            ["dimension.tpch_customer_market_segment"],
+        ),
+    ],
+)
+def test_a_document_edited_after_the_export_is_reported(edit, differences, missing, tmp_path):
     document = _export(PACKAGES["tpch_sf1_showcase"], tmp_path / "ossie")
-    text = document.read_text(encoding="utf-8")
-    document.write_text(
-        text.replace("SUM(tpch_order.tpch_revenue)", "MAX(tpch_order.tpch_revenue)")
-    )
+    document.write_text(edit(document.read_text(encoding="utf-8")), encoding="utf-8")
     report = import_ossie(document, tmp_path / "imported")
+    warnings = {w["construct"]: w["ids"] for w in report["warnings"]}
     assert report["round_trip"] == "differs"
-    [differences] = [w for w in report["warnings"] if w["construct"] == "round-trip differences"]
-    assert differences["ids"] == [
-        "document.metrics.sales_average_order_value",
-        "document.metrics.sales_revenue",
-    ]
+    assert set(differences) <= set(warnings["round-trip differences"])
+    assert warnings.get("sidecar objects missing from the document") == missing
+
+
+def _edited(text: str, change) -> str:
+    document = yaml.safe_load(text)
+    change(document)
+    return yaml.safe_dump(document, sort_keys=False)
+
+
+def _sidecar(document: Path) -> Path:
+    return document.with_name(f"{document.name.split('.')[0]}.semantic_rails.json")
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (lambda doc, side: doc.write_text("version: '1.0'\n"), "not an Ossie 0.1.x or 0.2"),
+        (lambda doc, side: side.write_text("{", encoding="utf-8"), "can't read it"),
+        (
+            lambda doc, side: side.write_text(
+                side.read_text().replace('"format_version": 1', '"format_version": 2')
+            ),
+            "not a version-1 Semantic Rails sidecar",
+        ),
+        (
+            lambda doc, side: (
+                side.unlink(),
+                doc.write_text("version: 0.2.0\ndatasets: [orders]\n"),
+            ),
+            "can't read it",
+        ),
+        (
+            lambda doc, side: (
+                side.unlink(),
+                doc.write_text(doc.read_text().replace("ANSI_SQL", "DATABRICKS")),
+            ),
+            "Importing a databricks package isn't supported yet",
+        ),
+    ],
+)
+def test_input_it_cannot_read_is_refused_with_a_typed_error(edit, message, tmp_path) -> None:
+    document = _export(PACKAGES["shop_starter"], tmp_path / "ossie")
+    edit(document, _sidecar(document))
+    with pytest.raises(SemanticLayerError, match=message):
+        import_ossie(document, tmp_path / "imported")
+    assert not (tmp_path / "imported").exists()
 
 
 FOREIGN = """
@@ -154,6 +235,7 @@ datasets:
     primary_key: [customer_id]
     fields:
       - {name: customer_id, label: null, dimension: {}, expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}}
+  - {name: Customers, source: crm.customers, primary_key: [customer_id]}
 relationships:
   - {name: orders_customer, from: orders, to: customers, from_columns: [customer_id], to_columns: [customer_id]}
   - {name: recent_customer, from: recent, to: customers, from_columns: [customer_id], to_columns: [customer_id]}
@@ -166,6 +248,7 @@ metrics:
   - {name: max_orders, expression: {dialects: [{dialect: ANSI_SQL, expression: MAX(orders.orders)}]}}
   - {name: share, expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(orders.amount) / SUM(orders.amount)}]}}
   - {name: broken, expression: null}
+  - {name: Revenue, expression: {dialects: [{dialect: ANSI_SQL, expression: AVG(orders.amount)}]}}
 """
 
 
@@ -184,11 +267,11 @@ def test_a_foreign_0_2_document_imports_what_it_can_and_counts_the_rest(tmp_path
         ],
         "dimensions with computed expressions": ["orders.status_code"],
         "facts outside the supported expression grammar": ["orders.big"],
-        "measures given defaults": ["measure.shop.amount", "measure.shop.orders"],
+        "measures given defaults": ["measure.shop.orders_amount", "measure.shop.orders_orders"],
         "metric custom_extensions": ["aov"],
         "metrics outside the aggregate grammar": ["broken", "share"],
         "metrics summing a field other metrics count distinct": ["max_orders"],
-        "model ai_context": ["shop"],
+        "names that collide once normalized": ["entity.shop_customers", "metric.shop.revenue"],
         "model ai_context text": ["shop"],
         "relationships to datasets not imported": ["recent_customer"],
         "temporal roles with default grains": ["temporal_role.shop_orders_ordered_at"],
