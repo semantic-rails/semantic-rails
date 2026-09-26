@@ -139,7 +139,8 @@ def trailing_window_runtime(tmp_path_factory):
         "value_type: count}\n"
     )
     (package / "metrics" / "metrics.yml").write_text(
-        "metrics:\n  unique_visitors_14d: {label: Unique visitors (14 days), "
+        # The metric's label leaves the span out; only its id and its measure state it.
+        "metrics:\n  unique_visitors_14d: {label: Unique visitors, "
         "description: Distinct visitors in the trailing 14-day window as of the snapshot., "
         "kind: semi_additive, measure: visitors_14d, value_type: count, "
         "temporal_role: temporal_role.f4win_repo_snapshot_snapshot_date}\n"
@@ -157,13 +158,16 @@ def trailing_window_runtime(tmp_path_factory):
 @pytest.mark.parametrize(
     ("intent", "status"),
     [
-        # A 14-day count bucketed or bounded by week is not the week's unique visitors.
+        # A 14-day count bucketed or bounded by week is not the week's unique visitors;
+        # each row covers its bucket, however long the whole window is.
         ("unique visitors by week", "low_confidence"),
         ("unique visitors last week", "low_confidence"),
+        ("unique visitors in the last two weeks by week", "low_confidence"),
         ("unique visitors in September 2026 by day", "low_confidence"),
-        # No period asked for, or the question names the subject's own window.
+        # No period asked for, or the question asks for the subject's own window.
         ("how many unique visitors", "ok"),
         ("unique visitors over 14 days by week", "ok"),
+        ("rolling unique visitors by week", "ok"),
     ],
 )
 def test_a_subject_with_its_own_window_is_flagged_for_another_period(
@@ -172,3 +176,8 @@ def test_a_subject_with_its_own_window_is_flagged_for_another_period(
     payload = plan_payload(trailing_window_runtime, intent=intent)
     assert payload["status"] == status, payload.get("why")
     assert ("subject_window_mismatch" in _gap_kinds(payload)) == (status != "ok")
+
+
+def test_a_rolling_metric_asked_for_as_rolling_is_not_flagged(runtime_factory) -> None:
+    payload = plan_payload(runtime_factory("jaffle_shop"), intent="rolling revenue by day")
+    assert "subject_window_mismatch" not in _gap_kinds(payload)

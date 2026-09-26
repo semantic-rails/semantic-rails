@@ -493,7 +493,8 @@ def intent_faithfulness_why(
     ):
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
-    gaps.extend(_subject_window_gaps(runtime._config, text, query))
+    # Read the asker's own words: a named metric's id may state a span they didn't.
+    gaps.extend(_subject_window_gaps(runtime._config, str(question or ""), query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
@@ -624,10 +625,15 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
     ]
 
 
-# A span a label, name or question states: "(14 days)", "14-day", "_14d", "28 d", "4 weeks".
-_SPAN_RE = re.compile(r"(?<![\w.])(\d+)\s*-?\s*(d|days?|w|wks?|weeks?|mo|months?)\b")
-_SPAN_UNIT_DAYS = {"d": 1, "w": 7, "m": 30}
+# A span a label, name or question states: "(14 days)", "14-day", "_14d", "4 weeks", "1 year";
+# not the upper end of a range such as "31-60 days".
+_SPAN_RE = re.compile(
+    r"(?<![\w.\-\u2013])(\d+)\s*-?\s*(d|days?|w|wks?|weeks?|mo|months?|q|quarters?|y|yrs?|years?)\b"
+)
+_SPAN_UNIT_DAYS = {"d": 1, "w": 7, "m": 30, "q": 91, "y": 365}
 _GRAIN_DAYS = {"day": 1, "week": 7, "month": 30, "quarter": 91, "year": 365}
+# A question about a rolling or as-of value asks for the subject's own window.
+_OWN_WINDOW_RE = re.compile(r"\b(rolling|trailing|moving|as of)\b")
 
 
 def _stated_spans(text: str) -> set[int]:
@@ -637,12 +643,15 @@ def _stated_spans(text: str) -> set[int]:
 
 
 def _same_span(a: int, b: int) -> bool:
-    return a == b or (a >= 28 and b >= 28 and abs(a - b) <= 3)  # a month is 28-31 days
+    # A month is 28-31 days, a year 360-366.
+    return a == b or (a >= 28 and b >= 28 and abs(a - b) <= max(3, max(a, b) // 50))
 
 
 def _draft_span_days(query: dict[str, Any]) -> int:
-    """Days in the period the draft reports each value for: its window, else its bucket."""
+    """Days in the period the draft reports each value for: its bucket, else its window."""
     time = _time_block(query)
+    if str(time.get("grain") or "") in _GRAIN_DAYS:
+        return _GRAIN_DAYS[str(time["grain"])]
     try:
         if time.get("start") and time.get("end"):
             start, end = (date.fromisoformat(str(time[key])[:10]) for key in ("start", "end"))
@@ -652,7 +661,7 @@ def _draft_span_days(query: dict[str, Any]) -> int:
     last = dict(dict(time.get("range") or {}).get("last") or {})
     if last.get("unit") in _GRAIN_DAYS:
         return _GRAIN_DAYS[last["unit"]] * int(last.get("value") or 1)
-    return _GRAIN_DAYS.get(str(time.get("grain") or ""), 0)
+    return 0
 
 
 def _subject_window_gaps(config: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
@@ -664,18 +673,24 @@ def _subject_window_gaps(config: Any, text: str, query: dict[str, Any]) -> list[
     is read from the subject's label, name or id, so a false match only lowers confidence.
     """
     asked = _draft_span_days(query)
-    if not asked:
+    subjects = _projected_subject_ids(query)
+    if not asked or _OWN_WINDOW_RE.search(text.lower()):
         return []
     named = _stated_spans(text)
     objects = {row.id: row for row in [*config.measures, *config.metric_recipes]}
     gaps: list[CoverageGap] = []
-    for subject_id in _projected_subject_ids(query):
+    for subject_id in subjects:
         row = objects.get(subject_id)
         kind = getattr(row, "measure_class", "") or getattr(row, "kind", "")
         if kind not in {"semi_additive", "rolling"}:
             continue
         label = str(getattr(row, "label", "") or subject_id)
-        spans = _stated_spans(f"{label} {getattr(row, 'name', '')} {subject_id}")
+        window = dict(getattr(row, "window_spec", {}) or {})
+        spans = (
+            {_SPAN_UNIT_DAYS[str(window["unit"])[0]] * int(window.get("value") or 1)}
+            if str(window.get("unit") or "")[:1] in _SPAN_UNIT_DAYS
+            else _stated_spans(f"{label} {getattr(row, 'name', '')} {subject_id}")
+        )
         if len(spans) != 1 or any(_same_span(span, own) for span in named for own in spans):
             continue
         (own,) = spans
