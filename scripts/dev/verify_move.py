@@ -6,9 +6,13 @@ Usage: python scripts/dev/verify_move.py <base-ref> [<head-ref>] [--repo DIR] [-
 Checks, over every changed ``semantic_rails/**.py`` file:
 1. Every top-level statement other than an import (def, class, assignment, with decorators and
    attached comments) exists exactly once on each side with byte-identical text and an identical
-   AST. Imports nested inside a definition are left out of that comparison, and checked by 2.
-2. Every name a statement reads, and every name a nested import binds, resolves to the same
-   definition on both sides: a definition is identified by the module and name it had at base.
+   AST, except that each import nested inside it is compared as a placeholder naming what it
+   binds (its position and count still count), and checked by 2.
+2. Every name a statement reads from module scope (per Python's scoping rules), and every name a
+   nested import binds, resolves to the same definition on both sides: a definition is identified
+   by the module and name it had at base. No moved statement declares ``global``, reads or binds
+   a name its old or new module declares ``global`` anywhere, and every moved public name, or
+   name in its old module's ``__all__``, is still reachable from the old module.
 3. The only new statements allowed are lazy forwarders,
    ``def f(*args, **kwargs): from <module> import f as fn; return fn(*args, **kwargs)``; a base
    forwarder may disappear only where the module now binds the definition it forwarded to.
@@ -19,6 +23,11 @@ Checks, over every changed ``semantic_rails/**.py`` file:
    patch on its old module (the patch would stop intercepting that call).
 7. Every ``from <changed module> import name`` in the package, tests and scripts still resolves to
    the same definition (a re-export ruff dropped, or a re-pointed importer, fails here).
+
+Limits: it reads only this repository, so importers and patches elsewhere (other repos, string
+paths) need their own check; a moved private name outside ``__all__`` may leave its old module
+when nothing here imports it from there; top-level imports aren't compared as statements, and
+names bound inside top-level ``if``/``try`` blocks aren't modelled.
 """
 
 from __future__ import annotations
@@ -27,6 +36,7 @@ import argparse
 import ast
 import functools
 import subprocess
+import symtable
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -39,9 +49,10 @@ HAZARDS = {"__file__", "__name__", "__package__", "__spec__", "globals", "vars",
 class Stmt:
     module: str
     name: str
-    key: tuple[str, str, str]  # (kind:name, text without nested imports, AST dump without them)
-    loads: set[str]
-    nested: dict[str, tuple[str, str]]  # local name -> (absolute module, imported name)
+    key: tuple[str, str, str]  # (kind:name, text, AST dump), nested imports as placeholders
+    loads: set[str]  # names read from module scope
+    declared_global: set[str]
+    nested: list[tuple[str, str, str]]  # (local name, absolute module, imported name), in order
     forward_to: tuple[str, str] | None = None
     base_id: tuple[str, str] | None = None
 
@@ -59,19 +70,26 @@ def _absolute(node: ast.ImportFrom, module: str, is_package: bool) -> str:
     return ".".join(base + ([node.module] if node.module else []))
 
 
-def _bound_locally(node: ast.AST) -> set[str]:
-    bound: set[str] = set()
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
-            bound.add(sub.id)
-        elif isinstance(sub, ast.arg):
-            bound.add(sub.arg)
-        elif (
-            isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and sub is not node
-        ) or (isinstance(sub, ast.ExceptHandler) and sub.name):
-            bound.add(sub.name)
-    return bound
+def _scope_names(source: str) -> tuple[set[str], set[str]]:
+    """Names a top-level statement reads from module scope, and names it declares ``global``."""
+    reads: set[str] = set()
+    declared: set[str] = set()
+
+    def walk(table: symtable.SymbolTable, top: bool) -> None:
+        for sym in table.get_symbols():
+            if sym.is_declared_global():
+                declared.add(sym.get_name())
+            if sym.is_referenced() and (top or sym.is_global()):
+                reads.add(sym.get_name())
+        for child in table.get_children():
+            walk(child, False)
+
+    walk(symtable.symtable(source, "<statement>", "exec"), True)
+    return reads, declared
+
+
+def _placeholder(node: ast.Import | ast.ImportFrom) -> str:
+    return "<import " + ", ".join(a.asname or a.name for a in node.names) + ">"
 
 
 def _is_forwarder(node: ast.stmt) -> bool:
@@ -88,13 +106,36 @@ def _is_forwarder(node: ast.stmt) -> bool:
     )
 
 
-def parse_module(path: str, text: str) -> tuple[list[Stmt], dict[str, tuple], list[str]]:
-    """Statements, top-level bindings and comment lines of one module."""
+@dataclass
+class Module:
+    stmts: list[Stmt]
+    binds: dict[str, tuple]
+    comments: list[str]
+    exports: set[str]  # names in ``__all__``
+    rebound: set[str]  # names declared ``global`` anywhere in the module
+
+
+_IMPORTS = (ast.Import, ast.ImportFrom)
+
+
+class _Placeholders(ast.NodeTransformer):
+    """Replace each nested import with a placeholder that keeps its position and bound names."""
+
+    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> ast.Expr:
+        return ast.Expr(ast.Constant(_placeholder(node)))
+
+    visit_ImportFrom = visit_Import
+
+
+def parse_module(path: str, text: str) -> Module:
+    """Statements, top-level bindings, comment lines, ``__all__`` and rebound globals of a module."""
     module, is_package = _module_name(path), path.endswith("__init__.py")
     lines = text.splitlines(keepends=True)
     tree = ast.parse(text)
     stmts: list[Stmt] = []
     binds: dict[str, tuple] = {}
+    exports: set[str] = set()
+    rebound = {n for sub in ast.walk(tree) if isinstance(sub, ast.Global) for n in sub.names}
     for i, node in enumerate(tree.body):
         if isinstance(node, ast.ImportFrom):
             for a in node.names:
@@ -115,6 +156,8 @@ def parse_module(path: str, text: str) -> tuple[list[Stmt], dict[str, tuple], li
             bound = getattr(target, "name", None) or getattr(target, "id", None)
             if bound:
                 binds[bound] = ("def", module, bound)
+            if bound == "__all__":
+                exports = set(ast.literal_eval(node.value))
         start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
         while start > 1 and lines[start - 2].lstrip().startswith("#"):
             start -= 1
@@ -122,41 +165,36 @@ def parse_module(path: str, text: str) -> tuple[list[Stmt], dict[str, tuple], li
         if _is_forwarder(node):
             imp = node.body[0]
             forward_to = (_absolute(imp, module, is_package), node.name)
-        nested: dict[str, tuple[str, str]] = {}
-        skip: set[int] = set()
-        for sub in list(ast.walk(node)):
-            if sub is node or not isinstance(sub, (ast.Import, ast.ImportFrom)) or forward_to:
-                continue
-            for a in sub.names:
+        source = "".join(lines[start - 1 : node.end_lineno])
+        loads, declared = _scope_names(source)
+        nested: list[tuple[str, str, str]] = []
+        imports = [] if forward_to else [n for n in ast.walk(node) if isinstance(n, _IMPORTS)]
+        offsets = [0]
+        for ln in lines[start - 1 : node.end_lineno]:
+            offsets.append(offsets[-1] + len(ln))
+        for sub in sorted(imports, key=lambda n: (n.lineno, n.col_offset), reverse=True):
+            for a in reversed(sub.names):
+                target = (a.name, "")
                 if isinstance(sub, ast.ImportFrom):
-                    nested[a.asname or a.name] = (_absolute(sub, module, is_package), a.name)
-                else:
-                    nested[a.asname or a.name.split(".")[0]] = (a.name, "")
-            skip |= set(range(sub.lineno, sub.end_lineno + 1))
-            for parent in ast.walk(node):
-                for fld in ("body", "orelse", "finalbody", "handlers"):
-                    block = getattr(parent, fld, None)
-                    if isinstance(block, list) and sub in block:
-                        block.remove(sub)
-        text_ = "".join(
-            ln for n, ln in enumerate(lines[start - 1 : node.end_lineno], start) if n not in skip
-        )
-        loads = {
-            n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
-        }
-        loads -= _bound_locally(node) | set(nested)
+                    target = (_absolute(sub, module, is_package), a.name)
+                nested.insert(0, (a.asname or a.name.split(".")[0], *target))
+            lo = offsets[sub.lineno - start] + sub.col_offset
+            hi = offsets[sub.end_lineno - start] + (sub.end_col_offset or 0)
+            source = source[:lo] + _placeholder(sub) + source[hi:]
+        dump = ast.dump(_Placeholders().visit(node))
         stmts.append(
             Stmt(
                 module,
                 name,
-                (f"{type(node).__name__}:{name}", text_, ast.dump(node)),
+                (f"{type(node).__name__}:{name}", source, dump),
                 loads,
+                declared,
                 nested,
                 forward_to,
             )
         )
     comments = [ln.strip() for ln in lines if ln.strip().startswith("#")]
-    return stmts, binds, comments
+    return Module(stmts, binds, comments, exports, rebound)
 
 
 class Side:
@@ -168,14 +206,15 @@ class Side:
         self.changed_modules = {_module_name(p) for p in changed if p in files}
         self.comments: Counter[str] = Counter()
         self.defs: dict[tuple[str, str], Stmt] = {}
+        self.modules: dict[str, Module] = {}
         for path, text in files.items():
-            stmts, binds, comments = parse_module(path, text)
-            self.binds[_module_name(path)] = binds
-            for st in stmts:
+            parsed = self.modules[_module_name(path)] = parse_module(path, text)
+            self.binds[_module_name(path)] = parsed.binds
+            for st in parsed.stmts:
                 self.defs[(st.module, st.name)] = st
             if path in changed:
-                self.stmts += stmts
-                self.comments.update(comments)
+                self.stmts += parsed.stmts
+                self.comments.update(parsed.comments)
 
     def resolve(self, module: str, name: str, depth: int = 0) -> tuple:
         bound = self.binds.get(module, {}).get(name)
@@ -188,7 +227,8 @@ class Side:
             st = self.defs.get((mod, nm))
             if st is not None and st.forward_to and depth < 10:
                 return self.resolve(*st.forward_to, depth + 1)
-            return ("def",) + (st.base_id if st is not None and st.base_id else (mod, nm))
+            kind_ = st.key[0].split(":")[0] if st is not None else ""
+            return ("def", *(st.base_id if st is not None and st.base_id else (mod, nm)), kind_)
         if kind == "imp" and depth < 10:
             return self.resolve(mod, nm, depth + 1)
         return ("ext", mod, nm)
@@ -203,7 +243,13 @@ def _git(repo: str, *args: str) -> str:
 def _changed(repo: str, base: str, head: str | None) -> list[str]:
     git = functools.partial(_git, repo)
     paths = git(
-        "diff", "--name-only", base, *([head] if head else []), "--", "semantic_rails"
+        "diff",
+        "--name-only",
+        "--no-renames",
+        base,
+        *([head] if head else []),
+        "--",
+        "semantic_rails",
     ).split()
     if not head:
         paths += git("ls-files", "--others", "--exclude-standard", "semantic_rails").split()
@@ -221,7 +267,7 @@ def _files(repo: str, ref: str | None, root: str = "") -> dict[str, str]:
         return {
             str(p.relative_to(repo)): p.read_text()
             for r in roots
-            for p in Path(repo, r).rglob("*.py")
+            for p in sorted(Path(repo, r).rglob("*.py"))
         }
     listing = _git(repo, "ls-tree", "-r", ref, *roots).splitlines()
     blobs = [(line.split("\t", 1)[1], line.split()[2]) for line in listing if line.endswith(".py")]
@@ -290,9 +336,8 @@ def verify(
         pool[st.key].append(st)
     pairs: list[tuple[Stmt, Stmt]] = []
     unmatched_head: list[Stmt] = []
-    origins: dict[str, Counter[str]] = defaultdict(
-        Counter
-    )  # head module -> base modules its code came from
+    # head module -> base modules its code came from
+    origins: dict[str, Counter[str]] = defaultdict(Counter)
 
     def pair(st: Stmt, pick: Stmt) -> None:
         pool[st.key].remove(pick)
@@ -301,9 +346,8 @@ def verify(
         pairs.append((pick, st))
 
     later = []
-    for st in (
-        head_side.stmts
-    ):  # unique content first, then duplicates by where their neighbours came from
+    # unique content first, then duplicates by where their neighbours came from
+    for st in head_side.stmts:
         candidates = pool.get(st.key) or []
         if len(candidates) == 1:
             pair(st, candidates[0])
@@ -321,16 +365,15 @@ def verify(
     for st in unmatched_head:
         if st.forward_to:
             target = head_side.resolve(*st.forward_to)
-            if target[0] != "def":
+            if target[0] != "def" or target[3] not in ("FunctionDef", "AsyncFunctionDef"):
                 problems.append(
                     f"forwarder {st.module}.{st.name} doesn't reach a definition: {target}"
                 )
         else:
             problems.append(f"new or changed statement: {st.module}.{st.name}")
     for st in [b for group in pool.values() for b in group]:
-        if (
-            st.forward_to
-        ):  # a base forwarder may go only where its module now binds the same definition
+        # a base forwarder may go only where its module now binds the same definition
+        if st.forward_to:
             if base_side.resolve(*st.forward_to) != head_side.resolve(st.module, st.name):
                 problems.append(
                     f"forwarder {st.module}.{st.name} was removed without its definition taking its place"
@@ -345,9 +388,9 @@ def verify(
                 problems.append(
                     f"{h.module}.{h.name}: '{name}' resolved to {before[1:]}, now {after[1:]}"
                 )
-        for local in sorted(set(b.nested) | set(h.nested)):
-            before = base_side.resolve(*b.nested[local]) if local in b.nested else None
-            after = head_side.resolve(*h.nested[local]) if local in h.nested else None
+        # identical placeholders: the same imports in the same places, binding the same names
+        for (local, *was), (_, *now) in zip(b.nested, h.nested, strict=True):
+            before, after = base_side.resolve(*was), head_side.resolve(*now)
             if before != after:
                 problems.append(
                     f"{h.module}.{h.name}: lazy import '{local}' resolved to {before}, now {after}"
@@ -358,8 +401,19 @@ def verify(
             and base_side.resolve(*b.forward_to) != head_side.resolve(*h.forward_to)
         ):
             problems.append(f"{h.module}.{h.name} now forwards to a different definition")
-        if b.module != h.module and (b.loads & HAZARDS):
+        if b.module == h.module:
+            continue
+        if b.loads & HAZARDS:
             problems.append(f"{b.module}.{b.name} moved but reads {sorted(b.loads & HAZARDS)}")
+        rebound = base_side.modules[b.module].rebound | head_side.modules[h.module].rebound
+        if b.declared_global or (b.loads | {b.name}) & rebound:
+            problems.append(
+                f"{b.module}.{b.name} moved but declares, reads or binds a global that its module"
+                f" rebinds: {sorted(b.declared_global | ((b.loads | {b.name}) & rebound))}"
+            )
+        public = not b.name.startswith("_") or b.name in base_side.modules[b.module].exports
+        if public and head_side.resolve(b.module, b.name)[:3] != ("def", b.module, b.name):
+            problems.append(f"{b.name} moved to {h.module} but {b.module} no longer provides it")
     # 5: comments
     edits = [f"-{c}" for c in base_side.comments - head_side.comments] + [
         f"+{c}" for c in head_side.comments - base_side.comments

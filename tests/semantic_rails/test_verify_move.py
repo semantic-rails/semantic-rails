@@ -291,3 +291,106 @@ def test_comment_edits_fail_unless_allowed(tmp_path):
     head = {**MOVED, "semantic_rails/c.py": BASE["semantic_rails/c.py"] + "\n# a new note\n"}
     assert any("comment edits" in p for p in _problems(tmp_path, head))
     assert _problems(tmp_path / "again", head, allow_comment_edits=True) == []
+
+
+RESOLVER = """
+_resolver = None
+
+
+def set_resolver(r):
+    global _resolver
+    _resolver = r
+
+
+def get_resolver():
+    return _resolver
+"""
+F_SHADOWED = """
+def f(x):
+    # sort by key
+    def pick(_key):
+        return _key
+
+    return sorted(x, key=_key)
+"""
+TWO_IMPORTS = """
+def h(flag):
+    if flag:
+        from .c import helper
+
+        flag = 2
+    from .c import helper
+
+    return helper(2)
+"""
+
+
+@pytest.mark.parametrize(
+    ("base", "head", "expected"),
+    [
+        pytest.param(
+            {"semantic_rails/a.py": RESOLVER},
+            {
+                "semantic_rails/a.py": RESOLVER.split("\n\n\ndef get")[0].replace(
+                    RESOLVER.split("\n\n\ndef set")[0], "\nfrom .d import _resolver, set_resolver"
+                )
+                + "\n\n\ndef get_resolver():\n    return _resolver\n",
+                "semantic_rails/d.py": RESOLVER.split("\n\n\ndef get")[0],
+            },
+            "rebinds: ['_resolver']",
+            id="moved-code-rebinds-a-global",
+        ),
+        pytest.param(
+            {
+                "semantic_rails/a.py": BASE["semantic_rails/a.py"].split("\n\n\ndef f")[0]
+                + F_SHADOWED
+                + "\n\ndef g(x):\n    return helper(x)\n"
+            },
+            {"semantic_rails/d.py": "from .b import _key\n\n" + F_SHADOWED},
+            "'_key' resolved to",
+            id="a-global-read-shadowed-in-another-scope",
+        ),
+        pytest.param(
+            {"semantic_rails/c.py": BASE["semantic_rails/c.py"] + TWO_IMPORTS},
+            {
+                "semantic_rails/c.py": BASE["semantic_rails/c.py"]
+                + TWO_IMPORTS.replace("        from .c import helper\n", "", 1)
+            },
+            "changed statement: semantic_rails.c.h",
+            id="a-nested-import-dropped",
+        ),
+        pytest.param(
+            {},
+            {"semantic_rails/a.py": MOVED["semantic_rails/a.py"].replace("_key, f", "_key")},
+            "f moved to semantic_rails.d but semantic_rails.a no longer provides it",
+            id="a-public-name-no-longer-reachable",
+        ),
+        pytest.param(
+            {"semantic_rails/c.py": BASE["semantic_rails/c.py"] + "\n\nclass C:\n    pass\n"},
+            {
+                "semantic_rails/c.py": BASE["semantic_rails/c.py"]
+                + "\n\ndef C(*args, **kwargs):\n    from .d import C as fn\n\n"
+                "    return fn(*args, **kwargs)\n",
+                "semantic_rails/d.py": MOVED["semantic_rails/d.py"] + "\n\nclass C:\n    pass\n",
+            },
+            "forwarder semantic_rails.c.C doesn't reach a definition",
+            id="a-forwarder-standing-in-for-a-class",
+        ),
+    ],
+)
+def test_scoping_imports_and_exports(tmp_path, base, head, expected):
+    problems = _problems(tmp_path, {**MOVED, **head}, {**BASE, **base})
+    assert any(expected in p for p in problems), problems
+
+
+def test_two_refs_read_the_head_ref_not_the_working_tree(tmp_path):
+    repo = _repo(tmp_path, MOVED)
+    git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "checkout", "-qb", "moved"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "move"], check=True)
+    (tmp_path / "tests" / "test_x.py").write_text(
+        'from semantic_rails import a\n\n\ndef test(monkeypatch):\n    monkeypatch.setattr(a, "_key", str)\n'
+    )
+    assert verify_move.verify(repo, "HEAD~1", "moved") == []
+    assert verify_move.verify(repo, "HEAD~1") != []
