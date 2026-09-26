@@ -432,7 +432,11 @@ is that measure's honest value for "no rows contributed":
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | Undefined over no rows. A filled `0` would be a fabricated measurement — a `min` below every value actually observed. |
 | semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
 | ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |
-| a `distribution` over entities (any function, `sum` included) | `NULL` | A period with no entities has no distribution. Fill only adds periods: the per-entity values are never filled, since a filled entity would enter the distribution as a `0`; for the same reason a distribution is refused when its input or a metric filter has a `rolling` or `prior_period` window. A filled distribution is also refused with any metric filter, which would keep different periods for the two. |
+
+A query with a `distribution` refuses `fill: true`; without fill, periods with no data are
+omitted. A `distribution` is also refused when its input or a metric filter has a `rolling`
+or `prior_period` window, whose dense per-entity series would count entities in periods where
+they have no rows.
 
 `fill: true` requires a `grain` — the calendar spine needs a step
 size — and it is engaged automatically by features that depend on

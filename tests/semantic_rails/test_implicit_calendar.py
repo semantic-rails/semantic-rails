@@ -464,18 +464,10 @@ LARGE_ORDER = {
 }
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        _ask("month", DISTRIBUTION, _rolling("month", 3)),
-        _ask("month", DISTRIBUTION, fill=True),
-        _ask("month", DISTRIBUTION, NOW, fill=True),
-        _ask("month", DISTRIBUTION, NOW, fill=True, start="2023-10-15", end="2024-08-01"),
-    ],
-)
 def test_a_query_compiled_as_sub_queries_refuses_the_implicit_calendar(
-    packages: dict[str, Path], query: dict[str, Any]
+    packages: dict[str, Path],
 ) -> None:
+    query = _ask("month", DISTRIBUTION, _rolling("month", 3))
     with pytest.raises(SemanticLayerError) as refused:
         _query(packages["none"], query)
 
@@ -495,22 +487,48 @@ def _per_order(aggregate: str) -> str:
     return f"(SELECT {aggregate} FROM orders WHERE date_trunc('month', ordered_at) = s.bucket)"
 
 
-def _rendered(package: Path, query: dict[str, Any], warehouse: str) -> str:
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
-    return str(compile_query(config, Registry(config), {"version": 1, **query})["sql"])
+LARGE_REVENUE = {"kind": "aggregate", "measure": "measure.cal.revenue"}
+LARGE_REVENUE["filter"] = {"all": [{"expression": LARGE_ORDER}]}
 
 
-def _answers(package: Path, query: dict[str, Any]) -> list[list[tuple[Any, ...]]]:
-    """The engine's rows, and the rows of its Postgres SQL run on DuckDB.
+# Regression: fill densified the per-order grain, so every order entered every month as a 0
+# (p80 read 3.0, 0, 0 for 9, 7, 20). A filled distribution is refused.
+@pytest.mark.parametrize(
+    ("package", "select", "time", "metric_filters"),
+    [
+        ("authored", [DISTRIBUTION], {}, []),
+        ("authored", [NOW, DISTRIBUTION], {"start": "2023-10-15", "end": "2024-08-01"}, []),
+        ("authored", [DISTRIBUTION], {}, [{"expression": LARGE_ORDER, "op": "=", "value": True}]),
+        ("authored", [{**_distribution("median", LARGE_REVENUE), "as": "median"}], {}, []),
+        ("none", [DISTRIBUTION], {}, []),
+        ("none", [DISTRIBUTION, NOW], {}, []),
+        ("fiscal_only", [DISTRIBUTION], {"calendar_id": "fiscal"}, []),
+    ],
+    ids=[
+        "authored",
+        "beside",
+        "metric_predicate",
+        "input_predicate",
+        "none",
+        "none_beside",
+        "fiscal",
+    ],
+)
+def test_a_filled_distribution_refuses(
+    packages: dict[str, Path],
+    package: str,
+    select: list[dict[str, Any]],
+    time: dict[str, Any],
+    metric_filters: list[dict[str, Any]],
+) -> None:
+    query = {**_ask("month", *select, fill=True, **time), "metric_filters": metric_filters}
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages[package], query)
 
-    Postgres joins keys through a text cast, where a date bucket never equals a timestamp one
-    (each period came back twice); DuckDB compares them as timestamps.
-    """
-    return [_query(package, query)[0], _key(package, _rendered(package, query, "postgres"))]
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert "time.fill isn't supported for distributions" in str(refused.value)
 
 
-# Regression: fill densified the per-order grain, so every order entered every month as a 0.
 @pytest.mark.parametrize(
     ("function", "aggregate"),
     [
@@ -522,44 +540,21 @@ def _answers(package: Path, query: dict[str, Any]) -> list[list[tuple[Any, ...]]
         ("max", "max(amount)"),
     ],
 )
-def test_a_filled_distribution_matches_the_key(
+def test_an_unfilled_distribution_matches_the_key(
     packages: dict[str, Path], function: str, aggregate: str
 ) -> None:
     select = {**_distribution(function, REVENUE), "as": "value"}
     key = _key(packages["authored"], _series_key("month", _per_order(aggregate)))
 
-    assert _answers(packages["authored"], _ask("month", select, fill=True)) == [key, key]
     assert _query(packages["authored"], _ask("month", select))[0] == [
         row for row in key if row[1] is not None
     ]
-
-
-def test_a_filled_distribution_beside_windows_and_groups_matches_the_key(
-    packages: dict[str, Path],
-) -> None:
-    p80 = {**_distribution("percentile", REVENUE), "as": "p80"}
-    beside = _ask("month", NOW, _prior("month"), p80, fill=True)
-    key = f"{REVENUE_NOW}, {_revenue_at('1 MONTH')}, {_per_order('quantile_cont(amount, 0.8)')}"
-    rows = _key(packages["authored"], _series_key("month", key))
-    assert _answers(packages["authored"], beside) == [rows, rows]
-    # ClickHouse reads an unmatched join field as 0, so a marker picks the joined rows.
-    assert "__row = 1" in _rendered(packages["authored"], beside, "clickhouse")
-
-    large = {**_distribution("median", REVENUE, where=[{"op": ">", "value": 5}]), "as": "median"}
-    by_store = {
-        **_ask("month", large, fill=True, start="2023-10-15", end="2024-08-01"),
-        "group_by": [STORE],
-    }
-    rows = _key(
+    # A prior-period sibling fills its own branch; the distribution reads NULL in February.
+    beside = _ask("month", _prior("month"), select)
+    assert _query(packages["authored"], beside)[0] == _key(
         packages["authored"],
-        """SELECT g.store_id, s.bucket, (SELECT median(amount) FROM orders
-             WHERE store_id = g.store_id AND date_trunc('month', ordered_at) = s.bucket
-             AND amount > 5)
-           FROM (SELECT DISTINCT store_id FROM orders) AS g,
-             range(TIMESTAMP '2023-10-01', TIMESTAMP '2024-08-01', INTERVAL 1 MONTH) AS s(bucket)""",
+        _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
     )
-    assert _answers(packages["authored"], by_store) == [rows, rows]
-    assert "__row = 1" in _rendered(packages["authored"], by_store, "clickhouse")
 
 
 PRIOR_REVENUE = _prior("month")["expression"]
@@ -570,13 +565,12 @@ MEDIAN_OF = {
 }
 
 
-@pytest.mark.parametrize("fill", [False, True])
 @pytest.mark.parametrize("shape", MEDIAN_OF)
 def test_a_distribution_over_a_per_entity_window_refuses(
-    packages: dict[str, Path], shape: str, fill: bool
+    packages: dict[str, Path], shape: str
 ) -> None:
     """Its dense series held every order in every month: November's median read 0, not 7.5."""
-    query = _ask("month", {**MEDIAN_OF[shape], "as": "value"}, fill=fill)
+    query = _ask("month", {**MEDIAN_OF[shape], "as": "value"})
     if shape == "prior_period_filter":
         query["metric_filters"] = [{"expression": PRIOR_REVENUE, "op": ">=", "value": 0}]
     with pytest.raises(SemanticLayerError) as refused:
@@ -584,37 +578,6 @@ def test_a_distribution_over_a_per_entity_window_refuses(
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     assert "prior-period window" in str(refused.value)
-
-
-@pytest.mark.parametrize(
-    "metric_filter",
-    [
-        {"expression": REVENUE, "op": "<", "value": 8},
-        {"expression": LARGE_ORDER, "op": "=", "value": True},
-    ],
-    ids=["value", "predicate"],
-)
-def test_a_filled_distribution_with_a_metric_filter_refuses(
-    packages: dict[str, Path], metric_filter: dict[str, Any]
-) -> None:
-    """The fill applied `< 8` per month, the distribution per order: November (10 + 5) vanished."""
-    select = {**_distribution("median", REVENUE), "as": "value"}
-    query = {**_ask("month", select, fill=True), "metric_filters": [metric_filter]}
-    with pytest.raises(SemanticLayerError) as refused:
-        _query(packages["authored"], query)
-
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert "metric filter" in str(refused.value)
-    _query(packages["authored"], {**query, "time": _time("month")})  # unfilled still answers
-
-
-def test_a_filled_distribution_on_a_fiscal_calendar_refuses(packages: dict[str, Path]) -> None:
-    """Unfilled, the per-order values can't take fiscal quarters (it read 2.5, 0, 0)."""
-    select = {**_distribution("median", REVENUE), "as": "value"}
-    with pytest.raises(SemanticLayerError) as refused:
-        _query(packages["fiscal_only"], _ask("quarter", select, calendar_id="fiscal", fill=True))
-
-    assert refused.value.code == "INCOMPATIBLE_CALENDAR"
 
 
 @pytest.mark.parametrize(
