@@ -214,6 +214,7 @@ class _Writer:
         return _slug(row.id.split(".", 1)[-1]), spec
 
     def metric(self, row: Any) -> tuple[str, dict[str, Any]]:
+        # The loader reads filter_spec and window_spec off the expression; aliases aren't authored.
         skip = {"expression", "filter_spec", "window_spec", "aliases"}
         spec = {"id": row.id, "expression": expr_to_dict(row.expression)}
         spec.update(
@@ -276,8 +277,8 @@ class _Writer:
             if rows:
                 documents[file] = {name: rows}
         for name in UNWRITTEN:
-            for row in getattr(config, name):
-                self.unwritten[name].append(getattr(row, "id", name))
+            for index, row in enumerate(getattr(config, name)):
+                self.unwritten[name].append(getattr(row, "id", f"{name}[{index}]"))
         return documents
 
 
