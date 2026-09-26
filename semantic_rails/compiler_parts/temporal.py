@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 from collections.abc import Iterable
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..ast import NormalizedQuery
@@ -885,3 +886,65 @@ def _validate_restrictive_time_semantics(query: NormalizedQuery, config: Package
                 ),
                 details=details,
             )
+
+
+def _parse_time_literal(value: Any) -> datetime:
+    text = str(value).strip()
+    if not text:
+        raise SemanticLayerError(
+            "PREDICATE_GRAIN_UNSAFE", "Predicate time range requires a non-empty timestamp"
+        )
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise SemanticLayerError(
+            "PREDICATE_GRAIN_UNSAFE", f"Unsupported predicate time literal '{value}'"
+        ) from exc
+
+
+def _floor_to_grain(dt: datetime, grain: str) -> datetime:
+    grain_norm = str(grain).lower()
+    if grain_norm == "day":
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if grain_norm == "week":
+        start = dt - timedelta(days=dt.weekday())
+        return start.replace(hour=0, minute=0, second=0, microsecond=0)
+    if grain_norm == "month":
+        return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if grain_norm == "quarter":
+        month = ((dt.month - 1) // 3) * 3 + 1
+        return dt.replace(month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+    if grain_norm == "year":
+        return dt.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    raise SemanticLayerError("PREDICATE_GRAIN_UNSAFE", f"Unsupported predicate grain '{grain}'")
+
+
+def _add_grain(dt: datetime, grain: str) -> datetime:
+    grain_norm = str(grain).lower()
+    if grain_norm == "day":
+        return dt + timedelta(days=1)
+    if grain_norm == "week":
+        return dt + timedelta(weeks=1)
+    if grain_norm == "month":
+        month = dt.month + 1
+        year = dt.year
+        if month > 12:
+            month = 1
+            year += 1
+        return dt.replace(year=year, month=month, day=1)
+    if grain_norm == "quarter":
+        month = dt.month + 3
+        year = dt.year
+        while month > 12:
+            month -= 12
+            year += 1
+        return dt.replace(year=year, month=month, day=1)
+    if grain_norm == "year":
+        return dt.replace(year=dt.year + 1, month=1, day=1)
+    raise SemanticLayerError("PREDICATE_GRAIN_UNSAFE", f"Unsupported predicate grain '{grain}'")
+
+
+def _is_grain_boundary(dt: datetime, grain: str) -> bool:
+    return dt == _floor_to_grain(dt, grain)
