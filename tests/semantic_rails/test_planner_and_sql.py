@@ -1849,7 +1849,10 @@ def test_conversion_metrics_compile_with_supported_event_pair_semantics(runtime_
         assert report["ok"] is True
         rendered = report["explain"]["rendered_sql"]
         assert "ROW_NUMBER()" in rendered
-        assert "DATE_DIFF('day'" in rendered
+        assert (
+            "< DATE_ADD(CAST(base_events.__base_event_time AS TIMESTAMP), INTERVAL (7) DAY)"
+            in rendered
+        )
     finally:
         runtime.close()
 

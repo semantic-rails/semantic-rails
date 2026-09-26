@@ -348,7 +348,7 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
                 ON converted.customer_id IS NOT DISTINCT FROM base.customer_id
                AND converted.store_id IS NOT DISTINCT FROM base.store_id
                AND converted.ordered_at >= base.started_at
-               AND DATE_DIFF('day', CAST(base.started_at AS TIMESTAMP), CAST(converted.ordered_at AS TIMESTAMP)) <= 7
+               AND CAST(converted.ordered_at AS TIMESTAMP) < CAST(base.started_at AS TIMESTAMP) + INTERVAL 7 DAY
             ),
             qualified_stores AS (
               SELECT
@@ -396,7 +396,7 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
               LEFT JOIN converted_events AS converted
                 ON converted.customer_id IS NOT DISTINCT FROM base.customer_id
                AND converted.ordered_at >= base.started_at
-               AND DATE_DIFF('day', CAST(base.started_at AS TIMESTAMP), CAST(converted.ordered_at AS TIMESTAMP)) <= 28
+               AND CAST(converted.ordered_at AS TIMESTAMP) < CAST(base.started_at AS TIMESTAMP) + INTERVAL 28 DAY
             )
             SELECT
               store_name AS "dimension.jaffle_store_name",

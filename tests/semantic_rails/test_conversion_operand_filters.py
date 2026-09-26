@@ -107,9 +107,8 @@ def test_product_a_then_product_b_conversion_matches_oracle(runtime_factory):
             SELECT 1 FROM conv c
             WHERE c.customer_id = b.customer_id
               AND c.ordered_at >= b.ordered_at
-              AND DATE_DIFF(
-                'day', CAST(b.ordered_at AS TIMESTAMP), CAST(c.ordered_at AS TIMESTAMP)
-              ) <= 28
+              AND CAST(c.ordered_at AS TIMESTAMP)
+                < CAST(b.ordered_at AS TIMESTAMP) + INTERVAL 28 DAY
           ) THEN b.order_id END) * 1.0 / COUNT(DISTINCT b.order_id) AS rate
         FROM base b
         """
@@ -266,9 +265,8 @@ def test_first_order_then_repeat_order_via_operand_filters_matches_oracle(runtim
             SELECT 1 FROM conv c
             WHERE c.customer_id = b.customer_id
               AND c.ordered_at >= b.ordered_at
-              AND DATE_DIFF(
-                'day', CAST(b.ordered_at AS TIMESTAMP), CAST(c.ordered_at AS TIMESTAMP)
-              ) <= 28
+              AND CAST(c.ordered_at AS TIMESTAMP)
+                < CAST(b.ordered_at AS TIMESTAMP) + INTERVAL 28 DAY
           ) THEN b.order_id END) * 1.0 / COUNT(DISTINCT b.order_id) AS rate
         FROM base b
         """

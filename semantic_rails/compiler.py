@@ -96,7 +96,7 @@ from .compiler_parts.temporal import (
     _validate_restrictive_time_semantics,
 )
 from .diagnostics import relationship_contract_payload
-from .dialects import dialect_for_warehouse
+from .dialects import SqlDialect, dialect_for_warehouse
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -2717,6 +2717,25 @@ def _conversion_dimension_requires_binding(
     )
 
 
+def _conversion_window_condition(expr: ConversionExpr, dialect: SqlDialect) -> Any:
+    """``base <= converted < base + window``: the window is a duration after the base event.
+
+    A 7-day window ends exactly 7 x 24 hours after the base event, not at the end of a
+    calendar day; month, quarter and year windows add calendar months. The end is
+    exclusive, like query time ranges, and a converted event at the base instant counts.
+    """
+    base_time = SqlIdentifier(parts=["base_events", "__base_event_time"])
+    converted_time = SqlIdentifier(parts=["converted_events", "__converted_event_time"])
+    window_end = dialect.date_add(
+        expr.window_unit, SqlLiteral(expr.window_value), dialect.timestamp_cast(base_time)
+    )
+    return SqlBinary(
+        SqlBinary(converted_time, ">=", base_time),
+        "AND",
+        SqlBinary(dialect.timestamp_cast(converted_time), "<", window_end),
+    )
+
+
 def _conversion_leaf_cte(
     expr: ConversionExpr, *, index: int, plan: LogicalPlan, config: PackageConfig
 ) -> SqlCte:
@@ -2899,24 +2918,7 @@ def _conversion_leaf_cte(
                 )
             )
 
-        join_condition: Any = SqlBinary(
-            SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
-            ">=",
-            SqlIdentifier(parts=["base_events", "__base_event_time"]),
-        )
-        join_condition = SqlBinary(
-            join_condition,
-            "AND",
-            SqlBinary(
-                dialect.date_diff(
-                    expr.window_unit,
-                    SqlIdentifier(parts=["base_events", "__base_event_time"]),
-                    SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
-                ),
-                "<=",
-                SqlLiteral(expr.window_value),
-            ),
-        )
+        join_condition: Any = _conversion_window_condition(expr, dialect)
         for key_alias, _ in _conversion_entity_key_fields(match_entity, config):
             join_condition = SqlBinary(
                 join_condition,
@@ -3142,24 +3144,7 @@ def _conversion_leaf_cte(
             )
         )
 
-    join_condition = SqlBinary(
-        SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
-        ">=",
-        SqlIdentifier(parts=["base_events", "__base_event_time"]),
-    )
-    join_condition = SqlBinary(
-        join_condition,
-        "AND",
-        SqlBinary(
-            dialect.date_diff(
-                expr.window_unit,
-                SqlIdentifier(parts=["base_events", "__base_event_time"]),
-                SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
-            ),
-            "<=",
-            SqlLiteral(expr.window_value),
-        ),
-    )
+    join_condition = _conversion_window_condition(expr, dialect)
     match_keys = _conversion_entity_key_fields(match_entity, config)
     for key_alias, _ in match_keys:
         join_condition = SqlBinary(

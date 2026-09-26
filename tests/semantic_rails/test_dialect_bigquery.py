@@ -545,7 +545,7 @@ def test_jaffle_battery_compiles_for_bigquery():
     assert re.search(r"AS TIMESTAMP\)", combined) is None
     # BigQuery-native forms show up where the battery exercises them.
     assert "DATETIME_TRUNC(" in combined
-    assert "DATETIME_DIFF(" in combined
+    assert "DATETIME_ADD(" in combined
     # Exact percentile lowering (ARRAY_AGG interpolation) is exercised
     # by the percentile battery cases.
     assert "ORDER BY" in combined and "[OFFSET(CAST(FLOOR(" in combined
