@@ -793,7 +793,6 @@ class ArchitectProject:
         )
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
-        dropped = {"dropped_fields": staged["dropped_fields"]} if replace else {}
         return self._commit(
             documents,
             kind="model",
@@ -825,7 +824,7 @@ class ArchitectProject:
                 "calendar_id": calendar_id,
                 "replace": replace,
             },
-            extra={"entity": staged["entity"], **dropped},
+            extra={"entity": staged["entity"], **_field_reports(staged)},
         )
 
     def upsert_models(
@@ -970,11 +969,7 @@ class ArchitectProject:
                         "entity": fact["entity_key"],
                         "existed": fact["existed"],
                         "target_file": fact["target_file"],
-                        **(
-                            {}
-                            if fact["dropped_fields"] is None
-                            else {"dropped_fields": fact["dropped_fields"]}
-                        ),
+                        **_field_reports(fact),
                     }
                     for fact in staged
                 ],
@@ -1094,28 +1089,20 @@ class ArchitectProject:
             model["calendar_id"] = requested_calendar
         elif calendar is False and was_calendar:
             model.pop("calendar_id", None)
-        if dimensions is not None:
-            model["dimensions"] = {
-                **dict(model.get("dimensions", {}) or {}),
-                **deepcopy(dict(dimensions or {})),
-            }
-        if times is not None:
-            model["times"] = {
-                **dict(model.get("times", {}) or {}),
-                **deepcopy(dict(times or {})),
-            }
-        if measures is not None:
-            model["measures"] = {
-                **dict(model.get("measures", {}) or {}),
-                **deepcopy(dict(measures or {})),
-            }
-        if joins is not None:
-            model["joins"] = {
-                **dict(model.get("joins", {}) or {}),
-                **deepcopy(dict(joins or {})),
-            }
+        object_drops: list[str] = []
+        for block, updates in (
+            ("dimensions", dimensions),
+            ("times", times),
+            ("measures", measures),
+            ("joins", joins),
+        ):
+            if updates is not None:
+                model[block] = _merge_named_objects(
+                    block, dict(model.get(block, {}) or {}), dict(updates), object_drops
+                )
         self._store_model(model_doc, model_wrapper, model_slug, model)
-        dropped_fields: list[str] | None = None
+        # A partial rewrite of an existing object lists what it dropped, as a replace does.
+        dropped_fields: list[str] | None = sorted(object_drops) or None
         if replace:
             dropped_fields = []
             for field, value in previous.items():
@@ -2448,6 +2435,37 @@ class ArchitectProject:
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.project_path).as_posix()
+
+
+def _field_reports(staged: dict[str, Any]) -> dict[str, Any]:
+    """A staged model's ``dropped_fields``: a replace's, or a partial object rewrite's."""
+    return {} if staged["dropped_fields"] is None else {"dropped_fields": staged["dropped_fields"]}
+
+
+# Fields that describe an object without changing what it computes.
+_DESCRIPTIVE_FIELDS = frozenset({"label", "description", "synonyms", "meta"})
+
+
+def _merge_named_objects(
+    block: str, current: dict[str, Any], updates: dict[str, Any], dropped: list[str]
+) -> dict[str, Any]:
+    """Apply ``updates`` to a model block's named objects.
+
+    An update of an existing object that names only descriptive fields (a new
+    label, say) merges into it. Any other update replaces the object whole, as a
+    wizard that rebuilds an object and leaves out fields that no longer apply
+    expects, and each field it leaves out is listed in ``dropped``.
+    """
+    merged = dict(current)
+    for name, spec in updates.items():
+        old = current.get(name)
+        if isinstance(spec, dict) and isinstance(old, dict):
+            if set(spec) <= _DESCRIPTIVE_FIELDS:
+                merged[name] = {**old, **deepcopy(spec)}
+                continue
+            dropped += [f"{block}.{name}.{field}" for field in old if field not in spec]
+        merged[name] = deepcopy(spec)
+    return merged
 
 
 def _replaced(current: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
