@@ -1011,6 +1011,17 @@ def _lower_agent_dag_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSele
             "INVALID_QUERY", "Agent DAG lowering requires at least one projected expression"
         )
 
+    dialect = _dialect(config)
+    # Branches disagree on the period's type: a dense branch (rolling, prior_period) reads it
+    # from a calendar's DATE column, the others from DATE_TRUNC's timestamp. Postgres and
+    # BigQuery join keys by their text, where the two never match, so every period came back
+    # twice. Combine and return the period as the timestamp DATE_TRUNC gives.
+    period_key = key_aliases[-1] if plan.time and plan.time.get("grain") else None
+
+    def _key(side: str, key: str) -> Any:
+        ref = SqlIdentifier(parts=[side, key])
+        return SqlCast(ref, dialect.timestamp_type_name()) if key == period_key else ref
+
     combined_name = branch_ctes[0].name
     combine_ctes: list[SqlCte] = []
     available_aliases = [output_aliases[0]]
@@ -1019,16 +1030,7 @@ def _lower_agent_dag_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSele
         right_alias = "right_side"
         next_name = f"agent_combined_{index}"
         select_fields = [
-            SqlField(
-                SqlCall(
-                    "COALESCE",
-                    [
-                        SqlIdentifier(parts=[left_alias, key]),
-                        SqlIdentifier(parts=[right_alias, key]),
-                    ],
-                ),
-                key,
-            )
+            SqlField(SqlCall("COALESCE", [_key(left_alias, key), _key(right_alias, key)]), key)
             for key in key_aliases
         ]
         select_fields.extend(
@@ -1050,8 +1052,14 @@ def _lower_agent_dag_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSele
                         SqlJoin(
                             join_type="FULL OUTER",
                             table=SqlTableRef(name=branch.name, alias=right_alias),
-                            on=_join_condition(
-                                key_aliases, left_alias, right_alias, dialect=_dialect(config)
+                            on=_and_conditions(
+                                [
+                                    dialect.null_safe_eq(
+                                        _key(left_alias, key), _key(right_alias, key)
+                                    )
+                                    for key in key_aliases
+                                ]
+                                or [SqlLiteral(True)]
                             ),
                         )
                     ],

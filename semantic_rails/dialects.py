@@ -705,11 +705,9 @@ class BigQueryDialect(SqlDialect):
         return "DATETIME"
 
     def timestamp_cast(self, expr: Any) -> Any:
-        # CAST(x AS DATETIME) is not representable today (DATETIME is
-        # not in sql_ast.SQL_CAST_TYPE_NAMES), so rely on BigQuery's
-        # implicit coercions instead: DATE -> DATETIME and string
-        # literal -> DATETIME both coerce wherever the DATETIME_*
-        # functions and comparisons expect a DATETIME.
+        # No cast: BigQuery's implicit coercions suffice here. DATE ->
+        # DATETIME and string literal -> DATETIME both coerce wherever
+        # the DATETIME_* functions and comparisons expect a DATETIME.
         return expr
 
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
