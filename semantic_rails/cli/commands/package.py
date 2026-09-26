@@ -17,7 +17,7 @@ from ...config_validation import (
 )
 from ...contracts import export_metric_portability, export_semantic_contract
 from ...errors import SemanticLayerError
-from ...interop.ossie import write_ossie_export
+from ...interop.ossie import import_ossie, write_ossie_export
 from ...mcp import SemanticLayerMCPAdapter
 from ...package_tools import (
     build_package_artifact_report,
@@ -192,7 +192,22 @@ def cmd_import(args: argparse.Namespace) -> None:
     package directory. Today supports `--from metricflow` (a MetricFlow
     YAML directory or a dbt-emitted `semantic_manifest.json`). No
     MetricFlow runtime is required — the translator reads YAML/JSON
-    files standalone."""
+    files standalone. `--from ossie` reads an Apache Ossie document and
+    the Semantic Rails sidecar beside it."""
+    if args.source_format == "ossie":
+        try:
+            _print(
+                import_ossie(
+                    args.source,
+                    args.output,
+                    package_id=args.package_id,
+                    namespace=args.namespace or "",
+                    default_db=args.default_db or "",
+                )
+            )
+        except FileExistsError as exc:
+            raise SemanticLayerError("CONFIG_CONFLICT", str(exc)) from exc
+        return
     if args.source_format == "metricflow":
         from mf2sr import translate
 

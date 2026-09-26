@@ -1,4 +1,4 @@
-# Apache Ossie export
+# Apache Ossie export and import
 
 `semantic-rails export --format ossie` writes a package as an
 [Apache Ossie](https://github.com/apache/ossie) 0.1.1 semantic model, the spec's only tagged
@@ -17,7 +17,8 @@ It writes two files and prints a JSON report with the counts and warnings:
   Ossie 0.1.1 accepts `custom_extensions` only from six named vendors, so Semantic Rails data can't
   ride inside the document itself.
 
-Importing Ossie documents (`import --from ossie`) and writing Ossie 0.2 are not supported yet.
+`semantic-rails import --from ossie` reads a document back ([Import](#import)). Writing Ossie 0.2 is
+not supported yet.
 
 ## Mapping
 
@@ -60,9 +61,50 @@ affected ids. Nothing is dropped silently.
     relationships whose `allowed_directions` exclude the many-to-one direction.
 - **Exported, with extra attributes in the sidecar.** For example a dimension's data type and
   semantic kind, a measure's default aggregation and accumulation, or a metric's temporal role.
+  The sidecar's `expressions` also keep the exact expression behind each exported measure and
+  metric, which the SQL alone can't give back.
 
 Semantic policies also get a separate `policy enforcement` warning: Ossie consumers don't read
 the sidecar and won't enforce them, so anyone given the document sees every exported object.
 
 The export covers the semantic model only. Deployment settings (`connection`, `seed`,
 `default_db`) and the package's examples and tests are not part of it.
+
+## Import
+
+```bash
+uv run semantic-rails import --from ossie --source dist/ossie/jaffle_shop.ossie.yaml \
+  --output dist/imported --package-id jaffle_shop
+```
+
+It reads an Ossie 0.1.x document (the first model in `semantic_model`) or a 0.2 document (one
+model at the root), writes the package to `<output>/<package-id>/`, and prints a JSON report
+with the counts and warnings. Like the export, it never drops anything silently: every construct
+it skips or fills with a default gets one warning with the affected names.
+
+- **With the sidecar** (`<name>.semantic_rails.json` beside the document, as the export writes
+  it), every object comes back exactly: the document supplies what it carries and the sidecar
+  the rest, including the objects the export left out. The import then exports what it wrote and
+  compares that with the document and sidecar it read. The report says `round_trip: exact`, or
+  lists each difference, for example a metric whose SQL was edited after the export.
+- **Without it**, the import keeps what the document states and uses defaults for the rest:
+  - datasets with a table `source` and a `primary_key` become entities;
+  - fields that name a column become dimensions, typed as categories, or as timestamps when
+    `dimension.is_time` or the 0.2 `datatype` says so. Time fields get a temporal role with day
+    to year grains;
+  - fields without `dimension` become measures when their SQL is a column or simple arithmetic,
+    aggregated the way the metrics use them, and counted distinct if any metric does;
+  - relationships become many-to-one joins;
+  - metrics are imported when their SQL is the aggregate SQL the export writes:
+    - `SUM`, `AVG`, `MIN`, `MAX` or `COUNT(DISTINCT ...)` over `dataset.field`;
+    - numbers, parentheses, and `+`, `-` and `*`;
+    - division by `NULLIF(denominator, 0)`;
+    - `COALESCE(x, 0)` on both sides of `+` or `-`.
+
+  Anything else is skipped with a warning: computed dimensions, other SQL, datasets defined by a
+  query, `unique_keys`, `custom_extensions`, and `ai_context` beyond `synonyms`.
+
+The imported package reads data another tool built: `--default-db` names the DuckDB file
+(default `data/<package-id>.duckdb`, with `seed: {kind: external}`). A document written for
+Snowflake gets a `snowflake_cli` connection named after the package. `--warehouse`,
+`--description` and `--schema-strict` apply to `--from metricflow` only.
