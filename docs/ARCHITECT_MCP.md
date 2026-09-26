@@ -314,6 +314,12 @@ validation, it may build a missing seeded DuckDB database.
 `upsert_model`, `upsert_metric` and `upsert_segment` merge their arguments into an existing
 object. `replace: true` rewrites the object from the arguments instead.
 
+`upsert_model` also merges into each existing dimension, time, measure and join field by field:
+`times: {snapshot_date: {label: Snapshot day}}` changes only the label. A field's value is replaced
+whole (an `expr` or `accumulation` isn't merged into), a `null` field removes that field, and a
+`null` object is refused (use `remove_object`). The report's `kept_fields` names the fields an
+update left as they were, such as `measures.revenue.filter`, so check them when you change an `expr`.
+
 - A model keeps only its `id`, its `entities` block (the relationships `upsert_relationship`
   wrote) and its `calendar_id`. The report's `dropped_fields` names every field, dimension, time,
   measure and join the rewrite drops, such as `label` or `dimensions.status`; restate what should

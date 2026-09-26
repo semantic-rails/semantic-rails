@@ -793,7 +793,6 @@ class ArchitectProject:
         )
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
-        dropped = {"dropped_fields": staged["dropped_fields"]} if replace else {}
         return self._commit(
             documents,
             kind="model",
@@ -825,7 +824,7 @@ class ArchitectProject:
                 "calendar_id": calendar_id,
                 "replace": replace,
             },
-            extra={"entity": staged["entity"], **dropped},
+            extra={"entity": staged["entity"], **_field_reports(staged)},
         )
 
     def upsert_models(
@@ -970,11 +969,7 @@ class ArchitectProject:
                         "entity": fact["entity_key"],
                         "existed": fact["existed"],
                         "target_file": fact["target_file"],
-                        **(
-                            {}
-                            if fact["dropped_fields"] is None
-                            else {"dropped_fields": fact["dropped_fields"]}
-                        ),
+                        **_field_reports(fact),
                     }
                     for fact in staged
                 ],
@@ -1094,26 +1089,17 @@ class ArchitectProject:
             model["calendar_id"] = requested_calendar
         elif calendar is False and was_calendar:
             model.pop("calendar_id", None)
-        if dimensions is not None:
-            model["dimensions"] = {
-                **dict(model.get("dimensions", {}) or {}),
-                **deepcopy(dict(dimensions or {})),
-            }
-        if times is not None:
-            model["times"] = {
-                **dict(model.get("times", {}) or {}),
-                **deepcopy(dict(times or {})),
-            }
-        if measures is not None:
-            model["measures"] = {
-                **dict(model.get("measures", {}) or {}),
-                **deepcopy(dict(measures or {})),
-            }
-        if joins is not None:
-            model["joins"] = {
-                **dict(model.get("joins", {}) or {}),
-                **deepcopy(dict(joins or {})),
-            }
+        kept_fields: list[str] = []
+        for block, updates in (
+            ("dimensions", dimensions),
+            ("times", times),
+            ("measures", measures),
+            ("joins", joins),
+        ):
+            if updates is not None:
+                model[block] = _merge_named_objects(
+                    block, dict(model.get(block, {}) or {}), dict(updates), kept_fields
+                )
         self._store_model(model_doc, model_wrapper, model_slug, model)
         dropped_fields: list[str] | None = None
         if replace:
@@ -1152,6 +1138,7 @@ class ArchitectProject:
             "entity_key": entity_slug,
             "calendar_changed": calendar is not None or bool(requested_calendar),
             "dropped_fields": dropped_fields,
+            "kept_fields": kept_fields or None,
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
@@ -2448,6 +2435,41 @@ class ArchitectProject:
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.project_path).as_posix()
+
+
+def _field_reports(staged: dict[str, Any]) -> dict[str, Any]:
+    """A staged model's ``dropped_fields`` (replace only) and ``kept_fields`` (partial updates)."""
+    return {
+        key: staged[key] for key in ("dropped_fields", "kept_fields") if staged[key] is not None
+    }
+
+
+def _merge_named_objects(
+    block: str, current: dict[str, Any], updates: dict[str, Any], kept_fields: list[str]
+) -> dict[str, Any]:
+    """Merge ``updates`` into a model block's named objects, field by field.
+
+    A field's value replaces the old one whole (an ``expr`` AST is never half-merged)
+    and a ``null`` field removes it. Fields of an existing object that the update
+    doesn't name are kept and listed in ``kept_fields``.
+    """
+    merged = dict(current)
+    for name, spec in updates.items():
+        if spec is None:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{block}.{name} is null; remove an object with remove_object",
+                details={"field": f"{block}.{name}"},
+            )
+        old = current.get(name)
+        if not isinstance(spec, dict) or not isinstance(old, dict):
+            merged[name] = deepcopy(spec)
+            continue
+        kept_fields += [f"{block}.{name}.{field}" for field in old if field not in spec]
+        merged[name] = {
+            field: value for field, value in {**old, **deepcopy(spec)}.items() if value is not None
+        }
+    return merged
 
 
 def _replaced(current: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:

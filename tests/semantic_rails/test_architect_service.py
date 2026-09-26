@@ -417,3 +417,72 @@ def test_a_retried_file_write_or_archive_replays(
     assert retried.report["original_status"] == first.report["status"]
     with pytest.raises(SemanticLayerError, match=refusal):
         call("second", project.revision())
+
+
+_EVENTS = {
+    "model_id": "events",
+    "entity_key": "event",
+    "relation": "raw_events",
+    "primary_key": ["event_id"],
+}
+
+
+def _events_model(project_path: Path) -> dict:
+    return yaml_loader.load_yaml_file(project_path / "models" / "core" / "events.yml")["model"]
+
+
+def test_model_upsert_merges_each_named_object_field_by_field(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    before = _events_model(project_path)
+
+    # A label-only update used to replace the whole time role with {label: ...},
+    # dropping its column, kind, class and default while parse still passed.
+    mutation = project.upsert_model(**_EVENTS, times={"occurred_at": {"label": "Event time"}})
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert _events_model(project_path)["times"]["occurred_at"] == {
+        **before["times"]["occurred_at"],
+        "label": "Event time",
+    }
+    assert mutation.report["kept_fields"] == [
+        f"times.occurred_at.{field}" for field in ("column", "kind", "class", "default")
+    ]
+
+    # An expr change keeps the rest of the measure and says so; a new object keeps nothing.
+    mutation = project.upsert_model(
+        **_EVENTS,
+        measures={
+            "total_amount": {"expr": "amount * 2"},
+            "max_amount": {"kind": "aggregate", "expr": "amount", "value_type": "number"},
+        },
+    )
+    assert mutation.report["ok"] is True, mutation.report
+    measure = _events_model(project_path)["measures"]["total_amount"]
+    assert measure["expr"] == "amount * 2" and measure["accumulation"] == {"kind": "flow"}
+    kept = mutation.report["kept_fields"]
+    assert "measures.total_amount.accumulation" in kept
+    assert not [field for field in kept if field.startswith("measures.max_amount")]
+
+
+def test_model_upsert_null_removes_a_field_and_refuses_a_whole_object(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+
+    mutation = project.upsert_model(**_EVENTS, dimensions={"event_type": {"label": None}})
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert _events_model(project_path)["dimensions"]["event_type"] == {"kind": "categorical"}
+    with pytest.raises(SemanticLayerError, match="remove_object"):
+        project.upsert_model(**_EVENTS, dimensions={"event_type": None})
+
+
+def test_models_upsert_reports_kept_fields_per_model(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    mutation = ArchitectProject(project_path, workspace_root=tmp_path).upsert_models(
+        models=[{**_EVENTS, "times": {"occurred_at": {"label": "Event time"}}}]
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert mutation.report["models"][0]["kept_fields"][0] == "times.occurred_at.column"
+    assert _events_model(project_path)["times"]["occurred_at"]["class"] == "event_time"
