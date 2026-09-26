@@ -18,6 +18,7 @@ import os
 import tempfile
 import threading
 import time
+import weakref
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -53,7 +54,9 @@ _GENERATED_SUFFIXES = {
     ".tmp",
     ".wal",
 }
-_LOCAL_LOCKS: dict[str, threading.Lock] = {}
+# One lock per lock file for this process's threads. An entry lives only while a thread
+# holds or waits for its lock, so a long-running host's table does not grow per project.
+_LOCAL_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 _LOCAL_LOCKS_GUARD = threading.Lock()
 
 

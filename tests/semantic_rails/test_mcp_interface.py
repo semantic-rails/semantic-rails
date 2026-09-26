@@ -174,6 +174,33 @@ def test_mcp_output_schema_matches_real_success_and_error_envelopes(runtime_fact
         adapter.close()
 
 
+def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary():
+    runtime = types.SimpleNamespace(package_id="host-test", close=lambda: None)
+    adapter, other = SemanticLayerMCPAdapter(runtime), SemanticLayerMCPAdapter(runtime)
+    seen: list[dict] = []
+
+    def handler(arguments: dict) -> dict:
+        seen.append(arguments)
+        return {"ok": True}
+
+    original = adapter.tool_handlers["inspect"]
+    assert adapter.replace_tool_handler("inspect", handler) == original
+    trusted = RequestContext(request_id="trusted", tenant="tenant-a", roles=("analyst",))
+    spoofed = {"object_id": "measure.x", "policy_context": {"tenant": "tenant-b"}}
+    response = adapter.call_tool("inspect", spoofed, request_context=trusted)
+    missing = adapter.call_tool("inspect", {}, request_context=trusted)
+
+    assert [(args["object_id"], args["policy_context"]) for args in seen] == [
+        ("measure.x", trusted.to_policy_context())
+    ]
+    assert response["request_context"]["tenant"] == "tenant-a"
+    assert missing["errors"][0]["code"] == "INVALID_MCP_ARGUMENTS"
+    assert other.tool_handlers["inspect"] == other._handle_inspect  # noqa: SLF001
+    with pytest.raises(ValueError, match="Unknown MCP tool 'no-such-tool'"):
+        adapter.replace_tool_handler("no-such-tool", handler)
+    assert set(adapter.tool_handlers) == REQUIRED_TOOL_NAMES
+
+
 def test_mcp_adapter_metadata_tools_match_public_v1_payloads(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)

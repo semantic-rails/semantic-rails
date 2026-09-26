@@ -6,6 +6,9 @@ shapes of calls whose receiver the scan can place, and the exact members and par
 the protocols it implements. A failure means this change would break that embedder when it
 upgrades. Keep the old form working next to the new one and deprecate it (docs/EMBEDDING.md,
 "Changing the facade"); regenerate the list only once the embedder has stopped using it.
+
+The facade reference in docs/EMBEDDING.md lists every exported name with its call shape, so a
+new export is documented and a changed signature shows up in the docs diff.
 """
 
 from __future__ import annotations
@@ -15,9 +18,19 @@ from pathlib import Path
 
 import pytest
 
-from scripts.embedding_consumer_contract import HEADER, USES_FILE, problem, scan
+import semantic_rails.embedding as embedding
+from scripts.embedding_consumer_contract import (
+    HEADER,
+    REPO_ROOT,
+    USES_FILE,
+    _parameters,
+    _protocol_shape,
+    problem,
+    scan,
+)
 
 USES = USES_FILE.read_text(encoding="utf-8").removeprefix(HEADER).splitlines()
+EMBEDDING_DOC = REPO_ROOT / "docs" / "EMBEDDING.md"
 
 
 @pytest.mark.parametrize("use", USES)
@@ -118,3 +131,23 @@ def test_scan_follows_imports_instances_and_patches(tmp_path: Path) -> None:
         "set_audit_sink(_)",
     ]
     assert list(failing) == ["Runtime().not_an_engine_attribute"]
+
+
+def _reference(name: str) -> str:
+    value = getattr(embedding, name)
+    if (shape := _protocol_shape(value)) is not None:
+        return f"{name}{{{shape}}}"
+    return f"{name}({_parameters(value)})" if callable(value) else name
+
+
+def test_every_export_imports_and_matches_the_documented_reference() -> None:
+    namespace: dict[str, object] = {}
+    exec("from semantic_rails.embedding import *", namespace)
+    assert set(embedding.__all__) <= set(namespace)
+    assert len(set(embedding.__all__)) == len(embedding.__all__)
+    section = EMBEDDING_DOC.read_text(encoding="utf-8").split("## Facade reference\n", 1)[1]
+    documented = section.split("```text\n", 1)[1].split("```", 1)[0].splitlines()
+    expected = [_reference(name) for name in sorted(embedding.__all__)]
+    assert documented == expected, "update docs/EMBEDDING.md's facade reference to:\n" + "\n".join(
+        expected
+    )

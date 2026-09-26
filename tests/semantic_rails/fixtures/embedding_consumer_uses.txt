@@ -5,6 +5,7 @@ CompiledSqlCache{get(self, key); put(self, key, value)}
 ConnectionCredentialProvider{credentials_for(self, *, warehouse, connection_kind, connection_name)}
 DuckDBAdapter(_)
 LruCompiledSqlCache(maxsize=)
+MCPAdapter{call_tool(self, name, arguments, *, request_context); get_prompt(self, name, arguments); list_prompts(self); list_resources(self); list_tools(self); package_id; read_resource(self, uri, *, request_context)}
 MCP_PROTOCOL_VERSION
 PUBLIC_V1_ROUTES
 PackageReference(package_id=, source_path=)
@@ -23,6 +24,7 @@ Runtime().package_id
 Runtime().query(_)
 Runtime().set_adapter(_)
 Runtime.from_path(_)
+Runtime.from_snapshot
 SNOWFLAKE_CLI_CONNECTION_OPTIONS
 SemanticHTTPService().exception_payload
 SemanticHTTPService().handle
@@ -46,6 +48,7 @@ emit_audit_event(_, error_codes=, package_id=, request_context=, request_id=, st
 get_audit_sink()
 handle_jsonrpc_message(_, _)
 handle_jsonrpc_message(_, _, request_context=)
+load_package_snapshot(_)
 parse_config_report(_)
 request_context_payload(_)
 run_package_tests_report

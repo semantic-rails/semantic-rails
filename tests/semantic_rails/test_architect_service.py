@@ -328,6 +328,22 @@ def test_cross_process_writers_from_one_base_are_serialized(tmp_path: Path) -> N
     assert conflict["error"]["details"]["conflict_kind"] == "stale_revision"
 
 
+def test_the_in_process_project_lock_is_shared_while_held_then_forgotten(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path, package_id="lock_core")
+    holder = architect_transactions.ProjectTransaction(project_path, workspace_root=tmp_path)
+    waiter = architect_transactions.ProjectTransaction(
+        project_path, workspace_root=tmp_path, lock_timeout_seconds=0.1
+    )
+    key = str(holder._lock_path)  # noqa: SLF001
+
+    with holder._exclusive_lock():  # noqa: SLF001
+        assert key in architect_transactions._LOCAL_LOCKS  # noqa: SLF001
+        with pytest.raises(SemanticLayerError, match="Timed out"), waiter._exclusive_lock():  # noqa: SLF001
+            pass
+
+    assert key not in architect_transactions._LOCAL_LOCKS  # noqa: SLF001
+
+
 @pytest.mark.parametrize(
     ("operation", "reported", "refusal"),
     [
