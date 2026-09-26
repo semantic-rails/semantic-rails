@@ -49,11 +49,11 @@ affected ids. Nothing is dropped silently.
   - temporal roles, value domains, segments, semantic policies and caveats, aggregate relations,
     relation pipelines, path preferences and path policy;
   - cumulative, rolling, prior-period, period-to-date, conversion and semi-additive metrics;
-    filtered or windowed metrics; metrics using an aggregation other than `SUM`, `COUNT`,
-    `COUNT DISTINCT`, `AVG`, `MIN` or `MAX`; metrics over a semi-additive measure; and metrics
-    built on anything left out;
+    filtered or windowed metrics; metrics that pin a clock; metrics using an aggregation other
+    than `SUM`, `COUNT`, `COUNT DISTINCT`, `AVG`, `MIN` or `MAX`; metrics over a semi-additive
+    measure; and metrics built on anything left out;
   - measures read from another relation or entity;
-  - M:N, time-valid and unsafe relationships, and N:1 relationships that need a rewrite.
+  - M:N, time-valid and unsafe relationships, and N:1 or 1:1 relationships that need a rewrite.
 - **Exported, with extra attributes in the sidecar.** For example a dimension's data type and
   semantic kind, a measure's default aggregation and accumulation, or a metric's temporal role.
 
