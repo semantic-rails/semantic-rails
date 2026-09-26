@@ -448,7 +448,8 @@ dense rows (for example, the inline `prior_period` LAG window in the
   quarters and years; Monday weeks), in the temporal role's time zone. It spans
   the window for a query with `start` and `end`, and otherwise the data's first
   to last bucket, so an outlying date (say `1900-01-01`) widens the series
-  rather than being dropped. The rendered SQL names it `implicit_calendar`.
+  rather than being dropped (a `9999-12-31` placeholder makes it millions of days long). The
+  rendered SQL names it `implicit_calendar`.
   (An authored calendar fills only the days it holds, so it must cover the data.)
 - Any other `calendar_id` (for example a fiscal calendar) needs that calendar
   authored. Without it the query is refused; it never falls back to Gregorian
@@ -456,8 +457,9 @@ dense rows (for example, the inline `prior_period` LAG window in the
 - The implicit calendar is not available on ClickHouse (an unmatched outer-join
   field there reads 0 rather than NULL), and on Athena a series is capped at
   10,000 days (about 27 years); past that the warehouse refuses the query.
-  Author a calendar for those, for Sunday weeks, and for holidays or business
-  days.
+  A query whose parts compile as separate sub-queries (for example with a
+  `distribution` expression) is refused too. Author a calendar for those, for
+  Sunday weeks, and for holidays or business days.
 
 Two consequences apply to any calendar. The first rows of a `rolling` window
 cover only the periods the series has (a 3-month window at the first month

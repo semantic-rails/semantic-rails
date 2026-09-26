@@ -7,6 +7,7 @@ package with an authored calendar, which must give identical rows.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
@@ -21,6 +22,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.dialects import DuckDbDialect
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.metadata_parts.capabilities import _capability_payload
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import SqlBinary, SqlLiteral
@@ -318,19 +320,20 @@ def test_a_non_additive_fill_is_null_not_zero(packages: dict[str, Path]) -> None
 
 
 @pytest.mark.parametrize(
-    ("package", "time"),
+    ("package", "time", "group_by"),
     [
         # A window that starts mid-month and ends after the data: every month it touches.
-        ("none", {"start": "2023-10-15", "end": "2024-08-01"}),
+        ("none", {"start": "2023-10-15", "end": "2024-08-01"}, []),
+        ("none", {"start": "2023-12-01", "end": "2024-04-01"}, [STORE]),
         # Offset bounds on a role in another zone: days in the role's zone.
-        ("zoned", {"start": "2023-12-01T00:00:00-05:00", "end": "2024-04-01T04:00:00+00:00"}),
-        ("zoned", {"start": "2023-11-30T23:30:00-12:00", "end": "2024-02-29T23:00:00+14:00"}),
+        ("zoned", {"start": "2023-12-01T00:00:00-05:00", "end": "2024-04-01T04:00:00+00:00"}, []),
+        ("zoned", {"start": "2023-11-30T23:30:00-12:00", "end": "2024-02-29T23:00:00+14:00"}, []),
     ],
 )
 def test_bounded_fill_matches_an_authored_calendar(
-    packages: dict[str, Path], package: str, time: dict[str, str]
+    packages: dict[str, Path], package: str, time: dict[str, str], group_by: list[str]
 ) -> None:
-    query = _ask("month", NOW, fill=True, **time)
+    query = {**_ask("month", NOW, fill=True, **time), "group_by": group_by}
     rows, sql = _query(packages[package], query)
 
     assert "implicit_calendar" in sql
@@ -442,6 +445,91 @@ def test_a_default_question_never_borrows_a_fiscal_calendar(packages: dict[str, 
     ]
 
 
+DISTRIBUTION = {
+    "expression": {
+        "kind": "distribution",
+        "function": "percentile",
+        "p": 0.8,
+        "over": {"kind": "entity_value", "entity": "entity.cal_order", "input": REVENUE},
+    },
+    "as": "p80",
+}
+LARGE_ORDER = {
+    "kind": "metric_predicate",
+    "entity": "entity.cal_order",
+    "scope_mode": "contextual",
+    "input": REVENUE,
+    "op": ">",
+    "value": 5,
+}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        _ask("month", DISTRIBUTION, _rolling("month", 3)),
+        _ask("month", DISTRIBUTION, NOW, fill=True),
+        _ask("month", DISTRIBUTION, NOW, fill=True, start="2023-10-15", end="2024-08-01"),
+    ],
+)
+def test_a_query_compiled_as_sub_queries_refuses_the_implicit_calendar(
+    packages: dict[str, Path], query: dict[str, Any]
+) -> None:
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages["none"], query)
+
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert "calendar entity" in str(refused.value)
+    _query(packages["authored"], query)  # an authored calendar still answers
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        _ask("month", NOW, fill=True, start="2023-10-15", end="2024-08-01"),
+        _ask("month", NOW, _prior("month")),
+    ],
+)
+def test_a_metric_predicate_matches_an_authored_calendar(
+    packages: dict[str, Path], query: dict[str, Any]
+) -> None:
+    query = {**query, "metric_filters": [{"expression": LARGE_ORDER, "op": "=", "value": True}]}
+    rows, sql = _query(packages["none"], query)
+
+    assert "implicit_calendar" in sql
+    assert rows == _query(packages["authored"], query)[0]
+
+
+@pytest.mark.parametrize(
+    "name", ["EXPLODE", "sequence", "Generate_Date_Array", "ARRAY_GENERATE_RANGE"]
+)
+def test_a_call_may_not_name_the_calendar_generators(packages: dict[str, Path], name: str) -> None:
+    call = {"expression": {"kind": "call", "name": name, "args": [REVENUE]}, "as": "rows"}
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages["none"], _ask("month", call))
+
+    assert refused.value.code == "INVALID_EXPRESSION_AST"
+
+
+@pytest.mark.parametrize(
+    ("package", "warehouse", "available"),
+    [
+        ("none", "duckdb", True),
+        ("none", "clickhouse", False),
+        ("fiscal_only", "clickhouse", False),
+        ("authored", "clickhouse", True),
+    ],
+)
+def test_dense_fill_capability_follows_the_calendar_that_would_fill(
+    packages: dict[str, Path], package: str, warehouse: str, available: bool
+) -> None:
+    config = load_package_config(str(packages[package]))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    supported, _ = _capability_payload(config)
+
+    assert ("dense_fill" in {row["kind"] for row in supported}) is available
+
+
 # The implicit calendar per warehouse: a day series over dense_bounds, days cast to DATE,
 # bucketed with the warehouse's own truncation.
 BOUNDS = "CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE)"
@@ -487,14 +575,16 @@ def no_calendar_config(packages: dict[str, Path]) -> Any:
     return load_package_config(str(packages["none"]))
 
 
+@pytest.mark.parametrize("bounded", [False, True])
 @pytest.mark.parametrize("warehouse", [*GOLDENS, "clickhouse", "generic"])
 def test_each_warehouse_generates_a_bounded_day_spine_or_refuses(
-    no_calendar_config: Any, warehouse: str
+    no_calendar_config: Any, warehouse: str, bounded: bool
 ) -> None:
     config = replace(
         no_calendar_config, package=replace(no_calendar_config.package, warehouse=warehouse)
     )
-    query = {"version": 1, **BESIDE_PRIOR_MONTH}
+    window = {"fill": True, "start": "2023-10-15", "end": "2024-08-01"}
+    query = {"version": 1, **(_ask("month", NOW, **window) if bounded else BESIDE_PRIOR_MONTH)}
     if warehouse not in GOLDENS:
         with pytest.raises(SemanticLayerError, match="has no implicit calendar"):
             compile_query(config, Registry(config), query)
@@ -506,6 +596,14 @@ def test_each_warehouse_generates_a_bounded_day_spine_or_refuses(
         f"implicit_days AS (\nSELECT\n  {days}\n),\nimplicit_calendar AS (\nSELECT\n"
         f"  implicit_days.date_day AS date_day,\n  {bucket}\nFROM implicit_days\n)"
     ) in sql, sql
+    if bounded:  # the window's days, widened by three and narrowed by the day predicate
+        assert (
+            "dense_bounds AS (\nSELECT\n  CAST('2023-10-12' AS DATE) AS range_start,\n"
+            "  CAST('2024-08-04' AS DATE) AS range_end\n)"
+        ) in sql, sql
+        # Athena's statement preparation types the literals as TIMESTAMP.
+        assert re.search(r"implicit_calendar\.date_day >= (TIMESTAMP )?'2023-10-15'", sql), sql
+        assert re.search(r"implicit_calendar\.date_day < (TIMESTAMP )?'2024-08-01'", sql), sql
 
 
 @pytest.mark.parametrize(

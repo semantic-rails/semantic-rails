@@ -76,7 +76,8 @@ SQL_FUNCTION_NAMES = frozenset(
         "ARGMIN",
         "ARRAY_AGG",
         # Implicit-calendar day series (dialects.SqlDialect.day_series):
-        # Snowflake, BigQuery, Trino/Athena and Databricks spellings.
+        # Snowflake, BigQuery, Trino/Athena and Databricks spellings. Engine-only:
+        # expressions.ENGINE_ONLY_FUNCTIONS keeps them out of `call` expressions.
         "ARRAY_GENERATE_RANGE",
         "AVG",
         "CEIL",

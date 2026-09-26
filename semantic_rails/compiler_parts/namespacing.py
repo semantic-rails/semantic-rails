@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..errors import SemanticLayerError
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
@@ -117,7 +118,16 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
         return SqlTableRef(name=rename.get(table.name, table.name), alias=table.alias)
 
     def _select(node: SqlSelect) -> SqlSelect:
-        assert isinstance(node.from_table, SqlTableRef)  # compiled SQL uses SqlTableRef only
+        if not isinstance(node.from_table, SqlTableRef) or not all(
+            isinstance(join.table, SqlTableRef) for join in node.joins
+        ):
+            # A generated series (the implicit calendar's days) can't be renamed into a
+            # sub-query here; refuse rather than emit SQL that lost its arguments.
+            raise SemanticLayerError(
+                "REWRITE_NOT_SUPPORTED",
+                "This query compiles its parts as separate sub-queries, which cannot hold the "
+                "implicit calendar; add a calendar entity (kind: time) to the package",
+            )
         return SqlSelect(
             select=[SqlField(_expr(field.expression), field.alias) for field in node.select],
             from_table=_table(node.from_table),

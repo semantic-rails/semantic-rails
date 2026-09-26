@@ -21,6 +21,12 @@ from .errors import SemanticLayerError
 if TYPE_CHECKING:
     from .schema import MeasureConfig, PackageConfig
 
+# Row generators only the engine emits (the implicit calendar's day series, in
+# dialects.SqlDialect.day_series). A query or package `call` may not name them.
+ENGINE_ONLY_FUNCTIONS = frozenset(
+    {"ARRAY_GENERATE_RANGE", "EXPLODE", "GENERATE_DATE_ARRAY", "SEQUENCE"}
+)
+
 
 @dataclass(frozen=True)
 class MeasureRefExpr:
@@ -1196,6 +1202,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         name = str(expr.get("name", "")).strip()
         if not name:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Call expressions require 'name'")
+        if " ".join(name.split()).upper() in ENGINE_ONLY_FUNCTIONS:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", f"Unsafe SQL function token: {name!r}"
+            )
         return CallExpr(
             name=name,
             args=[
