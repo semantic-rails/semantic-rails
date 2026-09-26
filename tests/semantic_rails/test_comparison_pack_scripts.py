@@ -820,6 +820,22 @@ def test_a_declared_model_change_the_layer_executed_is_refused(tmp_path, monkeyp
         rubric.build_labels()
 
 
+def test_a_frozen_model_workaround_must_say_why(tmp_path, monkeypatch) -> None:
+    _frozen_pack(tmp_path, monkeypatch, executed=["q17"])
+    detect = ("fake", lambda entry: (["SQL API window function"], ["select 1"]))
+    monkeypatch.setattr(rubric, "DETECTORS", {"fake": detect})
+    with pytest.raises(SystemExit, match="q17 is a workaround, but frozen_model.yml doesn't say"):
+        rubric.build_labels()
+    frozen = json.loads((tmp_path / "frozen_model.yml").read_text(encoding="utf-8"))
+    frozen["fake"]["workaround"] = {"q17": {"reason": "SQL around a query.", "doc": "https://w"}}
+    (tmp_path / "frozen_model.yml").write_text(json.dumps(frozen), encoding="utf-8")
+    assert rubric.build_labels()["labels"]["fake"]["q17"]["evidence"] == [
+        "SQL API window function",
+        "SQL around a query.",
+        "https://w",
+    ]
+
+
 def test_a_changed_model_stops_the_rubric(tmp_path, monkeypatch) -> None:
     pack = _frozen_pack(tmp_path, monkeypatch, executed=[])
     (pack / "fake_model" / "orders.yml").write_text("measures: [revenue, large_revenue]\n", "utf-8")
@@ -923,6 +939,8 @@ def test_every_assessed_layer_answers_or_declares_each_variant() -> None:
                 assert label == "requires_model_change", (layer, qid)
             else:
                 assert label in {"native", "workaround", "precomputed"}, (layer, qid, label)
+            if label in {"requires_model_change", "workaround"}:  # it says why, with a link
+                assert labels[layer][qid]["evidence"][-1].startswith("https://"), (layer, qid)
 
 
 def test_the_published_frozen_model_counts_come_from_the_labels() -> None:

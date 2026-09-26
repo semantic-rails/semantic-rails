@@ -276,6 +276,16 @@ def frozen_label(spec: dict[str, Any] | None, qid: str, executed: bool) -> dict[
     return {"label": "requires_model_change", "evidence": [declared["reason"], declared["doc"]]}
 
 
+def explain_workaround(spec: dict[str, Any], qid: str, label: dict[str, Any]) -> None:
+    """A frozen-model answer labeled workaround says why, with the documentation behind it."""
+    if label["label"] != "workaround":
+        return
+    why = spec.get("workaround", {}).get(qid)
+    if why is None:
+        raise SystemExit(f"{qid} is a workaround, but frozen_model.yml doesn't say why")
+    label["evidence"] += [why["reason"], why["doc"]]
+
+
 def build_labels() -> dict[str, Any]:
     questions = yaml.safe_load((PACK / "shared" / "questions.yml").read_text(encoding="utf-8"))
     frozen = load_frozen_models()
@@ -304,6 +314,8 @@ def build_labels() -> dict[str, Any]:
             labels[layer][question["id"]] = decide(
                 executed, helpers, texts, list(question.get("bypass_columns", []))
             )
+            if question.get("scope_level") == "variant":
+                explain_workaround(frozen[layer], question["id"], labels[layer][question["id"]])
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "rules": [{"label": label, "rule": rule} for label, rule in RULES],

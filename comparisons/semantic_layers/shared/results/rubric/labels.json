@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-26T02:02:59+00:00",
+  "generated_at": "2026-09-26T02:05:38+00:00",
   "labels": {
     "cube": {
       "q01_orders_by_month": {
@@ -83,14 +83,18 @@
       "q19_trailing_3_month_revenue_by_month": {
         "evidence": [
           "SQL API query over a derived table",
-          "SQL API window function"
+          "SQL API window function",
+          "An SQL API query answers it by wrapping a Cube query in SQL of its own: a derived table, with a window function for q19 (SUM OVER) and q20 (LAG), and a filter on each customer-month's order count for q23. The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, or a multi-stage measure with the new threshold.",
+          "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
         ],
         "label": "workaround"
       },
       "q20_revenue_and_prior_month_revenue_by_month": {
         "evidence": [
           "SQL API query over a derived table",
-          "SQL API window function"
+          "SQL API window function",
+          "An SQL API query answers it by wrapping a Cube query in SQL of its own: a derived table, with a window function for q19 (SUM OVER) and q20 (LAG), and a filter on each customer-month's order count for q23. The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, or a multi-stage measure with the new threshold.",
+          "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
         ],
         "label": "workaround"
       },
@@ -110,7 +114,9 @@
       },
       "q23_orders_from_customers_with_5plus_orders_in_month": {
         "evidence": [
-          "SQL API query over a derived table"
+          "SQL API query over a derived table",
+          "An SQL API query answers it by wrapping a Cube query in SQL of its own: a derived table, with a window function for q19 (SUM OVER) and q20 (LAG), and a filter on each customer-month's order count for q23. The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, or a multi-stage measure with the new threshold.",
+          "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
         ],
         "label": "workaround"
       },

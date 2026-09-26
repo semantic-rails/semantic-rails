@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-26T02:03:42+00:00",
+  "generated_at": "2026-09-26T02:05:38+00:00",
   "claims": [
     "The 8 frozen-model questions (q17-q24) each change one parameter of a metric that q01-q16 already use: a window, an offset, a filter, an aggregation or a threshold. No layer's model defines the variant. With each layer's model left exactly as written for q01-q16, answered through the layer's query-time interface, out of 8: Malloy 8 (8 native), Semantic Rails 6 (6 native), Cube 4 (1 native, 3 workaround), KtX 3 (2 native, 1 precomputed) and MetricFlow 2 (2 native). Each other answer requires a model change, for the reason and the documentation given in shared/frozen_model.yml. Snowflake Semantic Views wasn't assessed: its capture can't be re-run.",
     "Every layer's model was written with q01-q16 in view, so a q01-q16 label says where an answer's logic lives, not whether the layer could answer a question its model wasn't written for; the frozen-model questions test that.",
@@ -728,7 +728,9 @@
         ],
         "cube": [
           "SQL API query over a derived table",
-          "SQL API window function"
+          "SQL API window function",
+          "An SQL API query answers it by wrapping a Cube query in SQL of its own: a derived table, with a window function for q19 (SUM OVER) and q20 (LAG), and a filter on each customer-month's order count for q23. The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, or a multi-stage measure with the new threshold.",
+          "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
         ],
         "ktx": [
           "ktx-sl rejects window functions in measures, inline query measures included (\"Window functions (OVER clause) are not supported in measures\"), so a trailing or prior-period value needs a SQL source.",
@@ -765,7 +767,9 @@
         ],
         "cube": [
           "SQL API query over a derived table",
-          "SQL API window function"
+          "SQL API window function",
+          "An SQL API query answers it by wrapping a Cube query in SQL of its own: a derived table, with a window function for q19 (SUM OVER) and q20 (LAG), and a filter on each customer-month's order count for q23. The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, or a multi-stage measure with the new threshold.",
+          "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
         ],
         "ktx": [
           "ktx-sl rejects window functions in measures, inline query measures included (\"Window functions (OVER clause) are not supported in measures\"), so a trailing or prior-period value needs a SQL source.",
@@ -851,7 +855,9 @@
       },
       "label_evidence": {
         "cube": [
-          "SQL API query over a derived table"
+          "SQL API query over a derived table",
+          "An SQL API query answers it by wrapping a Cube query in SQL of its own: a derived table, with a window function for q19 (SUM OVER) and q20 (LAG), and a filter on each customer-month's order count for q23. The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, or a multi-stage measure with the new threshold.",
+          "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
         ],
         "ktx": [
           "The more-than-10 threshold is inside the pack's customer-month SQL source. A query filter is row-level or applies at the query's own grain, so it can't count each customer-month's orders; a new threshold needs a new SQL source.",

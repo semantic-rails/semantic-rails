@@ -48,9 +48,10 @@ query-time interface only, and the same rules then label each answer:
   executes it.
 - **An answer that runs is labeled like any other.** A Cube SQL API query that wraps a Cube query
   in a derived table or a window function is SQL written by hand, so it is `workaround`, like SQL
-  outside `SEMANTIC_VIEW(...)`. A Malloy query that extends a source with its own join, or a KtX
-  or Semantic Rails query that composes an aggregate inline, uses the layer's semantic constructs
-  and is `native`.
+  outside `SEMANTIC_VIEW(...)`; `frozen_model.yml` says why for each one, with a documentation
+  link, and the rubric refuses a frozen-model `workaround` without one. A Malloy query that
+  extends a source with its own join, or a KtX or Semantic Rails query that composes an
+  aggregate inline, uses the layer's semantic constructs and is `native`.
 
 The published matrix gives each layer's count as "answered with the model frozen": the
 frozen-model questions it answered (`native`, `workaround` or `precomputed`), out of 8.
