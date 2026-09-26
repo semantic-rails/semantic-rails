@@ -56,8 +56,8 @@ executed SQL, no cubes, KtX sources or Semantic Rails models, or no named Malloy
 
 ## What The Labels Don't Say
 
-- A label describes how this pack models a layer today, not what the layer can do. Several
-  layers ship features that this pack hasn't modeled yet (see the README), and the rubric
+- A label describes how this pack models a layer today, not what the layer can do. Snowflake
+  Semantic Views ships range joins that this pack hasn't modeled (see the README), and the rubric
   checks where an answer's logic lives, not whether the model is idiomatic.
 - The Semantic-Rails-targeted questions (q08-q16) were chosen to exercise Semantic Rails
   features. The Semantic Rails authors wrote every layer's models. Those questions are a

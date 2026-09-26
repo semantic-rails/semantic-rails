@@ -46,11 +46,12 @@ def token(secret: str) -> str:
 def _request(path: str, query: str | None = None) -> str:
     url = BASE_URL + path + (f"?{urllib.parse.urlencode({'query': query})}" if query else "")
     request = urllib.request.Request(url, headers={"Authorization": token(API_SECRET)})
-    while True:
+    for _ in range(60):
         with urllib.request.urlopen(request, timeout=120) as response:
             body = response.read().decode("utf-8")
         if json.loads(body).get("error") != "Continue wait":  # a long query: ask again
             return body
+    raise SystemExit(f"Cube still answered 'Continue wait' to {path} after 60 tries")
 
 
 def _wait_for_meta(server: subprocess.Popen[bytes], log: IO[bytes]) -> str:
@@ -59,10 +60,28 @@ def _wait_for_meta(server: subprocess.Popen[bytes], log: IO[bytes]) -> str:
             break
         try:
             return _request("/meta")
+        except urllib.error.HTTPError as exc:  # Cube is up but refused: don't wait it out
+            raise SystemExit(f"Cube answered /meta with HTTP {exc.code}") from exc
         except OSError:
             time.sleep(1)
     log.seek(0)
     raise SystemExit("Cube didn't start:\n" + log.read().decode("utf-8", "replace")[-4000:])
+
+
+def _server_environment() -> dict[str, str]:
+    """What Node needs, plus the API secret. An inherited CUBEJS_* setting, CUBE_DUCKDB_PATH or
+    PORT would change what Cube runs or where it listens, apart from what this runner records."""
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR") if key in os.environ}
+    return env | {"CUBEJS_API_SECRET": API_SECRET}
+
+
+def _stop(server: subprocess.Popen[bytes]) -> None:
+    server.terminate()
+    try:
+        server.wait(timeout=30)
+    except subprocess.TimeoutExpired:  # don't leave Cube listening
+        server.kill()
+        server.wait()
 
 
 def _environment() -> dict[str, str]:
@@ -89,9 +108,8 @@ def main() -> None:
     shutil.rmtree(RESULTS_DIR, ignore_errors=True)
     questions, unsupported = [], {}
     with tempfile.TemporaryFile() as log:
-        env = os.environ | {"CUBEJS_API_SECRET": API_SECRET}
         server = subprocess.Popen(
-            ["node", "index.js"], cwd=PROJECT_DIR, env=env, stdout=log, stderr=log
+            ["node", "index.js"], cwd=PROJECT_DIR, env=_server_environment(), stdout=log, stderr=log
         )
         try:
             _write(RESULTS_DIR / "meta.json", _wait_for_meta(server, log))
@@ -117,8 +135,7 @@ def main() -> None:
                     }
                 )
         finally:
-            server.terminate()
-            server.wait(timeout=30)
+            _stop(server)
     summary = {
         "layer": "cube",
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),

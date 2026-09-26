@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T23:45:53+00:00",
+  "generated_at": "2026-09-26T00:54:21+00:00",
   "claims": [
     "On all 16 questions, the 5 layers checked on the current dataset (Semantic Rails, MetricFlow, Cube, Malloy and KtX) return the independent answer key's normalized outputs, with numbers matching within 1e-6.",
     "Snowflake Semantic Views was captured on 2026-04-07 on an earlier dataset and has not been re-run, so it is left out of that count. Its capture matches the answer key on 14 questions and differs on: q07, q16.",
@@ -517,7 +517,31 @@
         "questions": 7
       }
     },
-    "scale_up_caveat": "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits graph.yml, core_metrics.yml and package.yml. Do not compare sizes until one script counts every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model and 7-model sets, not question slices.",
+    "stale_layers": {
+      "snowflake_semantic_views": {
+        "matched": [
+          "q01_orders_by_month",
+          "q02_revenue_by_store_by_month",
+          "q03_item_revenue_by_product_type_by_month",
+          "q04_aov_by_store",
+          "q05_orders_and_item_revenue_by_store_by_month",
+          "q06_new_customer_orders_by_month",
+          "q08_revenue_by_customer_segment_as_of_order_time",
+          "q09_session_to_order_conversion_7d",
+          "q10_orders_from_customers_with_10plus_orders_in_month",
+          "q11_repeat_customer_orders_by_store_by_month",
+          "q12_orders_by_month_with_lifetime_spend_500_filter",
+          "q13_daily_orders_from_customers_with_10plus_orders_in_month",
+          "q14_revenue_from_customers_with_10plus_orders_same_store_month",
+          "q15_same_store_session_to_order_conversion_7d"
+        ],
+        "mismatched": [
+          "q07_delivered_revenue_by_month",
+          "q16_revenue_by_customer_segment_as_of_delivered_time"
+        ]
+      }
+    },
+    "scale_up_caveat": "Authored-size counts are not yet uniform across layers: the Semantic Rails count omits graph.yml, core_metrics.yml and package.yml. Malloy and Snowflake Semantic Views count their one model file only up to a stretch marker, while the other layers count whole baseline files, including members only the stretch questions use. Do not compare sizes until one script counts every layer's authored files the same way. 'baseline' and 'stretch' here are the 4-model and 7-model sets, not question slices.",
     "scale_up": [
       {
         "layer": "semantic_rails",
@@ -549,7 +573,7 @@
         "baseline_models": 4,
         "baseline_files": 4,
         "baseline_loc": 166,
-        "baseline_relationships": 4,
+        "baseline_relationships": 5,
         "stretch_models": 7,
         "stretch_files": 8,
         "stretch_loc": 284,

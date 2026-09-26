@@ -50,6 +50,7 @@ with `npm pack` (no install, no dependencies), extracts the Python wheel that
 the package bundles (`assets/python/kaelio_ktx-0.16.0-py3-none-any.whl`), and
 refuses it unless its sha256 matches the one pinned in the runner, which is the
 hash in the package's own `assets/python/manifest.json`. The wheel is cached in
-`/tmp/ktx-compare`; set `KTX_DIR` to use another directory. The runner records
-the KtX version, the wheel hash and the Python package versions in its
-`summary.json`.
+`ktx/.cache/` (git-ignored; set `KTX_DIR` to use another directory). Each run
+copies the checked bytes into a private temporary directory and imports the
+wheel from there. The runner records the KtX version, the wheel hash and the
+Python package versions in its `summary.json`.

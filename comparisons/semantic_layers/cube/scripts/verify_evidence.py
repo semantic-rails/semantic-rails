@@ -1,4 +1,5 @@
-"""Check the Cube install surface offline (no npm): pinned manifest, registry lock, clean audit.
+"""Check the Cube install surface offline (no npm): pinned manifest, registry lock, clean audit,
+and an index.js that keeps Cube's dev server off.
 
 `--record` re-runs `npm audit` on the lockfile (network) and records it with the lockfile's hash.
 """
@@ -30,6 +31,22 @@ def _dependencies(manifest: dict) -> dict[str, str]:
     return {f"{f} {name}": v for f in fields for name, v in manifest.get(f, {}).items()}
 
 
+def _server_errors(project: Path) -> list[str]:
+    """A tripwire, not a parser: index.js's code (comment lines aside) keeps `devServer: false`,
+    checks for a .env file before loading Cube's server, and refuses CUBEJS_DEV_MODE after it."""
+    lines = (project / "index.js").read_text(encoding="utf-8").splitlines()
+    source = "\n".join(line for line in lines if not line.lstrip().startswith("//"))
+    load = source.find('require("@cubejs-backend/server")')
+    dotenv = source.find('fs.existsSync(path.join(process.cwd(), ".env"))')
+    dev_mode = source.find("process.env.CUBEJS_DEV_MODE !== undefined")
+    found = [] if "devServer: false," in source else ["index.js doesn't pass devServer: false"]
+    if not -1 < dotenv < load:
+        found.append("index.js doesn't refuse a .env file before loading @cubejs-backend/server")
+    if not -1 < load < dev_mode:
+        found.append("index.js doesn't refuse CUBEJS_DEV_MODE after loading @cubejs-backend/server")
+    return found
+
+
 def errors(project: Path = PROJECT_DIR) -> list[str]:
     package, lock = _load(project, "package.json"), _load(project, "package-lock.json")
     found = [] if package.get("private") is True else ["package.json must be private"]
@@ -56,7 +73,7 @@ def errors(project: Path = PROJECT_DIR) -> list[str]:
     for severity in ("high", "critical"):
         if counts.get(severity) != 0:
             found.append(f"npm-audit.json reports {counts.get(severity)} {severity} advisories")
-    return found
+    return found + _server_errors(project)
 
 
 def record(project: Path = PROJECT_DIR) -> None:
@@ -67,7 +84,10 @@ def record(project: Path = PROJECT_DIR) -> None:
         capture_output=True,
         text=True,
     )
-    payload = {"package_lock_sha256": _lock_sha256(project), "report": json.loads(audit.stdout)}
+    report = json.loads(audit.stdout or "{}")  # non-JSON output raises before anything is written
+    if not isinstance(report.get("metadata", {}).get("vulnerabilities"), dict):
+        raise SystemExit(f"npm audit (exit {audit.returncode}) gave no report; kept npm-audit.json")
+    payload = {"package_lock_sha256": _lock_sha256(project), "report": report}
     (project / "npm-audit.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 

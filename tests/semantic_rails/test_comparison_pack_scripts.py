@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import io
 import itertools
 import json
+import os
 import re
 import subprocess
 import sys
+import urllib.error
 from collections import Counter
 from decimal import Decimal
+from email.message import Message
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -262,9 +266,9 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
     )
 
 
-def _load_snowflake_runner() -> ModuleType:
-    path = SCRIPTS.parents[1] / "snowflake_semantic_views" / "scripts" / "run_questions.py"
-    spec = importlib.util.spec_from_file_location("snowflake_runner", path)
+def _load_runner(layer: str) -> ModuleType:
+    path = SCRIPTS.parents[1] / layer / "scripts" / "run_questions.py"
+    spec = importlib.util.spec_from_file_location(f"{layer}_runner", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -272,7 +276,7 @@ def _load_snowflake_runner() -> ModuleType:
 
 
 def test_snowflake_run_records_only_one_agreed_fingerprint() -> None:
-    loaded = _load_snowflake_runner().loaded_fingerprint
+    loaded = _load_runner("snowflake_semantic_views").loaded_fingerprint
     assert loaded([{"FINGERPRINT": "abc"}]) == "abc"
     assert loaded([{"FINGERPRINT": "abc"}, {"FINGERPRINT": "abc"}]) == "abc"
     assert loaded([{"FINGERPRINT": "abc"}, {"FINGERPRINT": "def"}]) is None
@@ -387,7 +391,7 @@ def test_stale_snowflake_capture_is_set_aside_and_reported(tmp_path, monkeypatch
 
 def _run_snowflake_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sql: str) -> dict:
     """Run the Snowflake runner offline; a question whose SQL says `broken` fails."""
-    runner = _load_snowflake_runner()
+    runner = _load_runner("snowflake_semantic_views")
     examples = tmp_path / "query_examples.sql"
     examples.write_text(f"-- q01_orders_by_month\n{sql}\n", encoding="utf-8")
 
@@ -420,6 +424,66 @@ def test_snowflake_runner_lists_a_failed_question_as_unsupported(tmp_path, monke
     assert entry["question_id"] == "q01_orders_by_month"
     assert entry["status"] == "unsupported"
     assert entry["reason"] == "SQL compilation error"
+
+
+def test_cube_runs_with_only_the_environment_node_needs(monkeypatch) -> None:
+    cube = _load_runner("cube")
+    for key in ("CUBEJS_DEV_MODE", "CUBEJS_TESSERACT_SQL_PLANNER", "CUBE_DUCKDB_PATH", "PORT"):
+        monkeypatch.setenv(key, "x")
+    env = cube._server_environment()
+    assert set(env) <= {"PATH", "HOME", "TMPDIR", "CUBEJS_API_SECRET"}
+    assert env["PATH"] == os.environ["PATH"]  # Popen finds `node` through the child's PATH
+    assert env["CUBEJS_API_SECRET"] == cube.API_SECRET
+
+
+def test_cube_is_killed_when_it_ignores_the_stop_signal() -> None:
+    calls = []
+
+    class Server:
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+        def wait(self, timeout: float | None = None) -> None:
+            calls.append("wait")
+            if timeout:
+                raise subprocess.TimeoutExpired("node", timeout)
+
+    _load_runner("cube")._stop(Server())
+    assert calls == ["terminate", "wait", "kill", "wait"]
+
+
+def test_cube_start_stops_at_a_refused_request(monkeypatch) -> None:
+    cube = _load_runner("cube")
+
+    def refuse(path: str, query: str | None = None) -> str:
+        raise urllib.error.HTTPError(cube.BASE_URL + path, 403, "Forbidden", Message(), None)
+
+    monkeypatch.setattr(cube, "_request", refuse)
+    running = SimpleNamespace(poll=lambda: None)
+    with pytest.raises(SystemExit, match="HTTP 403"):
+        cube._wait_for_meta(running, io.BytesIO())
+
+
+def test_ktx_refuses_a_cached_wheel_off_the_pin_without_fetching(tmp_path, monkeypatch) -> None:
+    ktx = _load_runner("ktx")
+    monkeypatch.setattr(ktx, "KTX_DIR", tmp_path)
+    (tmp_path / ktx.KTX_WHEEL_NAME).write_bytes(b"not the pinned wheel")
+    monkeypatch.setattr(ktx.subprocess, "run", lambda *_, **__: pytest.fail("fetched"))
+    private = tmp_path / "private"
+    private.mkdir()
+    with pytest.raises(SystemExit, match="pinned sha256"):
+        ktx._ktx_wheel(private)
+    assert not any(private.iterdir())
+
+
+def test_cube_sql_excerpts_are_the_generated_sql() -> None:
+    data, _ = generator.build_contracts()
+    [cube] = [layer for layer in data["layers"] if layer["id"] == "cube"]
+    for entry in cube["questions"]:
+        assert entry["sql_excerpt"].lstrip().upper().startswith(("SELECT", "WITH")), entry
 
 
 def test_a_missing_mapped_column_fails_instead_of_being_guessed() -> None:
