@@ -173,14 +173,14 @@ class PostgresAdapter(DbApiAdapter):
         """
         info = self._connection().info
         current = info.parameter_status("TimeZone")
-        if not current:  # a proxy that doesn't report it: ask the server
-            cursor.execute("SELECT current_setting('TimeZone')")
-            current = cursor.fetchone()[0]
-        if _same_zone(current, zone):
+        if current and _same_zone(current, zone):
             yield
             return
         idle = getattr(info.transaction_status, "name", "") == "IDLE"
         with self._connection().transaction():
+            if not current:  # a proxy that doesn't report it: ask, inside the transaction
+                cursor.execute("SELECT current_setting('TimeZone')")
+                current = cursor.fetchone()[0]
             cursor.execute("SELECT set_config('TimeZone', %s, true)", (zone,))
             yield
             if not idle:

@@ -448,8 +448,9 @@ def _postgres_with(connection: Any) -> PostgresAdapter:
         # Already in the zone, under any of its names: no transaction and no SET.
         ("IDLE", "UTC", ["SQL"]),
         ("IDLE", "Etc/UTC", ["SQL"]),
-        # A connection that doesn't report its zone: the server is asked first.
-        ("INTRANS", None, ["ASK", "BEGIN", "UTC", "SQL", "Europe/Paris", "COMMIT"]),
+        # A connection that doesn't report its zone: the server is asked, inside the scope.
+        ("IDLE", None, ["BEGIN", "ASK", "UTC", "SQL", "COMMIT"]),
+        ("INTRANS", None, ["BEGIN", "ASK", "UTC", "SQL", "Europe/Paris", "COMMIT"]),
     ],
 )
 def test_postgres_scopes_the_zone_to_the_query(
