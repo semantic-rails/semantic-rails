@@ -29,7 +29,7 @@ from ..expressions import (
     resolve_filter_dimension,
 )
 from ..schema import MeasureConfig, MetricConfig, PackageConfig
-from ..segments import _metric_root_entity
+from ..segments import metric_root_entity
 from .backend import current_backend
 from .prompts import (
     _author_choice,
@@ -1640,7 +1640,7 @@ def _author_segment(
     roots: dict[str, str] = {}
     for recipe in config.metric_recipes:
         with contextlib.suppress(SemanticLayerError):
-            roots[recipe.id] = _metric_root_entity(config, recipe.expression)
+            roots[recipe.id] = metric_root_entity(config, recipe.expression)
     rooted = {entity.id for entity in config.entities if entity.allowed_as_root}
     entities = [
         row
