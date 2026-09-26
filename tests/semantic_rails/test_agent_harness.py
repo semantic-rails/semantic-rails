@@ -326,7 +326,8 @@ def test_eval_ab_grades_each_arm_on_the_gold_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run lock
     model, requests = serve(replies, "full")
     url, out = f"http://127.0.0.1:{model.server_port}/v1", tmp_path / "runs"
-    arms = "base=semantic-rails,head=semantic-rails"
+    # The first arm is the baseline, whatever the names' order.
+    arms = "main=semantic-rails,head=semantic-rails"
     try:
         eval_ab.main(
             ["run", "--out", str(out), "--model", "m", "--base-url", url, "--cases", "J01"]
@@ -340,8 +341,11 @@ def test_eval_ab_grades_each_arm_on_the_gold_rows(tmp_path, monkeypatch):
     # Like a host, the harness shows the model the server's instructions.
     assert "execute(query)" in requests[2]["messages"][0]["content"]
     table = eval_ab.summary(out)
-    assert "| base | 1 | 0 | 1 | 0 | 0 |" in table and "| head | 1 | 1 | 0 | 0 | 0 |" in table
-    assert "head vs base, 1 paired runs: accuracy +100.0 points" in table
+    assert "| main | 1 | 0 | 1 | 0 | 0 |" in table and "| head | 1 | 1 | 0 | 0 | 0 |" in table
+    assert "head vs main, 1 paired runs: accuracy +100.0 points" in table
+    for bad in ("head=semantic-rails", "a-b=x,c=y", "a=x,b=y,c=z"):
+        with pytest.raises(SystemExit):
+            eval_ab.main(["run", "--out", str(out), "--model", "m", "--arms", bad])
     refuse, trend = cases["J34"], cases["J01"]
     assert eval_ab.grade(refuse, "No.\nANSWER_STATUS: cannot_answer", None, out) == "correct"
     assert eval_ab.grade(refuse, "It's 3.", {"select": []}, out) == "silent_wrong"

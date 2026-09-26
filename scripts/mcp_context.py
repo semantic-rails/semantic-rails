@@ -1259,7 +1259,8 @@ def write_baseline(
     document = {
         "description": (
             "Ceilings for scripts/mcp_context.py's query MCP (interface v2): its surface, "
-            "defaults, sessions, resources, errors and hosted probes, in "
+            "defaults, sessions, resources, errors and hosted probes (compact cards, which "
+            "carry query patches; query.v2.default covers default discover), in "
             "tokens = round(chars / 4). Gated token metrics fail CI above budget + max(8, "
             "budget * tolerance), counts above budget; tracked ones are reported only. "
             "Regenerate with --write-baseline and review the diff."

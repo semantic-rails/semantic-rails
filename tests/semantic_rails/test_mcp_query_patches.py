@@ -13,8 +13,9 @@ from typing import Any
 
 import pytest
 
+from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.metadata import _QUERY_IR_KEYS, build_options_payload
+from semantic_rails.metadata import _QUERY_IR_KEYS
 from semantic_rails.request_context import RequestContext
 
 QUERY_IR_KEYS = set(_QUERY_IR_KEYS)
@@ -127,17 +128,13 @@ def test_every_patch_runs_as_is(
 def test_build_options_patches_are_pure_ir_and_run_at_every_step(
     adapter: SemanticLayerMCPAdapter, step: str
 ) -> None:
-    # Response options and a policy context must not leak into the patches.
-    arguments = dict(BUILDER_STEPS[step])
-    query = {
-        **arguments.pop("query", {}),
-        "policy_context": POLICY_CONTEXT,
-        "verbosity": "full",
-        "sql_profile": "off",
-    }
-    response = build_options_payload(
-        adapter.runtime, partial_query=query, verbosity="full", **arguments
+    # MCP has no build-options tool; HTTP shapes the request. Response options
+    # and a policy context must not leak into the patches.
+    payload = {**BUILDER_STEPS[step], "policy_context": POLICY_CONTEXT, "sql_profile": "off"}
+    response, status = SemanticHTTPService(adapter.runtime).handle(
+        "POST", normalize_route("/api/v1/build-options"), {**payload, "verbosity": "full"}
     )
+    assert status == 200, response
     assert response.get("builder_step", step) == step
     patches = list(_patches(response))
     assert patches, f"no patches at step {step}"

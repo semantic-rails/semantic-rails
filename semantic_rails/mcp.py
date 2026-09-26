@@ -3,7 +3,7 @@
 Exposes :class:`SemanticLayerMCPAdapter`, which presents six governed
 tools backed by a single ``Runtime`` (interface v2): ``discover``,
 ``inspect``, ``valid-values``, ``plan``, ``execute(mode)`` and
-``segment(action)``. Interface v1 was removed in 0.3.3. The transport — stdio vs HTTP — lives in
+``segment(action)``. Interface v1 was removed. The transport — stdio vs HTTP — lives in
 :mod:`semantic_rails.mcp_server`; this module is the protocol-agnostic
 adapter.
 """
@@ -85,8 +85,8 @@ __all__ = [
 
 
 # The only query-MCP interface, frozen in query_mcp.v2.json. Interface v1 was
-# removed in 0.3.3: asking for it (the adapter's interface argument or this
-# environment variable) fails.
+# removed: asking for it (the adapter's interface argument or this environment
+# variable) fails.
 _INTERFACE = "v2"
 _INTERFACE_ENV = "SEMANTIC_RAILS_MCP_INTERFACE"
 
@@ -358,7 +358,7 @@ def _tool_annotations(name: str) -> dict[str, Any]:
     non-destructive: the engine only compiles and executes SELECT-shaped SQL.
     """
 
-    open_world = name in {"execute", "valid-values", "segment-preview", "segment"}
+    open_world = name in {"execute", "valid-values", "segment"}
     return {
         "title": name.replace("-", " ").title(),
         "readOnlyHint": True,
@@ -483,12 +483,14 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     ),
                 },
                 "verbosity": _VERBOSITY_MINIMAL,
+                # No schema default: clients that fill defaults in would cap
+                # an empty-terms page at 10 ids.
                 "limit": {
                     "type": "integer",
-                    "default": 10,
                     "minimum": 1,
                     "description": (
-                        f"Per kind; with empty terms, ids per kind (default {_DISCOVER_ID_PAGE})."
+                        "Per kind (default 10); with empty terms, ids per kind "
+                        f"(default {_DISCOVER_ID_PAGE})."
                     ),
                 },
                 "offset": {
@@ -638,7 +640,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             " derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows"
             " and the total member count. Default verbosity='minimal' leaves out compiler "
             "plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like "
-            "'segment.jaffle.high_value_customers' (discover with empty terms lists them); "
+            "'segment.jaffle.high_value_customers' (list them first with empty discover terms); "
             "'preview' queries the warehouse."
         ),
         input_schema=_schema(
@@ -763,8 +765,11 @@ _REMOVED_TOOLS = {
     "segment-explain": "segment with action 'explain'",
     "segment-preview": "segment with action 'preview'",
     "catalog": "discover with empty terms",
-    "capabilities": "plan to draft Query IR (execute's schema lists the expression shapes)",
-    "build-options": "plan, then valid-values for filter values",
+    "capabilities": (
+        "plan to draft Query IR (execute's schema lists the expression shapes; "
+        "the HTTP API keeps /api/v1/capabilities)"
+    ),
+    "build-options": "plan, then valid-values for filter values (HTTP and the CLI keep it)",
 }
 
 MCP_TOOL_DEFINITIONS = tuple(definition.to_dict() for definition in TOOL_DEFINITIONS)
@@ -805,79 +810,34 @@ def _argument_error(message: str, *, field: str, value: Any | None = None) -> Se
     return SemanticLayerError("INVALID_MCP_ARGUMENTS", message, details=details)
 
 
-def _tool_required_properties(
-    tool_name: str, tools: Sequence[ToolDefinition]
-) -> tuple[list[str], list[str]]:
+# Argument tables, derived from the tool schemas. A closed schema rejects
+# unknown keys, an open one warns and ignores them. ``execute`` also accepts
+# top-level Query-IR keys (from the parser, so a new IR field needs no second
+# list); Query IR's own additional-keys gate in ``ast.py`` checks those.
+_TOOL_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
+    definition.name: dict(definition.input_schema or {}) for definition in TOOL_DEFINITIONS
+}
+_KNOWN_ARGS: Mapping[str, frozenset[str]] = {
+    name: frozenset(schema.get("properties") or {})
+    | (QUERY_INPUT_KEYS if name == "execute" else frozenset())
+    for name, schema in _TOOL_SCHEMAS.items()
+}
+_STRICT_REJECT_TOOLS: frozenset[str] = frozenset(
+    name for name, schema in _TOOL_SCHEMAS.items() if not schema.get("additionalProperties", True)
+)
+_UNKNOWN_ARG_WARNING_CODE: Mapping[str, str] = {
+    name: f"{name.replace('-', '_').upper()}_UNKNOWN_ARG"
+    for name in _TOOL_SCHEMAS
+    if name not in _STRICT_REJECT_TOOLS
+}
+_WARN_AND_IGNORE_TOOLS: frozenset[str] = frozenset(_UNKNOWN_ARG_WARNING_CODE)
+
+
+def _tool_required_properties(tool_name: str) -> tuple[list[str], list[str]]:
     """Return (required, known) properties from the tool's input_schema."""
-    for definition in tools:
-        if definition.name != tool_name:
-            continue
-        schema = dict(definition.input_schema or {})
-        required = list(schema.get("required") or [])
-        known = list((schema.get("properties") or {}).keys())
-        return required, known
-    return [], []
+    schema = _TOOL_SCHEMAS.get(tool_name, {})
+    return list(schema.get("required") or []), list(schema.get("properties") or {})
 
-
-def _tool_known_args(tool_name: str, tools: Sequence[ToolDefinition]) -> frozenset[str]:
-    """Source of truth for the legitimate argument keys per tool.
-
-    Combines the tool's ``input_schema.properties`` keys with canonical
-    :data:`semantic_rails.ast.QUERY_INPUT_KEYS` for ``execute``, which accepts
-    top-level Query-IR passthrough. Callers can
-    skip the ``query`` wrapper without tripping the unknown-arg check. Query
-    IR's own additional-keys gate (in ``ast.py``) handles unknown IR keys
-    separately — no double-validation here.
-    """
-    for definition in tools:
-        if definition.name != tool_name:
-            continue
-        schema = dict(definition.input_schema or {})
-        known = set((schema.get("properties") or {}).keys())
-        if tool_name == "execute":
-            known.update(QUERY_INPUT_KEYS)
-        return frozenset(known)
-    return frozenset()
-
-
-@dataclass(frozen=True)
-class _ArgumentRules:
-    """The tools' argument tables, derived from their schemas.
-
-    Tool schemas own unknown-argument behavior: a closed schema rejects
-    unknown keys, an open one warns and ignores them. Query-IR passthrough
-    keys come from the parser, so adding an IR field needs no second
-    transport list.
-    """
-
-    tools: tuple[ToolDefinition, ...]
-    known: Mapping[str, frozenset[str]]
-    strict: frozenset[str]
-    warning_codes: Mapping[str, str]
-
-
-def _argument_rules(tools: tuple[ToolDefinition, ...]) -> _ArgumentRules:
-    strict = frozenset(
-        definition.name
-        for definition in tools
-        if not definition.input_schema.get("additionalProperties", True)
-    )
-    return _ArgumentRules(
-        tools=tools,
-        known={definition.name: _tool_known_args(definition.name, tools) for definition in tools},
-        strict=strict,
-        warning_codes={
-            definition.name: f"{definition.name.replace('-', '_').upper()}_UNKNOWN_ARG"
-            for definition in tools
-            if definition.name not in strict
-        },
-    )
-
-
-_RULES = _argument_rules(TOOL_DEFINITIONS)
-_STRICT_REJECT_TOOLS: frozenset[str] = _RULES.strict
-_WARN_AND_IGNORE_TOOLS: frozenset[str] = frozenset(_RULES.warning_codes)
-_UNKNOWN_ARG_WARNING_CODE: Mapping[str, str] = _RULES.warning_codes
 
 _ROW_FORMATS: frozenset[str] = frozenset({"records", "columns"})
 
@@ -885,32 +845,31 @@ _ROW_FORMATS: frozenset[str] = frozenset({"records", "columns"})
 def _reject_removed_interface(interface: str | None) -> None:
     """Fail when a caller asks for an interface other than v2, such as the removed v1."""
 
-    raw = interface if interface is not None else os.environ.get(_INTERFACE_ENV, "")
-    if str(raw or "").strip().lower() not in {"", _INTERFACE}:
+    raw = interface or os.environ.get(_INTERFACE_ENV, "")
+    if str(raw).strip().lower() not in {"", _INTERFACE}:
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            "The v1 MCP interface was removed in 0.3.3; use v2 (see docs/MCP_INTERFACE.md).",
+            "The v1 MCP interface was removed; v2 is the only interface "
+            "(see docs/MCP_INTERFACE.md).",
             details={"interface": str(raw), "valid_values": [_INTERFACE]},
         )
 
 
-def _unknown_arg_keys(
-    *, tool_name: str, arguments: Mapping[str, Any], rules: _ArgumentRules
-) -> list[str]:
+def _unknown_arg_keys(*, tool_name: str, arguments: Mapping[str, Any]) -> list[str]:
     """Return the sorted list of unknown argument keys for ``tool_name``.
 
     Consults the interface's known arguments regardless of the schema's
     ``additionalProperties`` flag — the flag is a hint about reaction
     policy, not a gate on the check.
     """
-    known = rules.known.get(tool_name)
+    known = _KNOWN_ARGS.get(tool_name)
     if known is None:
         return []
     return sorted(key for key in (arguments or {}) if key not in known)
 
 
 def _unknown_argument_error(
-    *, tool_name: str, arguments: Mapping[str, Any], rules: _ArgumentRules
+    *, tool_name: str, arguments: Mapping[str, Any]
 ) -> SemanticLayerError | None:
     """Reject unknown tool arguments on strict-reject tools.
 
@@ -921,12 +880,12 @@ def _unknown_argument_error(
     """
     from difflib import get_close_matches
 
-    if tool_name not in rules.strict:
+    if tool_name not in _STRICT_REJECT_TOOLS:
         return None
-    unknown = _unknown_arg_keys(tool_name=tool_name, arguments=arguments, rules=rules)
+    unknown = _unknown_arg_keys(tool_name=tool_name, arguments=arguments)
     if not unknown:
         return None
-    known = rules.known.get(tool_name, frozenset())
+    known = _KNOWN_ARGS.get(tool_name, frozenset())
     suggestions: list[str] = []
     for unknown_key in unknown:
         suggestions.extend(get_close_matches(unknown_key, sorted(known), n=2, cutoff=0.4))
@@ -950,7 +909,7 @@ def _unknown_argument_error(
 
 
 def _unknown_argument_warnings(
-    *, tool_name: str, arguments: Mapping[str, Any], rules: _ArgumentRules
+    *, tool_name: str, arguments: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     """Emit one warning per unknown argument on warn-and-ignore tools.
 
@@ -962,13 +921,13 @@ def _unknown_argument_warnings(
     """
     from difflib import get_close_matches
 
-    if tool_name not in rules.warning_codes:
+    if tool_name not in _UNKNOWN_ARG_WARNING_CODE:
         return []
-    unknown = _unknown_arg_keys(tool_name=tool_name, arguments=arguments, rules=rules)
+    unknown = _unknown_arg_keys(tool_name=tool_name, arguments=arguments)
     if not unknown:
         return []
-    known = rules.known.get(tool_name, frozenset())
-    code = rules.warning_codes.get(tool_name, "MCP_UNKNOWN_ARG")
+    known = _KNOWN_ARGS.get(tool_name, frozenset())
+    code = _UNKNOWN_ARG_WARNING_CODE[tool_name]
     warnings: list[dict[str, Any]] = []
     for key in unknown:
         closest = get_close_matches(key, sorted(known), n=2, cutoff=0.4)
@@ -991,7 +950,7 @@ def _unknown_argument_warnings(
 
 
 def _required_string_type_error(
-    *, tool_name: str, arguments: Mapping[str, Any], rules: _ArgumentRules
+    *, tool_name: str, arguments: Mapping[str, Any]
 ) -> SemanticLayerError | None:
     """Reject non-string values on string-typed required args (object_id,
     segment_id, dimension_id, intent). Returning a clean
@@ -999,7 +958,7 @@ def _required_string_type_error(
     ``inspect({object_id: 12345})`` into the misleading
     ``OBJECT_NOT_FOUND: Unknown object '12345'``.
     """
-    required, _known = _tool_required_properties(tool_name, rules.tools)
+    required, _known = _tool_required_properties(tool_name)
     payload = dict(arguments or {})
     # Per tool input_schema, every required arg on the existing tools is
     # typed `string`. If new non-string required args appear later, this
@@ -1028,7 +987,7 @@ def _required_string_type_error(
 
 
 def _missing_required_argument_error(
-    *, tool_name: str, arguments: Mapping[str, Any], rules: _ArgumentRules
+    *, tool_name: str, arguments: Mapping[str, Any]
 ) -> SemanticLayerError | None:
     """Return a structured INVALID_MCP_ARGUMENTS error when a required
     tool argument is missing or blank — preferred to letting the
@@ -1037,7 +996,7 @@ def _missing_required_argument_error(
     """
     from difflib import get_close_matches
 
-    required, known = _tool_required_properties(tool_name, rules.tools)
+    required, known = _tool_required_properties(tool_name)
     if not required:
         return None
     payload = dict(arguments or {})
@@ -1203,8 +1162,8 @@ def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dic
 # (logical, SQL, physical, performance) and their copies. An omitted level,
 # "compact", and "full" return the whole response.
 _SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
-    "segment-validate": frozenset({"segment", "normalized_segment", "derived_query"}),
-    "segment-explain": frozenset(
+    "validate": frozenset({"segment", "normalized_segment", "derived_query"}),
+    "explain": frozenset(
         {
             "segment",
             "normalized_segment",
@@ -1212,7 +1171,7 @@ _SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
             "rendered_sql",
         }
     ),
-    "segment-preview": frozenset(
+    "preview": frozenset(
         {
             "segment",
             "member_key_dimensions",
@@ -1246,11 +1205,11 @@ _SEGMENT_OUTCOME_KEYS = frozenset(
 )
 
 
-def _segment_response(tool: str, payload: Mapping[str, Any], verbosity: Any) -> dict[str, Any]:
+def _segment_response(action: str, payload: Mapping[str, Any], verbosity: Any) -> dict[str, Any]:
     out = dict(payload or {})
     if str(verbosity or "full").strip().lower() != "minimal":
         return out
-    keep = _SEGMENT_MINIMAL_KEYS[tool] | _SEGMENT_OUTCOME_KEYS
+    keep = _SEGMENT_MINIMAL_KEYS[action] | _SEGMENT_OUTCOME_KEYS
     return {
         key: value
         for key, value in out.items()
@@ -1587,7 +1546,7 @@ class SemanticLayerMCPAdapter:
     """
 
     def __init__(self, runtime: Runtime, *, interface: str | None = None):
-        """``interface`` may only be ``"v2"`` (or omitted): v1 was removed in 0.3.3."""
+        """``interface`` may only be ``"v2"`` (or omitted): v1 was removed."""
 
         _reject_removed_interface(interface)
         self.interface = _INTERFACE
@@ -1664,8 +1623,7 @@ class SemanticLayerMCPAdapter:
             )
             return response
 
-        rules = _RULES
-        policy_aware = "policy_context" in rules.known.get(name, frozenset())
+        policy_aware = "policy_context" in _KNOWN_ARGS.get(name, frozenset())
         if arguments is not None and not isinstance(arguments, Mapping):
             sanitized = _arguments_with_trusted_context(
                 {}, request_context, inject_policy_context=policy_aware
@@ -1696,17 +1654,13 @@ class SemanticLayerMCPAdapter:
                     SemanticLayerError("UNKNOWN_MCP_TOOL", message, details=details), args_dict
                 )
             )
-        unknown_arg_error = _unknown_argument_error(
-            tool_name=name, arguments=args_dict, rules=rules
-        )
+        unknown_arg_error = _unknown_argument_error(tool_name=name, arguments=args_dict)
         if unknown_arg_error is not None:
             return finish(self._error_response(unknown_arg_error, args_dict))
-        type_error = _required_string_type_error(tool_name=name, arguments=args_dict, rules=rules)
+        type_error = _required_string_type_error(tool_name=name, arguments=args_dict)
         if type_error is not None:
             return finish(self._error_response(type_error, args_dict))
-        missing_arg_error = _missing_required_argument_error(
-            tool_name=name, arguments=args_dict, rules=rules
-        )
+        missing_arg_error = _missing_required_argument_error(tool_name=name, arguments=args_dict)
         if missing_arg_error is not None:
             return finish(self._error_response(missing_arg_error, args_dict))
         # Compute unknown-arg warnings once at the boundary (warn-tools
@@ -1715,9 +1669,7 @@ class SemanticLayerMCPAdapter:
         # ``object_id``→``focus_object_id``) still fire from inside the
         # handler with their domain-specific guidance; this generic
         # pass catches everything else.
-        unknown_arg_warnings = _unknown_argument_warnings(
-            tool_name=name, arguments=args_dict, rules=rules
-        )
+        unknown_arg_warnings = _unknown_argument_warnings(tool_name=name, arguments=args_dict)
         response = handler(args_dict)
         if unknown_arg_warnings:
             existing = list(response.get("warnings") or [])
@@ -1889,8 +1841,8 @@ class SemanticLayerMCPAdapter:
                 out["errors"] = []
         # Surface errors[0] at the top-level `error` so agents that read
         # the conventional MCP-envelope `if result.get("error"): ...`
-        # branch don't silently treat a soft-fail (validate /
-        # segment-validate) as success.
+        # branch don't silently treat a soft-fail (execute mode validate,
+        # segment action validate) as success.
         if not out.get("error"):
             first = next(
                 (issue for issue in (out.get("errors") or []) if isinstance(issue, dict)),
@@ -2307,52 +2259,23 @@ class SemanticLayerMCPAdapter:
         args = {key: value for key, value in arguments.items() if key != "action"}
         if not str(args.get("verbosity") or "").strip():
             args["verbosity"] = "minimal"
-        handlers = {
-            "validate": self._handle_segment_validate,
-            "explain": self._handle_segment_explain,
-            "preview": self._handle_segment_preview,
-        }
-        return handlers[action](args)
 
-    def _handle_segment_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: _segment_response(
-                "segment-validate",
-                self.runtime.segment_validate(
-                    str(args.get("segment_id", "")),
-                    policy_context=_policy_context_payload(args),
-                ),
-                args.get("verbosity"),
-            ),
-        )
-
-    def _handle_segment_explain(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: _segment_response(
-                "segment-explain",
-                self.runtime.segment_explain(
-                    str(args.get("segment_id", "")),
-                    policy_context=_policy_context_payload(args),
-                ),
-                args.get("verbosity"),
-            ),
-        )
-
-    def _handle_segment_preview(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: _segment_response(
-                "segment-preview",
-                self.runtime.segment_preview(
-                    str(args.get("segment_id", "")),
+        def run(args: dict[str, Any]) -> dict[str, Any]:
+            segment_id = str(args.get("segment_id", ""))
+            policy_context = _policy_context_payload(args)
+            if action == "preview":
+                payload = self.runtime.segment_preview(
+                    segment_id,
                     limit=_coerce_int(args.get("limit"), 50, field="limit", minimum=1),
-                    policy_context=_policy_context_payload(args),
-                ),
-                args.get("verbosity"),
-            ),
-        )
+                    policy_context=policy_context,
+                )
+            elif action == "explain":
+                payload = self.runtime.segment_explain(segment_id, policy_context=policy_context)
+            else:
+                payload = self.runtime.segment_validate(segment_id, policy_context=policy_context)
+            return _segment_response(action, payload, args.get("verbosity"))
+
+        return self._guarded(args, run)
 
 
 def json_text(payload: Any) -> str:

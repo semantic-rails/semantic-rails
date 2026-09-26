@@ -1323,8 +1323,8 @@ def _conversion_intent_why(
 # Maximum number of validation errors surfaced inline under ``why``.
 # Validation can emit many errors per IR (one per offending key, one
 # per missing dimension, one per impossible JOIN); a full envelope can
-# push the low_confidence response past v1's size. Trim to the top
-# few — the agent calls ``validate`` next to get the full set anyway.
+# bloat the low_confidence response. Trim to the top few; validating the
+# draft (over MCP, ``execute`` with mode ``validate``) returns the full set.
 _WHY_ERROR_BUDGET = 3
 
 
@@ -1332,7 +1332,7 @@ def _trim_why_errors(errors: list[dict[str, Any]]) -> dict[str, Any]:
     """Cap ``why.errors`` to ``_WHY_ERROR_BUDGET`` entries.
 
     Adds a ``truncated`` marker with the dropped count so the agent
-    knows there is more detail behind a follow-up ``validate`` call.
+    knows validating the draft returns more detail.
     """
 
     why: dict[str, Any] = {

@@ -302,7 +302,7 @@ def test_compatibility_checker_flags_breaking_schema_http_and_mcp_changes() -> N
 
 
 def test_compatibility_checker_reports_a_retired_contract_as_removed(tmp_path: Path) -> None:
-    # 0.3.3 stopped shipping query_mcp.v1.json; a baseline that has it must not pass silently.
+    # Removing MCP interface v1 retired query_mcp.v1.json; a baseline with it must not pass silently.
     (tmp_path / "query_mcp.v1.json").write_text(json.dumps({"tools": []}), encoding="utf-8")
     baseline = load_contract_directory(tmp_path)
     assert set(baseline) == {"query_mcp.v1.json"}
