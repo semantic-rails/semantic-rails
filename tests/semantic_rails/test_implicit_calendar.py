@@ -468,6 +468,7 @@ LARGE_ORDER = {
     "query",
     [
         _ask("month", DISTRIBUTION, _rolling("month", 3)),
+        _ask("month", DISTRIBUTION, fill=True),
         _ask("month", DISTRIBUTION, NOW, fill=True),
         _ask("month", DISTRIBUTION, NOW, fill=True, start="2023-10-15", end="2024-08-01"),
     ],
@@ -494,6 +495,21 @@ def _per_order(aggregate: str) -> str:
     return f"(SELECT {aggregate} FROM orders WHERE date_trunc('month', ordered_at) = s.bucket)"
 
 
+def _rendered(package: Path, query: dict[str, Any], warehouse: str) -> str:
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    return str(compile_query(config, Registry(config), {"version": 1, **query})["sql"])
+
+
+def _answers(package: Path, query: dict[str, Any]) -> list[list[tuple[Any, ...]]]:
+    """The engine's rows, and the rows of its Postgres SQL run on DuckDB.
+
+    Postgres joins keys through a text cast, where a date bucket never equals a timestamp one
+    (each period came back twice); DuckDB compares them as timestamps.
+    """
+    return [_query(package, query)[0], _key(package, _rendered(package, query, "postgres"))]
+
+
 # Regression: fill densified the per-order grain, so every order entered every month as a 0.
 @pytest.mark.parametrize(
     ("function", "aggregate"),
@@ -512,7 +528,7 @@ def test_a_filled_distribution_matches_the_key(
     select = {**_distribution(function, REVENUE), "as": "value"}
     key = _key(packages["authored"], _series_key("month", _per_order(aggregate)))
 
-    assert _query(packages["authored"], _ask("month", select, fill=True))[0] == key
+    assert _answers(packages["authored"], _ask("month", select, fill=True)) == [key, key]
     assert _query(packages["authored"], _ask("month", select))[0] == [
         row for row in key if row[1] is not None
     ]
@@ -524,16 +540,17 @@ def test_a_filled_distribution_beside_windows_and_groups_matches_the_key(
     p80 = {**_distribution("percentile", REVENUE), "as": "p80"}
     beside = _ask("month", NOW, _prior("month"), p80, fill=True)
     key = f"{REVENUE_NOW}, {_revenue_at('1 MONTH')}, {_per_order('quantile_cont(amount, 0.8)')}"
-    assert _query(packages["authored"], beside)[0] == _key(
-        packages["authored"], _series_key("month", key)
-    )
+    rows = _key(packages["authored"], _series_key("month", key))
+    assert _answers(packages["authored"], beside) == [rows, rows]
+    # ClickHouse reads an unmatched join field as 0, so a marker picks the joined rows.
+    assert "__row = 1" in _rendered(packages["authored"], beside, "clickhouse")
 
     large = {**_distribution("median", REVENUE, where=[{"op": ">", "value": 5}]), "as": "median"}
     by_store = {
         **_ask("month", large, fill=True, start="2023-10-15", end="2024-08-01"),
         "group_by": [STORE],
     }
-    assert _query(packages["authored"], by_store)[0] == _key(
+    rows = _key(
         packages["authored"],
         """SELECT g.store_id, s.bucket, (SELECT median(amount) FROM orders
              WHERE store_id = g.store_id AND date_trunc('month', ordered_at) = s.bucket
@@ -541,20 +558,31 @@ def test_a_filled_distribution_beside_windows_and_groups_matches_the_key(
            FROM (SELECT DISTINCT store_id FROM orders) AS g,
              range(TIMESTAMP '2023-10-01', TIMESTAMP '2024-08-01', INTERVAL 1 MONTH) AS s(bucket)""",
     )
+    assert _answers(packages["authored"], by_store) == [rows, rows]
 
 
-@pytest.mark.parametrize("input_", [_rolling("month", 3), _prior("month")])
+PRIOR_REVENUE = _prior("month")["expression"]
+MEDIAN_OF = {
+    "rolling": _distribution("median", _rolling("month", 3)["expression"]),
+    "prior_period": _distribution("median", PRIOR_REVENUE),
+    "prior_period_filter": _distribution("median", REVENUE),
+}
+
+
 @pytest.mark.parametrize("fill", [False, True])
+@pytest.mark.parametrize("shape", MEDIAN_OF)
 def test_a_distribution_over_a_per_entity_window_refuses(
-    packages: dict[str, Path], input_: dict[str, Any], fill: bool
+    packages: dict[str, Path], shape: str, fill: bool
 ) -> None:
     """Its dense series held every order in every month: November's median read 0, not 7.5."""
-    select = {**_distribution("median", input_["expression"]), "as": "value"}
+    query = _ask("month", {**MEDIAN_OF[shape], "as": "value"}, fill=fill)
+    if shape == "prior_period_filter":
+        query["metric_filters"] = [{"expression": PRIOR_REVENUE, "op": ">=", "value": 0}]
     with pytest.raises(SemanticLayerError) as refused:
-        _query(packages["authored"], _ask("month", select, fill=fill))
+        _query(packages["authored"], query)
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert "per entity" in str(refused.value)
+    assert "rolling or prior-period window" in str(refused.value)
 
 
 def test_a_filled_distribution_on_a_fiscal_calendar_refuses(packages: dict[str, Path]) -> None:

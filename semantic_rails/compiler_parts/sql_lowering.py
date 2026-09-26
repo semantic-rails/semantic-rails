@@ -905,11 +905,13 @@ def _distribution_select(
 
     # A dense per-entity series holds every entity in every period, so an entity with no rows
     # in a period (not yet created, or long gone) would enter that period's distribution.
-    if _expr_requires_dense_series(expr.over.input, config):
+    if _expr_requires_dense_series(expr.over.input, config) or _metric_filters_require_dense_series(
+        plan, config
+    ):
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
-            "A distribution over a rolling or prior-period value per entity is not supported: "
-            "it would count entities in periods where they have no rows.",
+            "A distribution is not supported with a rolling or prior-period window in its input "
+            "or a metric filter: it would count entities in periods where they have no rows.",
         )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
@@ -922,27 +924,32 @@ def _distribution_select(
         extra_group_by=entity_key_dims,
     )
     # Never fill the per-entity grain, for the same reason; `_fill_distribution` adds the periods.
-    entity_value_query.get("time", {}).pop("fill", None)
+    filled = bool(entity_value_query.get("time", {}).pop("fill", False))
     sql_ast = _compile_query_sql_ast(
         config, entity_value_query, project_cut=project_is_cut() or bool(expr.over.where)
     )
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
     value_ref = SqlIdentifier(parts=[source_name, value_alias])
+    aggregated: Any = value_ref
+    if filled:  # a marker finds joined rows: an unmatched ClickHouse join field reads 0, not NULL
+        sql_ast = replace(sql_ast, select=[*sql_ast.select, SqlField(SqlLiteral(1), "__row")])
+        present = SqlBinary(SqlIdentifier(parts=[source_name, "__row"]), "=", SqlLiteral(1))
+        aggregated = SqlCase(whens=[SqlCaseWhen(condition=present, result=value_ref)])
     function = str(expr.function or "").strip().lower()
     parameters = dict(expr.parameters or {})
     if function == "percentile":
         if expr.p is not None:
             parameters.setdefault("p", expr.p)
         aggregate_expr = _aggregation_expr(
-            value_ref,
+            aggregated,
             "percentile",
             parameters=parameters,
             dialect=dialect_for_warehouse(config.package.warehouse),
         )
     elif function in {"median", "avg", "sum", "min", "max"}:
         aggregate_expr = _aggregation_expr(
-            value_ref,
+            aggregated,
             function,
             parameters=parameters,
             dialect=dialect_for_warehouse(config.package.warehouse),
@@ -951,77 +958,83 @@ def _distribution_select(
         raise SemanticLayerError(
             "UNSUPPORTED_AGGREGATION", f"Unsupported distribution function '{expr.function}'"
         )
-    distribution = SqlSelect(
-        ctes=[
-            SqlCte(
-                name=source_name,
-                query=_namespace_sql_select(sql_ast, f"{source_name}__"),
-            )
-        ],
+    source = SqlCte(name=source_name, query=_namespace_sql_select(sql_ast, f"{source_name}__"))
+    value_filters = [
+        _value_filter_condition(value_ref, item)
+        for item in list(expr.over.where or [])
+        if str(item.get("kind", "value_filter")) == "value_filter"
+    ]
+    if filled:
+        return _fill_distribution(
+            source, aggregate_expr, value_filters, expr, alias=alias, plan=plan, config=config
+        )
+    return SqlSelect(
+        ctes=[source],
         select=[
             *[SqlField(SqlIdentifier(parts=[source_name, key]), key) for key in key_aliases],
             SqlField(aggregate_expr, alias),
         ],
         from_table=SqlTableRef(name=source_name),
-        where=[
-            _value_filter_condition(value_ref, item)
-            for item in list(expr.over.where or [])
-            if str(item.get("kind", "value_filter")) == "value_filter"
-        ],
+        where=value_filters,
         group_by=[SqlIdentifier(parts=[source_name, key]) for key in key_aliases],
     )
-    if not (plan.time or {}).get("fill"):
-        return distribution
-    return _fill_distribution(distribution, expr, alias=alias, plan=plan, config=config)
 
 
 def _fill_distribution(
-    distribution: SqlSelect,
+    source: SqlCte,
+    aggregate: Any,
+    value_filters: list[Any],
     expr: DistributionExpr,
     *,
     alias: str,
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> SqlSelect:
-    """``time.fill`` for a distribution: the periods of its input's filled series.
+    """``time.fill`` for a distribution: the per-entity values joined onto filled periods.
 
-    A period where no entity has a value reads NULL, like ``median`` over no rows. The full join
-    keeps every period the distribution has, whatever the filled series holds. A constant marker
-    finds the distribution's rows (an unmatched ClickHouse outer-join field reads 0, not NULL).
+    The periods (and their key values) are the input's own filled series at the query's grain,
+    as a filled sibling has them; a period where no entity has a value reads NULL, like
+    ``median`` over no rows. As in the dense join, the bucket joins with ``=`` (the two sides'
+    time types can differ) and the groups null-safely.
     """
     periods = _single_expression_branch_select(
         expr.over.input, alias="__filled", plan=plan, config=config
     )
-    marked = replace(distribution, select=[*distribution.select, SqlField(SqlLiteral(1), "__row")])
-    names = [f"{alias}__periods", f"{alias}__distribution"]
-
-    def _from_distribution(column: str, otherwise: Any = None) -> SqlCase:
-        present = SqlBinary(SqlIdentifier(parts=[names[1], "__row"]), "=", SqlLiteral(1))
-        value = SqlIdentifier(parts=[names[1], column])
-        return SqlCase(whens=[SqlCaseWhen(condition=present, result=value)], else_expr=otherwise)
-
-    keys = _query_key_aliases(plan)
-    return SqlSelect(
-        ctes=[
-            SqlCte(name=name, query=_namespace_sql_select(query, f"{name}__"))
-            for name, query in zip(names, (periods, marked), strict=True)
-        ],
-        select=[
-            *[
-                SqlField(_from_distribution(key, SqlIdentifier(parts=[names[0], key])), key)
-                for key in keys
-            ],
-            SqlField(_from_distribution(alias), alias),
-        ],
-        from_table=SqlTableRef(name=names[0]),
-        joins=[
-            SqlJoin(
-                join_type="FULL OUTER",
-                table=SqlTableRef(name=names[1]),
-                on=_join_condition(keys, *names, dialect=_dialect(config)),
+    frame = f"{alias}__periods"
+    *groups, bucket = _query_key_aliases(plan)
+    on = [
+        SqlBinary(
+            SqlIdentifier(parts=[frame, bucket]), "=", SqlIdentifier(parts=[source.name, bucket])
+        ),
+        *[
+            _dialect(config).null_safe_eq(
+                SqlIdentifier(parts=[frame, key]), SqlIdentifier(parts=[source.name, key])
             )
+            for key in groups
         ],
+        *value_filters,
+    ]
+    keys: list[Any] = [SqlIdentifier(parts=[frame, key]) for key in [*groups, bucket]]
+    return SqlSelect(
+        ctes=[source, SqlCte(name=frame, query=_namespace_sql_select(periods, f"{frame}__"))],
+        select=[
+            *[SqlField(key, key.parts[-1]) for key in keys],
+            SqlField(aggregate, alias),
+        ],
+        from_table=SqlTableRef(name=frame),
+        joins=[
+            SqlJoin(join_type="LEFT", table=SqlTableRef(name=source.name), on=_and_conditions(on))
+        ],
+        group_by=keys,
     )
+
+
+def _metric_filters_require_dense_series(plan: LogicalPlan, config: PackageConfig) -> bool:
+    for item in list(plan.query.get("metric_filters", []) or []):
+        expr = _parse_public_expr(dict(item["expression"]))
+        if not isinstance(expr, MetricPredicateExpr) and _expr_requires_dense_series(expr, config):
+            return True
+    return False
 
 
 def _single_expression_branch_select(
@@ -3712,13 +3725,7 @@ def _query_requires_dense_series(plan: LogicalPlan, config: PackageConfig) -> bo
         for expr in plan.post_aggregation_exprs.values()
     ):
         return True
-    for item in list(plan.query.get("metric_filters", []) or []):
-        expr = _parse_public_expr(dict(item["expression"]))
-        if isinstance(expr, MetricPredicateExpr):
-            continue
-        if _expr_requires_dense_series(expr, config):
-            return True
-    return False
+    return _metric_filters_require_dense_series(plan, config)
 
 
 def _calendar_join_for_leaf(
