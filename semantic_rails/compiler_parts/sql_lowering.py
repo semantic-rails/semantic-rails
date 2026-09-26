@@ -238,8 +238,8 @@ def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) 
         "clock_column": clock.column,
         "clock_class": role.temporal_class,
         "row_key": key,
-        "fix": f"Key the entity by the series columns plus {clock.column!r}, "
-        f"e.g. key: [<series columns>, {clock.column}].",
+        "fix": "Key the entity by the series columns plus its snapshot time, "
+        "e.g. key: [store_id, date_day].",
     }
 
 

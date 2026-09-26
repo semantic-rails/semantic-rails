@@ -1182,7 +1182,7 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
     other_role = replace(role, id="temporal_role.test.other_clock", dimension=other_dimension.id)
     measure = replace(measure, compatible_temporal_roles=[role.id, other_role.id])
     if shape == "anchored":
-        # A stock's key holds each as-of clock it answers on; one outside it is refused.
+        # The synthetic as-of clock must be in the key, or queries on it are refused.
         measure = replace(measure, row_grain=[*measure.row_grain, other_dimension.column])
     expression = {
         "kind": "scoped_aggregate" if shape == "anchored" else "measure",

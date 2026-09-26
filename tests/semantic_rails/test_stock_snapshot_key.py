@@ -137,7 +137,7 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
 
 def test_declared_grain_and_series_key_agree(tmp_path: Path) -> None:
     # A grain of the clock alone is one series: last snapshot, not the entity's
-    # surrogate. (Package validation also rejects a grain that differs from the key.)
+    # surrogate. (Only a non-strict package can author `grain:`.)
     package = _package(
         tmp_path, key="[repo_snapshot_key]", clock_class="as_of_time", grain="[snapshot_date]"
     )
