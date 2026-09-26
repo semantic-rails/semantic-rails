@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import duckdb
@@ -437,6 +438,8 @@ _DISTRIBUTION["select"][0]["expression"] = {
         "input": {"measure": "measure.revenue"},
     },
 }
+_SUM_AND_DISTRIBUTION = _rollup_query("measure.revenue", "sum", "quarter")
+_SUM_AND_DISTRIBUTION["select"].append({**_DISTRIBUTION["select"][0], "as": "d"})
 _DAYS_QUERY = {
     **_rollup_query("measure.days", "count_distinct", "quarter"),
     "time": {"temporal_role": "temporal_role.day", "grain": "quarter"},
@@ -651,8 +654,14 @@ def test_rollup_routing_matches_base_tables(
         pytest.param(
             _MONTHLY_ONLY,
             _DISTRIBUTION,
-            {"leaf_1:aggregate_relation.orders_monthly": "query_shape_not_routed"},
-            id="distribution-runs-on-base-tables",
+            {"leaf_1:aggregate_relation.orders_monthly": "lowered_separately"},
+            id="distribution-lowered-separately",
+        ),
+        pytest.param(
+            _MONTHLY_ONLY,
+            _SUM_AND_DISTRIBUTION,
+            {"leaf_1:aggregate_relation.orders_monthly": "lowered_separately"},
+            id="distribution-beside-a-routed-sum",  # the sum's branch reads the rollup
         ),
     ],
 )
@@ -677,14 +686,24 @@ def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
     rows = {name: sorted(connection.execute(c["sql"]).fetchall()) for name, c in compiled.items()}
 
     assert rows["rollup"] == rows["base"] == rows["off"]
+    tables = {row.id: row.relation for row in config.aggregate_relations}
+
+    def read(sql: str) -> set[str]:
+        return {table for table in tables.values() if re.search(rf"\b{table}\b", sql)}
+
     off = compiled["off"]["explain"].performance_plan["aggregate_routing"]
-    assert off["selected"] == []
+    assert off["selected"] == [] and read(compiled["off"]["sql"]) == set()
     assert {row["reason"] for row in off["candidates"]} == {ROUTING_OFF}
     routing = compiled["rollup"]["explain"].performance_plan["aggregate_routing"]
-    reported = {
-        row["relation_id"] for row in routing["candidates"] if row["decision"] == "selected"
-    }
-    assert reported == set(routing["selected"])  # the report agrees with the scans
+    decided: dict[str, set[str]] = {"selected": set(), "unknown": set()}
+    for row in routing["candidates"]:
+        decided.setdefault(row["decision"], set()).add(row["relation_id"])
+    # The report agrees with the SQL: what it calls selected is read, and nothing else is
+    # read unless the report says it can't tell.
+    assert decided["selected"] == set(routing["selected"])
+    selected = {tables[id_] for id_ in decided["selected"]}
+    assert selected <= read(compiled["rollup"]["sql"])
+    assert read(compiled["rollup"]["sql"]) <= selected | {tables[id_] for id_ in decided["unknown"]}
     return routing
 
 
@@ -714,6 +733,8 @@ def test_routing_switch_applies_on_a_warm_compile_cache(tmp_path: Path, monkeypa
     assert compile_once(runtime) == (routed, True)
     with pytest.raises(TypeError):
         runtime.set_aggregate_routing("off")  # type: ignore[arg-type]
+    with runtime.request_scope():  # a request in flight doesn't block the switch
+        runtime.set_aggregate_routing(True)
 
     monkeypatch.setenv("SEMANTIC_RAILS_AGGREGATE_ROUTING", "OFF")
     assert compile_once(Runtime.from_path(str(tmp_path / "p"))) == ([], False)

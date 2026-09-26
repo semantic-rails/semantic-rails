@@ -1379,12 +1379,12 @@ class Runtime:
         Off, every measure leaf runs on the base tables and each rollup it considered is reported
         as ``aggregate_routing_off``. The compile cache keys on the switch, so cached plans
         follow it. The initial value comes from ``SEMANTIC_RAILS_AGGREGATE_ROUTING`` (``on`` or
-        ``off``; default ``on``). Anything but a bool raises ``TypeError``.
+        ``off``; default ``on``). Anything but a bool raises ``TypeError``. It doesn't wait for
+        requests in flight: each request reads the switch once, when it starts.
         """
         if not isinstance(enabled, bool):
             raise TypeError(f"set_aggregate_routing takes True or False, not {enabled!r}")
-        with self._state_gate.write():
-            self._aggregate_routing = enabled
+        self._aggregate_routing = enabled
 
     def _resolve_asset_path(self, value: str, *, kind: str) -> str:
         if not value:

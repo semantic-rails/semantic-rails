@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 AGGREGATE_ROUTING_ENV = "SEMANTIC_RAILS_AGGREGATE_ROUTING"
 ROUTING_OFF = "aggregate_routing_off"
-NOT_LOWERED = "query_shape_not_routed"  # e.g. distribution and entity-set plans scan base tables
+LOWERED_SEPARATELY = "lowered_separately"  # a distribution branch or an entity-set plan
 _enabled: ContextVar[bool] = ContextVar("semantic_rails_aggregate_routing", default=True)
 
 
@@ -53,10 +53,13 @@ def aggregate_routing_enabled() -> bool:
 def routing_candidates(
     plan: LogicalPlan, physical: PhysicalPlan, config: PackageConfig
 ) -> list[dict[str, str]]:
-    """Each rollup considered for each measure leaf: ``selected``, ``eligible`` or ``rejected``.
+    """Each rollup considered for each measure leaf: ``selected``, ``eligible``, ``rejected``
+    or ``unknown``.
 
-    A leaf's pick counts as ``selected`` only if the physical plan scans that rollup for it;
-    otherwise the leaf ran on the base tables and its rollups are rejected with :data:`NOT_LOWERED`.
+    A leaf's pick counts as ``selected`` only if the physical plan scans that rollup for it. A
+    leaf lowered some other way (a distribution compiles each branch as its own query) reports
+    each rollup its planner didn't reject as ``unknown``, :data:`LOWERED_SEPARATELY`: the branch
+    re-plans it, and may or may not read the rollup.
     """
     scanned = {
         (str(item.get("alias", "")), str(node.details.get("aggregate_relation_id", "")))
@@ -68,15 +71,17 @@ def routing_candidates(
     rows: list[dict[str, str]] = []
     for leaf in plan.measure_plans:
         chosen = leaf.aggregate_relation_id
-        lowered = (leaf.bound_measure.alias, chosen) in scanned
+        unverified = chosen and (leaf.bound_measure.alias, chosen) not in scanned
         for relation in config.aggregate_relations:
             if relation.source_entity != leaf.source_entity:
                 continue
             reason = leaf.aggregate_relation_rejections.get(relation.id, "")
-            if not reason and chosen and not lowered:
-                reason = NOT_LOWERED
-            picked = "selected" if relation.id == chosen else "eligible"
-            decision = "rejected" if reason else picked
+            if reason:
+                decision = "rejected"
+            elif unverified:
+                decision, reason = "unknown", LOWERED_SEPARATELY
+            else:
+                decision = "selected" if relation.id == chosen else "eligible"
             rows.append(
                 {
                     "leaf_id": leaf.cte_name,
