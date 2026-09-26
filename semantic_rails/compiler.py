@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -456,6 +456,206 @@ def _validate_rollup_safety(bound_measures: Iterable[BoundMeasure], config: Pack
                     "missing_metadata_or_capability": "rollup_sketch or additive primitive",
                 },
             )
+
+
+# A window adds periods and a per-entity rollup adds an entity's rows before comparing
+# or ranking them, so neither may take a measure that must never be summed.
+_SUMMING_WRAPPERS = (
+    CumulativeExpr,
+    RollingExpr,
+    PeriodToDateExpr,
+    OffsetWindowExpr,
+    EntityValueExpr,
+    DistributionExpr,
+    MetricPredicateExpr,
+    ScopedAggregateExpr,
+)
+
+
+def _measures_under_summing_wrappers(
+    expr: Any, config: PackageConfig, wrapper: str = ""
+) -> Iterable[tuple[str, str]]:
+    """(measure id, construct) for each measure a window or per-entity rollup reaches."""
+    # A prior-period offset reads one other period's value; it adds nothing.
+    offset = isinstance(expr, OffsetWindowExpr) and expr.aggregate in {"lag", "lead"}
+    if isinstance(expr, _SUMMING_WRAPPERS) and not offset:
+        wrapper = wrapper or expr_kind(expr)
+    if wrapper and isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+        yield expr.measure, wrapper
+    if isinstance(expr, ScopedAggregateExpr):
+        for kind, object_id in _payload_object_ids(expr.predicates):
+            if kind == "measure":
+                yield object_id, "metric_predicate"
+            elif (recipe := _recipe_index(config).get(object_id)) is not None:
+                yield from _measures_under_summing_wrappers(
+                    recipe.expression, config, "metric_predicate"
+                )
+        return
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        if recipe is not None:
+            yield from _measures_under_summing_wrappers(recipe.expression, config, wrapper)
+        return
+    if not is_dataclass(expr):
+        return
+    for item in fields(expr):
+        value = getattr(expr, item.name)
+        for child in value if isinstance(value, list) else [value]:
+            if is_dataclass(child):
+                yield from _measures_under_summing_wrappers(child, config, wrapper)
+
+
+def _payload_object_ids(payload: Any) -> Iterable[tuple[str, str]]:
+    """Every ``measure`` and ``metric`` id named anywhere in a raw expression payload."""
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in {"measure", "metric"} and isinstance(value, str):
+                yield key, value
+            else:
+                yield from _payload_object_ids(value)
+    elif isinstance(payload, list):
+        for value in payload:
+            yield from _payload_object_ids(value)
+
+
+def _single_valued_columns(
+    measure: MeasureConfig, bound: BoundMeasure, query: NormalizedQuery, config: PackageConfig
+) -> set[str]:
+    """Columns of the measure's own model that hold one value in every output row.
+
+    A column counts only when the query groups by its dimension, or by the key
+    dimension of the model a direct many-to-one relationship reaches through it, or
+    pins that dimension with a top-level ``=`` filter or a one-value ``in``; and the
+    measure's own ``date`` clock at ``grain: day``. Metric, measure and segment
+    filters never count: they don't split the output rows.
+    """
+    dimensions = _dimension_index(config)
+    pinned = set(query.group_by)
+    for item in query.where:
+        op = str(item.op or "=").strip().lower()
+        if (op in {"=", "=="} and not isinstance(item.value, (list, tuple, set))) or (
+            op == "in" and isinstance(item.value, (list, tuple)) and len(item.value) == 1
+        ):
+            pinned.add(str(item.field))
+    columns: set[str] = set()
+    for dimension_id in pinned:
+        dimension = dimensions.get(dimension_id)
+        if dimension is None:
+            continue
+        if dimension.entity == measure.entity:
+            columns.add(dimension.column)
+            continue
+        for rel in config.relationships:
+            sources = list(rel.source_columns or [rel.source_column])
+            targets = list(rel.target_columns or [rel.target_column])
+            if (
+                rel.source_entity == measure.entity
+                and rel.target_entity == dimension.entity
+                and rel.cardinality in {"N:1", "1:1"}
+                and targets == [dimension.column]
+            ):
+                columns.update(sources)
+    role_id = _leaf_time_role(bound, query, config)
+    role = _temporal_role_index(config).get(role_id) if role_id else None
+    clock = dimensions.get(role.dimension) if role is not None else None
+    if (
+        clock is not None
+        and query.time is not None
+        and str(query.time.grain or "").lower() == "day"
+        and clock.entity == measure.entity
+        and clock.data_type == "date"
+    ):
+        columns.add(clock.column)
+    return columns
+
+
+def _validate_non_additive_sums(
+    bound_measures: Iterable[BoundMeasure], config: PackageConfig, query: NormalizedQuery
+) -> None:
+    """Refuse a query that would add up two values of an ``additive: false`` measure.
+
+    A flow sums its rows, and a stock sums its series' last (or first) snapshots, so each
+    output row must hold one row (for a stock, one series) of the measure's model. Other
+    aggregations (avg, min, max, median, percentile) are statistics of the values and
+    stay allowed. Windows and per-entity rollups over such a measure always refuse.
+    """
+    measures = _measure_index(config)
+    bound_measures = list(bound_measures)
+    roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
+    roots += [item.expression for item in query.metric_filters if item.expression is not None]
+    for bound in bound_measures:
+        roots.extend(_bound_metric_predicates(bound))
+    wrapped = {
+        measure_id: construct
+        for root in roots
+        for measure_id, construct in _measures_under_summing_wrappers(root, config)
+    }
+    for measure_id, construct in wrapped.items():
+        measure = measures.get(measure_id)
+        if measure is not None and not measure.additive:
+            _raise_non_additive_sum(measure, construct, [], config)
+    for bound in bound_measures:
+        measure = measures[bound.measure_id]
+        if measure.additive:
+            continue
+        aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
+        key = list(measure.row_grain or []) or list(_entity_index(config)[measure.entity].key or [])
+        if measure.measure_class == "semi_additive" and aggregation in {
+            "last_value",
+            "first_value",
+        }:
+            role = _temporal_role_index(config).get(bound.temporal_role)
+            clock = _dimension_index(config).get(role.dimension) if role is not None else None
+            required = [column for column in key if clock is None or column != clock.column]
+        elif aggregation == "sum":
+            required = key
+        else:
+            continue
+        missing = [
+            column
+            for column in required
+            if column not in _single_valued_columns(measure, bound, query, config)
+        ]
+        if missing:
+            _raise_non_additive_sum(measure, aggregation, missing, config)
+
+
+def _raise_non_additive_sum(
+    measure: MeasureConfig, construct: str, missing: list[str], config: PackageConfig
+) -> None:
+    dimensions = [
+        dimension.id
+        for dimension in config.dimensions
+        if dimension.entity == measure.entity and dimension.column in missing
+    ]
+    if missing:
+        message = (
+            f"Measure '{measure.id}' is additive: false, and this query would sum more than one "
+            f"of its rows into an output row: group by or filter (=) each of {missing}, or ask "
+            "for avg, min or max."
+        )
+        hint = (
+            f"Group by, or filter with = to one value, the dimensions {dimensions or missing}; "
+            "or use aggregation avg, min or max."
+        )
+    else:
+        message = (
+            f"Measure '{measure.id}' is additive: false, so it can't feed a {construct}: that "
+            "adds its values across periods or rows."
+        )
+        hint = "Query the measure itself at the grain it's stored at."
+    raise SemanticLayerError(
+        "ROLLUP_UNSAFE",
+        message,
+        details={
+            "measure_id": measure.id,
+            "unsupported_construct": "non_additive_sum",
+            "construct": construct,
+            "missing_columns": missing,
+            "missing_dimensions": dimensions,
+            "recovery_hints": [{"kind": "stay_at_stored_grain", "message": hint}],
+        },
+    )
 
 
 def _path_can_project_count_key_from_rewrite_anchor(
@@ -3363,6 +3563,7 @@ def _plan_query(
     bound_measures = list(dedup_measures.values())
     _validate_measure_validity_windows(bound_measures, config, query)
     _validate_rollup_safety(bound_measures, config)
+    _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
     if bound_measures:
         root_entity = measures[bound_measures[0].measure_id].entity

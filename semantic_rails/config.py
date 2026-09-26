@@ -2112,6 +2112,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     f"{path}: measure '{measure_key}' has default_agg '{default_aggregation}' which is not in allowed_aggregations {allowed_aggregations}",
                 )
             kind = str(measure_spec.get("kind", "")).strip().lower()
+            additive = measure_spec.get("additive", True)
+            if not isinstance(additive, bool) or (not additive and kind == "entity_count"):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: measure '{measure_key}' additive must be true or false, and "
+                    "false only on kind: aggregate (an entity_count is a distinct count the "
+                    "engine computes itself)",
+                )
             authoring_warnings: list[str] = []
             raw_aggregation = str(raw_measure_spec.get("aggregation", "") or "").strip().lower()
             if raw_aggregation == "count_distinct" and kind != "entity_count":
@@ -2226,6 +2234,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     measure_spec.get("cross_window_policy", "caveat") or "caveat"
                 ),
                 authoring_warnings=authoring_warnings,
+                additive=additive,
             )
             measures.append(measure)
             measure_lookup[(model_id, str(measure_key))] = measure_id

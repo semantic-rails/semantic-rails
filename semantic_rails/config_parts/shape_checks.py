@@ -247,6 +247,7 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
         "disallowed_aggregations",
         "suggested_aggregations",
         "rollup",
+        "additive",
         "entity_key",
         "times",
         "time",
