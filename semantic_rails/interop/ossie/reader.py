@@ -28,9 +28,9 @@ from ...expressions import (
 )
 from ...relation_pipelines import _semantic_expr_to_sql
 from ...renderer import render_expr
-from ...schema import PackageConfig, PackageMeta
+from ...schema import ConnectionSpec, PackageConfig, PackageMeta, SeedSpec
 from ...yaml_loader import load_yaml_file
-from ..package_writer import package_documents, write_package
+from ..package_writer import write_package
 from .export import export_ossie
 
 # The keys each element may carry; any other key is counted as not imported.
@@ -478,21 +478,22 @@ def import_ossie(
         raise SemanticLayerError("INVALID_CONFIG", f"{sidecar_path}: not a Semantic Rails sidecar")
     importer = _Importer(document, sidecar)
     config = importer.package(package_id, namespace)
-    documents, unwritten = package_documents(config, namespace=importer.ns)
-    for collection, ids in unwritten.items():
-        for sr_id in ids:
-            importer.skip(f"{collection.replace('_', ' ')} not written back yet", sr_id)
-    package, pid = documents["package.yml"]["package"], config.package.package_id
+    meta, pid = config.package, config.package.package_id
     if not re.fullmatch(r"\w[\w.-]*", pid):  # it names the output directory
         raise SemanticLayerError("INVALID_CONFIG", f"Package id {pid!r} can't name a directory")
-    if config.package.warehouse == "duckdb":  # another tool built the data the document describes
-        package.update(default_db=default_db or f"data/{pid}.duckdb", seed={"kind": "external"})
-    elif config.package.warehouse == "snowflake":
-        package["connection"] = {"kind": "snowflake_cli", "name": pid}
+    if meta.warehouse == "duckdb":  # another tool built the data the document describes
+        meta = replace(
+            meta, default_db=default_db or f"data/{pid}.duckdb", seed=SeedSpec("external")
+        )
+    elif meta.warehouse == "snowflake":
+        meta = replace(meta, connection=ConnectionSpec(kind="snowflake_cli", name=pid))
     else:
-        message = f"Importing a {config.package.warehouse} package isn't supported yet"
+        message = f"Importing a {meta.warehouse} package isn't supported yet"
         raise SemanticLayerError("INVALID_CONFIG", message)
-    directory = write_package(documents, Path(output_dir).expanduser() / pid)
+    # Without the sidecar the document leaves attributes unset; the loader's defaults fill them.
+    config = replace(config, package=meta)
+    target = Path(output_dir).expanduser() / pid
+    directory = write_package(config, target, namespace=importer.ns, exact=sidecar is not None)
     report: dict[str, Any] = {
         "ok": True,
         "format": "ossie",
@@ -502,9 +503,7 @@ def import_ossie(
     report["sidecar"] = str(sidecar_path) if sidecar is not None else None
     collections = ("entities", "dimensions", "measures", "relationships", "metric_recipes")
     report["imported"] = {name: len(getattr(config, name)) for name in collections}
-    if sidecar is None:
-        load_package_snapshot(str(directory))  # the written package must load
-    else:
+    if sidecar is not None:
         for path in _round_trip(directory, importer.model, sidecar):
             importer.skip("round-trip differences", path)
         report["round_trip"] = "differs" if importer.warnings["round-trip differences"] else "exact"
