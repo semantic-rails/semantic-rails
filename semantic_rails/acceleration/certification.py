@@ -18,6 +18,8 @@ from ..schema import PackageConfig
 from .routing import LOWERED_SEPARATELY, aggregate_routing
 from .selection import _aggregate_dimension_coverage, _column_holds
 
+_UTC_ZONES = frozenset({"UTC", "Etc/UTC"})
+
 
 def certify_aggregate_relation(config: PackageConfig, relation_id: str) -> dict[str, Any]:
     """Judge one declared rollup, as if certified, against the routing rules (R1-R8).
@@ -30,7 +32,10 @@ def certify_aggregate_relation(config: PackageConfig, relation_id: str) -> dict[
     ``rollup_sql`` reads the rollup and ``base_sql`` the base tables. A rollup whose own grain its
     time role can't be queried at (an hour rollup under a role that starts at day) isn't
     certifiable. The caller's routing switch applies, so with routing off every measure fails
-    with ``aggregate_routing_off``.
+    with ``aggregate_routing_off``. The paired queries don't carry the zone a query runs in. On
+    DuckDB, MotherDuck, DuckLake and Postgres that is its role's zone, so a host builds the rollup
+    and runs each pair with the session time zone set to UTC, and a rollup under a role whose
+    ``timezone`` isn't ``UTC`` or ``Etc/UTC`` isn't certifiable (``timezone_not_utc``).
     """
     relation = next((row for row in config.aggregate_relations if row.id == relation_id), None)
     if relation is None:
@@ -77,6 +82,8 @@ def certify_aggregate_relation(config: PackageConfig, relation_id: str) -> dict[
             and relation.id not in routed["performance_plan"].aggregate_routing["selected"]
         ):
             reason = LOWERED_SEPARATELY
+        if not reason and str(role.timezone or "UTC").strip() not in _UTC_ZONES:
+            reason = "timezone_not_utc"  # its queries answer from the base tables instead
         results.append({**result, "reason": reason, "rollup_sql": "" if reason else routed["sql"]})
     return {
         "relation_id": relation.id,

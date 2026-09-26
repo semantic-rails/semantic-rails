@@ -48,11 +48,6 @@ STEP = {"day": "1 day", "week": "7 day", "month": "1 month", "quarter": "3 month
 
 # Known wrong answers.
 ISSUES = "https://github.com/semantic-rails/semantic-rails/issues/"
-ZONE_AWARE = (
-    "zone-aware column: a TIMESTAMP WITH TIME ZONE column is bucketed in the session's time"
-    " zone instead of the role's (UTC), so the answer follows the server's setting"
-    f" ({ISSUES}168)"
-)
 NULL_SUM_TO_ZERO = (
     "NULL sum filled as zero: once the series is dense (fill, or a window beside it), a bucket"
     " whose only amounts are NULL reads 0, where the same question unfilled reads NULL"
@@ -318,8 +313,7 @@ def _cases() -> Iterator[Case]:
         for calendar in ("authored", "implicit"):
             variant = f"{clock}_{calendar}"
             for grain in ("day", "week", "month", "quarter", "year"):
-                known = BOTH(ZONE_AWARE) if clock == "tz" and grain in ("day", "week") else {}
-                yield _plain(f"{variant}-revenue_by_{grain}", variant, grain, known=known)
+                yield _plain(f"{variant}-revenue_by_{grain}", variant, grain)
     # Fiscal quarters: order 11 crosses into the previous one in New York, and the window
     # starts and ends with an empty quarter there (the first one in every clock).
     for clock, grain, start, end in [
@@ -327,9 +321,8 @@ def _cases() -> Iterator[Case]:
         ("utc", "year", "2023-02-01", "2025-02-01"),
     ]:
         query = _ask(grain, revenue, calendar_id="fiscal", start=start, end=end, fill=True)
-        known = BOTH(ZONE_AWARE) if clock == "tz" else {}
         reference = _fiscal(grain, clock, start, end)
-        yield Case(f"{clock}-fiscal_{grain}", f"{clock}_authored", query, reference, known=known)
+        yield Case(f"{clock}-fiscal_{grain}", f"{clock}_authored", query, reference)
 
     # Nulls, groups, filters and bounds; whole-month bounds may use the rollup.
     yield _plain("null_store_group", "utc_authored", "month", "revenue orders average", store=True)
@@ -390,9 +383,8 @@ def _cases() -> Iterator[Case]:
     for variant in ("utc_authored", "utc_implicit", "ny_implicit", "date_authored", "tz_implicit"):
         clock = variant.split("_")[0]
         query = _ask("month", revenue, average, start="2023-10-01", end="2024-09-01", fill=True)
-        known = BOTH(ZONE_AWARE) if clock == "tz" else {}
         reference = FILL_WINDOW.format(clock=CLOCK[clock])
-        yield Case(f"{variant}-fill_window", variant, query, reference, known=known)
+        yield Case(f"{variant}-fill_window", variant, query, reference)
     yield Case(
         "fill_empty_window",
         "utc_authored",

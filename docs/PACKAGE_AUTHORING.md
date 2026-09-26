@@ -885,6 +885,43 @@ times:
 `class:`, `supported_grains:`, and `default_query_axis:` are load-bearing — the
 planner uses them to decide alignment and pick implicit time axes.
 
+`timezone:` (default `UTC`) is the zone the role answers in. Every grain's
+buckets, and a query's `start`/`end` bounds, are in that zone:
+
+- A naive `TIMESTAMP` or a `DATE` column is read as stored. If it stores
+  another zone's clock, name that zone in `column_timezone:` (for example
+  `column_timezone: UTC` with `timezone: America/New_York`), and the engine
+  converts it.
+- A zone-aware column (`TIMESTAMP WITH TIME ZONE`) holds instants. On DuckDB,
+  MotherDuck, DuckLake and Postgres, each query runs with the session time zone
+  set to its time role's zone (UTC for a query without one), and only for that
+  query. So these columns bucket and filter in the role's zone whatever the
+  server's or machine's default. Leave `column_timezone:` off them. (MotherDuck
+  gets the setting on its client connection; this hasn't been checked against
+  the service.)
+- Everything else zone-dependent in the query follows that zone too:
+  - an authored `call` over a zone-aware value, such as `date_part('hour', …)`
+    or a cast to `DATE`;
+  - `now()` and `current_date`;
+  - zone-aware values returned in rows, which are the same instants shown with
+    that zone's offset.
+
+  The rendered SQL doesn't show the zone. To reproduce an answer in a SQL
+  console, set the session's `TimeZone` to it first.
+- A query whose measures are bucketed on time roles in different zones runs in
+  the zone of its `time.temporal_role`. It returns a `TIME_ZONE_NOT_APPLIED`
+  warning that names the roles whose own zone it didn't use.
+- The other warehouses don't do this yet, so there a zone-aware column follows
+  the warehouse's own rules:
+  - Snowflake `TIMESTAMP_LTZ` and Databricks `TIMESTAMP` use the session time zone.
+  - Snowflake `TIMESTAMP_TZ` keeps each value's own offset.
+  - Athena/Trino `timestamp with time zone` keeps each value's own zone.
+  - ClickHouse `DateTime` uses the column's or the server's zone.
+  - BigQuery buckets `DATETIME` values, so a `TIMESTAMP` column isn't bucketed in the role's zone.
+
+  On those warehouses, store naive timestamps and declare their zone with
+  `column_timezone:`.
+
 ### Dimensions
 
 Only behavioral dimensions are authored. Key dimensions auto-create from
@@ -1400,7 +1437,11 @@ Routing is conservative in the MVP:
   rollup under a role that starts at day) isn't certifiable. A runtime doesn't
   use its compile cache for a package with such a rollup: every request compiles
   again, which costs compile time, so that a revoked certification applies to the
-  next request.
+  next request. A rollup under a role whose `timezone:` isn't `UTC` or `Etc/UTC`
+  isn't certifiable yet (`timezone_not_utc`), so its queries use the base tables.
+  On DuckDB, MotherDuck, DuckLake and Postgres, which run each query in its role's
+  zone, build the rollup and run each pair with the session time zone set to UTC
+  (`SET TimeZone = 'UTC'`).
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
