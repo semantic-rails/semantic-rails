@@ -1089,7 +1089,7 @@ class ArchitectProject:
             model["calendar_id"] = requested_calendar
         elif calendar is False and was_calendar:
             model.pop("calendar_id", None)
-        kept_fields: list[str] = []
+        object_drops: list[str] = []
         for block, updates in (
             ("dimensions", dimensions),
             ("times", times),
@@ -1098,10 +1098,11 @@ class ArchitectProject:
         ):
             if updates is not None:
                 model[block] = _merge_named_objects(
-                    block, dict(model.get(block, {}) or {}), dict(updates), kept_fields
+                    block, dict(model.get(block, {}) or {}), dict(updates), object_drops
                 )
         self._store_model(model_doc, model_wrapper, model_slug, model)
-        dropped_fields: list[str] | None = None
+        # A partial rewrite of an existing object lists what it dropped, as a replace does.
+        dropped_fields: list[str] | None = sorted(object_drops) or None
         if replace:
             dropped_fields = []
             for field, value in previous.items():
@@ -1138,7 +1139,6 @@ class ArchitectProject:
             "entity_key": entity_slug,
             "calendar_changed": calendar is not None or bool(requested_calendar),
             "dropped_fields": dropped_fields,
-            "kept_fields": kept_fields or None,
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
@@ -2438,37 +2438,33 @@ class ArchitectProject:
 
 
 def _field_reports(staged: dict[str, Any]) -> dict[str, Any]:
-    """A staged model's ``dropped_fields`` (replace only) and ``kept_fields`` (partial updates)."""
-    return {
-        key: staged[key] for key in ("dropped_fields", "kept_fields") if staged[key] is not None
-    }
+    """A staged model's ``dropped_fields``: a replace's, or a partial object rewrite's."""
+    return {} if staged["dropped_fields"] is None else {"dropped_fields": staged["dropped_fields"]}
+
+
+# Fields that describe an object without changing what it computes.
+_DESCRIPTIVE_FIELDS = frozenset({"label", "description", "synonyms", "meta"})
 
 
 def _merge_named_objects(
-    block: str, current: dict[str, Any], updates: dict[str, Any], kept_fields: list[str]
+    block: str, current: dict[str, Any], updates: dict[str, Any], dropped: list[str]
 ) -> dict[str, Any]:
-    """Merge ``updates`` into a model block's named objects, field by field.
+    """Apply ``updates`` to a model block's named objects.
 
-    A field's value replaces the old one whole (an ``expr`` AST is never half-merged)
-    and a ``null`` field removes it. Fields of an existing object that the update
-    doesn't name are kept and listed in ``kept_fields``.
+    An update of an existing object that names only descriptive fields (a new
+    label, say) merges into it. Any other update replaces the object whole, as a
+    wizard that rebuilds an object and leaves out fields that no longer apply
+    expects, and each field it leaves out is listed in ``dropped``.
     """
     merged = dict(current)
     for name, spec in updates.items():
-        if spec is None:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{block}.{name} is null; remove an object with remove_object",
-                details={"field": f"{block}.{name}"},
-            )
         old = current.get(name)
-        if not isinstance(spec, dict) or not isinstance(old, dict):
-            merged[name] = deepcopy(spec)
-            continue
-        kept_fields += [f"{block}.{name}.{field}" for field in old if field not in spec]
-        merged[name] = {
-            field: value for field, value in {**old, **deepcopy(spec)}.items() if value is not None
-        }
+        if isinstance(spec, dict) and isinstance(old, dict):
+            if set(spec) <= _DESCRIPTIVE_FIELDS:
+                merged[name] = {**old, **deepcopy(spec)}
+                continue
+            dropped += [f"{block}.{name}.{field}" for field in old if field not in spec]
+        merged[name] = deepcopy(spec)
     return merged
 
 

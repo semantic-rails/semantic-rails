@@ -431,7 +431,7 @@ def _events_model(project_path: Path) -> dict:
     return yaml_loader.load_yaml_file(project_path / "models" / "core" / "events.yml")["model"]
 
 
-def test_model_upsert_merges_each_named_object_field_by_field(tmp_path: Path) -> None:
+def test_model_upsert_relabels_an_object_without_rewriting_it(tmp_path: Path) -> None:
     project_path = _create_project(tmp_path)
     project = ArchitectProject(project_path, workspace_root=tmp_path)
     before = _events_model(project_path)
@@ -441,48 +441,76 @@ def test_model_upsert_merges_each_named_object_field_by_field(tmp_path: Path) ->
     mutation = project.upsert_model(**_EVENTS, times={"occurred_at": {"label": "Event time"}})
 
     assert mutation.report["ok"] is True, mutation.report
+    assert "dropped_fields" not in mutation.report
     assert _events_model(project_path)["times"]["occurred_at"] == {
         **before["times"]["occurred_at"],
         "label": "Event time",
     }
-    assert mutation.report["kept_fields"] == [
-        f"times.occurred_at.{field}" for field in ("column", "kind", "class", "default")
-    ]
-
-    # An expr change keeps the rest of the measure and says so; a new object keeps nothing.
     mutation = project.upsert_model(
-        **_EVENTS,
-        measures={
-            "total_amount": {"expr": "amount * 2"},
-            "max_amount": {"kind": "aggregate", "expr": "amount", "value_type": "number"},
-        },
+        **_EVENTS, measures={"total_amount": {"description": "Amount, summed."}}
     )
     assert mutation.report["ok"] is True, mutation.report
     measure = _events_model(project_path)["measures"]["total_amount"]
-    assert measure["expr"] == "amount * 2" and measure["accumulation"] == {"kind": "flow"}
-    kept = mutation.report["kept_fields"]
-    assert "measures.total_amount.accumulation" in kept
-    assert not [field for field in kept if field.startswith("measures.max_amount")]
+    assert measure == {**before["measures"]["total_amount"], "description": "Amount, summed."}
 
 
-def test_model_upsert_null_removes_a_field_and_refuses_a_whole_object(tmp_path: Path) -> None:
+def test_model_upsert_rewrites_an_object_and_reports_what_drops(tmp_path: Path) -> None:
+    # Any other update rewrites the object, as wizards that rebuild it and leave out
+    # fields that no longer apply expect: a kind change must not keep the old expr.
     project_path = _create_project(tmp_path)
     project = ArchitectProject(project_path, workspace_root=tmp_path)
+    counted = {"kind": "entity_count", "entity_key": "event_id", "value_type": "count"}
 
-    mutation = project.upsert_model(**_EVENTS, dimensions={"event_type": {"label": None}})
+    preview = project.upsert_model(**_EVENTS, measures={"total_amount": counted}, dry_run=True)
+    mutation = project.upsert_model(**_EVENTS, measures={"total_amount": counted})
 
     assert mutation.report["ok"] is True, mutation.report
-    assert _events_model(project_path)["dimensions"]["event_type"] == {"kind": "categorical"}
-    with pytest.raises(SemanticLayerError, match="remove_object"):
-        project.upsert_model(**_EVENTS, dimensions={"event_type": None})
+    assert _events_model(project_path)["measures"]["total_amount"] == counted
+    dropped = [
+        f"measures.total_amount.{field}" for field in ("accumulation", "default_agg", "expr")
+    ]
+    assert set(dropped) <= set(mutation.report["dropped_fields"])
+    assert preview.report["dropped_fields"] == mutation.report["dropped_fields"]
 
 
-def test_models_upsert_reports_kept_fields_per_model(tmp_path: Path) -> None:
+def test_models_upsert_reports_dropped_fields_per_model(tmp_path: Path) -> None:
     project_path = _create_project(tmp_path)
     mutation = ArchitectProject(project_path, workspace_root=tmp_path).upsert_models(
-        models=[{**_EVENTS, "times": {"occurred_at": {"label": "Event time"}}}]
+        models=[{**_EVENTS, "dimensions": {"event_type": {"kind": "categorical"}}}]
     )
 
     assert mutation.report["ok"] is True, mutation.report
-    assert mutation.report["models"][0]["kept_fields"][0] == "times.occurred_at.column"
-    assert _events_model(project_path)["times"]["occurred_at"]["class"] == "event_time"
+    assert mutation.report["models"][0]["dropped_fields"] == ["dimensions.event_type.label"]
+
+
+def test_mcp_upsert_model_returns_dropped_fields(tmp_path: Path) -> None:
+    import asyncio
+
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from semantic_rails.architect_mcp import create_architect_mcp_server
+    from semantic_rails.architect_transactions import project_revision
+
+    project_path = _create_project(tmp_path)
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    async def call(**values: object) -> dict:
+        async with create_connected_server_and_client_session(server) as session:
+            result = await session.call_tool(
+                "upsert_model",
+                {
+                    "project_path": project_path.name,
+                    "expected_revision": project_revision(project_path),
+                    "idempotency_key": str(values),
+                    **_EVENTS,
+                    **values,
+                },
+            )
+            return dict(result.structuredContent or {})
+
+    relabeled = asyncio.run(call(times={"occurred_at": {"label": "Event time"}}))
+    rewritten = asyncio.run(call(dimensions={"event_type": {"kind": "categorical"}}))
+
+    assert relabeled["ok"] is True and "dropped_fields" not in relabeled
+    assert rewritten["ok"] is True
+    assert rewritten["dropped_fields"] == ["dimensions.event_type.label"]

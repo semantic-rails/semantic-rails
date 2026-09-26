@@ -1034,10 +1034,11 @@ def create_architect_mcp_server(
             "calendars needs): time.fill reads its date_day time and week_start, month_start, "
             "quarter_start and year_start kind: date dimensions. calendar: false reverts that. "
             "On a regular model, calendar_id binds its times to a calendar. Fields merge into "
-            "an existing model and into each named dimension, time, measure and join (a null "
-            "field removes it; kept_fields lists the fields left as they were); replace: true "
-            "rewrites it from the arguments, keeping only its id, entities and calendar_id, and "
-            "lists what it drops in dropped_fields."
+            "an existing model. An existing dimension, time, measure or join given only label, "
+            "description, synonyms or meta keeps its other fields; given anything else it is "
+            "rewritten, and dropped_fields lists what that drops. replace: true rewrites the "
+            "model from the arguments, keeping only its id, entities and calendar_id, and lists "
+            "what it drops in dropped_fields."
         ),
     )
     def upsert_model(
