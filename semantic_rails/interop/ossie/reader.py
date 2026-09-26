@@ -17,6 +17,8 @@ from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, get_args, get_origin, get_type_hints
 
+import yaml
+
 from ...config import (
     _default_topics,
     _derive_measure_semantics,
@@ -61,11 +63,7 @@ _MESSAGES = {
     "dimensions typed by default": _DEFAULTED,
     "measures given defaults": f"{_DEFAULTED} (aggregation from their metrics, time from their dataset)",
     "temporal roles with default grains": _DEFAULTED,
-    "round-trip differences": "exporting the imported package differs from the input here",
     "names that collide once normalized": "not imported: another element already has that id",
-    "sidecar objects missing from the document": (
-        "not imported: the sidecar describes them but the document no longer names them"
-    ),
 }
 _AGGREGATES = {"SUM": "sum", "AVG": "avg", "MIN": "min", "MAX": "max", "COUNT": "count_distinct"}
 _TOKEN = re.compile(r"\s*(?:(\d+(?:\.\d+)?)|([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)|(\S))")
@@ -90,8 +88,12 @@ def _value(hint: Any, value: Any, name: str) -> Any:
     return value
 
 
+def _dialects(node: dict[str, Any]) -> list[dict[str, Any]]:
+    return list(dict(node.get("expression") or {}).get("dialects") or [])
+
+
 def _sql(node: dict[str, Any]) -> str:
-    dialects = list(dict(node.get("expression") or {}).get("dialects") or [{}])
+    dialects = _dialects(node) or [{}]
     ansi = [d for d in dialects if d.get("dialect") in {"ANSI_SQL", "OSSIE_SQL_2026"}]
     return str((ansi or dialects)[0].get("expression", "")).strip()
 
@@ -242,9 +244,31 @@ class _Importer:
         for key in sorted(set(node) - _READ[kind]):
             self.skip(f"{kind} {key}", name)
         context = node.get("ai_context")
-        if isinstance(context, str) or set(dict(context or {})) - {"synonyms"}:
+        extra = isinstance(context, dict) and not isinstance(context.get("synonyms", []), list)
+        if isinstance(context, str) or extra or set(dict(context or {})) - {"synonyms"}:
             self.skip(f"{kind} ai_context text", name)
         return name
+
+    def _fields(self) -> list[dict[str, Any]]:
+        return [f for d in self.model.get("datasets") or [] for f in d.get("fields") or []]
+
+    def mismatch(self) -> list[str]:
+        """How the document's element names differ from the sidecar's (edits after the export)."""
+        datasets = self.model.get("datasets") or []
+        present = {
+            "datasets": {d.get("name") for d in datasets},
+            "fields": {
+                f"{d.get('name')}.{f.get('name')}" for d in datasets for f in d.get("fields") or []
+            },
+            "relationships": {r.get("name") for r in self.model.get("relationships") or []},
+            "metrics": {m.get("name") for m in self.model.get("metrics") or []},
+        }
+        out = []
+        for group, names in present.items():
+            expected = set(dict(self.names.get(group) or {}))
+            out += [f"{group} {n} (not in the document)" for n in sorted(expected - names)]
+            out += [f"{group} {n} (not in the sidecar)" for n in sorted(map(str, names - expected))]
+        return out
 
     def sr_id(self, group: str, name: str, default: str) -> str:
         return dict(self.names.get(group) or {}).get(name) or default
@@ -346,7 +370,7 @@ class _Importer:
             self.row("relationships", rel_id, document, **defaults, target_key_role="primary")
 
     def read_metrics(self) -> None:
-        parsed = []
+        parsed: list[tuple[str, dict[str, Any], str, SemanticExpr, list[tuple[str, str]]]] = []
         for node in self.model.get("metrics") or []:
             name = self.node("metric", node)
             metric_id = self.sr_id("metrics", name, f"metric.{self.ns}.{_slug(name)}")
@@ -355,6 +379,8 @@ class _Importer:
             expr = _value(None, exact, "expression") if exact else parser.parse()
             if expr is None:
                 self.skip("metrics outside the aggregate grammar", name)
+            elif metric_id in {row[0] for row in parsed}:
+                self.skip("names that collide once normalized", metric_id)
             else:
                 parsed.append((metric_id, node, name, expr, parser.used))
         counted = {
@@ -386,7 +412,8 @@ class _Importer:
             self.skip("measures given defaults", measure_id)
             spec = {"kind": "entity_count"} if measure_id in counted else {}
             default, allowed, invalid, measure_class = _derive_measure_semantics(spec)
-            default = default if spec else min(summed[measure_id] or {"sum"})
+            aggs = summed[measure_id]
+            default = default if spec else "sum" if "sum" in aggs or not aggs else min(aggs)
             name = measure_id.split(".", 1)[-1]
             roles = [r for r, entity in self.role_entities.items() if entity == row["entity"]]
             row.update(subject_entity=row["entity"], aggregation_entity=row["entity"], name=name)
@@ -418,13 +445,14 @@ class _Importer:
         }
         meta = _build(PackageMeta, {**document, **residual})
         if not residual:  # the warehouse the document's SQL is written for
-            dialects = {
-                d.get("dialect")
-                for m in self.model.get("metrics") or []
-                for d in dict(m.get("expression") or {}).get("dialects") or []
+            nodes = [*(self.model.get("metrics") or []), *self._fields()]
+            dialects = {str(d.get("dialect")) for n in nodes for d in _dialects(n)} & {
+                "SNOWFLAKE",
+                "DATABRICKS",
             }
-            found = sorted(dialects & {"SNOWFLAKE", "DATABRICKS"})
-            meta = replace(meta, warehouse=found[0].lower() if len(found) == 1 else "duckdb")
+            if len(dialects) > 1:
+                raise ValueError(f"expressions for more than one warehouse: {sorted(dialects)}")
+            meta = replace(meta, warehouse=(dialects or {"duckdb"}).pop().lower())
         hints, built = get_type_hints(PackageConfig), dict[str, Any]()
         for item in fields(PackageConfig):
             if item.name in {"version", "package"}:
@@ -433,16 +461,9 @@ class _Importer:
             args = get_args(hint)
             if get_origin(hint) is list and args and is_dataclass(args[0]):
                 rows: dict[Any, dict[str, Any]] = dict(self.rows.get(item.name) or {})
-                # Objects the export left out of the document come whole from the sidecar; the
-                # rest of the sidecar's rows add to objects the document should still name.
-                sidecar_rows = value.items() if isinstance(value, dict) else enumerate(value or [])
-                for i, row in sidecar_rows:
-                    if i in rows:
-                        continue
-                    if "id" in row:
-                        rows[i] = row
-                    else:
-                        self.skip("sidecar objects missing from the document", str(i))
+                # Objects the export left out of the document come whole from the sidecar.
+                left_out = value.items() if isinstance(value, dict) else enumerate(value or [])
+                rows.update({i: row for i, row in left_out if i not in rows})
                 built[item.name] = [_build(args[0], row) for row in rows.values()]
             elif value is not None:
                 built[item.name] = _value(hint, value, item.name)
@@ -463,7 +484,10 @@ def _by_name(model: dict[str, Any]) -> dict[str, Any]:
     for key in ("datasets", "relationships", "metrics"):
         rows = model.get(key) or []
         out[key] = {
-            r["name"]: {**r, "fields": sorted(r.get("fields") or [], key=lambda f: f["name"])}
+            r.get("name"): {
+                **r,
+                "fields": sorted(r.get("fields") or [], key=lambda f: f.get("name")),
+            }
             for r in rows
         }
     return out
@@ -494,14 +518,14 @@ def import_ossie(
     writes beside it (``<name>.semantic_rails.json``) when there is one. Reports the counts, the
     warnings and, with a sidecar, whether exporting the result gives the same files back."""
     source = Path(source).expanduser()
-    document = load_yaml_file(source)
-    version = str(document.get("version")) if isinstance(document, dict) else ""
-    if not re.match(r"0\.[12](\.|$)", version):
-        raise SemanticLayerError("INVALID_CONFIG", f"{source}: not an Ossie 0.1.x or 0.2 document")
     sidecar_path = source.with_name(
         re.sub(r"(\.ossie)?\.ya?ml$", "", source.name) + ".semantic_rails.json"
     )
     try:
+        document = load_yaml_file(source)
+        version = str(document.get("version")) if isinstance(document, dict) else ""
+        if not re.match(r"0\.[12](\.|$)", version):
+            raise ValueError("not an Ossie 0.1.x or 0.2 document")
         sidecar = json.loads(sidecar_path.read_text("utf-8")) if sidecar_path.is_file() else None
         if sidecar is not None and (
             sidecar.get("format"),
@@ -509,9 +533,19 @@ def import_ossie(
         ) != ("semantic_rails.ossie_sidecar", SIDECAR_FORMAT_VERSION):
             raise ValueError(f"{sidecar_path} is not a version-1 Semantic Rails sidecar")
         importer = _Importer(document, sidecar)
+        identity = str(dict(importer.sidecar.get("package") or {}).get("id") or "")
+        if sidecar is not None and package_id not in ("", identity):
+            raise ValueError(f"with its sidecar, the package id is {identity!r}")
+        # A sidecar describes the document as exported; one edited since would mix the two.
+        mismatch = importer.mismatch() if sidecar is not None else []
+        if mismatch:
+            raise ValueError(
+                f"it doesn't match its sidecar ({'; '.join(mismatch)}); "
+                "import the document alone or export again"
+            )
         config = importer.package(package_id, namespace)
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:  # a malformed input shape
-        raise SemanticLayerError("INVALID_CONFIG", f"{source}: can't read it ({exc})") from exc
+    except (AttributeError, KeyError, OSError, TypeError, ValueError, yaml.YAMLError) as exc:
+        raise SemanticLayerError("INVALID_CONFIG", f"{source}: can't import it ({exc})") from exc
     meta, pid = config.package, config.package.package_id
     if not re.fullmatch(r"\w[\w.-]*", pid):  # it names the output directory
         raise SemanticLayerError("INVALID_CONFIG", f"Package id {pid!r} can't name a directory")
@@ -525,25 +559,38 @@ def import_ossie(
         message = f"Importing a {meta.warehouse} package isn't supported yet"
         raise SemanticLayerError("INVALID_CONFIG", message)
     config = replace(config, package=meta)
-    directory = write_package(config, Path(output_dir).expanduser() / pid, namespace=importer.ns)
-    report: dict[str, Any] = {
-        "ok": True,
-        "format": "ossie",
-        "ossie_version": version,
-        "package_dir": str(directory),
-    }
-    report["sidecar"] = str(sidecar_path) if sidecar is not None else None
-    collections = ("entities", "dimensions", "measures", "relationships", "metric_recipes")
-    report["imported"] = {name: len(getattr(config, name)) for name in collections}
-    if sidecar is not None:
+    try:
+        directory = write_package(
+            config, Path(output_dir).expanduser() / pid, namespace=importer.ns
+        )
+    except (
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:  # a sidecar at odds with itself
+        raise SemanticLayerError("INVALID_CONFIG", f"{source}: can't import it ({exc!r})") from exc
+    if sidecar is not None:  # exporting what was written must give back the files that were read
         try:
             differences = _round_trip(directory, importer.model, sidecar)
         except Exception:
             shutil.rmtree(directory, ignore_errors=True)
             raise
-        for path in differences:
-            importer.skip("round-trip differences", path)
-        report["round_trip"] = "differs" if importer.warnings["round-trip differences"] else "exact"
+        if differences:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{source} doesn't match its sidecar; import the document alone or export again: "
+                + "; ".join(differences),
+                details={"differences": differences},
+            )
+    report: dict[str, Any] = {"ok": True, "format": "ossie", "ossie_version": version}
+    report["package_dir"] = str(directory)
+    report["sidecar"] = str(sidecar_path) if sidecar is not None else None
+    if sidecar is not None:
+        report["round_trip"] = "exact"
+    collections = ("entities", "dimensions", "measures", "relationships", "metric_recipes")
+    report["imported"] = {name: len(getattr(config, name)) for name in collections}
     report["warnings"] = [
         {
             "construct": c,

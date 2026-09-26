@@ -88,13 +88,13 @@ version, is refused with `INVALID_CONFIG`.
 
 - **With the sidecar** (`<name>.semantic_rails.json` beside the document, as the export writes
   it), every object comes back exactly: the document supplies what it carries and the sidecar
-  the rest, including the objects the export left out. The import then exports what it wrote and
-  compares that with the document and sidecar it read. The report says `round_trip: exact`, or
-  lists each difference, for example a metric whose SQL was edited, or a metric or field removed
-  or renamed, after the export. An import under another `--package-id` lists the package
-  identity as a difference. A package that uses relation pipelines, aggregate relations or path
-  preferences is refused, naming those objects, because they can't be written back as package
-  files yet.
+  the rest, including the objects the export left out. The package keeps the sidecar's package
+  id and namespace. The import then exports what it wrote and compares that with the document
+  and sidecar it read, and reports `round_trip: exact`. A document edited after the export (an
+  element added, removed or renamed, or its SQL changed) no longer matches its sidecar, so the
+  import is refused and names the differences; import the document alone, or export again. A
+  package that uses relation pipelines, aggregate relations or path preferences is refused too,
+  naming those objects, because they can't be written back as package files yet.
 - **Without it**, the import keeps what the document states and uses defaults for the rest:
   - datasets with a table `source` and a `primary_key` become entities;
   - fields that name a column become dimensions, typed as categories, or as timestamps when
@@ -117,4 +117,5 @@ The imported package reads data another tool built: `--default-db` names the Duc
 (default `data/<package-id>.duckdb`, with `seed: {kind: external}`). A document written for
 Snowflake gets a `snowflake_cli` connection named after the package; other warehouses are
 refused. `--warehouse`,
-`--description` and `--schema-strict` apply to `--from metricflow` only.
+`--description` and `--schema-strict` apply to `--from metricflow` only. With a sidecar,
+`--package-id` must name the sidecar's package, and `--namespace` is left out.

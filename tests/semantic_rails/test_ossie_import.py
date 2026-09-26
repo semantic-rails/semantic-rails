@@ -79,6 +79,9 @@ def test_import_without_the_sidecar_validates_with_counted_defaults(package_id, 
     assert report["sidecar"] is None and "round_trip" not in report
     assert {w["construct"]: w["count"] for w in report["warnings"]} == WITHOUT_SIDECAR[package_id]
     assert validate_runtime_package(Path(report["package_dir"])) == []
+    # The warehouse comes from the dialect the document's SQL is written in.
+    warehouse = load_package_snapshot(report["package_dir"]).config.package.warehouse
+    assert warehouse == ("snowflake" if package_id == "tpch_sf1_showcase" else "duckdb")
 
 
 def _answer(runtime: Runtime, example: dict) -> tuple:
@@ -127,44 +130,53 @@ def _renamed_field(document: dict, old: str, new: str) -> None:
             field["name"] = new if field["name"] == old else field["name"]
 
 
+def _without_dataset(document: dict, name: str) -> None:
+    [model] = document["semantic_model"]
+    model["datasets"] = [d for d in model["datasets"] if d["name"] != name]
+    model["relationships"] = [r for r in model["relationships"] if name not in (r["from"], r["to"])]
+
+
 @pytest.mark.parametrize(
-    ("edit", "differences", "missing"),
+    ("package_id", "edit", "named"),
     [
         (
+            "tpch_sf1_showcase",
             lambda text: text.replace(
                 "SUM(tpch_order.tpch_revenue)", "MAX(tpch_order.tpch_revenue)"
             ),
-            ["document.metrics.sales_average_order_value", "document.metrics.sales_revenue"],
-            None,
+            "document.metrics.sales_revenue",
         ),
         (
+            "tpch_sf1_showcase",
             lambda text: _edited(text, lambda d: _without_metric(d, "sales_orders")),
-            [
-                "sidecar.names.metrics.sales_orders",
-                "sidecar.objects.metric_recipes.metric.sales.orders",
-            ],
-            ["metric.sales.orders"],
+            "metrics sales_orders (not in the document)",
         ),
         (
+            "tpch_sf1_showcase",
             lambda text: _edited(
                 text, lambda d: _renamed_field(d, "tpch_customer_market_segment", "segment")
             ),
-            [
-                "document.datasets.tpch_customer",
-                "sidecar.names.fields.tpch_customer.tpch_customer_market_segment",
-            ],
-            ["dimension.tpch_customer_market_segment"],
+            "fields tpch_customer.segment (not in the sidecar)",
+        ),
+        (
+            "tpch_sf1_showcase",
+            lambda text: _edited(text, lambda d: _renamed_field(d, "tpch_order_order_date", "day")),
+            "fields tpch_order.tpch_order_order_date (not in the document)",
+        ),
+        (
+            "jaffle_shop",
+            lambda text: _edited(text, lambda d: _without_dataset(d, "jaffle_customer_history")),
+            "datasets jaffle_customer_history (not in the document)",
         ),
     ],
 )
-def test_a_document_edited_after_the_export_is_reported(edit, differences, missing, tmp_path):
-    document = _export(PACKAGES["tpch_sf1_showcase"], tmp_path / "ossie")
+def test_a_document_edited_after_the_export_is_refused(package_id, edit, named, tmp_path):
+    document = _export(PACKAGES[package_id], tmp_path / "ossie")
     document.write_text(edit(document.read_text(encoding="utf-8")), encoding="utf-8")
-    report = import_ossie(document, tmp_path / "imported")
-    warnings = {w["construct"]: w["ids"] for w in report["warnings"]}
-    assert report["round_trip"] == "differs"
-    assert set(differences) <= set(warnings["round-trip differences"])
-    assert warnings.get("sidecar objects missing from the document") == missing
+    with pytest.raises(SemanticLayerError, match="match its sidecar") as caught:
+        import_ossie(document, tmp_path / "imported")
+    assert named in str(caught.value)
+    assert not (tmp_path / "imported" / package_id).exists()
 
 
 def _edited(text: str, change) -> str:
@@ -181,7 +193,9 @@ def _sidecar(document: Path) -> Path:
     ("edit", "message"),
     [
         (lambda doc, side: doc.write_text("version: '1.0'\n"), "not an Ossie 0.1.x or 0.2"),
-        (lambda doc, side: side.write_text("{", encoding="utf-8"), "can't read it"),
+        (lambda doc, side: doc.write_text("version: 0.2.0\nname: [\n"), "can't import it"),
+        (lambda doc, side: doc.unlink(), "can't import it"),
+        (lambda doc, side: side.write_text("{", encoding="utf-8"), "can't import it"),
         (
             lambda doc, side: side.write_text(
                 side.read_text().replace('"format_version": 1', '"format_version": 2')
@@ -193,7 +207,7 @@ def _sidecar(document: Path) -> Path:
                 side.unlink(),
                 doc.write_text("version: 0.2.0\ndatasets: [orders]\n"),
             ),
-            "can't read it",
+            "can't import it",
         ),
         (
             lambda doc, side: (
@@ -209,6 +223,13 @@ def test_input_it_cannot_read_is_refused_with_a_typed_error(edit, message, tmp_p
     edit(document, _sidecar(document))
     with pytest.raises(SemanticLayerError, match=message):
         import_ossie(document, tmp_path / "imported")
+    assert not (tmp_path / "imported").exists()
+
+
+def test_with_its_sidecar_the_package_keeps_its_id(tmp_path) -> None:
+    document = _export(PACKAGES["shop_starter"], tmp_path / "ossie")
+    with pytest.raises(SemanticLayerError, match="the package id is 'shop_starter'"):
+        import_ossie(document, tmp_path / "imported", package_id="shop_copy")
     assert not (tmp_path / "imported").exists()
 
 
