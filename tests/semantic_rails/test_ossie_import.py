@@ -153,7 +153,7 @@ datasets:
     source: shop.customers
     primary_key: [customer_id]
     fields:
-      - {name: customer_id, dimension: {}, expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}}
+      - {name: customer_id, label: null, dimension: {}, expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}}
 relationships:
   - {name: orders_customer, from: orders, to: customers, from_columns: [customer_id], to_columns: [customer_id]}
   - {name: recent_customer, from: recent, to: customers, from_columns: [customer_id], to_columns: [customer_id]}
@@ -165,6 +165,7 @@ metrics:
     custom_extensions: [{vendor_name: COMMON, data: "{}"}]
   - {name: max_orders, expression: {dialects: [{dialect: ANSI_SQL, expression: MAX(orders.orders)}]}}
   - {name: share, expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(orders.amount) / SUM(orders.amount)}]}}
+  - {name: broken, expression: null}
 """
 
 
@@ -185,7 +186,7 @@ def test_a_foreign_0_2_document_imports_what_it_can_and_counts_the_rest(tmp_path
         "facts outside the supported expression grammar": ["orders.big"],
         "measures given defaults": ["measure.shop.amount", "measure.shop.orders"],
         "metric custom_extensions": ["aov"],
-        "metrics outside the aggregate grammar": ["share"],
+        "metrics outside the aggregate grammar": ["broken", "share"],
         "metrics summing a field other metrics count distinct": ["max_orders"],
         "model ai_context": ["shop"],
         "model ai_context text": ["shop"],
@@ -193,6 +194,9 @@ def test_a_foreign_0_2_document_imports_what_it_can_and_counts_the_rest(tmp_path
         "temporal roles with default grains": ["temporal_role.shop_orders_ordered_at"],
     }
     config = load_package_snapshot(report["package_dir"]).config
+    assert {d.label for d in config.dimensions if d.entity == "entity.shop_customers"} == {
+        "Customer Id"
+    }
     assert {m.id: m.kind for m in config.metric_recipes} == {
         "metric.shop.aov": "ratio",
         "metric.shop.order_count": "aggregate",

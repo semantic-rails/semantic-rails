@@ -243,7 +243,9 @@ class _Importer:
             entity_id = self.sr_id("datasets", name, f"entity.{self.ns}_{_slug(name)}")
             self.datasets[name] = entity_id
             document = {"table": source, "primary_key": key[0], "key": key}
-            document.update(description=dataset.get("description", ""), aliases=_synonyms(dataset))
+            document.update(
+                description=str(dataset.get("description") or ""), aliases=_synonyms(dataset)
+            )
             defaults = {"name": name, "label": _title(name), "identifiers": key}
             self.row(
                 "entities", entity_id, document, **defaults, key_roles=dict.fromkeys(key, "primary")
@@ -253,9 +255,9 @@ class _Importer:
 
     def read_field(self, dataset: str, entity_id: str, key: list[str], field: dict) -> None:
         name, sql = self.node("field", field), _sql(field)
-        ref, label = f"{dataset}.{name}", str(field.get("label", ""))
+        ref, label = f"{dataset}.{name}", str(field.get("label") or "")
         document = {"entity": entity_id, "label": label, "aliases": _synonyms(field)}
-        document["description"] = str(field.get("description", ""))
+        document["description"] = str(field.get("description") or "")
         if "dimension" not in field:
             measure_id = self.sr_id("fields", ref, f"measure.{self.ns}.{_slug(name)}")
             if measure_id in self.rows["measures"]:
@@ -349,7 +351,7 @@ class _Importer:
             kind = (
                 "aggregate" if isinstance(expr, AggregateExpr) else "ratio" if ratio else "derived"
             )
-            description = str(node.get("description", ""))
+            description = str(node.get("description") or "")
             document = {"expression": expr, "description": description, "aliases": _synonyms(node)}
             defaults = {"kind": kind, "name": name, "label": _title(name)}
             self.row(
@@ -391,14 +393,14 @@ class _Importer:
         document = {
             "package_id": package_id,
             "name": package_id,
-            "description": self.model.get("description", ""),
+            "description": str(self.model.get("description") or ""),
         }
         meta = _build(PackageMeta, {**document, **residual})
         if not residual:  # the warehouse the document's SQL is written for
             dialects = {
                 d.get("dialect")
                 for m in self.model.get("metrics") or []
-                for d in m["expression"]["dialects"]
+                for d in dict(m.get("expression") or {}).get("dialects") or []
             }
             found = sorted(dialects & {"SNOWFLAKE", "DATABRICKS"})
             meta = replace(meta, warehouse=found[0].lower() if len(found) == 1 else "duckdb")
