@@ -172,6 +172,25 @@ def test_a_window_total_is_not_split_into_fiscal_buckets(jaffle: Runtime) -> Non
     assert day["best"]["query_ir"]["time"]["grain"] == "day"
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "year to date revenue by fiscal month",
+        "fiscal ytd revenue by month",
+        "rolling 3 month revenue by fiscal month",
+    ],
+)
+def test_a_to_date_or_rolling_fiscal_question_is_not_answered(
+    jaffle: Runtime, question: str
+) -> None:
+    # Period-to-date resets on Gregorian periods whatever the calendar, and plan drops the
+    # to-date or rolling ask; bucketing fiscal months would turn a flagged draft into an ok one.
+    payload = plan_payload(jaffle, intent=question)
+
+    assert payload["status"] == "low_confidence"
+    assert "calendar_id" not in payload["best"]["query_ir"].get("time", {})
+
+
 def test_exact_days_bound_a_fiscal_series(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue by fiscal quarter from 2017-02-01 to 2018-01-31")
     time = payload["best"]["query_ir"]["time"]

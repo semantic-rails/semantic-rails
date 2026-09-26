@@ -678,7 +678,9 @@ def _select_key(config: Any, item: Any) -> str:
 
     import json
 
-    expression = item.get("expression") if isinstance(item, dict) else item
+    expression = item
+    if isinstance(item, dict):
+        expression = item.get("expression", {k: v for k, v in item.items() if k != "as"})
     if isinstance(expression, dict) and set(expression) <= {"measure", "aggregation"}:
         measure = next(
             (row for row in config.measures if row.id == expression.get("measure")), None

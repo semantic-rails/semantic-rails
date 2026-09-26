@@ -518,6 +518,7 @@ def _fiscal_calendar(config: Any) -> Any | None:
     return rows[0] if len(rows) == 1 else None
 
 
+_TO_DATE_OR_ROLLING_RE = re.compile(r"\b(?:[ymqw]td|to[\s-]+date|rolling|trailing|moving)\b")
 # The calendar column a filled series buckets each grain on.
 _CALENDAR_BUCKET_COLUMNS = {
     "day": "date_day",
@@ -537,17 +538,20 @@ def _with_fiscal_calendar(config: Any, text: str, query: dict[str, Any]) -> dict
     the time bucket now holds, so it goes. The draft is unchanged, and plan
     reports the gap, without a fiscal calendar, or when the planner chose the
     grain to hold a window in one Gregorian bucket: a fiscal bucket of that
-    grain may split the window in two.
+    grain may split the window in two. Likewise for a to-date or rolling
+    question: period-to-date resets on Gregorian periods whatever the calendar.
     """
 
     time = query.get("time")
     calendar = _fiscal_calendar(config)
+    lowered = str(text or "").lower()
     if (
         calendar is None
         or not isinstance(time, dict)
         or not time.get("grain")
         or time.get("calendar_id")
-        or not _FISCAL_RE.search(str(text or "").lower())
+        or not _FISCAL_RE.search(lowered)
+        or _TO_DATE_OR_ROLLING_RE.search(lowered)
         or (time.get("start") and time["grain"] != "day" and not _explicit_grain(text))
     ):
         return query
