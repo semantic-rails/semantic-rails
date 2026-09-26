@@ -185,6 +185,19 @@ The base `WarehouseAdapter.query_prepared` delegates to `query` for existing cus
 adapters that have no SQL transformations. Test compile/explain SQL against the
 statement captured at the driver boundary, including alias restoration and limits.
 
+**Parameterized statements.** `PreparedQuery.parameters` lists a `ParameterSlot`
+for each positional `?` placeholder: the trusted request attribute that supplies
+the value and its exact type (`string`, `integer` or `boolean`). The runtime binds
+values per request from the host's `TrustedAttributes`; a missing attribute or a
+value of another type is denied with `POLICY_DENIED`, never bound as NULL or
+coerced. Only an adapter that sets `supports_parameters = True` receives such a
+statement, as `query_prepared(prepared, limits=..., parameters=values)`, and it
+must send the values to its driver separately from the SQL. Every other adapter,
+including the base fallback, denies it before reaching its driver. Never render a
+value into SQL text as a fallback. `DuckDBAdapter` is the only adapter with
+support today; qualify a driver's parameter API with tests before enabling
+another.
+
 Rules every adapter follows:
 
 - **Secrets** come from env-var indirection (`*_env`) or files

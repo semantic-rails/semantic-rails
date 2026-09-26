@@ -28,7 +28,13 @@ from typing import Any
 from ..dialects import BIGQUERY_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError, query_execution_error
 from ..sql_preparation import PreparedQuery, prepare_query
-from .base import WarehouseAdapter, _clip_rows, _limit_timeout_seconds, restore_column_names
+from .base import (
+    WarehouseAdapter,
+    _clip_rows,
+    _limit_timeout_seconds,
+    reject_parameters,
+    restore_column_names,
+)
 from .common import (
     import_driver,
     normalize_connection_options,
@@ -129,6 +135,7 @@ class BigQueryNativeAdapter(WarehouseAdapter):
     def query_prepared(
         self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
+        reject_parameters(prepared, self)
         timeout_s = _limit_timeout_seconds(limits)
         try:
             client = self.client()

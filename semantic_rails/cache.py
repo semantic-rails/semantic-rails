@@ -12,12 +12,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any, Protocol, runtime_checkable
 
 from .package_snapshot import capture_package_source
+from .request_context import context_from_policy_context
 
 COMPILER_CACHE_VERSION = "semantic-rails-compiler-v3-prepared-sql-1"
 
@@ -107,9 +109,13 @@ def compilation_cache_key(
     warehouse: str,
     relation_profile: str,
     render_profile: str = "audit",
-    policy_context: dict[str, Any],
+    policy_context: Mapping[str, Any],
     aggregate_routing: bool,
 ) -> str:
+    # Trusted attribute values partition the key explicitly (the object's repr
+    # names keys only), so no compiled plan is reused across attribute values.
+    # JSON keeps 1, true, "1" and ["1"] distinct.
+    attributes = context_from_policy_context(policy_context).attributes
     return stable_json_hash(
         {
             "compiler_version": COMPILER_CACHE_VERSION,
@@ -118,7 +124,8 @@ def compilation_cache_key(
             "warehouse": warehouse,
             "relation_profile": relation_profile,
             "render_profile": render_profile,
-            "policy_context": policy_context,
+            "policy_context": {k: v for k, v in policy_context.items() if k != "attributes"},
+            "attributes": {name: attributes.get(name) for name in attributes.names},
             "aggregate_routing": aggregate_routing,
         }
     )

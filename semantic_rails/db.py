@@ -28,7 +28,7 @@ import sqlite3
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch semantic_rails.db.subprocess
 import threading
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +44,7 @@ from .db_parts.base import (
     _clip_rows,
     _limit_max_rows,
     _limit_timeout_milliseconds,
+    restore_column_names,
 )
 from .db_parts.snowflake import (
     SnowflakeCliAdapter,
@@ -57,7 +58,7 @@ from .dialects import (
 from .errors import SemanticLayerError, query_execution_error
 from .schema import PackageMeta
 from .seed_provenance import record_seed_provenance
-from .sql_preparation import PreparedQuery
+from .sql_preparation import ParameterValue, PreparedQuery, checked_parameter_values
 
 __all__ = [
     "Database",
@@ -167,11 +168,32 @@ class Database:
 class DuckDBAdapter(WarehouseAdapter):
     engine = "duckdb"
     supports_statement_timeout = True
+    supports_parameters = True
 
     def __init__(self, db_path: str):
         self._db = Database.connect(db_path, read_only=True)
 
-    def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def query_prepared(
+        self,
+        prepared: PreparedQuery,
+        *,
+        limits: dict[str, Any] | None = None,
+        parameters: Sequence[Any] = (),
+    ) -> list[dict[str, Any]]:
+        """Send slot values through DuckDB's parameter binding, never the SQL text."""
+        values = checked_parameter_values(prepared, parameters)
+        if not values:
+            return super().query_prepared(prepared, limits=limits)
+        rows = self.query(prepared.sql, limits=limits, parameters=values)
+        return restore_column_names(rows, prepared)
+
+    def query(
+        self,
+        sql: str,
+        *,
+        limits: dict[str, Any] | None = None,
+        parameters: Sequence[ParameterValue] = (),
+    ) -> list[dict[str, Any]]:
         timeout_ms = _limit_timeout_milliseconds(limits)
         finished = threading.Event()
         watchdog: threading.Timer | None = None
@@ -185,7 +207,7 @@ class DuckDBAdapter(WarehouseAdapter):
             watchdog.daemon = True
             watchdog.start()
         try:
-            rows = self._db.query(sql, max_rows=_limit_max_rows(limits))
+            rows = self._db.query(sql, parameters, max_rows=_limit_max_rows(limits))
             return _clip_rows(rows, limits)
         except SemanticLayerError:
             raise

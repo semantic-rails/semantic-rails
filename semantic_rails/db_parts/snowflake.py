@@ -27,6 +27,7 @@ from .base import (
     WarehouseAdapter,
     _clip_rows,
     _limit_timeout_seconds,
+    reject_parameters,
     restore_column_names,
 )
 from .common import (
@@ -85,6 +86,7 @@ class SnowflakeCliAdapter(WarehouseAdapter):
     def query_prepared(
         self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
+        reject_parameters(prepared, self)
         timeout_s = _limit_timeout_seconds(limits)
         effective_sql = prepared.sql
         if timeout_s > 0:
@@ -328,6 +330,7 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
     def query_prepared(
         self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
+        reject_parameters(prepared, self)
         timeout_s = _limit_timeout_seconds(limits)
         try:
             cursor = self._connection().cursor()

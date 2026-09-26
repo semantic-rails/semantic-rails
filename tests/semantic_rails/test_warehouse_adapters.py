@@ -77,7 +77,7 @@ def test_duckdb_timeout_interrupts_the_active_connection(monkeypatch: pytest.Mon
     class FakeDatabase:
         conn = FakeConnection()
 
-        def query(self, _sql, *, max_rows=None):
+        def query(self, _sql, _params=None, *, max_rows=None):
             assert interrupted.wait(timeout=1)
             return []
 
@@ -119,7 +119,7 @@ def test_duckdb_watchdog_uses_true_millisecond_interval(monkeypatch: pytest.Monk
     class FakeDatabase:
         conn = FakeConnection()
 
-        def query(self, _sql, *, max_rows=None):
+        def query(self, _sql, _params=None, *, max_rows=None):
             return []
 
     monkeypatch.setattr(db_module.threading, "Timer", FakeTimer)

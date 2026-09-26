@@ -37,6 +37,7 @@ from .base import (
     _clip_rows,
     _limit_max_rows,
     _limit_timeout_seconds,
+    reject_parameters,
     restore_column_names,
 )
 
@@ -295,6 +296,7 @@ class DbApiAdapter(WarehouseAdapter):
     def query_prepared(
         self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
+        reject_parameters(prepared, self)
         timeout_s = _limit_timeout_seconds(limits)
         use_timeout = timeout_s > 0 and self.supports_statement_timeout
         try:
