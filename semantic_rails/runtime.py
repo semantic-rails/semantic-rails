@@ -25,6 +25,7 @@ from dataclasses import asdict, replace
 from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import __version__
 from .acceleration.routing import (
@@ -563,6 +564,24 @@ def _normalize_query_limits(raw: Any) -> dict[str, Any]:
         if coerced > 0:
             normalized[key] = coerced
     return normalized
+
+
+def _query_time_zone(config: Any, plan: Any) -> str:
+    """The zone a query runs in: its time role's, else UTC ("" if the name isn't a zone).
+
+    DuckDB and Postgres read a ``TIMESTAMP WITH TIME ZONE`` column's clock, and compare it
+    with a plain timestamp, in the session's zone. The adapters run the query in this one,
+    so a zone-aware column buckets and filters in the role's zone at every grain. Naive
+    ``TIMESTAMP`` and ``DATE`` columns don't depend on the session zone.
+    """
+    role_id = str((getattr(plan, "time", None) or {}).get("temporal_role") or "")
+    zone = next((role.timezone for role in config.temporal_roles if role.id == role_id), "")
+    zone = str(zone or "UTC").strip()
+    try:
+        ZoneInfo(zone)
+    except (ValueError, ZoneInfoNotFoundError):
+        return ""
+    return zone
 
 
 def _adapter_query(
@@ -2087,6 +2106,7 @@ class Runtime:
         # operators use this to enforce per-tenant policies without forking;
         # local users typically leave `limits` unset.
         limits = _normalize_query_limits(payload.get("limits"))
+        limits["time_zone"] = _query_time_zone(self._config, compiled["logical_plan"])
         # If the caller asked for a statement_timeout_ms but the adapter
         # can't honor it at the warehouse boundary, surface a warning so
         # the caller learns the limit was best-effort. Without this, the
@@ -2466,14 +2486,22 @@ class Runtime:
             count_shell.sql.replace("__SR_MEMBERSHIP__", membership_compiled["sql"]),
             parameters=membership_compiled["prepared_query"].parameters,
         )
+        preview_plan = preview_compiled["logical_plan"]
+        membership_plan = membership_compiled["logical_plan"]
         adapter = self._get_adapter()
         try:
             with self._query_lock:
                 rows = _adapter_query(
-                    adapter, preview_compiled["prepared_query"], limits={}, policy_context=context
+                    adapter,
+                    preview_compiled["prepared_query"],
+                    limits={"time_zone": _query_time_zone(self._config, preview_plan)},
+                    policy_context=context,
                 )
                 count_rows = _adapter_query(
-                    adapter, count_prepared, limits={}, policy_context=context
+                    adapter,
+                    count_prepared,
+                    limits={"time_zone": _query_time_zone(self._config, membership_plan)},
+                    policy_context=context,
                 )
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":

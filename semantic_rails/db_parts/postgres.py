@@ -20,6 +20,8 @@ Conventions (shared machinery in :mod:`semantic_rails.db_parts.common`):
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from ..dialects import POSTGRES_CONNECTION_OPTIONS
@@ -37,6 +39,14 @@ from .common import (
 
 _LABEL = "Postgres"
 _DEFAULT_PORT = 5432
+# Names a server may report for UTC (the Docker image says Etc/UTC), all one zone.
+_UTC_NAMES = frozenset({"utc", "etc/utc", "uct", "etc/uct", "universal", "etc/universal"})
+_UTC_NAMES |= {"zulu", "etc/zulu", "gmt", "etc/gmt", "greenwich", "etc/greenwich"}
+
+
+def _same_zone(left: str, right: str) -> bool:
+    left, right = left.casefold(), right.casefold()
+    return left == right or (left in _UTC_NAMES and right in _UTC_NAMES)
 
 
 class _DdlTolerantCursor:
@@ -152,6 +162,26 @@ class PostgresAdapter(DbApiAdapter):
 
     def _reset_statement_timeout(self, cursor: Any) -> None:
         cursor.execute("RESET statement_timeout")
+
+    @contextmanager
+    def _time_zone_scope(self, cursor: Any, zone: str) -> Iterator[None]:
+        """Run the statement with ``SET LOCAL TimeZone``, which ends with its transaction.
+
+        Outside a transaction, the scope is a transaction of its own. Inside one the
+        connection's owner opened, ``SET LOCAL`` would outlast this statement, so the
+        owner's zone is put back before its transaction goes on.
+        """
+        info = self._connection().info
+        current = info.parameter_status("TimeZone") or ""
+        if _same_zone(current, zone):
+            yield
+            return
+        idle = getattr(info.transaction_status, "name", "") == "IDLE"
+        with self._connection().transaction():
+            cursor.execute("SELECT set_config('TimeZone', %s, true)", (zone,))
+            yield
+            if not idle:
+                cursor.execute("SELECT set_config('TimeZone', %s, true)", (current,))
 
 
 def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:

@@ -885,6 +885,29 @@ times:
 `class:`, `supported_grains:`, and `default_query_axis:` are load-bearing — the
 planner uses them to decide alignment and pick implicit time axes.
 
+`timezone:` (default `UTC`) is the zone the role answers in. Every grain's
+buckets, and a query's `start`/`end` bounds, are in that zone:
+
+- A naive `TIMESTAMP` or a `DATE` column is read as stored. If it stores
+  another zone's clock, name that zone in `column_timezone:` (for example
+  `column_timezone: UTC` with `timezone: America/New_York`), and the engine
+  converts it.
+- A zone-aware column (`TIMESTAMP WITH TIME ZONE`) holds instants. On DuckDB,
+  MotherDuck, DuckLake and Postgres, each query runs with the session time zone
+  set to its time role's zone (UTC for a query without one), and only for that
+  query. So these columns bucket and filter in the role's zone whatever the
+  server's or machine's default. Leave `column_timezone:` off them.
+- The other warehouses don't do this yet, so there a zone-aware column follows
+  the warehouse's own rules:
+  - Snowflake `TIMESTAMP_LTZ` and Databricks `TIMESTAMP` use the session time zone.
+  - Snowflake `TIMESTAMP_TZ` keeps each value's own offset.
+  - Athena/Trino `timestamp with time zone` keeps each value's own zone.
+  - ClickHouse `DateTime` uses the column's or the server's zone.
+  - BigQuery buckets `DATETIME` values, so a `TIMESTAMP` column isn't bucketed in the role's zone.
+
+  On those warehouses, store naive timestamps and declare their zone with
+  `column_timezone:`.
+
 ### Dimensions
 
 Only behavioral dimensions are authored. Key dimensions auto-create from

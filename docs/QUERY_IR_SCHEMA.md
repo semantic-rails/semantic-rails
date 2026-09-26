@@ -220,6 +220,12 @@ The runtime rejects any `field` that does not resolve, with
 would silently exclude December 31. Half-open bounds make adjacent
 windows compose without overlap or gaps.
 
+Buckets and bounds are in the temporal role's `timezone` (UTC by default).
+On DuckDB and Postgres that holds for zone-aware (`TIMESTAMP WITH TIME ZONE`)
+columns too: the query runs with the session time zone set to the role's zone.
+For other warehouses, see "`times:` — temporal roles" in
+[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
+
 `fill: true` requires a `grain`. `range` is mutually exclusive with
 `start`/`end`. `range.last` is strictly an object — the string shorthand
 (`"90 days"`) is rejected with `INVALID_QUERY` + a `USE_OBJECT_SHAPE`
