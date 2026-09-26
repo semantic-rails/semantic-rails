@@ -8,6 +8,326 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.2rc1 — 2026-09-26 — Exact rollups, row filters, Ossie and a v2-only query MCP
+
+**Pre-release.** Install it with `pip install semantic-rails==0.3.2rc1`; `pip install
+semantic-rails` and `<0.4` ranges keep resolving 0.3.1.
+
+**Upgrading from 0.3.1:** run `semantic-rails project validate --mode parse` on your packages
+first, and check these changes; each has its entry below.
+
+- **Query MCP interface v1, 0.3.1's default, is removed** (Removed). Move clients to v2's six
+  tools. v2's defaults are smaller: `execute` returns at most 200 rows, `discover` and `inspect`
+  return slim cards (pass `verbosity: "compact"` for v1's), and `plan` returns
+  `detail: "query"`.
+- **Packages that 0.3.1 accepted can now be rejected:** a conversion metric whose operands both
+  count the conversion entity on the same clock (Fixed); a rollup binding with a key the engine
+  doesn't know, a `holds` the measure can't be queried with, or an unknown relationship in
+  `path` (Changed); and a policy that looks like a misspelled `row_filter` (Added).
+  `validate runtime` also runs each segment's preview query, so it can report a segment
+  membership value the warehouse can't compare with its column (Changed).
+- **Some answers change, and some queries are refused:** a conversion `window` is now a
+  duration after the base event, so rates can drop (Changed); a query on the default calendar in
+  a package that declares only non-default calendars fills from an implicit Gregorian calendar
+  instead of borrowing another calendar's periods, and ClickHouse refuses it until the package
+  adds a default calendar (Fixed); queries a rollup can't answer exactly run on the base tables
+  instead (Fixed); and a `distribution` with `time.fill: true`, or with a `rolling` or
+  `prior_period` window in its input or metric filter, is refused instead of returning wrong
+  values (Fixed).
+- **`plan` returns `low_confidence` where 0.3.1 returned `ok`** when several measures or
+  metrics tie and the question names none of them (a `subject_ambiguous` gap; `semantic-rails
+  ask` then exits 1 without running, so name one in the question), and for a fiscal question it
+  can't put on the package's fiscal calendar, which 0.3.1 answered with Gregorian periods;
+  fiscal windows such as "FY2017" return `TIME_WINDOW_UNRESOLVED` with no runnable draft
+  (Fixed). "Number of customers" in the bundled demo now answers Customer count.
+- **Embedding hosts:** `MCP_INTERFACE_VERSION` and the other query MCP interface constants are
+  gone from `semantic_rails.embedding` (Removed); `semantic_rails.cache.compilation_cache_key`
+  takes a required `aggregate_routing` argument (Added); and importing the audit sink and
+  API-key helpers from `semantic_rails.request_context` is deprecated and stops working in
+  0.3.3 (Deprecated).
+
+### Added
+
+- The compile plan's `performance_plan.aggregate_routing.candidates` lists every
+  declared rollup considered for each measure leaf, whether it was `selected`,
+  `eligible`, `rejected` or `unknown`, and why, and `aggregate_routing.selected`
+  lists every rollup the compiled SQL reads, including a `distribution`'s
+  separately compiled branches. Setting
+  `SEMANTIC_RAILS_AGGREGATE_ROUTING=off` (or calling
+  `runtime.set_aggregate_routing(False)`) runs every query a runtime serves on the
+  base tables, including queries whose compiled plan is already cached.
+- `semantic_rails.cache.compilation_cache_key` takes a required `aggregate_routing`
+  argument, so a custom compile cache keys on the routing switch. Plans cached
+  before the upgrade miss once.
+- The comparison pack adds eight frozen-model questions (q17-q24). Each changes one parameter
+  of a metric the first 16 questions use (a conversion window, a rolling window, a period
+  offset, a per-metric filter, an aggregation or a threshold), and every layer answers it with
+  its model unchanged, through its query-time interface only. The rubric gains a
+  `requires_model_change` label, which `comparisons/semantic_layers/shared/frozen_model.yml`
+  backs with a reason and a documentation link, and the published matrix gives each layer's
+  count answered with the model frozen. Cube's runner now also sends SQL API queries through
+  `/cubesql`, so Cube's start script opens its SQL API port (15432, on every interface) with a
+  random password that no client receives.
+- `docs/EMBEDDING.md` describes how changes to `semantic_rails.embedding` are staged:
+  the new form ships next to the old one, the old one is deprecated with a named removal
+  release, and it is removed only after embedders have moved. The test suite now checks
+  the facade names, attributes, call shapes and implemented protocols recorded from a
+  known embedder's code.
+- `rolling`, `prior_period` and `time.fill` now work in a package that declares no calendar:
+  a query on the default calendar fills its periods from an implicit Gregorian calendar the
+  engine generates in SQL (calendar months, quarters and years, Monday weeks, in the time
+  role's zone), spanning the query's window or the data's first to last period. They used to
+  fail with "time.fill requires a calendar entity in the package". An authored calendar still
+  fills when the package has one; any other `calendar_id`, such as a fiscal calendar, still
+  needs its calendar authored and is refused without it. Not available on ClickHouse. See
+  [docs/QUERY_IR_SCHEMA.md](docs/QUERY_IR_SCHEMA.md).
+- `semantic-rails export --format ossie --output DIR` writes a package as an Apache Ossie 0.1.1
+  document (`<package-id>.ossie.yaml`) that passes the spec's validator, plus a sidecar
+  (`<package-id>.semantic_rails.json`) holding what Ossie 0.1.1 can't express. Each such construct
+  gets a counted warning. Metrics, measures and relationships Ossie can't state faithfully are left
+  out of the document instead of approximated, and semantic policies carry an extra warning that
+  Ossie consumers won't enforce them. See [docs/OSSIE.md](docs/OSSIE.md).
+- `semantic-rails import --from ossie` reads a document written by `export --format ossie` back
+  into a package. With the sidecar the package comes back exactly, checked by exporting it again,
+  and a document edited since the export is refused. Without the sidecar, datasets, column fields,
+  joins to a primary key and metrics in the export's aggregate SQL are imported, with the types
+  and aggregations it defaults counted in warnings, and anything else is skipped with a warning.
+  A refused import leaves no files behind. Reading other Ossie 0.1.x and 0.2 documents is
+  experimental. See [docs/OSSIE.md](docs/OSSIE.md).
+- Compiled statements can carry typed parameter slots that the engine binds per request from
+  the host's `TrustedAttributes`. DuckDB receives the values through its own parameter
+  binding, never in the SQL text; every other warehouse adapter refuses such statements, and a
+  missing or mistyped attribute is denied. Requests with different attribute values no longer
+  share a compile-cache entry. `row_filter` policies produce the parameters. See
+  [docs/ADDING_A_DIALECT.md](docs/ADDING_A_DIALECT.md).
+- A rollup can declare `requires_certification: true`. It then routes only while
+  the host's certification provider, installed with
+  `semantic_rails.acceleration.routing.set_certification_provider`, says it is
+  certified. With no provider it runs on the base tables (`not_certified`). A
+  package with such a rollup skips the compile cache and compiles every request,
+  so a revoked certification applies to the next one.
+  `semantic_rails.acceleration.certification.certify_aggregate_relation(config,
+  relation_id)` returns the engine's verdict on each of a rollup's measure columns
+  with a paired base and rollup query to compare before certifying it. Rollup rows
+  in validation metadata gain a `requires_certification` field.
+- A rollup's measure column can declare what it holds per row with `holds:`
+  (`sum`, `min`, `max` or `count_distinct`), so `min` and `max` queries can run on
+  a rollup. A column declared `holds: count_distinct` also answers a distinct count
+  of a key other than the row key at the rollup's own time grain, when every
+  rollup dimension is grouped or pinned by an `=` filter. A column without
+  `holds:` keeps its meaning: a sum for an `aggregate` measure or a distinct count
+  for an `entity_count` measure, re-added with `SUM`. A dimension column
+  pre-joined from another model declares the relationship `path:` it was built
+  along, and routes only when the query joins along that same many-to-one path.
+- A new `row_filter` package policy limits a relation's rows to a trusted request attribute,
+  for example each customer's own orders: the compiler adds `<column> = ?` and the runtime
+  binds the host's `TrustedAttributes` value. Only DuckDB executes these statements today;
+  other adapters refuse them. A missing or mistyped attribute is denied on every surface, as
+  is any query that reads more than the one filtered relation (joins, metric filters, calendar
+  spines); rollups aren't routed to under a row filter, and the zero-row coverage probe is
+  skipped. The package loader rejects a row filter it can't express, and a policy that looks
+  like a misspelled one. A warehouse error on a parameterized statement is now raised without
+  the driver's message. See [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).
+- Embedding hosts can attach typed, immutable `TrustedAttributes` (for example a customer ID from a
+  verified token) to a `RequestContext`, imported from `semantic_rails.embedding`. The engine
+  carries them through every transport and internal call; request bodies, headers and plans
+  can't set or replace them, and they never appear in the public `request_context`, echoed
+  queries, errors or audit events. `row_filter` policies read them. See
+  [docs/EMBEDDING.md](docs/EMBEDDING.md).
+
+### Changed
+
+- The API-key helpers (`api_key_auth_result`, `configured_api_keys`,
+  `extract_bearer_or_api_key`) moved from `semantic_rails.request_context` to the new
+  `semantic_rails.api_keys` module. Importing them from `semantic_rails.request_context`
+  still works.
+- Package validation warns when a measure duplicates another one (same entity, expression,
+  aggregation and default clock).
+- An Architect write refused as stale now says that writes sent together with one
+  `expected_revision` apply only the first, and names the revision to resend with; the
+  Architect MCP instructions ask for one write at a time.
+- The semantic layer comparison pack models MetricFlow (dbt-metricflow 0.15.0), Cube Core
+  (1.7.45), Malloy (`@malloydata/cli` 0.0.57) and KtX (`@kaelio/ktx` 0.16.0) with the features
+  their current releases ship, and re-runs them and Semantic Rails on the shared dataset. Cube
+  runs live again from a locked, audited install. The rubric now labels MetricFlow, Cube and
+  Malloy `native` on all 16 questions; every layer checked on the current data still matches
+  the independent answer key. Snowflake Semantic Views remains a stale April capture.
+- A conversion `window` is now a duration after the base event on every warehouse: a converted
+  event counts when `base <= converted < base + window`, as in MetricFlow. It used to count
+  unit boundaries, so a 7-day window ran to the end of the 7th calendar day (up to 8 days), a
+  1-week window ran through the 13th day on DuckDB and Postgres, and a 1-month window covered
+  all of the next month. Conversion rates can drop where converted events fell in that extra
+  time; the shipped `jaffle_shop` conversion metrics are unchanged. See
+  [docs/QUERY_API.md](docs/QUERY_API.md).
+- The query MCP's `plan` and `execute` tool descriptions now say to draft Query IR with `plan`
+  first and that `time.end` is exclusive, for hosts that don't pass the server instructions to
+  the model. `plan`'s `next.ready_for` now lists only `execute` (over HTTP and the CLI too), and
+  recovery hints that name a follow-up call say which MCP call it is, for example "validate it
+  (over MCP, execute with mode 'validate')", on every surface.
+- Rollup bindings are checked when a package loads. A measure binding (a variant
+  `columns:` entry or an `aggregate_relations:` measure) accepts only `column`,
+  `rollup`, `aggregation` and `holds`, and a dimension binding only `column` and
+  `path`. Any other key, a `holds` the measure can't be queried with, or an
+  unknown relationship in `path` is now `INVALID_CONFIG`, where before it was
+  ignored. An `aggregate_relations:` entry that holds a column from another model
+  without a many-to-one `path` no longer routes at all.
+  `performance_plan.aggregate_routing.selected_count` now counts the distinct
+  rollups the SQL reads, not the rollup scans in the physical plan.
+- `validate runtime` (and `project validate --mode runtime`) also runs each segment's
+  preview query, so a membership value the warehouse can't compare with its column is
+  reported, with a hint, before `segment preview` fails. `segment validate` stays
+  warehouse-free: for a membership value on a text, id, date or time dimension, which it
+  can't check against the column, it adds a `SEGMENT_VALUES_UNCHECKED` warning that names
+  those commands.
+
+### Deprecated
+
+- The audit sink (`AuditSink`, `StderrAuditSink`, `audit_logging_enabled`,
+  `emit_audit_event`, `get_audit_sink`, `set_audit_sink`) moved from
+  `semantic_rails.request_context` to the new `semantic_rails.audit` module, and
+  `semantic_rails.embedding` now also exports `audit_logging_enabled`. Importing these names,
+  or the API-key helpers that moved to `semantic_rails.api_keys`
+  (`MISSING_API_KEY_FILE_SENTINEL`, `api_key_auth_result`, `configured_api_keys`,
+  `extract_bearer_or_api_key`), from `semantic_rails.request_context` is deprecated and stops
+  working in 0.3.3. Import them from their new modules (hosts: the audit names from
+  `semantic_rails.embedding`), and install a sink with `set_audit_sink` rather than patching
+  module state.
+
+### Removed
+
+- **Breaking:** query MCP interface v1 is removed. Interface v2 is the only one: six
+  tools (`discover`, `inspect`, `valid-values`, `plan`, `execute` and `segment`) and one
+  contract, `query_mcp.v2.json`; `query_mcp.v1.json` is no longer shipped. Setting
+  `SEMANTIC_RAILS_MCP_INTERFACE=v1` or passing `interface="v1"` fails with "The v1 MCP interface
+  was removed; v2 is the only interface" (`mcp stdio` returns it as the error of the client's
+  `initialize` and logs it to stderr), and calling a v1 tool returns `UNKNOWN_MCP_TOOL` naming
+  its replacement. The Architect MCP's `preview_query` builds a query adapter, so it fails the
+  same way under that setting, and its results report `api_version` `v2`.
+  `MCP_INTERFACE_VERSION` and the other interface constants are gone from
+  `semantic_rails.mcp` and `semantic_rails.embedding`. Upgrading from v1:
+  - `validate` → `execute` with `mode: "validate"`; `compile` → `execute` with `mode: "sql"`.
+  - `segment-validate`, `segment-explain`, `segment-preview` → `segment` with `action`
+    `validate`, `explain` or `preview` (`verbosity: "full"` for the whole response).
+  - `catalog` → `discover` with empty `terms`, or the `semantic-rails://catalog/*` resources.
+  - `capabilities`, `build-options` → draft Query IR with `plan`. The HTTP API keeps both,
+    and the CLI keeps `build-options`.
+  - Smaller defaults: `execute` returns at most 200 rows (`max_rows` up to 100,000);
+    `discover` and `inspect` return slim cards (`verbosity: "compact"` for v1's); `plan`
+    returns `detail: "query"` (`detail: "best"` for v1's).
+  See [docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md#migrating-from-interface-v1).
+
+### Fixed
+
+- Segments on a true/false column work from `author segment` to preview. `author model`
+  declares a BOOLEAN column as `kind: boolean`, not `categorical`; the segment wizard
+  offers true and false for it, types every other value by its dimension (`'completed'`
+  means the text completed), asks again for a value of the wrong type, offers only
+  entities that can hold a segment and that entity's own metrics, and starts an edit from
+  the saved membership field, so Enter at every prompt keeps a segment it wrote.
+- A segment or query filter value of the wrong type for its dimension fails validation
+  with a recovery hint, and a segment preview the warehouse refuses carries a hint about
+  membership values and dimension kinds.
+- `author model` on a package whose seed files aren't built into its DuckDB file yet
+  names `validate runtime`, which builds it, instead of `dbt build` (a dbt-built package
+  still names `dbt build`).
+- The bundled sample package, installed from a wheel, builds its DuckDB file in
+  `~/.semantic_rails/cache/` (or under `SEMANTIC_RAILS_HOME`), one per installed version,
+  not in `site-packages`.
+  A `site-packages/data/jaffle_shop.duckdb` left by an earlier version, and a folder under
+  `~/.semantic_rails/cache/jaffle_shop/` for a version no longer installed, can be deleted.
+- REPL polish: `author model` recommends the largest unmodeled table and doesn't
+  pre-tick rank or sequence-number columns as summed measures (the Architect's
+  `suggest_model` marks them low confidence); "Model to extend" lists calendars last;
+  the filtered-metric wizard offers true and false for a boolean dimension; the growth
+  recipe's example question plans without a warning, and labels keep MoM, YoY and YTD;
+  `help` lists `help [command]`; `ask` prints its warnings before the rows; and
+  day-or-coarser time buckets print as dates.
+- The semantic layer comparison pack's published Cube SQL excerpts show Cube's generated SQL
+  instead of its first character, and Cube's baseline join count matches its baseline files.
+  Each layer's listed weaknesses now state how its q09 and q15 conversion window's boundaries
+  differ from the stated rule. The Cube runner no longer passes the caller's environment to
+  Cube, the KtX runner caches its wheel in the pack instead of a shared `/tmp` directory and
+  imports only the bytes it checked, and CI fails if Cube's start script loses its dev-server
+  guards.
+- A conversion expression without a supported `matching_mode` now fails with an error that
+  names the parameter, lists `first_converted_after_base` and `closest_converted_after_base`
+  with what each matches, and returns the sent expression with a mode set. The window error
+  lists the supported units. A conversion metric's `inspect` card now shows its own
+  expression under `conversion`, so the same conversion can run over another window, such
+  as 50 minutes instead of 7 days, without a new metric.
+- A conversion metric whose base and converted operands both count the conversion entity
+  itself on the same clock (for example a 90-day repeat-purchase rate counting customers
+  instead of orders) is now rejected by package validation and at query time. Each entity
+  was a single event that converted to itself, so the window never applied and the metric
+  returned the share of entities that ever matched the converted filter. The error names
+  measures that count events keyed by the entity, such as orders.
+- A query on the default calendar no longer fills from another calendar when the package
+  declares only non-default ones (for example only a fiscal calendar). It borrowed that
+  calendar's periods, so fiscal quarters and years missed every Gregorian period and read 0;
+  it now uses the implicit Gregorian calendar. Answers change for such packages, including
+  bounded `fill` windows, which now follow the rule for a calendar whose `date_day` is a
+  `date`. On ClickHouse, which has no implicit calendar, such a query is now refused until the
+  package adds a default calendar.
+- A `distribution` with `time.fill: true` returned wrong values: every entity entered every
+  period as a `0`, so a monthly median or percentile read 0 or too low (for example 3.0
+  instead of 9.0). Such a query is now refused; without fill it answers as before, omitting
+  periods with no data. A `distribution` whose input or metric filter has a `rolling` or
+  `prior_period` window, which counted entities in periods where they had no rows, is refused
+  too. See [docs/QUERY_IR_SCHEMA.md](docs/QUERY_IR_SCHEMA.md).
+- `semantic-rails ls` accepts the REPL's `ls [kind] [search]` form, for example
+  `semantic-rails ls metric revenue`.
+- `author model` warns when the seed files changed after the DuckDB file was built, with
+  the command that rebuilds it, and refuses a typed table name the file lacks.
+- `author model` no longer pre-ticks `_cents` columns as money amounts, which printed cents
+  as dollars.
+- The authoring banner says that typing `cancel` in a list picks an option containing it.
+- The query MCP `discover` schema no longer advertises a `limit` default, so a client that
+  fills in schema defaults gets 100-id pages for empty `terms`, not 10. Two recovery hints that
+  pointed MCP agents at HTTP routes now name `discover`.
+- Query MCP interface v2: `discover` with empty `terms` lists at most 100 ids
+  per kind at a time, so its response stays bounded on large packages. `limit`
+  and `offset` page the ids, and a `DISCOVER_IDS_TRUNCATED` warning says which
+  kinds have more. An unknown tool name on v2 now gets a hint that names only
+  v2 tools, not `validate` and `compile`.
+- `plan` answers "number of customers" and "how many customers" with Customer count. The
+  words "number" and "of" tied it with measures described as "Number of …", and the tie went
+  to Active menu count by label; a measure named for what the question counts, plus "count",
+  now counts as the one the question names.
+- `plan` counts a fiscal question's time on the fiscal calendar. "Revenue by fiscal quarter"
+  came back as Gregorian quarters with status ok, and "vs prior fiscal quarter" was dropped
+  with status ok. With one calendar whose name says fiscal, `plan` puts a question that asks
+  for fiscal buckets ("by fiscal quarter") on it (`time.calendar_id` with `time.fill: true`).
+  Any other fiscal period ("the first fiscal quarter"), or a package without such a calendar,
+  returns `low_confidence` with a `fiscal_calendar_unrealized` gap, and a dropped fiscal
+  comparison is reported like any other. A fiscal question's window resolves only from exact
+  days: "fiscal Q2 2017", "FY2017" and "last fiscal quarter" return `TIME_WINDOW_UNRESOLVED`
+  instead of the Gregorian period of the same name.
+- `plan` with a partial query it can't read (`group_by: [["dimension.x"]]`) returns
+  `INVALID_QUERY` with a recovery hint instead of an internal error, and a select item passed
+  in `query` appears once, under the caller's alias, instead of again under the draft's.
+- When several measures or metrics match a question equally well, `plan` now picks the one
+  the question names: "What is revenue by month?" uses a measure labelled Revenue, not Item
+  Revenue Cents, which used to win on alphabetical order. When the question names none of
+  them (Gross Revenue and Net Revenue for "revenue"), `plan` returns `low_confidence` with a
+  `subject_ambiguous` gap that lists the candidates, and `ask` says which to name.
+- These queries, which a declared rollup can't answer exactly, now run on the base
+  tables instead of returning a wrong number: distinct counts of anything but the
+  single-column row key of a model that isn't a fact model, weekly rollups asked
+  for months, quarters or years, time ranges that don't start and end on the
+  rollup's bucket boundaries (day boundaries for minute and hour rollups), time
+  roles that convert time zones, non-default calendars, rollups that declare their
+  own `filters`, aggregates filtered by a `metric_predicate`, stock
+  (semi-additive) measures, aggregations other than the one a rollup column holds,
+  dimensions pre-joined into a rollup along a join path other than the query's (or
+  with no declared `path`), rollups with a pre-joined column asked a query that
+  doesn't use it, `aggregate_relations:` entries without a `temporal_role`, and
+  measures or time roles read from another model.
+  The logical plan's `aggregate_relation_rejections` says why each rejected rollup
+  wasn't used. The engine still trusts the rollup's author on what it can't see
+  in the tables: a weekly rollup is built on Monday-start weeks, a pre-joined
+  column is built with an inner join as the base path joins it, and a declared
+  distinct count has one row per time bucket and dimension.
+
 ## 0.3.1 — 2026-09-25 — Honest plans, clock-safe metrics and a REPL calendar
 
 **Upgrading from 0.3.0:** validation and planning are stricter; run `project validate --mode parse`
