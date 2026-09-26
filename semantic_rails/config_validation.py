@@ -29,6 +29,7 @@ from .compiler import (
     _requires_query_time,
     compile_query,
 )
+from .compiler_parts.sql_lowering import _stock_clock_key_gap
 from .config import (
     SEED_KIND_EXTERNAL,
     _merge_package_dir,
@@ -1305,6 +1306,30 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
             )
         for warning in list(getattr(measure, "authoring_warnings", []) or []):
             warnings.append(f"{prefix}: {warning}")
+        # One warning per stock; an as-of gap (the one whose queries refuse) wins.
+        gaps = [
+            gap
+            for role_id in dict.fromkeys(measure.compatible_temporal_roles or [])
+            if (gap := _stock_clock_key_gap(measure, role_id, config))
+        ]
+        gap = min(gaps, key=lambda row: row["clock_class"] != "as_of_time", default={})
+        if gap:
+            refusal = (
+                "Its queries on that clock are refused."
+                if gap["clock_class"] == "as_of_time"
+                else "Ignore this only if the table holds one row per series (current state)."
+            )
+            warnings.append(
+                _error_payload(
+                    "STOCK_SNAPSHOT_KEY_MISSING_CLOCK",
+                    f"{prefix} is a stock on the {gap['clock_class']} clock "
+                    f"{gap['clock_column']!r}, but its key {gap['row_key']} doesn't contain that "
+                    "column: each key value counts as its own series, so if the table keeps "
+                    "several snapshots of a series, a coarser grain sums them. "
+                    f"{gap['fix']} {refusal}",
+                    details=gap,
+                )
+            )
         if not str(meta.get("owner_team", "") or "").strip():
             warnings.append(f"{prefix} should declare meta.owner_team")
         if not str(meta.get("review_priority", "") or "").strip():

@@ -202,6 +202,80 @@ def _measure_owned_key_columns(measure, entities, temporal_roles, dimensions) ->
     return list(entity.key or [entity.primary_key])
 
 
+def _stock_row_key(measure, config: PackageConfig) -> list[str]:
+    """The row key a stock's series come from: its declared grain, else its entity's key."""
+    return [column for column in list(measure.row_grain or []) if column] or [
+        column
+        for column in _measure_owned_key_columns(
+            measure, _entity_index(config), _temporal_role_index(config), _dimension_index(config)
+        )
+        if column
+    ]
+
+
+def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) -> dict[str, Any]:
+    """Why a stock measure's row key can't tell its snapshots apart on this clock, or ``{}``.
+
+    A snapshot table holds one row per series per snapshot, so its key is the series
+    columns plus the snapshot time. A key without the clock's column (a surrogate
+    such as ``repo@2026-09-26``) makes every row its own series, and a grain coarser
+    than the snapshots then sums them. A one-row-per-series current-state table has
+    the same shape and is right, so only the caller decides whether to refuse. A
+    clock on another model isn't checked here.
+    """
+    if measure.measure_class != "semi_additive" or not temporal_role_id:
+        return {}
+    role = _temporal_role_index(config).get(temporal_role_id)
+    clock = _dimension_index(config).get(role.dimension) if role is not None else None
+    if role is None or clock is None or clock.entity != measure.entity:
+        return {}
+    key = _stock_row_key(measure, config)
+    if not key or clock.column in key:
+        return {}
+    return {
+        "measure_id": measure.id,
+        "temporal_role": temporal_role_id,
+        "clock_column": clock.column,
+        "clock_class": role.temporal_class,
+        "row_key": key,
+        "fix": "Key the entity by the series columns plus its snapshot time, "
+        "e.g. key: [store_id, date_day].",
+    }
+
+
+def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConfig) -> list[str]:
+    """The columns that identify one snapshot series of a stock measure.
+
+    That is its row key without the ordering time column. The time column never
+    belongs in the series key: partitioning "last snapshot per key" by the
+    snapshot's own time makes every snapshot its own group, so the final combine
+    sums a stock across periods. An empty result means the series is keyed by time
+    alone (one snapshot per day), a valid singleton series.
+    """
+    order_column = ""
+    if temporal_role_id:
+        role = _temporal_role_index(config)[temporal_role_id]
+        order_column = _dimension_index(config)[role.dimension].column
+    key = _stock_row_key(measure, config)
+    if not key:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", f"Semi-additive measure '{measure.id}' requires a row grain"
+        )
+    gap = _stock_clock_key_gap(measure, temporal_role_id, config)
+    if gap.get("clock_class") == "as_of_time":
+        # An as-of clock declares a snapshot table, so a key without it is never a
+        # current-state table: refuse rather than sum every snapshot in a bucket.
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Stock measure '{measure.id}' takes the last snapshot per key on the as-of "
+            f"clock {gap['clock_column']!r}, but its key {gap['row_key']} doesn't contain "
+            f"that column, so each snapshot would count as its own series and be summed. "
+            f"{gap['fix']}",
+            details=gap,
+        )
+    return [column for column in key if column != order_column]
+
+
 def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:
     """Wrap a temporal role's raw column expression with a timezone conversion
     when the role's ``column_timezone`` is set and differs from ``timezone``.
@@ -1916,29 +1990,12 @@ def _measure_leaf_select(
                 "INVALID_TEMPORAL_ROLE",
                 f"{measure_plan.bound_measure.aggregation} requires an ordering temporal role",
             )
-        order_column = ""
-        if measure_plan.bound_measure.temporal_role:
-            order_role = temporal_roles[measure_plan.bound_measure.temporal_role]
-            order_column = dimensions[order_role.dimension].column
-        declared_columns = [column for column in list(measure.row_grain or []) if column]
-        fallback_columns = _measure_owned_key_columns(measure, entities, temporal_roles, dimensions)
-        # The ordering time column is never part of the snapshot row key:
-        # partitioning "last snapshot per key" by the snapshot's own time
-        # makes every snapshot its own group, so the final combine sums a
-        # stock across periods. An empty result means the series is keyed
-        # by time alone (one snapshot per day) — a valid singleton series.
-        row_grain_columns = [column for column in declared_columns if column != order_column]
-        if not row_grain_columns:
-            row_grain_columns = [column for column in fallback_columns if column != order_column]
         row_grain_exprs = [
             _column_ref(_measure_owned_relation(measure, entities), column)
-            for column in row_grain_columns
-            if column
-        ]
-        if not row_grain_exprs and not declared_columns and not fallback_columns:
-            raise SemanticLayerError(
-                "INVALID_CONFIG", f"Semi-additive measure '{measure.id}' requires a row grain"
+            for column in _snapshot_series_columns(
+                measure, measure_plan.bound_measure.temporal_role, config
             )
+        ]
         window_choice = measure_plan.bound_measure.aggregation
         if window_choice not in {"first_value", "last_value"}:
             window_choice = (
@@ -2098,20 +2155,9 @@ def _snapshot_select_fields(
     order_role = temporal_roles[measure_plan.bound_measure.temporal_role]
     order_dim = dimensions[order_role.dimension]
     order_expr = _column_ref(_measure_dim_relation(measure, order_dim, entities), order_dim.column)
-    order_column = order_dim.column
-    row_grain_columns = [
-        column for column in list(measure.row_grain or []) if column and column != order_column
-    ]
-    if not row_grain_columns:
-        # Exclude the ordering time column from the fallback too: a series
-        # keyed by time alone is a singleton snapshot series, and keeping
-        # the time column in the partition would defeat the last/first
-        # snapshot reduction (see _semi_additive_leaf_select).
-        row_grain_columns = [
-            column
-            for column in _measure_owned_key_columns(measure, entities, temporal_roles, dimensions)
-            if column and column != order_column
-        ]
+    row_grain_columns = _snapshot_series_columns(
+        measure, measure_plan.bound_measure.temporal_role, config
+    )
     row_grain_exprs = [_column_ref(source_table, column) for column in row_grain_columns]
 
     fields_by_alias: dict[str, Any] = {}
