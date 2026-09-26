@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from .api_keys import api_key_auth_result
+from .audit import emit_audit_event
 from .http_core import (
     CORS_ALLOW_HEADERS,
     SemanticHTTPService,
@@ -31,7 +32,7 @@ from .http_core import (
 )
 from .mcp import SemanticLayerMCPAdapter
 from .mcp_streamable_http import MCP_MAX_REQUEST_BYTES, handle_streamable_http_request
-from .request_context import emit_audit_event, get_policy_context_resolver
+from .request_context import get_policy_context_resolver
 from .runtime import Runtime
 
 Receive = Callable[[], Awaitable[dict[str, Any]]]

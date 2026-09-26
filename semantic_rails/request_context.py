@@ -1,21 +1,17 @@
-"""Request context and the audit sink protocol.
+"""Request context and its resolvers.
 
 Defines :class:`RequestContext` (actor, tenant, project, roles,
 environment, audience, request_id, host-only :class:`TrustedAttributes`)
 and the helpers that resolve it from headers, JSON payloads, or a
-pluggable :class:`PolicyContextResolver`. Also owns :func:`emit_audit_event` —
-the single hook every governed write/read funnels through so hosts can
-plug in an :class:`AuditSink`. API-key auth lives in
-:mod:`semantic_rails.api_keys`; its names are re-exported here.
+pluggable :class:`PolicyContextResolver`. API-key auth lives in
+:mod:`semantic_rails.api_keys` and the audit sink in :mod:`semantic_rails.audit`;
+their public names are re-exported here until 0.3.3.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import sys
-import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from types import MappingProxyType
@@ -27,6 +23,14 @@ from .api_keys import (  # noqa: F401 — API-key names are re-exported from the
     api_key_auth_result,
     configured_api_keys,
     extract_bearer_or_api_key,
+)
+from .audit import (  # noqa: F401 — audit names are re-exported from their old home
+    AuditSink,
+    StderrAuditSink,
+    audit_logging_enabled,
+    emit_audit_event,
+    get_audit_sink,
+    set_audit_sink,
 )
 
 CONTEXT_FIELDS = ("actor", "tenant", "project", "roles", "environment", "audience")
@@ -357,85 +361,6 @@ def merge_policy_context(
     for key, value in context.to_policy_context().items():
         policy_context[key] = value
     return policy_context
-
-
-def audit_logging_enabled() -> bool:
-    return os.environ.get("SEMANTIC_RAILS_AUDIT_LOGS", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-_AUDIT_SECRET_KEYS = frozenset(
-    {"authorization", "api_key", "password", "token", "secret", "private_key"}
-)
-
-
-@runtime_checkable
-class AuditSink(Protocol):
-    """Pluggable destination for audit events.
-
-    The default `StderrAuditSink` writes JSON lines to stderr, suitable
-    for local dev and container deployments that ship stderr to a log
-    aggregator. Hosted deployments will typically want a structured sink
-    (JSON over Kafka, OpenTelemetry, an HTTP collector, etc.). The
-    protocol is the integration seam — implementations receive an
-    already-scrubbed payload (no `authorization`, `api_key`, etc.).
-    """
-
-    def emit(self, payload: dict[str, Any]) -> None: ...
-
-
-class StderrAuditSink:
-    """Default `AuditSink`: write JSON-encoded events to stderr.
-
-    Suitable for the OSS standalone experience and for container
-    deployments where stderr is shipped to a log aggregator. Hosted
-    operators replace this with a structured sink via
-    `set_audit_sink(...)`.
-    """
-
-    def emit(self, payload: dict[str, Any]) -> None:
-        print(json.dumps(payload, sort_keys=True, default=str), file=sys.stderr, flush=True)
-
-
-_audit_sink: AuditSink = StderrAuditSink()
-
-
-def get_audit_sink() -> AuditSink:
-    """Return the active `AuditSink`."""
-    return _audit_sink
-
-
-def set_audit_sink(sink: AuditSink) -> None:
-    """Install a process-wide `AuditSink`. Hosted deployments call this
-    once at startup to route audit events into a structured pipeline.
-    """
-    global _audit_sink
-    if not hasattr(sink, "emit"):
-        raise TypeError("AuditSink must implement .emit(payload)")
-    _audit_sink = sink
-
-
-def emit_audit_event(event: str, **payload: Any) -> None:
-    if not audit_logging_enabled():
-        return
-    safe_payload = {
-        "event": event,
-        "ts": round(time.time(), 3),
-        **{key: value for key, value in payload.items() if key not in _AUDIT_SECRET_KEYS},
-    }
-    try:
-        _audit_sink.emit(safe_payload)
-    except Exception:  # noqa: BLE001 — never block a request on audit failure
-        # Fall back to stderr so a misconfigured sink can't silence audit.
-        print(
-            json.dumps(safe_payload, sort_keys=True, default=str),
-            file=sys.stderr,
-            flush=True,
-        )
 
 
 def request_context_payload(context: RequestContext | Mapping[str, Any] | None) -> dict[str, Any]:

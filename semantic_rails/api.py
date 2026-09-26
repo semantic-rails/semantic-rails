@@ -20,6 +20,7 @@ from http.server import ThreadingHTTPServer as HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .audit import emit_audit_event
 from .http_core import (
     API_VERSION,
     CORS_ALLOW_HEADERS,
@@ -32,7 +33,7 @@ from .http_core import (
     public_api_route,
     request_id_from_parts,
 )
-from .request_context import emit_audit_event, warn_if_default_policy_resolver_exposed
+from .request_context import warn_if_default_policy_resolver_exposed
 from .runtime import Runtime
 
 __all__ = ["API_VERSION", "CORS_ALLOW_HEADERS", "PUBLIC_V1_ROUTES", "AppState", "Handler", "serve"]

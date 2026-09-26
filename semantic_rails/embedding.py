@@ -8,6 +8,14 @@ particular hosting product.
 
 from __future__ import annotations
 
+from .audit import (
+    AuditSink,
+    StderrAuditSink,
+    audit_logging_enabled,
+    emit_audit_event,
+    get_audit_sink,
+    set_audit_sink,
+)
 from .cache import CachedCompilation, CompiledSqlCache, LruCompiledSqlCache
 from .config_validation import (
     PackageReference,
@@ -50,19 +58,14 @@ from .mcp_server import MCP_PROTOCOL_VERSION, handle_jsonrpc_message
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .package_tools import run_package_tests_report
 from .request_context import (
-    AuditSink,
     HeaderPolicyContextResolver,
     PolicyContextResolver,
     RequestContext,
-    StderrAuditSink,
     TrustedAttributes,
     context_from_headers,
     context_from_policy_context,
-    emit_audit_event,
-    get_audit_sink,
     get_policy_context_resolver,
     request_context_payload,
-    set_audit_sink,
     set_policy_context_resolver,
 )
 from .runtime import Runtime
@@ -103,6 +106,7 @@ __all__ = [
     "TrustedAttributes",
     "WarehouseAdapter",
     "WarehouseConnectorSpec",
+    "audit_logging_enabled",
     "context_from_headers",
     "context_from_policy_context",
     "create_duckdb_adapter",
