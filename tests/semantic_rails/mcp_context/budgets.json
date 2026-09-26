@@ -29,7 +29,7 @@
   "query.v2.default.segment_preview_tokens": 2368,
   "query.v2.default.segment_validate_tokens": 479,
   "query.v2.default.valid_values_tokens": 265,
-  "query.v2.instructions_tokens": 285,
+  "query.v2.instructions_tokens": 362,
   "query.v2.session.by_the_book.max_step_structured_tokens": 2349,
   "query.v2.session.by_the_book.structured_tokens": 10913,
   "query.v2.session.by_the_book.text_tokens": 10913,

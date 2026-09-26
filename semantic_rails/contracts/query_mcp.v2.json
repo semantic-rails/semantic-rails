@@ -498,7 +498,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Draft Query IR from the question; call it before 'execute' instead of writing Query IR from scratch. Returns status (ok, low_confidence, unrealizable or out_of_scope), best.query_ir, and why or warnings naming what the draft doesn't honor. detail 'best' or 'full' adds the trace and alternatives. Gotcha: execute best.query_ir only when status is ok and there are no warnings.",
+      "description": "Draft Query IR from the question; call it before 'execute' instead of writing Query IR from scratch. Returns status (ok, low_confidence, unrealizable or out_of_scope), best.query_ir, and why or warnings naming what the draft doesn't honor. detail 'best' adds intent_ir and the trace, 'full' alternatives and blocked drafts, 'debug' compose_hints. Gotcha: execute best.query_ir only when status is ok and there are no warnings.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {

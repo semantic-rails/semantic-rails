@@ -135,8 +135,13 @@ MCP_SERVER_INSTRUCTIONS = (
     "the package can't answer.\n"
     "3. execute(query) runs it and returns at most max_rows rows (truncated says more remain).\n"
     "\n"
-    "time.end is exclusive. A window without time.grain returns one row per raw timestamp; "
-    'a grain whose bucket covers the window returns one total. Filter several values with op "in". '
+    "Query IR composes variants at query time, with no model change: select measures (any "
+    "allowed aggregation) or metrics, or expressions such as prior_period, rolling, cumulative, "
+    "ratio, conversion or aggregate_if (shapes: see execute); group_by dimension ids; where "
+    'filters (op "in" for several values); time {temporal_role, grain, start, end}. time.end '
+    "is exclusive. A window without time.grain returns one row per raw timestamp; a grain "
+    "whose bucket covers the window returns one total.\n"
+    "\n"
     "segment(segment_id, action) checks or previews a package-authored segment. Errors carry "
     "recovery_hints; follow them before retrying. For local testing, any tool accepts "
     "policy_context {environment, audience, roles}; hosted servers set it for you."
@@ -509,7 +514,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "Draft Query IR from the question; call it before 'execute' instead of writing "
             "Query IR from scratch. Returns status (ok, low_confidence, unrealizable or "
             "out_of_scope), best.query_ir, and why or warnings naming what the draft doesn't "
-            "honor. detail 'best' or 'full' adds the trace and alternatives. Gotcha: execute "
+            "honor. detail 'best' adds intent_ir and the trace, 'full' alternatives and blocked "
+            "drafts, 'debug' compose_hints. Gotcha: execute "
             "best.query_ir only when status is ok and there are no warnings."
         ),
         input_schema=_schema(
