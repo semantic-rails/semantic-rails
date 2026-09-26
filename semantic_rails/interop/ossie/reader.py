@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from collections import defaultdict
 from dataclasses import fields, is_dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -358,6 +358,9 @@ class _Importer:
             rel_id = self.sr_id("relationships", name, f"relationship.{_slug(name)}")
             if (self.residual("relationships", rel_id) or {}).get("cardinality") == "1:N":
                 ends, columns = ends[::-1], columns[::-1]  # the export writes 1:N joins reversed
+            elif not self.sidecar and set(columns[1]) != set(self.rows["entities"][ends[1]]["key"]):
+                self.skip("relationships not to their target's primary key", name)  # maybe not N:1
+                continue
             document: dict[str, Any] = {"source_entity": ends[0], "target_entity": ends[1]}
             document["aliases"] = _synonyms(node)
             document.update(source_column=columns[0][0], source_columns=columns[0])
@@ -432,6 +435,10 @@ class _Importer:
         self.read_datasets()
         self.read_relationships()
         self.read_metrics()
+        if self.sidecar and self.warnings:  # the export writes nothing an import skips
+            raise ValueError(
+                _stale([f"{c}: {', '.join(i)}" for c, i in sorted(self.warnings.items())])
+            )
         objects = dict(self.objects)
         residual = dict(objects.pop("package", None) or {}).get(identity.get("id")) or {}
         # Deployment isn't part of the export; the import sets it, never the sidecar.
@@ -472,6 +479,11 @@ class _Importer:
         return PackageConfig(version=int(identity.get("schema_version", 1)), package=meta, **built)
 
 
+def _stale(edits: list[str]) -> str:
+    listed = "; ".join(edits)
+    return f"it doesn't match its sidecar ({listed}); import the document alone or export again"
+
+
 def _changed(old: Any, new: Any, path: str, depth: int) -> list[str]:
     if depth and isinstance(old, dict) and isinstance(new, dict):
         keys = sorted(old.keys() | new.keys())
@@ -493,17 +505,22 @@ def _by_name(model: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _round_trip(directory: Path, model: dict[str, Any], sidecar: dict[str, Any]) -> list[str]:
-    """Where an export of the written package differs from the imported document and sidecar."""
+def _round_trip(
+    directory: Path, model: dict[str, Any], sidecar: dict[str, Any], source: Path
+) -> None:
+    """Refuse unless an export of the written package gives back the document and sidecar."""
     document, again = export_ossie(load_package_snapshot(str(directory)))
     kept = ("package", "names", "objects", "expressions")
     old, new = (
         {k: sidecar.get(k) for k in kept},
         json.loads(json.dumps({k: again.get(k) for k in kept})),
     )
-    return _changed(
+    differences = _changed(
         _by_name(model), _by_name(document["semantic_model"][0]), "document", 2
     ) + _changed(old, new, "sidecar", 3)
+    if differences:
+        message = f"{source}: can't import it ({_stale(differences)})"
+        raise SemanticLayerError("INVALID_CONFIG", message, details={"differences": differences})
 
 
 def import_ossie(
@@ -533,16 +550,14 @@ def import_ossie(
         ) != ("semantic_rails.ossie_sidecar", SIDECAR_FORMAT_VERSION):
             raise ValueError(f"{sidecar_path} is not a version-1 Semantic Rails sidecar")
         importer = _Importer(document, sidecar)
-        identity = str(dict(importer.sidecar.get("package") or {}).get("id") or "")
-        if sidecar is not None and package_id not in ("", identity):
-            raise ValueError(f"with its sidecar, the package id is {identity!r}")
+        identity = dict(importer.sidecar.get("package") or {})
+        for key, given in (("id", package_id), ("namespace", namespace)):
+            if sidecar is not None and given not in ("", str(identity.get(key) or "")):
+                raise ValueError(f"with its sidecar, the package {key} is {identity.get(key)!r}")
         # A sidecar describes the document as exported; one edited since would mix the two.
         mismatch = importer.mismatch() if sidecar is not None else []
         if mismatch:
-            raise ValueError(
-                f"it doesn't match its sidecar ({'; '.join(mismatch)}); "
-                "import the document alone or export again"
-            )
+            raise ValueError(_stale(mismatch))
         config = importer.package(package_id, namespace)
     except (AttributeError, KeyError, OSError, TypeError, ValueError, yaml.YAMLError) as exc:
         raise SemanticLayerError("INVALID_CONFIG", f"{source}: can't import it ({exc})") from exc
@@ -559,9 +574,14 @@ def import_ossie(
         message = f"Importing a {meta.warehouse} package isn't supported yet"
         raise SemanticLayerError("INVALID_CONFIG", message)
     config = replace(config, package=meta)
+    # With a sidecar, exporting what was written must give back the files that were read.
+    check = partial(_round_trip, model=importer.model, sidecar=importer.sidecar, source=source)
     try:
         directory = write_package(
-            config, Path(output_dir).expanduser() / pid, namespace=importer.ns
+            config,
+            Path(output_dir).expanduser() / pid,
+            namespace=importer.ns,
+            check=None if sidecar is None else check,
         )
     except (
         AttributeError,
@@ -570,20 +590,6 @@ def import_ossie(
         ValueError,
     ) as exc:  # a sidecar at odds with itself
         raise SemanticLayerError("INVALID_CONFIG", f"{source}: can't import it ({exc!r})") from exc
-    if sidecar is not None:  # exporting what was written must give back the files that were read
-        try:
-            differences = _round_trip(directory, importer.model, sidecar)
-        except Exception:
-            shutil.rmtree(directory, ignore_errors=True)
-            raise
-        if differences:
-            shutil.rmtree(directory, ignore_errors=True)
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{source} doesn't match its sidecar; import the document alone or export again: "
-                + "; ".join(differences),
-                details={"differences": differences},
-            )
     report: dict[str, Any] = {"ok": True, "format": "ossie", "ossie_version": version}
     report["package_dir"] = str(directory)
     report["sidecar"] = str(sidecar_path) if sidecar is not None else None

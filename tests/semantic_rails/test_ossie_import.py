@@ -168,6 +168,13 @@ def _without_dataset(document: dict, name: str) -> None:
             lambda text: _edited(text, lambda d: _without_dataset(d, "jaffle_customer_history")),
             "datasets jaffle_customer_history (not in the document)",
         ),
+        (  # every name still matches, but the import would skip the dataset
+            "shop_starter",
+            lambda text: _edited(
+                text, lambda d: d["semantic_model"][0]["datasets"][0].pop("primary_key")
+            ),
+            "datasets without a primary key or defined by a query: ",
+        ),
     ],
 )
 def test_a_document_edited_after_the_export_is_refused(package_id, edit, named, tmp_path):
@@ -176,7 +183,7 @@ def test_a_document_edited_after_the_export_is_refused(package_id, edit, named, 
     with pytest.raises(SemanticLayerError, match="match its sidecar") as caught:
         import_ossie(document, tmp_path / "imported")
     assert named in str(caught.value)
-    assert not (tmp_path / "imported" / package_id).exists()
+    assert not (tmp_path / "imported").exists()
 
 
 def _edited(text: str, change) -> str:
@@ -216,6 +223,17 @@ def _sidecar(document: Path) -> Path:
             ),
             "Importing a databricks package isn't supported yet",
         ),
+        (
+            lambda doc, side: (
+                side.unlink(),
+                doc.write_text(
+                    doc.read_text()
+                    .replace("ANSI_SQL", "SNOWFLAKE", 1)
+                    .replace("ANSI_SQL", "DATABRICKS", 1)
+                ),
+            ),
+            "expressions for more than one warehouse",
+        ),
     ],
 )
 def test_input_it_cannot_read_is_refused_with_a_typed_error(edit, message, tmp_path) -> None:
@@ -226,10 +244,17 @@ def test_input_it_cannot_read_is_refused_with_a_typed_error(edit, message, tmp_p
     assert not (tmp_path / "imported").exists()
 
 
-def test_with_its_sidecar_the_package_keeps_its_id(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("given", "message"),
+    [
+        ({"package_id": "shop_copy"}, "the package id is 'shop_starter'"),
+        ({"namespace": "store"}, "the package namespace is 'shop'"),
+    ],
+)
+def test_with_its_sidecar_the_package_keeps_its_id(given, message, tmp_path) -> None:
     document = _export(PACKAGES["shop_starter"], tmp_path / "ossie")
-    with pytest.raises(SemanticLayerError, match="the package id is 'shop_starter'"):
-        import_ossie(document, tmp_path / "imported", package_id="shop_copy")
+    with pytest.raises(SemanticLayerError, match=message):
+        import_ossie(document, tmp_path / "imported", **given)
     assert not (tmp_path / "imported").exists()
 
 
@@ -245,6 +270,7 @@ datasets:
     fields:
       - {name: order_id, dimension: {}, expression: {dialects: [{dialect: ANSI_SQL, expression: order_id}]}}
       - {name: ordered_at, datatype: timestamp, dimension: {}, expression: {dialects: [{dialect: ANSI_SQL, expression: ordered_at}]}}
+      - {name: ordered_on, datatype: date, dimension: {}, expression: {dialects: [{dialect: ANSI_SQL, expression: ordered_on}]}}
       - {name: status_code, dimension: {}, expression: {dialects: [{dialect: ANSI_SQL, expression: UPPER(status)}]}}
       - {name: customer_id, dimension: {}, expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}}
       - {name: amount, expression: {dialects: [{dialect: ANSI_SQL, expression: amount_cents / 100.0}]}}
@@ -260,6 +286,7 @@ datasets:
 relationships:
   - {name: orders_customer, from: orders, to: customers, from_columns: [customer_id], to_columns: [customer_id]}
   - {name: recent_customer, from: recent, to: customers, from_columns: [customer_id], to_columns: [customer_id]}
+  - {name: orders_by_email, from: orders, to: customers, from_columns: [email], to_columns: [email]}
 metrics:
   - {name: revenue, expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(orders.amount)}]}}
   - {name: order_count, expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(DISTINCT orders.orders)}]}}
@@ -285,6 +312,7 @@ def test_a_foreign_0_2_document_imports_what_it_can_and_counts_the_rest(tmp_path
             "dimension.shop_orders_customer_id",
             "dimension.shop_orders_order_id",
             "dimension.shop_orders_ordered_at",
+            "dimension.shop_orders_ordered_on",
         ],
         "dimensions with computed expressions": ["orders.status_code"],
         "facts outside the supported expression grammar": ["orders.big"],
@@ -294,13 +322,19 @@ def test_a_foreign_0_2_document_imports_what_it_can_and_counts_the_rest(tmp_path
         "metrics summing a field other metrics count distinct": ["max_orders"],
         "names that collide once normalized": ["entity.shop_customers", "metric.shop.revenue"],
         "model ai_context text": ["shop"],
+        "relationships not to their target's primary key": ["orders_by_email"],
         "relationships to datasets not imported": ["recent_customer"],
-        "temporal roles with default grains": ["temporal_role.shop_orders_ordered_at"],
+        "temporal roles with default grains": [
+            "temporal_role.shop_orders_ordered_at",
+            "temporal_role.shop_orders_ordered_on",
+        ],
     }
     config = load_package_snapshot(report["package_dir"]).config
     assert {d.label for d in config.dimensions if d.entity == "entity.shop_customers"} == {
         "Customer Id"
     }
+    kinds = {d.name: d.semantic_kind for d in config.dimensions if d.name.startswith("ordered")}
+    assert kinds == {"ordered_at": "timestamp", "ordered_on": "date"}
     assert {m.id: m.kind for m in config.metric_recipes} == {
         "metric.shop.aov": "ratio",
         "metric.shop.order_count": "aggregate",

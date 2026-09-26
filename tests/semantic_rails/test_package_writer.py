@@ -12,7 +12,12 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.meta_contract import load_meta_contract
 from semantic_rails.operational import load_operational_contract
-from semantic_rails.schema import AggregateRelationConfig, RelationConfig
+from semantic_rails.schema import (
+    AggregateRelationConfig,
+    PathPolicyConfig,
+    PathPreferenceConfig,
+    RelationConfig,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGES = [
@@ -30,7 +35,10 @@ def test_written_package_loads_back_identical_and_validates_alike(package, tmp_p
     directory = tmp_path / snapshot.config.package.package_id
     namespace = snapshot.normalized["package"]["namespace"]
     assert write_package(snapshot.config, directory, namespace=namespace) == directory
-    assert load_package_snapshot(directory).semantic == snapshot.semantic
+    loaded = load_package_snapshot(directory)
+    assert (loaded.semantic, loaded.config.package) == (snapshot.semantic, snapshot.config.package)
+    # No source authors suggested aggregations, so the derived ones aren't written either.
+    assert not any("suggested_aggregations" in p.read_text() for p in directory.rglob("*.yml"))
     # The written directory passes the same validation as its source: the comparison package
     # carries one pre-existing error (a date dimension without a temporal role), kept as is.
     original = [e.replace(str(package), "<pkg>") for e in validate_runtime_package(package)]
@@ -38,7 +46,7 @@ def test_written_package_loads_back_identical_and_validates_alike(package, tmp_p
     assert written == original
 
 
-def test_contracts_that_measure_payloads_follow_are_written(tmp_path) -> None:
+def test_contracts_path_policy_and_authored_values_are_written(tmp_path) -> None:
     config = STARTER.config
     operational = {"operational": {"measure": {"fields": {"owner": {"type": "string"}}}}}
     meta = {"meta": {"measure": {"fields": {"owner_team": {"type": "string"}}}}}
@@ -47,16 +55,21 @@ def test_contracts_that_measure_payloads_follow_are_written(tmp_path) -> None:
         operational_contract=load_operational_contract(operational, path="test"),
         meta_contract=load_meta_contract(meta, path="test"),
         measures=[
-            replace(config.measures[0], operational={"owner": "sales"}),
+            replace(
+                config.measures[0], operational={"owner": "sales"}, suggested_aggregations=["max"]
+            ),
             *config.measures[1:],
         ],
+        path_policy=PathPolicyConfig(max_hops=6),
     )
     directory = write_package(config, tmp_path / "shop_starter", namespace="shop")
     loaded = load_package_snapshot(directory).config
-    assert (loaded.operational_contract, loaded.meta_contract) == (
+    assert (loaded.operational_contract, loaded.meta_contract, loaded.path_policy) == (
         config.operational_contract,
         config.meta_contract,
+        config.path_policy,
     )
+    assert loaded.measures[0].suggested_aggregations == ["max"]
 
 
 def _relation_pipeline(config):
@@ -86,6 +99,19 @@ def _relation_pipeline(config):
             lambda c: {"metric_recipes": [c.metric_recipes[0], *c.metric_recipes]},
             ["metric_recipes"],
         ),
+        (
+            lambda c: {"path_preferences": [PathPreferenceConfig("entity.a", "entity.b", ["r"])]},
+            ["path_preferences"],
+        ),
+        # Deployment settings are compared too: an empty `null_strings` loads back as the default.
+        (
+            lambda c: {
+                "package": replace(c.package, seed=replace(c.package.seed, null_strings=[]))
+            },
+            ["package seed"],
+        ),
+        # A package that doesn't load back is refused the same way.
+        (lambda c: {"package": replace(c.package, default_db="../shop.duckdb")}, ["package"]),
     ],
 )
 def test_what_does_not_come_back_is_refused_by_name(changes, refused, tmp_path) -> None:
@@ -97,9 +123,9 @@ def test_what_does_not_come_back_is_refused_by_name(changes, refused, tmp_path) 
     else:
         config = replace(STARTER.config, **changes(STARTER.config))
     with pytest.raises(SemanticLayerError) as caught:
-        write_package(config, tmp_path / "shop_starter", namespace="shop")
+        write_package(config, tmp_path / "out/shop_starter", namespace="shop")
     assert set(refused) <= set(caught.value.details["objects"]), caught.value.details
-    assert not (tmp_path / "shop_starter").exists()
+    assert not (tmp_path / "out").exists()  # nor the parent directory it created
 
 
 def test_write_package_refuses_an_existing_directory(tmp_path) -> None:

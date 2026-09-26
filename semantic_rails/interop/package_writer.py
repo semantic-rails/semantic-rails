@@ -5,19 +5,27 @@ the compact authoring form that ``schema_strict`` packages must use. This writer
 way: each object in the keys the loader reads, leaving out what the loader derives anyway. It
 then loads the directory back, and refuses (removing it) unless every object comes back the
 same, naming the ones that don't: relation pipelines, aggregate relations and path preferences
-aren't written yet. Deployment settings (connection, seed, default database) are written as
-they are, so relative paths resolve against the new directory.
+aren't written yet. Deployment settings (connection, seed, default database) are written and
+compared as they are: relative paths in them aren't rebased, so they name files in the new
+directory, which the caller supplies.
 """
 
 from __future__ import annotations
 
+import contextlib
 import shutil
+from collections.abc import Callable
 from dataclasses import MISSING, fields
 from pathlib import Path
 from typing import Any
 
 from ..architect_scaffold import dump_project_yaml
-from ..config import _default_topics, _derive_measure_semantics, load_package_snapshot
+from ..config import (
+    _default_topics,
+    _derive_measure_semantics,
+    _suggested_aggregations,
+    load_package_snapshot,
+)
 from ..config_parts.package_loader import _slug
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
@@ -175,6 +183,11 @@ class _Writer:
                     spec[name] = getattr(measure, name)
             if measure.topics == _default_topics(measure.name, fallback=model_key):
                 spec.pop("topics", None)
+            suggested = _suggested_aggregations(
+                measure.default_aggregation, measure.allowed_aggregations, measure.measure_class
+            )
+            if measure.suggested_aggregations == suggested:  # the loader derives it
+                spec.pop("suggested_aggregations", None)
             if not self.config.package.schema_strict:
                 spec["publish"] = False  # every metric is written out explicitly
             model.setdefault("measures", {})[key] = spec
@@ -276,28 +289,54 @@ def package_documents(config: PackageConfig, *, namespace: str) -> dict[str, dic
     return _Writer(config, namespace).documents()
 
 
-def write_package(config: PackageConfig, directory: str | Path, *, namespace: str) -> Path:
+def write_package(
+    config: PackageConfig,
+    directory: str | Path,
+    *,
+    namespace: str,
+    check: Callable[[Path], None] | None = None,
+) -> Path:
     """Write ``config`` into ``directory``, which must not exist yet, and load it back. Unless it
-    loads to the same objects, remove the directory and raise INVALID_CONFIG naming them. The
-    comparison leaves out deployment settings (connection, seed, default database)."""
+    loads to the same objects and deployment settings, and ``check(directory)`` (when given)
+    returns, remove it and the parent directories it created, and raise: INVALID_CONFIG naming
+    what differs, or what ``check`` raised."""
     rendered = {
         path: dump_project_yaml(document)
         for path, document in package_documents(config, namespace=namespace).items()
     }
-    root = Path(directory).expanduser()
+    root = created = Path(directory).expanduser()
+    while not created.parent.exists():
+        created = created.parent
     root.mkdir(parents=True)  # FileExistsError when it already exists
     try:
         for relative, text in rendered.items():
             (root / relative).parent.mkdir(parents=True, exist_ok=True)
             (root / relative).write_text(text, encoding="utf-8")
-        differences = _differences(semantic_payload(config), load_package_snapshot(root).semantic)
+        try:
+            loaded = load_package_snapshot(root)
+        except SemanticLayerError as exc:  # e.g. a default database outside the package
+            message = f"The written package doesn't load: {exc}"
+            raise SemanticLayerError(
+                "INVALID_CONFIG", message, details={"objects": ["package"]}
+            ) from exc
+        differences = _differences(semantic_payload(config), loaded.semantic)
+        differences += [
+            f"package {name}"
+            for name in ("connection", "seed", "default_db")
+            if getattr(config.package, name) != getattr(loaded.config.package, name)
+        ]
         if differences:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"The package can't be written back exactly yet: {'; '.join(differences)}",
                 details={"objects": differences},
             )
+        if check is not None:
+            check(root)
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)
+        for parent in root.parents[: len(root.parts) - len(created.parts)]:
+            with contextlib.suppress(OSError):  # a parent it created, unless no longer empty
+                parent.rmdir()
         raise
     return root
