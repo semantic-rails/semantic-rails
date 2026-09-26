@@ -100,3 +100,28 @@ or files. If the provider retains revealed values, it may implement `clear()`;
 New hosting requirements should first become generic, tested engine seams and
 then be added to this facade. Product-specific identity, tenancy, billing,
 deployment, and secret-storage code does not belong in the engine.
+
+## Changing the facade
+
+`tests/semantic_rails/test_embedding_consumer_contract.py` checks the facade uses
+recorded from a known downstream embedder's code: the names it imports, the attributes it
+reads, the argument shapes of the calls whose receiver the scan can place, and the exact
+members and parameters of the protocols it implements (the engine calls those). A pull
+request that breaks a recorded use fails CI. A method the embedder reaches through an
+object the scan can't place is checked for existence only. `uv run python
+scripts/embedding_consumer_contract.py --consumer <checkout>` regenerates the list from
+the embedder's code; `--check` reports drift without writing.
+
+When the test fails, stage the change across releases instead of making it in one:
+
+1. Add the new form next to the old one. A new parameter gets a default that keeps
+   today's behavior, and a moved name stays importable from its old place as the same
+   object.
+2. Deprecate the old form in a `deprecated` changelog fragment that names the release
+   removing it, and pin that release with a test that fails once the version reaches it,
+   as `tests/semantic_rails/test_request_context_reexports.py` does.
+3. Remove the old form in that release, once the embedder has moved, and regenerate the
+   list.
+
+Hosts should test for a capability, such as `hasattr(embedding, "Name")` or a parameter
+in `inspect.signature(...)`, rather than compare engine versions.
