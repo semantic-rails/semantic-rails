@@ -19,3 +19,12 @@ make test-integration     # = uv run pytest -q tests/integration
   `data/.fixture_cache/` and loaded into each warehouse idempotently
   (fingerprint marker table), so repeat runs don't re-load.
 - Adding a warehouse: see `docs/ADDING_A_DIALECT.md`.
+
+## Differential correctness suite (`correctness/`)
+
+`make test-postgres` asks the same questions of DuckDB and a throwaway Postgres 16 container
+(removed afterwards), checks each answer against reference SQL, and requires Postgres to
+answer as DuckDB does. Without Docker the Postgres checks skip. With `SR_POSTGRES_*` already
+set it uses that server, in a schema of its own that it drops afterwards; `make
+test-integration` also collects this suite. Known wrong answers are strict xfails that link
+their issue.

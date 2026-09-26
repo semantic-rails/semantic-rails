@@ -1,0 +1,9 @@
+model:
+  id: default_calendar
+  label: Calendar
+  relation: dim_date
+  calendar_id: default
+  entities: {default_calendar: {}}
+  times: {date_day: {label: Day, column: date_day, kind: date, class: calendar_time}}
+  dimensions: {week_start: {label: Week, kind: date}, month_start: {label: Month, kind: date},
+    quarter_start: {label: Quarter, kind: date}, year_start: {label: Year, kind: date}}

@@ -1,0 +1,28 @@
+model:
+  id: orders
+  label: Orders
+  relation: orders
+  default_variant: tx
+  entities: {order: {}, customer: {}}
+  times:
+    ordered_at: {label: Order time, column: ordered_at, kind: timestamp, class: event_time,
+      supported_grains: [day, week, month, quarter, year], default: true}
+  dimensions:
+    store_id: {label: Store, kind: categorical}
+  measures:
+    revenue: {label: Revenue, kind: aggregate, expr: amount, accumulation: {kind: flow},
+      value_type: currency, rollup: additive}
+    order_count: {label: Orders, kind: entity_count, entity_key: order_id,
+      accumulation: {kind: flow}, rollup: additive}
+    average_order: {label: Average order, kind: aggregate, expr: amount, default_agg: avg,
+      value_type: currency}
+  variants:
+    tx: {relation: orders, grain: {time: transaction, entities: [order]}, covers: inherit_all}
+    monthly:
+      relation: orders_monthly
+      grain: {time: month, entities: [order]}
+      time: {role: ordered_at, column: month_start}
+      excludes: {entities: [order, customer]}
+      columns: {store_id: store_id, revenue: revenue, order_count: order_count}
+      eligible_time_grains: [month, quarter, year]
+      equivalence: {kind: exact}
