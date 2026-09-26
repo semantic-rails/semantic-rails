@@ -41,6 +41,6 @@
   "J37": {"outcome": "wrong_flagged", "mismatched": ["refused"]},
   "J38": {"outcome": "pass", "mismatched": []},
   "J39": {"outcome": "pass", "mismatched": []},
-  "J40": {"outcome": "wrong_flagged", "mismatched": ["select"]}
+  "J40": {"outcome": "wrong_flagged", "mismatched": ["select", "group_by", "fill", "calendar_id"]}
  }
 }

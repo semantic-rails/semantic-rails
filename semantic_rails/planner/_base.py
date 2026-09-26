@@ -518,6 +518,16 @@ def _fiscal_calendar(config: Any) -> Any | None:
     return rows[0] if len(rows) == 1 else None
 
 
+# The only fiscal mention plan honors itself: a bucket ("by fiscal quarter", "fiscal
+# quarterly"). Any other ("the first fiscal quarter", "since the start of the fiscal year",
+# "vs prior fiscal year") scopes or compares time in a way the draft doesn't carry.
+_FISCAL_BUCKET_RE = re.compile(
+    r"\b(?:by|per|each)\s+fiscal[\s-]+(?P<unit>year|quarter|month|week)s?\b"
+    r"|\bfiscal[\s-]+(?P<cadence>year|quarter|month|week)ly\b"
+    r"|\bfiscal[\s-]+annual\b"
+)
+# Period-to-date resets on Gregorian periods whatever the calendar, and plan drops a
+# to-date or rolling ask.
 _TO_DATE_OR_ROLLING_RE = re.compile(r"\b(?:[ymqw]td|to[\s-]+date|rolling|trailing|moving)\b")
 # The calendar column a filled series buckets each grain on.
 _CALENDAR_BUCKET_COLUMNS = {
@@ -532,27 +542,29 @@ _CALENDAR_BUCKET_COLUMNS = {
 def _with_fiscal_calendar(config: Any, text: str, query: dict[str, Any]) -> dict[str, Any]:
     """Bucket a fiscal question's draft on the package's fiscal calendar.
 
-    ``fill`` routes the buckets through the calendar (the engine refuses a
-    non-default ``calendar_id`` without it). A ``group_by`` on that calendar's
-    bucket for the same grain ("by fiscal quarter" read as a dimension) is what
-    the time bucket now holds, so it goes. The draft is unchanged, and plan
-    reports the gap, without a fiscal calendar, or when the planner chose the
-    grain to hold a window in one Gregorian bucket: a fiscal bucket of that
-    grain may split the window in two. Likewise for a to-date or rolling
-    question: period-to-date resets on Gregorian periods whatever the calendar.
+    Only when every fiscal mention asks for fiscal buckets of the draft's grain, and
+    nothing asks for a to-date or rolling value. ``fill`` routes the buckets through
+    the calendar (the engine refuses a non-default ``calendar_id`` without it). A
+    ``group_by`` on the calendar's bucket for the same grain ("by fiscal quarter" read
+    as a dimension) is what the time bucket now holds, so it goes, and an ``order_by``
+    on it orders by time. Otherwise the draft is unchanged and plan reports the gap.
     """
 
     time = query.get("time")
     calendar = _fiscal_calendar(config)
     lowered = str(text or "").lower()
+    units = {
+        match["unit"] or match["cadence"] or "year" for match in _FISCAL_BUCKET_RE.finditer(lowered)
+    }
     if (
         calendar is None
         or not isinstance(time, dict)
-        or not time.get("grain")
         or time.get("calendar_id")
-        or not _FISCAL_RE.search(lowered)
+        # The draft's grain is the one bucket the question names, not one plan chose to
+        # hold a window ("fiscal annual revenue from 2017-02-01 to 2017-02-28": month).
+        or units != {time.get("grain")}
+        or _FISCAL_RE.search(_FISCAL_BUCKET_RE.sub(" ", lowered))
         or _TO_DATE_OR_ROLLING_RE.search(lowered)
-        or (time.get("start") and time["grain"] != "day" and not _explicit_grain(text))
     ):
         return query
     column = _CALENDAR_BUCKET_COLUMNS.get(str(time["grain"]))
@@ -560,13 +572,15 @@ def _with_fiscal_calendar(config: Any, text: str, query: dict[str, Any]) -> dict
         row.id for row in config.dimensions if row.entity == calendar.id and row.column == column
     }
     out = {**query, "time": {**time, "calendar_id": calendar.calendar_id, "fill": True}}
+    order_by: list[Any] = []
+    for item in query.get("order_by") or []:
+        if isinstance(item, dict) and item.get("field") in bucket:
+            item = {**item, "field": "time"}
+        if item not in order_by:
+            order_by.append(item)
     kept = {
         "group_by": [item for item in query.get("group_by") or [] if item not in bucket],
-        "order_by": [
-            item
-            for item in query.get("order_by") or []
-            if not (isinstance(item, dict) and item.get("field") in bucket)
-        ],
+        "order_by": order_by,
     }
     for key, items in kept.items():
         if items:
@@ -1704,15 +1718,15 @@ _DEFAULT_TOP_LIMIT = 5
 _PERIOD_SHIFT_TRIGGERS = (
     (r"\byoy\b", "year"),
     (r"\byear[\s\-]?over[\s\-]?year\b", "year"),
-    (r"\bvs\.?\s+(?:last|prior|previous)\s+(?:fiscal\s+)?year\b", "year"),
-    (r"\bversus\s+(?:last|prior|previous)\s+(?:fiscal\s+)?year\b", "year"),
-    (r"\bcompared\s+to\s+(?:last|prior|previous)\s+(?:fiscal\s+)?year\b", "year"),
+    (r"\bvs\.?\s+(?:last|prior|previous)\s+year\b", "year"),
+    (r"\bversus\s+(?:last|prior|previous)\s+year\b", "year"),
+    (r"\bcompared\s+to\s+(?:last|prior|previous)\s+year\b", "year"),
     (r"\bmom\b", "month"),
     (r"\bmonth[\s\-]?over[\s\-]?month\b", "month"),
-    (r"\bvs\.?\s+(?:last|prior|previous)\s+(?:fiscal\s+)?month\b", "month"),
+    (r"\bvs\.?\s+(?:last|prior|previous)\s+month\b", "month"),
     (r"\bwow\b", "week"),
     (r"\bweek[\s\-]?over[\s\-]?week\b", "week"),
-    (r"\bvs\.?\s+(?:last|prior|previous)\s+(?:fiscal\s+)?week\b", "week"),
+    (r"\bvs\.?\s+(?:last|prior|previous)\s+week\b", "week"),
     (r"\bqoq\b", "quarter"),
     (r"\bquarter[\s\-]?over[\s\-]?quarter\b", "quarter"),
 )

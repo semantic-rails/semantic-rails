@@ -186,9 +186,12 @@ A draft that validates can still leave out part of the question. `plan` returns
   several named subjects;
 - counts time in fiscal periods ("fiscal quarter", "FY") on the Gregorian calendar
   (`fiscal_calendar_unrealized`). When the package has one calendar whose name says fiscal,
-  `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`), except for
-  a to-date or rolling question (period-to-date resets on Gregorian periods); otherwise the
-  recovery hint names the package's calendars;
+  `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`) only when
+  the question's fiscal words ask for buckets of the draft's grain ("by fiscal quarter",
+  "fiscal quarterly") and no to-date or rolling value (period-to-date resets on Gregorian
+  periods). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
+  reported, and its recovery hint asks for the period as exact dates; without such a calendar
+  the hint names the package's calendars;
 - picked its subject from several that match the question equally well, when neither the
   question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
@@ -215,11 +218,13 @@ bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a compari
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
 windows at once (such as "last month and this month"), return `low_confidence` with
 `why.code="TIME_WINDOW_UNRESOLVED"` and the phrases they couldn't resolve, rather than the
-nearest parsed window. In a question that names fiscal periods, only days with a year and ISO
-dates resolve: "fiscal Q2 2017", "FY2017", "last fiscal quarter" and even "in 2017" are
-unresolved, since only the package's fiscal calendar can date them. That response has no `best.query_ir` to execute, since a query without
-the window answers a different question: pass the window in `query.time`, with the temporal
-role and grain, and plan again. **Qualified relative periods remain a limitation:** for phrases such as
+nearest parsed window. In a question that names fiscal periods, only exact days resolve (days
+with a year, ISO dates, and "last 7 days", "yesterday" or "today"): "fiscal Q2 2017",
+"FY2017", "last fiscal quarter" and even "in 2017" are unresolved, since only the package's
+fiscal calendar can date them. That response has no `best.query_ir` to execute, since a query
+without the window answers a different question: pass the window in `query.time`, with the
+temporal role and grain, and plan again. **Qualified relative periods remain a limitation:**
+for phrases such as
 "before today", "after last month", or "until this week", `plan` may return `status="ok"`
 with the embedded period's bounds but without the qualifier, rather than
 `TIME_WINDOW_UNRESOLVED`. A `PLAN_UNMATCHED_TERMS` warning may appear, but "until" is treated as

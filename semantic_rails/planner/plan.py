@@ -403,7 +403,13 @@ def _planned_row(
     blocked: list[dict[str, Any]],
     intent: str,
 ) -> dict[str, Any]:
-    fiscal_query = _with_fiscal_calendar(runtime._config, intent, draft.query)
+    # A caller's time block wins the merge, so it would replace what the fiscal step
+    # chose; the draft stays Gregorian and the fiscal gap reports it instead.
+    fiscal_query = (
+        draft.query
+        if (partial_query or {}).get("time")
+        else _with_fiscal_calendar(runtime._config, intent, draft.query)
+    )
     merged_draft = replace(
         draft, query=_merge_partial_query(runtime._config, fiscal_query, partial_query)
     )
@@ -1273,7 +1279,8 @@ def _unresolved_time_why(
                     f"Shorten the question to at most {_MAX_TIME_TEXT} characters."
                     if too_long
                     else "A fiscal question's window resolves only from exact days: name the "
-                    "period's first and last day (e.g. 'from 2017-02-01 to 2018-01-31')."
+                    "period's first and last day and its fiscal bucket (e.g. 'by fiscal year "
+                    "from 2017-02-01 to 2018-01-31')."
                     if _FISCAL_RE.search(intent.lower())
                     else "Rephrase the window using a supported form: "
                     + "; ".join(_SUPPORTED_WINDOW_FORMS)
