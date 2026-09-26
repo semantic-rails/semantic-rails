@@ -420,14 +420,14 @@ def classify_column(name: str, data_type: str) -> str:
 
 def measure_aggregation(name: str) -> tuple[str, str, str]:
     """(aggregation, confidence, reason) for a numeric column, from its name."""
-    if _has_word(name, _DISTINCT_COUNT_WORDS):
+    average = _has_word(name, _AVERAGE_WORDS)
+    if _distinct_count_like(name):
         return (
             "sum",
             "low",
             "may be a pre-counted distinct count; adding rows counts a person more than once, "
             "so it is drafted additive: false",
         )
-    average = _has_word(name, _AVERAGE_WORDS)
     summed = _has_word(name, _SUM_WORDS)
     if average and not summed:
         return "avg", "high", "a per-row price or rate: averaging is safe, summing is not"
@@ -506,7 +506,7 @@ def draft_roles(
                     "aggregation": aggregation,
                     "confidence": confidence,
                     "reason": reason,
-                    **({"additive": False} if _has_word(name, _DISTINCT_COUNT_WORDS) else {}),
+                    **({"additive": False} if _distinct_count_like(name) else {}),
                     **described,
                 }
             )
@@ -621,6 +621,11 @@ def entity_name(table: str) -> str:
 def _key_like(column: str) -> bool:
     lowered = column.lower()
     return lowered == "id" or lowered.endswith(_KEY_SUFFIXES)
+
+
+def _distinct_count_like(column: str) -> bool:
+    """A count of distinct people per row, and not an average or rate of one."""
+    return _has_word(column, _DISTINCT_COUNT_WORDS) and not _has_word(column, _AVERAGE_WORDS)
 
 
 def _has_word(column: str, words: tuple[str, ...]) -> bool:

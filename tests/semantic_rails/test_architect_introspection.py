@@ -873,14 +873,16 @@ def test_a_rank_or_sequence_number_is_a_low_confidence_measure() -> None:
 
 
 def test_a_pre_counted_distinct_column_is_drafted_non_additive(tmp_path) -> None:
+    from semantic_rails import yaml_loader
     from semantic_rails.architect_introspection import draft_roles, upsert_model_draft
-    from semantic_rails.architect_service import ArchitectProject
     from semantic_rails.cli.scaffold import create_project_report
 
     columns = [
         {"name": "daily_visitors", "type": "BIGINT"},
         {"name": "uniques", "type": "BIGINT"},
         {"name": "views", "type": "BIGINT"},
+        # An average or rate of distinct people keeps its average.
+        {"name": "avg_daily_users", "type": "DOUBLE"},
     ]
     roles, _ = draft_roles("traffic_day", ["traffic_day_id"], [], columns)
     draft = upsert_model_draft(
@@ -892,6 +894,8 @@ def test_a_pre_counted_distinct_column_is_drafted_non_additive(tmp_path) -> None
     assert {item["confidence"] for item in flagged.values()} == {"low"}
     assert draft["measures"]["uniques"]["additive"] is False
     assert "additive" not in draft["measures"]["views"]
+    assert draft["measures"]["avg_daily_users"]["default_agg"] == "avg"
+    assert "additive" not in draft["measures"]["avg_daily_users"]
     # The drafted key parses: the package accepts it as written.
     report = create_project_report(
         package_id="drafted", workspace_root=str(tmp_path), run_checks=False
@@ -906,3 +910,5 @@ def test_a_pre_counted_distinct_column_is_drafted_non_additive(tmp_path) -> None
         measures=measures,
     )
     assert mutation.report["ok"] is True, mutation.report
+    written = yaml_loader.load_yaml_file(Path(report["project_path"]) / "models/core/events.yml")
+    assert written["model"]["measures"]["uniques"]["additive"] is False
