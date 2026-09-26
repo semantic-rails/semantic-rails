@@ -31,6 +31,8 @@ from .compiler import (
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
+    CONVERSION_MATCHING_MODES,
+    CONVERSION_WINDOW_UNITS,
     AggregateExpr,
     ArithmeticExpr,
     BooleanExpr,
@@ -51,6 +53,8 @@ from .expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    collect_object_references,
+    expr_to_dict,
     parse_semantic_expression,
 )
 from .metadata_parts.capabilities import (
@@ -92,7 +96,7 @@ from .metadata_parts.valid_values import valid_values_payload
 from .policies import hidden_object_ids, policy_effects_for_object
 from .request_context import context_from_policy_context
 from .runtime import Runtime, runtime_request_scope
-from .schema import PackageConfig
+from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
 
@@ -765,6 +769,50 @@ def _predicate_exprs_from_expr(
     return []
 
 
+def _without_empty_defaults(expr: dict[str, Any]) -> dict[str, Any]:
+    """Drop the empty defaults ``expr_to_dict`` writes on a conversion and its operands."""
+    return {
+        key: _without_empty_defaults(item) if key in {"base", "converted"} else item
+        for key, item in expr.items()
+        if not (key in {"aggregation", "temporal_role", "constant_properties"} and not item)
+    }
+
+
+def _conversion_metadata(
+    config: PackageConfig, recipe: MetricConfig, policy_context: dict[str, Any]
+) -> dict[str, Any]:
+    """A conversion metric's own expression, so a caller can re-run it over another window.
+
+    Left out (fail closed) when a policy other than a visibility grant or a release label
+    applies to the metric or to anything its expression names, or a reference won't resolve."""
+    if not isinstance(recipe.expression, ConversionExpr):
+        return {}
+    expression = _without_empty_defaults(expr_to_dict(recipe.expression))
+    try:
+        references = collect_object_references(expression, config, owner=recipe.id)
+    except SemanticLayerError:
+        return {}
+    for object_id in {recipe.id, *references}:
+        effects = policy_effects_for_object(
+            config,
+            object_id,
+            environment=str(policy_context.get("environment", "")),
+            audience=str(policy_context.get("audience", "")),
+            roles=policy_context.get("roles", []),
+        )
+        if any(effect["action"] not in {"visible", "label"} for effect in effects):
+            return {}
+    units = "|".join(CONVERSION_WINDOW_UNITS)
+    return {
+        "conversion": {
+            "expression": expression,
+            "matching_modes": list(CONVERSION_MATCHING_MODES),
+            "rewindow": "select this expression with another window "
+            f"{{unit: {units}, value: positive integer}}",
+        }
+    }
+
+
 def _predicate_metadata(
     config: PackageConfig, expr: SemanticExpr, partial_query: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -912,6 +960,7 @@ def _object_card(
                 **_example_test_metadata(recipe),
                 **predicate_meta,
                 **_comparison_metadata(recipe),
+                **_conversion_metadata(config, recipe, policy_context),
             }
         )
     elif obj.kind == "dimension":

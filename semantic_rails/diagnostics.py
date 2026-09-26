@@ -594,6 +594,17 @@ def recovery_hints_for_error(
                 "details": dict(details),
             }
         ]
+    if code == "CONVERSION_WINDOW_REQUIRED":
+        return list(details.get("recovery_hints", []) or [])
+    if code == "CONVERSION_MATCHING_MODE_REQUIRED" and details.get("expression"):
+        return [
+            {
+                "kind": "set_conversion_matching_mode",
+                "message": "Resend details.expression, or set matching_mode to another "
+                "value from details.allowed_values.",
+                "allowed_values": list(details.get("allowed_values", {}) or {}),
+            }
+        ]
     if code == "MEASURE_VALIDITY_BOUNDARY":
         return list(details.get("recovery_hints", []) or []) or [
             {

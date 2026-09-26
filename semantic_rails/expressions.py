@@ -852,7 +852,44 @@ _PARAMETER_SCHEMAS_BY_AGGREGATION: dict[str, dict[str, str]] = {
 # Units the conversion matching window can lower into the dialects'
 # DATE_DIFF. Matches the units advertised in the window-shape recovery
 # hint below; anything else only fails at warehouse execution time.
-_CONVERSION_WINDOW_UNITS = {"minute", "hour", "day", "week", "month", "quarter", "year"}
+CONVERSION_WINDOW_UNITS = ("minute", "hour", "day", "week", "month", "quarter", "year")
+_CONVERSION_WINDOW_UNITS = set(CONVERSION_WINDOW_UNITS)
+_CONVERSION_WINDOW_SHAPE = {
+    "unit": f"<{'|'.join(CONVERSION_WINDOW_UNITS)}>",
+    "value": "<positive integer>",
+}
+
+# Every mode counts a base event as converted when any converted event of the same
+# entity falls in its window; the mode only picks which converted event is matched.
+CONVERSION_MATCHING_MODES = {
+    "first_converted_after_base": "match each base event to the earliest converted event "
+    "in its window",
+    "closest_converted_after_base": "match each base event to the converted event nearest "
+    "to it in window units (ties: the earliest)",
+}
+
+
+def _conversion_matching_mode_error(expr: Mapping[str, Any], received: Any) -> SemanticLayerError:
+    problem = (
+        f"unsupported conversion matching_mode {received!r}"
+        if received not in (None, "")
+        else "conversion expressions require 'matching_mode'"
+    )
+    return SemanticLayerError(
+        "CONVERSION_MATCHING_MODE_REQUIRED",
+        f"{problem}: use one of {', '.join(CONVERSION_MATCHING_MODES)}. "
+        "details.allowed_values says what each matches; details.expression is your "
+        "expression with the first one set.",
+        details={
+            "path": "expression.matching_mode",
+            "received_value": received,
+            "allowed_values": dict(CONVERSION_MATCHING_MODES),
+            "expression": {
+                **{key: value for key, value in expr.items() if key != "matching"},
+                "matching_mode": next(iter(CONVERSION_MATCHING_MODES)),
+            },
+        },
+    )
 
 
 def parameter_schema_for_aggregation(aggregation: str) -> dict[str, str]:
@@ -1800,7 +1837,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         entity = str(expr.get("entity", "")).strip()
         if not entity:
             raise SemanticLayerError(
-                "CONVERSION_ENTITY_REQUIRED", "conversion expressions require 'entity'"
+                "CONVERSION_ENTITY_REQUIRED",
+                "conversion expressions require 'entity': the id of the entity a base event and "
+                'its converted event must share, e.g. "entity": "entity.<customer>"',
+                details={"path": "expression.entity"},
             )
         raw_window = expr.get("window", {}) or {}
         if not isinstance(raw_window, dict):
@@ -1820,10 +1860,7 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                                 "Wrap window as {unit, value}. E.g. window=7 "
                                 "→ window={'unit': 'day', 'value': 7}."
                             ),
-                            "suggested_shape": {
-                                "unit": "<minute|hour|day|week|month|quarter|year>",
-                                "value": "<positive integer>",
-                            },
+                            "suggested_shape": dict(_CONVERSION_WINDOW_SHAPE),
                         }
                     ],
                 },
@@ -1832,15 +1869,19 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         unit = str(window.get("unit", "")).strip()
         try:
             window_value = int(window.get("value", 0) or 0)
-        except (TypeError, ValueError) as exc:
-            raise SemanticLayerError(
-                "CONVERSION_WINDOW_REQUIRED",
-                "conversion expressions require a positive window.value",
-            ) from exc
+        except (TypeError, ValueError):
+            window_value = 0
         if not unit or window_value <= 0:
             raise SemanticLayerError(
                 "CONVERSION_WINDOW_REQUIRED",
-                "conversion expressions require a positive window.unit and window.value",
+                "conversion expressions require window {unit, value}: unit one of "
+                f"{', '.join(CONVERSION_WINDOW_UNITS)} and a positive integer value, "
+                'e.g. "window": {"unit": "minute", "value": 50}',
+                details={
+                    "path": "expression.window",
+                    "received_value": raw_window,
+                    "suggested_shape": dict(_CONVERSION_WINDOW_SHAPE),
+                },
             )
         if unit not in _CONVERSION_WINDOW_UNITS:
             # An unrecognized unit compiles into DATE_DIFF('<unit>', ...)
@@ -1855,12 +1896,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                     "supported_units": sorted(_CONVERSION_WINDOW_UNITS),
                 },
             )
-        matching_mode = str(expr.get("matching_mode", expr.get("matching", ""))).strip()
-        if matching_mode not in {"first_converted_after_base", "closest_converted_after_base"}:
-            raise SemanticLayerError(
-                "CONVERSION_MATCHING_MODE_REQUIRED",
-                "conversion expressions require a supported matching_mode",
-            )
+        raw_mode = expr.get("matching_mode", expr.get("matching", ""))
+        matching_mode = raw_mode.strip() if isinstance(raw_mode, str) else ""
+        if matching_mode not in CONVERSION_MATCHING_MODES:
+            raise _conversion_matching_mode_error(expr, raw_mode)
         dimension_bindings = {
             str(dim_id): {str(key): str(value) for key, value in dict(binding or {}).items()}
             for dim_id, binding in dict(expr.get("dimension_bindings", {}) or {}).items()
