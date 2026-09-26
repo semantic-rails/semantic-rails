@@ -99,6 +99,9 @@ uv run python scripts/verify_release_readiness.py
 uv run python scripts/changelog_fragments.py check
 ```
 
+If `test_embedding_consumer_contract.py` fails, the change breaks a known embedder's use of
+`semantic_rails.embedding`: follow "Changing the facade" in [docs/EMBEDDING.md](docs/EMBEDDING.md).
+
 ## Full Verification Matrix
 
 For release-surface work or anything that touches the runtime, packages, or

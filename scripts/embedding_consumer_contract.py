@@ -3,11 +3,12 @@
     uv run python scripts/embedding_consumer_contract.py --consumer PATH [--check]
 
 Scans every Python file tracked in the embedder's git checkout for the facade
-names it uses and how: the attributes it reads and the argument shapes it calls
-with. Each use that works against this engine is written, one per line, to
-``USES_FILE``; ``tests/semantic_rails/test_embedding_consumer_contract.py`` checks
-them on every pull request. ``--check`` compares instead of writing and exits 1
-when the embedder's use has drifted from the recorded list.
+names it uses and how: the attributes it reads, the argument shapes it calls
+with, and the protocols it implements. Each use that works against this engine
+is written, one per line, to ``USES_FILE``;
+``tests/semantic_rails/test_embedding_consumer_contract.py`` checks them on every
+pull request. ``--check`` compares instead of writing and exits 1 when the
+embedder's use has drifted from the recorded list.
 
 A use reads like the code it came from:
 
@@ -16,6 +17,13 @@ A use reads like the code it came from:
     Runtime().package_id                 attribute read on an instance
     SemanticHTTPService(_, package_id=)  positional and keyword arguments
     emit_audit_event(**)                 a call that unpacks arguments (``*`` or ``**``)
+    AuditSink{emit(self, payload)}       a protocol's members and exact parameters
+
+The engine calls the embedder's implementation of a protocol, so a protocol the
+embedder names, or that appears in the annotations of a facade callable it
+calls, is recorded whole, and any change to it fails. A method reached through
+an object the scan can't place is recorded as an attribute read, so only its
+existence is checked.
 
 Instances are found by name: within a file, a name or attribute assigned from a
 facade class or from a facade callable annotated to return one; across files,
@@ -50,7 +58,9 @@ HEADER = (
 )
 # Calls whose arguments name an attribute they replace, e.g. ``monkeypatch.setattr(mod, "X", …)``.
 _PATCHING_CALLS = frozenset({"setattr", "delattr", "patch", "object"})
-_USE = re.compile(r"(?P<name>\w+)(?:(?P<instance>\(\))?\.(?P<attr>\w+))?(?P<args>\([^()]*\))?")
+_USE = re.compile(
+    r"(?P<name>\w+)(?:(?P<instance>\(\))?\.(?P<attr>\w+))?(?P<args>\([^()]*\))?(?P<protocol>\{[^{}]*\})?"
+)
 
 
 def problem(use: str) -> str | None:
@@ -58,10 +68,19 @@ def problem(use: str) -> str | None:
     match = _USE.fullmatch(use)
     if not match:
         return "unrecognised use"
-    name, instance, attr, args = match.group("name", "instance", "attr", "args")
+    name, instance, attr, args, protocol = match.group(
+        "name", "instance", "attr", "args", "protocol"
+    )
     if name not in embedding.__all__:
         return f"{FACADE} no longer exports {name}"
     owner = target = getattr(embedding, name)
+    if protocol is not None:
+        current = f"{{{_protocol_shape(owner)}}}"
+        if current == protocol:
+            return None
+        return f"{name} is now {current}; the embedder implements it, so update that first"
+    if attr and instance and not inspect.isclass(owner):
+        return f"{name} is no longer a class"
     if attr and instance and attr not in _instance_attributes(owner):
         return f"{name} instances have no attribute {attr!r}"
     if attr and not instance and not hasattr(owner, attr):
@@ -94,7 +113,10 @@ def _instance_attributes(cls: type) -> set[str]:
         if not klass.__module__.startswith("semantic_rails"):
             continue
         names.update(inspect.get_annotations(klass))
-        tree = ast.parse(textwrap.dedent(inspect.getsource(klass)))
+        try:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(klass)))
+        except (OSError, TypeError):
+            continue
         names.update(
             node.attr
             for node in ast.walk(tree)
@@ -104,6 +126,52 @@ def _instance_attributes(cls: type) -> set[str]:
             and node.value.id == "self"
         )
     return names
+
+
+def _parameters(function: Any) -> str:
+    parts: list[str] = []
+    keyword_only = False
+    for parameter in inspect.signature(function).parameters.values():
+        if parameter.kind is parameter.KEYWORD_ONLY and not keyword_only:
+            parts.append("*")
+        keyword_only |= parameter.kind in (parameter.KEYWORD_ONLY, parameter.VAR_POSITIONAL)
+        stars = "**" if parameter.kind is parameter.VAR_KEYWORD else ""
+        stars = "*" if parameter.kind is parameter.VAR_POSITIONAL else stars
+        default = "" if parameter.default is parameter.empty else "="
+        parts.append(f"{stars}{parameter.name}{default}")
+    return ", ".join(parts)
+
+
+def _protocol_shape(cls: Any) -> str | None:
+    """A protocol's members, with each method's parameters; None for anything else."""
+    if not (inspect.isclass(cls) and getattr(cls, "_is_protocol", False)):
+        return None
+    members = sorted(
+        n for n in {*vars(cls), *inspect.get_annotations(cls)} if not n.startswith("_")
+    )
+    shapes = [
+        f"{member}({_parameters(value)})"
+        if callable(value := getattr(cls, member, None))
+        else member
+        for member in members
+    ]
+    return "; ".join(shapes)
+
+
+def _mentions(use: str) -> set[str]:
+    """The facade name a use starts with, and the names in the annotations of what it calls."""
+    match = _USE.fullmatch(use)
+    if not match:
+        return set()
+    target: Any = getattr(embedding, match["name"], None)
+    target = getattr(target, match["attr"], None) if match["attr"] else target
+    try:
+        annotations = " ".join(
+            str(p.annotation) for p in inspect.signature(target).parameters.values()
+        )
+    except (TypeError, ValueError):
+        annotations = ""
+    return {match["name"], *re.findall(r"\w+", annotations)}
 
 
 def _produces(name: str, attr: str | None) -> str | None:
@@ -250,10 +318,14 @@ def scan(consumer: Path) -> tuple[list[str], dict[str, str]]:
     ]
     members = {key: owner for scanned in files for key, owner in scanned.members.items()}
     found = set().union(*(scanned.uses(members) for scanned in files))
+    named = set().union(*map(_mentions, found)) & set(embedding.__all__)
+    shapes = {name: _protocol_shape(getattr(embedding, name)) for name in named}
+    found |= {f"{name}{{{shape}}}" for name, shape in shapes.items() if shape is not None}
     failing = {use: reason for use in sorted(found) if (reason := problem(use))}
     working = found - set(failing)
     # ``Runtime`` is implied by ``Runtime.from_path(_)``; keep only the most specific uses.
-    kept = sorted(u for u in working if not any(o.startswith((f"{u}(", f"{u}.")) for o in working))
+    prefixes = {use: (f"{use}(", f"{use}.", f"{use}{{") for use in working}
+    kept = sorted(u for u in working if not any(o.startswith(prefixes[u]) for o in working))
     return kept, failing
 
 

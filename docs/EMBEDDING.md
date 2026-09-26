@@ -100,12 +100,14 @@ deployment, and secret-storage code does not belong in the engine.
 
 ## Changing the facade
 
-`tests/semantic_rails/test_embedding_consumer_contract.py` checks every facade use a
-known downstream embedder makes (the names it imports, the attributes it reads, and the
-argument shapes it calls with) against the engine, so a pull request that would break
-that embedder fails CI. `uv run python scripts/embedding_consumer_contract.py --consumer
-<checkout>` regenerates the list from the embedder's code; `--check` reports drift
-without writing.
+`tests/semantic_rails/test_embedding_consumer_contract.py` checks the facade uses
+recorded from a known downstream embedder's code: the names it imports, the attributes it
+reads, the argument shapes of the calls whose receiver the scan can place, and the exact
+members and parameters of the protocols it implements (the engine calls those). A pull
+request that breaks a recorded use fails CI. A method the embedder reaches through an
+object the scan can't place is checked for existence only. `uv run python
+scripts/embedding_consumer_contract.py --consumer <checkout>` regenerates the list from
+the embedder's code; `--check` reports drift without writing.
 
 When the test fails, stage the change across releases instead of making it in one:
 

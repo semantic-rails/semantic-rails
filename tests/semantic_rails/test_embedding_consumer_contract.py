@@ -1,11 +1,11 @@
-"""Every ``semantic_rails.embedding`` use a downstream embedder relies on keeps working.
+"""The ``semantic_rails.embedding`` uses recorded from a downstream embedder keep working.
 
-``fixtures/embedding_consumer_uses.txt`` lists the names, attributes and call shapes
-a hosted embedder uses, generated from its code by
-``scripts/embedding_consumer_contract.py``. A failure means this change would break that
-embedder when it upgrades. Keep the old form working next to the new one and deprecate it
-(docs/EMBEDDING.md, "Changing the facade"); regenerate the list only once the embedder
-has stopped using it.
+``fixtures/embedding_consumer_uses.txt`` lists what a hosted embedder uses, generated from
+its code by ``scripts/embedding_consumer_contract.py``: names, attributes, the argument
+shapes of calls whose receiver the scan can place, and the exact members and parameters of
+the protocols it implements. A failure means this change would break that embedder when it
+upgrades. Keep the old form working next to the new one and deprecate it (docs/EMBEDDING.md,
+"Changing the facade"); regenerate the list only once the embedder has stopped using it.
 """
 
 from __future__ import annotations
@@ -45,6 +45,13 @@ def test_uses_file_is_canonical() -> None:
         ("Runtime().set_adapter()", "no longer accepts this call"),
         ("SemanticHTTPService(_, no_such_keyword=)", "no longer accepts this call"),
         ("Runtime()", "missing a required argument: 'package_id'"),
+        ("emit_audit_event().anything", "emit_audit_event is no longer a class"),
+        ("AuditSink{emit(self, payload)}", None),
+        ("AuditSink{emit(self)}", "AuditSink is now {emit(self, payload)}"),
+        (
+            "PolicyContextResolver{resolve(self, headers, *, payload=)}",
+            "PolicyContextResolver is now {resolve(self, headers, *, payload=, request_id=)}",
+        ),
     ],
 )
 def test_problem_reports_only_breaking_uses(use: str, reason: str | None) -> None:
@@ -70,12 +77,19 @@ def route(entry, request):
     return entry.service.handle("POST", request), entry.runtime.not_an_engine_attribute
 """,
     "tests/test_host.py": """
-import semantic_rails.embedding as engine
+from unittest import mock
 
-def test_it(monkeypatch, args):
+import semantic_rails.embedding as engine
+from semantic_rails import embedding as facade
+
+def test_it(monkeypatch, args, sink):
     monkeypatch.setattr(engine, "Runtime", object)
     monkeypatch.setattr("semantic_rails.embedding.emit_audit_event", print)
     engine.RequestContext(*args, request_id="r")
+    facade.set_audit_sink(sink)
+    with mock.patch.object(facade.Runtime, "close"):
+        context: facade.RequestContext = facade.RequestContext(request_id="r")
+        context.to_policy_context()
 """,
 }
 
@@ -90,12 +104,17 @@ def test_scan_follows_imports_instances_and_patches(tmp_path: Path) -> None:
     kept, failing = scan(tmp_path)
 
     assert kept == [
+        "AuditSink{emit(self, payload)}",  # set_audit_sink takes one
+        "RequestContext().to_policy_context()",
         "RequestContext(*, request_id=)",
+        "RequestContext(request_id=)",
         "Runtime().package_id",
         "Runtime().set_adapter(_)",
+        "Runtime.close",
         "Runtime.from_path(_)",
         "SemanticHTTPService().handle(_, _)",
         "SemanticHTTPService(_, package_id=)",
         "emit_audit_event",
+        "set_audit_sink(_)",
     ]
     assert list(failing) == ["Runtime().not_an_engine_attribute"]
