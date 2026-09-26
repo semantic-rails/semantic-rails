@@ -90,6 +90,12 @@ class CallExpr:
     args: list[SemanticExpr] = field(default_factory=list)
     distinct: bool = False
 
+    def __post_init__(self) -> None:
+        if " ".join(self.name.split()).upper() in ENGINE_ONLY_FUNCTIONS:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", f"Unsafe SQL function token: {self.name!r}"
+            )
+
 
 @dataclass(frozen=True)
 class DateAddExpr:
@@ -1202,10 +1208,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         name = str(expr.get("name", "")).strip()
         if not name:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Call expressions require 'name'")
-        if " ".join(name.split()).upper() in ENGINE_ONLY_FUNCTIONS:
-            raise SemanticLayerError(
-                "INVALID_EXPRESSION_AST", f"Unsafe SQL function token: {name!r}"
-            )
         return CallExpr(
             name=name,
             args=[
