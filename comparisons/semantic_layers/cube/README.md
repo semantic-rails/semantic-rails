@@ -2,7 +2,7 @@
 
 Cube Core runs live on the shared DuckDB, with its model under `model/cubes/` (one cube per
 file) and one query per question under `queries/`: a REST query (`.json`), or an SQL API query
-(`.sql`) for three frozen-model questions.
+(`.sql`) for five frozen-model questions.
 
 - `@cubejs-backend/server` `1.7.45` and `@cubejs-backend/duckdb-driver` `1.7.45` (exact
   versions in `package.json`, locked in `package-lock.json`); the driver runs DuckDB through
@@ -117,18 +117,20 @@ Every cube reads one `comparison_*` view with `sql_table`; the model has no SQL-
 - q11, q12: subquery dimensions on `customers` compute each customer's lifetime order count and
   spend from the `orders` measures, and the queries filter on them. The precomputed
   `lifetime_*` columns of `comparison_customers` aren't read.
-
 - q17-q24, the frozen-model questions, run with this model unchanged. q24 is q12's REST query
-  with a 1000 USD threshold. q19, q20 and q23 are SQL API queries that wrap a Cube query in SQL:
-  a moving sum and `LAG` over monthly revenue, and a filter on each customer-month's order
-  count; Cube pushes each one down to DuckDB whole. They are `workaround` in the rubric, since
-  the logic is SQL around Cube's members. The moving sum and `LAG` step over month rows, which
-  equals the calendar rule only because every month has orders (the SQL API refuses a `RANGE`
-  frame with an interval). q17, q18, q21 and q22 need a model change: the 7-day window is on a
-  declared join and the SQL API refuses a non-equality join between two Cube queries; filtered
-  measures and measure types are set in the model; and the primary keys an SQL API query would
-  group by per session, order or item are hidden unless marked public
-  (`../shared/frozen_model.yml` has each reason and its documentation).
+  with a 1000 USD threshold. q22 is an SQL API query of `AVG` and `MAX` over
+  `order_items.item_revenue_usd`, a `sum` measure: Cube pushes them down as the average and
+  maximum of the measure's row expression, which is the question's rule, and the query selects
+  members only, so it is `native`. q19, q20, q21 and q23 are SQL API queries that wrap a Cube
+  query in a derived table: a moving sum and `LAG` over monthly revenue, a `CASE` over each
+  order's revenue (an ungrouped query of the revenue measure), and a filter on each
+  customer-month's order count. Cube pushes each one down to DuckDB whole, and the rubric
+  labels them `workaround`, since the logic is SQL around Cube's members. The moving sum and
+  `LAG` step over month rows, which equals the calendar rule only because every month has orders
+  (the SQL API refuses a `RANGE` frame with an interval). q17 and q18 need a model change: the
+  7-day window is on a declared join, the SQL API joins cubes only along declared joins, and
+  narrowing the join needs a session key the model hides (`../shared/frozen_model.yml` has each
+  reason and its documentation).
 
 ## Workarounds
 

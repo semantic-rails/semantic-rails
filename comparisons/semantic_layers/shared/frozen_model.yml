@@ -75,39 +75,29 @@ cube:
     q17_session_to_order_conversion_14d: &cube_window
       reason: >-
         The model's session-to-order join carries the 7-day window, and a query can't change a
-        join's condition. The SQL API refuses a non-equality join between two Cube queries
-        ("Unsupported expressions in Left JOIN"), and the model exposes no session key to count
-        converted sessions with, since a primary key is hidden unless it is marked public. A
-        different window needs a new join in the model.
-      doc: https://docs.cube.dev/reference/data-modeling/joins
+        join's condition. The SQL API joins cubes only along the model's declared joins
+        (`__cubeJoinField` or CROSS JOIN), so a 14-day window can't be reached. Narrowing the 7-day
+        join to 50 minutes needs a flag per session, and the model exposes no session key (a
+        primary key is hidden unless marked public): grouping by customer and start time would be
+        right only if those were unique, and Cube refuses to post-process the join without a row
+        limit that could truncate it. A different window needs a new join in the model.
+      doc: https://docs.cube.dev/reference/core-data-apis/sql-api/joins
     q18_same_store_session_to_order_conversion_50m: *cube_window
-    q21_revenue_and_large_order_revenue_by_month:
-      reason: >-
-        Query filters apply to the whole query, and a filtered measure (`filters:` on a measure)
-        is set in the model. The model exposes no order-total dimension to filter on and no order
-        key for an SQL API query to total revenue per order (a primary key is hidden unless it is
-        marked public), so large-order revenue beside total revenue needs a model change.
-      doc: https://docs.cube.dev/reference/data-modeling/measures
-    q22_average_and_max_item_revenue_by_product_type_by_month:
-      reason: >-
-        A measure's type is set in the model (`sum` for `item_revenue_usd`), and the SQL API
-        refuses an aggregate that doesn't match it. The model exposes no item key and no
-        item-revenue dimension to aggregate per item (a primary key is hidden unless it is marked
-        public), so the average and the maximum need new measures.
-      doc: https://docs.cube.dev/reference/core-data-apis/sql-api/query-format
   workaround:
     q19_trailing_3_month_revenue_by_month: &cube_sql_api
       reason: >-
-        An SQL API query answers it by wrapping a Cube query in SQL of its own: a derived table,
-        with a window function for q19 (SUM OVER) and q20 (LAG), and a filter on each
-        customer-month's order count for q23. The rubric counts SQL written around a layer's
-        members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is
-        workaround rather than native. A REST query has no such option: its filters apply to the
-        whole query, and compareDateRange returns each date range as a separate result set, not
-        the prior month beside each month. In the model these would be a rolling_window or
-        time_shift measure, or a multi-stage measure with the new threshold.
+        An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table:
+        with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23,
+        and a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21.
+        The rubric counts SQL written around a layer's members as hand-written, as it does SQL
+        outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query
+        has no such option: its filters apply to the whole query, and compareDateRange returns
+        each date range as a separate result set, not the prior month beside each month. In the
+        model these would be a rolling_window or time_shift measure, a measure with filters, or a
+        multi-stage measure with the new threshold.
       doc: https://docs.cube.dev/reference/core-data-apis/sql-api/query-format
     q20_revenue_and_prior_month_revenue_by_month: *cube_sql_api
+    q21_revenue_and_large_order_revenue_by_month: *cube_sql_api
     q23_orders_from_customers_with_5plus_orders_in_month: *cube_sql_api
 
 malloy:

@@ -1,6 +1,6 @@
 # Output Consistency
 
-Generated at `2026-09-26T02:02:59+00:00` on dataset `4f24ad8276da`. Every layer is compared with the independent answer key in `shared/oracle/`.
+Generated at `2026-09-26T02:15:31+00:00` on dataset `4f24ad8276da`. Every layer is compared with the independent answer key in `shared/oracle/`.
 
 - Matched: `24`
 - Mismatched: `0`
@@ -150,15 +150,15 @@ Generated at `2026-09-26T02:02:59+00:00` on dataset `4f24ad8276da`. Every layer 
 
 ## q21_revenue_and_large_order_revenue_by_month Revenue And Large Order Revenue By Month
 
-- Layer statuses: `semantic_rails=executed, metricflow=not_run, cube=not_run, malloy=executed, snowflake_semantic_views=not_run, ktx=executed`
+- Layer statuses: `semantic_rails=executed, metricflow=not_run, cube=executed, malloy=executed, snowflake_semantic_views=not_run, ktx=executed`
 - Comparison status: `matched`
-- Layers compared: `semantic_rails, malloy, ktx`
+- Layers compared: `semantic_rails, cube, malloy, ktx`
 
 ## q22_average_and_max_item_revenue_by_product_type_by_month Average And Largest Item Revenue By Product Type By Month
 
-- Layer statuses: `semantic_rails=executed, metricflow=not_run, cube=not_run, malloy=executed, snowflake_semantic_views=not_run, ktx=executed`
+- Layer statuses: `semantic_rails=executed, metricflow=not_run, cube=executed, malloy=executed, snowflake_semantic_views=not_run, ktx=executed`
 - Comparison status: `matched`
-- Layers compared: `semantic_rails, malloy, ktx`
+- Layers compared: `semantic_rails, cube, malloy, ktx`
 
 ## q23_orders_from_customers_with_5plus_orders_in_month Orders From Customers With 5 Plus Orders In Month
 

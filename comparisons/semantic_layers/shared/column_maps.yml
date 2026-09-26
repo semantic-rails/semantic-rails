@@ -206,6 +206,15 @@ cube:
     month: "month"
     revenue_usd: "revenue_usd"
     prior_month_revenue_usd: "prior_month_revenue_usd"
+  q21_revenue_and_large_order_revenue_by_month:
+    month: "month"
+    revenue_usd: "revenue_usd"
+    large_order_revenue_usd: "large_order_revenue_usd"
+  q22_average_and_max_item_revenue_by_product_type_by_month:
+    month: "month"
+    product_type: "product_type"
+    avg_item_revenue_usd: "avg_item_revenue_usd"
+    max_item_revenue_usd: "max_item_revenue_usd"
   q23_orders_from_customers_with_5plus_orders_in_month:
     month: "month"
     qualifying_orders: "qualifying_orders"

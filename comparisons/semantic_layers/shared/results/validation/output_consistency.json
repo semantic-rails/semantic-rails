@@ -1,6 +1,6 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
-  "generated_at": "2026-09-26T02:02:59+00:00",
+  "generated_at": "2026-09-26T02:15:31+00:00",
   "questions": [
     {
       "comparable_layers": [
@@ -16678,22 +16678,22 @@
           },
           {
             "month": "2016-12-01",
-            "qualifying_revenue_usd": 19451.92,
+            "qualifying_revenue_usd": 19451.919999999995,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-01-01",
-            "qualifying_revenue_usd": 24923.48,
+            "qualifying_revenue_usd": 24923.480000000003,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-02-01",
-            "qualifying_revenue_usd": 20033.920000000002,
+            "qualifying_revenue_usd": 20033.92,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-03-01",
-            "qualifying_revenue_usd": 27524.64,
+            "qualifying_revenue_usd": 27524.639999999996,
             "store_name": "Philadelphia"
           },
           {
@@ -16708,7 +16708,7 @@
           },
           {
             "month": "2017-04-01",
-            "qualifying_revenue_usd": 22774.050000000003,
+            "qualifying_revenue_usd": 22774.05,
             "store_name": "Philadelphia"
           },
           {
@@ -16718,12 +16718,12 @@
           },
           {
             "month": "2017-05-01",
-            "qualifying_revenue_usd": 29219.31,
+            "qualifying_revenue_usd": 29219.310000000005,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-06-01",
-            "qualifying_revenue_usd": 19267.01,
+            "qualifying_revenue_usd": 19267.010000000002,
             "store_name": "Brooklyn"
           },
           {
@@ -16733,17 +16733,17 @@
           },
           {
             "month": "2017-07-01",
-            "qualifying_revenue_usd": 20318.68,
+            "qualifying_revenue_usd": 20318.680000000004,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-07-01",
-            "qualifying_revenue_usd": 22613.709999999995,
+            "qualifying_revenue_usd": 22613.71,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-08-01",
-            "qualifying_revenue_usd": 24424.96,
+            "qualifying_revenue_usd": 24424.959999999995,
             "store_name": "Philadelphia"
           },
           {
@@ -18785,17 +18785,19 @@
     {
       "comparable_layers": [
         "semantic_rails",
+        "cube",
         "malloy",
         "ktx"
       ],
       "comparison_status": "matched",
       "current_layers": [
         "semantic_rails",
+        "cube",
         "malloy",
         "ktx"
       ],
       "layer_statuses": {
-        "cube": "not_run",
+        "cube": "executed",
         "ktx": "executed",
         "malloy": "executed",
         "metricflow": "not_run",
@@ -18863,6 +18865,68 @@
             "large_order_revenue_usd": 9694.4,
             "month": "2017-04-01",
             "revenue_usd": 83316.99
+          }
+        ],
+        "cube": [
+          {
+            "large_order_revenue_usd": 10121.240000000002,
+            "month": "2017-06-01",
+            "revenue_usd": 98378.87000000292
+          },
+          {
+            "large_order_revenue_usd": 10629.820000000002,
+            "month": "2017-08-01",
+            "revenue_usd": 107371.59000000378
+          },
+          {
+            "large_order_revenue_usd": 12161.109999999997,
+            "month": "2017-07-01",
+            "revenue_usd": 94857.19000000243
+          },
+          {
+            "large_order_revenue_usd": 2192.04,
+            "month": "2016-11-01",
+            "revenue_usd": 27916.81999999998
+          },
+          {
+            "large_order_revenue_usd": 2376.5,
+            "month": "2016-09-01",
+            "revenue_usd": 18053.280000000006
+          },
+          {
+            "large_order_revenue_usd": 2642.5699999999997,
+            "month": "2016-10-01",
+            "revenue_usd": 21923.950000000033
+          },
+          {
+            "large_order_revenue_usd": 3549.919999999999,
+            "month": "2016-12-01",
+            "revenue_usd": 35677.60000000001
+          },
+          {
+            "large_order_revenue_usd": 4959.689999999999,
+            "month": "2017-02-01",
+            "revenue_usd": 43358.11999999978
+          },
+          {
+            "large_order_revenue_usd": 5175.9,
+            "month": "2017-01-01",
+            "revenue_usd": 45017.94999999983
+          },
+          {
+            "large_order_revenue_usd": 6553.2400000000025,
+            "month": "2017-03-01",
+            "revenue_usd": 73950.32000000068
+          },
+          {
+            "large_order_revenue_usd": 7801.520000000004,
+            "month": "2017-05-01",
+            "revenue_usd": 96070.35000000297
+          },
+          {
+            "large_order_revenue_usd": 9694.399999999998,
+            "month": "2017-04-01",
+            "revenue_usd": 83316.99000000172
           }
         ],
         "ktx": [
@@ -19059,17 +19123,19 @@
     {
       "comparable_layers": [
         "semantic_rails",
+        "cube",
         "malloy",
         "ktx"
       ],
       "comparison_status": "matched",
       "current_layers": [
         "semantic_rails",
+        "cube",
         "malloy",
         "ktx"
       ],
       "layer_statuses": {
-        "cube": "not_run",
+        "cube": "executed",
         "ktx": "executed",
         "malloy": "executed",
         "metricflow": "not_run",
@@ -19188,6 +19254,152 @@
           },
           {
             "avg_item_revenue_usd": 5.596139786518497,
+            "max_item_revenue_usd": 7,
+            "month": "2017-03-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.600477200424178,
+            "max_item_revenue_usd": 7,
+            "month": "2017-04-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.60087370929309,
+            "max_item_revenue_usd": 7,
+            "month": "2016-11-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.613598489056772,
+            "max_item_revenue_usd": 7,
+            "month": "2017-06-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.6174829510229385,
+            "max_item_revenue_usd": 7,
+            "month": "2016-09-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.619268418341061,
+            "max_item_revenue_usd": 7,
+            "month": "2017-01-01",
+            "product_type": "beverage"
+          }
+        ],
+        "cube": [
+          {
+            "avg_item_revenue_usd": 11.941087613293051,
+            "max_item_revenue_usd": 14,
+            "month": "2016-12-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 11.950524737631184,
+            "max_item_revenue_usd": 14,
+            "month": "2016-09-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 11.969276882727613,
+            "max_item_revenue_usd": 14,
+            "month": "2017-03-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 11.975961538461538,
+            "max_item_revenue_usd": 14,
+            "month": "2016-10-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 11.980271270036992,
+            "max_item_revenue_usd": 14,
+            "month": "2017-02-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 11.984641638225256,
+            "max_item_revenue_usd": 14,
+            "month": "2017-05-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 11.989203384884739,
+            "max_item_revenue_usd": 14,
+            "month": "2017-07-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 11.996515679442508,
+            "max_item_revenue_usd": 14,
+            "month": "2017-01-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 11.999736980536559,
+            "max_item_revenue_usd": 14,
+            "month": "2017-08-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 12.020891364902507,
+            "max_item_revenue_usd": 14,
+            "month": "2017-06-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 12.050814332247556,
+            "max_item_revenue_usd": 14,
+            "month": "2017-04-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 12.054187192118226,
+            "max_item_revenue_usd": 14,
+            "month": "2016-11-01",
+            "product_type": "jaffle"
+          },
+          {
+            "avg_item_revenue_usd": 5.586242834809797,
+            "max_item_revenue_usd": 7,
+            "month": "2016-10-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.588603631809643,
+            "max_item_revenue_usd": 7,
+            "month": "2016-12-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.5921875,
+            "max_item_revenue_usd": 7,
+            "month": "2017-02-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.592826172644856,
+            "max_item_revenue_usd": 7,
+            "month": "2017-08-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.595030069215931,
+            "max_item_revenue_usd": 7,
+            "month": "2017-07-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.595955005113056,
+            "max_item_revenue_usd": 7,
+            "month": "2017-05-01",
+            "product_type": "beverage"
+          },
+          {
+            "avg_item_revenue_usd": 5.5961397865184965,
             "max_item_revenue_usd": 7,
             "month": "2017-03-01",
             "product_type": "beverage"
