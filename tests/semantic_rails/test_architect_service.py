@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import multiprocessing
+import threading
+import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -328,20 +331,46 @@ def test_cross_process_writers_from_one_base_are_serialized(tmp_path: Path) -> N
     assert conflict["error"]["details"]["conflict_kind"] == "stale_revision"
 
 
-def test_the_in_process_project_lock_is_shared_while_held_then_forgotten(tmp_path: Path) -> None:
+def test_in_process_project_lock_excludes_threads_across_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     project_path = _create_project(tmp_path, package_id="lock_core")
-    holder = architect_transactions.ProjectTransaction(project_path, workspace_root=tmp_path)
-    waiter = architect_transactions.ProjectTransaction(
-        project_path, workspace_root=tmp_path, lock_timeout_seconds=0.1
-    )
-    key = str(holder._lock_path)  # noqa: SLF001
+    transaction = architect_transactions.ProjectTransaction(project_path, workspace_root=tmp_path)
 
-    with holder._exclusive_lock():  # noqa: SLF001
-        assert key in architect_transactions._LOCAL_LOCKS  # noqa: SLF001
-        with pytest.raises(SemanticLayerError, match="Timed out"), waiter._exclusive_lock():  # noqa: SLF001
-            pass
+    class CountingLocks(weakref.WeakValueDictionary):
+        created = 0
 
-    assert key not in architect_transactions._LOCAL_LOCKS  # noqa: SLF001
+        def setdefault(self, key, default=None):
+            value = super().setdefault(key, default)
+            self.created += value is default
+            return value
+
+    locks = CountingLocks()
+    monkeypatch.setattr(architect_transactions, "_LOCAL_LOCKS", locks)
+    # Stub the lock file, so only the in-process lock can keep the threads apart.
+    monkeypatch.setattr(architect_transactions, "_try_file_lock", lambda _descriptor: True)
+    monkeypatch.setattr(architect_transactions, "_release_file_lock", lambda _descriptor: None)
+    inside: list[int] = []
+    seen: list[int] = []
+
+    def writer(index: int) -> None:
+        for turn in range(100):
+            with transaction._exclusive_lock():  # noqa: SLF001
+                inside.append(index)
+                seen.append(len(inside))
+                time.sleep(0.0002)
+                inside.remove(index)
+            time.sleep((index + turn) % 3 / 1000)  # lets every thread let go at times
+
+    threads = [threading.Thread(target=writer, args=(index,)) for index in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(seen) == 600 and max(seen) == 1
+    assert locks.created > 1  # the entry was collected and recreated while threads contended
+    assert str(transaction._lock_path) not in locks  # noqa: SLF001
 
 
 @pytest.mark.parametrize(
