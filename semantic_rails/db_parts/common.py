@@ -22,7 +22,8 @@ from __future__ import annotations
 import importlib
 import os
 from abc import abstractmethod
-from contextlib import suppress
+from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext, suppress
 from typing import Any
 
 from ..dialects import (
@@ -249,6 +250,26 @@ def rows_from_cursor(cursor: Any, *, limits: dict[str, Any] | None = None) -> li
     )
 
 
+def session_time_zone(limits: Mapping[str, Any] | None) -> str:
+    """The zone the runtime runs this query in (``limits["time_zone"]``), or ``""``.
+
+    DuckDB and Postgres read a ``TIMESTAMP WITH TIME ZONE`` value's clock, and compare it
+    with a plain timestamp, in the session's zone. The runtime passes the query's time-role
+    zone so that zone-aware columns bucket and filter in it, whatever the server's default.
+    """
+    return str((limits or {}).get("time_zone") or "")
+
+
+def set_duckdb_time_zone(cursor: Any, zone: str) -> None:
+    """Run this DuckDB cursor's statements in ``zone``.
+
+    A DuckDB cursor is a connection of its own, so the setting ends with the cursor and
+    never reaches the connection it came from.
+    """
+    if zone:
+        cursor.execute("SET TimeZone = '" + zone.replace("'", "''") + "'")
+
+
 class DbApiAdapter(WarehouseAdapter):
     """Base class for adapters backed by a PEP 249 (DB-API 2.0) driver.
 
@@ -287,6 +308,14 @@ class DbApiAdapter(WarehouseAdapter):
     def _reset_statement_timeout(self, cursor: Any) -> None:
         """Undo :meth:`_apply_statement_timeout`. No-op default."""
 
+    def _time_zone_scope(self, cursor: Any, zone: str) -> AbstractContextManager[Any]:
+        """Run the statement inside in ``zone`` (see :func:`session_time_zone`), never empty.
+
+        No-op default: only warehouses whose zone-aware values follow a session zone the
+        engine can scope to one query override it.
+        """
+        return nullcontext()
+
     def _error_details(self) -> dict[str, Any]:
         return redacted_error_details(self.engine, self.connection_kind, self.options)
 
@@ -304,8 +333,10 @@ class DbApiAdapter(WarehouseAdapter):
             try:
                 if use_timeout:
                     self._apply_statement_timeout(cursor, timeout_s)
-                cursor.execute(prepared.sql)
-                rows = rows_from_cursor(cursor, limits=limits)
+                zone = session_time_zone(limits)
+                with self._time_zone_scope(cursor, zone) if zone else nullcontext():
+                    cursor.execute(prepared.sql)
+                    rows = rows_from_cursor(cursor, limits=limits)
                 return restore_column_names(_clip_rows(rows, limits), prepared)
             finally:
                 if use_timeout:
