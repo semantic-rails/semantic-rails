@@ -429,7 +429,8 @@ def test_an_installed_bundled_package_builds_its_database_in_the_user_cache(
     finally:
         config_module.list_package_paths.cache_clear()
 
-    assert runtime.db_path == str(home / "cache" / "mini" / "data" / "mini.duckdb")
+    version = runtime_module.__version__
+    assert runtime.db_path == str(home / "cache" / "mini" / version / "data" / "mini.duckdb")
     assert Path(runtime.db_path).is_file()
     assert sorted(path for path in installed.rglob("*")) == before
     assert not site_packages.exists()

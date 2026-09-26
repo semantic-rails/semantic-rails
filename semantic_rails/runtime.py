@@ -25,6 +25,7 @@ from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
 
+from . import __version__
 from .acceleration.routing import (
     AGGREGATE_ROUTING_ENV,
     aggregate_routing,
@@ -1407,7 +1408,8 @@ class Runtime:
             if not _is_repo_managed_source(self.package_root):
                 # An installed bundled package builds its database in the user's cache, not
                 # beside the installed code (maybe read-only; uninstall would leave it behind).
-                return os.path.join(semantic_rails_home(), "cache", self.package_id, value)
+                cache = os.path.join(semantic_rails_home(), "cache", self.package_id, __version__)
+                return os.path.join(cache, value)  # per version: installs may ship other seeds
             return repo_candidate
         if self.prefer_package_root_assets and os.path.exists(package_candidate):
             return package_candidate
@@ -2289,22 +2291,20 @@ class Runtime:
                     "request_context": request_context_payload(context),
                 }
             )
-            # A text dimension takes any text, so only the warehouse can say a value fits its
-            # column (text for a BOOLEAN column fails there); say so rather than a clean ok.
-            text_dimensions = {
-                row.id for row in self._config.dimensions if row.data_type == "string"
-            }
-            unchecked = sorted(
-                {str(item.get("field")) for item in normalized.where} & text_dimensions
-            )
+            # Validation type-checks booleans and numbers only; for text, dates and times only the
+            # warehouse can say a value fits its column (text for a BOOLEAN column fails there).
+            untyped = {"string", "date", "timestamp"}
+            untyped_ids = {row.id for row in self._config.dimensions if row.data_type in untyped}
+            unchecked = sorted({str(item.get("field")) for item in normalized.where} & untyped_ids)
             if validation.get("ok") and unchecked:
                 validation.setdefault("warnings", []).append(
                     {
                         "code": "SEGMENT_VALUES_UNCHECKED",
                         "severity": "warning",
                         "message": (
-                            f"Membership values on text dimensions ({', '.join(unchecked)}) are "
-                            "checked in the warehouse only: preview the segment, or run "
+                            f"Membership values on text, date or time dimensions "
+                            f"({', '.join(unchecked)}) are checked in the warehouse only: preview "
+                            "the segment, or run "
                             "`semantic-rails project validate --mode runtime` (REPL: "
                             "`validate runtime`)."
                         ),

@@ -1574,7 +1574,7 @@ SEGMENT_VALUES = [
     ("tier", {COMPARISON_VALUE: iter(["high", "2"])}, 2, 1),  # a mistyped number is asked again
     ("amount", {COMPARISON_VALUE: "10"}, 10.0, 1),  # a number
 ]
-AMOUNT = "    amount: {label: Amount, kind: continuous, column: subtotal}\n"
+EXTRA_DIMENSIONS = "    amount: {label: Amount, kind: continuous, column: subtotal}\n"
 
 
 def _segment_metrics(project: Path) -> None:
@@ -1594,7 +1594,7 @@ def test_segment_values_keep_their_type_from_the_wizard_to_preview(
     _segment_metrics(project)
     orders = project / "models" / "core" / "orders.yml"
     text = orders.read_text("utf-8")
-    orders.write_text(text.replace("  measures:\n", AMOUNT + "  measures:\n", 1), "utf-8")
+    orders.write_text(text.replace("  measures:\n", EXTRA_DIMENSIONS + "  measures:\n", 1), "utf-8")
     script = _Script(
         {
             "Segment key": "s",
@@ -1626,7 +1626,7 @@ def test_segment_values_keep_their_type_from_the_wizard_to_preview(
         assert runtime.segment_preview("segment.shop.s")["member_count"] == members
     finally:
         runtime.close()
-    # Validation can type-check every value but text; for text it says only the warehouse can.
+    # Validation type-checks booleans and numbers; for text it says only the warehouse can.
     assert validated["ok"] is True
     warned = [warning["code"] for warning in validated["warnings"]]
     assert warned == (["SEGMENT_VALUES_UNCHECKED"] if dimension == "status" else [])
@@ -1696,3 +1696,61 @@ def test_a_membership_value_its_column_cannot_hold_fails_validation_with_a_hint(
     output = capsys.readouterr().out
     assert "failed=1" in output
     assert "hint: If the warehouse refused a membership value of segment.shop.s" in output
+
+
+@pytest.mark.parametrize(("data_type", "warned"), [("date", True), ("integer", False)])
+def test_segment_validate_says_which_values_only_the_warehouse_can_check(
+    tmp_path: Path, data_type: str, warned: bool
+) -> None:
+    import dataclasses
+
+    from semantic_rails.runtime import Runtime
+
+    project = _shop(tmp_path)
+    _segment_metrics(project)
+    tier = "dimension.shop_order_tier"
+    segment = {"entity": "entity.shop_order", "basis_metric": "metric.shop.revenue"}
+    segment["membership"] = {"where": [{"field": tier, "value": 2}]}
+    (project / "segments").mkdir(exist_ok=True)
+    _write_yaml(project / "segments" / "core.yml", {"segments": {"s": segment}})
+    runtime = Runtime.from_path(str(project))
+    # A date dimension is reached only through a calendar relationship; stand one in for tier.
+    dimensions = runtime._config.dimensions
+    index = next(i for i, row in enumerate(dimensions) if row.id == tier)
+    dimensions[index] = dataclasses.replace(dimensions[index], data_type=data_type)
+    try:
+        codes = [row["code"] for row in runtime.segment_validate("segment.shop.s")["warnings"]]
+    finally:
+        runtime.close()
+
+    assert ("SEGMENT_VALUES_UNCHECKED" in codes) is warned
+
+
+def test_editing_a_segment_starts_from_its_membership_field(tmp_path: Path) -> None:
+    project = _shop(tmp_path)
+    _segment_metrics(project)
+    tier, status = "dimension.shop_order_tier", "dimension.shop_order_status"
+    segment = {
+        "id": "segment.shop.s",
+        "label": "S",
+        "description": "Tier 2 orders.",
+        "entity": "entity.shop_order",
+        "basis_metric": "metric.shop.revenue",
+        "preview_dimensions": [status],
+        "membership": {"where": [{"field": tier, "op": "=", "value": 2}]},
+    }
+    (project / "segments").mkdir(exist_ok=True)
+    _write_yaml(project / "segments" / "core.yml", {"segments": {"s": segment}})
+    update = ("Manage and update this existing segment?", "Update this segment?")
+    answers = {**dict.fromkeys(update, True), "Segment key": "s"}
+
+    def where() -> list[dict[str, Any]]:
+        saved = yaml.safe_load((project / "segments" / "core.yml").read_text("utf-8"))
+        return saved["segments"]["s"]["membership"]["where"]
+
+    # Enter keeps the membership, though the first preview dimension is another field.
+    _repl(project, "author segment", _Script(answers), [])
+    assert where() == [{"field": tier, "op": "=", "value": 2}]
+    # Another field starts from its own default, not the old field's value.
+    _repl(project, "author segment", _Script({**answers, "Membership dimension": "status - "}), [])
+    assert where() == [{"field": status, "op": "=", "value": "placed"}]

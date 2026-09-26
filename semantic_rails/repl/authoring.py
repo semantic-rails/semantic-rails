@@ -1666,11 +1666,15 @@ def _author_segment(
     if not entity_dimensions:
         entity_dimensions = dimensions
     current_preview = list(current.get("preview_dimensions", []) or [])
+    current_where = list((current.get("membership", {}) or {}).get("where", []) or [])
+    current_filter = dict(current_where[0] or {}) if current_where else {}
     dimension = _select_inventory_item(
         "Membership dimension",
         entity_dimensions,
-        default_key=str(current_preview[0]) if current_preview else "",
+        default_key=str(current_filter.get("field") or (current_preview or [""])[0]),
     )
+    if current_filter.get("field") != _row_id(dimension):
+        current_filter.pop("value", None)  # a saved value belongs to its own field
     basis = _select_inventory_item(
         "Metric used when previewing segment size",
         [
@@ -1687,8 +1691,6 @@ def _author_segment(
         comparison_options.extend(
             [(">=", "At least"), (">", "Greater than"), ("<=", "At most"), ("<", "Less than")]
         )
-    current_where = list((current.get("membership", {}) or {}).get("where", []) or [])
-    current_filter = dict(current_where[0] or {}) if current_where else {}
     current_op = str(current_filter.get("op", "="))
     op = _author_choice(
         "Membership comparison",

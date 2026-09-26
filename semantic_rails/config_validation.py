@@ -1771,7 +1771,11 @@ def validate_config_report(
                 if progress is not None:
                     progress(f"WARNING metric failed: {recipe.id} ({probe['error']['code']})")
 
-        for segment in runtime._config.segments:
+        for index, segment in enumerate(runtime._config.segments, start=1):
+            if progress is not None:
+                progress(
+                    f"Validating segment {index}/{len(runtime._config.segments)}: {segment.id}"
+                )
             # Preview's query: a membership value its column can't hold fails only in the warehouse.
             query = build_segment_query(
                 normalize_segment(runtime._config, segment.id),
@@ -1782,6 +1786,8 @@ def validate_config_report(
             probes.append(probe)
             if not probe["ok"]:
                 failures.append(_probe_failure(probe))
+                if progress is not None:
+                    progress(f"WARNING segment failed: {segment.id} ({probe['error']['code']})")
 
         warnings.extend(_filter_value_warnings(runtime))
         passed = sum(1 for probe in probes if probe["ok"])

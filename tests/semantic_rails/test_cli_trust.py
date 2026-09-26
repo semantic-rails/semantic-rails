@@ -689,6 +689,22 @@ def test_day_or_coarser_time_buckets_print_as_dates_and_labels_keep_acronyms() -
     assert common._title("orders_ytd") == "Orders YTD"
 
 
+def test_a_failed_validation_probe_carries_the_recovery_hint_of_its_error() -> None:
+    from semantic_rails.config_validation import _probe_failure
+
+    error = {"dimension": "dimension.status", "data_type": "string", "value": 1}
+    probe = {
+        "kind": "metric",
+        "object_id": "metric.m",
+        "error": {"code": "INVALID_QUERY", "message": "expects a string", "details": error},
+    }
+
+    failure = _probe_failure(probe)
+
+    assert failure["details"]["object_id"] == "metric.m"
+    assert [hint["kind"] for hint in failure["recovery_hints"]] == ["fix_filter_value_type"]
+
+
 def test_a_repeated_validation_error_prints_its_count_then_its_hint(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
