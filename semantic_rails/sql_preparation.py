@@ -11,11 +11,13 @@ import hashlib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .errors import SemanticLayerError
 
 ParameterValue = str | int | bool
+# The name rule for trusted request attributes, which parameter slots name.
+ATTRIBUTE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _SLOT_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool}
 
 
@@ -33,6 +35,8 @@ class ParameterSlot:
     def __post_init__(self) -> None:
         if self.type not in _SLOT_TYPES:
             raise ValueError(f"Unsupported parameter type {self.type!r}.")
+        if type(self.attribute) is not str or not ATTRIBUTE_NAME.fullmatch(self.attribute):
+            raise ValueError("Parameter attribute names must match [a-z][a-z0-9_]{0,63}.")
 
 
 @dataclass(frozen=True)
@@ -67,12 +71,16 @@ def checked_parameter_values(
     """Values matching the slots exactly: no NULL, no coercion, no extra or missing value."""
     if len(values) != len(prepared.parameters):
         raise parameters_denied("parameter_count_mismatch")
-    for slot, value in zip(prepared.parameters, values, strict=True):
-        if value is None:
-            raise parameters_denied("missing_attribute", attribute=slot.attribute)
-        if type(value) is not _SLOT_TYPES[slot.type]:
-            raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
-    return tuple(values)
+    return tuple(map(checked_slot_value, prepared.parameters, values))
+
+
+def checked_slot_value(slot: ParameterSlot, value: Any) -> ParameterValue:
+    """The value for one slot, or a denial naming only the attribute."""
+    if value is None:
+        raise parameters_denied("missing_attribute", attribute=slot.attribute)
+    if type(value) is not _SLOT_TYPES[slot.type]:
+        raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
+    return cast(ParameterValue, value)
 
 
 def prepare_query(sql: str, warehouse: str) -> PreparedQuery:

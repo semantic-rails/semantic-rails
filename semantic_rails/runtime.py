@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -79,7 +80,7 @@ from .expressions import collect_object_references, expr_to_dict
 from .fanout import build_hop_profile
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
-from .policies import enforce_query_policies, query_policy_effects
+from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .request_context import (
@@ -301,6 +302,7 @@ def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
     return {}
 
 
+_LOG = logging.getLogger(__name__)
 _DEFAULT_PATH_PREFERENCE = 100
 
 
@@ -577,12 +579,36 @@ def _adapter_query(
             attributes = context_from_policy_context(policy_context).attributes
             slot_values = [attributes.get(slot.attribute) for slot in query.parameters]
             values = checked_parameter_values(query, slot_values)
-            return adapter.query_prepared(query, limits=limits, parameters=values)
+            try:
+                return adapter.query_prepared(query, limits=limits, parameters=values)
+            except Exception as exc:  # noqa: BLE001 — re-raised below without the driver's text
+                failure = _unchained_failure(exc, adapter, query)
+            # Raised outside the handler: driver text (a conversion error, say) can quote a
+            # bound value, so it reaches neither __cause__ nor __context__.
+            raise failure
         execute = getattr(adapter, "query_prepared", None)
         if execute is not None:
             return execute(query, limits=limits)
         return WarehouseAdapter.query_prepared(adapter, query, limits=limits)
     return query_with_limits(adapter, query, limits=limits)
+
+
+def _unchained_failure(exc: Exception, adapter: Any, query: PreparedQuery) -> SemanticLayerError:
+    engine = str(getattr(adapter, "engine", "") or "")
+    root: BaseException = exc
+    while root.__cause__ is not None:
+        root = root.__cause__
+    shape = _sql_summary(query.sql)
+    _LOG.debug(
+        "parameterized statement failed on %s: %s (sql_sha256=%s, outline=%s)",
+        engine,
+        type(root).__name__,
+        shape["sql_sha256"],
+        shape["sql_outline"],
+    )
+    if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
+        return SemanticLayerError(exc.code, str(exc), details=exc.details)
+    return query_execution_error({"engine": engine, "sql_redacted": True})
 
 
 def _data_coverage_probe(
@@ -1867,7 +1893,7 @@ class Runtime:
             refusal = _scope_refusal(payload)
             if refusal is not None:
                 raise refusal
-            binding = bind_query(self._config, self.registry, payload)
+            binding = self._bind(payload, policy_context)
             object_ids = binding.object_ids
             policy_effects = enforce_query_policies(
                 self._config,
@@ -1970,7 +1996,7 @@ class Runtime:
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
         try:
-            binding = bind_query(self._config, self.registry, payload)
+            binding = self._bind(payload, policy_context)
             object_ids = binding.object_ids
             policy_effects = enforce_query_policies(
                 self._config,
@@ -2028,7 +2054,7 @@ class Runtime:
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
         try:
-            binding = bind_query(self._config, self.registry, payload)
+            binding = self._bind(payload, policy_context)
             object_ids = binding.object_ids
             policy_effects = enforce_query_policies(
                 self._config,
@@ -2194,14 +2220,17 @@ class Runtime:
                 # still ships. The probe only fires on the zero-row path
                 # (we already paid for the original query) so the
                 # round-three "signal only, no probes" rule still holds.
-                with self._query_lock:
-                    actual_data_coverage = _data_coverage_probe(
-                        self._get_adapter(),
-                        self._config,
-                        root_entity=root_entity,
-                        temporal_role=str(time_block.get("temporal_role", "") or ""),
-                        limits=limits,
-                    )
+                # The probe reads the whole relation, so a row-filtered query skips it.
+                actual_data_coverage: dict[str, str] = {}
+                if not compiled["prepared_query"].parameters:
+                    with self._query_lock:
+                        actual_data_coverage = _data_coverage_probe(
+                            self._get_adapter(),
+                            self._config,
+                            root_entity=root_entity,
+                            temporal_role=str(time_block.get("temporal_role", "") or ""),
+                            limits=limits,
+                        )
                 # Resolve requested_window from whichever shape was supplied.
                 # When the agent uses `range.last`, the payload only has the
                 # relative window — show the resolved absolute bounds so the
@@ -2262,6 +2291,10 @@ class Runtime:
         return apply_response_verbosity(
             out, verbosity=verbosity, sql_profile=sql_profile, kind="execute"
         )
+
+    def _bind(self, payload: dict[str, Any], policy_context: dict[str, Any]) -> BoundQuery:
+        filters = row_filters_for_context(self._config, policy_context)
+        return bind_query(self._config, self.registry, payload, row_filters=filters)
 
     def _segment_policy_effects(
         self, segment_id: str, context: dict[str, Any]
@@ -2385,8 +2418,13 @@ class Runtime:
             ):
                 if effect not in query_policy_effects:
                     query_policy_effects.append(effect)
-        preview_compiled = compile_query(self._config, self.registry, preview_query)
-        membership_compiled = compile_query(self._config, self.registry, membership_query)
+        filters = row_filters_for_context(self._config, context)
+        preview_compiled = compile_query(
+            self._config, self.registry, preview_query, row_filters=filters
+        )
+        membership_compiled = compile_query(
+            self._config, self.registry, membership_query, row_filters=filters
+        )
         dialect = dialect_for_warehouse(self.warehouse)
         count_shell = dialect.prepare_query(
             'SELECT COUNT(*) AS "member_count" FROM (__SR_MEMBERSHIP__) AS "segment_members"'

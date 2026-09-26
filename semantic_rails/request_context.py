@@ -10,7 +10,6 @@ their public names are re-exported here until 0.3.3.
 
 from __future__ import annotations
 
-import re
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
@@ -32,11 +31,11 @@ from .audit import (  # noqa: F401 — audit names are re-exported from their ol
     get_audit_sink,
     set_audit_sink,
 )
+from .sql_preparation import ATTRIBUTE_NAME
 
 CONTEXT_FIELDS = ("actor", "tenant", "project", "roles", "environment", "audience")
 
 AttributeValue = str | int | bool | tuple[str, ...] | tuple[int, ...] | tuple[bool, ...]
-_ATTRIBUTE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _ATTRIBUTE_SCALARS = frozenset({str, int, bool})
 
 
@@ -71,7 +70,7 @@ class TrustedAttributes:
             raise TypeError("Trusted attributes must be a mapping of names to values.")
         checked: dict[str, AttributeValue] = {}
         for name, value in values.items():
-            if type(name) is not str or not _ATTRIBUTE_NAME.fullmatch(name):
+            if type(name) is not str or not ATTRIBUTE_NAME.fullmatch(name):
                 raise ValueError("Trusted attribute names must match [a-z][a-z0-9_]{0,63}.")
             checked[name] = _attribute_value(name, value)
         object.__setattr__(self, "_values", MappingProxyType(checked))

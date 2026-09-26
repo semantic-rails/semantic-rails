@@ -436,7 +436,10 @@ semantic aliases in result rows. Session timeout commands and row-fetch limits r
 adapter concerns. Legacy direct `query(sql)` calls use the same preparation once.
 A statement may carry typed parameter slots that the runtime binds per request
 from trusted attributes; only adapters that bind values separately execute it
-(see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)).
+(see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)). Row-filter policies produce
+them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` to the one
+scan of a filtered relation, and denies any statement that reads another
+relation, reads it twice or reads a rollup (routing is off under a row filter).
 Segment preview and count execute their prepared statements independently; the
 preview response includes both statements. Live valid-values uses the ordinary
 query path and includes the loaded semantic identity in its provenance.

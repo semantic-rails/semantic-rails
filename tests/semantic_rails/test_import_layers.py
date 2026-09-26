@@ -29,7 +29,7 @@ LAYERS = [
     " acceleration",
     "db db_parts seed_provenance",
     "config config_parts package_snapshot yaml_loader operational meta_contract",
-    "dialects sql_preparation sql_ast sql_identifiers",
+    "dialects sql_preparation sql_ast sql_identifiers row_filters",
     "ast expressions schema errors request_payload catalog_search scope",
 ]
 LAYER_OF = {key: rank for rank, keys in enumerate(LAYERS) for key in keys.split()}

@@ -70,8 +70,11 @@ headers and plans can't create or replace them (a caller's
 `request_context`, echoed queries, errors or audit events. The object is opaque
 and immutable: read it with `names` and `get(name)`. Attribute values partition
 the compile cache and bind to prepared-statement parameters at execution
-(DuckDB only; other adapters deny such statements). No package policy produces
-parameters yet.
+(DuckDB only; other adapters deny such statements). A package's `row_filter`
+policies produce those parameters: they limit a relation's rows to the
+attribute's value, and deny the request when it is missing (see
+[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)). A driver error on such a statement
+is raised without the driver's message, which could quote a bound value.
 
 For in-memory Snowflake credentials, implement the generic
 `ConnectionCredentialProvider` protocol and pass it to the public adapter:

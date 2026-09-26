@@ -32,6 +32,7 @@ from .sql_ast import (
     SqlJsonExtract,
     SqlLiteral,
     SqlNamedArg,
+    SqlParameter,
     SqlParameterizedCall,
     SqlQuery,
     SqlSelect,
@@ -183,6 +184,8 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         if expr.qualifier:
             return f"{_quote_ident(expr.qualifier)}.*"
         return "*"
+    if isinstance(expr, SqlParameter):
+        return "?"
     if isinstance(expr, SqlLiteral):
         if expr.value is None:
             return "NULL"
