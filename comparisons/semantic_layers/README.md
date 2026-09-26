@@ -11,14 +11,11 @@ compare latency, token use or cost. It runs without touching the active
   independent answer key's normalized outputs, with numbers matching within 1e-6** (Semantic
   Rails, MetricFlow, Cube, Malloy and KtX). No layer is the reference: the answer key is SQL
   written against the same views without seeing any layer's models or outputs (see *Independent
-  Answer Key* below). Every layer reads the same `comparison_*` views. Cube wasn't re-run: its
-  answers come from re-executing the SQL that Cube 1.6.32 generated on 2026-04-07, because Cube
-  itself can't be reinstalled until the captured lockfile's dependency advisories are resolved.
-  On every question whose data didn't change, that replay returns the rows Cube returned, with
-  numbers equal to within 1e-9.
-- **Snowflake Semantic Views is a stale capture.** It ran on 2026-04-07 on an earlier dataset,
-  whose lifecycle view held only the 11 hand-authored lifecycle rows, and it can't be re-run
-  without a live account. The output check reports it separately: it matches the answer key on
+  Answer Key* below). Every layer reads the same `comparison_*` views, and all five ran live on
+  2026-09-25 for this capture.
+- **Snowflake Semantic Views is a stale April capture.** It ran on 2026-04-07 on an earlier
+  dataset, whose lifecycle view held only the 11 hand-authored lifecycle rows, and it can't be
+  re-run or re-authored without a live account. The output check reports it separately: it matches the answer key on
   14 questions and differs on q07 and q16, the two questions that read lifecycle data. The
   per-question report is
   [`shared/results/validation/output_consistency.md`](shared/results/validation/output_consistency.md).
@@ -34,40 +31,44 @@ compare latency, token use or cost. It runs without touching the active
   are scored separately below.
 - **Every support label comes from one executable rubric.** `shared/scripts/apply_rubric.py`
   applies the same rules to every layer, Semantic Rails included, and publishes the evidence for
-  each label; [`shared/rubric.md`](shared/rubric.md) states the rules. Every layer answers q11
-  and q12 from the precomputed customer columns (`lifetime_order_count`, `lifetime_spend_cents`),
-  so all six are labeled `precomputed` there. The Semantic Rails authors wrote every layer's
-  models, and several layers are not yet modeled with native features they ship: MetricFlow
-  conversion metrics and metric filters, Cube multi-fact queries, multi-stage measures and
-  subquery dimensions, Malloy arbitrary-condition joins and query-derived join sources, and
-  Snowflake range joins. KtX's `ktx-sl` hasn't been reviewed for native alternatives. A
-  `workaround` label describes this pack's model of a layer, not the layer itself. Until every
-  layer is modeled with the features it ships, nothing in this pack shows that Semantic Rails is
-  better at q08-q16.
+  each label; [`shared/rubric.md`](shared/rubric.md) states the rules. Semantic Rails,
+  Snowflake Semantic Views and KtX answer q11 and q12 from the precomputed customer columns
+  (`lifetime_order_count`, `lifetime_spend_cents`), so they are labeled `precomputed` there;
+  MetricFlow, Cube and Malloy compute those rollups from orders and are labeled `native`.
+- **Every runnable competitor is modeled idiomatically on its current version.** The Semantic
+  Rails authors wrote every layer's models. MetricFlow, Cube, Malloy and KtX were re-authored
+  with the features they ship: MetricFlow conversion metrics and metric filters, Cube
+  multi-fact queries, multi-stage measures and subquery dimensions, Malloy arbitrary-condition
+  joins and query-derived sources. KtX's `ktx-sl` was reviewed for native alternatives: its
+  joins are equality-only and it has no query-derived sources, so its `workaround` labels stand.
+  Its SQL sources are standalone per-question fact tables rather than bridge sources joined to
+  `orders`, a known gap in this pack's KtX model (see `ktx/README.md`). Snowflake range joins
+  aren't modeled, because the capture can't be re-run. A `workaround` label describes this
+  pack's model of a layer, not the layer itself. Nothing in this pack claims that any layer,
+  Semantic Rails included, is better than another.
 
 ## Versions And Captures
 
 | Layer | Version | Captured (UTC) | Re-runnable from this repo |
 | --- | --- | --- | --- |
-| Semantic Rails | 0.2.1 | 2026-09-23 | yes |
-| MetricFlow | `dbt-metricflow 0.11.0`, `dbt-duckdb 1.10.1` (`metricflow/requirements.lock`) | 2026-09-23 | yes; installs the locked packages |
-| Cube | `1.6.32` | SQL captured 2026-04-07; re-executed 2026-09-23 | the captured SQL re-executes; Cube itself can't be reinstalled until the captured lockfile's dependency advisories are resolved |
-| Malloy | `@malloydata/cli 0.0.52` | 2026-09-23 | yes; installs the locked CLI |
-| Snowflake Semantic Views | Snowflake CLI + semantic view trial account | 2026-04-07, on an earlier dataset | needs a live Snowflake account |
-| KtX | `ktx-sl 0.13.1` / KtX `a155c0b` | 2026-09-23 | yes; clones KtX at `a155c0b` |
+| Semantic Rails | 0.3.1, not a release (engine tree `e398685`, `main` after v0.3.1) | 2026-09-25 | yes |
+| MetricFlow | `dbt-metricflow 0.15.0` (`metricflow 0.213.0`), `dbt-core 1.12.5`, `dbt-duckdb 1.11.0` (`metricflow/requirements.lock`) | 2026-09-25 | yes; installs the locked packages |
+| Cube | Cube Core `1.7.45` (`@cubejs-backend/server`, `@cubejs-backend/duckdb-driver`; `cube/package-lock.json`) | 2026-09-25 | yes, on darwin-arm64 (the only platform whose native binary is pinned); installs the locked packages and starts Cube locally |
+| Malloy | `@malloydata/cli 0.0.57` (`malloy/package-lock.json`) | 2026-09-25 | yes; installs the locked CLI |
+| Snowflake Semantic Views | Snowflake CLI + semantic view trial account | stale: 2026-04-07, on an earlier dataset | needs a live Snowflake account |
+| KtX | `@kaelio/ktx 0.16.0` (its bundled `ktx-sl` wheel, pinned by sha256) | 2026-09-25 | yes; fetches the npm package and checks the wheel's hash |
 
-Dates are UTC. Cube's captured results record `lastRefreshTime` 2026-04-07T03:04:57Z, and
-Snowflake's summary records `2026-04-06T23:05:57-04:00`. Each runner records its tool versions,
+Dates are UTC. Snowflake's summary records `2026-04-06T23:05:57-04:00`. Each runner records its tool versions,
 run timestamp and dataset fingerprint in its `summary.json` under `shared/results/`. The
 fingerprint hashes the seed files and the `comparison_*` view definitions, so the output check
 can tell a capture made on other data from a real mismatch.
 
 The Semantic Rails runner also records the source trees of its engine, its package, its queries
 and runner, and the question suite, and whether the engine is exactly a tagged release. The
-committed Semantic Rails evidence ran on the v0.2.1 engine: its engine tree equals
-`git rev-parse v0.2.1:semantic_rails`. The commit it records may not survive a squash merge, but
-the tree hashes do. Re-running from a later commit whose engine differs is labeled "0.2.1, not a
-release (engine tree …)" wherever the version is shown.
+committed Semantic Rails evidence ran on an engine after the v0.3.1 release: its engine tree,
+`e398685`, is `main`'s engine tree at `62a0b26`, not `git rev-parse v0.3.1:semantic_rails`, so it is
+labeled "0.3.1, not a release (engine tree e398685)" wherever the version is shown. The commit it
+records may not survive a squash merge, but the tree hashes do.
 
 ## Shared Questions: q01-q07
 
@@ -78,7 +79,7 @@ sum and group-by-month surface every layer in the pack was built to answer.
 | --- | --- |
 | Semantic Rails | 7 native |
 | MetricFlow | 7 native |
-| Cube | 6 native, 1 workaround (q05, through a helper cube; Cube's multi-fact queries not modeled yet) |
+| Cube | 7 native |
 | Malloy | 7 native |
 | Snowflake Semantic Views | 7 native |
 | KtX | 7 native |
@@ -94,11 +95,11 @@ each layer today. It is not a ranking.
 | Layer | Support labels | How this pack models the layer |
 | --- | --- | --- |
 | Semantic Rails | 7 native, 2 precomputed (q11, q12) | Semantic-model primitives; q11 and q12 filter on the precomputed customer columns |
-| MetricFlow | 2 native (q08, q16), 5 workaround, 2 precomputed | Validity-windowed semantic models for q08 and q16, helper dbt views for the rest; native conversion metrics and metric filters not modeled yet |
-| Cube | 1 native (q08), 6 workaround, 2 precomputed | q08 through a declared join carrying the validity condition, helper cubes for q09, q10 and q13-q16, and filters on joined rollup columns for q11 and q12; multi-fact queries, multi-stage measures and subquery dimensions not modeled yet |
-| Malloy | 7 workaround, 2 precomputed | SQL sources, and query-level filters on the rollup columns for q11 and q12; arbitrary-condition joins and query-derived join sources not modeled yet |
-| Snowflake Semantic Views | 7 workaround, 2 precomputed | SQL on the same tables outside `SEMANTIC_VIEW(...)`; range joins not modeled yet |
-| KtX | 7 workaround, 2 precomputed | SQL-backed sources, and query-level filters on the rollup columns for q11 and q12 |
+| MetricFlow | 9 native | Validity-windowed semantic models (q08, q16), conversion metrics with constant properties (q09, q15), and metric filters (q10-q14); q10, q13 and q14 group their filters by surrogate entities defined with `expr` |
+| Cube | 9 native | Declared joins carrying validity and 7-day windows (q08, q09, q15, q16), subquery dimensions (q09, q11, q12, q15), and multi-stage measures at a fixed customer-month or customer-store-month grain (q10, q13, q14) |
+| Malloy | 9 native | Arbitrary-condition joins (q08, q09, q15, q16) and query-derived sources joined back to orders (q10-q14) |
+| Snowflake Semantic Views | 7 workaround, 2 precomputed | Stale capture: SQL on the same tables outside `SEMANTIC_VIEW(...)`; range joins not modeled, since the capture can't be re-run |
+| KtX | 7 workaround, 2 precomputed | SQL-backed sources (its joins are equality-only; they are standalone per-question fact tables, a known gap described in `ktx/README.md`), and query-level filters on the rollup columns for q11 and q12 |
 
 Output check: 9 of 9 match the answer key across the five layers checked on the current dataset.
 
@@ -148,9 +149,9 @@ instead of being guessed from its name.
 - `metricflow/`
   Minimal dbt + MetricFlow project on the shared DuckDB dataset.
 - `cube/`
-  Captured Cube Core models, queries, runner source, results, non-installable original lock graph, raw audit, normalized SBOM, and an offline verifier.
+  Cube Core project: models, REST queries, the locked npm install, its recorded `npm audit`, a live runner, and an offline check of the install surface.
 - `malloy/`
-  Minimal Malloy project with native baseline queries and SQL-source stretch workarounds.
+  Minimal Malloy project: one model with a named query per question.
 - `snowflake_semantic_views/`
   Executed Snowflake Semantic Views pack, trial-account setup assets, and query runner.
 - `ktx/`
@@ -164,7 +165,7 @@ instead of being guessed from its name.
   - `cube/node_modules`, `cube/.cubestore`
   - `malloy/node_modules`, `malloy/.home`, `malloy/.cache`
   - `snowflake_semantic_views/trial_data/*.csv`
-- Executed result artifacts under `shared/results/` are kept because they are part of the comparison evidence. `shared/results/cube/` is Cube's pinned capture; `shared/results/cube_sql_replay/` re-executes its SQL on the current dataset.
+- Executed result artifacts under `shared/results/` are kept because they are part of the comparison evidence.
 
 ## Reproduce
 
@@ -180,25 +181,28 @@ instead of being guessed from its name.
    uv run python comparisons/semantic_layers/semantic_rails/scripts/run_questions.py
    ```
 
-3. Execute the external runnable layers. Cube remains captured evidence only
-   until its upstream npm graph is free of unresolved high/critical advisories:
+3. Execute the external runnable layers. Cube needs its locked npm install first, plus the
+   prebuilt native binary that one `postinstall` downloads and `cube/index.js` pins by sha256
+   (see [`cube/README.md`](cube/README.md)):
 
    ```bash
+   (cd comparisons/semantic_layers/cube && CUBESTORE_SKIP_POST_INSTALL=true npm ci --ignore-scripts \
+     && npm rebuild @cubejs-backend/native)
    uv run python comparisons/semantic_layers/metricflow/scripts/run_questions.py
+   uv run python comparisons/semantic_layers/cube/scripts/run_questions.py
    uv run python comparisons/semantic_layers/malloy/scripts/run_questions.py
-   test -d /tmp/ktx-compare || git clone https://github.com/Kaelio/ktx /tmp/ktx-compare
-   git -C /tmp/ktx-compare checkout a155c0b
-   PYTHONPATH=/tmp/ktx-compare/python/ktx-sl \
-     uv run --with sqlglot==30.19.0 --with pydantic==2.13.4 --with pyyaml==6.0.3 \
+   uv run --with sqlglot==30.19.0 --with pydantic==2.13.5 --with pyyaml==6.0.3 \
      python comparisons/semantic_layers/ktx/scripts/run_questions.py
    ```
 
-4. Verify the Cube capture without installing its vulnerable npm graph, then re-execute its
-   captured SQL on the current dataset:
+   Run them one at a time: MetricFlow's `dbt build` writes to the shared DuckDB, and DuckDB
+   allows one writer at a time.
+
+4. Check the Cube install surface offline (exact pins, registry-only lockfile, and a recorded
+   `npm audit` with no high or critical advisory):
 
    ```bash
    python3 comparisons/semantic_layers/cube/scripts/verify_evidence.py
-   uv run python comparisons/semantic_layers/cube/scripts/replay_sql.py
    ```
 
 5. Rebuild the Snowflake trial pack with the default `semantic_views_trial` connection:

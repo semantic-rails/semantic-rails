@@ -30,12 +30,7 @@ RUNNABLE_LAYERS = [
 # The reference is the independent answer key (shared/oracle/), not one of the layers.
 ANSWER_KEY = "answer_key"
 COLUMN_MAPS_PATH = SHARED_ROOT / "column_maps.yml"
-# Cube can't be re-run until its dependency advisories are resolved; its captured SQL is
-# re-executed on the current dataset instead (cube/scripts/replay_sql.py).
-RESULT_DIRS = {layer: layer for layer in RUNNABLE_LAYERS} | {
-    "cube": "cube_sql_replay",
-    ANSWER_KEY: "oracle",
-}
+RESULT_DIRS = {layer: layer for layer in RUNNABLE_LAYERS} | {ANSWER_KEY: "oracle"}
 DECIMAL_TOLERANCE = Decimal("0.000001")
 NUMERIC_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 # Published scoring keeps the 7 shared questions apart from the 9 that were chosen to

@@ -1,7 +1,7 @@
 {
-  "measures": ["qualified_orders.qualifying_orders"],
+  "measures": ["orders.orders_from_customers_with_10plus_orders_in_month"],
   "timeDimensions": [
-    { "dimension": "qualified_orders.ordered_month", "granularity": "month" }
+    { "dimension": "orders.ordered_at", "granularity": "month" }
   ],
-  "order": { "qualified_orders.ordered_month": "asc" }
+  "order": { "orders.ordered_at": "asc" }
 }

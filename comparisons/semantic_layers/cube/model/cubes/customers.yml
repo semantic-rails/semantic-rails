@@ -2,6 +2,11 @@ cubes:
   - name: customers
     sql_table: comparison_customers
 
+    joins:
+      - name: orders
+        relationship: one_to_many
+        sql: "{CUBE}.customer_id = {orders.customer_id}"
+
     dimensions:
       - name: customer_id
         sql: customer_id
@@ -16,14 +21,13 @@ cubes:
         sql: customer_type
         type: string
 
-      - name: lifetime_order_count
-        sql: lifetime_order_count
+      # Subquery dimensions: each customer's orders measures over all their orders (q11, q12).
+      - name: lifetime_orders
+        sql: "{orders.order_count}"
         type: number
+        sub_query: true
 
       - name: lifetime_spend_usd
-        sql: "lifetime_spend_cents / 100.0"
+        sql: "{orders.revenue_usd}"
         type: number
-
-      - name: first_order_at
-        sql: first_order_at
-        type: time
+        sub_query: true

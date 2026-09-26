@@ -2,161 +2,161 @@
   {
     "delivered_month": "2016-09-01 00:00:00",
     "customer_segment": "new",
-    "delivered_revenue_total_usd": 575.58
+    "delivered_revenue_usd": 575.58
   },
   {
     "delivered_month": "2016-09-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 17477.700000000008
+    "delivered_revenue_usd": 17477.7
   },
   {
     "delivered_month": "2016-10-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 21277.360000000004
+    "delivered_revenue_usd": 21277.36
   },
   {
     "delivered_month": "2016-10-01 00:00:00",
     "customer_segment": "new",
-    "delivered_revenue_total_usd": 646.5900000000003
-  },
-  {
-    "delivered_month": "2016-11-01 00:00:00",
-    "customer_segment": "new",
-    "delivered_revenue_total_usd": 488.64000000000027
+    "delivered_revenue_usd": 646.59
   },
   {
     "delivered_month": "2016-11-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 27428.180000000037
+    "delivered_revenue_usd": 27428.18
+  },
+  {
+    "delivered_month": "2016-11-01 00:00:00",
+    "customer_segment": "new",
+    "delivered_revenue_usd": 488.64
   },
   {
     "delivered_month": "2016-12-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 34952.61000000004
+    "delivered_revenue_usd": 34952.61
   },
   {
     "delivered_month": "2016-12-01 00:00:00",
     "customer_segment": "new",
-    "delivered_revenue_total_usd": 724.9900000000002
+    "delivered_revenue_usd": 724.99
   },
   {
     "delivered_month": "2017-01-01 00:00:00",
     "customer_segment": "repeat",
-    "delivered_revenue_total_usd": 218.35
+    "delivered_revenue_usd": 218.35
   },
   {
     "delivered_month": "2017-01-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 44504.93000000001
+    "delivered_revenue_usd": 44504.93
   },
   {
     "delivered_month": "2017-01-01 00:00:00",
     "customer_segment": "new",
-    "delivered_revenue_total_usd": 294.67000000000013
-  },
-  {
-    "delivered_month": "2017-02-01 00:00:00",
-    "customer_segment": "new",
-    "delivered_revenue_total_usd": 376.29000000000013
-  },
-  {
-    "delivered_month": "2017-02-01 00:00:00",
-    "customer_segment": "repeat",
-    "delivered_revenue_total_usd": 147.32999999999998
+    "delivered_revenue_usd": 294.67
   },
   {
     "delivered_month": "2017-02-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 42834.49999999988
+    "delivered_revenue_usd": 42834.5
+  },
+  {
+    "delivered_month": "2017-02-01 00:00:00",
+    "customer_segment": "repeat",
+    "delivered_revenue_usd": 147.33
+  },
+  {
+    "delivered_month": "2017-02-01 00:00:00",
+    "customer_segment": "new",
+    "delivered_revenue_usd": 376.29
+  },
+  {
+    "delivered_month": "2017-03-01 00:00:00",
+    "customer_segment": "new",
+    "delivered_revenue_usd": 414.43
   },
   {
     "delivered_month": "2017-03-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 73321.77000000008
-  },
-  {
-    "delivered_month": "2017-03-01 00:00:00",
-    "customer_segment": "new",
-    "delivered_revenue_total_usd": 414.4300000000003
+    "delivered_revenue_usd": 73321.77
   },
   {
     "delivered_month": "2017-03-01 00:00:00",
     "customer_segment": "repeat",
-    "delivered_revenue_total_usd": 214.11999999999998
-  },
-  {
-    "delivered_month": "2017-04-01 00:00:00",
-    "customer_segment": "new",
-    "delivered_revenue_total_usd": 362.5000000000002
+    "delivered_revenue_usd": 214.12
   },
   {
     "delivered_month": "2017-04-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 82682.07000000101
+    "delivered_revenue_usd": 82682.07
   },
   {
     "delivered_month": "2017-04-01 00:00:00",
     "customer_segment": "repeat",
-    "delivered_revenue_total_usd": 272.42
+    "delivered_revenue_usd": 272.42
+  },
+  {
+    "delivered_month": "2017-04-01 00:00:00",
+    "customer_segment": "new",
+    "delivered_revenue_usd": 362.5
+  },
+  {
+    "delivered_month": "2017-05-01 00:00:00",
+    "customer_segment": null,
+    "delivered_revenue_usd": 95395.17
+  },
+  {
+    "delivered_month": "2017-05-01 00:00:00",
+    "customer_segment": "repeat",
+    "delivered_revenue_usd": 278.78
   },
   {
     "delivered_month": "2017-05-01 00:00:00",
     "customer_segment": "new",
-    "delivered_revenue_total_usd": 396.4000000000003
-  },
-  {
-    "delivered_month": "2017-05-01 00:00:00",
-    "customer_segment": null,
-    "delivered_revenue_total_usd": 95395.17000000286
-  },
-  {
-    "delivered_month": "2017-05-01 00:00:00",
-    "customer_segment": "repeat",
-    "delivered_revenue_total_usd": 278.78000000000003
-  },
-  {
-    "delivered_month": "2017-06-01 00:00:00",
-    "customer_segment": "new",
-    "delivered_revenue_total_usd": 348.73000000000025
-  },
-  {
-    "delivered_month": "2017-06-01 00:00:00",
-    "customer_segment": null,
-    "delivered_revenue_total_usd": 97728.07000000266
+    "delivered_revenue_usd": 396.4
   },
   {
     "delivered_month": "2017-06-01 00:00:00",
     "customer_segment": "repeat",
-    "delivered_revenue_total_usd": 302.07
+    "delivered_revenue_usd": 302.07
   },
   {
-    "delivered_month": "2017-07-01 00:00:00",
+    "delivered_month": "2017-06-01 00:00:00",
+    "customer_segment": null,
+    "delivered_revenue_usd": 97728.07
+  },
+  {
+    "delivered_month": "2017-06-01 00:00:00",
     "customer_segment": "new",
-    "delivered_revenue_total_usd": 374.1500000000002
+    "delivered_revenue_usd": 348.73
   },
   {
     "delivered_month": "2017-07-01 00:00:00",
     "customer_segment": "repeat",
-    "delivered_revenue_total_usd": 377.34999999999997
+    "delivered_revenue_usd": 377.35
+  },
+  {
+    "delivered_month": "2017-07-01 00:00:00",
+    "customer_segment": "new",
+    "delivered_revenue_usd": 374.15
   },
   {
     "delivered_month": "2017-07-01 00:00:00",
     "customer_segment": null,
-    "delivered_revenue_total_usd": 94105.69000000243
-  },
-  {
-    "delivered_month": "2017-08-01 00:00:00",
-    "customer_segment": null,
-    "delivered_revenue_total_usd": 106851.15000000386
+    "delivered_revenue_usd": 94105.69
   },
   {
     "delivered_month": "2017-08-01 00:00:00",
     "customer_segment": "repeat",
-    "delivered_revenue_total_usd": 171.72
+    "delivered_revenue_usd": 171.72
+  },
+  {
+    "delivered_month": "2017-08-01 00:00:00",
+    "customer_segment": null,
+    "delivered_revenue_usd": 106851.15
   },
   {
     "delivered_month": "2017-08-01 00:00:00",
     "customer_segment": "new",
-    "delivered_revenue_total_usd": 348.7200000000003
+    "delivered_revenue_usd": 348.72
   }
 ]

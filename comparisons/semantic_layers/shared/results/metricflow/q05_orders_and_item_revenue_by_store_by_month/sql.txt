@@ -1,16 +1,12 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
 
 ⠙ Initiating query…
-✔ Success 🦄 - query completed after 0.07 seconds
+✔ Success 🦄 - query completed after 0.04 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
-WITH rss_10013_cte AS (
+WITH rss_10007_cte AS (
   SELECT
     store_name
     , store_id AS store
@@ -18,58 +14,58 @@ WITH rss_10013_cte AS (
 )
 
 SELECT
-  COALESCE(subq_7.metric_time__month, subq_15.metric_time__month) AS metric_time__month
-  , COALESCE(subq_7.store__store_name, subq_15.store__store_name) AS store__store_name
-  , MAX(subq_7.orders) AS orders
-  , MAX(subq_15.item_revenue_usd) AS item_revenue_usd
+  COALESCE(subq_8.metric_time__month, subq_17.metric_time__month) AS metric_time__month
+  , COALESCE(subq_8.store__store_name, subq_17.store__store_name) AS store__store_name
+  , MAX(subq_8.orders) AS orders
+  , MAX(subq_17.item_revenue_usd) AS item_revenue_usd
 FROM (
   SELECT
     subq_1.metric_time__month AS metric_time__month
-    , rss_10013_cte.store_name AS store__store_name
-    , SUM(subq_1.orders) AS orders
+    , rss_10007_cte.store_name AS store__store_name
+    , SUM(subq_1.__orders) AS orders
   FROM (
     SELECT
       DATE_TRUNC('month', ordered_at) AS metric_time__month
       , store_id AS store
-      , 1 AS orders
+      , 1 AS __orders
     FROM "jaffle_comparison"."main"."orders" orders_src_10000
   ) subq_1
   LEFT OUTER JOIN
-    rss_10013_cte
+    rss_10007_cte
   ON
-    subq_1.store = rss_10013_cte.store
+    subq_1.store = rss_10007_cte.store
   GROUP BY
     subq_1.metric_time__month
-    , rss_10013_cte.store_name
-) subq_7
+    , rss_10007_cte.store_name
+) subq_8
 FULL OUTER JOIN (
   SELECT
-    subq_9.metric_time__month AS metric_time__month
-    , rss_10013_cte.store_name AS store__store_name
-    , SUM(subq_9.item_revenue_usd) AS item_revenue_usd
+    subq_10.metric_time__month AS metric_time__month
+    , rss_10007_cte.store_name AS store__store_name
+    , SUM(subq_10.__item_revenue_usd) AS item_revenue_usd
   FROM (
     SELECT
       DATE_TRUNC('month', ordered_at) AS metric_time__month
       , store_id AS store
-      , item_revenue_cents / 100.0 AS item_revenue_usd
+      , item_revenue_cents / 100.0 AS __item_revenue_usd
     FROM "jaffle_comparison"."main"."order_items" order_items_src_10000
-  ) subq_9
+  ) subq_10
   LEFT OUTER JOIN
-    rss_10013_cte
+    rss_10007_cte
   ON
-    subq_9.store = rss_10013_cte.store
+    subq_10.store = rss_10007_cte.store
   GROUP BY
-    subq_9.metric_time__month
-    , rss_10013_cte.store_name
-) subq_15
+    subq_10.metric_time__month
+    , rss_10007_cte.store_name
+) subq_17
 ON
   (
-    subq_7.store__store_name = subq_15.store__store_name
+    subq_8.store__store_name = subq_17.store__store_name
   ) AND (
-    subq_7.metric_time__month = subq_15.metric_time__month
+    subq_8.metric_time__month = subq_17.metric_time__month
   )
 GROUP BY
-  COALESCE(subq_7.metric_time__month, subq_15.metric_time__month)
-  , COALESCE(subq_7.store__store_name, subq_15.store__store_name)
+  COALESCE(subq_8.metric_time__month, subq_17.metric_time__month)
+  , COALESCE(subq_8.store__store_name, subq_17.store__store_name)
 ORDER BY metric_time__month
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from datetime import UTC, datetime
@@ -21,7 +22,6 @@ DBT_BIN = PROJECT_DIR / ".venv" / "bin" / "dbt"
 RECORDED_PACKAGES = [
     "dbt-metricflow",
     "metricflow",
-    "dbt-semantic-interfaces",
     "dbt-core",
     "dbt-duckdb",
     "duckdb",
@@ -135,9 +135,11 @@ QUESTION_COMMANDS = {
     "q12_orders_by_month_with_lifetime_spend_500_filter": [
         "query",
         "--metrics",
-        "filtered_orders_lifetime_spend_500",
+        "orders",
         "--group-by",
         "metric_time__month",
+        "--where",
+        '{{ Metric("revenue_usd", group_by=["customer"]) }} >= 500',
         "--order",
         "metric_time__month",
     ],
@@ -252,7 +254,7 @@ def main() -> None:
         data_command = [str(MF_BIN), *args, "--quiet", "--csv", str(result_csv)]
         query_file = PROJECT_DIR / "queries" / f"{question_id}.txt"
         query_file.parent.mkdir(parents=True, exist_ok=True)
-        query_file.write_text(" ".join(args) + "\n", encoding="utf-8")
+        query_file.write_text(shlex.join(args) + "\n", encoding="utf-8")
 
         explained = _run(explain_command, cwd=PROJECT_DIR)
         executed = _run(data_command, cwd=PROJECT_DIR)

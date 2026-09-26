@@ -1,7 +1,3 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
@@ -9,18 +5,45 @@
 ⠙ Initiating query…
 
 ⠹ Initiating query…
-✔ Success 🦄 - query completed after 0.11 seconds
+✔ Success 🦄 - query completed after 0.09 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
-SELECT
-  metric_time__month
-  , SUM(filtered_orders_lifetime_spend_500) AS filtered_orders_lifetime_spend_500
-FROM (
+WITH sma_10003_cte AS (
   SELECT
     DATE_TRUNC('month', ordered_at) AS metric_time__month
-    , 1 AS filtered_orders_lifetime_spend_500
-  FROM "jaffle_comparison"."main"."high_value_orders_500" high_value_orders_500_src_10000
-) subq_2
+    , customer_id AS customer
+    , 1 AS __orders
+    , order_total_cents / 100.0 AS __revenue_usd
+  FROM "jaffle_comparison"."main"."orders" orders_src_10000
+)
+
+SELECT
+  metric_time__month AS metric_time__month
+  , SUM(orders) AS orders
+FROM (
+  SELECT
+    subq_5.metric_time__month AS metric_time__month
+    , subq_11.customer__revenue_usd AS customer__revenue_usd
+    , subq_5.__orders AS orders
+  FROM (
+    SELECT
+      metric_time__month
+      , customer
+      , __orders
+    FROM sma_10003_cte
+  ) subq_5
+  LEFT OUTER JOIN (
+    SELECT
+      customer
+      , SUM(__revenue_usd) AS customer__revenue_usd
+    FROM sma_10003_cte
+    GROUP BY
+      customer
+  ) subq_11
+  ON
+    subq_5.customer = subq_11.customer
+) subq_13
+WHERE customer__revenue_usd >= 500
 GROUP BY
   metric_time__month
 ORDER BY metric_time__month

@@ -1,7 +1,7 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
-  "engine_release": "v0.2.1",
-  "generated_at": "2026-09-23T02:57:04+00:00",
+  "engine_release": null,
+  "generated_at": "2026-09-25T23:06:57+00:00",
   "inputs_modified": false,
   "layer": "semantic_rails",
   "layer_tree": "398270fc9d8903b89eb15a264965fc2484681d5c",
@@ -138,7 +138,7 @@
     }
   ],
   "questions_blob": "7c0154b68212d2f16248d41f2d3aef9110463747",
-  "semantic_rails_commit": "a0ebd6325ac81606c0ce6db391df9d15959e6d86",
-  "semantic_rails_tree": "e78ee078a4e5d3d6bcd05262461f8a7e465a57fb",
-  "semantic_rails_version": "0.2.1"
+  "semantic_rails_commit": "6a2f642e85738b9de41794702eaa15f809424fd7",
+  "semantic_rails_tree": "e39868575072e022822697fc1d570dca17e0c99e",
+  "semantic_rails_version": "0.3.1"
 }

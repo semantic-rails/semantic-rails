@@ -24,7 +24,10 @@ fast enough for the default test run.
 
 from __future__ import annotations
 
+import json
 import re
+import runpy
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -384,35 +387,51 @@ def test_distribution_boundary_gate_rejects_private_paths_and_symbols():
     assert forbidden_symbols["private client type"] == ["semantic_rails/cloud_client_boundary.py"]
 
 
-def test_node_dependency_audits_are_ci_gates_and_unsafe_cube_graph_is_not_shipped():
+def test_node_dependency_audits_are_ci_gates_and_the_cube_install_is_locked():
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "uv export --quiet --format requirements-txt --all-extras" in ci
     assert "deploy/cloudflare" not in ci
     assert "npm audit --prefix comparisons/semantic_layers/malloy --audit-level=high" in ci
+    # Cube's install surface: exact pins, a committed lockfile and a recorded audit, which CI
+    # checks offline.
     cube = REPO_ROOT / "comparisons" / "semantic_layers" / "cube"
-    assert not (cube / "package.json").exists()
-    assert not (cube / "package-lock.json").exists()
-    for evidence_file in (
-        "original-package.json.evidence",
-        "original-package-lock.json.evidence",
-        "npm-audit.json.evidence",
-        "sbom.cdx.json.evidence",
-        "evidence-manifest.json",
-        "scripts/verify_evidence.py",
-    ):
-        assert (cube / evidence_file).is_file()
+    for path in ("package.json", "package-lock.json", "npm-audit.json"):
+        assert (cube / path).is_file()
     assert "python3 comparisons/semantic_layers/cube/scripts/verify_evidence.py" in ci
-    snapshot = (cube / "runtime-snapshot.json").read_text(encoding="utf-8")
-    assert '"status": "captured-evidence-only"' in snapshot
-    for evidence in (
-        "security_audit_date",
-        "node_version",
-        "package_lock_sha256",
-        "CycloneDX",
-        "component_count",
-        "manifest_sha256",
-    ):
-        assert evidence in snapshot
+    assert runpy.run_path(str(cube / "scripts" / "verify_evidence.py"))["errors"]() == []
+
+
+def _first_locked(lock: dict) -> dict:
+    return next(meta for path, meta in lock["packages"].items() if path)
+
+
+@pytest.mark.parametrize(
+    ("name", "edit", "error"),
+    [
+        ("package.json", lambda d: d["dependencies"].update(x="^1.0.0"), "isn't an exact version"),
+        ("package-lock.json", lambda d: d.update(name="changed"), "audits another package-lock"),
+        (
+            "package-lock.json",
+            lambda d: _first_locked(d).update(resolved="https://example.com/x.tgz"),
+            "doesn't resolve from",
+        ),
+        ("package-lock.json", lambda d: _first_locked(d).pop("integrity"), "no sha512 integrity"),
+        (
+            "npm-audit.json",
+            lambda d: d["report"]["metadata"]["vulnerabilities"].update(high=1),
+            "reports 1 high advisories",
+        ),
+    ],
+)
+def test_the_cube_install_check_refuses_a_loose_or_unaudited_install(tmp_path, name, edit, error):
+    cube = REPO_ROOT / "comparisons" / "semantic_layers" / "cube"
+    for path in ("package.json", "package-lock.json", "npm-audit.json"):
+        shutil.copy(cube / path, tmp_path / path)
+    data = json.loads((tmp_path / name).read_text(encoding="utf-8"))
+    edit(data)
+    (tmp_path / name).write_text(json.dumps(data), encoding="utf-8")
+    found = runpy.run_path(str(cube / "scripts" / "verify_evidence.py"))["errors"](tmp_path)
+    assert any(error in message for message in found), found
 
 
 def test_contract_and_release_boundaries_have_codeowners():

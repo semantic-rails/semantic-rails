@@ -20,8 +20,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.392,
-      "compile_ms": 0.348,
+      "cache_lookup_ms": 0.395,
+      "compile_ms": 0.118,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -97,6 +97,7 @@
       "measure_plans": [
         {
           "aggregate_relation_id": "",
+          "aggregate_relation_rejections": {},
           "bound_measure": {
             "aggregation": "sum",
             "aggregation_params": {},
@@ -687,6 +688,7 @@
     "measure_plans": [
       {
         "aggregate_relation_id": "",
+        "aggregate_relation_rejections": {},
         "bound_measure": {
           "aggregation": "sum",
           "aggregation_params": {},
@@ -925,51 +927,51 @@
   "row_count": 12,
   "rows": [
     {
-      "delivered_revenue": 18053.28000000002,
+      "delivered_revenue": 18053.280000000006,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-09-01 00:00:00"
     },
     {
-      "delivered_revenue": 21923.950000000044,
+      "delivered_revenue": 21923.950000000004,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-10-01 00:00:00"
     },
     {
-      "delivered_revenue": 27916.820000000036,
+      "delivered_revenue": 27916.820000000025,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-11-01 00:00:00"
     },
     {
-      "delivered_revenue": 35677.599999999984,
+      "delivered_revenue": 35677.600000000006,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-12-01 00:00:00"
     },
     {
-      "delivered_revenue": 45017.94999999978,
+      "delivered_revenue": 45017.94999999991,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01 00:00:00"
     },
     {
-      "delivered_revenue": 43358.119999999806,
+      "delivered_revenue": 43358.1199999998,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01 00:00:00"
     },
     {
-      "delivered_revenue": 73950.3200000002,
+      "delivered_revenue": 73950.32000000066,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-03-01 00:00:00"
     },
     {
-      "delivered_revenue": 83316.99000000102,
+      "delivered_revenue": 83316.99000000165,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-04-01 00:00:00"
     },
     {
-      "delivered_revenue": 96070.35000000316,
+      "delivered_revenue": 96070.35000000312,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01 00:00:00"
     },
     {
-      "delivered_revenue": 98378.87000000288,
+      "delivered_revenue": 98378.87000000301,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01 00:00:00"
     },
     {
-      "delivered_revenue": 94857.19000000262,
+      "delivered_revenue": 94857.19000000264,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-07-01 00:00:00"
     },
     {
-      "delivered_revenue": 107371.5900000039,
+      "delivered_revenue": 107371.59000000378,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01 00:00:00"
     }
   ],

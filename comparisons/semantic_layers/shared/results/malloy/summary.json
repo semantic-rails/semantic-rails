@@ -1,10 +1,10 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "environment": {
-    "@malloydata/cli": "0.0.52",
+    "@malloydata/cli": "0.0.57",
     "duckdb": "1.5.3"
   },
-  "generated_at": "2026-09-23T02:31:34+00:00",
+  "generated_at": "2026-09-25T22:37:47+00:00",
   "layer": "malloy",
   "questions": [
     {

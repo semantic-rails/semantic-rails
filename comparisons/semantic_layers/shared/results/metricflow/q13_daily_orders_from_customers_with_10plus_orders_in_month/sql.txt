@@ -1,24 +1,47 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
 
 ⠙ Initiating query…
-✔ Success 🦄 - query completed after 0.06 seconds
+✔ Success 🦄 - query completed after 0.05 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
+WITH sma_10003_cte AS (
+  SELECT
+    DATE_TRUNC('day', ordered_at) AS metric_time__day
+    , customer_id || '|' || strftime(ordered_at, '%Y-%m') AS customer_month
+    , 1 AS __orders
+    , 1 AS __qualifying_orders
+  FROM "jaffle_comparison"."main"."orders" orders_src_10000
+)
+
 SELECT
-  metric_time__day
+  metric_time__day AS metric_time__day
   , SUM(qualifying_orders) AS qualifying_orders
 FROM (
   SELECT
-    DATE_TRUNC('day', ordered_at) AS metric_time__day
-    , 1 AS qualifying_orders
-  FROM "jaffle_comparison"."main"."high_frequency_orders" high_frequency_orders_src_10000
-) subq_2
+    subq_5.metric_time__day AS metric_time__day
+    , subq_11.customer_month__orders AS customer_month__orders
+    , subq_5.__qualifying_orders AS qualifying_orders
+  FROM (
+    SELECT
+      metric_time__day
+      , customer_month
+      , __qualifying_orders
+    FROM sma_10003_cte
+  ) subq_5
+  LEFT OUTER JOIN (
+    SELECT
+      customer_month
+      , SUM(__orders) AS customer_month__orders
+    FROM sma_10003_cte
+    GROUP BY
+      customer_month
+  ) subq_11
+  ON
+    subq_5.customer_month = subq_11.customer_month
+) subq_13
+WHERE customer_month__orders > 10
 GROUP BY
   metric_time__day
 ORDER BY metric_time__day

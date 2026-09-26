@@ -1,24 +1,20 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
 
 ⠙ Initiating query…
-✔ Success 🦄 - query completed after 0.06 seconds
+✔ Success 🦄 - query completed after 0.02 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
 SELECT
   metric_time__month
-  , SUM(new_customer_orders) AS new_customer_orders
+  , SUM(__new_customer_orders) AS new_customer_orders
 FROM (
   SELECT
     DATE_TRUNC('month', ordered_at) AS metric_time__month
-    , CASE WHEN is_new_customer_order THEN 1 ELSE 0 END AS new_customer_orders
+    , CASE WHEN is_new_customer_order THEN 1 ELSE 0 END AS __new_customer_orders
   FROM "jaffle_comparison"."main"."orders" orders_src_10000
-) subq_2
+) subq_3
 GROUP BY
   metric_time__month
 ORDER BY metric_time__month

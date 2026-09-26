@@ -307,7 +307,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     },
     "metricflow": {
         "label": "MetricFlow",
-        "version": "dbt-metricflow 0.11.0 / dbt-duckdb 1.10.1",
+        "version": "dbt-metricflow 0.15.0 / dbt-duckdb 1.11.0",
         "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
@@ -315,10 +315,12 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "unsupported_path": RESULTS_ROOT / "metricflow" / "unsupported.json",
         "strengths": [
             "Temporal validity stays native and readable on both ordered-time and delivered-time questions.",
+            "Conversion metrics (with constant properties) and metric filters answer q09-q15 without helper models.",
             "Generated SQL is clear and easy to inspect against the shared dataset.",
         ],
         "weaknesses": [
-            "In this pack, q09-q15 run through helper dbt views; MetricFlow's native conversion metrics and metric filters have not been modeled yet.",
+            "A metric filter groups by one entity, so the per customer-month and customer-store-month predicates (q10, q13, q14) use surrogate entities defined with `expr`.",
+            "Conversion metrics credit each order to the latest session before it, so q09 and q15 count sessions credited with a conversion; that matches the stated rule only when no two sessions of a customer share a window, as in this data.",
         ],
         "scale": {
             "baseline_files": [
@@ -337,28 +339,12 @@ LAYER_META: dict[str, dict[str, Any]] = {
                 COMPARISON_ROOT / "metricflow" / "models" / "staging" / "customer_history.sql",
                 COMPARISON_ROOT / "metricflow" / "models" / "staging" / "order_lifecycle.sql",
                 COMPARISON_ROOT / "metricflow" / "models" / "staging" / "storefront_sessions.sql",
-                COMPARISON_ROOT
-                / "metricflow"
-                / "models"
-                / "staging"
-                / "repeat_customer_orders.sql",
-                COMPARISON_ROOT / "metricflow" / "models" / "staging" / "high_value_orders_500.sql",
-                COMPARISON_ROOT
-                / "metricflow"
-                / "models"
-                / "staging"
-                / "high_frequency_store_orders.sql",
-                COMPARISON_ROOT
-                / "metricflow"
-                / "models"
-                / "staging"
-                / "session_conversions_7d_same_store.sql",
                 COMPARISON_ROOT / "metricflow" / "models" / "semantic_models" / "orders.yml",
                 COMPARISON_ROOT / "metricflow" / "models" / "semantic_models" / "extensions.yml",
                 COMPARISON_ROOT / "metricflow" / "models" / "metrics.yml",
             ],
             "baseline_relationships": 5,
-            "stretch_relationships": 16,
+            "stretch_relationships": 13,
         },
         "snippets": {
             "q01_orders_by_month": (
@@ -395,31 +381,31 @@ LAYER_META: dict[str, dict[str, Any]] = {
             ),
             "q09_session_to_order_conversion_7d": (
                 "comparisons/semantic_layers/metricflow/models/metrics.yml",
-                "- name: session_to_order_conversion_rate_7d",
+                "- name: session_order_conversions_7d",
             ),
             "q10_orders_from_customers_with_10plus_orders_in_month": (
-                "comparisons/semantic_layers/metricflow/models/metrics.yml",
+                "comparisons/semantic_layers/metricflow/models/semantic_models/orders.yml",
                 "- name: qualifying_orders",
             ),
             "q11_repeat_customer_orders_by_store_by_month": (
-                "comparisons/semantic_layers/metricflow/models/staging/repeat_customer_orders.sql",
-                "where c.lifetime_order_count > 1",
+                "comparisons/semantic_layers/metricflow/models/semantic_models/orders.yml",
+                "- name: repeat_customer_orders",
             ),
             "q12_orders_by_month_with_lifetime_spend_500_filter": (
-                "comparisons/semantic_layers/metricflow/models/staging/high_value_orders_500.sql",
-                "where c.lifetime_spend_cents >= 50000",
+                "comparisons/semantic_layers/metricflow/queries/q12_orders_by_month_with_lifetime_spend_500_filter.txt",
+                "query --metrics orders",
             ),
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": (
-                "comparisons/semantic_layers/metricflow/models/semantic_models/extensions.yml",
-                "- name: high_frequency_orders",
+                "comparisons/semantic_layers/metricflow/models/semantic_models/orders.yml",
+                "- name: customer_month",
             ),
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": (
-                "comparisons/semantic_layers/metricflow/models/staging/high_frequency_store_orders.sql",
-                "with customer_store_months as",
+                "comparisons/semantic_layers/metricflow/models/semantic_models/orders.yml",
+                "- name: qualifying_revenue_usd_same_store",
             ),
             "q15_same_store_session_to_order_conversion_7d": (
-                "comparisons/semantic_layers/metricflow/models/staging/session_conversions_7d_same_store.sql",
-                "and s.store_id = o.store_id",
+                "comparisons/semantic_layers/metricflow/models/metrics.yml",
+                "- name: same_store_session_order_conversions_7d",
             ),
             "q16_revenue_by_customer_segment_as_of_delivered_time": (
                 "comparisons/semantic_layers/metricflow/models/semantic_models/extensions.yml",
@@ -428,36 +414,31 @@ LAYER_META: dict[str, dict[str, Any]] = {
         },
         "notes": {
             "q08_revenue_by_customer_segment_as_of_order_time": "MetricFlow's validity parameters keep the as-of join inside the semantic model.",
-            "q09_session_to_order_conversion_7d": "Executed through a helper dbt view that materializes session-level 7-day conversion flags; MetricFlow's native conversion metrics are not modeled yet.",
-            "q10_orders_from_customers_with_10plus_orders_in_month": "Executed through a helper dbt view that precomputes qualifying customer-month orders.",
-            "q11_repeat_customer_orders_by_store_by_month": "Executed through a helper dbt view that filters on the precomputed `lifetime_order_count` customer column; MetricFlow's metric filters are not modeled yet.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed through a helper dbt view that filters on the precomputed `lifetime_spend_cents` customer column; MetricFlow's metric filters are not modeled yet.",
-            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Reuses the precomputed qualifying customer-month order view, then queries it at day grain.",
-            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a helper dbt view that materializes qualifying customer store-month orders with revenue attached.",
-            "q15_same_store_session_to_order_conversion_7d": "Executed through a helper dbt view that materializes same-store 7-day conversion flags; MetricFlow's native conversion metrics (with constant properties) are not modeled yet.",
+            "q09_session_to_order_conversion_7d": "A conversion metric (sessions to orders by the same customer within 7 days) credits each order to a session; the rate counts sessions credited with at least one order, over all sessions.",
+            "q10_orders_from_customers_with_10plus_orders_in_month": "A metric filter keeps orders whose customer-month (a surrogate entity defined with `expr`) has more than 10 orders.",
+            "q11_repeat_customer_orders_by_store_by_month": "A metric filter computes each customer's lifetime order count from orders; the precomputed rollup isn't read.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "A query-time metric filter computes each customer's lifetime revenue from orders; the precomputed rollup isn't read.",
+            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "The same customer-month metric filter as q10, queried at day grain, so the predicate covers the whole month.",
+            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "A metric filter over a customer-store-month surrogate entity keeps revenue from store-months with more than 10 orders.",
+            "q15_same_store_session_to_order_conversion_7d": "The q09 conversion metric with `constant_properties` requiring the order's store to equal the session's store.",
             "q16_revenue_by_customer_segment_as_of_delivered_time": "Delivered revenue stays native because the delivered-time metric and validity-windowed customer history both live inside the semantic model graph.",
         },
     },
     "cube": {
         "label": "Cube",
-        "version": "1.6.32",
-        # When Cube itself ran: its captured results record lastRefreshTime 2026-04-07T03:04:57Z.
-        "captured": "2026-04-07",
-        "setup_status": "captured SQL re-executed on the current dataset",
+        "version": "1.7.45",
+        "captured": UNRECORDED_CAPTURE,
+        "setup_status": "executed",
         "comparison_type": "runnable",
-        # Cube can't be re-run until its dependency advisories are resolved, so its captured
-        # SQL is re-executed on the current dataset (cube/scripts/replay_sql.py).
-        "summary_path": RESULTS_ROOT / "cube_sql_replay" / "summary.json",
+        "summary_path": RESULTS_ROOT / "cube" / "summary.json",
         "unsupported_path": RESULTS_ROOT / "cube" / "unsupported.json",
         "strengths": [
             "The baseline cubes are compact and the local DuckDB setup is straightforward.",
-            "Temporal history can be modeled with explicit join SQL when needed.",
+            "Declared joins carry validity and event-window conditions, and multi-stage measures and subquery dimensions answer q09-q15 without SQL-defined cubes.",
         ],
         "weaknesses": [
-            "In this pack, q05 and q09-q16 run through helper cubes or joined rollup filters; Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
-        ],
-        "capture_notes": [
-            "Cube 1.6.32 can't be reinstalled until the captured lockfile's dependency advisories are resolved, so its captured SQL is re-executed on the current dataset.",
+            "q11 counts a duplicate `orders.order_count` measure: Cube 1.7.45's Tesseract planner renders invalid SQL when a query selects a measure and filters on a subquery dimension over that same measure.",
+            "Its `@cubejs-backend/native` package downloads a prebuilt binary from Cube's GitHub releases at install time, outside the lockfile's integrity hashes; Cube 1.7 doesn't start without it, so the pack pins the installed package by sha256 and runs only on darwin-arm64 for now.",
         ],
         "scale": {
             "baseline_files": [
@@ -465,30 +446,16 @@ LAYER_META: dict[str, dict[str, Any]] = {
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "order_items.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "customers.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "stores.yml",
-                COMPARISON_ROOT / "cube" / "model" / "cubes" / "order_metrics.yml",
             ],
             "stretch_files": [
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "orders.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "order_items.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "customers.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "stores.yml",
-                COMPARISON_ROOT / "cube" / "model" / "cubes" / "order_metrics.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "customer_history.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "order_lifecycle.yml",
                 COMPARISON_ROOT / "cube" / "model" / "cubes" / "storefront_sessions.yml",
-                COMPARISON_ROOT / "cube" / "model" / "cubes" / "session_conversions_7d.yml",
-                COMPARISON_ROOT / "cube" / "model" / "cubes" / "qualified_orders.yml",
-                COMPARISON_ROOT / "cube" / "model" / "cubes" / "high_frequency_store_orders.yml",
-                COMPARISON_ROOT
-                / "cube"
-                / "model"
-                / "cubes"
-                / "session_conversions_7d_same_store.yml",
-                COMPARISON_ROOT
-                / "cube"
-                / "model"
-                / "cubes"
-                / "delivered_orders_with_customer_segment.yml",
+                COMPARISON_ROOT / "cube" / "model" / "cubes" / "same_store_orders.yml",
             ],
             "baseline_relationships": 4,
             "stretch_relationships": 9,
@@ -511,8 +478,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
                 "- name: aov_usd",
             ),
             "q05_orders_and_item_revenue_by_store_by_month": (
-                "comparisons/semantic_layers/cube/model/cubes/order_metrics.yml",
-                "- name: order_metrics",
+                "comparisons/semantic_layers/cube/queries/q05_orders_and_item_revenue_by_store_by_month.json",
+                '"measures"',
             ),
             "q06_new_customer_orders_by_month": (
                 "comparisons/semantic_layers/cube/model/cubes/orders.yml",
@@ -527,54 +494,54 @@ LAYER_META: dict[str, dict[str, Any]] = {
                 "- name: customer_history",
             ),
             "q09_session_to_order_conversion_7d": (
-                "comparisons/semantic_layers/cube/model/cubes/session_conversions_7d.yml",
-                "- name: session_to_order_conversion_rate_7d",
+                "comparisons/semantic_layers/cube/model/cubes/storefront_sessions.yml",
+                "- name: orders",
             ),
             "q10_orders_from_customers_with_10plus_orders_in_month": (
-                "comparisons/semantic_layers/cube/model/cubes/qualified_orders.yml",
-                "- name: qualifying_orders",
+                "comparisons/semantic_layers/cube/model/cubes/orders.yml",
+                "- name: customer_month_orders",
             ),
             "q11_repeat_customer_orders_by_store_by_month": (
-                "comparisons/semantic_layers/cube/queries/q11_repeat_customer_orders_by_store_by_month.json",
-                '"customers.lifetime_order_count"',
+                "comparisons/semantic_layers/cube/model/cubes/customers.yml",
+                "- name: lifetime_orders",
             ),
             "q12_orders_by_month_with_lifetime_spend_500_filter": (
-                "comparisons/semantic_layers/cube/queries/q12_orders_by_month_with_lifetime_spend_500_filter.json",
-                '"customers.lifetime_spend_usd"',
+                "comparisons/semantic_layers/cube/model/cubes/customers.yml",
+                "- name: lifetime_spend_usd",
             ),
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": (
-                "comparisons/semantic_layers/cube/model/cubes/qualified_orders.yml",
-                "date_trunc('month', ordered_at)",
+                "comparisons/semantic_layers/cube/model/cubes/orders.yml",
+                "- name: orders_from_customers_with_10plus_orders_in_month",
             ),
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": (
-                "comparisons/semantic_layers/cube/model/cubes/high_frequency_store_orders.yml",
-                "with customer_store_months as",
+                "comparisons/semantic_layers/cube/model/cubes/orders.yml",
+                "- name: customer_store_month_orders",
             ),
             "q15_same_store_session_to_order_conversion_7d": (
-                "comparisons/semantic_layers/cube/model/cubes/session_conversions_7d_same_store.yml",
-                "and s.store_id = o.store_id",
+                "comparisons/semantic_layers/cube/model/cubes/storefront_sessions.yml",
+                "- name: same_store_orders",
             ),
             "q16_revenue_by_customer_segment_as_of_delivered_time": (
-                "comparisons/semantic_layers/cube/model/cubes/delivered_orders_with_customer_segment.yml",
-                "left join comparison_customer_history",
+                "comparisons/semantic_layers/cube/model/cubes/order_lifecycle.yml",
+                "- name: customer_history",
             ),
         },
         "notes": {
-            "q05_orders_and_item_revenue_by_store_by_month": "Executed through a helper order-grain cube that rolls item revenue up before Cube aggregates it with order count; Cube's multi-fact queries are not modeled yet.",
+            "q05_orders_and_item_revenue_by_store_by_month": "One query for the order count and item revenue: Cube aggregates each measure on its own cube and joins the results, so neither fans out.",
             "q08_revenue_by_customer_segment_as_of_order_time": "Modeled as a declared join from orders to customer history whose `sql` carries the validity condition.",
-            "q09_session_to_order_conversion_7d": "Executed through a dedicated helper cube that materializes the 7-day session-to-order match.",
-            "q10_orders_from_customers_with_10plus_orders_in_month": "Executed through a dedicated helper cube that materializes qualifying customer-month orders.",
-            "q11_repeat_customer_orders_by_store_by_month": "Executed by filtering the orders cube on the joined, precomputed customer lifetime order count.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed by filtering the orders cube on the joined, precomputed customer lifetime spend.",
-            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through the precomputed qualifying-orders helper cube at day grain.",
-            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a helper cube that materializes qualifying customer store-month revenue.",
-            "q15_same_store_session_to_order_conversion_7d": "Executed through a helper cube that materializes same-store 7-day session matches.",
-            "q16_revenue_by_customer_segment_as_of_delivered_time": "Executed through a helper cube that bakes the delivered-time as-of join into SQL.",
+            "q09_session_to_order_conversion_7d": "Sessions join the same customer's orders within 7 days after the session start; a subquery dimension counts each session's matches, and the rate is converted sessions over all sessions.",
+            "q10_orders_from_customers_with_10plus_orders_in_month": "Multi-stage measures count orders at a fixed customer and calendar-month grain, then sum the orders of groups with more than 10.",
+            "q11_repeat_customer_orders_by_store_by_month": "A subquery dimension computes each customer's lifetime order count from orders; the precomputed rollup isn't read.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "A subquery dimension computes each customer's lifetime spend from orders; the precomputed rollup isn't read.",
+            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "The q10 multi-stage measures, queried at day grain: the inner grain stays the calendar month.",
+            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Multi-stage measures count orders per customer, store and calendar month, then sum the revenue of groups with more than 10.",
+            "q15_same_store_session_to_order_conversion_7d": "The q09 pattern through a second join, to `same_store_orders` (`extends: orders`), that also requires the session's store.",
+            "q16_revenue_by_customer_segment_as_of_delivered_time": "Modeled as a declared join from order lifecycle to customer history whose `sql` carries the validity condition on delivered time.",
         },
     },
     "malloy": {
         "label": "Malloy",
-        "version": "0.0.52",
+        "version": "0.0.57",
         "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
@@ -583,16 +550,15 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "strengths": [
             "The authored surface stays compact, especially for mixed-grain q05.",
             "Join-tree aggregation is expressive without a large semantic scaffolding layer.",
+            "Arbitrary-condition joins and query-derived sources answer q08-q16 without SQL blocks.",
         ],
-        "weaknesses": [
-            "In this pack, q08-q16 run through SQL sources or query-level filters; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet.",
-        ],
+        "weaknesses": [],
         "scale": {
             "baseline_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
             "stretch_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
             "baseline_relationships": 3,
-            "stretch_relationships": 4,
-            "baseline_marker": "# Stretch scope adds an alternate clock plus SQL-backed workaround sources.",
+            "stretch_relationships": 10,
+            "baseline_marker": "# Stretch scope: an alternate clock, validity-window and event-window joins, and customer",
         },
         "snippets": {
             "q01_orders_by_month": (
@@ -625,52 +591,52 @@ LAYER_META: dict[str, dict[str, Any]] = {
             ),
             "q08_revenue_by_customer_segment_as_of_order_time": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "source: orders_with_customer_segment",
+                "source: orders_with_customer_context",
             ),
             "q09_session_to_order_conversion_7d": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "source: session_conversions_7d",
+                "source: storefront_sessions",
             ),
             "q10_orders_from_customers_with_10plus_orders_in_month": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "source: orders_from_high_frequency_customers",
+                "source: customer_month_orders",
             ),
             "q11_repeat_customer_orders_by_store_by_month": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "query: q11_repeat_customer_orders_by_store_by_month",
+                "source: customer_order_facts",
             ),
             "q12_orders_by_month_with_lifetime_spend_500_filter": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "query: q12_orders_by_month_with_lifetime_spend_500_filter",
+                "source: customer_order_facts",
             ),
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "query: q13_daily_orders_from_customers_with_10plus_orders_in_month",
+                "source: customer_month_orders",
             ),
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "source: revenue_from_high_frequency_store_customers",
+                "source: customer_store_month_orders",
             ),
             "q15_same_store_session_to_order_conversion_7d": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "source: session_conversions_7d_same_store",
+                "source: storefront_sessions",
             ),
             "q16_revenue_by_customer_segment_as_of_delivered_time": (
                 "comparisons/semantic_layers/malloy/models/jaffle.malloy",
-                "source: delivered_orders_with_customer_segment",
+                "source: order_lifecycle",
             ),
         },
         "notes": {
             "q05_orders_and_item_revenue_by_store_by_month": "Malloy's join-tree aggregation keeps the mixed-grain query native and compact.",
-            "q08_revenue_by_customer_segment_as_of_order_time": "Executed via a SQL source embedded inside the Malloy model.",
-            "q09_session_to_order_conversion_7d": "Executed via a SQL source that materializes the 7-day matching window.",
-            "q10_orders_from_customers_with_10plus_orders_in_month": "Executed via a SQL source that precomputes qualifying customer-months.",
-            "q11_repeat_customer_orders_by_store_by_month": "Executed as a query-level filter on the joined, precomputed customer lifetime order count.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as a query-level filter on the joined, precomputed customer lifetime spend.",
-            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through the SQL-backed qualifying-order source at day grain.",
-            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a SQL source that materializes qualifying customer store-month revenue.",
-            "q15_same_store_session_to_order_conversion_7d": "Executed through a SQL source that materializes same-store session matches.",
-            "q16_revenue_by_customer_segment_as_of_delivered_time": "Executed through a SQL source that bakes the delivered-time temporal join into the query model.",
+            "q08_revenue_by_customer_segment_as_of_order_time": "An arbitrary-condition `join_one` picks the customer-history row valid at the order time.",
+            "q09_session_to_order_conversion_7d": "A `join_many` to the same customer's orders within 7 days after the session; `count()` counts each session once across the join.",
+            "q10_orders_from_customers_with_10plus_orders_in_month": "A query-derived source counts each customer-month's orders and is joined back to filter on more than 10.",
+            "q11_repeat_customer_orders_by_store_by_month": "A query-derived source computes each customer's lifetime order count from orders; the precomputed rollup isn't read.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "A query-derived source computes each customer's lifetime spend from orders; the precomputed rollup isn't read.",
+            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "The q10 customer-month source, queried at day grain, so the predicate covers the whole month.",
+            "q14_revenue_from_customers_with_10plus_orders_same_store_month": "A query-derived source counts each customer-store-month's orders and is joined back to filter on more than 10.",
+            "q15_same_store_session_to_order_conversion_7d": "The q09 join with a filtered measure requiring the order's store to equal the session's store.",
+            "q16_revenue_by_customer_segment_as_of_delivered_time": "An arbitrary-condition `join_one` picks the customer-history row valid at the delivered time.",
         },
     },
     "snowflake_semantic_views": {
@@ -690,7 +656,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "In this pack, q08-q16 run as SQL outside `SEMANTIC_VIEW(...)`; range joins, announced in preview on 2026-02-25, have not been modeled yet.",
         ],
         "capture_notes": [
-            "The capture comes from a trial account and cannot be re-run without a live Snowflake account.",
+            "A stale April capture: it ran on 2026-04-07 (UTC) in a trial account, on an earlier dataset, and can't be re-run or re-authored with range joins without a live Snowflake account.",
         ],
         "scale": {
             "baseline_files": [
@@ -784,7 +750,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
     },
     "ktx": {
         "label": "KtX",
-        "version": "ktx-sl 0.13.1 / KtX a155c0b",
+        "version": "@kaelio/ktx 0.16.0 (ktx-sl)",
         "captured": UNRECORDED_CAPTURE,
         "setup_status": "executed",
         "comparison_type": "runnable",
@@ -795,7 +761,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Aggregate locality keeps the mixed-grain q05 orders-plus-item-revenue query native without a helper mart.",
         ],
         "weaknesses": [
-            "In this pack, q08-q16 run through SQL-backed sources or query-level filters.",
+            "In this pack, q08-q16 run through SQL-backed sources or query-level filters: ktx-sl joins are equality-only, its measures reject window functions, and it has no query-derived sources.",
             "This pack exercises ktx-sl directly, not the broader KtX context ingestion, wiki/search, daemon, and MCP stack.",
         ],
         "scale": {
@@ -905,7 +871,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "q10_orders_from_customers_with_10plus_orders_in_month": "Executed through a KtX SQL source that precomputes qualifying customer-month orders.",
             "q11_repeat_customer_orders_by_store_by_month": "Executed as a query-level filter on the joined, precomputed customer lifetime order count.",
             "q12_orders_by_month_with_lifetime_spend_500_filter": "Executed as a query-level filter on the joined, precomputed customer lifetime spend.",
-            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through the SQL-backed qualifying-order source at day grain.",
+            "q13_daily_orders_from_customers_with_10plus_orders_in_month": "Executed through a separate KtX SQL source that duplicates the q10 source at day grain.",
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": "Executed through a KtX SQL source that materializes qualifying customer store-month revenue.",
             "q15_same_store_session_to_order_conversion_7d": "Executed through a KtX SQL source that materializes same-store session matches.",
             "q16_revenue_by_customer_segment_as_of_delivered_time": "Executed through a KtX SQL source that bakes the delivered-time temporal join into the model.",
@@ -1071,11 +1037,11 @@ SCALE_UP_CAVEAT = (
 # Findings that describe how this pack models each layer. They must not rank the layers on the
 # Semantic-Rails-targeted questions until every layer is modeled with the features it ships.
 LAYER_FINDINGS = [
-    "MetricFlow answers q08 and q16 with validity-windowed semantic models; this pack answers q09, q10 and q13-q15 through helper dbt views, and q11-q12 through helper views over the precomputed rollups. MetricFlow's native conversion metrics and metric filters have not been modeled yet.",
-    "Cube answers q08 through a declared join that carries the validity condition; this pack answers q05, q09, q10 and q13-q16 through helper cubes, and q11-q12 through filters on joined rollup columns. Cube's multi-fact queries, multi-stage measures and subquery dimensions have not been modeled yet.",
-    "Malloy answers q08-q16 through SQL sources or query-level filters in this pack; Malloy's arbitrary-condition joins and query-derived join sources have not been modeled yet.",
+    "MetricFlow answers q08-q16 with validity-windowed semantic models, conversion metrics and metric filters; q10, q13 and q14 group their metric filters by surrogate entities defined with `expr`.",
+    "Cube answers q08-q16 with declared joins carrying validity and event-window conditions, subquery dimensions and multi-stage measures, and q05 as one multi-fact query.",
+    "Malloy answers q08-q16 with arbitrary-condition joins and query-derived sources joined back to orders.",
     "Snowflake Semantic Views answers q01-q07 through `SEMANTIC_VIEW(...)` and q08-q16 as SQL on the same tables; range joins have not been modeled yet.",
-    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack.",
+    "KtX answers q01-q07 through its Python semantic layer (ktx-sl) and q08-q16 through SQL-backed sources or query-level filters in this pack; the ktx-sl bundled in @kaelio/ktx 0.16.0 has equality-only joins and no query-derived sources. The SQL sources are standalone per-question fact tables rather than bridge sources joined to orders (the q10 and q13 sources differ only in grain), a known gap in this pack's KtX model.",
     "The numeric suite is still not the whole story: MetricFlow keeps meaningful compiler-surface strengths on controls like metric-time-only planning and duplicate-alias rejection that are documented separately, not scored here.",
 ]
 
@@ -1176,15 +1142,6 @@ def claim_findings(
         if summary["not_comparable"]:
             output_check += f" {summary['not_comparable']} could not be compared."
     claims = [output_check]
-    for layer in layers_payload:
-        # A replay on an earlier dataset is reported with the stale captures below instead.
-        if layer.get("re_executed") and layer["dataset"] == "current":
-            claims.append(
-                f"{layer['label']} {layer['version']} was not re-run: the SQL it generated on "
-                f"{layer['captured']} was re-executed on the current dataset on "
-                f"{layer['re_executed']}."
-            )
-    # The date each layer itself ran; a replay's report records when it was re-executed.
     captured = {layer["id"]: layer["captured"] for layer in layers_payload}
     for layer_id, checks in validation_report["stale_layers"].items():
         differs = ", ".join(short_id(qid) for qid in checks["mismatched"]) or "none"
@@ -1232,8 +1189,8 @@ def claim_findings(
         claims.append(
             f"{len(targeted)} of the {total} questions ({id_range(targeted)}) were chosen to "
             "exercise features Semantic Rails ships. The Semantic Rails authors wrote every "
-            "layer's models, and several layers are not yet modeled with native features they "
-            "ship, so these questions are a capability showcase, not a ranking."
+            "layer's models, so these questions are a capability showcase, not a ranking, and "
+            "no layer is claimed to be better than another."
         )
 
     claims.append(
@@ -1293,23 +1250,15 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
             entry_for_question(layer_id, question_by_id[qid], entries[qid])
             for qid in question_by_id
         ]
-        # A replay (its summary records a method) keeps the date the layer itself ran.
-        replayed = bool(summary.get("method"))
         layers_payload.append(
             {
                 "id": layer_id,
                 "label": LAYER_META[layer_id]["label"],
                 "version": recorded_version(layer_id, summary),
-                "captured": (
-                    LAYER_META[layer_id]["captured"]
-                    if replayed
-                    else recorded_capture(layer_id, summary)
-                ),
-                "re_executed": recorded_capture(layer_id, summary) if replayed else None,
+                "captured": recorded_capture(layer_id, summary),
                 "dataset": "stale" if layer_id in validation_report["stale_layers"] else "current",
-                # What each runner recorded about how it ran: tool versions, replay method.
+                # What each runner recorded about how it ran: tool versions.
                 "environment": summary.get("environment"),
-                "method": summary.get("method"),
                 "setup_status": LAYER_META[layer_id]["setup_status"],
                 "comparison_type": LAYER_META[layer_id]["comparison_type"],
                 "strengths": LAYER_META[layer_id]["strengths"],
@@ -1367,10 +1316,8 @@ def build_contracts() -> tuple[dict[str, Any], dict[str, Any]]:
                 "label": layer["label"],
                 "version": layer["version"],
                 "captured": layer["captured"],
-                "re_executed": layer["re_executed"],
                 "dataset": layer["dataset"],
                 "environment": layer["environment"],
-                "method": layer["method"],
                 "setup_status": layer["setup_status"],
                 "status_totals_by_slice": layer["status_totals_by_slice"],
             }

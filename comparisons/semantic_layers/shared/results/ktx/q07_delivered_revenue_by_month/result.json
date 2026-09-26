@@ -1,15 +1,15 @@
 [
   {
     "delivered_at_month": "2016-09-01 00:00:00",
-    "delivered_revenue": 18053.28000000002
+    "delivered_revenue": 18053.280000000006
   },
   {
     "delivered_at_month": "2016-10-01 00:00:00",
-    "delivered_revenue": 21923.95
+    "delivered_revenue": 21923.950000000004
   },
   {
     "delivered_at_month": "2016-11-01 00:00:00",
-    "delivered_revenue": 27916.82000000004
+    "delivered_revenue": 27916.820000000025
   },
   {
     "delivered_at_month": "2016-12-01 00:00:00",
@@ -17,34 +17,34 @@
   },
   {
     "delivered_at_month": "2017-01-01 00:00:00",
-    "delivered_revenue": 45017.95000000001
+    "delivered_revenue": 45017.94999999991
   },
   {
     "delivered_at_month": "2017-02-01 00:00:00",
-    "delivered_revenue": 43358.11999999988
+    "delivered_revenue": 43358.1199999998
   },
   {
     "delivered_at_month": "2017-03-01 00:00:00",
-    "delivered_revenue": 73950.32000000023
+    "delivered_revenue": 73950.32000000066
   },
   {
     "delivered_at_month": "2017-04-01 00:00:00",
-    "delivered_revenue": 83316.99000000105
+    "delivered_revenue": 83316.99000000165
   },
   {
     "delivered_at_month": "2017-05-01 00:00:00",
-    "delivered_revenue": 96070.35000000296
+    "delivered_revenue": 96070.35000000312
   },
   {
     "delivered_at_month": "2017-06-01 00:00:00",
-    "delivered_revenue": 98378.8700000028
+    "delivered_revenue": 98378.87000000301
   },
   {
     "delivered_at_month": "2017-07-01 00:00:00",
-    "delivered_revenue": 94857.19000000248
+    "delivered_revenue": 94857.19000000264
   },
   {
     "delivered_at_month": "2017-08-01 00:00:00",
-    "delivered_revenue": 107371.59000000395
+    "delivered_revenue": 107371.59000000378
   }
 ]

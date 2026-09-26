@@ -1,48 +1,138 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
 
 ⠙ Initiating query…
-✔ Success 🦄 - query completed after 0.07 seconds
+✔ Success 🦄 - query completed after 0.05 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
+WITH sma_10004_cte AS (
+  SELECT
+    DATE_TRUNC('minute', started_at) AS metric_time__minute
+    , DATE_TRUNC('month', started_at) AS metric_time__month
+    , session_id AS session
+    , customer_id AS customer
+    , 1 AS __session_starts
+    , 1 AS __converted_sessions_7d
+  FROM "jaffle_comparison"."main"."storefront_sessions" storefront_sessions_src_10000
+)
+
 SELECT
-  metric_time__month
+  metric_time__month AS metric_time__month
   , CAST(converted_sessions_7d AS DOUBLE) / CAST(NULLIF(session_starts, 0) AS DOUBLE) AS session_to_order_conversion_rate_7d
 FROM (
   SELECT
-    COALESCE(subq_4.metric_time__month, subq_9.metric_time__month) AS metric_time__month
-    , MAX(subq_4.converted_sessions_7d) AS converted_sessions_7d
-    , MAX(subq_9.session_starts) AS session_starts
+    COALESCE(subq_40.metric_time__month, subq_45.metric_time__month) AS metric_time__month
+    , MAX(subq_40.converted_sessions_7d) AS converted_sessions_7d
+    , MAX(subq_45.session_starts) AS session_starts
   FROM (
     SELECT
-      DATE_TRUNC('month', started_at) AS metric_time__month
+      metric_time__month
       , SUM(converted_sessions_7d) AS converted_sessions_7d
-    FROM "jaffle_comparison"."main"."session_conversions_7d" session_conversions_7d_src_10000
+    FROM (
+      SELECT
+        sma_10004_cte.metric_time__month AS metric_time__month
+        , subq_34.session__session_order_conversions_7d AS session__session_order_conversions_7d
+        , sma_10004_cte.__converted_sessions_7d AS converted_sessions_7d
+      FROM sma_10004_cte
+      LEFT OUTER JOIN (
+        SELECT
+          COALESCE(subq_20.session, subq_31.session) AS session
+          , MAX(subq_31.__orders) AS session__session_order_conversions_7d
+        FROM (
+          SELECT
+            session
+          FROM sma_10004_cte
+          GROUP BY
+            session
+        ) subq_20
+        FULL OUTER JOIN (
+          SELECT
+            session
+            , SUM(__orders) AS __orders
+          FROM (
+            SELECT DISTINCT
+              FIRST_VALUE(sma_10004_cte.__session_starts) OVER (
+                PARTITION BY
+                  subq_26.customer
+                  , subq_26.metric_time__minute
+                  , subq_26.mf_internal_uuid
+                ORDER BY sma_10004_cte.metric_time__minute DESC
+                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+              ) AS __session_starts
+              , FIRST_VALUE(sma_10004_cte.metric_time__minute) OVER (
+                PARTITION BY
+                  subq_26.customer
+                  , subq_26.metric_time__minute
+                  , subq_26.mf_internal_uuid
+                ORDER BY sma_10004_cte.metric_time__minute DESC
+                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+              ) AS metric_time__minute
+              , FIRST_VALUE(sma_10004_cte.session) OVER (
+                PARTITION BY
+                  subq_26.customer
+                  , subq_26.metric_time__minute
+                  , subq_26.mf_internal_uuid
+                ORDER BY sma_10004_cte.metric_time__minute DESC
+                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+              ) AS session
+              , FIRST_VALUE(sma_10004_cte.customer) OVER (
+                PARTITION BY
+                  subq_26.customer
+                  , subq_26.metric_time__minute
+                  , subq_26.mf_internal_uuid
+                ORDER BY sma_10004_cte.metric_time__minute DESC
+                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+              ) AS customer
+              , subq_26.mf_internal_uuid AS mf_internal_uuid
+              , subq_26.__orders AS __orders
+            FROM sma_10004_cte
+            INNER JOIN (
+              SELECT
+                DATE_TRUNC('minute', ordered_at) AS metric_time__minute
+                , customer_id AS customer
+                , 1 AS __orders
+                , GEN_RANDOM_UUID() AS mf_internal_uuid
+              FROM "jaffle_comparison"."main"."orders" orders_src_10000
+            ) subq_26
+            ON
+              (
+                sma_10004_cte.customer = subq_26.customer
+              ) AND (
+                (
+                  sma_10004_cte.metric_time__minute <= subq_26.metric_time__minute
+                ) AND (
+                  sma_10004_cte.metric_time__minute > subq_26.metric_time__minute - INTERVAL 7 day
+                )
+              )
+          ) subq_27
+          GROUP BY
+            session
+        ) subq_31
+        ON
+          subq_20.session = subq_31.session
+        GROUP BY
+          COALESCE(subq_20.session, subq_31.session)
+      ) subq_34
+      ON
+        sma_10004_cte.session = subq_34.session
+    ) subq_36
+    WHERE session__session_order_conversions_7d > 0
     GROUP BY
-      DATE_TRUNC('month', started_at)
-  ) subq_4
+      metric_time__month
+  ) subq_40
   FULL OUTER JOIN (
     SELECT
       metric_time__month
-      , SUM(session_starts) AS session_starts
-    FROM (
-      SELECT
-        DATE_TRUNC('month', started_at) AS metric_time__month
-        , 1 AS session_starts
-      FROM "jaffle_comparison"."main"."storefront_sessions" storefront_sessions_src_10000
-    ) subq_7
+      , SUM(__session_starts) AS session_starts
+    FROM sma_10004_cte
     GROUP BY
       metric_time__month
-  ) subq_9
+  ) subq_45
   ON
-    subq_4.metric_time__month = subq_9.metric_time__month
+    subq_40.metric_time__month = subq_45.metric_time__month
   GROUP BY
-    COALESCE(subq_4.metric_time__month, subq_9.metric_time__month)
-) subq_10
+    COALESCE(subq_40.metric_time__month, subq_45.metric_time__month)
+) subq_46
 ORDER BY metric_time__month
 

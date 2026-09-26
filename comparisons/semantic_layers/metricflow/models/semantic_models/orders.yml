@@ -1,105 +1,155 @@
-semantic_models:
+models:
   - name: orders
     description: One row per completed customer order.
-    defaults:
-      agg_time_dimension: ordered_at
-    model: ref('orders')
-    entities:
-      - name: order
-        type: primary
-        expr: order_id
-      - name: customer
-        type: foreign
-        expr: customer_id
-      - name: store
-        type: foreign
-        expr: store_id
-    measures:
-      - name: orders
-        description: Count of completed orders.
-        expr: "1"
-        agg: SUM
-      - name: revenue_usd
-        description: Net order revenue.
-        expr: order_total_cents / 100.0
-        agg: SUM
-      - name: new_customer_orders
-        description: Count of first orders.
-        expr: CASE WHEN is_new_customer_order THEN 1 ELSE 0 END
-        agg: SUM
-    dimensions:
+    semantic_model:
+      enabled: true
+    agg_time_dimension: ordered_at
+    columns:
+      - name: order_id
+        entity:
+          type: primary
+          name: order
+      - name: customer_id
+        entity:
+          type: foreign
+          name: customer
+      - name: store_id
+        entity:
+          type: foreign
+          name: store
       - name: ordered_at
-        type: time
-        type_params:
-          time_granularity: day
-      - name: ordered_date
-        type: categorical
+        granularity: minute
+        dimension:
+          type: time
       - name: is_new_customer_order
-        type: categorical
+        dimension:
+          type: categorical
+    derived_semantics:
+      entities:
+        # Surrogate keys for the per-customer-month and per-customer-store-month predicates
+        # (q10, q13, q14): a metric filter groups by exactly one entity, and the dbt docs
+        # combine columns into one key this way ("Combine columns with a key").
+        - name: customer_month
+          type: foreign
+          expr: "customer_id || '|' || strftime(ordered_at, '%Y-%m')"
+        - name: customer_store_month
+          type: foreign
+          expr: "customer_id || '|' || store_id || '|' || strftime(ordered_at, '%Y-%m')"
+    metrics:
+      - name: orders
+        label: Orders
+        type: simple
+        agg: sum
+        expr: "1"
+      - name: revenue_usd
+        label: Revenue (USD)
+        description: Net order revenue.
+        type: simple
+        agg: sum
+        expr: order_total_cents / 100.0
+      - name: new_customer_orders
+        label: New Customer Orders
+        description: Count of first orders.
+        type: simple
+        agg: sum
+        expr: CASE WHEN is_new_customer_order THEN 1 ELSE 0 END
+      - name: repeat_customer_orders
+        label: Repeat Customer Orders
+        description: Orders from customers with more than one order over all time.
+        type: simple
+        agg: sum
+        expr: "1"
+        filter: |
+          {{ Metric('orders', group_by=['customer']) }} > 1
+      - name: qualifying_orders
+        label: Orders From Customers With 10+ Orders In Month
+        description: Orders in customer-months with more than 10 orders.
+        type: simple
+        agg: sum
+        expr: "1"
+        filter: |
+          {{ Metric('orders', group_by=['customer_month']) }} > 10
+      - name: qualifying_revenue_usd_same_store
+        label: Revenue From Customers With 10+ Orders In Same Store-Month
+        description: Revenue in customer-store-months with more than 10 orders.
+        type: simple
+        agg: sum
+        expr: order_total_cents / 100.0
+        filter: |
+          {{ Metric('orders', group_by=['customer_store_month']) }} > 10
 
   - name: order_items
     description: One row per item with order time and grouping keys enriched from the order table.
-    defaults:
-      agg_time_dimension: ordered_at
-    model: ref('order_items')
-    entities:
-      - name: item
-        type: primary
-        expr: item_id
-      - name: order
-        type: foreign
-        expr: order_id
-      - name: customer
-        type: foreign
-        expr: customer_id
-      - name: store
-        type: foreign
-        expr: store_id
-    measures:
-      - name: item_revenue_usd
-        description: Revenue at item grain.
-        expr: item_revenue_cents / 100.0
-        agg: SUM
-    dimensions:
+    semantic_model:
+      enabled: true
+    agg_time_dimension: ordered_at
+    columns:
+      - name: item_id
+        entity:
+          type: primary
+          name: item
+      - name: order_id
+        entity:
+          type: foreign
+          name: order
+      - name: customer_id
+        entity:
+          type: foreign
+          name: customer
+      - name: store_id
+        entity:
+          type: foreign
+          name: store
       - name: ordered_at
-        type: time
-        type_params:
-          time_granularity: day
+        granularity: minute
+        dimension:
+          type: time
       - name: product_name
-        type: categorical
+        dimension:
+          type: categorical
       - name: product_type
-        type: categorical
+        dimension:
+          type: categorical
+    metrics:
+      - name: item_revenue_usd
+        label: Item Revenue (USD)
+        description: Revenue at item grain.
+        type: simple
+        agg: sum
+        expr: item_revenue_cents / 100.0
 
   - name: customers
     description: One row per customer.
-    defaults:
-      agg_time_dimension: first_order_at
-    model: ref('customers')
-    entities:
-      - name: customer
-        type: primary
-        expr: customer_id
-    dimensions:
+    semantic_model:
+      enabled: true
+    agg_time_dimension: first_order_at
+    columns:
+      - name: customer_id
+        entity:
+          type: primary
+          name: customer
       - name: first_order_at
-        type: time
-        type_params:
-          time_granularity: day
+        granularity: minute
+        dimension:
+          type: time
       - name: customer_name
-        type: categorical
+        dimension:
+          type: categorical
 
   - name: stores
     description: One row per store.
-    defaults:
-      agg_time_dimension: opened_at
-    model: ref('stores')
-    entities:
-      - name: store
-        type: primary
-        expr: store_id
-    dimensions:
+    semantic_model:
+      enabled: true
+    agg_time_dimension: opened_at
+    columns:
+      - name: store_id
+        entity:
+          type: primary
+          name: store
       - name: opened_at
-        type: time
-        type_params:
-          time_granularity: day
+        granularity: day
+        dimension:
+          type: time
       - name: store_name
-        type: categorical
+        dimension:
+          type: categorical

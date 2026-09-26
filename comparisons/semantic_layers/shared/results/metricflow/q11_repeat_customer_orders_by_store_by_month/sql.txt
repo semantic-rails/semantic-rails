@@ -1,34 +1,61 @@
-‼️ Warning: A new version of the MetricFlow CLI is available.
-💡 Please update to version 0.15.0, released 2026-09-10 20:36:50 by running:
-	$ pip install --upgrade dbt-metricflow
-
 
 
 ⠋ Initiating query…
 
 ⠙ Initiating query…
-
-⠹ Initiating query…
-✔ Success 🦄 - query completed after 0.22 seconds
+✔ Success 🦄 - query completed after 0.07 seconds
 🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
 
-SELECT
-  subq_1.metric_time__month AS metric_time__month
-  , stores_src_10000.store_name AS store__store_name
-  , SUM(subq_1.repeat_customer_orders) AS repeat_customer_orders
-FROM (
+WITH sma_10003_cte AS (
   SELECT
     DATE_TRUNC('month', ordered_at) AS metric_time__month
+    , customer_id AS customer
     , store_id AS store
-    , 1 AS repeat_customer_orders
-  FROM "jaffle_comparison"."main"."repeat_customer_orders" repeat_customer_orders_src_10000
-) subq_1
-LEFT OUTER JOIN
-  "jaffle_comparison"."main"."stores" stores_src_10000
-ON
-  subq_1.store = stores_src_10000.store_id
+    , 1 AS __orders
+    , 1 AS __repeat_customer_orders
+  FROM "jaffle_comparison"."main"."orders" orders_src_10000
+)
+
+SELECT
+  metric_time__month AS metric_time__month
+  , store__store_name AS store__store_name
+  , SUM(repeat_customer_orders) AS repeat_customer_orders
+FROM (
+  SELECT
+    subq_5.metric_time__month AS metric_time__month
+    , subq_13.store_name AS store__store_name
+    , subq_11.customer__orders AS customer__orders
+    , subq_5.__repeat_customer_orders AS repeat_customer_orders
+  FROM (
+    SELECT
+      metric_time__month
+      , customer
+      , store
+      , __repeat_customer_orders
+    FROM sma_10003_cte
+  ) subq_5
+  LEFT OUTER JOIN (
+    SELECT
+      customer
+      , SUM(__orders) AS customer__orders
+    FROM sma_10003_cte
+    GROUP BY
+      customer
+  ) subq_11
+  ON
+    subq_5.customer = subq_11.customer
+  LEFT OUTER JOIN (
+    SELECT
+      store_id AS store
+      , store_name
+    FROM "jaffle_comparison"."main"."stores" stores_src_10000
+  ) subq_13
+  ON
+    subq_5.store = subq_13.store
+) subq_15
+WHERE customer__orders > 1
 GROUP BY
-  subq_1.metric_time__month
-  , stores_src_10000.store_name
+  metric_time__month
+  , store__store_name
 ORDER BY metric_time__month
 

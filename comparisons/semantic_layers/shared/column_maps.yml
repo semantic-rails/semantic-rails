@@ -100,7 +100,7 @@ metricflow:
     repeat_customer_orders: "repeat_customer_orders"
   q12_orders_by_month_with_lifetime_spend_500_filter:
     month: "metric_time__month"
-    filtered_orders: "filtered_orders_lifetime_spend_500"
+    filtered_orders: "orders"
   q13_daily_orders_from_customers_with_10plus_orders_in_month:
     day: "metric_time__day"
     qualifying_orders: "qualifying_orders"
@@ -131,10 +131,10 @@ cube:
     store_name: "stores.store_name"
     aov_usd: "orders.aov_usd"
   q05_orders_and_item_revenue_by_store_by_month:
-    month: "order_metrics.ordered_at.month"
+    month: "orders.ordered_at.month"
     store_name: "stores.store_name"
-    orders: "order_metrics.orders"
-    item_revenue_usd: "order_metrics.item_revenue_usd"
+    orders: "orders.orders"
+    item_revenue_usd: "order_items.item_revenue_usd"
   q06_new_customer_orders_by_month:
     month: "orders.ordered_at.month"
     new_customer_orders: "orders.new_customer_orders"
@@ -146,11 +146,11 @@ cube:
     customer_segment: "customer_history.customer_segment"
     revenue_usd: "orders.revenue_usd"
   q09_session_to_order_conversion_7d:
-    month: "session_conversions_7d.started_at.month"
-    session_to_order_conversion_rate_7d: "session_conversions_7d.session_to_order_conversion_rate_7d"
+    month: "storefront_sessions.started_at.month"
+    session_to_order_conversion_rate_7d: "storefront_sessions.session_to_order_conversion_rate_7d"
   q10_orders_from_customers_with_10plus_orders_in_month:
-    month: "qualified_orders.ordered_month.month"
-    qualifying_orders: "qualified_orders.qualifying_orders"
+    month: "orders.ordered_at.month"
+    qualifying_orders: "orders.orders_from_customers_with_10plus_orders_in_month"
   q11_repeat_customer_orders_by_store_by_month:
     month: "orders.ordered_at.month"
     store_name: "stores.store_name"
@@ -159,19 +159,19 @@ cube:
     month: "orders.ordered_at.month"
     filtered_orders: "orders.orders"
   q13_daily_orders_from_customers_with_10plus_orders_in_month:
-    day: "qualified_orders.ordered_at.day"
-    qualifying_orders: "qualified_orders.qualifying_orders"
+    day: "orders.ordered_at.day"
+    qualifying_orders: "orders.orders_from_customers_with_10plus_orders_in_month"
   q14_revenue_from_customers_with_10plus_orders_same_store_month:
-    month: "high_frequency_store_orders.ordered_at.month"
+    month: "orders.ordered_at.month"
     store_name: "stores.store_name"
-    qualifying_revenue_usd: "high_frequency_store_orders.qualifying_revenue_usd"
+    qualifying_revenue_usd: "orders.revenue_from_customers_with_10plus_orders_in_store_month"
   q15_same_store_session_to_order_conversion_7d:
-    month: "session_conversions_7d_same_store.started_at.month"
-    same_store_conversion_rate_7d: "session_conversions_7d_same_store.same_store_session_to_order_conversion_rate_7d"
+    month: "storefront_sessions.started_at.month"
+    same_store_conversion_rate_7d: "storefront_sessions.same_store_conversion_rate_7d"
   q16_revenue_by_customer_segment_as_of_delivered_time:
-    month: "delivered_orders_with_customer_segment.delivered_at.month"
-    customer_segment: "delivered_orders_with_customer_segment.customer_segment"
-    delivered_revenue: "delivered_orders_with_customer_segment.delivered_revenue"
+    month: "order_lifecycle.delivered_at.month"
+    customer_segment: "customer_history.customer_segment"
+    delivered_revenue: "order_lifecycle.delivered_revenue"
 malloy:
   q01_orders_by_month:
     month: "ordered_month"
@@ -201,13 +201,13 @@ malloy:
   q08_revenue_by_customer_segment_as_of_order_time:
     month: "ordered_month"
     customer_segment: "customer_segment"
-    revenue_usd: "revenue_total_usd"
+    revenue_usd: "revenue_usd"
   q09_session_to_order_conversion_7d:
     month: "session_month"
     session_to_order_conversion_rate_7d: "conversion_rate_7d"
   q10_orders_from_customers_with_10plus_orders_in_month:
     month: "ordered_month"
-    qualifying_orders: "qualifying_orders"
+    qualifying_orders: "orders"
   q11_repeat_customer_orders_by_store_by_month:
     month: "ordered_month"
     store_name: "store_name"
@@ -217,18 +217,18 @@ malloy:
     filtered_orders: "orders"
   q13_daily_orders_from_customers_with_10plus_orders_in_month:
     day: "ordered_day"
-    qualifying_orders: "qualifying_orders"
+    qualifying_orders: "orders"
   q14_revenue_from_customers_with_10plus_orders_same_store_month:
     month: "ordered_month"
     store_name: "store_name"
-    qualifying_revenue_usd: "qualifying_revenue_usd"
+    qualifying_revenue_usd: "revenue_usd"
   q15_same_store_session_to_order_conversion_7d:
     month: "session_month"
     same_store_conversion_rate_7d: "same_store_conversion_rate_7d"
   q16_revenue_by_customer_segment_as_of_delivered_time:
     month: "delivered_month"
     customer_segment: "customer_segment"
-    delivered_revenue: "delivered_revenue_total_usd"
+    delivered_revenue: "delivered_revenue_usd"
 snowflake_semantic_views:
   q01_orders_by_month:
     month: "ORDERED_MONTH"

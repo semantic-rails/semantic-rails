@@ -199,13 +199,12 @@ charset-normalizer==3.5.1 \
     --hash=sha256:fd0a274c0e5f9a21565cd9d3dd749b61f96b7aa1e20a93aa1ba4029518f2e5c0 \
     --hash=sha256:fdb8a068947befafba9952162645dc2fecaeb400e64584829ed5e9b2fbe21a7f
     # via requests
-click==8.2.1 \
-    --hash=sha256:27c491cc05d968d271d5a1db13e3b5a184636d9d930f148c50b038f0d0646202 \
-    --hash=sha256:61a3265b914e850b85317d0b3109c7f8cd35a670f963866005d6ef1d5175a12b
+click==8.5.0 \
+    --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360 \
+    --hash=sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34
     # via
     #   dbt-core
     #   dbt-metricflow
-    #   dbt-semantic-interfaces
 colorama==0.4.6 \
     --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
     --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
@@ -230,15 +229,18 @@ dbt-common==1.39.0 \
     #   dbt-adapters
     #   dbt-core
     #   dbt-duckdb
-dbt-core==1.10.23 \
-    --hash=sha256:0781b9b887b20a66d439bd1ec33eae57db663c729825a19c11b7529766b0a5dd \
-    --hash=sha256:bdce6698a2ee93be7375a8be481818849b2438c5f8dddb0b6b24e4cb58a94e36
+dbt-core==1.12.5 \
+    --hash=sha256:77661a8c9ee1d1ec7a8ed904d15a0937289d12ba6fd2d86d6f36d3eea735ce3d \
+    --hash=sha256:f17f662aed7b6a8b0d267ecf07448ad1ec03edf147a52abbdf5ee48d25999bb6
     # via
     #   dbt-duckdb
     #   dbt-metricflow
-dbt-duckdb==1.10.1 \
-    --hash=sha256:5d6df1589d4ba21fe20ac08454a32763d3263798c9f5914280eabd1dc285cbc0 \
-    --hash=sha256:90658ecb367082786c5ea2ffbf9e35bb4116fa5ad1bc2f287c4dc1f3984bafa1
+dbt-core-experimental-parser==2.0.5 \
+    --hash=sha256:b6ad345dc5bf187d8324d2f643ba6aad274eeb51e5c3b7c17780ea62338b069c
+    # via dbt-core
+dbt-duckdb==1.11.0 \
+    --hash=sha256:4b087557e8559e2c141a8daae28f4a832a06f425d0b4567eca7c8ffb635cd0fe \
+    --hash=sha256:bac8c77771de890efa1af5b003af7c74de50c5ef67dba5891894e78348f7091b
     # via -r requirements.in
 dbt-extractor==0.6.0 \
     --hash=sha256:05bcfab7ebd70296ceb31742e8333ba66a2c939de44e61a7088bebafa939aaf6 \
@@ -258,9 +260,9 @@ dbt-extractor==0.6.0 \
     --hash=sha256:d6cf08ec793b8bc2bd6e260ef818230ae68a4f71436fa489f08d7db1a52e2ffe \
     --hash=sha256:dcf14ed245de8df269815ff4c4f555fa72d2621f4fff37c023b8c99d0e421b4f
     # via dbt-core
-dbt-metricflow==0.11.0 \
-    --hash=sha256:2bcc6f43afecc1cdc2e2a5738370bd091f92616ff9ab2f8825bafd2aabb26aa2 \
-    --hash=sha256:31e52da53c305b3b68f7bd2ae3060aab9bf22a1c8a310d9dee21da72e6e5b80e
+dbt-metricflow==0.15.0 \
+    --hash=sha256:470d5503530734b482675945d8d62a06f9f4797fa8cbd477be9e65e708248612 \
+    --hash=sha256:d8bcc7bd979d6b5d09cec7683a78ce66a5d8508a6cbb82f592b686138b3176d0
     # via -r requirements.in
 dbt-protos==1.0.565 \
     --hash=sha256:130a8333fcd644ba1f00c8377e8f8013b28cca696a6af56037feb55a011f964c \
@@ -269,14 +271,6 @@ dbt-protos==1.0.565 \
     #   dbt-adapters
     #   dbt-common
     #   dbt-core
-dbt-semantic-interfaces==0.9.4.dev0 \
-    --hash=sha256:0891fa94ced32133481435ec8d31a41b0c261f707fc51514a0861b069898515d \
-    --hash=sha256:8710f2dc953087d8e37528442fc5f3e766ba5310fd520c0d61eedd33076aad38
-    # via
-    #   -r requirements.in
-    #   dbt-core
-    #   dbt-metricflow
-    #   metricflow
 deepdiff==8.6.2 \
     --hash=sha256:186dcbd181e4d76cef11ab05f802d0056c5d6083c5a6748c1473e9d7481e183e \
     --hash=sha256:4d22034a866c3928303a9332c279362f714192d9305bac17c498720d095fd1b4
@@ -318,10 +312,6 @@ duckdb==1.5.5 \
     --hash=sha256:fbf0f2d48b43c6c304d00463b463c27ead6c4b01c3c1816b750f728decf71afe \
     --hash=sha256:feead93c56679b79592d437c62975d39cb67adedffa7592c763baf8160ac7366
     # via dbt-duckdb
-graphviz==0.20.3 \
-    --hash=sha256:09d6bc81e6a9fa392e7ba52135a9d49f1ed62526f96499325930e87ca1b5925d \
-    --hash=sha256:81f848f2904515d8cd359cc611faba817598d2feaac4027b266aa3eda7b3dde5
-    # via metricflow
 halo==0.0.31 \
     --hash=sha256:5350488fb7d2aa7c31a1344120cee67a872901ce8858f60da7946cef96c208ab \
     --hash=sha256:7b67a3521ee91d53b7152d4ee3452811e1d2a6321975137762eb3d70063cc9d6
@@ -333,7 +323,7 @@ idna==3.20 \
 importlib-metadata==8.9.0 \
     --hash=sha256:58850626cef4bd2df100378b0f2aea9724a7b92f10770d547725b047078f99ee \
     --hash=sha256:e0f761b6ea91ced3b0844c14c9d955224d538105921f8e6754c00f6ca79fba7f
-    # via dbt-semantic-interfaces
+    # via metricflow
 isodate==0.7.2 \
     --hash=sha256:28009937d8031054830160fce6d409ed342816b543597cece116d966c6d99e15 \
     --hash=sha256:4cd1aa0f43ca76f4a6c6c0292a85f40b35ec2e43e315b59f06e6d32171a953e6
@@ -347,7 +337,6 @@ jinja2==3.1.6 \
     #   dbt-common
     #   dbt-core
     #   dbt-metricflow
-    #   dbt-semantic-interfaces
     #   metricflow
 jsonschema==4.26.0 \
     --hash=sha256:0c26707e2efad8aa1bfc5b7ce170f3fccc2e4918ff85989ba9ffa9facb2be326 \
@@ -355,7 +344,7 @@ jsonschema==4.26.0 \
     # via
     #   dbt-common
     #   dbt-core
-    #   dbt-semantic-interfaces
+    #   metricflow
 jsonschema-specifications==2025.9.1 \
     --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe \
     --hash=sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d
@@ -466,16 +455,16 @@ mashumaro==3.14 \
     #   dbt-adapters
     #   dbt-common
     #   dbt-core
-metricflow==0.209.0 \
-    --hash=sha256:1bebde4638b054157c06fc10700e85ff7a7bf775e3cde24922c7b437a445204b \
-    --hash=sha256:58187952eb2e96f0c33b4ceea2701572555fabf435eea44ca24fcba7fb4c53f9
-    # via dbt-metricflow
+metricflow==0.213.0 \
+    --hash=sha256:6e1865535a200607529970f6ca1a9fcd22b7814d0b71cd654d9ee01eecf0157b \
+    --hash=sha256:e6b5e8f05a0b9b0183430416052a61747fc89f809c39f2cdc5a3d9ba7a3f6931
+    # via
+    #   dbt-core
+    #   dbt-metricflow
 more-itertools==10.8.0 \
     --hash=sha256:52d4362373dcf7c52546bc4af9a86ee7c4579df9a8dc268be0a2f949d376cc9b \
     --hash=sha256:f638ddf8a1a0d134181275fb5d58b086ead7c6a72429ad725c67503f13ba30bd
-    # via
-    #   dbt-semantic-interfaces
-    #   metricflow
+    # via metricflow
 msgpack==1.2.2 \
     --hash=sha256:06d95f61de7afe4f4ff908a6feebfcb070d0582ac87c9cf3cedf8551cf634516 \
     --hash=sha256:0708afbf6a9587f0bfe479a9825c141d14d91e2f6a5c8103cf28bc96f4edb5d9 \
@@ -573,7 +562,9 @@ networkx==3.7 \
 opentelemetry-api==1.44.0 \
     --hash=sha256:67647e5e9566edcf421166fdf022b3537f818635daa852b289e34604dc6fb33a \
     --hash=sha256:94b98c893a91b88657eaac1e3ba89618cdb85be6918196705354f34728b2cdef
-    # via dbt-common
+    # via
+    #   dbt-common
+    #   dbt-core
 orderly-set==5.5.0 \
     --hash=sha256:46f0b801948e98f427b412fcabb831677194c05c3b699b80de260374baa0b1e7 \
     --hash=sha256:e87185c8e4d8afa64e7f8160ee2c542a475b738bc891dc3f58102e654125e6ce
@@ -613,7 +604,6 @@ pydantic==2.13.5 \
     --hash=sha256:51a9c5f7b2f8e636f04c6cada605d9b6a3bf1348fdf945a3d8869b19bba0ee08
     # via
     #   dbt-core
-    #   dbt-semantic-interfaces
     #   metricflow
 pydantic-core==2.46.5 \
     --hash=sha256:013d6f3483d81e02e7c328831808f336c8596ee33b4bd4026b9ffb1e960b8942 \
@@ -742,8 +732,11 @@ python-dateutil==2.9.0.post0 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
     # via
     #   dbt-common
-    #   dbt-semantic-interfaces
     #   metricflow
+python-dotenv==1.2.3 \
+    --hash=sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9 \
+    --hash=sha256:a20a594dabeaa385725aa239d5244871c143ecb356add8a20fcf23773a6c3a35
+    # via dbt-core
 python-slugify==9.1.1 \
     --hash=sha256:6db0d9480b22a8867e2dbd725e0eea28e7893ee1dc00bdae467b345ad0eafafb \
     --hash=sha256:db48547ed6d43072af59c86c3bc80bfc3c6f4e88c130c99de11775d721a574b8
@@ -834,7 +827,7 @@ pyyaml==6.0.3 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
     # via
     #   dbt-core
-    #   dbt-semantic-interfaces
+    #   metricflow
 rapidfuzz==3.14.6 \
     --hash=sha256:07c7aa0b1e4b9999a54f9e73317d6743ff85442c8ef7b7fbbe6b190fd37d9e75 \
     --hash=sha256:0844066900cdc9909ce4ab4fb5ba1d8e0c021252d770f2ea476f3443df1d22ef \
@@ -946,6 +939,7 @@ referencing==0.37.0 \
     # via
     #   jsonschema
     #   jsonschema-specifications
+    #   metricflow
 requests==2.34.2 \
     --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \
     --hash=sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed
@@ -1088,9 +1082,13 @@ spinners==0.0.24 \
     --hash=sha256:1eb6aeb4781d72ab42ed8a01dcf20f3002bf50740d7154d12fb8c9769bf9e27f \
     --hash=sha256:2fa30d0b72c9650ad12bbe031c9943b8d441e41b4f5602b0ec977a19f3290e98
     # via halo
-sqlparse==0.5.4 \
-    --hash=sha256:4396a7d3cf1cd679c1be976cf3dc6e0a51d0111e87787e7a8d780e7d5a998f9e \
-    --hash=sha256:99a9f0314977b76d776a0fcb8554de91b9bb8a18560631d6bc48721d07023dcb
+sqlglot==30.19.0 \
+    --hash=sha256:6fcfbe93c5ee76e07faadf0930dd119eebb545c4f317f8e4f205f177305d8b08 \
+    --hash=sha256:b4500fcced395359feea582f09d2d4433bf1f36362a3a9d0d6d5ebbc1f84242e
+    # via metricflow
+sqlparse==0.6.0 \
+    --hash=sha256:113c35c75365ab9cc9c7231d68c6428fb11c085fc8e9eb1ad659b7ddbf6cd2b9 \
+    --hash=sha256:b861c0288ce2fa56209a9a6412d2e066ac664b3873b89c26c9d8415e8e32996f
     # via dbt-core
 tabulate==0.10.0 \
     --hash=sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d \
@@ -1111,7 +1109,6 @@ typing-extensions==4.16.0 \
     #   dbt-adapters
     #   dbt-common
     #   dbt-core
-    #   dbt-semantic-interfaces
     #   mashumaro
     #   metricflow
     #   opentelemetry-api

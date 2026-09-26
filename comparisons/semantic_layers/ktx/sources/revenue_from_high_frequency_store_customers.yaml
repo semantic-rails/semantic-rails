@@ -1,4 +1,6 @@
 name: revenue_from_high_frequency_store_customers
+descriptions:
+  user: "SL gap: the predicate needs each customer-store-month's order count, a per-entity aggregate no source or measure filter can express."
 sql: |
   with customer_store_months as (
     select

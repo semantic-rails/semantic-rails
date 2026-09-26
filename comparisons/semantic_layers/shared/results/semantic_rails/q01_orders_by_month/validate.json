@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 3.741,
-      "compile_ms": 3.541,
+      "cache_lookup_ms": 0.343,
+      "compile_ms": 0.154,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -98,6 +98,7 @@
       "measure_plans": [
         {
           "aggregate_relation_id": "",
+          "aggregate_relation_rejections": {},
           "bound_measure": {
             "aggregation": "count_distinct",
             "aggregation_params": {},
@@ -675,6 +676,7 @@
     "measure_plans": [
       {
         "aggregate_relation_id": "",
+        "aggregate_relation_rejections": {},
         "bound_measure": {
           "aggregation": "count_distinct",
           "aggregation_params": {},
@@ -911,7 +913,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 5.262,
+  "timing_ms": 2.317,
   "trace": {
     "fallback": {
       "reason": "",

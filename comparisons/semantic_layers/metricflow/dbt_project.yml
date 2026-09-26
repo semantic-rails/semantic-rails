@@ -6,3 +6,9 @@ profile: comparison_metricflow
 
 model-paths: ["models"]
 seed-paths: ["seeds"]
+
+flags:
+  # dbt-core 1.12.5 also copies a latest-spec conversion metric's top-level `window` into the
+  # legacy `type_params.window`, which this behavior flag (default true in 1.12) rejects as an
+  # un-nested cumulative window. Keep it off so the documented conversion `window` parses.
+  require_nested_cumulative_type_params: false

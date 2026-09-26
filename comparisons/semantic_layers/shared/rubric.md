@@ -66,7 +66,10 @@ executed SQL, no cubes, KtX sources or Semantic Rails models, or no named Malloy
   read under another name would go unnoticed. The tests pin the current labels
   (`tests/semantic_rails/test_comparison_pack_scripts.py`), so any change to a label shows up
   in review.
+- Detection doesn't parse member, entity or join expressions. The methodology keeps them
+  row-level, and review checks that no derived table hides in one. A layer's own
+  derived-query constructs, such as Malloy query-derived sources, Cube subquery dimensions
+  and multi-stage measures, and MetricFlow conversion metrics and metric filters, are
+  semantic constructs, not hand-written SQL.
 - Snowflake's committed `summary.json` predates the rubric and still carries hand-assigned
-  labels. The rubric reads only whether each question executed. Cube's pinned capture
-  (`results/cube/summary.json`) carries them too. The rubric reads the replay's summary
-  instead.
+  labels. The rubric reads only whether each question executed.

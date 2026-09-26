@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.445,
-      "compile_ms": 3.541,
+      "cache_lookup_ms": 0.429,
+      "compile_ms": 0.154,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -98,6 +98,7 @@
       "measure_plans": [
         {
           "aggregate_relation_id": "",
+          "aggregate_relation_rejections": {},
           "bound_measure": {
             "aggregation": "count_distinct",
             "aggregation_params": {},
@@ -682,6 +683,7 @@
     "measure_plans": [
       {
         "aggregate_relation_id": "",
+        "aggregate_relation_rejections": {},
         "bound_measure": {
           "aggregation": "count_distinct",
           "aggregation_params": {},

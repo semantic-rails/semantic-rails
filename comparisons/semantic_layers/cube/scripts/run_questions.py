@@ -1,165 +1,134 @@
+"""Run the Cube pack live: start Cube Core, then save /meta and each query's /sql and /load."""
+
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
+import shutil
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
+
+import duckdb
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-PROJECT_DIR = REPO_ROOT / "comparisons" / "semantic_layers" / "cube"
-RESULTS_DIR = REPO_ROOT / "comparisons" / "semantic_layers" / "shared" / "results" / "cube"
-API_SECRET = "comparison-secret"
+PACK = REPO_ROOT / "comparisons" / "semantic_layers"
+PROJECT_DIR = PACK / "cube"
+RESULTS_DIR = PACK / "shared" / "results" / "cube"
+DATABASE = PACK / "shared" / "data" / "jaffle_comparison.duckdb"
 BASE_URL = "http://127.0.0.1:4000/cubejs-api/v1"
-QUESTION_STATUSES = {
-    "q01_orders_by_month": "native",
-    "q02_revenue_by_store_by_month": "native",
-    "q03_item_revenue_by_product_type_by_month": "native",
-    "q04_aov_by_store": "native",
-    "q05_orders_and_item_revenue_by_store_by_month": "workaround",
-    "q06_new_customer_orders_by_month": "native",
-    "q07_delivered_revenue_by_month": "native",
-    "q08_revenue_by_customer_segment_as_of_order_time": "workaround",
-    "q09_session_to_order_conversion_7d": "precomputed",
-    "q10_orders_from_customers_with_10plus_orders_in_month": "precomputed",
-    "q11_repeat_customer_orders_by_store_by_month": "workaround",
-    "q12_orders_by_month_with_lifetime_spend_500_filter": "workaround",
-    "q13_daily_orders_from_customers_with_10plus_orders_in_month": "precomputed",
-    "q14_revenue_from_customers_with_10plus_orders_same_store_month": "precomputed",
-    "q15_same_store_session_to_order_conversion_7d": "precomputed",
-    "q16_revenue_by_customer_segment_as_of_delivered_time": "precomputed",
-}
+PACKAGES = ["@cubejs-backend/server", "@cubejs-backend/duckdb-driver", "@duckdb/node-api"]
+# A fresh API secret per run: Cube accepts only requests carrying a JWT signed with it.
+API_SECRET = secrets.token_hex(32)
 
 
-def _load_env() -> dict[str, str]:
-    env = dict(os.environ)
-    env_file = PROJECT_DIR / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            text = line.strip()
-            if not text or text.startswith("#") or "=" not in text:
-                continue
-            key, value = text.split("=", 1)
-            env[key] = value
-    return env
+def token(secret: str) -> str:
+    """An HS256 JWT signed with the API secret, which Cube requires on every request."""
+
+    def encode(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    signed = encode(b'{"alg":"HS256","typ":"JWT"}') + "." + encode(b"{}")
+    signature = hmac.new(secret.encode(), signed.encode(), hashlib.sha256).digest()
+    return f"{signed}.{encode(signature)}"
 
 
-def _request(path: str, query: dict[str, object] | None = None) -> bytes:
-    url = f"{BASE_URL}{path}"
-    if query is not None:
-        url += "?" + urllib.parse.urlencode({"query": json.dumps(query)})
-    req = urllib.request.Request(url, headers={"Authorization": API_SECRET})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        return response.read()
+def _request(path: str, query: str | None = None) -> str:
+    url = BASE_URL + path + (f"?{urllib.parse.urlencode({'query': query})}" if query else "")
+    request = urllib.request.Request(url, headers={"Authorization": token(API_SECRET)})
+    while True:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            body = response.read().decode("utf-8")
+        if json.loads(body).get("error") != "Continue wait":  # a long query: ask again
+            return body
 
 
-def _write(path: Path, data: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(data, encoding="utf-8")
-
-
-def _wait_for_server() -> None:
-    for _ in range(60):
+def _wait_for_meta(server: subprocess.Popen[bytes], log: IO[bytes]) -> str:
+    for _ in range(90):
+        if server.poll() is not None:
+            break
         try:
-            _request("/meta")
-            return
-        except Exception:
+            return _request("/meta")
+        except OSError:
             time.sleep(1)
-    raise TimeoutError("Cube server did not start in time.")
+    log.seek(0)
+    raise SystemExit("Cube didn't start:\n" + log.read().decode("utf-8", "replace")[-4000:])
+
+
+def _environment() -> dict[str, str]:
+    modules = PROJECT_DIR / "node_modules"
+    if not modules.is_dir():
+        raise SystemExit("Install Cube first: see comparisons/semantic_layers/cube/README.md")
+    versions = {
+        name: json.loads((modules / name / "package.json").read_text(encoding="utf-8"))["version"]
+        for name in PACKAGES
+    }
+    node = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True)
+    return versions | {"node": node.stdout.strip()}
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def main() -> None:
-    if not (PROJECT_DIR / "package.json").is_file():
-        raise SystemExit(
-            "Cube comparison is captured evidence only: the recorded npm graph has "
-            "unresolved high/critical advisories. Review runtime-snapshot.json, verify "
-            "its lock/SBOM evidence, and provide a separately audited manifest before "
-            "rerunning it."
+    environment = _environment()
+    with duckdb.connect(str(DATABASE), read_only=True) as con:
+        (fingerprint,) = con.execute("SELECT fingerprint FROM comparison_dataset").fetchone()
+    shutil.rmtree(RESULTS_DIR, ignore_errors=True)
+    questions, unsupported = [], {}
+    with tempfile.TemporaryFile() as log:
+        env = os.environ | {"CUBEJS_API_SECRET": API_SECRET}
+        server = subprocess.Popen(
+            ["node", "index.js"], cwd=PROJECT_DIR, env=env, stdout=log, stderr=log
         )
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    env = _load_env()
-    env["npm_config_cache"] = "/tmp/codex-npm-cache"
-
-    install = subprocess.run(
-        ["npm", "install"],
-        cwd=PROJECT_DIR,
-        env=env,
-        text=True,
-        capture_output=True,
-    )
-    _write(RESULTS_DIR / "npm_install.stdout.txt", install.stdout)
-    _write(RESULTS_DIR / "npm_install.stderr.txt", install.stderr)
-    if install.returncode != 0:
-        raise SystemExit("Cube npm install failed.")
-
-    validate = subprocess.run(
-        ["npm", "run", "validate"],
-        cwd=PROJECT_DIR,
-        env=env,
-        text=True,
-        capture_output=True,
-    )
-    _write(RESULTS_DIR / "validate.stdout.txt", validate.stdout)
-    _write(RESULTS_DIR / "validate.stderr.txt", validate.stderr)
-
-    server = subprocess.Popen(
-        ["npm", "run", "dev"],
-        cwd=PROJECT_DIR,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        _wait_for_server()
-        _write(RESULTS_DIR / "meta.json", _request("/meta").decode("utf-8"))
-
-        summary: list[dict[str, object]] = []
-        for query_file in sorted((PROJECT_DIR / "queries").glob("q*.json")):
-            question_id = query_file.stem
-            target_dir = RESULTS_DIR / question_id
-            query = json.loads(query_file.read_text(encoding="utf-8"))
-
-            try:
-                sql_raw = _request("/sql", query).decode("utf-8")
-                _write(target_dir / "sql.json", sql_raw)
-                load_raw = _request("/load", query).decode("utf-8")
-                _write(target_dir / "load.json", load_raw)
-                status = QUESTION_STATUSES[question_id]
-            except urllib.error.HTTPError as exc:
-                _write(target_dir / "error.txt", exc.read().decode("utf-8"))
-                status = "unsupported"
-
-            summary.append(
-                {
-                    "question_id": question_id,
-                    "status": status,
-                    "query_path": str(query_file.relative_to(REPO_ROOT)),
-                    "result_path": str((target_dir / "load.json").relative_to(REPO_ROOT)),
-                    "sql_path": str((target_dir / "sql.json").relative_to(REPO_ROOT)),
-                }
-            )
-
-        unsupported = {}
-        _write(RESULTS_DIR / "unsupported.json", json.dumps(unsupported, indent=2, sort_keys=True))
-        _write(
-            RESULTS_DIR / "summary.json",
-            json.dumps({"layer": "cube", "questions": summary}, indent=2, sort_keys=True),
-        )
-    finally:
-        server.terminate()
         try:
-            stdout, stderr = server.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            server.kill()
-            stdout, stderr = server.communicate(timeout=10)
-        _write(RESULTS_DIR / "server.stdout.txt", stdout)
-        _write(RESULTS_DIR / "server.stderr.txt", stderr)
-
-    print(f"Wrote Cube artifacts to {RESULTS_DIR}")
+            _write(RESULTS_DIR / "meta.json", _wait_for_meta(server, log))
+            for query_file in sorted((PROJECT_DIR / "queries").glob("q*.json")):
+                target = RESULTS_DIR / query_file.stem
+                query = query_file.read_text(encoding="utf-8")
+                try:
+                    _write(target / "sql.json", _request("/sql", query))
+                    _write(target / "load.json", _request("/load", query))
+                    status = "executed"
+                except urllib.error.HTTPError as exc:
+                    _write(target / "error.txt", exc.read().decode("utf-8"))
+                    reason = f"HTTP {exc.code}"
+                    unsupported[query_file.stem] = {"status": "unsupported", "reason": reason}
+                    status = "unsupported"
+                questions.append(
+                    {
+                        "question_id": query_file.stem,
+                        "status": status,
+                        "query_path": str(query_file.relative_to(REPO_ROOT)),
+                        "result_path": str((target / "load.json").relative_to(REPO_ROOT)),
+                        "sql_path": str((target / "sql.json").relative_to(REPO_ROOT)),
+                    }
+                )
+        finally:
+            server.terminate()
+            server.wait(timeout=30)
+    summary = {
+        "layer": "cube",
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "dataset_fingerprint": fingerprint,
+        "environment": environment,
+        "questions": questions,
+    }
+    _write(RESULTS_DIR / "unsupported.json", json.dumps(unsupported, indent=2, sort_keys=True))
+    _write(RESULTS_DIR / "summary.json", json.dumps(summary, indent=2, sort_keys=True))
+    print(f"Wrote Cube results to {RESULTS_DIR.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":

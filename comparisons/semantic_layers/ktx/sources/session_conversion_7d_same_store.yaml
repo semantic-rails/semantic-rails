@@ -1,4 +1,6 @@
 name: session_conversion_7d_same_store
+descriptions:
+  user: "SL gap: conversion needs an EXISTS over each session's 7-day window of same-store orders; joins are equality-only and measures can't use window functions."
 sql: |
   with matched as (
     select

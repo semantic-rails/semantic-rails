@@ -1,4 +1,6 @@
 name: delivered_revenue_by_customer_segment
+descriptions:
+  user: "SL gap: joins are equality-only, so the history validity window on delivered_at can't be a declared join."
 sql: |
   select
     l.order_id,
