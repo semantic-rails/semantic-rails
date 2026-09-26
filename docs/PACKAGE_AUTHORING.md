@@ -1334,6 +1334,12 @@ Routing is conservative in the MVP:
   [relationship.orders_customer]}}`. It routes only when the query joins that
   model along the same path, and only if every hop is many-to-one (or one-to-one)
   with no `temporal_validity`. A pre-joined column without a `path` doesn't route.
+  Another model's key read from a foreign key (such as the customer key) needs a
+  `path` of the one relationship between the two models, and doesn't route when
+  two relationships link them. Build pre-joined columns with the base path's join
+  semantics: a fact row with no match keeps a null value, so use an outer join. A
+  measure whose expression, or a time role whose column, comes from another model
+  doesn't route.
 - Every selected measure must have a column in the variant.
 - Every grouped or filtered dimension must be covered by the variant. If a
   query groups by `customer_id` and the monthly table excludes that dimension,

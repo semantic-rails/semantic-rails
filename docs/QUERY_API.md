@@ -306,8 +306,9 @@ When package authors declare physical rollups with `model.variants:` or explicit
   package without rollups.
 - `performance_plan.aggregate_routing.candidates` lists every rollup considered
   for each measure leaf: `{leaf_id, measure_id, relation_id, decision, reason}`,
-  where `decision` is `selected`, `eligible` (it could answer, but another rollup
-  ranked higher), `rejected` (with the reason code) or `unknown`. A leaf the plan
+  where `decision` is `selected`, `eligible` (it passed every rule but wasn't
+  read: another rollup ranked higher, or, with reason `lowered_separately`, no
+  branch read it), `rejected` (with the reason code) or `unknown`. A leaf the plan
   lowers separately (a `distribution` compiles each branch as its own query)
   reports each rollup its planner didn't reject with reason `lowered_separately`:
   `unknown` when some branch reads it (the report can't say which leaf's), and

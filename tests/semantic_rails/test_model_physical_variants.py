@@ -255,6 +255,8 @@ ALTER TABLE order_fact ADD COLUMN ship_to_id VARCHAR;
 UPDATE order_fact SET ship_to_id = CASE customer_id WHEN 'c1' THEN 'c2' ELSE 'c1' END;
 CREATE TABLE order_region_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  region, sum(amount) AS revenue FROM order_fact JOIN customers USING (customer_id) GROUP BY 1, 2;
+CREATE TABLE order_ship_to_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
+ ship_to_id AS customer_key, sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
 """
 _ROLLUP_COLUMNS = {"store_id": "store_id", "revenue": "revenue"}
 _MONTHLY = {
@@ -502,6 +504,13 @@ _REGION = {
 }
 _NO_PATH = {**_REGION, "dimensions": {"dimension.region": {"column": "region"}}}
 _BY_REGION = _grouped(_rollup_query(_REVENUE, "sum", "month"), "dimension.region")
+_CUSTOMER_KEY = "dimension.p_customer_id"  # the customer entity's key, read from a foreign key
+_SHIP_TO_KEY = {
+    **_REGION,
+    "id": "aggregate_relation.ship_to",
+    "relation": "order_ship_to_monthly",
+    "dimensions": {_CUSTOMER_KEY: {"column": "customer_key", "path": [_SHIP_TO]}},
+}
 
 
 @pytest.mark.parametrize(
@@ -737,6 +746,21 @@ _BY_REGION = _grouped(_rollup_query(_REVENUE, "sum", "month"), "dimension.region
             "join_path_mismatch",
             id="pre-joined-path-undeclared",
         ),
+        pytest.param(
+            ({}, [_REGION], {"ship_to": False}),
+            _grouped(
+                _rollup_query(_REVENUE, "sum", "month"),
+                where=[{"field": "dimension.region", "op": "=", "value": "east"}],
+            ),
+            None,
+            id="pre-joined-path-filter",
+        ),
+        pytest.param(
+            ({}, [_SHIP_TO_KEY], {"ship_to": False}),
+            _grouped(_rollup_query(_REVENUE, "sum", "month"), _CUSTOMER_KEY),
+            "join_path_mismatch",
+            id="foreign-key-with-two-relationships",  # the base reads the buyer's key
+        ),
         # Reason codes that predate the rollup guards.
         pytest.param(
             ({"monthly": {**_MONTHLY, "equivalence": {"kind": "approximate"}}}, []),
@@ -899,6 +923,32 @@ def test_routing_report_lists_each_rollup_per_leaf(
     tmp_path: Path, rollups: tuple, query: dict, decisions: dict
 ):
     assert _decisions(_routed_answers(tmp_path, rollups, query)) == decisions
+
+
+@pytest.mark.parametrize(
+    ("columns", "error"),
+    [
+        pytest.param(
+            {"revenue": {"column": "max_amount", "hold": "max"}}, "unknown keys", id="typo"
+        ),
+        pytest.param({"revenue": {"column": "revenue", "holds": "avg"}}, "holds 'avg'", id="value"),
+        pytest.param(
+            {"revenue": {"column": "revenue", "holds": "count_distinct"}},
+            "holds 'count_distinct'",
+            id="not-allowed-for-the-measure",
+        ),
+    ],
+)
+def test_rollup_bindings_are_checked(tmp_path: Path, columns: dict, error: str):
+    _rollup_package(tmp_path / "p", *_monthly(**columns))
+    with pytest.raises(SemanticLayerError, match=error):
+        load_package_config(str(tmp_path / "p"))
+    unknown_path = {"dimension.region": {"column": "region", "path": ["relationship.nope"]}}
+    _rollup_package(
+        tmp_path / "q", {}, [{**_REGION, "dimensions": unknown_path}], {"ship_to": False}
+    )
+    with pytest.raises(SemanticLayerError, match="unknown relationships"):
+        load_package_config(str(tmp_path / "q"))
 
 
 def test_routing_report_caps_its_rows(tmp_path: Path, monkeypatch):

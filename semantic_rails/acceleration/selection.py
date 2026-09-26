@@ -6,6 +6,7 @@ rejects gets a stable reason code, which the routing report (:mod:`.routing`) sh
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +16,7 @@ from ..compiler_parts.bind import (
     _bound_metric_predicates,
     _measure_count_distinct_key_columns,
 )
+from ..compiler_parts.dependencies import binding_cut
 from ..compiler_parts.indexes import _dimension_index, _measure_index, _temporal_role_index
 from ..compiler_parts.paths import (
     _direct_dimension_source_expr,
@@ -67,6 +69,8 @@ def _time_bound_on_grain(value: Any, grain: str) -> bool:
 
     A day boundary is also an hour and minute boundary, so finer rollups check the day.
     """
+    if not re.match(r"\d{4}-\d{2}-\d{2}(?:[T ]|$)", str(value).strip()):
+        return False  # only calendar dates; `datetime` also reads week and ordinal dates
     try:
         moment = _parse_time_literal(value)
         grain = grain if _grain_rank(grain) >= _grain_rank("day") else "day"
@@ -114,6 +118,8 @@ class _Leaf:
     single_valued: set[str]  # grouped, or pinned to one value by an equality filter
     # The query's join path to each dimension from another model; None if it can fan out.
     join_paths: dict[str, list[str] | None]
+    # The measure expression or the time role reads another model, which no rollup declares.
+    joins_undeclared: bool
     counts_fact_key: bool
 
 
@@ -141,9 +147,12 @@ def _one_row_per_group(row: AggregateRelationConfig, leaf: _Leaf, config: Packag
     """Whether each output row is exactly one rollup row: the query's grain is the rollup's,
     and every rollup dimension, including the keys of its entity grain, is single-valued."""
     try:
-        keys = {
-            dim for entity in row.entity_grain for dim in _entity_key_dimension_ids(entity, config)
-        }
+        with binding_cut():  # the rollup's keys aren't objects the query reads
+            keys = {
+                dim
+                for entity in row.entity_grain
+                for dim in _entity_key_dimension_ids(entity, config)
+            }
     except SemanticLayerError:  # an entity without a key dimension can't be grouped
         return False
     dimensions = _aggregate_dimension_coverage(row)
@@ -191,7 +200,7 @@ def _aggregate_relation_rejection_reason(
         return "missing_measure_column"
     if leaf.dimensions - _aggregate_dimension_coverage(row):
         return "missing_dimension"
-    if any(
+    if leaf.joins_undeclared or any(
         path is None or row.dimension_paths.get(dim) != path
         for dim, path in leaf.join_paths.items()
     ):
@@ -219,12 +228,23 @@ def _aggregate_relation_rejection_reason(
 def _join_paths(
     dimensions: set[str], leaf_entity: str, selections: list[PathSelection], config: PackageConfig
 ) -> dict[str, list[str] | None]:
-    """The query's path to each dimension a rollup would hold pre-joined from another model."""
+    """The query's path to each dimension of another model, which a rollup holds pre-joined;
+    ``None`` where no declared path can match it."""
     chosen = {selection.target_entity: selection for selection in selections}
     paths: dict[str, list[str] | None] = {}
     for dim_id in sorted(dimensions):
         entity = _dimension_index(config)[dim_id].entity
-        if entity == leaf_entity or _direct_dimension_source_expr(leaf_entity, dim_id, config):
+        if entity == leaf_entity:
+            continue
+        if _direct_dimension_source_expr(leaf_entity, dim_id, config):
+            # The base path reads this key from a foreign key on the leaf's own table, through
+            # the first relationship between the two entities: unambiguous only if there's one.
+            links = [
+                rel.id
+                for rel in config.relationships
+                if {rel.source_entity, rel.target_entity} == {leaf_entity, entity}
+            ]
+            paths[dim_id] = links if len(links) == 1 else None
             continue
         selection = chosen.get(entity)
         paths[dim_id] = None
@@ -278,6 +298,7 @@ def _select_aggregate_relation(
             if str(op or "=").strip() in {"=", "=="} and not isinstance(value, (list, tuple, set))
         },
         join_paths=_join_paths(dimensions, measure.entity, path_selections, config),
+        joins_undeclared=any(item.purpose in {"measure_expr", "time"} for item in path_selections),
         # Each value of a model's single-column row key sits in one rollup row.
         counts_fact_key=len(key) == 1 and measure.row_grain == key and not measure.source_relation,
     )

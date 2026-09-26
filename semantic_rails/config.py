@@ -217,6 +217,17 @@ def _ensure_dict_list(value: Any) -> list[dict[str, Any]]:
 _TIME_GRAIN_ORDER = ["transaction", "minute", "hour", "day", "week", "month", "quarter", "year"]
 # What a rollup's measure column may hold per row (`holds:`); see acceleration/selection.py.
 _ROLLUP_HOLDS = frozenset({"sum", "min", "max", "count_distinct"})
+_MEASURE_BINDING_KEYS = frozenset({"column", "rollup", "aggregation", "holds"})
+_DIMENSION_BINDING_KEYS = frozenset({"column", "path"})
+
+
+def _check_binding_keys(binding: dict[str, Any], allowed: frozenset[str], *, label: str) -> None:
+    """A misspelled key would silently change what a rollup column is trusted to hold."""
+    unknown = sorted(set(binding) - allowed)
+    if unknown:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", f"{label} has unknown keys {unknown}; use {sorted(allowed)}"
+        )
 
 
 def _coarser_time_grains(grain: str) -> list[str]:
@@ -2643,6 +2654,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     dimension_ids = {dimension.id for dimension in dimensions}
     temporal_role_ids = {role.id for role in temporal_roles}
     relationship_ids = {row.id for row in relationships}
+    measures_by_id = {measure.id: measure for measure in measures}
     model_measure_keys: dict[str, set[str]] = {
         model_id: set(dict(model.get("measures", {}) or {}))
         for model_id, model in model_rows.items()
@@ -2697,6 +2709,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 measure_id = _resolve_measure_ref(measure_ref, model_id=model_id)
                 measures_list.append(measure_id)
                 binding = dict(binding_raw or {}) if isinstance(binding_raw, dict) else {}
+                _check_binding_keys(
+                    binding, _MEASURE_BINDING_KEYS, label=f"{path}: rollup measure '{measure_id}'"
+                )
                 column = str(
                     binding.get("column", binding_raw if not isinstance(binding_raw, dict) else "")
                     or ""
@@ -2706,11 +2721,12 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 measure_rollups[measure_id] = str(binding.get("rollup", "") or "").strip()
                 measure_aggregations[measure_id] = str(binding.get("aggregation", "") or "").strip()
                 holds = str(binding.get("holds", "") or "").strip().lower()
-                if holds and holds not in _ROLLUP_HOLDS:
+                allowed = getattr(measures_by_id.get(measure_id), "allowed_aggregations", [holds])
+                if holds and (holds not in _ROLLUP_HOLDS or holds not in allowed):
                     raise SemanticLayerError(
                         "INVALID_CONFIG",
                         f"{path}: aggregate relation measure '{measure_id}' declares holds '{holds}';"
-                        f" use one of {sorted(_ROLLUP_HOLDS)}",
+                        f" use one of {sorted(_ROLLUP_HOLDS & set(allowed))}",
                     )
                 if holds:
                     measure_holds[measure_id] = holds
@@ -2728,6 +2744,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 dim_id = _resolve_dimension_ref(dim_ref, model_id=model_id)
                 dimensions_list.append(dim_id)
                 binding = dict(binding_raw or {}) if isinstance(binding_raw, dict) else {}
+                _check_binding_keys(
+                    binding, _DIMENSION_BINDING_KEYS, label=f"{path}: rollup dimension '{dim_id}'"
+                )
                 column = str(
                     binding.get("column", binding_raw if not isinstance(binding_raw, dict) else "")
                     or ""
@@ -2891,6 +2910,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     )
                     raw_column = columns.get(measure_id, columns.get(measure_key, measure_key))
                     if isinstance(raw_column, dict):
+                        _check_binding_keys(
+                            raw_column,
+                            _MEASURE_BINDING_KEYS,
+                            label=f"{path}: variant '{variant_id}' column '{measure_key}'",
+                        )
                         column = str(raw_column.get("column", "") or "").strip()
                         rollup = str(
                             raw_column.get("rollup", raw_measure_spec.get("rollup", "")) or ""
