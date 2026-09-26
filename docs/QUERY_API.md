@@ -130,7 +130,9 @@ hosted enterprise auth.
 `policy_context.roles` are **trusted upstream context**. The policy engine matches policies
 against these fields (for example, a policy with `audiences: [finance]` only fires when the
 resolved context carries `audience=finance`). The default runtime reads them from request
-headers (and falls back to the body's `policy_context` block).
+headers (and falls back to the body's `policy_context` block). `policy_context.attributes` is
+reserved for attributes an embedding host attaches ([EMBEDDING.md](EMBEDDING.md)); a value a
+caller sends is ignored.
 
 For local development, single-tenant on-prem, and any deployment behind a trusted edge,
 the header-based default is correct. **For multi-tenant hosted deployments it is unsafe** —
