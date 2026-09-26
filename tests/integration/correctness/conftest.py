@@ -103,7 +103,8 @@ def _rows(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
 def duckdb_backend(packages: dict[str, Path]) -> Iterator[Backend]:
     runtimes = {name: _runtime(path) for name, path in packages.items()}
     for runtime in runtimes.values():
-        _rows(runtime, f"SET TimeZone = '{SESSION_ZONE}'")
+        # GLOBAL: the engine queries on cursors, which don't inherit a session setting.
+        _rows(runtime, f"SET GLOBAL TimeZone = '{SESSION_ZONE}'")
     try:
         yield Backend("duckdb", runtimes, lambda sql: _rows(runtimes["utc_authored"], sql))
     finally:
