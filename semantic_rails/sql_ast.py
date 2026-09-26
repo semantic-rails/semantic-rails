@@ -50,6 +50,7 @@ SQL_CAST_TYPE_NAMES = frozenset(
         "BOOLEAN",
         "CHAR",
         "DATE",
+        "DATETIME",
         "DECIMAL",
         "DOUBLE",
         "FLOAT",

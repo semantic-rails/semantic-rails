@@ -238,7 +238,7 @@ DIFFERENTIAL = [
 
 @pytest.fixture(scope="module")
 def packages(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
-    return {
+    built = {
         name: _write_package(tmp_path_factory.mktemp(name), calendars=calendars, zone=zone)
         for name, calendars, zone in (
             ("none", (), False),
@@ -248,6 +248,9 @@ def packages(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
             ("zoned_authored", ("default",), True),
         )
     }
+    for package in built.values():  # seed the warehouse `_key` reads, whatever test runs first
+        _query(package, _ask("month", NOW))
+    return built
 
 
 @pytest.mark.parametrize(
