@@ -117,7 +117,7 @@ def test_execute_description_names_every_query_time_variant(runtime_factory):
         "kind:metric_predicate",
     ):
         assert variant in execute_desc, variant
-    assert "Compose variants at query time" in MCP_SERVER_INSTRUCTIONS
+    assert "composes at query time with no model change" in MCP_SERVER_INSTRUCTIONS
     example = re.search(r"large orders: (\{.*\})\.$", execute_desc)
     assert example, execute_desc
     expression = json.loads(re.sub(r"(\w+):", r'"\1":', example.group(1)).replace("'", '"'))
