@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.824,
-      "compile_ms": 0.202,
+      "cache_lookup_ms": 0.83,
+      "compile_ms": 0.287,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -328,6 +328,7 @@
     },
     "performance_plan": {
       "aggregate_routing": {
+        "candidates": [],
         "selected": [],
         "selected_count": 0
       },
@@ -1442,8 +1443,8 @@
   "recovery_hints": [],
   "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.t AS t\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders_from_customers_with_10plus_orders_in_period\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
-  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
+  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
+  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
   "sql_plan": {
     "ctes": [
       {

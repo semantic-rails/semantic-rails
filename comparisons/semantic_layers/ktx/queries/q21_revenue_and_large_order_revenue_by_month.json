@@ -1,0 +1,17 @@
+{
+  "dimensions": [
+    {
+      "field": "orders.ordered_at",
+      "granularity": "month"
+    }
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    "orders.revenue_usd",
+    {
+      "expr": "sum(case when orders.order_total_cents >= 5000 then orders.order_total_cents / 100.0 else 0 end)",
+      "name": "large_order_revenue_usd"
+    }
+  ]
+}

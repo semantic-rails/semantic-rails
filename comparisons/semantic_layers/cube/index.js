@@ -59,6 +59,10 @@ if (process.env.CUBEJS_DEV_MODE !== undefined) {
   process.exit(1);
 }
 
+// SQL API queries post-process a Cube query's result above its row limit only by truncating it;
+// fail them instead of returning a partial answer.
+process.env.CUBESQL_FAIL_ON_LIMITLESS_POST_PROCESSING = "true";
+
 const database = path.resolve(
   __dirname,
   process.env.CUBE_DUCKDB_PATH || "../shared/data/jaffle_comparison.duckdb",
@@ -73,6 +77,12 @@ const server = new CubejsServer({
   http: { cors: { origin: false } },
   // Queries only: no Cube Store for the cache and queue, and no pre-aggregations.
   cacheAndQueueDriver: "memory",
+  // The SQL API, which the runner reaches through the REST endpoint /v1/cubesql with the same
+  // JWT. Cube starts it only with a Postgres-protocol port, which also listens on every
+  // interface; its password is random per start and never shown, so nothing can log in there.
+  pgSqlPort: 15432,
+  sqlUser: "cube",
+  sqlPassword: crypto.randomBytes(32).toString("hex"),
   // The driver opens an in-memory DuckDB and attaches the shared file read-only, so other
   // processes can open the file read-only while Cube runs.
   driverFactory: () => ({

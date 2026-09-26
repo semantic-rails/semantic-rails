@@ -1,0 +1,15 @@
+// Query-time only: the model (../models/jaffle.malloy) is unchanged.
+import "../models/jaffle.malloy"
+
+// The model joins sessions to orders within 7 days; this query declares a 50-minute join itself.
+query: q18_same_store_session_to_order_conversion_50m is storefront_sessions extend {
+  join_many: orders_within_50m is orders on customer_id = orders_within_50m.customer_id
+    and orders_within_50m.ordered_at >= started_at
+    and orders_within_50m.ordered_at < started_at + 50 minutes
+} -> {
+  group_by: session_month
+  aggregate: same_store_conversion_rate_50m is
+    count() { where: orders_within_50m.store_id = store_id } / sessions
+  order_by: session_month asc
+  limit: 5000
+}

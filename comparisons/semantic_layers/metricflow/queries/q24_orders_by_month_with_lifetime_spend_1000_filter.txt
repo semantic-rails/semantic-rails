@@ -1,0 +1,1 @@
+query --metrics orders --group-by metric_time__month --where '{{ Metric("revenue_usd", group_by=["customer"]) }} >= 1000' --order metric_time__month

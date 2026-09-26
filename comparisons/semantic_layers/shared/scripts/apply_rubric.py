@@ -6,6 +6,7 @@ and its evidence, so a reader can check it against the artifacts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -20,10 +21,22 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 PACK = REPO_ROOT / "comparisons" / "semantic_layers"
 RESULTS = PACK / "shared" / "results"
 OUTPUT_PATH = RESULTS / "rubric" / "labels.json"
+FROZEN_MODEL_PATH = PACK / "shared" / "frozen_model.yml"
 
 # A trivial passthrough of one shared view isn't hand-written logic.
 PASSTHROUGH = re.compile(r"^\s*select\s+\*\s+from\s+comparison_\w+\s*;?\s*$", re.IGNORECASE)
 RULES = [
+    (
+        "not_assessed",
+        "Frozen-model questions only: the layer isn't listed in frozen_model.yml, because this "
+        "pack can't run it on them.",
+    ),
+    (
+        "requires_model_change",
+        "Frozen-model questions only: the layer's documented query-time interface can't express "
+        "the question with its model unchanged; frozen_model.yml gives the reason and the "
+        "documentation.",
+    ),
     ("unsupported", "The layer didn't execute the question."),
     (
         "precomputed",
@@ -130,12 +143,23 @@ def metricflow(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def cube(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
-    query = json.loads(_read(entry["query_path"]))
-    members = [*query.get("measures", []), *query.get("dimensions", [])]
-    members += [item["dimension"] for item in query.get("timeDimensions", [])]
-    members += [item["member"] for item in query.get("filters", []) if "member" in item]
     helpers = []
-    for name in _require(sorted({member.split(".")[0] for member in members}), "cubes", entry):
+    if entry["query_path"].endswith(".sql"):
+        # An SQL API query: SQL around a Cube query is hand-written, whether Cube post-processes
+        # it or pushes it down.
+        sql = _read(entry["query_path"])
+        names = re.findall(r"\b(?:from|join)\s+([a-z_]\w*)", sql, flags=re.IGNORECASE)
+        if re.search(r"\(\s*select\b", sql, flags=re.IGNORECASE):
+            helpers.append("SQL API query over a derived table")
+        if re.search(r"\bover\s*\(", sql, flags=re.IGNORECASE):
+            helpers.append("SQL API window function")
+    else:
+        query = json.loads(_read(entry["query_path"]))
+        members = [*query.get("measures", []), *query.get("dimensions", [])]
+        members += [item["dimension"] for item in query.get("timeDimensions", [])]
+        members += [item["member"] for item in query.get("filters", []) if "member" in item]
+        names = [member.split(".")[0] for member in members]
+    for name in _require(sorted(set(names)), "cubes", entry):
         model = PACK / "cube" / "model" / "cubes" / f"{name}.yml"
         spec = yaml.safe_load(model.read_text(encoding="utf-8"))["cubes"][0]
         if "sql" in spec and not is_passthrough(spec["sql"]):
@@ -155,6 +179,10 @@ def _squash(sql: str) -> str:
 
 def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     model = (PACK / "malloy" / "models" / "jaffle.malloy").read_text(encoding="utf-8")
+    # A frozen-model question's query is its own file, which imports the model.
+    query_file = PACK / "malloy" / "queries" / f"{entry['question_id']}.malloy"
+    if query_file.is_file():
+        model += "\n" + query_file.read_text(encoding="utf-8")
     query = rf"^query:\s+{re.escape(entry['question_id'])}\s+is\b"
     _require(re.findall(query, model, flags=re.MULTILINE), "named query", entry)
     executed = _executed_sql(entry)
@@ -172,7 +200,14 @@ def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 def ktx(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     payload = json.loads(_read(entry["query_path"]))
-    fields = [*payload.get("measures", [])]
+    fields = [item for item in payload.get("measures", []) if isinstance(item, str)]
+    # An inline measure expression reads `source.column` references.
+    fields += [
+        ref
+        for item in payload.get("measures", [])
+        if isinstance(item, dict)
+        for ref in re.findall(r"\b[A-Za-z_]\w*\.\w+", item["expr"])
+    ]
     fields += [
         item if isinstance(item, str) else item["field"] for item in payload.get("dimensions", [])
     ]
@@ -203,8 +238,47 @@ DETECTORS = {
 }
 
 
+def model_digest(paths: list[str]) -> str:
+    """Identify a layer's model: every file under its model paths, by path and content."""
+    files = []
+    for relative in paths:
+        root = PACK / relative
+        files += [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        data = path.read_bytes().replace(b"\r\n", b"\n")  # the same text on a CRLF checkout
+        digest.update(f"{path.relative_to(PACK).as_posix()}\0{len(data)}\0".encode())
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def load_frozen_models() -> dict[str, Any]:
+    """Fail closed: a frozen-model answer can't be vouched for once its model has changed."""
+    frozen = yaml.safe_load(FROZEN_MODEL_PATH.read_text(encoding="utf-8"))
+    for layer, spec in frozen.items():
+        if model_digest(spec["model"]) != spec["sha256"]:
+            raise SystemExit(
+                f"{layer}: its model ({', '.join(spec['model'])}) changed since the frozen-model "
+                "questions were answered; answer them again before re-pinning frozen_model.yml"
+            )
+    return frozen
+
+
+def frozen_label(spec: dict[str, Any] | None, qid: str, executed: bool) -> dict[str, Any] | None:
+    """The labels only a frozen-model question can get, checked before the others."""
+    if spec is None:
+        return {"label": "not_assessed", "evidence": []}
+    declared = spec["requires_model_change"].get(qid)
+    if declared is None:
+        return None
+    if executed:
+        raise SystemExit(f"{qid} is declared requires_model_change but the layer executed it")
+    return {"label": "requires_model_change", "evidence": [declared["reason"], declared["doc"]]}
+
+
 def build_labels() -> dict[str, Any]:
     questions = yaml.safe_load((PACK / "shared" / "questions.yml").read_text(encoding="utf-8"))
+    frozen = load_frozen_models()
     labels: dict[str, dict[str, Any]] = {}
     for layer, (results_dir, detect) in DETECTORS.items():
         directory = RESULTS / results_dir
@@ -221,6 +295,11 @@ def build_labels() -> dict[str, Any]:
                 and entry["status"] != "unsupported"
                 and question["id"] not in failed
             )
+            if question.get("scope_level") == "variant":
+                label = frozen_label(frozen.get(layer), question["id"], executed)
+                if label is not None:
+                    labels[layer][question["id"]] = label
+                    continue
             helpers, texts = detect(entry) if executed else ([], [])
             labels[layer][question["id"]] = decide(
                 executed, helpers, texts, list(question.get("bypass_columns", []))

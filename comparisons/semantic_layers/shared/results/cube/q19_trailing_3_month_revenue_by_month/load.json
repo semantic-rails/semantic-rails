@@ -1,0 +1,62 @@
+{
+  "schema": [
+    {
+      "name": "month",
+      "column_type": "Timestamp"
+    },
+    {
+      "name": "trailing_3_month_revenue_usd",
+      "column_type": "Double"
+    }
+  ],
+  "data": [
+    {
+      "month": "2016-09-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "18053.280000000006"
+    },
+    {
+      "month": "2016-10-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "39977.23000000004"
+    },
+    {
+      "month": "2016-11-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "67894.05000000002"
+    },
+    {
+      "month": "2016-12-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "85518.37000000002"
+    },
+    {
+      "month": "2017-01-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "108612.36999999982"
+    },
+    {
+      "month": "2017-02-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "124053.66999999962"
+    },
+    {
+      "month": "2017-03-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "162326.39000000028"
+    },
+    {
+      "month": "2017-04-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "200625.43000000218"
+    },
+    {
+      "month": "2017-05-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "253337.66000000536"
+    },
+    {
+      "month": "2017-06-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "277766.2100000076"
+    },
+    {
+      "month": "2017-07-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "289306.41000000836"
+    },
+    {
+      "month": "2017-08-01T00:00:00.000",
+      "trailing_3_month_revenue_usd": "300607.6500000091"
+    }
+  ]
+}

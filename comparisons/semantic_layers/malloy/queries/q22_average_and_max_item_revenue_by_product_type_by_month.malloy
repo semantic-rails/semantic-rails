@@ -1,0 +1,14 @@
+// Query-time only: the model (../models/jaffle.malloy) is unchanged.
+import "../models/jaffle.malloy"
+
+// Ad hoc aggregates over the item rows' revenue column.
+query: q22_average_and_max_item_revenue_by_product_type_by_month is order_items -> {
+  group_by:
+    ordered_month
+    product_type
+  aggregate:
+    avg_item_revenue_usd is item_revenue_cents.avg() / 100.0
+    max_item_revenue_usd is item_revenue_cents.max() / 100.0
+  order_by: ordered_month asc
+  limit: 5000
+}

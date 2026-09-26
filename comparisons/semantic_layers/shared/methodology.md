@@ -12,6 +12,7 @@
 - When a layer needs extra modeling, keep the extra work explicit and local to that layer.
 - Keep member, entity and join expressions row-level: a subquery or derived table hidden in an expression is hand-written SQL, even where the rubric's textual detectors can't see it. Review checks this; a question that needs a derived table uses the layer's SQL-defined source, and is labeled `workaround`.
 - Do not claim runtime support that was not actually executed in this repo on this machine.
+- Answer the frozen-model questions (q17-q24) with each layer's q01-q16 model unchanged, through the layer's documented query-time interface only. Give every layer every query-time feature it has; where none can express a variant, record `requires_model_change` in `frozen_model.yml` with the reason and a documentation link (`rubric.md`, "Frozen-Model Questions").
 - Score edge cases against their intended semantic behavior, not just matching rows. If a layer only reaches the same result by leaning on helper SQL, extra persisted marts, or source-side rollup columns that bypass the intended metric-predicate or conversion semantics, treat that path as `workaround` or `precomputed`, not `native`. The rubric (`rubric.md`) enforces this for every layer, Semantic Rails included.
 - Keep the narrative honest in both directions. This executed pack emphasizes numeric questions; compiler-surface concerns such as duplicate-alias rejection, metric-time-only or distinct-values planning, and entity-type join contracts should still be called out separately when they are not exercised here.
 
@@ -23,6 +24,7 @@
 - `precomputed`: the answer reads a rollup column that the question declares in `bypass_columns`.
 - `workaround`: the answer depends on SQL written by hand for this pack.
 - `native`: the answer uses only the layer's own semantic constructs.
+- On the frozen-model questions only, `requires_model_change` (the layer's query-time interface can't express the question with its model unchanged) and `not_assessed` (a capture this pack can't re-run) come first.
 
 The contracts also keep a `doc_backed` count for a layer represented only from official docs. No layer is represented that way today.
 

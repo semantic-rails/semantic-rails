@@ -31,6 +31,13 @@ DuckDB data as the other local comparison layers.
   bridge source per derivation and query the existing `orders` measures. That
   wouldn't change a label: the rubric labels any non-passthrough SQL source
   `workaround`.
+- The frozen-model questions (q17-q24) run with these sources unchanged. Inline measure
+  expressions in the query answer q21 (a `sum(case ...)` beside `orders.revenue_usd`) and q22
+  (`avg(...)` and `max(...)`), which the rubric labels `native`; q24 filters on the precomputed
+  `lifetime_spend_cents`, so it is `precomputed` like q12. q17-q20 and q23 need a model change:
+  the conversion windows and the customer-month threshold are inside SQL sources, joins are
+  equality-only, and measures, inline ones included, reject window functions
+  (`../shared/frozen_model.yml`).
 - `q11` and `q12` filter on the precomputed customer rollup columns
   (`lifetime_order_count`, `lifetime_spend_cents`), so the rubric labels them
   `precomputed`. KtX has no construct that computes a per-customer lifetime

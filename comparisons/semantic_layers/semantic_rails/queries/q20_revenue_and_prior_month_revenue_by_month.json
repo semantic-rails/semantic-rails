@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "select": [
+    {
+      "expression": {
+        "measure": "measure.jaffle.revenue_usd"
+      },
+      "as": "revenue_usd"
+    },
+    {
+      "expression": {
+        "kind": "prior_period",
+        "input": {
+          "measure": "measure.jaffle.revenue_usd"
+        },
+        "offset": {
+          "unit": "month",
+          "value": 1
+        }
+      },
+      "as": "prior_month_revenue_usd"
+    }
+  ],
+  "time": {
+    "temporal_role": "temporal_role.jaffle_order_time",
+    "grain": "month"
+  },
+  "order_by": [
+    {
+      "field": "temporal_role.jaffle_order_time__month",
+      "direction": "ASC"
+    }
+  ]
+}

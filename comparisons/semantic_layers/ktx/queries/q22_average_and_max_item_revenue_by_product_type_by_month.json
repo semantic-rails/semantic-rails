@@ -1,0 +1,21 @@
+{
+  "dimensions": [
+    {
+      "field": "order_items.ordered_at",
+      "granularity": "month"
+    },
+    "order_items.product_type"
+  ],
+  "include_empty": false,
+  "limit": 5000,
+  "measures": [
+    {
+      "expr": "avg(order_items.item_revenue_cents / 100.0)",
+      "name": "avg_item_revenue_usd"
+    },
+    {
+      "expr": "max(order_items.item_revenue_cents / 100.0)",
+      "name": "max_item_revenue_usd"
+    }
+  ]
+}

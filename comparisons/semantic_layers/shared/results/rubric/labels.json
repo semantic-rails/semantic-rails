@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T23:07:10+00:00",
+  "generated_at": "2026-09-26T02:02:59+00:00",
   "labels": {
     "cube": {
       "q01_orders_by_month": {
@@ -63,6 +63,58 @@
         "label": "native"
       },
       "q16_revenue_by_customer_segment_as_of_delivered_time": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q17_session_to_order_conversion_14d": {
+        "evidence": [
+          "The model's session-to-order join carries the 7-day window, and a query can't change a join's condition. The SQL API refuses a non-equality join between two Cube queries (\"Unsupported expressions in Left JOIN\"), and the model exposes no session key to count converted sessions with, since a primary key is hidden unless it is marked public. A different window needs a new join in the model.",
+          "https://docs.cube.dev/reference/data-modeling/joins"
+        ],
+        "label": "requires_model_change"
+      },
+      "q18_same_store_session_to_order_conversion_50m": {
+        "evidence": [
+          "The model's session-to-order join carries the 7-day window, and a query can't change a join's condition. The SQL API refuses a non-equality join between two Cube queries (\"Unsupported expressions in Left JOIN\"), and the model exposes no session key to count converted sessions with, since a primary key is hidden unless it is marked public. A different window needs a new join in the model.",
+          "https://docs.cube.dev/reference/data-modeling/joins"
+        ],
+        "label": "requires_model_change"
+      },
+      "q19_trailing_3_month_revenue_by_month": {
+        "evidence": [
+          "SQL API query over a derived table",
+          "SQL API window function"
+        ],
+        "label": "workaround"
+      },
+      "q20_revenue_and_prior_month_revenue_by_month": {
+        "evidence": [
+          "SQL API query over a derived table",
+          "SQL API window function"
+        ],
+        "label": "workaround"
+      },
+      "q21_revenue_and_large_order_revenue_by_month": {
+        "evidence": [
+          "Query filters apply to the whole query, and a filtered measure (`filters:` on a measure) is set in the model. The model exposes no order-total dimension to filter on and no order key for an SQL API query to total revenue per order (a primary key is hidden unless it is marked public), so large-order revenue beside total revenue needs a model change.",
+          "https://docs.cube.dev/reference/data-modeling/measures"
+        ],
+        "label": "requires_model_change"
+      },
+      "q22_average_and_max_item_revenue_by_product_type_by_month": {
+        "evidence": [
+          "A measure's type is set in the model (`sum` for `item_revenue_usd`), and the SQL API refuses an aggregate that doesn't match it. The model exposes no item key and no item-revenue dimension to aggregate per item (a primary key is hidden unless it is marked public), so the average and the maximum need new measures.",
+          "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
+        ],
+        "label": "requires_model_change"
+      },
+      "q23_orders_from_customers_with_5plus_orders_in_month": {
+        "evidence": [
+          "SQL API query over a derived table"
+        ],
+        "label": "workaround"
+      },
+      "q24_orders_by_month_with_lifetime_spend_1000_filter": {
         "evidence": [],
         "label": "native"
       }
@@ -149,6 +201,55 @@
           "SQL source delivered_revenue_by_customer_segment"
         ],
         "label": "workaround"
+      },
+      "q17_session_to_order_conversion_14d": {
+        "evidence": [
+          "The 7-day window is inside the pack's conversion SQL sources. ktx-sl joins are equality-only, and a semantic query has no join or window option, so a different window needs a new SQL source.",
+          "https://github.com/Kaelio/ktx/blob/main/docs-site/content/docs/concepts/semantic-layer-internals.mdx"
+        ],
+        "label": "requires_model_change"
+      },
+      "q18_same_store_session_to_order_conversion_50m": {
+        "evidence": [
+          "The 7-day window is inside the pack's conversion SQL sources. ktx-sl joins are equality-only, and a semantic query has no join or window option, so a different window needs a new SQL source.",
+          "https://github.com/Kaelio/ktx/blob/main/docs-site/content/docs/concepts/semantic-layer-internals.mdx"
+        ],
+        "label": "requires_model_change"
+      },
+      "q19_trailing_3_month_revenue_by_month": {
+        "evidence": [
+          "ktx-sl rejects window functions in measures, inline query measures included (\"Window functions (OVER clause) are not supported in measures\"), so a trailing or prior-period value needs a SQL source.",
+          "https://github.com/Kaelio/ktx/blob/main/docs-site/content/docs/concepts/semantic-layer-internals.mdx"
+        ],
+        "label": "requires_model_change"
+      },
+      "q20_revenue_and_prior_month_revenue_by_month": {
+        "evidence": [
+          "ktx-sl rejects window functions in measures, inline query measures included (\"Window functions (OVER clause) are not supported in measures\"), so a trailing or prior-period value needs a SQL source.",
+          "https://github.com/Kaelio/ktx/blob/main/docs-site/content/docs/concepts/semantic-layer-internals.mdx"
+        ],
+        "label": "requires_model_change"
+      },
+      "q21_revenue_and_large_order_revenue_by_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q22_average_and_max_item_revenue_by_product_type_by_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q23_orders_from_customers_with_5plus_orders_in_month": {
+        "evidence": [
+          "The more-than-10 threshold is inside the pack's customer-month SQL source. A query filter is row-level or applies at the query's own grain, so it can't count each customer-month's orders; a new threshold needs a new SQL source.",
+          "https://github.com/Kaelio/ktx/blob/main/docs-site/content/docs/concepts/semantic-layer-internals.mdx"
+        ],
+        "label": "requires_model_change"
+      },
+      "q24_orders_by_month_with_lifetime_spend_1000_filter": {
+        "evidence": [
+          "reads lifetime_spend_cents"
+        ],
+        "label": "precomputed"
       }
     },
     "malloy": {
@@ -215,6 +316,38 @@
       "q16_revenue_by_customer_segment_as_of_delivered_time": {
         "evidence": [],
         "label": "native"
+      },
+      "q17_session_to_order_conversion_14d": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q18_same_store_session_to_order_conversion_50m": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q19_trailing_3_month_revenue_by_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q20_revenue_and_prior_month_revenue_by_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q21_revenue_and_large_order_revenue_by_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q22_average_and_max_item_revenue_by_product_type_by_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q23_orders_from_customers_with_5plus_orders_in_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q24_orders_by_month_with_lifetime_spend_1000_filter": {
+        "evidence": [],
+        "label": "native"
       }
     },
     "metricflow": {
@@ -279,6 +412,56 @@
         "label": "native"
       },
       "q16_revenue_by_customer_segment_as_of_delivered_time": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q17_session_to_order_conversion_14d": {
+        "evidence": [
+          "The conversion window is part of the conversion metric's definition (`window: 7 days`). No query option changes it, so a 14-day window needs a new conversion metric.",
+          "https://docs.getdbt.com/docs/build/conversion"
+        ],
+        "label": "requires_model_change"
+      },
+      "q18_same_store_session_to_order_conversion_50m": {
+        "evidence": [
+          "The window and the same-store constant property are part of the conversion metric's definition. No query option changes the window, so a 50-minute window needs a new conversion metric.",
+          "https://docs.getdbt.com/docs/build/conversion"
+        ],
+        "label": "requires_model_change"
+      },
+      "q19_trailing_3_month_revenue_by_month": {
+        "evidence": [
+          "A trailing window is a cumulative metric's `window`, set in its definition. The query interface has no window option, so it needs a new cumulative metric.",
+          "https://docs.getdbt.com/docs/build/cumulative"
+        ],
+        "label": "requires_model_change"
+      },
+      "q20_revenue_and_prior_month_revenue_by_month": {
+        "evidence": [
+          "A prior-period value is a derived metric with an `offset_window`, set in its definition. The query interface has no offset option, so it needs a new derived metric.",
+          "https://docs.getdbt.com/docs/build/derived"
+        ],
+        "label": "requires_model_change"
+      },
+      "q21_revenue_and_large_order_revenue_by_month": {
+        "evidence": [
+          "A query's `--where` filters every metric in the query. A metric filter grouped by `order` selects the large orders, so one query returns large-order revenue or total revenue, but not both side by side; that needs a metric with its own `filter:`.",
+          "https://docs.getdbt.com/docs/build/metricflow-commands"
+        ],
+        "label": "requires_model_change"
+      },
+      "q22_average_and_max_item_revenue_by_product_type_by_month": {
+        "evidence": [
+          "A simple metric's aggregation is part of its definition (`agg: sum` for `item_revenue_usd`). The query interface can't choose another aggregation, so the average and the maximum each need a new simple metric.",
+          "https://docs.getdbt.com/docs/build/simple"
+        ],
+        "label": "requires_model_change"
+      },
+      "q23_orders_from_customers_with_5plus_orders_in_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q24_orders_by_month_with_lifetime_spend_1000_filter": {
         "evidence": [],
         "label": "native"
       }
@@ -349,6 +532,44 @@
         "label": "native"
       },
       "q16_revenue_by_customer_segment_as_of_delivered_time": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q17_session_to_order_conversion_14d": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q18_same_store_session_to_order_conversion_50m": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q19_trailing_3_month_revenue_by_month": {
+        "evidence": [
+          "`rolling` and `prior_period` are query-time expressions, but they run over a dense calendar, and this package declares no calendar entity. The engine refuses the query (\"time.fill requires a calendar entity in the package\"), so the package needs a calendar entity first.",
+          "https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_IR_SCHEMA.md#dense-fill-timefill"
+        ],
+        "label": "requires_model_change"
+      },
+      "q20_revenue_and_prior_month_revenue_by_month": {
+        "evidence": [
+          "`rolling` and `prior_period` are query-time expressions, but they run over a dense calendar, and this package declares no calendar entity. The engine refuses the query (\"time.fill requires a calendar entity in the package\"), so the package needs a calendar entity first.",
+          "https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_IR_SCHEMA.md#dense-fill-timefill"
+        ],
+        "label": "requires_model_change"
+      },
+      "q21_revenue_and_large_order_revenue_by_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q22_average_and_max_item_revenue_by_product_type_by_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q23_orders_from_customers_with_5plus_orders_in_month": {
+        "evidence": [],
+        "label": "native"
+      },
+      "q24_orders_by_month_with_lifetime_spend_1000_filter": {
         "evidence": [],
         "label": "native"
       }
@@ -435,10 +656,50 @@
           "SQL outside SEMANTIC_VIEW(...)"
         ],
         "label": "workaround"
+      },
+      "q17_session_to_order_conversion_14d": {
+        "evidence": [],
+        "label": "not_assessed"
+      },
+      "q18_same_store_session_to_order_conversion_50m": {
+        "evidence": [],
+        "label": "not_assessed"
+      },
+      "q19_trailing_3_month_revenue_by_month": {
+        "evidence": [],
+        "label": "not_assessed"
+      },
+      "q20_revenue_and_prior_month_revenue_by_month": {
+        "evidence": [],
+        "label": "not_assessed"
+      },
+      "q21_revenue_and_large_order_revenue_by_month": {
+        "evidence": [],
+        "label": "not_assessed"
+      },
+      "q22_average_and_max_item_revenue_by_product_type_by_month": {
+        "evidence": [],
+        "label": "not_assessed"
+      },
+      "q23_orders_from_customers_with_5plus_orders_in_month": {
+        "evidence": [],
+        "label": "not_assessed"
+      },
+      "q24_orders_by_month_with_lifetime_spend_1000_filter": {
+        "evidence": [],
+        "label": "not_assessed"
       }
     }
   },
   "rules": [
+    {
+      "label": "not_assessed",
+      "rule": "Frozen-model questions only: the layer isn't listed in frozen_model.yml, because this pack can't run it on them."
+    },
+    {
+      "label": "requires_model_change",
+      "rule": "Frozen-model questions only: the layer's documented query-time interface can't express the question with its model unchanged; frozen_model.yml gives the reason and the documentation."
+    },
     {
       "label": "unsupported",
       "rule": "The layer didn't execute the question."

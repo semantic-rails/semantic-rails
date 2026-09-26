@@ -1,0 +1,50 @@
+[
+  {
+    "month": "2016-09-01",
+    "filtered_orders": 1243
+  },
+  {
+    "month": "2016-10-01",
+    "filtered_orders": 1488
+  },
+  {
+    "month": "2016-11-01",
+    "filtered_orders": 1874
+  },
+  {
+    "month": "2016-12-01",
+    "filtered_orders": 2143
+  },
+  {
+    "month": "2017-01-01",
+    "filtered_orders": 2375
+  },
+  {
+    "month": "2017-02-01",
+    "filtered_orders": 2250
+  },
+  {
+    "month": "2017-03-01",
+    "filtered_orders": 2849
+  },
+  {
+    "month": "2017-04-01",
+    "filtered_orders": 2822
+  },
+  {
+    "month": "2017-05-01",
+    "filtered_orders": 3002
+  },
+  {
+    "month": "2017-06-01",
+    "filtered_orders": 2699
+  },
+  {
+    "month": "2017-07-01",
+    "filtered_orders": 2404
+  },
+  {
+    "month": "2017-08-01",
+    "filtered_orders": 2594
+  }
+]

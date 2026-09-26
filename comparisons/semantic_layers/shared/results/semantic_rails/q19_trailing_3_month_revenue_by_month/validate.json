@@ -1,0 +1,93 @@
+{
+  "assumptions": [],
+  "authoring_hints": [],
+  "disabled_options": [],
+  "errors": [
+    {
+      "closest_valid_query": {},
+      "code": "REWRITE_NOT_SUPPORTED",
+      "details": {},
+      "message": "time.fill requires a calendar entity in the package",
+      "missing_metadata_or_capability": "",
+      "object_ids": [],
+      "path": "",
+      "recovery_hints": [
+        {
+          "details": {},
+          "kind": "legal_alternative",
+          "message": "Try a simpler query shape or remove the unsupported rewrite requirement."
+        }
+      ],
+      "severity": "error",
+      "stage": "validate",
+      "suggested_query_ir_change": "",
+      "suggested_yaml_change": "",
+      "unsupported_construct": "REWRITE_NOT_SUPPORTED",
+      "why_invalid": "time.fill requires a calendar entity in the package"
+    }
+  ],
+  "explain": {},
+  "freshness_as_of": "",
+  "freshness_by_leaf": [],
+  "logical_plan": {},
+  "methodology_hints": [],
+  "ok": false,
+  "policy_effects": [],
+  "provenance_summary": {
+    "policy_effects": [],
+    "rewrite_status": "",
+    "root_entity": "",
+    "selected_paths": [],
+    "time": {
+      "grain": "month",
+      "temporal_role": "temporal_role.jaffle_order_time"
+    }
+  },
+  "query": {
+    "order_by": [
+      {
+        "direction": "ASC",
+        "field": "temporal_role.jaffle_order_time__month"
+      }
+    ],
+    "select": [
+      {
+        "as": "trailing_3_month_revenue_usd",
+        "expression": {
+          "input": {
+            "measure": "measure.jaffle.revenue_usd"
+          },
+          "kind": "rolling",
+          "window": {
+            "unit": "month",
+            "value": 3
+          }
+        }
+      }
+    ],
+    "time": {
+      "grain": "month",
+      "temporal_role": "temporal_role.jaffle_order_time"
+    },
+    "version": 1
+  },
+  "query_ir_hints": [
+    {
+      "details": {},
+      "kind": "legal_alternative",
+      "message": "Try a simpler query shape or remove the unsupported rewrite requirement."
+    }
+  ],
+  "recovery_hints": [
+    {
+      "details": {},
+      "kind": "legal_alternative",
+      "message": "Try a simpler query shape or remove the unsupported rewrite requirement."
+    }
+  ],
+  "request_context": {},
+  "status": "error",
+  "timing_ms": 0.494,
+  "version": 2,
+  "warnings": []
+}

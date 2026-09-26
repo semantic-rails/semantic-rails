@@ -1,0 +1,10 @@
+// Query-time only: the model (../models/jaffle.malloy) is unchanged.
+import "../models/jaffle.malloy"
+
+query: q23_orders_from_customers_with_5plus_orders_in_month is orders_with_customer_context -> {
+  where: customer_month_orders.monthly_orders > 5
+  group_by: ordered_month
+  aggregate: orders
+  order_by: ordered_month asc
+  limit: 5000
+}

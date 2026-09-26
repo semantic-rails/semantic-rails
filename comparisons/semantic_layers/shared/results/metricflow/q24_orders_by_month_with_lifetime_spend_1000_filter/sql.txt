@@ -1,0 +1,48 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+✔ Success 🦄 - query completed after 0.04 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+WITH sma_10003_cte AS (
+  SELECT
+    DATE_TRUNC('month', ordered_at) AS metric_time__month
+    , customer_id AS customer
+    , 1 AS __orders
+    , order_total_cents / 100.0 AS __revenue_usd
+  FROM "jaffle_comparison"."main"."orders" orders_src_10000
+)
+
+SELECT
+  metric_time__month AS metric_time__month
+  , SUM(orders) AS orders
+FROM (
+  SELECT
+    subq_5.metric_time__month AS metric_time__month
+    , subq_11.customer__revenue_usd AS customer__revenue_usd
+    , subq_5.__orders AS orders
+  FROM (
+    SELECT
+      metric_time__month
+      , customer
+      , __orders
+    FROM sma_10003_cte
+  ) subq_5
+  LEFT OUTER JOIN (
+    SELECT
+      customer
+      , SUM(__revenue_usd) AS customer__revenue_usd
+    FROM sma_10003_cte
+    GROUP BY
+      customer
+  ) subq_11
+  ON
+    subq_5.customer = subq_11.customer
+) subq_13
+WHERE customer__revenue_usd >= 1000
+GROUP BY
+  metric_time__month
+ORDER BY metric_time__month
+

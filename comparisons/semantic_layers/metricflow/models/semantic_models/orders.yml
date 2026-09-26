@@ -43,7 +43,7 @@ models:
         expr: "1"
       - name: revenue_usd
         label: Revenue (USD)
-        description: Net order revenue.
+        description: Order revenue, the order total including tax.
         type: simple
         agg: sum
         expr: order_total_cents / 100.0

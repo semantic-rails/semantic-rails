@@ -179,6 +179,30 @@ QUESTION_COMMANDS = {
         "--order",
         "metric_time__month",
     ],
+    # Frozen-model questions the query interface can express; the others are listed with their
+    # reasons in shared/frozen_model.yml.
+    "q23_orders_from_customers_with_5plus_orders_in_month": [
+        "query",
+        "--metrics",
+        "orders",
+        "--group-by",
+        "metric_time__month",
+        "--where",
+        '{{ Metric("orders", group_by=["customer_month"]) }} > 5',
+        "--order",
+        "metric_time__month",
+    ],
+    "q24_orders_by_month_with_lifetime_spend_1000_filter": [
+        "query",
+        "--metrics",
+        "orders",
+        "--group-by",
+        "metric_time__month",
+        "--where",
+        '{{ Metric("revenue_usd", group_by=["customer"]) }} >= 1000',
+        "--order",
+        "metric_time__month",
+    ],
 }
 
 

@@ -58,6 +58,27 @@ semantic_rails:
     month: "temporal_role.jaffle_lifecycle_delivered_at__month"
     customer_segment: "dimension.jaffle_customer_history_segment"
     delivered_revenue: "delivered_revenue"
+  q17_session_to_order_conversion_14d:
+    month: "temporal_role.jaffle_session_started_at__month"
+    session_to_order_conversion_rate_14d: "session_to_order_conversion_rate_14d"
+  q18_same_store_session_to_order_conversion_50m:
+    month: "temporal_role.jaffle_session_started_at__month"
+    same_store_conversion_rate_50m: "same_store_conversion_rate_50m"
+  q21_revenue_and_large_order_revenue_by_month:
+    month: "temporal_role.jaffle_order_time__month"
+    revenue_usd: "revenue_usd"
+    large_order_revenue_usd: "large_order_revenue_usd"
+  q22_average_and_max_item_revenue_by_product_type_by_month:
+    month: "temporal_role.jaffle_order_time__month"
+    product_type: "dimension.jaffle_item_product_type"
+    avg_item_revenue_usd: "avg_item_revenue_usd"
+    max_item_revenue_usd: "max_item_revenue_usd"
+  q23_orders_from_customers_with_5plus_orders_in_month:
+    month: "temporal_role.jaffle_order_time__month"
+    qualifying_orders: "qualifying_orders"
+  q24_orders_by_month_with_lifetime_spend_1000_filter:
+    month: "temporal_role.jaffle_order_time__month"
+    filtered_orders: "filtered_orders"
 metricflow:
   q01_orders_by_month:
     month: "metric_time__month"
@@ -115,6 +136,12 @@ metricflow:
     month: "metric_time__month"
     customer_segment: "customer__customer_segment"
     delivered_revenue: "delivered_revenue"
+  q23_orders_from_customers_with_5plus_orders_in_month:
+    month: "metric_time__month"
+    qualifying_orders: "orders"
+  q24_orders_by_month_with_lifetime_spend_1000_filter:
+    month: "metric_time__month"
+    filtered_orders: "orders"
 cube:
   q01_orders_by_month:
     month: "orders.ordered_at.month"
@@ -172,6 +199,19 @@ cube:
     month: "order_lifecycle.delivered_at.month"
     customer_segment: "customer_history.customer_segment"
     delivered_revenue: "order_lifecycle.delivered_revenue"
+  q19_trailing_3_month_revenue_by_month:
+    month: "month"
+    trailing_3_month_revenue_usd: "trailing_3_month_revenue_usd"
+  q20_revenue_and_prior_month_revenue_by_month:
+    month: "month"
+    revenue_usd: "revenue_usd"
+    prior_month_revenue_usd: "prior_month_revenue_usd"
+  q23_orders_from_customers_with_5plus_orders_in_month:
+    month: "month"
+    qualifying_orders: "qualifying_orders"
+  q24_orders_by_month_with_lifetime_spend_1000_filter:
+    month: "orders.ordered_at.month"
+    filtered_orders: "orders.orders"
 malloy:
   q01_orders_by_month:
     month: "ordered_month"
@@ -229,6 +269,34 @@ malloy:
     month: "delivered_month"
     customer_segment: "customer_segment"
     delivered_revenue: "delivered_revenue_usd"
+  q17_session_to_order_conversion_14d:
+    month: "session_month"
+    session_to_order_conversion_rate_14d: "session_to_order_conversion_rate_14d"
+  q18_same_store_session_to_order_conversion_50m:
+    month: "session_month"
+    same_store_conversion_rate_50m: "same_store_conversion_rate_50m"
+  q19_trailing_3_month_revenue_by_month:
+    month: "ordered_month"
+    trailing_3_month_revenue_usd: "trailing_3_month_revenue_usd"
+  q20_revenue_and_prior_month_revenue_by_month:
+    month: "ordered_month"
+    revenue_usd: "revenue_usd"
+    prior_month_revenue_usd: "prior_month_revenue_usd"
+  q21_revenue_and_large_order_revenue_by_month:
+    month: "ordered_month"
+    revenue_usd: "revenue_usd"
+    large_order_revenue_usd: "large_order_revenue_usd"
+  q22_average_and_max_item_revenue_by_product_type_by_month:
+    month: "ordered_month"
+    product_type: "product_type"
+    avg_item_revenue_usd: "avg_item_revenue_usd"
+    max_item_revenue_usd: "max_item_revenue_usd"
+  q23_orders_from_customers_with_5plus_orders_in_month:
+    month: "ordered_month"
+    qualifying_orders: "orders"
+  q24_orders_by_month_with_lifetime_spend_1000_filter:
+    month: "ordered_month"
+    filtered_orders: "orders"
 snowflake_semantic_views:
   q01_orders_by_month:
     month: "ORDERED_MONTH"
@@ -343,3 +411,15 @@ ktx:
     month: "delivered_month_month"
     customer_segment: "customer_segment"
     delivered_revenue: "delivered_revenue"
+  q21_revenue_and_large_order_revenue_by_month:
+    month: "ordered_at_month"
+    revenue_usd: "revenue_usd"
+    large_order_revenue_usd: "large_order_revenue_usd"
+  q22_average_and_max_item_revenue_by_product_type_by_month:
+    month: "ordered_at_month"
+    product_type: "product_type"
+    avg_item_revenue_usd: "avg_item_revenue_usd"
+    max_item_revenue_usd: "max_item_revenue_usd"
+  q24_orders_by_month_with_lifetime_spend_1000_filter:
+    month: "ordered_at_month"
+    filtered_orders: "orders"

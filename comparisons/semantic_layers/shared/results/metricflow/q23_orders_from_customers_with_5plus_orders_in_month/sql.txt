@@ -1,0 +1,47 @@
+
+
+⠋ Initiating query…
+
+⠙ Initiating query…
+✔ Success 🦄 - query completed after 0.04 seconds
+🔎 SQL (remove --explain to see data or add --show-dataflow-plan to see the generated dataflow plan):
+
+WITH sma_10003_cte AS (
+  SELECT
+    DATE_TRUNC('month', ordered_at) AS metric_time__month
+    , customer_id || '|' || strftime(ordered_at, '%Y-%m') AS customer_month
+    , 1 AS __orders
+  FROM "jaffle_comparison"."main"."orders" orders_src_10000
+)
+
+SELECT
+  metric_time__month AS metric_time__month
+  , SUM(orders) AS orders
+FROM (
+  SELECT
+    subq_5.metric_time__month AS metric_time__month
+    , subq_11.customer_month__orders AS customer_month__orders
+    , subq_5.__orders AS orders
+  FROM (
+    SELECT
+      metric_time__month
+      , customer_month
+      , __orders
+    FROM sma_10003_cte
+  ) subq_5
+  LEFT OUTER JOIN (
+    SELECT
+      customer_month
+      , SUM(__orders) AS customer_month__orders
+    FROM sma_10003_cte
+    GROUP BY
+      customer_month
+  ) subq_11
+  ON
+    subq_5.customer_month = subq_11.customer_month
+) subq_13
+WHERE customer_month__orders > 5
+GROUP BY
+  metric_time__month
+ORDER BY metric_time__month
+

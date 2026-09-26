@@ -20,6 +20,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
 SCRIPTS = (
     Path(__file__).resolve().parents[2] / "comparisons" / "semantic_layers" / "shared" / "scripts"
@@ -483,7 +484,8 @@ def test_cube_sql_excerpts_are_the_generated_sql() -> None:
     data, _ = generator.build_contracts()
     [cube] = [layer for layer in data["layers"] if layer["id"] == "cube"]
     for entry in cube["questions"]:
-        assert entry["sql_excerpt"].lstrip().upper().startswith(("SELECT", "WITH")), entry
+        if entry["support_status"] != "requires_model_change":  # no query ran, so no SQL
+            assert entry["sql_excerpt"].lstrip().upper().startswith(("SELECT", "WITH")), entry
 
 
 def test_a_missing_mapped_column_fails_instead_of_being_guessed() -> None:
@@ -493,11 +495,15 @@ def test_a_missing_mapped_column_fails_instead_of_being_guessed() -> None:
         validator._normalize_rows("q01_orders_by_month", rows, columns)
 
 
-def test_column_maps_cover_every_field_of_every_layer() -> None:
+def test_column_maps_cover_every_field_of_every_answer() -> None:
     maps = validator._load_column_maps()
-    for layer in validator.RUNNABLE_LAYERS:
-        for question_id, fields in validator.QUESTION_FIELDS.items():
-            assert sorted(maps[layer][question_id]) == sorted(fields)
+    report = SCRIPTS.parent / "results" / "validation" / "output_consistency.json"
+    for item in json.loads(report.read_text(encoding="utf-8"))["questions"]:
+        qid = item["question_id"]
+        for layer, status in item["layer_statuses"].items():
+            # Every layer maps q01-q16; a frozen-model variant only where the layer executed it.
+            if item["slice"] != "frozen_model" or status == "executed":
+                assert sorted(maps[layer][qid]) == sorted(validator.QUESTION_FIELDS[qid])
 
 
 def test_every_question_has_an_answer_key_query() -> None:
@@ -748,6 +754,8 @@ def test_a_question_without_an_executed_result_is_unsupported(tmp_path, monkeypa
     (results / "unsupported.json").write_text(json.dumps(failed), encoding="utf-8")
     monkeypatch.setattr(rubric, "PACK", tmp_path)
     monkeypatch.setattr(rubric, "RESULTS", tmp_path / "results")
+    monkeypatch.setattr(rubric, "FROZEN_MODEL_PATH", tmp_path / "shared" / "frozen_model.yml")
+    (tmp_path / "shared" / "frozen_model.yml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(rubric, "DETECTORS", {"fake": ("fake", lambda entry: ([], ["select 1"]))})
     labels = rubric.build_labels()["labels"]["fake"]
     assert {qid: label["label"] for qid, label in labels.items()} == {
@@ -755,6 +763,181 @@ def test_a_question_without_an_executed_result_is_unsupported(tmp_path, monkeypa
         "q02_b": "unsupported",
         "q03_c": "unsupported",
     }
+
+
+def _frozen_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, executed: list[str]) -> Path:
+    """A pack with one q01-q16 question and three frozen-model variants, for two layers."""
+    (tmp_path / "shared").mkdir()
+    variants = "".join(
+        f"  - id: {qid}\n    scope_level: variant\n" for qid in ("q17", "q18", "q19")
+    )
+    (tmp_path / "shared" / "questions.yml").write_text(
+        f"questions:\n  - id: q01\n    scope_level: required\n{variants}", encoding="utf-8"
+    )
+    for layer in ("fake", "other"):
+        results = tmp_path / "results" / layer
+        results.mkdir(parents=True)
+        entries = [{"question_id": qid, "status": "executed"} for qid in ["q01", *executed]]
+        (results / "summary.json").write_text(json.dumps({"questions": entries}), "utf-8")
+    (tmp_path / "fake_model").mkdir()
+    (tmp_path / "fake_model" / "orders.yml").write_text("measures: [revenue]\n", "utf-8")
+    monkeypatch.setattr(rubric, "PACK", tmp_path)
+    monkeypatch.setattr(rubric, "RESULTS", tmp_path / "results")
+    frozen = {
+        "fake": {
+            "model": ["fake_model"],
+            "sha256": rubric.model_digest(["fake_model"]),
+            "requires_model_change": {"q18": {"reason": "Set in the model.", "doc": "https://d"}},
+        }
+    }
+    (tmp_path / "frozen_model.yml").write_text(json.dumps(frozen), encoding="utf-8")
+    monkeypatch.setattr(rubric, "FROZEN_MODEL_PATH", tmp_path / "frozen_model.yml")
+    detect = ("fake", lambda entry: ([], ["select 1"]))
+    monkeypatch.setattr(rubric, "DETECTORS", {"fake": detect, "other": ("other", detect[1])})
+    return tmp_path
+
+
+def test_frozen_model_labels_come_first_on_the_variants(tmp_path, monkeypatch) -> None:
+    _frozen_pack(tmp_path, monkeypatch, executed=["q17"])
+    labels = rubric.build_labels()["labels"]
+    assert {qid: label["label"] for qid, label in labels["fake"].items()} == {
+        "q01": "native",
+        "q17": "native",
+        "q18": "requires_model_change",
+        "q19": "unsupported",  # neither answered nor declared: a failed attempt
+    }
+    assert labels["fake"]["q18"]["evidence"] == ["Set in the model.", "https://d"]
+    # A layer frozen_model.yml doesn't list keeps its q01-q16 labels and isn't assessed on the rest.
+    assert {qid: label["label"] for qid, label in labels["other"].items()} == {
+        "q01": "native",
+        **dict.fromkeys(("q17", "q18", "q19"), "not_assessed"),
+    }
+
+
+def test_a_declared_model_change_the_layer_executed_is_refused(tmp_path, monkeypatch) -> None:
+    _frozen_pack(tmp_path, monkeypatch, executed=["q18"])
+    with pytest.raises(SystemExit, match="q18 is declared requires_model_change"):
+        rubric.build_labels()
+
+
+def test_a_changed_model_stops_the_rubric(tmp_path, monkeypatch) -> None:
+    pack = _frozen_pack(tmp_path, monkeypatch, executed=[])
+    (pack / "fake_model" / "orders.yml").write_text("measures: [revenue, large_revenue]\n", "utf-8")
+    with pytest.raises(SystemExit, match="fake: its model .* changed"):
+        rubric.build_labels()
+
+
+def test_cube_sql_api_queries_around_a_cube_query_are_hand_written(tmp_path, monkeypatch) -> None:
+    cubes = tmp_path / "cube" / "model" / "cubes"
+    cubes.mkdir(parents=True)
+    (cubes / "orders.yml").write_text(
+        "cubes:\n  - name: orders\n    sql_table: comparison_orders\n", encoding="utf-8"
+    )
+    (tmp_path / "sql.json").write_text(json.dumps({"sql": {"sql": ["select 1", []]}}), "utf-8")
+    monkeypatch.setattr(rubric, "PACK", tmp_path)
+    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    member = (
+        "SELECT DATE_TRUNC('month', ordered_at) AS m, MEASURE(revenue) AS r FROM orders GROUP BY 1"
+    )
+    queries = {
+        "plain.sql": member,
+        "derived.sql": f"SELECT m, SUM(r) FROM ({member}) AS t WHERE r > 5 GROUP BY 1",
+        "window.sql": f"SELECT m, LAG(r) OVER (ORDER BY m) FROM ( {member} ) AS t",
+    }
+    found = {}
+    for name, sql in queries.items():
+        (tmp_path / name).write_text(sql, encoding="utf-8")
+        entry = {"question_id": "q_x", "query_path": name, "sql_path": "sql.json"}
+        found[name] = rubric.cube(entry)[0]
+    derived = "SQL API query over a derived table"
+    assert found == {
+        "plain.sql": [],
+        "derived.sql": [derived],
+        "window.sql": [derived, "SQL API window function"],
+    }
+
+
+def test_ktx_inline_measures_are_checked_against_the_sources_they_read(
+    tmp_path, monkeypatch
+) -> None:
+    sources = tmp_path / "ktx" / "sources"
+    sources.mkdir(parents=True)
+    (sources / "orders.yaml").write_text("name: orders\ntable: comparison_orders\n", "utf-8")
+    (sources / "facts.yaml").write_text(
+        "name: facts\nsql: select customer_id from comparison_orders group by 1\n", "utf-8"
+    )
+    (tmp_path / "sql.sql").write_text("select 1", encoding="utf-8")
+    monkeypatch.setattr(rubric, "PACK", tmp_path)
+    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    found = []
+    for expr in (
+        "sum(case when orders.total >= 5000 then orders.total / 100.0 else 0 end)",
+        "max(facts.customer_id)",
+    ):
+        query = {"measures": ["orders.revenue", {"name": "x", "expr": expr}]}
+        (tmp_path / "query.json").write_text(json.dumps(query), encoding="utf-8")
+        entry = {"question_id": "q_x", "query_path": "query.json", "sql_path": "sql.sql"}
+        found.append(rubric.ktx(entry)[0])
+    assert found == [[], ["SQL source facts"]]
+
+
+def test_malloy_reads_a_variant_query_from_its_own_file(tmp_path, monkeypatch) -> None:
+    (tmp_path / "malloy" / "models").mkdir(parents=True)
+    (tmp_path / "malloy" / "queries").mkdir()
+    (tmp_path / "malloy" / "models" / "jaffle.malloy").write_text(
+        "source: orders is jaffle.table('comparison_orders')\n", encoding="utf-8"
+    )
+    (tmp_path / "malloy" / "queries" / "q17_x.malloy").write_text(
+        'import "../models/jaffle.malloy"\n'
+        'source: facts is jaffle.sql("""select order_id from comparison_order_items""")\n'
+        "query: q17_x is orders extend { join_one: facts on true } -> { aggregate: n is count() }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "q17.sql").write_text(
+        "SELECT 1 FROM comparison_orders LEFT JOIN (select order_id from comparison_order_items)",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rubric, "PACK", tmp_path)
+    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    assert rubric.malloy({"question_id": "q17_x", "sql_path": "q17.sql"})[0] == ["SQL source facts"]
+
+
+def test_every_assessed_layer_answers_or_declares_each_variant() -> None:
+    """No variant is left as a silent failure, and every declared model change says why."""
+    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
+    frozen = rubric.load_frozen_models()
+    questions = yaml.safe_load((SCRIPTS.parent / "questions.yml").read_text(encoding="utf-8"))
+    variants = [q["id"] for q in questions["questions"] if q.get("scope_level") == "variant"]
+    assert len(variants) == 8
+    for layer in LAYERS:
+        spec = frozen.get(layer)
+        declared = (spec or {}).get("requires_model_change", {})
+        assert set(declared) <= set(variants), layer
+        for qid, reason in declared.items():
+            assert reason["reason"].strip() and reason["doc"].startswith("https://"), (layer, qid)
+        for qid in variants:
+            label = labels[layer][qid]["label"]
+            if spec is None:
+                assert label == "not_assessed", (layer, qid)
+            elif qid in declared:
+                assert label == "requires_model_change", (layer, qid)
+            else:
+                assert label in {"native", "workaround", "precomputed"}, (layer, qid, label)
+
+
+def test_the_published_frozen_model_counts_come_from_the_labels() -> None:
+    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
+    matrix = json.loads((SCRIPTS.parent / "capability_matrix.json").read_text(encoding="utf-8"))
+    variants = [row["question_id"] for row in matrix["rows"] if row["slice"] == "frozen_model"]
+    for layer in matrix["layers"]:
+        got = [labels[layer["id"]][qid]["label"] for qid in variants]
+        frozen = layer["answered_with_model_frozen"]
+        if "not_assessed" in got:
+            assert frozen is None
+            continue
+        answered = sum(label in {"native", "workaround", "precomputed"} for label in got)
+        assert frozen == {"answered": answered, "questions": 8, **Counter(got)}, layer["id"]
+    assert matrix["claims"][0].startswith("The 8 frozen-model questions (q17-q24)")
 
 
 def test_committed_labels_are_what_the_rubric_derives() -> None:
@@ -778,7 +961,8 @@ def test_contracts_take_rubric_labels_and_every_layer_on_current_data_counts() -
     for row in matrix["rows"]:
         qid = row["question_id"]
         assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
-    assert "(Semantic Rails, MetricFlow, Cube, Malloy and KtX)" in matrix["claims"][0]
+    output_check = next(claim for claim in matrix["claims"] if claim.startswith("On all 16"))
+    assert "(Semantic Rails, MetricFlow, Cube, Malloy and KtX)" in output_check
     stale = [layer["id"] for layer in matrix["layers"] if layer["dataset"] == "stale"]
     assert stale == ["snowflake_semantic_views"]
 
@@ -865,6 +1049,7 @@ def test_hand_written_label_tables_match_the_rubric() -> None:
     for slice_name, heading in [
         ("shared", "## Shared Questions"),
         ("semantic_rails_targeted", "## Semantic-Rails-Targeted Questions"),
+        ("frozen_model", "## Frozen-Model Questions"),
     ]:
         section = readme.split(heading, 1)[1].split("\n## ", 1)[0]
         rows = re.findall(r"^\| ([^|]+?) \| ([^|]+?) \|", section, flags=re.MULTILINE)

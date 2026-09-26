@@ -1,18 +1,29 @@
 # Semantic Layer Comparison Pack
 
-This pack asks one question of six semantic layers: can each layer express and run the same 16
+This pack asks one question of six semantic layers: can each layer express and run the same 24
 questions over one shared Jaffle dataset? It is a capability comparison. It doesn't measure or
 compare latency, token use or cost. It runs without touching the active
 `configs/semantic_rails/jaffle_shop` package.
 
 ## Read This First
 
+- **With its model frozen, how many metric variants can each layer answer?** q01-q16 were
+  answered with metrics written for them, in every layer. q17-q24 each change one parameter of a
+  metric those models already use: a 14-day instead of a 7-day conversion window, a 50-minute
+  same-store window, a trailing 3-month window, the prior month's value, large-order revenue
+  beside total revenue, the average and maximum of a measure modeled as a sum, and two new
+  thresholds. Every layer answers them with its model exactly as written for q01-q16, through
+  its query-time interface only. Answered, out of 8: **Malloy 8, Semantic Rails 6, Cube 4 (3 of
+  them through SQL API workarounds), KtX 3 and MetricFlow 2**; each other answer needs a model
+  change, for the reason in [`shared/frozen_model.yml`](shared/frozen_model.yml). Snowflake
+  Semantic Views isn't assessed. See *Frozen-Model Questions* below.
 - **Output check: on all 16 questions, the five layers checked on the current dataset return an
   independent answer key's normalized outputs, with numbers matching within 1e-6** (Semantic
-  Rails, MetricFlow, Cube, Malloy and KtX). No layer is the reference: the answer key is SQL
+  Rails, MetricFlow, Cube, Malloy and KtX), and on the frozen-model questions every answer a
+  layer executed matches it too. No layer is the reference: the answer key is SQL
   written against the same views without seeing any layer's models or outputs (see *Independent
   Answer Key* below). Every layer reads the same `comparison_*` views, and all five ran live on
-  2026-09-25 for this capture.
+  2026-09-26 for this capture.
 - **Snowflake Semantic Views is a stale April capture.** It ran on 2026-04-07 on an earlier
   dataset, whose lifecycle view held only the 11 hand-authored lifecycle rows, and it can't be
   re-run or re-authored without a live account. The output check reports it separately: it matches the answer key on
@@ -22,12 +33,11 @@ compare latency, token use or cost. It runs without touching the active
 - **This data can't test every intended semantic.** Delivered time never moves an order into
   another month, no customer orders at two stores, all 10 sessions are at one store on one day,
   and customer history covers 4 customers. Only Cube and Malloy apply q09's and q15's 7-day
-  window boundaries exactly as the rule states. MetricFlow (at minute grain) and KtX count
-  `[started_at, started_at + 7 days)`, and no order in the current dataset falls on either
-  boundary; this pack's Snowflake Semantic Views SQL counts the same window on its earlier
-  dataset. Semantic Rails counts through the end of the 7th calendar day, and the 5 orders in
-  that extra time belong to sessions that had already converted. Each layer's weaknesses in
-  `shared/comparison_data.json` say so. On q07, q09, q14, q15 and q16 in particular, matching the
+  window boundaries exactly as the rule states, `(started_at, started_at + 7 days]`. Semantic
+  Rails, MetricFlow (at minute grain) and KtX count `[started_at, started_at + 7 days)`, the
+  duration convention the frozen-model answer keys use, and no order in the current dataset
+  falls on either boundary; this pack's Snowflake Semantic Views SQL counts the same window on
+  its earlier dataset. Each layer's weaknesses in `shared/comparison_data.json` say so. On q07, q09, q14, q15 and q16 in particular, matching the
   answer key is weak evidence that a layer implements the intended rule; see
   [`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md).
 - **9 of the 16 questions target Semantic Rails features.** q08-q16 (`scope_level: stretch`) were
@@ -57,12 +67,12 @@ compare latency, token use or cost. It runs without touching the active
 
 | Layer | Version | Captured (UTC) | Re-runnable from this repo |
 | --- | --- | --- | --- |
-| Semantic Rails | 0.3.1, not a release (engine tree `e398685`, `main` after v0.3.1) | 2026-09-25 | yes |
-| MetricFlow | `dbt-metricflow 0.15.0` (`metricflow 0.213.0`), `dbt-core 1.12.5`, `dbt-duckdb 1.11.0` (`metricflow/requirements.lock`) | 2026-09-25 | yes; installs the locked packages |
-| Cube | Cube Core `1.7.45` (`@cubejs-backend/server`, `@cubejs-backend/duckdb-driver`; `cube/package-lock.json`) | 2026-09-25 | yes, on darwin-arm64 (the only platform whose native binary is pinned); installs the locked packages and starts Cube locally |
-| Malloy | `@malloydata/cli 0.0.57` (`malloy/package-lock.json`) | 2026-09-25 | yes; installs the locked CLI |
+| Semantic Rails | 0.3.1, not a release (engine tree `dd85761`, `main` after v0.3.1) | 2026-09-26 | yes |
+| MetricFlow | `dbt-metricflow 0.15.0` (`metricflow 0.213.0`), `dbt-core 1.12.5`, `dbt-duckdb 1.11.0` (`metricflow/requirements.lock`) | 2026-09-26 | yes; installs the locked packages |
+| Cube | Cube Core `1.7.45` (`@cubejs-backend/server`, `@cubejs-backend/duckdb-driver`; `cube/package-lock.json`) | 2026-09-26 | yes, on darwin-arm64 (the only platform whose native binary is pinned); installs the locked packages and starts Cube locally |
+| Malloy | `@malloydata/cli 0.0.57` (`malloy/package-lock.json`) | 2026-09-26 | yes; installs the locked CLI |
 | Snowflake Semantic Views | Snowflake CLI + semantic view trial account | stale: 2026-04-07, on an earlier dataset | needs a live Snowflake account |
-| KtX | `@kaelio/ktx 0.16.0` (its bundled `ktx-sl` wheel, pinned by sha256) | 2026-09-25 | yes; fetches the npm package and checks the wheel's hash |
+| KtX | `@kaelio/ktx 0.16.0` (its bundled `ktx-sl` wheel, pinned by sha256) | 2026-09-26 | yes; fetches the npm package and checks the wheel's hash |
 
 Dates are UTC. Snowflake's summary records `2026-04-06T23:05:57-04:00`. Each runner records its tool versions,
 run timestamp and dataset fingerprint in its `summary.json` under `shared/results/`. The
@@ -72,8 +82,8 @@ can tell a capture made on other data from a real mismatch.
 The Semantic Rails runner also records the source trees of its engine, its package, its queries
 and runner, and the question suite, and whether the engine is exactly a tagged release. The
 committed Semantic Rails evidence ran on an engine after the v0.3.1 release: its engine tree,
-`e398685`, is `main`'s engine tree at `62a0b26`, not `git rev-parse v0.3.1:semantic_rails`, so it is
-labeled "0.3.1, not a release (engine tree e398685)" wherever the version is shown. The commit it
+`dd85761`, is `main`'s engine tree at `b2bb05a`, not `git rev-parse v0.3.1:semantic_rails`, so it is
+labeled "0.3.1, not a release (engine tree dd85761)" wherever the version is shown. The commit it
 records may not survive a squash merge, but the tree hashes do.
 
 ## Shared Questions: q01-q07
@@ -108,6 +118,42 @@ each layer today. It is not a ranking.
 | KtX | 7 workaround, 2 precomputed | SQL-backed sources (its joins are equality-only; they are standalone per-question fact tables, a known gap described in `ktx/README.md`), and query-level filters on the rollup columns for q11 and q12 |
 
 Output check: 9 of 9 match the answer key across the five layers checked on the current dataset.
+
+## Frozen-Model Questions: q17-q24
+
+These 8 questions (`scope_level: variant`) each change one parameter of a metric that q01-q16
+already use, and no layer's model defines the variant. Every layer answers them with its model
+unchanged (the rubric checks each model against its sha256 in `shared/frozen_model.yml`), through
+its documented query-time interface only. A layer that can't express a variant is labeled
+`requires_model_change`, with the reason and a documentation link in `shared/frozen_model.yml`.
+
+| Layer | Support labels | Answered with the model frozen | What answers them, or why not |
+| --- | --- | --- | --- |
+| Semantic Rails | 6 native, 2 requires_model_change (q19, q20) | 6 of 8 | Query API conversion windows, aggregate overrides, a scoped aggregate and metric predicates. `rolling` and `prior_period` run over a dense calendar, and this package declares no calendar entity, so q19 and q20 need one |
+| MetricFlow | 2 native (q23, q24), 6 requires_model_change (q17-q22) | 2 of 8 | `--where` metric filters over existing entities answer the new thresholds. A conversion window, a cumulative window, a period offset, a per-metric filter and an aggregation are each part of a metric's definition |
+| Cube | 1 native (q24), 3 workaround (q19, q20, q23), 4 requires_model_change (q17, q18, q21, q22) | 4 of 8 | A REST filter answers q24. SQL API queries answer q19, q20 and q23 by wrapping a Cube query in SQL (window functions, a derived table). The 7-day window is on a declared join, filtered measures and measure types are set in the model, and the model hides the session, order and item keys an SQL API query would group by |
+| Malloy | 8 native | 8 of 8 | Filtered and ad hoc aggregates, calculations (`sum_moving`, `lag`) and, for q17 and q18, a join the query declares on the model's source |
+| KtX | 2 native (q21, q22), 1 precomputed (q24), 5 requires_model_change (q17-q20, q23) | 3 of 8 | Inline measure expressions answer q21 and q22, and a filter on the precomputed spend column answers q24. The windows and the customer-month threshold are inside SQL sources, joins are equality-only and measures reject window functions |
+| Snowflake Semantic Views | 8 not_assessed | not assessed | A stale capture: no variant can be run without a live account |
+
+Output check: every one of the 23 answers the layers executed matches the answer key.
+
+What this doesn't show:
+
+- **The label says how, not only whether.** Malloy answers q17 and q18 by declaring a windowed
+  join in the query itself; it is Malloy syntax, not SQL, so the rubric labels it `native`. Cube's
+  three SQL API answers are SQL around a Cube query, so they are `workaround`. q19's moving sum
+  and q20's `lag` in Malloy and Cube step over month rows, which equals the calendar rule here
+  only because every month has orders.
+- **Some variants don't discriminate on this data.** q17's 14-day rate equals q09's 7-day rate
+  (every session converts within an hour), and q22's maxima are each product type's top price in
+  every month, so a layer returning the base metric would still match there
+  ([`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md)). The labels don't depend on it:
+  each layer's query for a variant is in its `queries/` folder.
+- **The set is small, and the Semantic Rails authors chose it** knowing which parameters Semantic
+  Rails composes at query time and which some other layers set in the model. It probes where
+  each layer's frozen-model boundary lies; it isn't a ranking, and it doesn't weigh what a model
+  change costs in each layer.
 
 ## Independent Answer Key
 
@@ -155,9 +201,9 @@ instead of being guessed from its name.
 - `metricflow/`
   Minimal dbt + MetricFlow project on the shared DuckDB dataset.
 - `cube/`
-  Cube Core project: models, REST queries, the locked npm install, its recorded `npm audit`, a live runner, and an offline check of the install surface.
+  Cube Core project: models, REST and SQL API queries, the locked npm install, its recorded `npm audit`, a live runner, and an offline check of the install surface.
 - `malloy/`
-  Minimal Malloy project: one model with a named query per question.
+  Minimal Malloy project: one model with a named query per question for q01-q16, and one query file per frozen-model question that imports the unchanged model.
 - `snowflake_semantic_views/`
   Executed Snowflake Semantic Views pack, trial-account setup assets, and query runner.
 - `ktx/`

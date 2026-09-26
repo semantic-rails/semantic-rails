@@ -1,0 +1,2681 @@
+{
+  "assumptions": [],
+  "authoring_hints": [],
+  "dialect": "duckdb",
+  "errors": [],
+  "explain": {
+    "alias_resolution": {
+      "group_by": [],
+      "select": [
+        {
+          "alias": "revenue_usd",
+          "expression": {
+            "aggregation": "",
+            "kind": "measure",
+            "measure": "measure.jaffle.revenue_usd",
+            "temporal_role": ""
+          }
+        },
+        {
+          "alias": "large_order_revenue_usd",
+          "expression": {
+            "aggregation": "sum",
+            "kind": "scoped_aggregate",
+            "measure": "measure.jaffle.revenue_usd",
+            "predicates": [
+              {
+                "entity": "entity.jaffle_order",
+                "measure": "measure.jaffle.revenue_usd",
+                "op": ">=",
+                "value": 50
+              }
+            ],
+            "temporal_role": ""
+          }
+        }
+      ],
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "where": []
+    },
+    "chosen_paths": {},
+    "compile_stats": {
+      "cache_hit": true,
+      "cache_lookup_ms": 1.304,
+      "compile_ms": 0.412,
+      "dialect": "duckdb",
+      "physical_plan_nodes": 12
+    },
+    "fanout_strategy": {
+      "leaf_paths": {
+        "measure.jaffle.revenue_usd": []
+      },
+      "root_paths": {},
+      "status": "ok"
+    },
+    "grain_analysis": {
+      "group_by": [],
+      "leaf_grains": {
+        "measure.jaffle.revenue_usd": [
+          "temporal_role.jaffle_order_time__month"
+        ]
+      },
+      "measure_entities": [
+        "entity.jaffle_order"
+      ],
+      "root_entity": "entity.jaffle_order",
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      }
+    },
+    "logical_plan": {
+      "bound_measures": [
+        {
+          "aggregation": "sum",
+          "aggregation_params": {},
+          "alias": "leaf__measure_jaffle_revenue_usd__sum",
+          "filter_spec": {},
+          "measure_id": "measure.jaffle.revenue_usd",
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "window_spec": {}
+        },
+        {
+          "aggregation": "sum",
+          "aggregation_params": {},
+          "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+          "filter_spec": {
+            "all": [
+              {
+                "expression": {
+                  "entity": "entity.jaffle_order",
+                  "input": {
+                    "measure": "measure.jaffle.revenue_usd"
+                  },
+                  "kind": "metric_predicate",
+                  "op": ">=",
+                  "scope_mode": "contextual",
+                  "value": 50
+                }
+              }
+            ]
+          },
+          "measure_id": "measure.jaffle.revenue_usd",
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "window_spec": {}
+        }
+      ],
+      "candidate_paths": {},
+      "disabled_options": [],
+      "fanout_strategy": {
+        "leaf_paths": {
+          "measure.jaffle.revenue_usd": []
+        },
+        "root_paths": {},
+        "status": "ok"
+      },
+      "grain_analysis": {
+        "group_by": [],
+        "leaf_grains": {
+          "measure.jaffle.revenue_usd": [
+            "temporal_role.jaffle_order_time__month"
+          ]
+        },
+        "measure_entities": [
+          "entity.jaffle_order"
+        ],
+        "root_entity": "entity.jaffle_order",
+        "time": {
+          "calendar_id": "default",
+          "end": null,
+          "fill": false,
+          "grain": "month",
+          "start": null,
+          "temporal_role": "temporal_role.jaffle_order_time"
+        }
+      },
+      "group_by": [],
+      "measure_plans": [
+        {
+          "aggregate_relation_id": "",
+          "aggregate_relation_rejections": {},
+          "bound_measure": {
+            "aggregation": "sum",
+            "aggregation_params": {},
+            "alias": "leaf__measure_jaffle_revenue_usd__sum",
+            "filter_spec": {},
+            "measure_id": "measure.jaffle.revenue_usd",
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "window_spec": {}
+          },
+          "cte_name": "leaf_1",
+          "grain_keys": [
+            "temporal_role.jaffle_order_time__month"
+          ],
+          "path_selections": [],
+          "required_entities": [
+            "entity.jaffle_order"
+          ],
+          "rewrite_strategy": "direct",
+          "source_entity": "entity.jaffle_order"
+        },
+        {
+          "aggregate_relation_id": "",
+          "aggregate_relation_rejections": {},
+          "bound_measure": {
+            "aggregation": "sum",
+            "aggregation_params": {},
+            "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+            "filter_spec": {
+              "all": [
+                {
+                  "expression": {
+                    "entity": "entity.jaffle_order",
+                    "input": {
+                      "measure": "measure.jaffle.revenue_usd"
+                    },
+                    "kind": "metric_predicate",
+                    "op": ">=",
+                    "scope_mode": "contextual",
+                    "value": 50
+                  }
+                }
+              ]
+            },
+            "measure_id": "measure.jaffle.revenue_usd",
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "window_spec": {}
+          },
+          "cte_name": "leaf_2",
+          "grain_keys": [
+            "temporal_role.jaffle_order_time__month"
+          ],
+          "path_selections": [],
+          "required_entities": [
+            "entity.jaffle_order"
+          ],
+          "rewrite_strategy": "direct",
+          "source_entity": "entity.jaffle_order"
+        }
+      ],
+      "post_aggregation_exprs": {
+        "large_order_revenue_usd": {
+          "aggregation": "sum",
+          "kind": "scoped_aggregate",
+          "measure": "measure.jaffle.revenue_usd",
+          "predicates": [
+            {
+              "entity": "entity.jaffle_order",
+              "measure": "measure.jaffle.revenue_usd",
+              "op": ">=",
+              "value": 50
+            }
+          ],
+          "temporal_role": ""
+        },
+        "revenue_usd": {
+          "aggregation": "",
+          "kind": "measure",
+          "measure": "measure.jaffle.revenue_usd",
+          "temporal_role": ""
+        }
+      },
+      "query": {
+        "debug": false,
+        "explain": false,
+        "export": false,
+        "group_by": [],
+        "limit": null,
+        "metric_filters": [],
+        "order_by": [
+          {
+            "direction": "ASC",
+            "field": "temporal_role.jaffle_order_time__month"
+          }
+        ],
+        "path_policy": {
+          "ask_if_ambiguous": true,
+          "preference": "fewest_hops"
+        },
+        "select": [
+          {
+            "as": "revenue_usd",
+            "expression": {
+              "aggregation": "",
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd",
+              "temporal_role": ""
+            }
+          },
+          {
+            "as": "large_order_revenue_usd",
+            "expression": {
+              "aggregation": "sum",
+              "kind": "scoped_aggregate",
+              "measure": "measure.jaffle.revenue_usd",
+              "predicates": [
+                {
+                  "entity": "entity.jaffle_order",
+                  "measure": "measure.jaffle.revenue_usd",
+                  "op": ">=",
+                  "value": 50
+                }
+              ],
+              "temporal_role": ""
+            }
+          }
+        ],
+        "temporal_role_overrides": {},
+        "time": {
+          "calendar_id": "default",
+          "end": null,
+          "fill": false,
+          "grain": "month",
+          "start": null,
+          "temporal_role": "temporal_role.jaffle_order_time"
+        },
+        "version": 1,
+        "where": []
+      },
+      "resolved_ids": {
+        "group_by": [],
+        "select": [
+          {
+            "alias": "revenue_usd",
+            "expression": {
+              "aggregation": "",
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd",
+              "temporal_role": ""
+            }
+          },
+          {
+            "alias": "large_order_revenue_usd",
+            "expression": {
+              "aggregation": "sum",
+              "kind": "scoped_aggregate",
+              "measure": "measure.jaffle.revenue_usd",
+              "predicates": [
+                {
+                  "entity": "entity.jaffle_order",
+                  "measure": "measure.jaffle.revenue_usd",
+                  "op": ">=",
+                  "value": 50
+                }
+              ],
+              "temporal_role": ""
+            }
+          }
+        ],
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "where": []
+      },
+      "rewrite_steps": [],
+      "root_entity": "entity.jaffle_order",
+      "selected_paths": {},
+      "semantic_dag": {
+        "nodes": [
+          {
+            "details": {
+              "aggregation": "sum",
+              "entity": "entity.jaffle_order",
+              "measure": "measure.jaffle.revenue_usd",
+              "temporal_roles": [
+                "temporal_role.jaffle_order_time"
+              ]
+            },
+            "id": "source_leaf_1",
+            "inputs": [],
+            "kind": "SourceLeaf",
+            "label": "revenue_usd"
+          },
+          {
+            "details": {
+              "aggregation": "sum",
+              "entity": "entity.jaffle_order",
+              "measure": "measure.jaffle.revenue_usd",
+              "where": []
+            },
+            "id": "source_leaf_2",
+            "inputs": [],
+            "kind": "SourceLeaf",
+            "label": "large_order_revenue_usd"
+          },
+          {
+            "details": {
+              "entity": "entity.jaffle_order",
+              "measure": "measure.jaffle.revenue_usd",
+              "op": ">=",
+              "value": 50
+            },
+            "id": "predicate_set_3",
+            "inputs": [],
+            "kind": "PredicateSet",
+            "label": "metric_predicate"
+          },
+          {
+            "details": {
+              "entity": "entity.jaffle_order",
+              "time_alignment": ""
+            },
+            "id": "scoped_semijoin_4",
+            "inputs": [
+              "source_leaf_2",
+              "predicate_set_3"
+            ],
+            "kind": "ScopedSemiJoin",
+            "label": ""
+          },
+          {
+            "details": {
+              "keys": [
+                "temporal_role.jaffle_order_time__month"
+              ]
+            },
+            "id": "multi_fact_align",
+            "inputs": [
+              "source_leaf_1",
+              "scoped_semijoin_4"
+            ],
+            "kind": "MultiFactAlign",
+            "label": ""
+          },
+          {
+            "details": {
+              "outputs": {
+                "large_order_revenue_usd": "scoped_semijoin_4",
+                "revenue_usd": "source_leaf_1"
+              }
+            },
+            "id": "final_project",
+            "inputs": [
+              "source_leaf_1",
+              "scoped_semijoin_4"
+            ],
+            "kind": "FinalProject",
+            "label": ""
+          }
+        ],
+        "outputs": {
+          "large_order_revenue_usd": "scoped_semijoin_4",
+          "revenue_usd": "source_leaf_1"
+        },
+        "version": 1
+      },
+      "synthetic_measures": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      },
+      "version": 2
+    },
+    "normalized_query": {
+      "debug": false,
+      "explain": false,
+      "export": false,
+      "group_by": [],
+      "limit": null,
+      "metric_filters": [],
+      "order_by": [
+        {
+          "direction": "ASC",
+          "field": "temporal_role.jaffle_order_time__month"
+        }
+      ],
+      "path_policy": {
+        "ask_if_ambiguous": true,
+        "preference": "fewest_hops"
+      },
+      "select": [
+        {
+          "as": "revenue_usd",
+          "expression": {
+            "aggregation": "",
+            "kind": "measure",
+            "measure": "measure.jaffle.revenue_usd",
+            "temporal_role": ""
+          }
+        },
+        {
+          "as": "large_order_revenue_usd",
+          "expression": {
+            "aggregation": "sum",
+            "kind": "scoped_aggregate",
+            "measure": "measure.jaffle.revenue_usd",
+            "predicates": [
+              {
+                "entity": "entity.jaffle_order",
+                "measure": "measure.jaffle.revenue_usd",
+                "op": ">=",
+                "value": 50
+              }
+            ],
+            "temporal_role": ""
+          }
+        }
+      ],
+      "temporal_role_overrides": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      },
+      "version": 1,
+      "where": []
+    },
+    "performance_plan": {
+      "aggregate_routing": {
+        "candidates": [],
+        "selected": [],
+        "selected_count": 0
+      },
+      "date_filter_pushdown": [
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": true,
+          "pushed_to_scan": true,
+          "relation": "comparison_orders",
+          "scan_id": "leaf_1_scan",
+          "time_filter": {
+            "calendar_id": "default",
+            "end": null,
+            "fill": false,
+            "grain": "month",
+            "start": null,
+            "temporal_role": "temporal_role.jaffle_order_time"
+          }
+        },
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": true,
+          "pushed_to_scan": true,
+          "relation": "comparison_orders",
+          "scan_id": "leaf_2_scan",
+          "time_filter": {
+            "calendar_id": "default",
+            "end": null,
+            "fill": false,
+            "grain": "month",
+            "start": null,
+            "temporal_role": "temporal_role.jaffle_order_time"
+          }
+        },
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": true,
+          "pushed_to_scan": true,
+          "relation": "comparison_orders",
+          "scan_id": "leaf_2_predicate_1_scan_1",
+          "time_filter": {
+            "calendar_id": "default",
+            "end": null,
+            "grain": "month",
+            "output_temporal_role": "temporal_role.jaffle_order_time",
+            "start": null,
+            "temporal_role": "temporal_role.jaffle_order_time"
+          }
+        }
+      ],
+      "estimated_scan_relations": [
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": false,
+          "has_time_filter": true,
+          "large_relation_hint": false,
+          "measures": [
+            {
+              "aggregation": "sum",
+              "alias": "leaf__measure_jaffle_revenue_usd__sum",
+              "measure_id": "measure.jaffle.revenue_usd"
+            }
+          ],
+          "relation": "comparison_orders",
+          "scan_id": "leaf_1_scan",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        },
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": false,
+          "has_time_filter": true,
+          "large_relation_hint": false,
+          "measures": [
+            {
+              "aggregation": "sum",
+              "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+              "measure_id": "measure.jaffle.revenue_usd"
+            }
+          ],
+          "relation": "comparison_orders",
+          "scan_id": "leaf_2_scan",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        },
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": false,
+          "has_time_filter": true,
+          "large_relation_hint": false,
+          "measures": [
+            {
+              "aggregation": "sum",
+              "measure_id": "measure.jaffle.revenue_usd"
+            }
+          ],
+          "relation": "comparison_orders",
+          "scan_id": "leaf_2_predicate_1_scan_1",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        }
+      ],
+      "execution_recommendation": "needs_acceleration_layer",
+      "full_outer_alignments": 1,
+      "joins_after_aggregate": [],
+      "joins_before_aggregate": [
+        {
+          "aggregate_id": "leaf_2",
+          "contracts": [],
+          "join_node": "leaf_2_predicate_joins",
+          "max_path_hops": 0,
+          "paths": [],
+          "reason": "no_dimension_join",
+          "safe_before_aggregate": false,
+          "strategy": "direct_aggregate"
+        }
+      ],
+      "large_scan_risk": {
+        "all_raw_scans_bounded": false,
+        "large_raw_relations": [],
+        "reasons": [
+          "unbounded_raw_primitive_scan",
+          "multi_fact_raw_alignment"
+        ],
+        "risk": true,
+        "source_preaggregates": [],
+        "time_window_days": null
+      },
+      "notes": [],
+      "pre_aggregation_grain": {
+        "leaf_1": [
+          "temporal_role.jaffle_order_time__month"
+        ],
+        "leaf_2": [
+          "temporal_role.jaffle_order_time__month"
+        ]
+      },
+      "raw_fact_count": 3,
+      "risk_level": "high",
+      "semantic_equivalence": "exact_primitives",
+      "version": 1
+    },
+    "physical_plan": {
+      "nodes": [
+        {
+          "details": {
+            "aggregate_relation_id": "",
+            "measures": [
+              {
+                "aggregation": "sum",
+                "alias": "leaf__measure_jaffle_revenue_usd__sum",
+                "measure_id": "measure.jaffle.revenue_usd"
+              }
+            ],
+            "omitted_semantic_root_entity": "",
+            "physical_anchor_entity": "entity.jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
+            "selected_relation_type": "raw",
+            "semantic_equivalence": "",
+            "source_entity": "entity.jaffle_order",
+            "time_grain": ""
+          },
+          "id": "leaf_1_scan",
+          "inputs": [],
+          "kind": "Scan",
+          "label": "Scan comparison_orders"
+        },
+        {
+          "details": {
+            "measure_filters": [],
+            "pushed_to_scan": true,
+            "query_filters": [],
+            "time_filter": {
+              "calendar_id": "default",
+              "end": null,
+              "fill": false,
+              "grain": "month",
+              "start": null,
+              "temporal_role": "temporal_role.jaffle_order_time"
+            }
+          },
+          "id": "leaf_1_filter",
+          "inputs": [
+            "leaf_1_scan"
+          ],
+          "kind": "Filter",
+          "label": ""
+        },
+        {
+          "details": {
+            "aggregate_placement": {
+              "reason": "no_dimension_join",
+              "strategy": "direct_aggregate"
+            },
+            "aggregate_relation_id": "",
+            "folded_measure_count": 1,
+            "grain": [
+              "temporal_role.jaffle_order_time__month"
+            ],
+            "measures": [
+              {
+                "aggregation": "sum",
+                "alias": "leaf__measure_jaffle_revenue_usd__sum",
+                "measure_id": "measure.jaffle.revenue_usd"
+              }
+            ]
+          },
+          "id": "leaf_1",
+          "inputs": [
+            "leaf_1_filter"
+          ],
+          "kind": "Aggregate",
+          "label": ""
+        },
+        {
+          "details": {
+            "aggregate_relation_id": "",
+            "measures": [
+              {
+                "aggregation": "sum",
+                "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+                "measure_id": "measure.jaffle.revenue_usd"
+              }
+            ],
+            "omitted_semantic_root_entity": "",
+            "physical_anchor_entity": "entity.jaffle_order",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
+            "selected_relation_type": "raw",
+            "semantic_equivalence": "",
+            "source_entity": "entity.jaffle_order",
+            "time_grain": ""
+          },
+          "id": "leaf_2_scan",
+          "inputs": [],
+          "kind": "Scan",
+          "label": "Scan comparison_orders"
+        },
+        {
+          "details": {
+            "measure_filters": [],
+            "pushed_to_scan": true,
+            "query_filters": [],
+            "time_filter": {
+              "calendar_id": "default",
+              "end": null,
+              "fill": false,
+              "grain": "month",
+              "start": null,
+              "temporal_role": "temporal_role.jaffle_order_time"
+            }
+          },
+          "id": "leaf_2_filter",
+          "inputs": [
+            "leaf_2_scan"
+          ],
+          "kind": "Filter",
+          "label": ""
+        },
+        {
+          "details": {
+            "conversion_roles": [],
+            "measures": [
+              {
+                "aggregation": "sum",
+                "measure_id": "measure.jaffle.revenue_usd"
+              }
+            ],
+            "metric_recipes": [],
+            "predicate": {
+              "entity": "entity.jaffle_order",
+              "input": {
+                "aggregation": "",
+                "kind": "measure",
+                "measure": "measure.jaffle.revenue_usd",
+                "temporal_role": ""
+              },
+              "kind": "metric_predicate",
+              "op": ">=",
+              "scope_mode": "contextual",
+              "value": 50
+            },
+            "predicate_input": {
+              "aggregation": "",
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd",
+              "temporal_role": ""
+            },
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
+            "selected_relation_type": "raw",
+            "source_entity": "entity.jaffle_order"
+          },
+          "id": "leaf_2_predicate_1_scan_1",
+          "inputs": [],
+          "kind": "Scan",
+          "label": "Scan predicate source comparison_orders"
+        },
+        {
+          "details": {
+            "measure_filters": [],
+            "pushed_to_scan": true,
+            "query_filters": [],
+            "time_filter": {
+              "calendar_id": "default",
+              "end": null,
+              "grain": "month",
+              "output_temporal_role": "temporal_role.jaffle_order_time",
+              "start": null,
+              "temporal_role": "temporal_role.jaffle_order_time"
+            }
+          },
+          "id": "leaf_2_predicate_1_filter_1",
+          "inputs": [
+            "leaf_2_predicate_1_scan_1"
+          ],
+          "kind": "Filter",
+          "label": ""
+        },
+        {
+          "details": {
+            "entity": "entity.jaffle_order",
+            "keys": [
+              "dimension.jaffle_order_id"
+            ],
+            "op": ">=",
+            "scope_mode": "contextual",
+            "source_scan_count": 1,
+            "value": 50
+          },
+          "id": "leaf_2_predicate_set_1",
+          "inputs": [
+            "leaf_2_predicate_1_filter_1"
+          ],
+          "kind": "PredicateSet",
+          "label": ""
+        },
+        {
+          "details": {
+            "contracts": [],
+            "join_type": "INNER",
+            "predicate_sets": [
+              "leaf_2_predicate_set_1"
+            ],
+            "predicates": [
+              {
+                "entity": "entity.jaffle_order",
+                "input": {
+                  "aggregation": "",
+                  "kind": "measure",
+                  "measure": "measure.jaffle.revenue_usd",
+                  "temporal_role": ""
+                },
+                "kind": "metric_predicate",
+                "op": ">=",
+                "scope_mode": "contextual",
+                "value": 50
+              }
+            ],
+            "reason": "metric_predicate_entity_sets"
+          },
+          "id": "leaf_2_predicate_joins",
+          "inputs": [
+            "leaf_2_filter",
+            "leaf_2_predicate_set_1"
+          ],
+          "kind": "Join",
+          "label": ""
+        },
+        {
+          "details": {
+            "aggregate_placement": {
+              "reason": "no_dimension_join",
+              "strategy": "direct_aggregate"
+            },
+            "aggregate_relation_id": "",
+            "folded_measure_count": 1,
+            "grain": [
+              "temporal_role.jaffle_order_time__month"
+            ],
+            "measures": [
+              {
+                "aggregation": "sum",
+                "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+                "measure_id": "measure.jaffle.revenue_usd"
+              }
+            ]
+          },
+          "id": "leaf_2",
+          "inputs": [
+            "leaf_2_predicate_joins"
+          ],
+          "kind": "Aggregate",
+          "label": ""
+        },
+        {
+          "details": {
+            "join_type": "FULL OUTER",
+            "keys": [
+              "temporal_role.jaffle_order_time__month"
+            ],
+            "reason": "multiple_independent_metric_leaves"
+          },
+          "id": "align_facts",
+          "inputs": [
+            "leaf_1",
+            "leaf_2"
+          ],
+          "kind": "AlignFacts",
+          "label": ""
+        },
+        {
+          "details": {
+            "key_aliases": [
+              "temporal_role.jaffle_order_time__month"
+            ],
+            "outputs": [
+              "revenue_usd",
+              "large_order_revenue_usd"
+            ],
+            "projection_wrappers": "pruned_when_no_metric_filters_or_order_by"
+          },
+          "id": "final_project",
+          "inputs": [
+            "align_facts"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "optimizations": [
+        {
+          "kind": "filter_pushdown",
+          "status": "applied",
+          "target": "leaf_1_scan"
+        },
+        {
+          "kind": "source_aggregate_placement",
+          "reason": "no_dimension_join",
+          "status": "direct_aggregate",
+          "target": "leaf_1"
+        },
+        {
+          "kind": "filter_pushdown",
+          "status": "applied",
+          "target": "leaf_2_scan"
+        },
+        {
+          "kind": "metric_predicate_source_accounting",
+          "predicate_sets": [
+            "leaf_2_predicate_set_1"
+          ],
+          "status": "applied",
+          "target": "leaf_2_predicate_joins"
+        },
+        {
+          "kind": "source_aggregate_placement",
+          "reason": "no_dimension_join",
+          "status": "direct_aggregate",
+          "target": "leaf_2"
+        }
+      ],
+      "outputs": {
+        "large_order_revenue_usd": "final_project",
+        "leaf__measure_jaffle_revenue_usd__sum": "leaf_1",
+        "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4": "leaf_2",
+        "revenue_usd": "final_project"
+      },
+      "version": 1
+    },
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  base.m2 AS large_order_revenue_usd\nFROM combined_2 AS base\nORDER BY\n  t ASC",
+    "rewrite_strategy": {
+      "status": "direct",
+      "steps": []
+    },
+    "semantic_dag": {
+      "nodes": [
+        {
+          "details": {
+            "aggregation": "sum",
+            "entity": "entity.jaffle_order",
+            "measure": "measure.jaffle.revenue_usd",
+            "temporal_roles": [
+              "temporal_role.jaffle_order_time"
+            ]
+          },
+          "id": "source_leaf_1",
+          "inputs": [],
+          "kind": "SourceLeaf",
+          "label": "revenue_usd"
+        },
+        {
+          "details": {
+            "aggregation": "sum",
+            "entity": "entity.jaffle_order",
+            "measure": "measure.jaffle.revenue_usd",
+            "where": []
+          },
+          "id": "source_leaf_2",
+          "inputs": [],
+          "kind": "SourceLeaf",
+          "label": "large_order_revenue_usd"
+        },
+        {
+          "details": {
+            "entity": "entity.jaffle_order",
+            "measure": "measure.jaffle.revenue_usd",
+            "op": ">=",
+            "value": 50
+          },
+          "id": "predicate_set_3",
+          "inputs": [],
+          "kind": "PredicateSet",
+          "label": "metric_predicate"
+        },
+        {
+          "details": {
+            "entity": "entity.jaffle_order",
+            "time_alignment": ""
+          },
+          "id": "scoped_semijoin_4",
+          "inputs": [
+            "source_leaf_2",
+            "predicate_set_3"
+          ],
+          "kind": "ScopedSemiJoin",
+          "label": ""
+        },
+        {
+          "details": {
+            "keys": [
+              "temporal_role.jaffle_order_time__month"
+            ]
+          },
+          "id": "multi_fact_align",
+          "inputs": [
+            "source_leaf_1",
+            "scoped_semijoin_4"
+          ],
+          "kind": "MultiFactAlign",
+          "label": ""
+        },
+        {
+          "details": {
+            "outputs": {
+              "large_order_revenue_usd": "scoped_semijoin_4",
+              "revenue_usd": "source_leaf_1"
+            }
+          },
+          "id": "final_project",
+          "inputs": [
+            "source_leaf_1",
+            "scoped_semijoin_4"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "outputs": {
+        "large_order_revenue_usd": "scoped_semijoin_4",
+        "revenue_usd": "source_leaf_1"
+      },
+      "version": 1
+    },
+    "sql_plan": {
+      "ctes": [
+        {
+          "name": "leaf_1",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "comparison_orders"
+            },
+            "group_by": [
+              {
+                "args": [
+                  {
+                    "value": "month"
+                  },
+                  {
+                    "expr": {
+                      "parts": [
+                        "comparison_orders",
+                        "ordered_at"
+                      ]
+                    },
+                    "type_name": "TIMESTAMP"
+                  }
+                ],
+                "distinct": false,
+                "name": "DATE_TRUNC"
+              }
+            ],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "t",
+                "expression": {
+                  "args": [
+                    {
+                      "value": "month"
+                    },
+                    {
+                      "expr": {
+                        "parts": [
+                          "comparison_orders",
+                          "ordered_at"
+                        ]
+                      },
+                      "type_name": "TIMESTAMP"
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "DATE_TRUNC"
+                }
+              },
+              {
+                "alias": "m1",
+                "expression": {
+                  "args": [
+                    {
+                      "left": {
+                        "parts": [
+                          "comparison_orders",
+                          "order_total_cents"
+                        ]
+                      },
+                      "op": "/",
+                      "right": {
+                        "value": 100.0
+                      }
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "SUM"
+                }
+              }
+            ],
+            "where": []
+          }
+        },
+        {
+          "name": "leaf_2",
+          "query": {
+            "ctes": [
+              {
+                "name": "leaf_2__revenue_usd_order_month_source_1",
+                "query": {
+                  "ctes": [
+                    {
+                      "name": "leaf_2__revenue_usd_order_month_source_1__leaf_1",
+                      "query": {
+                        "ctes": [],
+                        "distinct": false,
+                        "from_table": {
+                          "alias": "",
+                          "name": "comparison_orders"
+                        },
+                        "group_by": [
+                          {
+                            "parts": [
+                              "comparison_orders",
+                              "order_id"
+                            ]
+                          },
+                          {
+                            "args": [
+                              {
+                                "value": "month"
+                              },
+                              {
+                                "expr": {
+                                  "parts": [
+                                    "comparison_orders",
+                                    "ordered_at"
+                                  ]
+                                },
+                                "type_name": "TIMESTAMP"
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "DATE_TRUNC"
+                          }
+                        ],
+                        "having": [],
+                        "joins": [],
+                        "limit": null,
+                        "order_by": [],
+                        "qualify": [],
+                        "select": [
+                          {
+                            "alias": "g1",
+                            "expression": {
+                              "parts": [
+                                "comparison_orders",
+                                "order_id"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "t",
+                            "expression": {
+                              "args": [
+                                {
+                                  "value": "month"
+                                },
+                                {
+                                  "expr": {
+                                    "parts": [
+                                      "comparison_orders",
+                                      "ordered_at"
+                                    ]
+                                  },
+                                  "type_name": "TIMESTAMP"
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "DATE_TRUNC"
+                            }
+                          },
+                          {
+                            "alias": "m1",
+                            "expression": {
+                              "args": [
+                                {
+                                  "left": {
+                                    "parts": [
+                                      "comparison_orders",
+                                      "order_total_cents"
+                                    ]
+                                  },
+                                  "op": "/",
+                                  "right": {
+                                    "value": 100.0
+                                  }
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "SUM"
+                            }
+                          }
+                        ],
+                        "where": []
+                      }
+                    }
+                  ],
+                  "distinct": false,
+                  "from_table": {
+                    "alias": "base",
+                    "name": "leaf_2__revenue_usd_order_month_source_1__leaf_1"
+                  },
+                  "group_by": [],
+                  "having": [],
+                  "joins": [],
+                  "limit": null,
+                  "order_by": [],
+                  "qualify": [],
+                  "select": [
+                    {
+                      "alias": "dimension.jaffle_order_id",
+                      "expression": {
+                        "parts": [
+                          "base",
+                          "g1"
+                        ]
+                      }
+                    },
+                    {
+                      "alias": "t",
+                      "expression": {
+                        "parts": [
+                          "base",
+                          "t"
+                        ]
+                      }
+                    },
+                    {
+                      "alias": "__predicate_value",
+                      "expression": {
+                        "parts": [
+                          "base",
+                          "m1"
+                        ]
+                      }
+                    }
+                  ],
+                  "where": []
+                }
+              },
+              {
+                "name": "leaf_2__qualified_orders_month_by_revenue_usd_1",
+                "query": {
+                  "ctes": [],
+                  "distinct": true,
+                  "from_table": {
+                    "alias": "predicate_source",
+                    "name": "leaf_2__revenue_usd_order_month_source_1"
+                  },
+                  "group_by": [],
+                  "having": [],
+                  "joins": [],
+                  "limit": null,
+                  "order_by": [],
+                  "qualify": [],
+                  "select": [
+                    {
+                      "alias": "dimension.jaffle_order_id",
+                      "expression": {
+                        "parts": [
+                          "predicate_source",
+                          "dimension.jaffle_order_id"
+                        ]
+                      }
+                    },
+                    {
+                      "alias": "t",
+                      "expression": {
+                        "parts": [
+                          "predicate_source",
+                          "t"
+                        ]
+                      }
+                    }
+                  ],
+                  "where": [
+                    {
+                      "left": {
+                        "parts": [
+                          "predicate_source",
+                          "__predicate_value"
+                        ]
+                      },
+                      "op": ">=",
+                      "right": {
+                        "value": 50
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "comparison_orders"
+            },
+            "group_by": [
+              {
+                "args": [
+                  {
+                    "value": "month"
+                  },
+                  {
+                    "expr": {
+                      "parts": [
+                        "comparison_orders",
+                        "ordered_at"
+                      ]
+                    },
+                    "type_name": "TIMESTAMP"
+                  }
+                ],
+                "distinct": false,
+                "name": "DATE_TRUNC"
+              }
+            ],
+            "having": [],
+            "joins": [
+              {
+                "join_type": "INNER",
+                "on": {
+                  "left": {
+                    "left": {
+                      "parts": [
+                        "comparison_orders",
+                        "order_id"
+                      ]
+                    },
+                    "op": "=",
+                    "right": {
+                      "parts": [
+                        "leaf_2__qualified_orders_month_by_revenue_usd_1",
+                        "dimension.jaffle_order_id"
+                      ]
+                    }
+                  },
+                  "op": "AND",
+                  "right": {
+                    "left": {
+                      "args": [
+                        {
+                          "value": "month"
+                        },
+                        {
+                          "expr": {
+                            "parts": [
+                              "comparison_orders",
+                              "ordered_at"
+                            ]
+                          },
+                          "type_name": "TIMESTAMP"
+                        }
+                      ],
+                      "distinct": false,
+                      "name": "DATE_TRUNC"
+                    },
+                    "op": "=",
+                    "right": {
+                      "parts": [
+                        "leaf_2__qualified_orders_month_by_revenue_usd_1",
+                        "t"
+                      ]
+                    }
+                  }
+                },
+                "table": {
+                  "alias": "",
+                  "name": "leaf_2__qualified_orders_month_by_revenue_usd_1"
+                }
+              }
+            ],
+            "limit": null,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "t",
+                "expression": {
+                  "args": [
+                    {
+                      "value": "month"
+                    },
+                    {
+                      "expr": {
+                        "parts": [
+                          "comparison_orders",
+                          "ordered_at"
+                        ]
+                      },
+                      "type_name": "TIMESTAMP"
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "DATE_TRUNC"
+                }
+              },
+              {
+                "alias": "m2",
+                "expression": {
+                  "args": [
+                    {
+                      "left": {
+                        "parts": [
+                          "comparison_orders",
+                          "order_total_cents"
+                        ]
+                      },
+                      "op": "/",
+                      "right": {
+                        "value": 100.0
+                      }
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "SUM"
+                }
+              }
+            ],
+            "where": []
+          }
+        },
+        {
+          "name": "combined_2",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "left_side",
+              "name": "leaf_1"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [
+              {
+                "join_type": "FULL OUTER",
+                "on": {
+                  "left": {
+                    "parts": [
+                      "left_side",
+                      "t"
+                    ]
+                  },
+                  "op": "IS NOT DISTINCT FROM",
+                  "right": {
+                    "parts": [
+                      "right_side",
+                      "t"
+                    ]
+                  }
+                },
+                "table": {
+                  "alias": "right_side",
+                  "name": "leaf_2"
+                }
+              }
+            ],
+            "limit": null,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "t",
+                "expression": {
+                  "args": [
+                    {
+                      "parts": [
+                        "left_side",
+                        "t"
+                      ]
+                    },
+                    {
+                      "parts": [
+                        "right_side",
+                        "t"
+                      ]
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "COALESCE"
+                }
+              },
+              {
+                "alias": "m1",
+                "expression": {
+                  "parts": [
+                    "left_side",
+                    "m1"
+                  ]
+                }
+              },
+              {
+                "alias": "m2",
+                "expression": {
+                  "parts": [
+                    "right_side",
+                    "m2"
+                  ]
+                }
+              }
+            ],
+            "where": []
+          }
+        }
+      ],
+      "distinct": false,
+      "from_table": {
+        "alias": "base",
+        "name": "combined_2"
+      },
+      "group_by": [],
+      "having": [],
+      "joins": [],
+      "limit": null,
+      "order_by": [
+        {
+          "direction": "ASC",
+          "expression": {
+            "parts": [
+              "t"
+            ]
+          }
+        }
+      ],
+      "qualify": [],
+      "select": [
+        {
+          "alias": "temporal_role.jaffle_order_time__month",
+          "expression": {
+            "parts": [
+              "base",
+              "t"
+            ]
+          }
+        },
+        {
+          "alias": "revenue_usd",
+          "expression": {
+            "parts": [
+              "base",
+              "m1"
+            ]
+          }
+        },
+        {
+          "alias": "large_order_revenue_usd",
+          "expression": {
+            "parts": [
+              "base",
+              "m2"
+            ]
+          }
+        }
+      ],
+      "where": []
+    }
+  },
+  "freshness_as_of": "",
+  "freshness_by_leaf": [],
+  "hop_profile": {
+    "hop_limit": 4,
+    "long_hop_targets": [],
+    "max_hop_count": 0,
+    "root_entity": "entity.jaffle_order",
+    "targets": {}
+  },
+  "logical_plan": {
+    "bound_measures": [
+      {
+        "aggregation": "sum",
+        "aggregation_params": {},
+        "alias": "leaf__measure_jaffle_revenue_usd__sum",
+        "filter_spec": {},
+        "measure_id": "measure.jaffle.revenue_usd",
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "window_spec": {}
+      },
+      {
+        "aggregation": "sum",
+        "aggregation_params": {},
+        "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+        "filter_spec": {
+          "all": [
+            {
+              "expression": {
+                "entity": "entity.jaffle_order",
+                "input": {
+                  "measure": "measure.jaffle.revenue_usd"
+                },
+                "kind": "metric_predicate",
+                "op": ">=",
+                "scope_mode": "contextual",
+                "value": 50
+              }
+            }
+          ]
+        },
+        "measure_id": "measure.jaffle.revenue_usd",
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "window_spec": {}
+      }
+    ],
+    "candidate_paths": {},
+    "disabled_options": [],
+    "fanout_strategy": {
+      "leaf_paths": {
+        "measure.jaffle.revenue_usd": []
+      },
+      "root_paths": {},
+      "status": "ok"
+    },
+    "grain_analysis": {
+      "group_by": [],
+      "leaf_grains": {
+        "measure.jaffle.revenue_usd": [
+          "temporal_role.jaffle_order_time__month"
+        ]
+      },
+      "measure_entities": [
+        "entity.jaffle_order"
+      ],
+      "root_entity": "entity.jaffle_order",
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      }
+    },
+    "group_by": [],
+    "measure_plans": [
+      {
+        "aggregate_relation_id": "",
+        "aggregate_relation_rejections": {},
+        "bound_measure": {
+          "aggregation": "sum",
+          "aggregation_params": {},
+          "alias": "leaf__measure_jaffle_revenue_usd__sum",
+          "filter_spec": {},
+          "measure_id": "measure.jaffle.revenue_usd",
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "window_spec": {}
+        },
+        "cte_name": "leaf_1",
+        "grain_keys": [
+          "temporal_role.jaffle_order_time__month"
+        ],
+        "path_selections": [],
+        "required_entities": [
+          "entity.jaffle_order"
+        ],
+        "rewrite_strategy": "direct",
+        "source_entity": "entity.jaffle_order"
+      },
+      {
+        "aggregate_relation_id": "",
+        "aggregate_relation_rejections": {},
+        "bound_measure": {
+          "aggregation": "sum",
+          "aggregation_params": {},
+          "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+          "filter_spec": {
+            "all": [
+              {
+                "expression": {
+                  "entity": "entity.jaffle_order",
+                  "input": {
+                    "measure": "measure.jaffle.revenue_usd"
+                  },
+                  "kind": "metric_predicate",
+                  "op": ">=",
+                  "scope_mode": "contextual",
+                  "value": 50
+                }
+              }
+            ]
+          },
+          "measure_id": "measure.jaffle.revenue_usd",
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "window_spec": {}
+        },
+        "cte_name": "leaf_2",
+        "grain_keys": [
+          "temporal_role.jaffle_order_time__month"
+        ],
+        "path_selections": [],
+        "required_entities": [
+          "entity.jaffle_order"
+        ],
+        "rewrite_strategy": "direct",
+        "source_entity": "entity.jaffle_order"
+      }
+    ],
+    "post_aggregation_exprs": {
+      "large_order_revenue_usd": {
+        "aggregation": "sum",
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.revenue_usd",
+        "predicates": [
+          {
+            "entity": "entity.jaffle_order",
+            "measure": "measure.jaffle.revenue_usd",
+            "op": ">=",
+            "value": 50
+          }
+        ],
+        "temporal_role": ""
+      },
+      "revenue_usd": {
+        "aggregation": "",
+        "kind": "measure",
+        "measure": "measure.jaffle.revenue_usd",
+        "temporal_role": ""
+      }
+    },
+    "query": {
+      "debug": false,
+      "explain": false,
+      "export": false,
+      "group_by": [],
+      "limit": null,
+      "metric_filters": [],
+      "order_by": [
+        {
+          "direction": "ASC",
+          "field": "temporal_role.jaffle_order_time__month"
+        }
+      ],
+      "path_policy": {
+        "ask_if_ambiguous": true,
+        "preference": "fewest_hops"
+      },
+      "select": [
+        {
+          "as": "revenue_usd",
+          "expression": {
+            "aggregation": "",
+            "kind": "measure",
+            "measure": "measure.jaffle.revenue_usd",
+            "temporal_role": ""
+          }
+        },
+        {
+          "as": "large_order_revenue_usd",
+          "expression": {
+            "aggregation": "sum",
+            "kind": "scoped_aggregate",
+            "measure": "measure.jaffle.revenue_usd",
+            "predicates": [
+              {
+                "entity": "entity.jaffle_order",
+                "measure": "measure.jaffle.revenue_usd",
+                "op": ">=",
+                "value": 50
+              }
+            ],
+            "temporal_role": ""
+          }
+        }
+      ],
+      "temporal_role_overrides": {},
+      "time": {
+        "calendar_id": "default",
+        "end": null,
+        "fill": false,
+        "grain": "month",
+        "start": null,
+        "temporal_role": "temporal_role.jaffle_order_time"
+      },
+      "version": 1,
+      "where": []
+    },
+    "resolved_ids": {
+      "group_by": [],
+      "select": [
+        {
+          "alias": "revenue_usd",
+          "expression": {
+            "aggregation": "",
+            "kind": "measure",
+            "measure": "measure.jaffle.revenue_usd",
+            "temporal_role": ""
+          }
+        },
+        {
+          "alias": "large_order_revenue_usd",
+          "expression": {
+            "aggregation": "sum",
+            "kind": "scoped_aggregate",
+            "measure": "measure.jaffle.revenue_usd",
+            "predicates": [
+              {
+                "entity": "entity.jaffle_order",
+                "measure": "measure.jaffle.revenue_usd",
+                "op": ">=",
+                "value": 50
+              }
+            ],
+            "temporal_role": ""
+          }
+        }
+      ],
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "where": []
+    },
+    "rewrite_steps": [],
+    "root_entity": "entity.jaffle_order",
+    "selected_paths": {},
+    "semantic_dag": {
+      "nodes": [
+        {
+          "details": {
+            "aggregation": "sum",
+            "entity": "entity.jaffle_order",
+            "measure": "measure.jaffle.revenue_usd",
+            "temporal_roles": [
+              "temporal_role.jaffle_order_time"
+            ]
+          },
+          "id": "source_leaf_1",
+          "inputs": [],
+          "kind": "SourceLeaf",
+          "label": "revenue_usd"
+        },
+        {
+          "details": {
+            "aggregation": "sum",
+            "entity": "entity.jaffle_order",
+            "measure": "measure.jaffle.revenue_usd",
+            "where": []
+          },
+          "id": "source_leaf_2",
+          "inputs": [],
+          "kind": "SourceLeaf",
+          "label": "large_order_revenue_usd"
+        },
+        {
+          "details": {
+            "entity": "entity.jaffle_order",
+            "measure": "measure.jaffle.revenue_usd",
+            "op": ">=",
+            "value": 50
+          },
+          "id": "predicate_set_3",
+          "inputs": [],
+          "kind": "PredicateSet",
+          "label": "metric_predicate"
+        },
+        {
+          "details": {
+            "entity": "entity.jaffle_order",
+            "time_alignment": ""
+          },
+          "id": "scoped_semijoin_4",
+          "inputs": [
+            "source_leaf_2",
+            "predicate_set_3"
+          ],
+          "kind": "ScopedSemiJoin",
+          "label": ""
+        },
+        {
+          "details": {
+            "keys": [
+              "temporal_role.jaffle_order_time__month"
+            ]
+          },
+          "id": "multi_fact_align",
+          "inputs": [
+            "source_leaf_1",
+            "scoped_semijoin_4"
+          ],
+          "kind": "MultiFactAlign",
+          "label": ""
+        },
+        {
+          "details": {
+            "outputs": {
+              "large_order_revenue_usd": "scoped_semijoin_4",
+              "revenue_usd": "source_leaf_1"
+            }
+          },
+          "id": "final_project",
+          "inputs": [
+            "source_leaf_1",
+            "scoped_semijoin_4"
+          ],
+          "kind": "FinalProject",
+          "label": ""
+        }
+      ],
+      "outputs": {
+        "large_order_revenue_usd": "scoped_semijoin_4",
+        "revenue_usd": "source_leaf_1"
+      },
+      "version": 1
+    },
+    "synthetic_measures": {},
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_order_time"
+    },
+    "version": 2
+  },
+  "methodology_hints": [],
+  "normalized_query": {
+    "debug": false,
+    "explain": false,
+    "export": false,
+    "group_by": [],
+    "limit": null,
+    "metric_filters": [],
+    "order_by": [
+      {
+        "direction": "ASC",
+        "field": "temporal_role.jaffle_order_time__month"
+      }
+    ],
+    "path_policy": {
+      "ask_if_ambiguous": true,
+      "preference": "fewest_hops"
+    },
+    "select": [
+      {
+        "as": "revenue_usd",
+        "expression": {
+          "aggregation": "",
+          "kind": "measure",
+          "measure": "measure.jaffle.revenue_usd",
+          "temporal_role": ""
+        }
+      },
+      {
+        "as": "large_order_revenue_usd",
+        "expression": {
+          "aggregation": "sum",
+          "kind": "scoped_aggregate",
+          "measure": "measure.jaffle.revenue_usd",
+          "predicates": [
+            {
+              "entity": "entity.jaffle_order",
+              "measure": "measure.jaffle.revenue_usd",
+              "op": ">=",
+              "value": 50
+            }
+          ],
+          "temporal_role": ""
+        }
+      }
+    ],
+    "temporal_role_overrides": {},
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_order_time"
+    },
+    "version": 1,
+    "where": []
+  },
+  "ok": true,
+  "output_columns": [
+    {
+      "display_label": "Order time",
+      "field": "temporal_role.jaffle_order_time__month",
+      "semantic_id": "temporal_role.jaffle_order_time",
+      "sql_alias": "temporal_role.jaffle_order_time__month",
+      "type": "time"
+    },
+    {
+      "display_label": "Revenue (USD)",
+      "field": "revenue_usd",
+      "semantic_id": "measure.jaffle.revenue_usd",
+      "sql_alias": "revenue_usd",
+      "type": "currency"
+    },
+    {
+      "display_label": "large_order_revenue_usd",
+      "field": "large_order_revenue_usd",
+      "semantic_id": "",
+      "sql_alias": "large_order_revenue_usd",
+      "type": ""
+    }
+  ],
+  "policy_effects": [],
+  "provenance_summary": {
+    "policy_effects": [],
+    "rewrite_status": "direct",
+    "root_entity": "entity.jaffle_order",
+    "selected_paths": [],
+    "time": {
+      "calendar_id": "default",
+      "end": null,
+      "fill": false,
+      "grain": "month",
+      "start": null,
+      "temporal_role": "temporal_role.jaffle_order_time"
+    }
+  },
+  "query": {
+    "order_by": [
+      {
+        "direction": "ASC",
+        "field": "temporal_role.jaffle_order_time__month"
+      }
+    ],
+    "select": [
+      {
+        "as": "revenue_usd",
+        "expression": {
+          "measure": "measure.jaffle.revenue_usd"
+        }
+      },
+      {
+        "as": "large_order_revenue_usd",
+        "expression": {
+          "aggregation": "sum",
+          "kind": "scoped_aggregate",
+          "measure": "measure.jaffle.revenue_usd",
+          "predicates": [
+            {
+              "entity": "entity.jaffle_order",
+              "measure": "measure.jaffle.revenue_usd",
+              "op": ">=",
+              "value": 50
+            }
+          ]
+        }
+      }
+    ],
+    "time": {
+      "grain": "month",
+      "temporal_role": "temporal_role.jaffle_order_time"
+    },
+    "version": 1
+  },
+  "query_ir_hints": [],
+  "recovery_hints": [],
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  base.m2 AS large_order_revenue_usd\nFROM combined_2 AS base\nORDER BY\n  t ASC",
+  "request_context": {},
+  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
+  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
+  "sql_plan": {
+    "ctes": [
+      {
+        "name": "leaf_1",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "",
+            "name": "comparison_orders"
+          },
+          "group_by": [
+            {
+              "args": [
+                {
+                  "value": "month"
+                },
+                {
+                  "expr": {
+                    "parts": [
+                      "comparison_orders",
+                      "ordered_at"
+                    ]
+                  },
+                  "type_name": "TIMESTAMP"
+                }
+              ],
+              "distinct": false,
+              "name": "DATE_TRUNC"
+            }
+          ],
+          "having": [],
+          "joins": [],
+          "limit": null,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "t",
+              "expression": {
+                "args": [
+                  {
+                    "value": "month"
+                  },
+                  {
+                    "expr": {
+                      "parts": [
+                        "comparison_orders",
+                        "ordered_at"
+                      ]
+                    },
+                    "type_name": "TIMESTAMP"
+                  }
+                ],
+                "distinct": false,
+                "name": "DATE_TRUNC"
+              }
+            },
+            {
+              "alias": "m1",
+              "expression": {
+                "args": [
+                  {
+                    "left": {
+                      "parts": [
+                        "comparison_orders",
+                        "order_total_cents"
+                      ]
+                    },
+                    "op": "/",
+                    "right": {
+                      "value": 100.0
+                    }
+                  }
+                ],
+                "distinct": false,
+                "name": "SUM"
+              }
+            }
+          ],
+          "where": []
+        }
+      },
+      {
+        "name": "leaf_2",
+        "query": {
+          "ctes": [
+            {
+              "name": "leaf_2__revenue_usd_order_month_source_1",
+              "query": {
+                "ctes": [
+                  {
+                    "name": "leaf_2__revenue_usd_order_month_source_1__leaf_1",
+                    "query": {
+                      "ctes": [],
+                      "distinct": false,
+                      "from_table": {
+                        "alias": "",
+                        "name": "comparison_orders"
+                      },
+                      "group_by": [
+                        {
+                          "parts": [
+                            "comparison_orders",
+                            "order_id"
+                          ]
+                        },
+                        {
+                          "args": [
+                            {
+                              "value": "month"
+                            },
+                            {
+                              "expr": {
+                                "parts": [
+                                  "comparison_orders",
+                                  "ordered_at"
+                                ]
+                              },
+                              "type_name": "TIMESTAMP"
+                            }
+                          ],
+                          "distinct": false,
+                          "name": "DATE_TRUNC"
+                        }
+                      ],
+                      "having": [],
+                      "joins": [],
+                      "limit": null,
+                      "order_by": [],
+                      "qualify": [],
+                      "select": [
+                        {
+                          "alias": "g1",
+                          "expression": {
+                            "parts": [
+                              "comparison_orders",
+                              "order_id"
+                            ]
+                          }
+                        },
+                        {
+                          "alias": "t",
+                          "expression": {
+                            "args": [
+                              {
+                                "value": "month"
+                              },
+                              {
+                                "expr": {
+                                  "parts": [
+                                    "comparison_orders",
+                                    "ordered_at"
+                                  ]
+                                },
+                                "type_name": "TIMESTAMP"
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "DATE_TRUNC"
+                          }
+                        },
+                        {
+                          "alias": "m1",
+                          "expression": {
+                            "args": [
+                              {
+                                "left": {
+                                  "parts": [
+                                    "comparison_orders",
+                                    "order_total_cents"
+                                  ]
+                                },
+                                "op": "/",
+                                "right": {
+                                  "value": 100.0
+                                }
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "SUM"
+                          }
+                        }
+                      ],
+                      "where": []
+                    }
+                  }
+                ],
+                "distinct": false,
+                "from_table": {
+                  "alias": "base",
+                  "name": "leaf_2__revenue_usd_order_month_source_1__leaf_1"
+                },
+                "group_by": [],
+                "having": [],
+                "joins": [],
+                "limit": null,
+                "order_by": [],
+                "qualify": [],
+                "select": [
+                  {
+                    "alias": "dimension.jaffle_order_id",
+                    "expression": {
+                      "parts": [
+                        "base",
+                        "g1"
+                      ]
+                    }
+                  },
+                  {
+                    "alias": "t",
+                    "expression": {
+                      "parts": [
+                        "base",
+                        "t"
+                      ]
+                    }
+                  },
+                  {
+                    "alias": "__predicate_value",
+                    "expression": {
+                      "parts": [
+                        "base",
+                        "m1"
+                      ]
+                    }
+                  }
+                ],
+                "where": []
+              }
+            },
+            {
+              "name": "leaf_2__qualified_orders_month_by_revenue_usd_1",
+              "query": {
+                "ctes": [],
+                "distinct": true,
+                "from_table": {
+                  "alias": "predicate_source",
+                  "name": "leaf_2__revenue_usd_order_month_source_1"
+                },
+                "group_by": [],
+                "having": [],
+                "joins": [],
+                "limit": null,
+                "order_by": [],
+                "qualify": [],
+                "select": [
+                  {
+                    "alias": "dimension.jaffle_order_id",
+                    "expression": {
+                      "parts": [
+                        "predicate_source",
+                        "dimension.jaffle_order_id"
+                      ]
+                    }
+                  },
+                  {
+                    "alias": "t",
+                    "expression": {
+                      "parts": [
+                        "predicate_source",
+                        "t"
+                      ]
+                    }
+                  }
+                ],
+                "where": [
+                  {
+                    "left": {
+                      "parts": [
+                        "predicate_source",
+                        "__predicate_value"
+                      ]
+                    },
+                    "op": ">=",
+                    "right": {
+                      "value": 50
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "distinct": false,
+          "from_table": {
+            "alias": "",
+            "name": "comparison_orders"
+          },
+          "group_by": [
+            {
+              "args": [
+                {
+                  "value": "month"
+                },
+                {
+                  "expr": {
+                    "parts": [
+                      "comparison_orders",
+                      "ordered_at"
+                    ]
+                  },
+                  "type_name": "TIMESTAMP"
+                }
+              ],
+              "distinct": false,
+              "name": "DATE_TRUNC"
+            }
+          ],
+          "having": [],
+          "joins": [
+            {
+              "join_type": "INNER",
+              "on": {
+                "left": {
+                  "left": {
+                    "parts": [
+                      "comparison_orders",
+                      "order_id"
+                    ]
+                  },
+                  "op": "=",
+                  "right": {
+                    "parts": [
+                      "leaf_2__qualified_orders_month_by_revenue_usd_1",
+                      "dimension.jaffle_order_id"
+                    ]
+                  }
+                },
+                "op": "AND",
+                "right": {
+                  "left": {
+                    "args": [
+                      {
+                        "value": "month"
+                      },
+                      {
+                        "expr": {
+                          "parts": [
+                            "comparison_orders",
+                            "ordered_at"
+                          ]
+                        },
+                        "type_name": "TIMESTAMP"
+                      }
+                    ],
+                    "distinct": false,
+                    "name": "DATE_TRUNC"
+                  },
+                  "op": "=",
+                  "right": {
+                    "parts": [
+                      "leaf_2__qualified_orders_month_by_revenue_usd_1",
+                      "t"
+                    ]
+                  }
+                }
+              },
+              "table": {
+                "alias": "",
+                "name": "leaf_2__qualified_orders_month_by_revenue_usd_1"
+              }
+            }
+          ],
+          "limit": null,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "t",
+              "expression": {
+                "args": [
+                  {
+                    "value": "month"
+                  },
+                  {
+                    "expr": {
+                      "parts": [
+                        "comparison_orders",
+                        "ordered_at"
+                      ]
+                    },
+                    "type_name": "TIMESTAMP"
+                  }
+                ],
+                "distinct": false,
+                "name": "DATE_TRUNC"
+              }
+            },
+            {
+              "alias": "m2",
+              "expression": {
+                "args": [
+                  {
+                    "left": {
+                      "parts": [
+                        "comparison_orders",
+                        "order_total_cents"
+                      ]
+                    },
+                    "op": "/",
+                    "right": {
+                      "value": 100.0
+                    }
+                  }
+                ],
+                "distinct": false,
+                "name": "SUM"
+              }
+            }
+          ],
+          "where": []
+        }
+      },
+      {
+        "name": "combined_2",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "left_side",
+            "name": "leaf_1"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [
+            {
+              "join_type": "FULL OUTER",
+              "on": {
+                "left": {
+                  "parts": [
+                    "left_side",
+                    "t"
+                  ]
+                },
+                "op": "IS NOT DISTINCT FROM",
+                "right": {
+                  "parts": [
+                    "right_side",
+                    "t"
+                  ]
+                }
+              },
+              "table": {
+                "alias": "right_side",
+                "name": "leaf_2"
+              }
+            }
+          ],
+          "limit": null,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "t",
+              "expression": {
+                "args": [
+                  {
+                    "parts": [
+                      "left_side",
+                      "t"
+                    ]
+                  },
+                  {
+                    "parts": [
+                      "right_side",
+                      "t"
+                    ]
+                  }
+                ],
+                "distinct": false,
+                "name": "COALESCE"
+              }
+            },
+            {
+              "alias": "m1",
+              "expression": {
+                "parts": [
+                  "left_side",
+                  "m1"
+                ]
+              }
+            },
+            {
+              "alias": "m2",
+              "expression": {
+                "parts": [
+                  "right_side",
+                  "m2"
+                ]
+              }
+            }
+          ],
+          "where": []
+        }
+      }
+    ],
+    "distinct": false,
+    "from_table": {
+      "alias": "base",
+      "name": "combined_2"
+    },
+    "group_by": [],
+    "having": [],
+    "joins": [],
+    "limit": null,
+    "order_by": [
+      {
+        "direction": "ASC",
+        "expression": {
+          "parts": [
+            "t"
+          ]
+        }
+      }
+    ],
+    "qualify": [],
+    "select": [
+      {
+        "alias": "temporal_role.jaffle_order_time__month",
+        "expression": {
+          "parts": [
+            "base",
+            "t"
+          ]
+        }
+      },
+      {
+        "alias": "revenue_usd",
+        "expression": {
+          "parts": [
+            "base",
+            "m1"
+          ]
+        }
+      },
+      {
+        "alias": "large_order_revenue_usd",
+        "expression": {
+          "parts": [
+            "base",
+            "m2"
+          ]
+        }
+      }
+    ],
+    "where": []
+  },
+  "sql_profile": "audit",
+  "status": "ok",
+  "trace": {
+    "fallback": {
+      "reason": "",
+      "semantic_drift": false,
+      "used": false
+    },
+    "intent_slots": {
+      "filters": [],
+      "grouping": [],
+      "qualification": [],
+      "target": [],
+      "time": {}
+    },
+    "markdown": "### Semantic Trace\n- Target: measure.jaffle.revenue_usd\n- Grouping: no grouping\n- Filters: 0\n- Relationship paths: 0\n- SQL: available",
+    "selected": {
+      "filters": [],
+      "group_by": [],
+      "paths": [],
+      "rewrite_status": "",
+      "root_entity": "entity.jaffle_order",
+      "sql_available": true,
+      "subjects": [
+        "measure.jaffle.revenue_usd"
+      ]
+    }
+  },
+  "warehouse": "duckdb",
+  "warehouse_capabilities": {
+    "date_diff": true,
+    "date_trunc": true,
+    "median": true,
+    "null_safe_equality": true,
+    "percentile_cont": true,
+    "qualify": false,
+    "snapshot_row_selection": "aggregate_join",
+    "timestamp_type": "TIMESTAMP"
+  },
+  "warnings": []
+}

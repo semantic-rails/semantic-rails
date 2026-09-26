@@ -108,12 +108,13 @@ def main() -> None:
             target_dir = RESULTS_DIR / question_id
 
             validated = runtime.validate(query)
-            explained = runtime.compile(query)
-            result = runtime.query(query) if validated.get("ok") else {"query": query}
-
             _write_json(target_dir / "query.json", query)
             _write_json(target_dir / "validate.json", validated)
-            _write_json(target_dir / "explain.json", explained)
+            # A query the engine refuses is recorded with its validation errors, not compiled.
+            result = {"query": query}
+            if validated.get("ok"):
+                _write_json(target_dir / "explain.json", runtime.compile(query))
+                result = runtime.query(query)
             _write_json(target_dir / "result.json", result)
             if "rendered_sql" in result:
                 _write_text(target_dir / "sql.sql", str(result["rendered_sql"]))

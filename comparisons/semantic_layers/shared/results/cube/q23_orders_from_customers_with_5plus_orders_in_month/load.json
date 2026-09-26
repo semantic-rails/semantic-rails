@@ -1,0 +1,62 @@
+{
+  "schema": [
+    {
+      "name": "month",
+      "column_type": "Timestamp"
+    },
+    {
+      "name": "qualifying_orders",
+      "column_type": "Int64"
+    }
+  ],
+  "data": [
+    {
+      "month": "2016-09-01T00:00:00.000",
+      "qualifying_orders": "1145"
+    },
+    {
+      "month": "2016-10-01T00:00:00.000",
+      "qualifying_orders": "1524"
+    },
+    {
+      "month": "2016-11-01T00:00:00.000",
+      "qualifying_orders": "2117"
+    },
+    {
+      "month": "2016-12-01T00:00:00.000",
+      "qualifying_orders": "2650"
+    },
+    {
+      "month": "2017-01-01T00:00:00.000",
+      "qualifying_orders": "3202"
+    },
+    {
+      "month": "2017-02-01T00:00:00.000",
+      "qualifying_orders": "3092"
+    },
+    {
+      "month": "2017-03-01T00:00:00.000",
+      "qualifying_orders": "5636"
+    },
+    {
+      "month": "2017-04-01T00:00:00.000",
+      "qualifying_orders": "6168"
+    },
+    {
+      "month": "2017-05-01T00:00:00.000",
+      "qualifying_orders": "7515"
+    },
+    {
+      "month": "2017-06-01T00:00:00.000",
+      "qualifying_orders": "7309"
+    },
+    {
+      "month": "2017-07-01T00:00:00.000",
+      "qualifying_orders": "6899"
+    },
+    {
+      "month": "2017-08-01T00:00:00.000",
+      "qualifying_orders": "8277"
+    }
+  ]
+}

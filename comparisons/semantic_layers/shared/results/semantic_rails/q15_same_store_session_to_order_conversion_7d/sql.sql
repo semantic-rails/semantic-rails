@@ -26,7 +26,7 @@ SELECT
   converted_events.__converted_event_key AS __converted_event_key,
   ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank
 FROM conversion_leaf_1__conversion_base_1 AS base_events
-LEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND DATE_DIFF('day', CAST(base_events.__base_event_time AS TIMESTAMP), CAST(converted_events.__converted_event_time AS TIMESTAMP)) <= 7 AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1 AND base_events.__property_1 IS NOT DISTINCT FROM converted_events.__property_1
+LEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND CAST(converted_events.__converted_event_time AS TIMESTAMP) < DATE_ADD(CAST(base_events.__base_event_time AS TIMESTAMP), INTERVAL (7) DAY) AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1 AND base_events.__property_1 IS NOT DISTINCT FROM converted_events.__property_1
 ),
 conversion_leaf_1 AS (
 SELECT

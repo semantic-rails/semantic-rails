@@ -1,10 +1,10 @@
 {
-  "answer_key_fingerprint": "f383e43db312d78db83e9ef2de4176ffece86264603d9b2d8afa0192dd0774fd",
+  "answer_key_fingerprint": "e46d16dc113b0e0fc8997f39752beb77d13b7f1f7f98686e51c1395329f4bcad",
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "environment": {
     "duckdb": "1.5.3"
   },
-  "generated_at": "2026-09-23T02:57:04+00:00",
+  "generated_at": "2026-09-26T02:01:57+00:00",
   "layer": "answer_key",
   "questions": [
     {
@@ -117,6 +117,62 @@
       "result_path": "comparisons/semantic_layers/shared/results/oracle/q16_revenue_by_customer_segment_as_of_delivered_time/result.json",
       "row_count": 32,
       "sql_path": "comparisons/semantic_layers/shared/oracle/q16_revenue_by_customer_segment_as_of_delivered_time.sql",
+      "status": "executed"
+    },
+    {
+      "question_id": "q17_session_to_order_conversion_14d",
+      "result_path": "comparisons/semantic_layers/shared/results/oracle/q17_session_to_order_conversion_14d/result.json",
+      "row_count": 1,
+      "sql_path": "comparisons/semantic_layers/shared/oracle/q17_session_to_order_conversion_14d.sql",
+      "status": "executed"
+    },
+    {
+      "question_id": "q18_same_store_session_to_order_conversion_50m",
+      "result_path": "comparisons/semantic_layers/shared/results/oracle/q18_same_store_session_to_order_conversion_50m/result.json",
+      "row_count": 1,
+      "sql_path": "comparisons/semantic_layers/shared/oracle/q18_same_store_session_to_order_conversion_50m.sql",
+      "status": "executed"
+    },
+    {
+      "question_id": "q19_trailing_3_month_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/oracle/q19_trailing_3_month_revenue_by_month/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/oracle/q19_trailing_3_month_revenue_by_month.sql",
+      "status": "executed"
+    },
+    {
+      "question_id": "q20_revenue_and_prior_month_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/oracle/q20_revenue_and_prior_month_revenue_by_month/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/oracle/q20_revenue_and_prior_month_revenue_by_month.sql",
+      "status": "executed"
+    },
+    {
+      "question_id": "q21_revenue_and_large_order_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/oracle/q21_revenue_and_large_order_revenue_by_month/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/oracle/q21_revenue_and_large_order_revenue_by_month.sql",
+      "status": "executed"
+    },
+    {
+      "question_id": "q22_average_and_max_item_revenue_by_product_type_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/oracle/q22_average_and_max_item_revenue_by_product_type_by_month/result.json",
+      "row_count": 24,
+      "sql_path": "comparisons/semantic_layers/shared/oracle/q22_average_and_max_item_revenue_by_product_type_by_month.sql",
+      "status": "executed"
+    },
+    {
+      "question_id": "q23_orders_from_customers_with_5plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/oracle/q23_orders_from_customers_with_5plus_orders_in_month/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/oracle/q23_orders_from_customers_with_5plus_orders_in_month.sql",
+      "status": "executed"
+    },
+    {
+      "question_id": "q24_orders_by_month_with_lifetime_spend_1000_filter",
+      "result_path": "comparisons/semantic_layers/shared/results/oracle/q24_orders_by_month_with_lifetime_spend_1000_filter/result.json",
+      "row_count": 12,
+      "sql_path": "comparisons/semantic_layers/shared/oracle/q24_orders_by_month_with_lifetime_spend_1000_filter.sql",
       "status": "executed"
     }
   ]

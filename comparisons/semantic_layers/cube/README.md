@@ -1,7 +1,8 @@
 # Cube Comparison Pack
 
 Cube Core runs live on the shared DuckDB, with its model under `model/cubes/` (one cube per
-file) and one REST query per question under `queries/`.
+file) and one query per question under `queries/`: a REST query (`.json`), or an SQL API query
+(`.sql`) for three frozen-model questions.
 
 - `@cubejs-backend/server` `1.7.45` and `@cubejs-backend/duckdb-driver` `1.7.45` (exact
   versions in `package.json`, locked in `package-lock.json`); the driver runs DuckDB through
@@ -55,8 +56,8 @@ python3 comparisons/semantic_layers/cube/scripts/verify_evidence.py --record   #
 cd comparisons/semantic_layers/cube && CUBEJS_API_SECRET="$(openssl rand -hex 32)" npm start
 ```
 
-Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sql`, `/load`).
-`index.js` fixes everything else:
+Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sql`, `/load`,
+and `/cubesql` for SQL API queries). `index.js` fixes everything else:
 
 - Production mode: no dev server or Playground (it refuses to start with `CUBEJS_DEV_MODE` set or a
   `.env` file present), and every request needs an `Authorization` header carrying an HS256 JWT
@@ -69,6 +70,11 @@ Cube serves its REST API at `http://localhost:4000/cubejs-api/v1` (`/meta`, `/sq
 - DuckDB opens `:memory:` and attaches `../shared/data/jaffle_comparison.duckdb` read-only
   through the driver's `initSql` option (its documented settings have no read-only mode).
   While Cube runs, other processes can open the file read-only, but not read-write.
+- The SQL API is on, because `/cubesql` needs it. Cube starts it only with a Postgres-protocol
+  port, so it also listens on port 15432 on every interface, with user `cube` and a random
+  password generated at each start and never shown; the runner uses only `/cubesql`, with the
+  same JWT. An SQL API query whose post-processing would truncate a result above Cube's row
+  limit fails instead (`CUBESQL_FAIL_ON_LIMITLESS_POST_PROCESSING`).
 - An in-memory cache and queue, no Cube Store and no pre-aggregations. Cube caches each result
   in memory and re-checks it every 10 seconds; pass `cache=no-cache` on `/load` to skip it.
 - Overrides when started by hand: `PORT` and `CUBE_DUCKDB_PATH` (another DuckDB file).
@@ -82,7 +88,8 @@ uv run python comparisons/semantic_layers/cube/scripts/run_questions.py
 The runner starts `node index.js` with a fresh random API secret and no other environment than
 `PATH`, `HOME` and `TMPDIR`, so no inherited `CUBEJS_*`, `PORT` or `CUBE_DUCKDB_PATH` setting
 changes the run. It waits for `/meta`, saves `/sql` and `/load` for each query under
-`shared/results/cube/`, and stops Cube, killing it if it hasn't exited 30 seconds after the
+`shared/results/cube/` (for an SQL API query, `/sql` with `format=sql` and the `/cubesql`
+rows in `/load`'s shape), and stops Cube, killing it if it hasn't exited 30 seconds after the
 stop signal. `summary.json` records the versions, the dataset
 fingerprint and whether each question executed; the rubric assigns the labels.
 
@@ -110,6 +117,18 @@ Every cube reads one `comparison_*` view with `sql_table`; the model has no SQL-
 - q11, q12: subquery dimensions on `customers` compute each customer's lifetime order count and
   spend from the `orders` measures, and the queries filter on them. The precomputed
   `lifetime_*` columns of `comparison_customers` aren't read.
+
+- q17-q24, the frozen-model questions, run with this model unchanged. q24 is q12's REST query
+  with a 1000 USD threshold. q19, q20 and q23 are SQL API queries that wrap a Cube query in SQL:
+  a moving sum and `LAG` over monthly revenue, and a filter on each customer-month's order
+  count; Cube pushes each one down to DuckDB whole. They are `workaround` in the rubric, since
+  the logic is SQL around Cube's members. The moving sum and `LAG` step over month rows, which
+  equals the calendar rule only because every month has orders (the SQL API refuses a `RANGE`
+  frame with an interval). q17, q18, q21 and q22 need a model change: the 7-day window is on a
+  declared join and the SQL API refuses a non-equality join between two Cube queries; filtered
+  measures and measure types are set in the model; and the primary keys an SQL API query would
+  group by per session, order or item are hidden unless marked public
+  (`../shared/frozen_model.yml` has each reason and its documentation).
 
 ## Workarounds
 

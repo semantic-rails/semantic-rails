@@ -1,0 +1,12 @@
+// Query-time only: the model (../models/jaffle.malloy) is unchanged.
+import "../models/jaffle.malloy"
+
+// A filtered aggregate over the model's revenue measure.
+query: q21_revenue_and_large_order_revenue_by_month is orders -> {
+  group_by: ordered_month
+  aggregate:
+    revenue_usd
+    large_order_revenue_usd is revenue_usd { where: order_total_cents >= 5000 }
+  order_by: ordered_month asc
+  limit: 5000
+}

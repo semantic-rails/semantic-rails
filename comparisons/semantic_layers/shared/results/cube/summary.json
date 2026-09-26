@@ -6,7 +6,7 @@
     "@duckdb/node-api": "1.5.5-r.5",
     "node": "v24.6.0"
   },
-  "generated_at": "2026-09-25T22:59:56+00:00",
+  "generated_at": "2026-09-26T01:51:19+00:00",
   "layer": "cube",
   "questions": [
     {
@@ -119,6 +119,34 @@
       "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
       "result_path": "comparisons/semantic_layers/shared/results/cube/q16_revenue_by_customer_segment_as_of_delivered_time/load.json",
       "sql_path": "comparisons/semantic_layers/shared/results/cube/q16_revenue_by_customer_segment_as_of_delivered_time/sql.json",
+      "status": "executed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q19_trailing_3_month_revenue_by_month.sql",
+      "question_id": "q19_trailing_3_month_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q19_trailing_3_month_revenue_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q19_trailing_3_month_revenue_by_month/sql.json",
+      "status": "executed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q20_revenue_and_prior_month_revenue_by_month.sql",
+      "question_id": "q20_revenue_and_prior_month_revenue_by_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q20_revenue_and_prior_month_revenue_by_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q20_revenue_and_prior_month_revenue_by_month/sql.json",
+      "status": "executed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q23_orders_from_customers_with_5plus_orders_in_month.sql",
+      "question_id": "q23_orders_from_customers_with_5plus_orders_in_month",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q23_orders_from_customers_with_5plus_orders_in_month/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q23_orders_from_customers_with_5plus_orders_in_month/sql.json",
+      "status": "executed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q24_orders_by_month_with_lifetime_spend_1000_filter.json",
+      "question_id": "q24_orders_by_month_with_lifetime_spend_1000_filter",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q24_orders_by_month_with_lifetime_spend_1000_filter/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q24_orders_by_month_with_lifetime_spend_1000_filter/sql.json",
       "status": "executed"
     }
   ]

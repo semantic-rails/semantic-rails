@@ -1,0 +1,11 @@
+// Query-time only: the model (../models/jaffle.malloy) is unchanged.
+import "../models/jaffle.malloy"
+
+// The previous month row's revenue.
+query: q20_revenue_and_prior_month_revenue_by_month is orders -> {
+  group_by: ordered_month
+  aggregate: revenue_usd
+  calculate: prior_month_revenue_usd is lag(revenue_usd)
+  order_by: ordered_month asc
+  limit: 5000
+}

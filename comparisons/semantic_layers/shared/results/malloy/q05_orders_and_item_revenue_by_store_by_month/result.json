@@ -37,27 +37,27 @@
   },
   {
     "ordered_month": "2017-03-01 00:00:00",
-    "store_name": "Brooklyn",
-    "orders": 2092,
-    "item_revenue_usd": 23902.0
-  },
-  {
-    "ordered_month": "2017-03-01 00:00:00",
     "store_name": "Philadelphia",
     "orders": 3986,
     "item_revenue_usd": 46316.0
   },
   {
-    "ordered_month": "2017-04-01 00:00:00",
+    "ordered_month": "2017-03-01 00:00:00",
     "store_name": "Brooklyn",
-    "orders": 2850,
-    "item_revenue_usd": 34058.0
+    "orders": 2092,
+    "item_revenue_usd": 23902.0
   },
   {
     "ordered_month": "2017-04-01 00:00:00",
     "store_name": "Philadelphia",
     "orders": 3746,
     "item_revenue_usd": 45188.0
+  },
+  {
+    "ordered_month": "2017-04-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 2850,
+    "item_revenue_usd": 34058.0
   },
   {
     "ordered_month": "2017-05-01 00:00:00",
@@ -85,26 +85,26 @@
   },
   {
     "ordered_month": "2017-07-01 00:00:00",
-    "store_name": "Philadelphia",
-    "orders": 3385,
-    "item_revenue_usd": 42347.0
-  },
-  {
-    "ordered_month": "2017-07-01 00:00:00",
     "store_name": "Brooklyn",
     "orders": 4053,
     "item_revenue_usd": 48049.0
   },
   {
-    "ordered_month": "2017-08-01 00:00:00",
-    "store_name": "Brooklyn",
-    "orders": 4940,
-    "item_revenue_usd": 57418.0
+    "ordered_month": "2017-07-01 00:00:00",
+    "store_name": "Philadelphia",
+    "orders": 3385,
+    "item_revenue_usd": 42347.0
   },
   {
     "ordered_month": "2017-08-01 00:00:00",
     "store_name": "Philadelphia",
     "orders": 3802,
     "item_revenue_usd": 44961.0
+  },
+  {
+    "ordered_month": "2017-08-01 00:00:00",
+    "store_name": "Brooklyn",
+    "orders": 4940,
+    "item_revenue_usd": 57418.0
   }
 ]

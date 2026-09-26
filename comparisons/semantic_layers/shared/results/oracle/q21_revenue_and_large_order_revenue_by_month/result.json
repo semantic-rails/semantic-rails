@@ -1,0 +1,62 @@
+[
+  {
+    "month": "2016-09-01",
+    "revenue_usd": 18053.28,
+    "large_order_revenue_usd": 2376.5
+  },
+  {
+    "month": "2016-10-01",
+    "revenue_usd": 21923.95,
+    "large_order_revenue_usd": 2642.57
+  },
+  {
+    "month": "2016-11-01",
+    "revenue_usd": 27916.82,
+    "large_order_revenue_usd": 2192.04
+  },
+  {
+    "month": "2016-12-01",
+    "revenue_usd": 35677.6,
+    "large_order_revenue_usd": 3549.92
+  },
+  {
+    "month": "2017-01-01",
+    "revenue_usd": 45017.95,
+    "large_order_revenue_usd": 5175.9
+  },
+  {
+    "month": "2017-02-01",
+    "revenue_usd": 43358.12,
+    "large_order_revenue_usd": 4959.69
+  },
+  {
+    "month": "2017-03-01",
+    "revenue_usd": 73950.32,
+    "large_order_revenue_usd": 6553.24
+  },
+  {
+    "month": "2017-04-01",
+    "revenue_usd": 83316.99,
+    "large_order_revenue_usd": 9694.4
+  },
+  {
+    "month": "2017-05-01",
+    "revenue_usd": 96070.35,
+    "large_order_revenue_usd": 7801.52
+  },
+  {
+    "month": "2017-06-01",
+    "revenue_usd": 98378.87,
+    "large_order_revenue_usd": 10121.24
+  },
+  {
+    "month": "2017-07-01",
+    "revenue_usd": 94857.19,
+    "large_order_revenue_usd": 12161.11
+  },
+  {
+    "month": "2017-08-01",
+    "revenue_usd": 107371.59,
+    "large_order_revenue_usd": 10629.82
+  }
+]

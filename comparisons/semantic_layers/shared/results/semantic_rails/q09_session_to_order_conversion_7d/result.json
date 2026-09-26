@@ -20,8 +20,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.754,
-      "compile_ms": 0.165,
+      "cache_lookup_ms": 1.125,
+      "compile_ms": 0.19,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -243,6 +243,7 @@
     },
     "performance_plan": {
       "aggregate_routing": {
+        "candidates": [],
         "selected": [],
         "selected_count": 0
       },
@@ -443,7 +444,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,\n  comparison_storefront_sessions.started_at AS __base_event_time,\n  comparison_storefront_sessions.session_id AS __base_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_storefront_sessions\nINNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  comparison_orders.ordered_at AS __converted_event_time,\n  comparison_orders.order_id AS __converted_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_orders\nINNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND DATE_DIFF('day', CAST(base_events.__base_event_time AS TIMESTAMP), CAST(converted_events.__converted_event_time AS TIMESTAMP)) <= 7 AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,\n  comparison_storefront_sessions.started_at AS __base_event_time,\n  comparison_storefront_sessions.session_id AS __base_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_storefront_sessions\nINNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  comparison_orders.ordered_at AS __converted_event_time,\n  comparison_orders.order_id AS __converted_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_orders\nINNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND CAST(converted_events.__converted_event_time AS TIMESTAMP) < DATE_ADD(CAST(base_events.__base_event_time AS TIMESTAMP), INTERVAL (7) DAY) AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -712,10 +713,17 @@
                           "op": "AND",
                           "right": {
                             "left": {
+                              "expr": {
+                                "parts": [
+                                  "converted_events",
+                                  "__converted_event_time"
+                                ]
+                              },
+                              "type_name": "TIMESTAMP"
+                            },
+                            "op": "<",
+                            "right": {
                               "args": [
-                                {
-                                  "value": "day"
-                                },
                                 {
                                   "expr": {
                                     "parts": [
@@ -726,21 +734,14 @@
                                   "type_name": "TIMESTAMP"
                                 },
                                 {
-                                  "expr": {
-                                    "parts": [
-                                      "converted_events",
-                                      "__converted_event_time"
-                                    ]
-                                  },
-                                  "type_name": "TIMESTAMP"
+                                  "unit": "DAY",
+                                  "value": {
+                                    "value": 7
+                                  }
                                 }
                               ],
                               "distinct": false,
-                              "name": "DATE_DIFF"
-                            },
-                            "op": "<=",
-                            "right": {
-                              "value": 7
+                              "name": "DATE_ADD"
                             }
                           }
                         },
@@ -1250,7 +1251,7 @@
     "version": 1
   },
   "recovery_hints": [],
-  "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,\n  comparison_storefront_sessions.started_at AS __base_event_time,\n  comparison_storefront_sessions.session_id AS __base_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_storefront_sessions\nINNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  comparison_orders.ordered_at AS __converted_event_time,\n  comparison_orders.order_id AS __converted_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_orders\nINNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND DATE_DIFF('day', CAST(base_events.__base_event_time AS TIMESTAMP), CAST(converted_events.__converted_event_time AS TIMESTAMP)) <= 7 AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
+  "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,\n  comparison_storefront_sessions.started_at AS __base_event_time,\n  comparison_storefront_sessions.session_id AS __base_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_storefront_sessions\nINNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  comparison_orders.ordered_at AS __converted_event_time,\n  comparison_orders.order_id AS __converted_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_orders\nINNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND CAST(converted_events.__converted_event_time AS TIMESTAMP) < DATE_ADD(CAST(base_events.__base_event_time AS TIMESTAMP), INTERVAL (7) DAY) AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_7d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
   "request_context": {},
   "row_count": 1,
   "rows": [
@@ -1259,8 +1260,8 @@
       "temporal_role.jaffle_session_started_at__month": "2016-09-01 00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
-  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
+  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
+  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
   "sql_plan": {
     "ctes": [
       {
@@ -1463,10 +1464,17 @@
                         "op": "AND",
                         "right": {
                           "left": {
+                            "expr": {
+                              "parts": [
+                                "converted_events",
+                                "__converted_event_time"
+                              ]
+                            },
+                            "type_name": "TIMESTAMP"
+                          },
+                          "op": "<",
+                          "right": {
                             "args": [
-                              {
-                                "value": "day"
-                              },
                               {
                                 "expr": {
                                   "parts": [
@@ -1477,21 +1485,14 @@
                                 "type_name": "TIMESTAMP"
                               },
                               {
-                                "expr": {
-                                  "parts": [
-                                    "converted_events",
-                                    "__converted_event_time"
-                                  ]
-                                },
-                                "type_name": "TIMESTAMP"
+                                "unit": "DAY",
+                                "value": {
+                                  "value": 7
+                                }
                               }
                             ],
                             "distinct": false,
-                            "name": "DATE_DIFF"
-                          },
-                          "op": "<=",
-                          "right": {
-                            "value": 7
+                            "name": "DATE_ADD"
                           }
                         }
                       },

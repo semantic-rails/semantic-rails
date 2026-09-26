@@ -42,6 +42,16 @@ QUESTION_IDS = [
     "q14_revenue_from_customers_with_10plus_orders_same_store_month",
     "q15_same_store_session_to_order_conversion_7d",
     "q16_revenue_by_customer_segment_as_of_delivered_time",
+    # The frozen-model questions: each is a query in its own file (queries/<id>.malloy) that
+    # imports the model, which stays unchanged.
+    "q17_session_to_order_conversion_14d",
+    "q18_same_store_session_to_order_conversion_50m",
+    "q19_trailing_3_month_revenue_by_month",
+    "q20_revenue_and_prior_month_revenue_by_month",
+    "q21_revenue_and_large_order_revenue_by_month",
+    "q22_average_and_max_item_revenue_by_product_type_by_month",
+    "q23_orders_from_customers_with_5plus_orders_in_month",
+    "q24_orders_by_month_with_lifetime_spend_1000_filter",
 ]
 
 
@@ -108,12 +118,14 @@ def main() -> None:
     summary: list[dict[str, object]] = []
     for question_id in QUESTION_IDS:
         target_dir = RESULTS_DIR / question_id
+        query_file = PROJECT_DIR / "queries" / f"{question_id}.malloy"
+        source = query_file if query_file.is_file() else MODEL_PATH
         compile_cmd = [
             str(MALLOY_BIN),
             "-c",
             str(PROJECT_DIR),
             "compile",
-            str(MODEL_PATH),
+            str(source),
             "-n",
             question_id,
         ]
@@ -123,11 +135,11 @@ def main() -> None:
         _write(target_dir / "sql.sql", compiled_sql)
         _write(target_dir / "compile.stderr.txt", compile_out.stderr)
 
-        query_file = PROJECT_DIR / "queries" / f"{question_id}.txt"
-        query_file.parent.mkdir(parents=True, exist_ok=True)
-        query_file.write_text(
-            f"compile -n {question_id}\nexecute compiled SQL in DuckDB\n", encoding="utf-8"
-        )
+        if source == MODEL_PATH:  # a named query in the model
+            query_file = PROJECT_DIR / "queries" / f"{question_id}.txt"
+            query_file.write_text(
+                f"compile -n {question_id}\nexecute compiled SQL in DuckDB\n", encoding="utf-8"
+            )
 
         run_error = ""
         execution_status = compile_out.returncode == 0

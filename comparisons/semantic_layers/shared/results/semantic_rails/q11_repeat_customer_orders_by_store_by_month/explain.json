@@ -101,8 +101,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.189,
-      "compile_ms": 0.262,
+      "cache_lookup_ms": 1.391,
+      "compile_ms": 0.27,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -902,6 +902,7 @@
     },
     "performance_plan": {
       "aggregate_routing": {
+        "candidates": [],
         "selected": [],
         "selected_count": 0
       },
@@ -2619,8 +2620,8 @@
   "recovery_hints": [],
   "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC,\n  g1 ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:c6213e2c285503bca3dfacfa04808a4f8d8f4fb4bac01a9d7537358a3848190a",
-  "source_fingerprint": "45060947cc39ac5bfa88d693d8c97a59da2bbf90443cb73a57cf8aedfe3b604e",
+  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
+  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
   "sql_plan": {
     "ctes": [
       {
