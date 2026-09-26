@@ -143,11 +143,24 @@ def test_a_tie_the_question_names_no_side_of_is_low_confidence(tmp_path: Path) -
     )
 
 
+CUSTOMERS = "measure.jaffle.customer_count"
+
+
 @pytest.mark.parametrize(
-    "question",
-    ["number of customers", "how many customers", "customers", "number of customers by store"],
+    ("question", "measure", "group_by"),
+    [
+        ("number of customers", CUSTOMERS, None),
+        ("how many customers", CUSTOMERS, None),
+        ("customers", CUSTOMERS, None),
+        ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"]),
+        # The measures whose descriptions start "Number of …" still answer their own questions.
+        ("number of active menu items", "measure.jaffle.active_menu_count_eop", None),
+        ("number of stores open", "measure.jaffle.open_store_count_eop", ...),
+    ],
 )
-def test_counting_words_name_the_count_measure(runtime_factory: Any, question: str) -> None:
+def test_counting_words_name_the_count_measure(
+    runtime_factory: Any, question: str, measure: str, group_by: Any
+) -> None:
     """ "number of" and "of" don't tie Customer count with measures described as
     "Number of active menu items…", and the question names Customer count over
     Ordering or Visiting customers."""
@@ -159,5 +172,22 @@ def test_counting_words_name_the_count_measure(runtime_factory: Any, question: s
         runtime.close()
 
     assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    [select] = query["select"]
+    assert select["expression"]["measure"] == measure
+    if group_by is not ...:
+        assert query.get("group_by") == group_by
+
+
+def test_a_whole_name_beats_one_that_adds_count(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, {"customers": "Customers", "customer_count": "Customer count"})
+    try:
+        plan = plan_payload(runtime, intent="customers by month")
+    finally:
+        runtime.close()
+
+    assert plan["status"] == "ok", plan.get("why")
     [select] = plan["best"]["query_ir"]["select"]
-    assert select["expression"]["measure"] == "measure.jaffle.customer_count"
+    assert (select["expression"].get("measure") or select["expression"]["metric"]).endswith(
+        "shop.customers"
+    )

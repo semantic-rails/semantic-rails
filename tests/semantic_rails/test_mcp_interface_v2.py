@@ -367,6 +367,7 @@ def test_removed_v1_tools_point_to_their_replacement(
         == f"The '{tool}' tool was removed with MCP interface v1; use {replacement}."
     )
     assert error["recovery_hints"][0]["message"] == f"Use {replacement} instead."
+    assert not _sends_to_removed_surface(replacement)
 
 
 def test_mcp_doctor_checks_the_v2_tools(runtime: Any, monkeypatch: pytest.MonkeyPatch) -> None:

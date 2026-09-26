@@ -343,7 +343,8 @@ def test_eval_ab_grades_each_arm_on_the_gold_rows(tmp_path, monkeypatch):
     table = eval_ab.summary(out)
     assert "| main | 1 | 0 | 1 | 0 | 0 |" in table and "| head | 1 | 1 | 0 | 0 | 0 |" in table
     assert "head vs main, 1 paired runs: accuracy +100.0 points" in table
-    for bad in ("head=semantic-rails", "a-b=x,c=y", "a=x,b=y,c=z"):
+    # One arm, a bad name, three arms, or resuming with the arms swapped.
+    for bad in ("head=semantic-rails", "a-b=x,c=y", "a=x,b=y,c=z", "head=x,main=y"):
         with pytest.raises(SystemExit):
             eval_ab.main(["run", "--out", str(out), "--model", "m", "--arms", bad])
     refuse, trend = cases["J34"], cases["J01"]

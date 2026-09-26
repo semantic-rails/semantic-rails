@@ -636,11 +636,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="segment",
         description=(
-            "Work with a package-authored segment: action='validate' checks it and the Query IR"
+            "Work with a package-authored segment, after discover finds its id: "
+            "action='validate' checks it and the Query IR"
             " derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows"
             " and the total member count. Default verbosity='minimal' leaves out compiler "
             "plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like "
-            "'segment.jaffle.high_value_customers' (list them first with empty discover terms); "
+            "'segment.jaffle.high_value_customers' (discover with empty terms lists them); "
             "'preview' queries the warehouse."
         ),
         input_schema=_schema(
@@ -767,7 +768,7 @@ _REMOVED_TOOLS = {
     "catalog": "discover with empty terms",
     "capabilities": (
         "plan to draft Query IR (execute's schema lists the expression shapes; "
-        "the HTTP API keeps /api/v1/capabilities)"
+        "the HTTP API keeps capabilities)"
     ),
     "build-options": "plan, then valid-values for filter values (HTTP and the CLI keep it)",
 }

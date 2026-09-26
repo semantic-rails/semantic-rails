@@ -168,7 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--reasoning-effort", default="")
     runner.add_argument("--cases", default="", help="comma-separated case ids (default: all)")
     runner.add_argument(
-        "--arms", required=True, help="baseline,candidate as name=command (names: letters, _)"
+        "--arms",
+        required=True,
+        help="baseline,candidate as name=command (names: letters, digits, _)",
     )
     runner.add_argument("--repeats", type=int, default=1)
     commands.add_parser("grade").add_argument("case")
@@ -190,8 +192,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(
             "--arms takes two name=command arms, baseline first; names are letters, digits, _"
         )
+    order = args.out / "arms.json"
+    if order.exists() and json.loads(order.read_text(encoding="utf-8")) != list(arms):
+        parser.error(f"{args.out} was run with other arms ({order.read_text(encoding='utf-8')})")
     (args.out / "scenarios").mkdir(parents=True, exist_ok=True)
-    (args.out / "arms.json").write_text(json.dumps(list(arms)), encoding="utf-8")
+    order.write_text(json.dumps(list(arms)), encoding="utf-8")
     for index, case_id in enumerate(wanted):
         for repeat in range(args.repeats):
             for arm in list(arms) if index % 2 == 0 else list(arms)[::-1]:
