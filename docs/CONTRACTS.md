@@ -17,7 +17,7 @@ of those exact released bytes, not an independently edited registry.
 | `semantic_contract.v1.json` | Engine | Stable framework-neutral validation payload |
 | `validation_report.v1.json` | Engine | Stable cross-validator report envelope |
 | `http_api.v1.openapi.json` | Engine | Stable `/api/v1` operations and envelope |
-| `query_mcp.v2.json` | Engine | Stable query-MCP tools, resources, prompts, schemas, and annotations (the only interface since 0.3.3) |
+| `query_mcp.v2.json` | Engine | Stable query-MCP tools, resources, prompts, schemas, and annotations (the only interface; v1 was removed) |
 
 The Python distribution version, package schema, Query IR, HTTP API, query MCP,
 semantic contract, and validation-report format are separate version

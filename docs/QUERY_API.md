@@ -271,7 +271,7 @@ The preferred human-like query-building cascade is:
 7. `query`
    Execute once the query is assembled.
 
-`plan` is the agent planning entrypoint. It returns `status`, `intent_ir`, and a validated best Query IR draft by default. In MCP, use `detail: "query"` when the next step is direct execution; it keeps the same planning and validation behavior but omits trace, alternatives, `next`, and compose hints. For advanced runtime-composition requests, drafts may use Query IR nodes such as `ratio`, `scoped_aggregate`, `aggregate_if`, `metric_predicate`, `entity_value`, `distribution`, `between`, and `arithmetic`.
+`plan` is the agent planning entrypoint. It returns `status`, `intent_ir`, and a validated best Query IR draft by default. `detail: "query"` (the MCP default) is for when the next step is direct execution; it keeps the same planning and validation behavior but omits trace, alternatives, `next`, and compose hints. For advanced runtime-composition requests, drafts may use Query IR nodes such as `ratio`, `scoped_aggregate`, `aggregate_if`, `metric_predicate`, `entity_value`, `distribution`, `between`, and `arithmetic`.
 
 ## Compile-Only SQL
 
@@ -328,9 +328,10 @@ anything but the model's single-column row key), the compiler falls back to the
 raw relation.
 
 `validate`, `compile`, and `query` accept a `verbosity` field (`minimal` | `compact` |
-`full`). The HTTP default is `compact`. The MCP adapter defaults the same three tools to
-`minimal` instead, which keeps only `{ok, status, errors, warnings, recovery_hints}` plus
-`rendered_sql` on `compile` and `rows` + `row_count` on `execute` — see
+`full`). The HTTP default is `compact`. Over MCP they are one tool, `execute` with `mode`
+`validate`, `sql` or `run`, which defaults to `minimal` instead: it keeps only
+`{ok, status, errors, warnings, recovery_hints}` plus `rendered_sql` in mode `sql` and
+`rows` + `row_count` in mode `run` — see
 [MCP_INTERFACE.md](MCP_INTERFACE.md). An explicit `verbosity` always wins on both surfaces.
 
 `sql_profile` currently defaults to `audit`. Callers may pass `sql_profile: "compact"` or `sql_profile: "debug"`; unsupported profile-specific rewrites fall back to audit-safe SQL while preserving the requested profile in metadata.

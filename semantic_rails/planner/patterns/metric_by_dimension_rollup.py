@@ -42,6 +42,7 @@ from .._base import (
     _unresolved_time_phrases,
 )
 from ..generators import _matched_value_rows, _target_focus_text
+from ..intent_ir import _FALLBACK_STOPWORDS
 from ._protocol import IntentPattern
 
 # Catch-all patterns return a sub-unity score so the orchestrator
@@ -73,7 +74,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     target_terms = (
         _target_measure_terms(target_focus, target_focus_terms)
         or _target_measure_terms(text, terms)
-        or sorted(target_focus_terms)
+        or sorted(target_focus_terms - _FALLBACK_STOPWORDS)
     )
     group_by = _maybe_group_by(config, text, target_terms=target_terms)
     metric_first = bool(

@@ -130,7 +130,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
                 },
                 "recovery_hints": [
                     "Rephrase the qualification so the predicate names a measure or metric — e.g. 'with at least 4 orders' or 'who placed more than 10 orders'.",
-                    "Inspect available measures via /api/v1/discover?terms=<predicate keyword>.",
+                    "Find available measures with discover, using the predicate keyword as terms.",
                 ],
             },
         )

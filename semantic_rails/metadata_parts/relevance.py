@@ -354,9 +354,9 @@ def _no_viable_candidates_block(
         ),
         "recovery_hint": (
             "Inspect the `blocked` array for specific reason codes "
-            "(PATH_NOT_FOUND, INVALID_QUERY). Use /api/v1/discover to find "
-            "what IS available, or /api/v1/catalog to browse modeled "
-            "entities, measures, and metrics."
+            "(PATH_NOT_FOUND, INVALID_QUERY). Use discover to find what IS "
+            "available, or browse the modeled entities, measures, and metrics "
+            "in the catalog (over MCP, `discover` with empty terms)."
         ),
     }
 

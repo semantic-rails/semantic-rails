@@ -39,7 +39,7 @@ def test_discover_advertises_slim_default_and_full_card_opt_in() -> None:
     properties = discover["inputSchema"]["properties"]
     assert properties["verbosity"]["default"] == "minimal"
     assert properties["verbosity"]["enum"] == ["minimal", "compact", "full"]
-    assert properties["limit"]["default"] == 10
+    assert "default" not in properties["limit"]  # empty terms page at 100 ids by default
 
 
 def test_explicit_minimal_discover_returns_five_slim_cards_per_kind(

@@ -260,8 +260,10 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     ``words`` name a tied row over another when its names (label, key and
     aliases) match every word the other's do and one more, or the same words
     and one of its names whole: "revenue" names Revenue over Item Revenue
-    Cents, "item revenue" the reverse. "revenue before tax" names neither
-    Revenue nor Tax paid, so the first by label stays a guess.
+    Cents, "item revenue" the reverse. A name missing only its "count" is
+    nearly whole: "number of customers" names Customer count over Ordering
+    customers. "revenue before tax" names neither Revenue nor Tax paid, so
+    the first by label stays a guess.
     """
 
     matched = [(_score(row, terms), row) for row in rows]
@@ -277,11 +279,14 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     for row in tied:
         names = [row.label, _last_token(row.id), *(getattr(row, "aliases", None) or [])]
         sets = [set(_tokens(name)) for name in names if _tokens(name)]
-        fit[row.id] = (set().union(*sets) & words, any(name <= words for name in sets))
+        whole = 2 if any(name <= words for name in sets) else 0
+        if not whole and any(len(name) > 1 and name - {"count"} <= words for name in sets):
+            whole = 1
+        fit[row.id] = (set().union(*sets) & words, whole)
 
     def beats(row: Any, other: Any) -> bool:
         (said, whole), (other_said, other_whole) = fit[row.id], fit[other.id]
-        return other_said < said or (other_said == said and whole and not other_whole)
+        return other_said < said or (other_said == said and whole > other_whole)
 
     named = [row for row in tied if all(beats(row, other) for other in tied if other is not row)]
     return tied, next(iter(named), None)

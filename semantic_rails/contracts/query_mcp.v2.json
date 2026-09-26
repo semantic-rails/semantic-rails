@@ -224,8 +224,7 @@
             ]
           },
           "limit": {
-            "default": 10,
-            "description": "Per kind; with empty terms, ids per kind (default 100).",
+            "description": "Per kind (default 10); with empty terms, ids per kind (default 100).",
             "minimum": 1,
             "type": "integer"
           },
@@ -802,7 +801,7 @@
         "readOnlyHint": true,
         "title": "Segment"
       },
-      "description": "Work with a package-authored segment: action='validate' checks it and the Query IR derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows and the total member count. Default verbosity='minimal' leaves out compiler plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like 'segment.jaffle.high_value_customers' (discover with empty terms lists them); 'preview' queries the warehouse.",
+      "description": "Work with a package-authored segment, after discover finds its id: action='validate' checks it and the Query IR derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows and the total member count. Default verbosity='minimal' leaves out compiler plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like 'segment.jaffle.high_value_customers' (discover with empty terms lists them); 'preview' queries the warehouse.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

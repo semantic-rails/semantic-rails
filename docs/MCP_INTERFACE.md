@@ -315,10 +315,11 @@ No tool silently accepts unknown keys. `segment` **rejects** them with `INVALID_
 
 ## Migrating from interface v1
 
-Interface v1 (thirteen tools) was removed in 0.3.3; v2 serves the same handlers as six tools.
+Interface v1 (thirteen tools) was removed; v2 serves the same handlers as six tools.
 Setting `SEMANTIC_RAILS_MCP_INTERFACE=v1` or passing `SemanticLayerMCPAdapter(runtime,
-interface="v1")` fails with `INVALID_CONFIG`: "The v1 MCP interface was removed in 0.3.3; use v2
-(see docs/MCP_INTERFACE.md)." Remove the setting (`v2` is still accepted). Calling a v1-only tool
+interface="v1")` fails with `INVALID_CONFIG`: "The v1 MCP interface was removed; v2 is the only
+interface (see docs/MCP_INTERFACE.md)." (`mcp stdio` returns it as the error of the client's
+`initialize` request and logs it to stderr.) Remove the setting (`v2` is still accepted). Calling a v1-only tool
 returns `UNKNOWN_MCP_TOOL`, whose message and `details.replacement` name the call to use.
 `initialize` reports `v2` as `serverInfo.version`, responses carry it as `api_version`, and
 `mcp doctor` prints it.
@@ -339,7 +340,9 @@ To move a v1 client:
 - `execute(query)` returns at most 200 rows; pass `max_rows` (up to 100,000) for more.
 - `segment-validate`, `segment-explain` and `segment-preview` become
   `segment(segment_id, action=...)`; pass `verbosity="full"` for v1's whole response.
-- `catalog()` becomes `discover(terms="")` or a `semantic-rails://catalog/*` resource. For v1's
+- `catalog()` becomes `discover(terms="")`, paged at 100 ids per kind (follow
+  `DISCOVER_IDS_TRUNCATED`'s `details.next_offset` with `offset`), or a
+  `semantic-rails://catalog/*` resource. For v1's
   default responses, pass `verbosity="compact"` to `discover` and `inspect`, and `detail="best"`
   to `plan`.
 - `capabilities` and `build-options` have no MCP tool: draft Query IR with `plan` (the `execute`

@@ -1,13 +1,14 @@
 """Grade the frozen eval questions through the agent harness, once per query-MCP build.
 
     uv run python scripts/agent_harness/eval_ab.py run --out RUNS --model MODEL \\
-        [--arms main=/path/to/main/.venv/bin/semantic-rails,head=semantic-rails] \\
+        --arms base=/path/to/base/.venv/bin/semantic-rails,head=semantic-rails \\
         [--base-url URL] [--reasoning-effort low] [--cases J01,J02] [--repeats 3]
     uv run python scripts/agent_harness/eval_ab.py summary RUNS
 
 `run` writes one scenario per question of tests/semantic_rails/mcp_context/eval_jaffle.jsonl
 and runs it with run.py once per arm and repeat, alternating which arm goes first. An arm is
-`name=command`: the `semantic-rails` executable whose `mcp stdio` serves the query MCP.
+`name=command`: the `semantic-rails` executable whose `mcp stdio` serves the query MCP. The
+first of the two arms is the baseline.
 Like Claude Code, the model gets the server's instructions and results cut at 100,000
 characters. A folder that already exists is
 skipped, so an interrupted run resumes. Each run's check is `eval_ab.py grade`: it re-runs the
@@ -30,6 +31,7 @@ import argparse
 import json
 import os
 import random
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -115,7 +117,10 @@ def summary(runs: Path) -> str:
         output = str(data["check"].get("output") or "").split()
         outcome = output[0] if data["finished"] and output else "incomplete"
         rows[(case_id, arm, int(repeat))] = {**data, "outcome": outcome}
-    arms = sorted({arm for _case, arm, _repeat in rows})
+    order = runs / "arms.json"
+    named = json.loads(order.read_text(encoding="utf-8")) if order.exists() else []
+    seen = {arm for _case, arm, _repeat in rows}
+    arms = [arm for arm in named if arm in seen] + sorted(seen - set(named))
     lines = [
         "| arm | runs | " + " | ".join(OUTCOMES) + " | median tokens | median tool calls |",
         "|---|---|" + "---|" * (len(OUTCOMES) + 2),
@@ -163,7 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--reasoning-effort", default="")
     runner.add_argument("--cases", default="", help="comma-separated case ids (default: all)")
     runner.add_argument(
-        "--arms", default="head=semantic-rails", help="comma-separated name=command (no '-')"
+        "--arms",
+        required=True,
+        help="baseline,candidate as name=command (names: letters, digits, _)",
     )
     runner.add_argument("--repeats", type=int, default=1)
     commands.add_parser("grade").add_argument("case")
@@ -180,8 +187,16 @@ def main(argv: list[str] | None = None) -> int:
         print(summary(args.runs))
         return 0
     wanted = [case for case in cases if not args.cases or case in args.cases.split(",")]
-    arms = dict(arm.split("=", 1) for arm in args.arms.split(","))
+    arms = dict(arm.partition("=")[::2] for arm in args.arms.split(","))
+    if len(arms) != 2 or not all(re.fullmatch(r"\w+", arm) and arms[arm] for arm in arms):
+        parser.error(
+            "--arms takes two name=command arms, baseline first; names are letters, digits, _"
+        )
+    order = args.out / "arms.json"
+    if order.exists() and json.loads(order.read_text(encoding="utf-8")) != arms:
+        parser.error(f"{args.out} was run with other arms ({order.read_text(encoding='utf-8')})")
     (args.out / "scenarios").mkdir(parents=True, exist_ok=True)
+    order.write_text(json.dumps(arms), encoding="utf-8")
     for index, case_id in enumerate(wanted):
         for repeat in range(args.repeats):
             for arm in list(arms) if index % 2 == 0 else list(arms)[::-1]:

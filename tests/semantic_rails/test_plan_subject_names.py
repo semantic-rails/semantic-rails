@@ -8,11 +8,14 @@ question names wins; when it names none of the tied measures, plan returns
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import yaml
 
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner._base import _tied_top
 from semantic_rails.planner.faithfulness import intent_subject_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
@@ -140,3 +143,85 @@ def test_a_tie_the_question_names_no_side_of_is_low_confidence(tmp_path: Path) -
     assert (
         "Gross Revenue (measure.shop.gross_revenue)" in plan["why"]["recovery_hints"][0]["message"]
     )
+
+
+CUSTOMERS = "measure.jaffle.customer_count"
+
+
+@pytest.mark.parametrize(
+    ("question", "measure", "group_by"),
+    [
+        ("number of customers", CUSTOMERS, None),
+        ("how many customers", CUSTOMERS, None),
+        ("customers", CUSTOMERS, None),
+        ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"]),
+        # The measures whose descriptions start "Number of …" still answer their own questions.
+        ("number of active menu items", "measure.jaffle.active_menu_count_eop", None),
+        ("number of stores open", "measure.jaffle.open_store_count_eop", ...),
+    ],
+)
+def test_counting_words_name_the_count_measure(
+    runtime_factory: Any, question: str, measure: str, group_by: Any
+) -> None:
+    """ "number of" and "of" don't tie Customer count with measures described as
+    "Number of active menu items…", and the question names Customer count over
+    Ordering or Visiting customers."""
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        plan = plan_payload(runtime, intent=question)
+    finally:
+        runtime.close()
+
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    [select] = query["select"]
+    assert select["expression"]["measure"] == measure
+    if group_by is not ...:
+        assert query.get("group_by") == group_by
+
+
+def test_a_whole_name_beats_one_that_adds_count(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, {"customers": "Customers", "customer_count": "Customer count"})
+    try:
+        plan = plan_payload(runtime, intent="customers by month")
+    finally:
+        runtime.close()
+
+    assert plan["status"] == "ok", plan.get("why")
+    [select] = plan["best"]["query_ir"]["select"]
+    assert (select["expression"].get("measure") or select["expression"]["metric"]).endswith(
+        "shop.customers"
+    )
+
+
+def _measure(key: str, label: str, description: str = "") -> SimpleNamespace:
+    return SimpleNamespace(id=f"measure.s.{key}", label=label, description=description)
+
+
+@pytest.mark.parametrize(
+    ("rows", "words", "named"),
+    [
+        # Whole apart from "count": Customer count over Ordering customers.
+        (
+            [
+                _measure("customer_count", "Customer count"),
+                _measure("ordering", "Ordering customers"),
+            ],
+            {"number", "of", "customer"},
+            "measure.s.customer_count",
+        ),
+        # A name that is only "count" names nothing.
+        (
+            [_measure("count", "Count", "customer"), _measure("visitors", "Visitors", "customer")],
+            {"customer"},
+            None,
+        ),
+    ],
+)
+def test_a_name_whole_apart_from_count_is_named(
+    rows: list[SimpleNamespace], words: set[str], named: str | None
+) -> None:
+    tied, chosen = _tied_top(rows, {"customer"}, words)
+    assert len(tied) == 2
+    assert getattr(chosen, "id", None) == named

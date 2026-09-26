@@ -1,4 +1,4 @@
-"""Query MCP interface v2, the only interface since v1 was removed in 0.3.3.
+"""Query MCP interface v2, the only interface since v1 was removed.
 
 v2 folded v1's validate and compile into ``execute(mode)`` and its three segment
 tools into ``segment(action)``, dropped capabilities, catalog and build-options,
@@ -7,6 +7,9 @@ and defaults every tool to its smallest response.
 
 from __future__ import annotations
 
+import argparse
+import io
+import json
 import re
 from collections.abc import Iterator
 from typing import Any
@@ -22,6 +25,8 @@ from semantic_rails.mcp import (
     SemanticLayerMCPAdapter,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
+from semantic_rails.metadata_parts.relevance import _no_viable_candidates_block
+from semantic_rails.planner.plan import _trim_why_errors
 from semantic_rails.request_context import RequestContext
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -84,15 +89,39 @@ def test_asking_for_the_removed_v1_interface_fails(
     env = "SEMANTIC_RAILS_MCP_INTERFACE"
     monkeypatch.setenv(env, " V2 ")
     assert SemanticLayerMCPAdapter(runtime).interface == "v2"
-    for argument, environment in (("v1", ""), (None, "v1"), (None, "v3")):
+    for argument, environment in (("v1", ""), (None, "v1"), (None, "v3"), ("", "v1")):
         monkeypatch.setenv(env, environment)
         with pytest.raises(SemanticLayerError) as raised:
             SemanticLayerMCPAdapter(runtime, interface=argument)
         assert raised.value.code == "INVALID_CONFIG"
-        assert "v1 MCP interface was removed in 0.3.3; use v2" in str(raised.value)
+        assert "v1 MCP interface was removed; v2 is the only interface" in str(raised.value)
     # mcp stdio, http and doctor build their adapter from the environment.
-    with pytest.raises(SemanticLayerError, match="removed in 0.3.3"):
+    with pytest.raises(SemanticLayerError, match="was removed; v2 is the only interface"):
         _mcp_tool_check(runtime)
+
+
+def test_a_stdio_client_pinned_to_v1_gets_the_refusal(
+    runtime: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Not a closed connection: the refusal answers initialize and goes to stderr."""
+
+    from semantic_rails.cli.commands import mcp as mcp_commands
+
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_INTERFACE", "v1")
+    monkeypatch.setattr(mcp_commands, "_runtime_from_package_or_path", lambda _args: runtime)
+    initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO(f"{json.dumps(initialize)}\n{json.dumps(initialized)}\n")
+    )
+    with pytest.raises(SystemExit):
+        mcp_commands.cmd_mcp_stdio(argparse.Namespace())
+    out, err = capsys.readouterr()
+    [reply] = [json.loads(line) for line in out.splitlines()]
+    assert reply["id"] == 1
+    assert reply["error"]["data"] == {"code": "INVALID_CONFIG"}
+    assert "v1 MCP interface was removed" in reply["error"]["message"]
+    assert "v1 MCP interface was removed" in err
 
 
 def test_the_adapter_serves_the_frozen_contract(v2: SemanticLayerMCPAdapter) -> None:
@@ -268,35 +297,86 @@ def _hint_texts(node: Any, key: str = "") -> Iterator[str]:
     elif isinstance(node, list):
         for item in node:
             yield from _hint_texts(item, key)
-    elif isinstance(node, str) and key in {"recovery_hint", "message"}:
+    elif isinstance(node, str) and key in {"recovery_hint", "message", "hint"}:
         yield node
 
 
+def _sends_to_removed_surface(text: str) -> bool:
+    """Whether ``text`` points an MCP agent at a removed v1 tool or an HTTP route."""
+
+    # "execute with mode 'validate'" and "segment with action 'preview'" are v2 calls.
+    text = re.sub(r"(mode|action) '[a-z]+'", "", text.lower())
+    names = "|".join(re.escape(name) for name in V1_ONLY_TOOLS)
+    return "/api/v1/" in text or bool(
+        re.search(rf"[`']({names})[`']|\b({names}) tool\b|\bor ({names}) to\b", text)
+        or re.search(rf"\b(call|use|run|try)\s+(the\s+)?({names})\b", text)
+    )
+
+
+def test_the_removed_surface_matcher_catches_the_old_wording() -> None:
+    for old in (
+        "Use compose_hints to author a Query IR directly, then call validate.",
+        "Call validate on best.query_ir to see why the semantically closest draft failed.",
+        "+4 additional validation errors; call validate on best.query_ir for the full list.",
+        "Use /api/v1/discover to find what IS available.",
+    ):
+        assert _sends_to_removed_surface(old), old
+    assert not _sends_to_removed_surface(
+        "then validate it (over MCP, execute with mode 'validate')"
+    )
+
+
+def _unrealizable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """plan drafts nothing, so it answers NO_PATTERN_MATCH."""
+
+    from semantic_rails.planner import plan as plan_module
+    from semantic_rails.planner.orchestrator import CompositionResult
+
+    def compose(runtime: Any, intent: str) -> CompositionResult:
+        return CompositionResult(intent_ir=plan_module.parse_intent(runtime, intent), draft=None)
+
+    monkeypatch.setattr(plan_module, "compose", compose)
+    monkeypatch.setattr(plan_module, "_distinct_fallback_drafts", lambda *args, **kwargs: [])
+
+
 @pytest.mark.parametrize(
-    ("tool", "arguments"),
+    ("tool", "arguments", "reached"),
     [
-        ("discover", {"terms": "unladen swallow"}),
-        ("plan", {"intent": "unladen swallow airspeed", "detail": "best"}),
+        ("discover", {"terms": "unladen swallow"}, "discover_low_relevance"),
+        ("plan", {"intent": "unladen swallow airspeed", "detail": "best"}, "LOW_RELEVANCE"),
         # A drafted fallback that failed validation: status low_confidence at the default detail.
-        ("plan", {"intent": "orders by customer status"}),
-        ("inspect", {"object_id": "measure.jaffle.airspeed"}),
-        ("execute", {"query": {**QUERY, "select": [{"as": "x", "expression": AIRSPEED}]}}),
+        ("plan", {"intent": "orders by customer status"}, "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("plan", {"intent": "revenue by store"}, "NO_PATTERN_MATCH"),
+        ("inspect", {"object_id": "measure.jaffle.airspeed"}, "call_discover_to_locate"),
+        (
+            "execute",
+            {"query": {**QUERY, "select": [{"as": "x", "expression": AIRSPEED}]}},
+            "call_discover_to_locate",
+        ),
     ],
 )
 def test_recovery_hints_never_send_the_agent_to_a_removed_tool(
-    v2: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
+    v2: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    tool: str,
+    arguments: dict[str, Any],
+    reached: str,
 ) -> None:
-    texts = list(_hint_texts(v2.call_tool(tool, arguments)))
+    if reached == "NO_PATTERN_MATCH":
+        _unrealizable(monkeypatch)
+    response = v2.call_tool(tool, arguments)
+    assert f'"{reached}"' in json.dumps(response), "the call should reach the hint under test"
+    texts = list(_hint_texts(response))
     assert texts, "the call should come back with recovery guidance"
-    for text in texts:
-        # "execute with mode 'validate'" and "segment with action 'preview'" are v2 calls.
-        text = re.sub(r"(mode|action) '[a-z]+'", "", text)
-        lowered = text.lower()
-        for name in V1_ONLY_TOOLS:
-            for mention in (f"`{name}`", f"'{name}'", f"{name} tool", f"or {name} to"):
-                assert mention not in text, (name, text)
-            for verb in ("call", "use", "run", "try"):
-                assert f"{verb} {name} " not in lowered + " ", (name, text)
+    assert not [text for text in texts if _sends_to_removed_surface(text)]
+
+
+def test_hints_built_outside_those_calls_point_at_v2_calls() -> None:
+    why = _trim_why_errors([{"code": "INVALID_QUERY", "message": "bad"}] * 4)
+    assert why["truncated"]["dropped"] == 1
+    blocked = _no_viable_candidates_block("x", blocked_codes=[], sample_blocked_messages=[])
+    texts = [*_hint_texts(why), blocked["recovery_hint"]]
+    assert not [text for text in texts if _sends_to_removed_surface(text)]
 
 
 @pytest.mark.parametrize("tool", sorted(V1_ONLY_TOOLS))
@@ -313,6 +393,7 @@ def test_removed_v1_tools_point_to_their_replacement(
         == f"The '{tool}' tool was removed with MCP interface v1; use {replacement}."
     )
     assert error["recovery_hints"][0]["message"] == f"Use {replacement} instead."
+    assert not _sends_to_removed_surface(replacement)
 
 
 def test_mcp_doctor_checks_the_v2_tools(runtime: Any, monkeypatch: pytest.MonkeyPatch) -> None:

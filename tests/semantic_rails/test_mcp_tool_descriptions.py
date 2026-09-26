@@ -6,10 +6,11 @@ agent-first guidance. An LLM ranking tools by description had no signal
 about which tool to call first, no input-shape note, no gotcha. The
 workflow itself is stated once, in the server instructions
 (``MCP_SERVER_INSTRUCTIONS``; see test_mcp_instructions.py). This test pins
-two constraints:
+three constraints:
 
-  1. Each description names a concrete gotcha or call-shape note.
-  2. Each description is non-trivial in length (>= 200 chars) so it
+  1. Each description says when to use its tool (after/before/first/step).
+  2. Each description names a concrete gotcha or call-shape note.
+  3. Each description is non-trivial in length (>= 200 chars) so it
      can't silently regress to a one-liner.
 """
 
@@ -19,7 +20,14 @@ import copy
 
 from semantic_rails.mcp import list_tool_definitions
 
+LOOP_KEYWORDS = ("after", "before", "step", "first")
 GOTCHA_KEYWORDS = ("gotcha", "must be", "do not", "don't", "skip", "only after", "cost")
+
+
+def test_every_tool_description_says_when_to_use_it():
+    for tool in list_tool_definitions():
+        desc = tool["description"].lower()
+        assert any(kw in desc for kw in LOOP_KEYWORDS), (tool["name"], tool["description"])
 
 
 def test_every_tool_description_names_a_gotcha_or_call_shape():
