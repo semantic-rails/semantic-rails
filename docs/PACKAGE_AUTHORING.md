@@ -1338,10 +1338,12 @@ Routing is conservative in the MVP:
   join would have repeated fact rows in every other column.
   Another model's key read from a foreign key (such as the customer key) needs a
   `path` of the one relationship between the two models, and doesn't route when
-  two relationships link them. Build pre-joined columns with the base path's join
-  semantics: a fact row with no match keeps a null value, so use an outer join. A
-  measure whose expression, or a time role whose column, comes from another model
-  doesn't route.
+  two relationships link them. Build a pre-joined column with an inner join, as
+  the base path joins it: a fact row with no match is left out. So a rollup with a
+  pre-joined column answers only queries that group or filter by that column; the
+  base path doesn't join it otherwise and keeps such rows. A measure whose
+  expression, or a time role whose column, comes from another model doesn't route.
+  An `aggregate_relations:` entry must declare its `temporal_role`.
 - Every selected measure must have a column in the variant.
 - Every grouped or filtered dimension must be covered by the variant. If a
   query groups by `customer_id` and the monthly table excludes that dimension,
@@ -1359,10 +1361,12 @@ Routing is conservative in the MVP:
   certify one, a host calls
   `semantic_rails.acceleration.certification.certify_aggregate_relation(config,
   relation_id)`. For each measure column it gets the rule the rollup fails (or none)
-  and a query's `base_sql` and `rollup_sql`, at the rollup's grain and grouped by
-  every rollup dimension, to run and compare. A runtime doesn't use its compile
-  cache for a package with such a rollup: every request compiles again, which costs
-  compile time, so that a revoked certification applies to the next request.
+  and a query's `base_sql` and `rollup_sql` to run and compare: over all time,
+  grouped by every rollup dimension, at the finest grain the rollup answers. Every
+  other query the rules let it answer re-aggregates those rows. A runtime doesn't
+  use its compile cache for a package with such a rollup: every request compiles
+  again, which costs compile time, so that a revoked certification applies to the
+  next request.
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected

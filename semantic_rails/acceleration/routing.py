@@ -13,6 +13,7 @@ none installed it never routes (:data:`NOT_CERTIFIED`).
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -25,6 +26,8 @@ if TYPE_CHECKING:
     from ..config import PackageConfig
     from ..ir import LogicalPlan, PhysicalPlan
     from ..schema import AggregateRelationConfig
+
+_LOG = logging.getLogger(__name__)
 
 AGGREGATE_ROUTING_ENV = "SEMANTIC_RAILS_AGGREGATE_ROUTING"
 ROUTING_OFF = "aggregate_routing_off"
@@ -61,7 +64,11 @@ def aggregate_routing_enabled() -> bool:
 
 class CertificationProvider(Protocol):
     def certified(self, config: PackageConfig, relation: AggregateRelationConfig) -> bool:
-        """True only if ``relation`` answers exactly for this package as loaded now."""
+        """True only if ``relation`` answers exactly for this package as loaded now.
+
+        ``config`` can be a per-query copy (with a query's inline measures), so key a
+        certification on the package's identity and the relation, not on the object.
+        """
         ...
 
 
@@ -82,7 +89,8 @@ def relation_certified(config: PackageConfig, relation: AggregateRelationConfig)
         return True
     try:
         return _provider is not None and _provider.certified(config, relation) is True
-    except Exception:  # a provider that can't answer never lets a rollup route
+    except Exception as exc:  # a provider that can't answer never lets a rollup route
+        _LOG.warning("certification provider failed (%s); rollup not routed", type(exc).__name__)
         return False
 
 

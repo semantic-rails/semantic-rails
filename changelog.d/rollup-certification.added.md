@@ -6,4 +6,5 @@
   so a revoked certification applies to the next one.
   `semantic_rails.acceleration.certification.certify_aggregate_relation(config,
   relation_id)` returns the engine's verdict on each of a rollup's measure columns
-  with a paired base and rollup query to compare before certifying it.
+  with a paired base and rollup query to compare before certifying it. Rollup rows
+  in validation metadata gain a `requires_certification` field.

@@ -162,10 +162,11 @@ def _one_row_per_group(row: AggregateRelationConfig, leaf: _Leaf, config: Packag
     )
 
 
-def _prejoined_safely(row: AggregateRelationConfig, config: PackageConfig) -> bool:
-    """Whether every column the rollup pre-joined from another model was joined along a declared
-    many-to-one path to that model, so that no fact row was repeated or dropped for it."""
+def _prejoined_dimensions(row: AggregateRelationConfig, config: PackageConfig) -> set[str] | None:
+    """The rollup's columns pre-joined from another model, or ``None`` unless each was joined
+    along a declared many-to-one path to its model, so no fact row was repeated for it."""
     relationships = {rel.id: rel for rel in config.relationships}
+    prejoined: set[str] = set()
     for dim_id in _aggregate_dimension_coverage(row):
         entity = _dimension_index(config)[dim_id].entity
         if entity == row.source_entity or _direct_dimension_source_expr(
@@ -176,20 +177,21 @@ def _prejoined_safely(row: AggregateRelationConfig, config: PackageConfig) -> bo
         for rel_id in path:
             rel = relationships[rel_id]
             if current not in {rel.source_entity, rel.target_entity}:
-                return False
+                return None
             current = rel.target_entity if current == rel.source_entity else rel.source_entity
         try:
             analysis = analyze_fanout(config, row.source_entity, path)
         except SemanticLayerError:  # an unsafe hop
-            return False
+            return None
         if (
             not path
             or current != entity
             or analysis["status"] != "ok"
             or any(join.get("temporal_validity") for join in analysis["relationships"])
         ):
-            return False
-    return True
+            return None
+        prejoined.add(dim_id)
+    return prejoined
 
 
 def _aggregate_relation_rejection_reason(
@@ -206,7 +208,7 @@ def _aggregate_relation_rejection_reason(
     requested_grain = str((time.grain if time else "") or "").lower()
     if time is None or not requested_grain:
         return "missing_query_time_grain"
-    if row.temporal_role and row.temporal_role != leaf.time_role:
+    if row.temporal_role != leaf.time_role:  # an undeclared role could be any of the measure's
         return "temporal_role_mismatch"
     if requested_grain not in set(row.eligible_time_grains or [row.grain]):
         return "unsupported_query_grain"
@@ -228,13 +230,17 @@ def _aggregate_relation_rejection_reason(
         return "missing_measure_column"
     if leaf.dimensions - _aggregate_dimension_coverage(row):
         return "missing_dimension"
+    prejoined = _prejoined_dimensions(row, config)
     if (
         leaf.joins_undeclared
         or any(
             path is None or row.dimension_paths.get(dim) != path
             for dim, path in leaf.join_paths.items()
         )
-        or not _prejoined_safely(row, config)  # also for dimensions the query doesn't use
+        # A pre-joined column holds only the fact rows its inner join matched, as the base path
+        # has them only when the query groups or filters by that column too.
+        or prejoined is None
+        or prejoined - leaf.dimensions
     ):
         # A pre-joined column is right only along the query's own many-to-one path.
         return "join_path_mismatch"

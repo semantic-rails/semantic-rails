@@ -9,15 +9,20 @@ import duckdb
 import pytest
 
 from semantic_rails.acceleration.certification import certify_aggregate_relation
-from semantic_rails.acceleration.routing import set_certification_provider
+from semantic_rails.acceleration.routing import aggregate_routing, set_certification_provider
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.test_model_physical_variants import (
+    _BUYER_KEY,
     _BUYERS,
+    _DAYS_MONTHLY,
     _DISTINCT_BUYERS,
+    _HOURLY,
+    _MINUTELY,
     _MONTHLY,
     _NO_PATH,
+    _NO_ROLE,
     _PRODUCT,
     _REGION,
     _REVENUE,
@@ -99,6 +104,22 @@ def test_revoked_certification_applies_to_the_next_request(tmp_path: Path, insta
     assert ungated.compile(payload)["compile_stats"]["cache_hit"]  # other packages still cache
 
 
+@pytest.mark.parametrize("value", [True, "yes"])
+def test_an_aggregate_relation_entry_can_require_certification(tmp_path: Path, value: object):
+    """The shape a host's managed rollups take: an `aggregate_relations:` entry."""
+    rollups = (
+        {},
+        [{**_NO_ROLE, "temporal_role": "temporal_role.t", "requires_certification": value}],
+    )
+    if value is not True:
+        _rollup_package(tmp_path / "p", *rollups)
+        with pytest.raises(SemanticLayerError, match="must be true or false"):
+            load_package_config(str(tmp_path / "p"))
+        return
+    routing = _routed_answers(tmp_path, rollups, _rollup_query(_REVENUE, "sum", "quarter"))
+    assert _decisions(routing) == {"leaf_1:aggregate_relation.no_role": "not_certified"}
+
+
 def test_certification_settings_are_checked(tmp_path: Path):
     _rollup_package(tmp_path / "p", {"monthly": {**_MONTHLY, "requires_certification": "yes"}}, [])
     with pytest.raises(SemanticLayerError, match="requires_certification must be true or false"):
@@ -107,10 +128,20 @@ def test_certification_settings_are_checked(tmp_path: Path):
         set_certification_provider(object())  # type: ignore[arg-type]
 
 
-_WEEKLY_ONLY_REVENUE = {
-    **_WEEKLY,
-    "excludes": {**_WEEKLY["excludes"], "measures": ["order_count", "buyers", "balance"]},
-}
+def test_certify_runs_under_the_routing_switch(tmp_path: Path):
+    _rollup_package(tmp_path / "p", *_GATED)
+    with aggregate_routing(False):
+        verdict = certify_aggregate_relation(load_package_config(str(tmp_path / "p")), _MONTHLY_ID)
+    assert {item["reason"] for item in verdict["measures"]} == {"aggregate_routing_off"}
+
+
+_ONLY_REVENUE = {"measures": ["order_count", "buyers", "balance"]}
+
+
+def _revenue_only(rollup: dict) -> dict:
+    return {**rollup, "excludes": {**rollup["excludes"], **_ONLY_REVENUE}}
+
+
 _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
 
 
@@ -136,10 +167,73 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
             id="max",
         ),
         pytest.param(
-            ({"weekly": _WEEKLY_ONLY_REVENUE}, []),
+            ({"weekly": _revenue_only(_WEEKLY)}, []),
             "aggregate_relation.orders_weekly",
             {_REVENUE: ""},
             id="weekly",
+        ),
+        pytest.param(
+            ({"hourly": _revenue_only(_HOURLY)}, []),
+            "aggregate_relation.orders_hourly",
+            {_REVENUE: ""},
+            id="hourly",
+        ),
+        pytest.param(
+            ({"minutely": _revenue_only(_MINUTELY)}, []),
+            "aggregate_relation.orders_minutely",
+            {_REVENUE: ""},
+            id="minutely",
+        ),
+        pytest.param(
+            _monthly(revenue={"column": "min_amount", "holds": "min"}),
+            _MONTHLY_ID,
+            {_REVENUE: ""},
+            id="min",
+        ),
+        pytest.param(
+            ({}, [_BUYER_KEY], {"ship_to": None}),
+            _BUYER_KEY["id"],
+            {_REVENUE: ""},
+            id="foreign-key",
+        ),
+        pytest.param(
+            ({}, [_DAYS_MONTHLY], {"fact_days": True}),
+            _DAYS_MONTHLY["id"],
+            {"measure.days": _NOT_REAGGREGABLE},
+            id="fact-model-distinct",
+        ),
+        pytest.param(
+            ({}, [{**_NO_ROLE, "measures": {_REVENUE: {"column": "revenue"}}}]),
+            _NO_ROLE["id"],
+            {_REVENUE: "temporal_role_mismatch"},
+            id="no-time-role",
+        ),
+        pytest.param(
+            (
+                {},
+                [
+                    {
+                        **_NO_ROLE,
+                        "temporal_role": "temporal_role.t",
+                        "measures": {_REVENUE: {"column": "revenue"}},
+                    }
+                ],
+            ),
+            _NO_ROLE["id"],
+            {_REVENUE: "unsupported_rollup"},
+            id="neither-rollup-nor-holds",
+        ),
+        pytest.param(
+            ({"monthly": _revenue_only({**_MONTHLY, "eligible_time_grains": ["quarter"]})}, []),
+            _MONTHLY_ID,
+            {_REVENUE: ""},
+            id="own-grain-not-eligible",  # checked at the finest grain it answers
+        ),
+        pytest.param(
+            ({"hourly": _revenue_only({**_HOURLY, "eligible_time_grains": ["hour"]})}, []),
+            "aggregate_relation.orders_hourly",
+            {_REVENUE: "unsupported_query_grain"},
+            id="no-grain-the-role-supports",
         ),
         pytest.param(({}, [_REGION], {"ship_to": False}), _REGION["id"], {_REVENUE: ""}, id="path"),
         pytest.param(
@@ -200,6 +294,7 @@ def test_certify_pairs_answer_alike(tmp_path: Path, rollups: tuple, relation_id:
     assert verdict["certifiable"] == (not any(got.values()))
     for item in verdict["measures"]:
         assert not re.search(rf"\b{table}\b", item["base_sql"])
+        assert ("error" in item) == (item["reason"] == "query_not_compiled")
         if not item["reason"]:  # the pair a host compares before certifying
             assert re.search(rf"\b{table}\b", item["rollup_sql"])
             rollup = sorted(connection.execute(item["rollup_sql"]).fetchall())
