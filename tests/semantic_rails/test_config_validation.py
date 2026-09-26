@@ -478,7 +478,11 @@ def test_jaffle_reference_package_has_release_authoring_profile():
         for w in report["warnings"]
         if not (isinstance(w, dict) and str(w.get("code", "")).startswith("SEMANTIC_TERM_"))
     ]
-    assert non_collision_warnings == []
+    # Lifetime spend is a stock on the one-row-per-customer table, a current-state
+    # shape the snapshot-key warning can't tell from a mis-keyed snapshot table.
+    assert [(w["code"], w["details"]["measure_id"]) for w in non_collision_warnings] == [
+        ("STOCK_SNAPSHOT_KEY_MISSING_CLOCK", "measure.jaffle.lifetime_spend_usd")
+    ]
     collision_warnings = [
         w
         for w in report["warnings"]

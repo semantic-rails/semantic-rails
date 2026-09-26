@@ -998,6 +998,20 @@ in `graph.entities.<entity>.key` (e.g. `order_id`), not the entity name
 `{ kind: population }`, or `{ kind: stock, snapshot: end_of_period }`. The strict
 enum is `{flow, stock, event, population}` — anything else is rejected.
 
+A `stock` measure answers with each series' last snapshot in each period (its first,
+with `snapshot: start_of_period`), then adds up the series. A series is the row key
+without the clock's column, so a snapshot table's entity key is the series columns plus
+the snapshot time: `key: [store_id, date_day]` for inventory per store per day, not a
+surrogate such as `inventory_row_id` that is unique per snapshot row. Give the snapshot
+time `class: as_of_time`.
+
+- A stock whose key doesn't contain its clock's column gets a
+  `STOCK_SNAPSHOT_KEY_MISSING_CLOCK` parse warning: each key value counts as its own
+  series, so two snapshots of one series in the same week are added together.
+- On an `as_of_time` clock, queries of such a stock are refused with `INVALID_CONFIG`.
+- A current-state table with one row per series (a customer's lifetime spend on the
+  customers table) has the same shape and is right as keyed; the warning is expected there.
+
 `default_agg:` (the new name for `agg_function:`) is the default aggregation the
 API uses if the caller doesn't specify. The accumulation class drives the
 default-allowed aggregation set; `disallowed_aggregations:` subtracts from it.

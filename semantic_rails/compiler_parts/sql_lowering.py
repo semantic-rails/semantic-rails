@@ -202,6 +202,42 @@ def _measure_owned_key_columns(measure, entities, temporal_roles, dimensions) ->
     return list(entity.key or [entity.primary_key])
 
 
+def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) -> dict[str, Any]:
+    """Why a stock measure's row key can't tell its snapshots apart on this clock, or ``{}``.
+
+    A snapshot table holds one row per series per snapshot, so its key is the series
+    columns plus the snapshot time. A key without the clock's column (a surrogate
+    such as ``repo@2026-09-26``) makes every row its own series, and a grain coarser
+    than the snapshots then sums them. A one-row-per-series current-state table has
+    the same shape and is right, so only the caller decides whether to refuse. A
+    clock on another model isn't checked here.
+    """
+    if measure.measure_class != "semi_additive" or not temporal_role_id:
+        return {}
+    role = _temporal_role_index(config).get(temporal_role_id)
+    clock = _dimension_index(config).get(role.dimension) if role is not None else None
+    if role is None or clock is None or clock.entity != measure.entity:
+        return {}
+    key = [column for column in list(measure.row_grain or []) if column] or [
+        column
+        for column in _measure_owned_key_columns(
+            measure, _entity_index(config), _temporal_role_index(config), _dimension_index(config)
+        )
+        if column
+    ]
+    if not key or clock.column in key:
+        return {}
+    return {
+        "measure_id": measure.id,
+        "temporal_role": temporal_role_id,
+        "clock_column": clock.column,
+        "clock_class": role.temporal_class,
+        "row_key": key,
+        "fix": f"Key the entity by the series columns plus {clock.column!r}, "
+        f"e.g. key: [<series columns>, {clock.column}].",
+    }
+
+
 def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConfig) -> list[str]:
     """The columns that identify one snapshot series of a stock measure.
 
@@ -229,6 +265,18 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
     if not series and not declared and not fallback:
         raise SemanticLayerError(
             "INVALID_CONFIG", f"Semi-additive measure '{measure.id}' requires a row grain"
+        )
+    gap = _stock_clock_key_gap(measure, temporal_role_id, config)
+    if gap.get("clock_class") == "as_of_time":
+        # An as-of clock declares a snapshot table, so a key without it is never a
+        # current-state table: refuse rather than sum every snapshot in a bucket.
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Stock measure '{measure.id}' takes the last snapshot per key on the as-of "
+            f"clock {gap['clock_column']!r}, but its key {gap['row_key']} doesn't contain "
+            f"that column, so each snapshot would count as its own series and be summed. "
+            f"{gap['fix']}",
+            details=gap,
         )
     return series
 
