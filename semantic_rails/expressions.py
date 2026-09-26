@@ -852,9 +852,10 @@ _PARAMETER_SCHEMAS_BY_AGGREGATION: dict[str, dict[str, str]] = {
 # Units the conversion matching window can lower into the dialects'
 # DATE_DIFF. Matches the units advertised in the window-shape recovery
 # hint below; anything else only fails at warehouse execution time.
-_CONVERSION_WINDOW_UNITS = {"minute", "hour", "day", "week", "month", "quarter", "year"}
+CONVERSION_WINDOW_UNITS = ("minute", "hour", "day", "week", "month", "quarter", "year")
+_CONVERSION_WINDOW_UNITS = set(CONVERSION_WINDOW_UNITS)
 _CONVERSION_WINDOW_SHAPE = {
-    "unit": "<minute|hour|day|week|month|quarter|year>",
+    "unit": f"<{'|'.join(CONVERSION_WINDOW_UNITS)}>",
     "value": "<positive integer>",
 }
 
@@ -1859,7 +1860,7 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                                 "Wrap window as {unit, value}. E.g. window=7 "
                                 "→ window={'unit': 'day', 'value': 7}."
                             ),
-                            "suggested_shape": _CONVERSION_WINDOW_SHAPE,
+                            "suggested_shape": dict(_CONVERSION_WINDOW_SHAPE),
                         }
                     ],
                 },
@@ -1874,12 +1875,12 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             raise SemanticLayerError(
                 "CONVERSION_WINDOW_REQUIRED",
                 "conversion expressions require window {unit, value}: unit one of "
-                f"{', '.join(sorted(_CONVERSION_WINDOW_UNITS))} and a positive integer value, "
+                f"{', '.join(CONVERSION_WINDOW_UNITS)} and a positive integer value, "
                 'e.g. "window": {"unit": "minute", "value": 50}',
                 details={
                     "path": "expression.window",
                     "received_value": raw_window,
-                    "suggested_shape": _CONVERSION_WINDOW_SHAPE,
+                    "suggested_shape": dict(_CONVERSION_WINDOW_SHAPE),
                 },
             )
         if unit not in _CONVERSION_WINDOW_UNITS:

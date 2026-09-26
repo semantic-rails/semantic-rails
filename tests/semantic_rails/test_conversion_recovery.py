@@ -7,6 +7,7 @@ metric's expression, so the same conversion runs over another window at query ti
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -15,7 +16,7 @@ import yaml
 
 from semantic_rails.expressions import CONVERSION_MATCHING_MODES
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.metadata import _conversion_metadata
+from semantic_rails.metadata import inspect_payload
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
@@ -25,6 +26,7 @@ CONVERSION_METRICS = [
     "metric.sales.session_to_order_conversion_rate_7d_same_store",
     "metric.sales.adele_then_chai_28d",  # added below: operand filters
 ]
+FILTERED = CONVERSION_METRICS[-1]
 PRODUCT = "dimension.jaffle_product_name"
 STORE = "dimension.jaffle_store_name"
 SESSION_TO_ORDER = {
@@ -42,7 +44,7 @@ def adapter(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SemanticLayerM
     metrics = path / "metrics" / "extensions" / "advanced_metrics.yml"
     raw = yaml.safe_load(metrics.read_text(encoding="utf-8"))
     raw["metrics"]["sales.adele_then_chai_28d"] = {
-        "as": "metric.sales.adele_then_chai_28d",
+        "as": FILTERED,
         "label": "Adele-ade then chai (28d)",
         "kind": "conversion",
         "temporal_role": "temporal_role.jaffle_order_time",
@@ -51,17 +53,29 @@ def adapter(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SemanticLayerM
             "entity": "entity.jaffle_customer",
             "window": {"unit": "day", "value": 28},
             "matching_mode": "first_converted_after_base",
-            **{
+            **{  # filter fields written as the dimension's name and label, not its id
                 side: {
                     "kind": "aggregate",
                     "measure": "order_count",
-                    "filter": {"all": [{"field": PRODUCT, "op": "=", "value": product}]},
+                    "filter": {"all": [{"field": field, "op": "=", "value": product}]},
                 }
-                for side, product in (("base", "adele-ade"), ("converted", "chai and mighty"))
+                for side, field, product in (
+                    ("base", "jaffle.Product.product_name", "adele-ade"),
+                    ("converted", "Product name", "chai and mighty"),
+                )
             },
         },
     }
     metrics.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    policies = path / "policies.yml"
+    raw = yaml.safe_load(policies.read_text(encoding="utf-8"))
+    raw["semantic_policies"] += [
+        {"id": "policy.test.hide_product", "kind": "object_visibility", "action": "hidden",
+         "object_ids": [PRODUCT], "audiences": ["no_product"]},
+        {"id": "policy.test.deny_metric", "kind": "object_access", "action": "deny",
+         "object_ids": [FILTERED], "audiences": ["no_metric"]},
+    ]  # fmt: skip
+    policies.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     runtime = Runtime.from_path(str(path))
     try:
         yield SemanticLayerMCPAdapter(runtime)
@@ -109,7 +123,7 @@ def test_window_error_names_the_units_and_shape(adapter, window):
 
     assert error["code"] == "CONVERSION_WINDOW_REQUIRED"
     if isinstance(window, dict):
-        assert "minute, month, quarter, week, year" in error["message"]
+        assert "minute, hour, day, week, month, quarter, year" in error["message"]
         shape = error["details"]["suggested_shape"]
     else:
         (hint,) = error["recovery_hints"]
@@ -125,8 +139,19 @@ def test_conversion_card_expression_answers_like_the_metric_and_rewindows(adapte
 
     metric = {"kind": "metric", "metric": metric_id}
     by_store = {"group_by": [STORE], "order_by": [{"field": STORE, "direction": "ASC"}]}
-    for extra in ({}, by_store):
-        assert _run(adapter, expression, **extra) == _run(adapter, metric, **extra)
+    role = card["default_temporal_role"]
+    since_sep_2016 = {
+        "time": {
+            "temporal_role": role,
+            "grain": "month",
+            "start": "2016-09-01",
+            "end": "2017-07-01",
+        },
+        "order_by": [{"field": "time", "direction": "ASC"}],
+    }
+    for extra in ({}, by_store, since_sep_2016):
+        rows = _run(adapter, metric, **extra)
+        assert rows and _run(adapter, expression, **extra) == rows
 
     thirty_minutes = {**expression, "window": {"unit": "minute", "value": 30}}
     closest = {**thirty_minutes, "matching_mode": "closest_converted_after_base"}
@@ -138,8 +163,10 @@ def test_only_conversion_metric_cards_carry_the_conversion_block(adapter):
     assert "conversion" not in card
 
 
-def test_conversion_block_is_omitted_when_it_names_a_hidden_object(adapter):
-    config = adapter.runtime._config
-    (recipe,) = [m for m in config.metric_recipes if m.id == "metric.sales.adele_then_chai_28d"]
-    assert _conversion_metadata(recipe.expression, set())
-    assert _conversion_metadata(recipe.expression, {PRODUCT}) == {}
+@pytest.mark.parametrize("audience", ["no_product", "no_metric"])
+def test_conversion_block_fails_closed_under_a_policy(adapter, audience):
+    context = {"policy_context": {"audience": audience}}
+    card = inspect_payload(adapter.runtime, object_id=FILTERED, partial_query=context)["card"]
+    assert "conversion" not in card
+    assert "adele-ade" not in json.dumps(card, default=str)
+    assert "conversion" in inspect_payload(adapter.runtime, object_id=FILTERED)["card"]
