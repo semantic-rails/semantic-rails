@@ -21,7 +21,7 @@ from collections.abc import Iterable, Mapping
 # build-options) do not serialize. Runtime caches are thread-safe.
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer as HTTPServer
-from typing import Any, TextIO, cast
+from typing import Any, Protocol, TextIO, cast
 from urllib.parse import parse_qs, urlparse
 
 from .api_keys import api_key_auth_result
@@ -115,8 +115,36 @@ def _tool_content(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class MCPAdapter(Protocol):
+    """What :func:`handle_jsonrpc_message` calls on its adapter.
+
+    :class:`SemanticLayerMCPAdapter` is one; a host may pass its own. Optional
+    ``interface`` and ``instructions`` attributes fill the ``initialize`` result
+    (``"v2"`` and the engine's instructions when absent).
+    """
+
+    @property
+    def package_id(self) -> str: ...
+
+    def list_tools(self) -> list[dict[str, Any]]: ...
+
+    def call_tool(
+        self, name: str, arguments: dict[str, Any], /, *, request_context: RequestContext | None
+    ) -> dict[str, Any]: ...
+
+    def list_resources(self) -> list[dict[str, Any]]: ...
+
+    def read_resource(
+        self, uri: str, /, *, request_context: RequestContext | None
+    ) -> dict[str, Any]: ...
+
+    def list_prompts(self) -> list[dict[str, Any]]: ...
+
+    def get_prompt(self, name: str, arguments: dict[str, Any], /) -> dict[str, Any]: ...
+
+
 def handle_jsonrpc_message(
-    adapter: SemanticLayerMCPAdapter,
+    adapter: MCPAdapter,
     message: dict[str, Any],
     *,
     request_context: RequestContext | None = None,

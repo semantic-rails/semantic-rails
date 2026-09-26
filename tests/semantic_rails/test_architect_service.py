@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import multiprocessing
+import threading
+import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -326,6 +329,55 @@ def test_cross_process_writers_from_one_base_are_serialized(tmp_path: Path) -> N
     conflict = next(report for report in reports if not report["ok"])
     assert conflict["error"]["code"] == "CONFIG_CONFLICT"
     assert conflict["error"]["details"]["conflict_kind"] == "stale_revision"
+
+
+def test_in_process_project_lock_excludes_threads_across_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_path = _create_project(tmp_path, package_id="lock_core")
+    transaction = architect_transactions.ProjectTransaction(project_path, workspace_root=tmp_path)
+
+    class CountingLocks(weakref.WeakValueDictionary):
+        created = 0
+
+        def setdefault(self, key, default=None):
+            value = super().setdefault(key, default)
+            self.created += value is default
+            return value
+
+    locks = CountingLocks()
+    monkeypatch.setattr(architect_transactions, "_LOCAL_LOCKS", locks)
+    # Stub the lock file, so only the in-process lock can keep the threads apart.
+    monkeypatch.setattr(architect_transactions, "_try_file_lock", lambda _descriptor: True)
+    monkeypatch.setattr(architect_transactions, "_release_file_lock", lambda _descriptor: None)
+    inside: list[int] = []
+    seen: list[int] = []
+
+    def writer(index: int) -> None:
+        for turn in range(100):
+            with transaction._exclusive_lock():  # noqa: SLF001
+                inside.append(index)
+                seen.append(len(inside))
+                time.sleep(0.0002)
+                inside.remove(index)
+            time.sleep((index + turn) % 3 / 1000)  # lets every thread let go at times
+
+    threads = [threading.Thread(target=writer, args=(index,)) for index in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(seen) == 600 and max(seen) == 1
+    assert locks.created > 1  # the entry was collected and recreated while threads contended
+    impatient = architect_transactions.ProjectTransaction(
+        project_path, workspace_root=tmp_path, lock_timeout_seconds=0.1
+    )
+    with transaction._exclusive_lock():  # noqa: SLF001
+        for _ in range(2):  # a waiter that times out leaves the holder's entry in place
+            with pytest.raises(SemanticLayerError, match="Timed out"), impatient._exclusive_lock():  # noqa: SLF001
+                pass
+    assert str(transaction._lock_path) not in locks  # noqa: SLF001
 
 
 @pytest.mark.parametrize(
