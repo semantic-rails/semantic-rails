@@ -82,12 +82,17 @@ that file nor a relation pipeline. It doesn't pre-tick `_cents` columns as money
 amounts: as currency they would print cents as dollars. Publish them in dollars
 with a measure such as `amount_cents / 100.0`.
 
-Rolling windows, prior periods and growth fill empty periods from the package
-calendar, so `author metric` offers them only once the package has one. A calendar
+Rolling windows, prior periods and growth fill empty periods from a calendar. At
+query time a package without one uses the engine's implicit Gregorian calendar
+(QUERY_IR_SCHEMA "Which calendar fills"); author one for fiscal or custom periods,
+Sunday weeks, or a ClickHouse package. `author metric` offers these metrics only
+once the package has a calendar. A calendar
 is a model whose graph entity has `kind: time`: one row per day in a `date_day`
 column, plus `week_start`, `month_start`, `quarter_start` and `year_start` date
 columns for the coarser units (see `models/core/calendar.yml` in the bundled
-package). `author calendar` writes it from your date-spine table.
+package). An authored default calendar replaces the implicit one for every grain,
+so a grain whose column it lacks is refused. `author calendar` writes it from your
+date-spine table.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh

@@ -20,9 +20,16 @@ from .sql_ast import (
     SqlCaseWhen,
     SqlCast,
     SqlDatePart,
+    SqlField,
+    SqlIdentifier,
     SqlInterval,
+    SqlJoin,
     SqlLiteral,
+    SqlNamedArg,
     SqlOrderTerm,
+    SqlSelect,
+    SqlTableFunction,
+    SqlTableRef,
     SqlWithinGroup,
 )
 from .sql_preparation import PreparedQuery, prepare_query
@@ -71,6 +78,15 @@ def backslash_escaped_string_literal(value: str) -> str:
     applied to a quote-escape this function introduced itself.
     """
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def _day_rows(day: Any, source: str, series: SqlTableFunction | None = None) -> SqlSelect:
+    """``SELECT <day> AS date_day FROM <source> [CROSS JOIN <series>]``."""
+    return SqlSelect(
+        select=[SqlField(day, "date_day")],
+        from_table=SqlTableRef(name=source),
+        joins=[SqlJoin("CROSS", table=series)] if series is not None else [],
+    )
 
 
 @dataclass(frozen=True)
@@ -154,6 +170,25 @@ class SqlDialect:
     def null_safe_eq(self, left: Any, right: Any) -> Any:
         return SqlBinary(left, "IS NOT DISTINCT FROM", right)
 
+    @property
+    def has_implicit_calendar(self) -> bool:
+        return type(self).day_series is not SqlDialect.day_series
+
+    def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
+        """Every day from ``start`` through ``end`` (both included) as a DATE ``date_day``.
+
+        ``start`` and ``end`` are DATE expressions over the one-row relation
+        ``source``, which always holds finite bounds. This is the implicit
+        calendar's spine; a warehouse without an override refuses, so a
+        package on it still needs an authored calendar.
+        """
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"Warehouse '{self.name}' has no implicit calendar, so time.fill, rolling and "
+            "prior_period need a calendar entity (kind: time) in the package",
+            details={"warehouse": self.name, "rewrite": "day_series"},
+        )
+
     def conditional_aggregate(self, aggregation: str, condition: Any, value: Any | None) -> Any:
         """Emit ``<AGG>(CASE WHEN condition THEN value END)``.
 
@@ -224,6 +259,16 @@ class SnowflakeDialect(SqlDialect):
     def date_add(self, unit: str, value_expr: Any, date_expr: Any) -> Any:
         return SqlCall("DATEADD", [SqlDatePart(unit), value_expr, date_expr])
 
+    def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
+        # ARRAY_GENERATE_RANGE stops before its end, hence the + 1.
+        count = SqlBinary(self.date_diff("day", start, end), "+", SqlLiteral(1))
+        offsets = SqlCall("ARRAY_GENERATE_RANGE", [SqlLiteral(0), count])
+        series = SqlTableFunction(
+            "FLATTEN", named_args=[SqlNamedArg("INPUT", offsets)], alias="day_series", lateral=True
+        )
+        offset = SqlCast(SqlIdentifier(parts=["day_series", "VALUE"]), "INTEGER")
+        return _day_rows(self.date_add("day", offset, start), source, series)
+
     def null_safe_eq(self, left: Any, right: Any) -> Any:
         return SqlCall("EQUAL_NULL", [left, right])
 
@@ -252,6 +297,18 @@ class SnowflakeDialect(SqlDialect):
 @dataclass(frozen=True)
 class DuckDbDialect(SqlDialect):
     name: str = "duckdb"
+
+    def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
+        # GENERATE_SERIES includes its end; over DATEs it yields midnight TIMESTAMPs.
+        series = SqlTableFunction(
+            "GENERATE_SERIES",
+            args=[start, end, SqlInterval(SqlLiteral(1), "day")],
+            alias="day_series",
+            columns=["series_day"],
+            lateral=True,
+        )
+        day = SqlCast(SqlIdentifier(parts=["day_series", "series_day"]), "DATE")
+        return _day_rows(day, source, series)
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
@@ -287,6 +344,19 @@ class PostgresDialect(SqlDialect):
     """
 
     name: str = "postgres"
+
+    def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
+        # Integer day offsets (DATE - DATE is an integer, DATE + integer a DATE), since
+        # there is no renderable INTERVAL literal here; GENERATE_SERIES includes its end.
+        series = SqlTableFunction(
+            "GENERATE_SERIES",
+            args=[SqlLiteral(0), SqlBinary(end, "-", start)],
+            alias="day_series",
+            columns=["day_offset"],
+            lateral=True,
+        )
+        day = SqlBinary(start, "+", SqlIdentifier(parts=["day_series", "day_offset"]))
+        return _day_rows(day, source, series)
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
@@ -535,6 +605,13 @@ class BigQueryDialect(SqlDialect):
 
     name: str = "bigquery"
 
+    def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
+        # GENERATE_DATE_ARRAY includes its end and steps one day by default.
+        series = SqlTableFunction(
+            "UNNEST", args=[SqlCall("GENERATE_DATE_ARRAY", [start, end])], alias="series_day"
+        )
+        return _day_rows(SqlIdentifier(parts=["series_day"]), source, series)
+
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # BigQuery has no CONVERT_TIMEZONE. TIMESTAMP(datetime, tz) reads a
         # naive DATETIME as wall-clock in `tz`; DATETIME(timestamp, tz)
@@ -723,6 +800,10 @@ class DatabricksDialect(SqlDialect):
 
     name: str = "databricks"
 
+    def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
+        # SEQUENCE over DATEs includes its end and steps one day by default.
+        return _day_rows(SqlCall("EXPLODE", [SqlCall("SEQUENCE", [start, end])]), source)
+
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # Databricks SQL provides a Snowflake-compatible
         # convert_timezone(sourceTz, targetTz, ts).
@@ -822,6 +903,17 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
+
+    def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
+        # SEQUENCE over DATEs includes its end and steps one day. Trino caps one
+        # sequence at 10,000 elements (about 27 years) and fails loudly beyond that.
+        series = SqlTableFunction(
+            "UNNEST",
+            args=[SqlCall("SEQUENCE", [start, end])],
+            alias="day_series",
+            columns=["series_day"],
+        )
+        return _day_rows(SqlIdentifier(parts=["day_series", "series_day"]), source, series)
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # Trino: with_timezone(naive_ts, tz) attaches a zone;
@@ -953,6 +1045,10 @@ class ClickHouseDialect(SqlDialect):
     """
 
     name: str = "clickhouse"
+
+    # No day_series override: an unmatched LEFT JOIN field is 0 here rather than NULL
+    # (without join_use_nulls), so a filled non-additive bucket would read 0. Packages
+    # on ClickHouse keep needing an authored calendar for dense fill.
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # ClickHouse: toDateTime(ts, tz) reads the value in `tz`;

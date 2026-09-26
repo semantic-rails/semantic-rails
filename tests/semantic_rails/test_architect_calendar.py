@@ -79,12 +79,12 @@ def _model(workspace: Path, model_id: str) -> dict[str, Any]:
     return dict(yaml.safe_load(path.read_text(encoding="utf-8"))["model"])
 
 
-def _monthly_orders(workspace: Path) -> list[tuple[Any, Any]]:
-    """Orders per month from December 2023 to April 2024, filled from the calendar."""
+def _monthly_orders(workspace: Path) -> tuple[list[tuple[Any, Any]], str]:
+    """Orders per month from December 2023 to April 2024, filled, and the SQL that filled them."""
     engine = Runtime.from_path(str(workspace / "shop"))
     month = "temporal_role.shop_order_ordered_at__month"
     try:
-        rows = engine.query(
+        result = engine.query(
             {
                 "version": 1,
                 "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
@@ -97,15 +97,16 @@ def _monthly_orders(workspace: Path) -> list[tuple[Any, Any]]:
                 },
                 "order_by": [{"field": month}],
             }
-        )["rows"]
+        )
     finally:
         engine.close()
-    return [(row[month], row["orders"]) for row in rows]
+    return [(row[month], row["orders"]) for row in result["rows"]], str(result["rendered_sql"])
 
 
 def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
-    with pytest.raises(SemanticLayerError, match="requires a calendar entity"):
-        _monthly_orders(workspace)
+    # Without a calendar the implicit Gregorian one fills; the authored one takes over below.
+    implicit_rows, implicit_sql = _monthly_orders(workspace)
+    assert "implicit_calendar" in implicit_sql
     server = create_architect_mcp_server(workspace_root=workspace)
     before = project_revision(workspace / "shop")
     arguments = {"project_path": "shop", **_calendar(), "expected_revision": before}
@@ -140,13 +141,16 @@ def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
         "calendar",
     )
     assert _model(workspace, "calendar")["calendar_id"] == "default"
-    assert _monthly_orders(workspace) == [
+    rows, sql = _monthly_orders(workspace)
+    assert "main_marts.dim_date" in sql and "implicit_calendar" not in sql
+    assert rows == [
         (date(2023, 12, 1), 0),
         (date(2024, 1, 1), 2),
         (date(2024, 2, 1), 3),
         (date(2024, 3, 1), 3),
         (date(2024, 4, 1), 0),
     ]
+    assert [(month.date(), orders) for month, orders in implicit_rows] == rows
 
 
 def test_date_dimensions_on_a_regular_entity_are_rolled_back(workspace: Path) -> None:

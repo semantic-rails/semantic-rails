@@ -76,6 +76,10 @@ SQL_FUNCTION_NAMES = frozenset(
         "ARGMAX",
         "ARGMIN",
         "ARRAY_AGG",
+        # Implicit-calendar day series (dialects.SqlDialect.day_series):
+        # Snowflake, BigQuery, Trino/Athena and Databricks spellings. Engine-only:
+        # expressions.ENGINE_ONLY_FUNCTIONS keeps them out of `call` expressions.
+        "ARRAY_GENERATE_RANGE",
         "AVG",
         "CEIL",
         "CEILING",
@@ -106,8 +110,10 @@ SQL_FUNCTION_NAMES = frozenset(
         "DATETIME_TRUNC",
         "EQUAL_NULL",
         "EXP",
+        "EXPLODE",
         "FLATTEN",
         "FLOOR",
+        "GENERATE_DATE_ARRAY",
         "GENERATE_SERIES",
         "JSON_EXTRACT",
         "JSON_EXTRACT_STRING",
@@ -137,6 +143,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "RIGHT",
         "ROUND",
         "ROW_NUMBER",
+        "SEQUENCE",
         "SQRT",
         "SPLIT",
         "STRING_SPLIT",

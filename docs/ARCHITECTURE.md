@@ -284,7 +284,8 @@ Core query rules:
 - `select` supports measure references, metric references, and derived AST expressions
 - `time.temporal_role` must point at a declared temporal role ID
 - `time.grain` must be one of the grains declared by the selected temporal role
-- `time.fill` triggers dense-series planning against a calendar entity
+- `time.fill` triggers dense-series planning against the calendar entity for `time.calendar_id`, or,
+  for the default calendar when none is declared, an implicit Gregorian day spine generated in SQL
 - `time.calendar_id` selects a declared calendar when more than one exists
 - `metric_filters` are applied after projected expressions except for `metric_predicate`, which is planned semantically at entity plus contextual time/group scope
 - `temporal_role_overrides` must only reference declared temporal roles
@@ -395,7 +396,8 @@ Important planner behaviors:
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance
   plan metadata
 - historical joins use temporal-validity conditions anchored to the effective time axis
-- dense fill uses a declared calendar entity
+- dense fill uses the declared calendar entity for the requested calendar id, or the implicit
+  Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
 - query-time predicates default to contextual scope
 - package-authored predicates must declare `scope_mode`
