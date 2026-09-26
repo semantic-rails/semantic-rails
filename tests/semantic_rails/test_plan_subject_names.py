@@ -8,6 +8,7 @@ question names wins; when it names none of the tied measures, plan returns
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -140,3 +141,23 @@ def test_a_tie_the_question_names_no_side_of_is_low_confidence(tmp_path: Path) -
     assert (
         "Gross Revenue (measure.shop.gross_revenue)" in plan["why"]["recovery_hints"][0]["message"]
     )
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["number of customers", "how many customers", "customers", "number of customers by store"],
+)
+def test_counting_words_name_the_count_measure(runtime_factory: Any, question: str) -> None:
+    """ "number of" and "of" don't tie Customer count with measures described as
+    "Number of active menu items…", and the question names Customer count over
+    Ordering or Visiting customers."""
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        plan = plan_payload(runtime, intent=question)
+    finally:
+        runtime.close()
+
+    assert plan["status"] == "ok", plan.get("why")
+    [select] = plan["best"]["query_ir"]["select"]
+    assert select["expression"]["measure"] == "measure.jaffle.customer_count"
