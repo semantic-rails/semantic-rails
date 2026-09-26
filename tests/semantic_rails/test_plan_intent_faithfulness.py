@@ -163,11 +163,14 @@ def trailing_window_runtime(tmp_path_factory):
         ("unique visitors by week", "low_confidence"),
         ("unique visitors last week", "low_confidence"),
         ("unique visitors in the last two weeks by week", "low_confidence"),
+        ("unique visitors in the last 2 weeks by week", "low_confidence"),
         ("unique visitors in September 2026 by day", "low_confidence"),
-        # No period asked for, or the question asks for the subject's own window.
+        # Nothing the question says turns the check off: these rows are 14-day counts too.
+        ("unique visitors over 14 days by week", "low_confidence"),
+        ("rolling unique visitors by week", "low_confidence"),
+        ("unique visitors trailing 7 days", "low_confidence"),
+        # No period asked for.
         ("how many unique visitors", "ok"),
-        ("unique visitors over 14 days by week", "ok"),
-        ("rolling unique visitors by week", "ok"),
     ],
 )
 def test_a_subject_with_its_own_window_is_flagged_for_another_period(
@@ -178,6 +181,7 @@ def test_a_subject_with_its_own_window_is_flagged_for_another_period(
     assert ("subject_window_mismatch" in _gap_kinds(payload)) == (status != "ok")
 
 
-def test_a_rolling_metric_asked_for_as_rolling_is_not_flagged(runtime_factory) -> None:
+def test_rolling_metrics_are_not_checked(runtime_factory) -> None:
+    # A rolling metric is read by day as a matter of course; its window is follow-up work.
     payload = plan_payload(runtime_factory("jaffle_shop"), intent="rolling revenue by day")
     assert "subject_window_mismatch" not in _gap_kinds(payload)

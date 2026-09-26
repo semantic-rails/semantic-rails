@@ -1456,7 +1456,14 @@ def named_metrics(tmp_path: Path) -> Iterator[SemanticLayerMCPAdapter]:
         ),
         ("cumulative revenue by month", "metric.sales.cumulative_revenue", "ok", None),
         # A measure with the metric's own name still means the metric, not plain revenue.
-        ("rolling 28-day revenue by day", "metric.sales.rolling_28d_revenue", "ok", None),
+        # It's a stock over its own 28-day window, so a daily read is flagged, whatever
+        # the question says: the planner can't tell a rolling read from a period one.
+        (
+            "rolling 28-day revenue by day",
+            "metric.sales.rolling_28d_revenue",
+            "low_confidence",
+            "subject_window_mismatch",
+        ),
         ("Revenue QTD by day", "metric.sales.revenue_qtd", "ok", None),
         # A draft without the named metric, or a second subject, isn't ready.
         (

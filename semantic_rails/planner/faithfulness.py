@@ -493,8 +493,7 @@ def intent_faithfulness_why(
     ):
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
-    # Read the asker's own words: a named metric's id may state a span they didn't.
-    gaps.extend(_subject_window_gaps(runtime._config, str(question or ""), query))
+    gaps.extend(_subject_window_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
@@ -632,8 +631,6 @@ _SPAN_RE = re.compile(
 )
 _SPAN_UNIT_DAYS = {"d": 1, "w": 7, "m": 30, "q": 91, "y": 365}
 _GRAIN_DAYS = {"day": 1, "week": 7, "month": 30, "quarter": 91, "year": 365}
-# A question about a rolling or as-of value asks for the subject's own window.
-_OWN_WINDOW_RE = re.compile(r"\b(rolling|trailing|moving|as of)\b")
 
 
 def _stated_spans(text: str) -> set[int]:
@@ -664,34 +661,27 @@ def _draft_span_days(query: dict[str, Any]) -> int:
     return 0
 
 
-def _subject_window_gaps(config: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
-    """The subject is a value over its own trailing window, and the question asks for another period.
+def _subject_window_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
+    """The subject is a stock over its own trailing window, and each row reports another period.
 
     "Unique visitors (14 days)" filtered to this week is the 14-day count as of the week's
-    last snapshot, not this week's unique visitors. Only stocks and rolling metrics carry
-    such a window (a conversion metric's "7d" is how long a conversion may take). The window
-    is read from the subject's label, name or id, so a false match only lowers confidence.
+    last snapshot, not this week's unique visitors. The window is read from the stock's
+    label, name or id. Nothing the question says turns the check off: a false match only
+    lowers confidence, while a missed one returns a wrong number as the period's.
     """
     asked = _draft_span_days(query)
-    subjects = _projected_subject_ids(query)
-    if not asked or _OWN_WINDOW_RE.search(text.lower()):
+    if not asked:
         return []
-    named = _stated_spans(text)
     objects = {row.id: row for row in [*config.measures, *config.metric_recipes]}
     gaps: list[CoverageGap] = []
-    for subject_id in subjects:
+    for subject_id in _projected_subject_ids(query):
         row = objects.get(subject_id)
         kind = getattr(row, "measure_class", "") or getattr(row, "kind", "")
-        if kind not in {"semi_additive", "rolling"}:
+        if kind != "semi_additive":
             continue
         label = str(getattr(row, "label", "") or subject_id)
-        window = dict(getattr(row, "window_spec", {}) or {})
-        spans = (
-            {_SPAN_UNIT_DAYS[str(window["unit"])[0]] * int(window.get("value") or 1)}
-            if str(window.get("unit") or "")[:1] in _SPAN_UNIT_DAYS
-            else _stated_spans(f"{label} {getattr(row, 'name', '')} {subject_id}")
-        )
-        if len(spans) != 1 or any(_same_span(span, own) for span in named for own in spans):
+        spans = _stated_spans(f"{label} {getattr(row, 'name', '')} {subject_id}")
+        if len(spans) != 1:
             continue
         (own,) = spans
         if _same_span(own, asked):
