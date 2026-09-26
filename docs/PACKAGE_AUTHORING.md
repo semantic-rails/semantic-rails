@@ -1350,6 +1350,19 @@ Routing is conservative in the MVP:
   aggregate's `filter`, do not route through variants yet.
 - An `aggregate_relations:` entry that declares `filters` doesn't route yet: it
   holds only the rows its filters kept.
+- A rollup that declares `requires_certification: true` (on a variant or an
+  `aggregate_relations:` entry; default `false`) routes only while the host's
+  certification provider says it is certified, and never when none is installed
+  (`not_certified`). A host installs one at startup with
+  `semantic_rails.acceleration.routing.set_certification_provider(provider)`, where
+  `provider.certified(config, relation)` returns `True` for a certified rollup. To
+  certify one, a host calls
+  `semantic_rails.acceleration.certification.certify_aggregate_relation(config,
+  relation_id)`. For each measure column it gets the rule the rollup fails (or none)
+  and a query's `base_sql` and `rollup_sql`, at the rollup's grain and grouped by
+  every rollup dimension, to run and compare. A runtime doesn't use its compile
+  cache for a package with such a rollup: every request compiles again, which costs
+  compile time, so that a revoked certification applies to the next request.
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected

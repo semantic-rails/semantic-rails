@@ -302,8 +302,8 @@ When package authors declare physical rollups with `model.variants:` or explicit
   rollup of the leaf's entity to a reason code, such as `missing_dimension`,
   `non_nesting_grain`, `time_bounds_not_aligned`, `timezone_mismatch`,
   `calendar_mismatch`, `rollup_filter_not_implied`, `metric_predicate_filter`,
-  `join_path_mismatch` or `aggregation_not_reaggregable`. It is empty for a
-  package without rollups.
+  `join_path_mismatch`, `aggregation_not_reaggregable` or `not_certified`. It is
+  empty for a package without rollups.
 - `performance_plan.aggregate_routing.candidates` lists every rollup considered
   for each measure leaf: `{leaf_id, measure_id, relation_id, decision, reason}`,
   where `decision` is `selected`, `eligible` (it passed every rule but wasn't

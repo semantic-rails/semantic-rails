@@ -29,7 +29,7 @@ from ..expressions import MetricPredicateExpr
 from ..fanout import analyze_fanout
 from ..ir import BoundMeasure, PathSelection
 from ..schema import AggregateRelationConfig, MeasureConfig, PackageConfig
-from .routing import ROUTING_OFF, aggregate_routing_enabled
+from .routing import NOT_CERTIFIED, ROUTING_OFF, aggregate_routing_enabled, relation_certified
 
 _ROUTABLE_GRAIN_ORDER = {
     "transaction": 0,
@@ -254,6 +254,8 @@ def _aggregate_relation_rejection_reason(
         and not (row.measure_holds.get(measure_id) and _one_row_per_group(row, leaf, config))
     ):
         return "aggregation_not_reaggregable"
+    if not relation_certified(config, row):  # R9, once R1-R8 hold
+        return NOT_CERTIFIED
     return ""
 
 

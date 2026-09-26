@@ -1,10 +1,14 @@
-"""The aggregate-routing kill switch and the per-leaf routing report.
+"""The aggregate-routing controls and the per-leaf routing report.
 
 A runtime turns routing to declared rollups on or off (``SEMANTIC_RAILS_AGGREGATE_ROUTING``
 or ``Runtime.set_aggregate_routing``). Its request scope enters :func:`aggregate_routing`, the
 planner rejects every rollup with :data:`ROUTING_OFF` while it is off, and the compile cache
 keys on :func:`aggregate_routing_enabled`, so a switch applies to the next request even when
 the plan is cached.
+
+A rollup that declares ``requires_certification`` routes only while the process's
+:class:`CertificationProvider` (:func:`set_certification_provider`) says it is certified; with
+none installed it never routes (:data:`NOT_CERTIFIED`).
 """
 
 from __future__ import annotations
@@ -13,18 +17,20 @@ from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from ..errors import SemanticLayerError
 
 if TYPE_CHECKING:
     from ..config import PackageConfig
     from ..ir import LogicalPlan, PhysicalPlan
+    from ..schema import AggregateRelationConfig
 
 AGGREGATE_ROUTING_ENV = "SEMANTIC_RAILS_AGGREGATE_ROUTING"
 ROUTING_OFF = "aggregate_routing_off"
 LOWERED_SEPARATELY = "lowered_separately"  # a distribution branch or an entity-set plan
 MAX_CANDIDATES = 200  # report rows; the rest are counted in `candidates_omitted`
+NOT_CERTIFIED = "not_certified"
 _enabled: ContextVar[bool] = ContextVar("semantic_rails_aggregate_routing", default=True)
 _scans: ContextVar[set[str] | None] = ContextVar("semantic_rails_rollup_scans", default=None)
 
@@ -51,6 +57,33 @@ def aggregate_routing(enabled: bool) -> Iterator[None]:
 
 def aggregate_routing_enabled() -> bool:
     return _enabled.get()
+
+
+class CertificationProvider(Protocol):
+    def certified(self, config: PackageConfig, relation: AggregateRelationConfig) -> bool:
+        """True only if ``relation`` answers exactly for this package as loaded now."""
+        ...
+
+
+_provider: CertificationProvider | None = None
+
+
+def set_certification_provider(provider: CertificationProvider | None) -> None:
+    """Install the process's certification provider at startup; ``None`` removes it."""
+    global _provider
+    if provider is not None and not callable(getattr(provider, "certified", None)):
+        raise TypeError("CertificationProvider must implement .certified(config, relation)")
+    _provider = provider
+
+
+def relation_certified(config: PackageConfig, relation: AggregateRelationConfig) -> bool:
+    """Whether a rollup may route as far as certification goes; unknown means no."""
+    if not relation.requires_certification:
+        return True
+    try:
+        return _provider is not None and _provider.certified(config, relation) is True
+    except Exception:  # a provider that can't answer never lets a rollup route
+        return False
 
 
 @contextmanager
