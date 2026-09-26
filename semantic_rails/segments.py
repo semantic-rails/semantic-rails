@@ -67,7 +67,8 @@ def _config_maps(config: PackageConfig) -> dict[str, dict[str, Any]]:
     }
 
 
-def _metric_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
+def metric_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
+    """The entity of the first measure the metric expression reads, or ``""`` if it reads none."""
     maps = _config_maps(config)
     measures = maps["measures"]
     recipes = maps["metric_recipes"]
@@ -78,36 +79,36 @@ def _metric_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
     if isinstance(expr, MetricRecipeRefExpr):
         if expr.metric_recipe not in recipes:
             raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric '{expr.metric_recipe}'")
-        return _metric_root_entity(config, recipes[expr.metric_recipe].expression)
+        return metric_root_entity(config, recipes[expr.metric_recipe].expression)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _metric_root_entity(config, expr.left)
+        return metric_root_entity(config, expr.left)
     if isinstance(expr, BooleanExpr):
         for arg in expr.args:
-            entity = _metric_root_entity(config, arg)
+            entity = metric_root_entity(config, arg)
             if entity:
                 return entity
         return ""
     if isinstance(expr, CallExpr):
         for arg in expr.args:
-            entity = _metric_root_entity(config, arg)
+            entity = metric_root_entity(config, arg)
             if entity:
                 return entity
         return ""
     if isinstance(expr, CaseExpr):
         for item in expr.whens:
-            entity = _metric_root_entity(config, item.when)
+            entity = metric_root_entity(config, item.when)
             if entity:
                 return entity
-            entity = _metric_root_entity(config, item.then)
+            entity = metric_root_entity(config, item.then)
             if entity:
                 return entity
-        return _metric_root_entity(config, expr.else_expr) if expr.else_expr is not None else ""
+        return metric_root_entity(config, expr.else_expr) if expr.else_expr is not None else ""
     if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
-        return _metric_root_entity(config, expr.input)
+        return metric_root_entity(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return expr.entity
     if isinstance(expr, ConversionExpr):
-        return expr.entity or _metric_root_entity(config, expr.base)
+        return expr.entity or metric_root_entity(config, expr.base)
     if isinstance(expr, LiteralExpr):
         return ""
     return ""
@@ -163,7 +164,7 @@ def normalize_segment(config: PackageConfig, segment_id: str) -> NormalizedSegme
             f"Unknown basis metric recipe '{segment.basis_metric}'",
             details={"segment_id": segment.id, "basis_metric": segment.basis_metric},
         )
-    root_entity = _metric_root_entity(config, recipe.expression)
+    root_entity = metric_root_entity(config, recipe.expression)
     if root_entity != segment.entity:
         raise SemanticLayerError(
             "INVALID_SEGMENT",

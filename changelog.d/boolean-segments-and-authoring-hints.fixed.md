@@ -13,7 +13,8 @@
 - The bundled sample package, installed from a wheel, builds its DuckDB file in
   `~/.semantic_rails/cache/` (or under `SEMANTIC_RAILS_HOME`), one per installed version,
   not in `site-packages`.
-  A `site-packages/data/jaffle_shop.duckdb` left by an earlier version can be deleted.
+  A `site-packages/data/jaffle_shop.duckdb` left by an earlier version, and a folder under
+  `~/.semantic_rails/cache/jaffle_shop/` for a version no longer installed, can be deleted.
 - REPL polish: `author model` recommends the largest unmodeled table and doesn't
   pre-tick rank or sequence-number columns as summed measures (the Architect's
   `suggest_model` marks them low confidence); "Model to extend" lists calendars last;

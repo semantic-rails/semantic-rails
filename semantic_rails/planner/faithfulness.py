@@ -19,13 +19,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ._base import (
+    _FISCAL_BUCKET_RE,
+    _FISCAL_RE,
     _MONTH_NUMBERS,
     _NUMBER_WORDS,
     _ORDINALS,
     _TERM_SYNONYMS,
     _TIME_UNITS,
+    _TO_DATE_OR_ROLLING_RE,
     _canonical_measure,
     _canonical_metric,
+    _fiscal_calendar,
     _named_metric,
     _object_text,
     _tied_top,
@@ -73,7 +77,7 @@ _RANK_RE = re.compile(
 )
 _PRIOR_PERIOD_RE = re.compile(
     r"\b(?:compared\s+(?:with|to)|vs\.?|versus|against|alongside|along\s+with|next\s+to)\s+"
-    r"(?:the\s+)?(?:last|prior|previous)\s+(?:day|week|month|quarter|year|period)\b",
+    r"(?:the\s+)?(?:last|prior|previous)\s+(?:fiscal\s+)?(?:day|week|month|quarter|year|period)\b",
     re.IGNORECASE,
 )
 _EXCLUSION_VALUE_RE = (
@@ -487,6 +491,7 @@ def intent_faithfulness_why(
         and any(caller_time.get(key) for key in ("start", "end", "range"))
     ):
         gaps.extend(_time_window_gaps(runtime, text, query))
+    gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
@@ -611,6 +616,91 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
                 "message": (
                     "Add the window to Query IR time (start inclusive, end exclusive) with a grain "
                     "that yields the buckets the question asks for, then validate."
+                ),
+            },
+        )
+    ]
+
+
+def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """The question counts time in fiscal periods, but the draft counts Gregorian ones.
+
+    A draft honors a fiscal bucket ("by fiscal quarter") by bucketing on a
+    non-default calendar (the planner picks only the fiscal one; a caller may name
+    another), or by grouping on a dimension whose name says fiscal (a fiscal-period
+    column on the fact). A question with no fiscal bucket is honored on days, too.
+    Any other fiscal mention ("the first fiscal quarter") also needs the period as
+    exact days in the draft's window. A draft with no time buckets honors it by
+    filtering on such a dimension. Nothing honors a to-date or rolling value:
+    period-to-date resets on Gregorian periods.
+    """
+
+    lowered = text.lower()
+    fiscal = _FISCAL_RE.search(lowered)
+    if fiscal is None:
+        return []
+    time = _time_block(query)
+    rolling = _TO_DATE_OR_ROLLING_RE.search(lowered) is not None
+    scoped = not _FISCAL_RE.search(_FISCAL_BUCKET_RE.sub(" ", lowered)) or any(
+        time.get(key) for key in ("start", "end", "range")
+    )
+    named = {
+        row.id
+        for row in config.dimensions
+        if "fiscal" in _tokens(f"{row.id} {row.name} {row.label}")
+    }
+    bucketed = (
+        str(time.get("calendar_id") or "default").lower() != "default"
+        # A day is a day on any calendar, unless the question asks for fiscal buckets.
+        or (time.get("grain") == "day" and not _FISCAL_BUCKET_RE.search(lowered))
+        or bool(named & {str(item) for item in query.get("group_by") or []})
+    )
+    filtered = not time.get("grain") and bool(named & set(_referenced_ids(query)))
+    if not rolling and ((scoped and bucketed) or filtered):
+        return []
+    calendar = _fiscal_calendar(config)
+    calendars = sorted(
+        {row.calendar_id for row in config.entities if row.kind == "time" and row.calendar_id}
+    )
+    steps = []
+    if rolling:
+        steps.append(
+            "ask for the fiscal buckets alone: plan can't draft a fiscal to-date or rolling value"
+        )
+    elif not bucketed and calendar is not None:
+        steps.append(
+            f"set query.time.calendar_id to {calendar.calendar_id!r} and time.fill to true"
+            + ("" if time.get("grain") else " with a temporal_role and grain")
+        )
+    if not scoped:
+        steps.append(
+            "give any fiscal period as exact query.time.start and end dates (or ask only for "
+            "fiscal buckets, as in 'by fiscal quarter')"
+        )
+    hint = " and ".join(steps)
+    return [
+        CoverageGap(
+            kind="fiscal_calendar_unrealized",
+            clause=fiscal.group(0),
+            message=(
+                "The question asks for a to-date or rolling value in fiscal periods."
+                if rolling
+                else "The question names a fiscal period, but the draft carries no window for it."
+                if bucketed
+                else "The question counts time in fiscal periods, but the draft buckets and "
+                "bounds time on the Gregorian calendar."
+            ),
+            expected={"calendar_id": calendar.calendar_id if calendar else "fiscal"},
+            actual={"calendar_id": time.get("calendar_id") or "default"},
+            recovery_hint={
+                "kind": "use_fiscal_calendar",
+                "message": (
+                    f"{hint[:1].upper()}{hint[1:]}, then validate."
+                    if calendar
+                    else "plan found no single calendar named fiscal in this package"
+                    + (f" (its calendars: {', '.join(calendars)})" if calendars else "")
+                    + ": set query.time.calendar_id to the one you mean with time.fill true, "
+                    "author a fiscal calendar, or ask in calendar-year terms."
                 ),
             },
         )
@@ -1802,9 +1892,12 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
     referenced = set(_referenced_ids(query))
+    calendar_id = str(_time_block(query).get("calendar_id") or "default")
     vocabulary: set[str] = set()
     for row in _catalog_rows(runtime._config):
-        if str(getattr(row, "id", "")) in referenced:
+        if str(getattr(row, "id", "")) in referenced or (
+            calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
+        ):
             vocabulary.update(_tokens(_object_text(row)))
     labels = _value_phrases(runtime._config)
     for node in _dict_nodes(query):

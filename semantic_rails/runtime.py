@@ -2346,10 +2346,10 @@ class Runtime:
                     "request_context": request_context_payload(context),
                 }
             )
-            # Validation type-checks booleans and numbers only; for text, dates and times only the
-            # warehouse can say a value fits its column (text for a BOOLEAN column fails there).
-            untyped = {"string", "date", "timestamp"}
-            untyped_ids = {row.id for row in self._config.dimensions if row.data_type in untyped}
+            # Validation type-checks booleans and numbers only; for text, ids, dates and times only
+            # the warehouse can say a value fits its column (text for a BOOLEAN column fails there).
+            typed = {"boolean", "integer", "number"}
+            untyped_ids = {row.id for row in self._config.dimensions if row.data_type not in typed}
             unchecked = sorted({str(item.get("field")) for item in normalized.where} & untyped_ids)
             if validation.get("ok") and unchecked:
                 validation.setdefault("warnings", []).append(
@@ -2357,7 +2357,7 @@ class Runtime:
                         "code": "SEGMENT_VALUES_UNCHECKED",
                         "severity": "warning",
                         "message": (
-                            f"Membership values on text, date or time dimensions "
+                            f"Membership values on text, id, date or time dimensions "
                             f"({', '.join(unchecked)}) are checked in the warehouse only: preview "
                             "the segment, or run "
                             "`semantic-rails project validate --mode runtime` (REPL: "

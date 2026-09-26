@@ -1656,6 +1656,7 @@ def test_segment_values_keep_their_type_from_the_wizard_to_preview(
 def test_a_membership_value_its_column_cannot_hold_fails_validation_with_a_hint(
     tmp_path: Path, kind: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from semantic_rails.config_validation import PackageReference, validate_config_report
     from semantic_rails.diagnostics import exception_issue
     from semantic_rails.runtime import Runtime
 
@@ -1697,8 +1698,16 @@ def test_a_membership_value_its_column_cannot_hold_fails_validation_with_a_hint(
     assert "failed=1" in output
     assert "hint: If the warehouse refused a membership value of segment.shop.s" in output
 
+    # Each segment probe reports its progress and its failure.
+    lines: list[str] = []
+    validate_config_report(PackageReference(source_path=str(project)), progress=lines.append)
+    assert "Validating segment 1/1: segment.shop.s" in lines
+    assert any(line.startswith("WARNING segment failed: segment.shop.s (") for line in lines)
 
-@pytest.mark.parametrize(("data_type", "warned"), [("date", True), ("integer", False)])
+
+@pytest.mark.parametrize(
+    ("data_type", "warned"), [("date", True), ("id", True), ("integer", False), ("number", False)]
+)
 def test_segment_validate_says_which_values_only_the_warehouse_can_check(
     tmp_path: Path, data_type: str, warned: bool
 ) -> None:
@@ -1714,7 +1723,8 @@ def test_segment_validate_says_which_values_only_the_warehouse_can_check(
     (project / "segments").mkdir(exist_ok=True)
     _write_yaml(project / "segments" / "core.yml", {"segments": {"s": segment}})
     runtime = Runtime.from_path(str(project))
-    # A date dimension is reached only through a calendar relationship; stand one in for tier.
+    # A date dimension is reached only through a calendar relationship; stand each type in for
+    # tier's (validation checks only booleans and numbers).
     dimensions = runtime._config.dimensions
     index = next(i for i, row in enumerate(dimensions) if row.id == tier)
     dimensions[index] = dataclasses.replace(dimensions[index], data_type=data_type)
