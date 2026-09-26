@@ -199,6 +199,9 @@ cube:
     month: "order_lifecycle.delivered_at.month"
     customer_segment: "customer_history.customer_segment"
     delivered_revenue: "order_lifecycle.delivered_revenue"
+  q18_same_store_session_to_order_conversion_50m:
+    month: "month"
+    same_store_conversion_rate_50m: "same_store_conversion_rate_50m"
   q19_trailing_3_month_revenue_by_month:
     month: "month"
     trailing_3_month_revenue_usd: "trailing_3_month_revenue_usd"

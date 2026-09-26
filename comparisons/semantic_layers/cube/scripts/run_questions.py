@@ -31,6 +31,9 @@ PROJECT_DIR = PACK / "cube"
 RESULTS_DIR = PACK / "shared" / "results" / "cube"
 DATABASE = PACK / "shared" / "data" / "jaffle_comparison.duckdb"
 BASE_URL = "http://127.0.0.1:4000/cubejs-api/v1"
+# Cube's SQL API returns at most this many rows (CUBESQL_NON_STREAMING_QUERY_MAX_ROW_LIMIT's
+# default), so a result that reaches it may be cut off.
+SQL_API_ROW_LIMIT = 50000
 PACKAGES = ["@cubejs-backend/server", "@cubejs-backend/duckdb-driver", "@duckdb/node-api"]
 # A fresh API secret per run: Cube accepts only requests carrying a JWT signed with it.
 API_SECRET = secrets.token_hex(32)
@@ -77,6 +80,8 @@ def _cubesql(sql: str) -> str:
         raise SqlApiError("; ".join(errors) or "no schema in the response")
     names = [column["name"] for column in chunks[0]["schema"]]
     rows = [dict(zip(names, row, strict=True)) for chunk in chunks[1:] for row in chunk["data"]]
+    if len(rows) >= SQL_API_ROW_LIMIT:
+        raise SqlApiError(f"{len(rows)} rows reach the SQL API's row limit, so it may be cut off")
     return json.dumps({"schema": chunks[0]["schema"], "data": rows}, indent=2)
 
 
@@ -139,7 +144,14 @@ def main() -> None:
         )
         try:
             _write(RESULTS_DIR / "meta.json", _wait_for_meta(server, log))
-            queries = sorted((PROJECT_DIR / "queries").glob("q*.*"), key=lambda path: path.stem)
+            queries = sorted(
+                path
+                for path in (PROJECT_DIR / "queries").glob("q*")
+                if path.suffix in {".json", ".sql"}
+            )
+            stems = [path.stem for path in queries]
+            if len(stems) != len(set(stems)):
+                raise SystemExit(f"Two query files answer one question: {sorted(stems)}")
             for query_file in queries:
                 target = RESULTS_DIR / query_file.stem
                 query = query_file.read_text(encoding="utf-8")

@@ -338,8 +338,10 @@ def main() -> None:
                 None,
             )
             # Only whether it ran: support labels come from the rubric, and a pinned capture's
-            # summary may still carry old hand labels. A layer with no entry didn't attempt the
-            # question: a frozen-model variant it can't express, or a capture that can't re-run.
+            # summary may still carry old hand labels. Only a frozen-model variant may be missing:
+            # a layer leaves out one it can't express, or a capture that can't re-run all of them.
+            if entry is None and SLICE_BY_SCOPE[metadata["scope_level"]] != "frozen_model":
+                raise SystemExit(f"{layer} has no result for {question_id}")
             if entry is None:
                 status = "not_run"
             else:

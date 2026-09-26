@@ -1,6 +1,6 @@
 {
   "layer": "ktx",
-  "generated_at": "2026-09-26T01:53:42+00:00",
+  "generated_at": "2026-09-26T02:34:11+00:00",
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "environment": {
     "@kaelio/ktx": "0.16.0",
@@ -154,6 +154,24 @@
       "sql_path": "comparisons/semantic_layers/shared/results/ktx/q16_revenue_by_customer_segment_as_of_delivered_time/sql.sql",
       "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q16_revenue_by_customer_segment_as_of_delivered_time/compile.stderr.txt",
       "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q16_revenue_by_customer_segment_as_of_delivered_time/run.stderr.txt"
+    },
+    {
+      "question_id": "q19_trailing_3_month_revenue_by_month",
+      "status": "unsupported",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q19_trailing_3_month_revenue_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q19_trailing_3_month_revenue_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q19_trailing_3_month_revenue_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q19_trailing_3_month_revenue_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q19_trailing_3_month_revenue_by_month/run.stderr.txt"
+    },
+    {
+      "question_id": "q20_revenue_and_prior_month_revenue_by_month",
+      "status": "unsupported",
+      "query_path": "comparisons/semantic_layers/ktx/queries/q20_revenue_and_prior_month_revenue_by_month.json",
+      "result_path": "comparisons/semantic_layers/shared/results/ktx/q20_revenue_and_prior_month_revenue_by_month/result.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/ktx/q20_revenue_and_prior_month_revenue_by_month/sql.sql",
+      "compile_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q20_revenue_and_prior_month_revenue_by_month/compile.stderr.txt",
+      "run_stderr_path": "comparisons/semantic_layers/shared/results/ktx/q20_revenue_and_prior_month_revenue_by_month/run.stderr.txt"
     },
     {
       "question_id": "q21_revenue_and_large_order_revenue_by_month",

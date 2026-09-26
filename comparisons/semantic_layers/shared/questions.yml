@@ -129,8 +129,7 @@ questions:
     scope_level: variant
     variant_of: q09_session_to_order_conversion_7d
     business_question: What share of sessions converted to an order within 14 days?
-    expected_semantics: The q09 rule with a 14 day window. A session converted if the same customer placed an order in [session start, session start + 14 x 24 hours).
-    bypass_columns: [converted_order_id, converted_at]
+    expected_semantics: The q09 rule with a 14 day window, counted as a duration. A session converted if the same customer placed an order in [session start, session start + 14 x 24 hours).
 
   - id: q18_same_store_session_to_order_conversion_50m
     title: Same Store Session To Order Conversion Within 50 Minutes
@@ -138,8 +137,7 @@ questions:
     scope_level: variant
     variant_of: q15_same_store_session_to_order_conversion_7d
     business_question: What share of sessions converted to an order at the same store within 50 minutes?
-    expected_semantics: The q15 rule with a 50 minute window. A session converted if the same customer placed an order at the session's store in [session start, session start + 50 minutes).
-    bypass_columns: [converted_order_id, converted_at]
+    expected_semantics: The q15 rule with a 50 minute window, counted as a duration. A session converted if the same customer placed an order at the session's store in [session start, session start + 50 minutes).
 
   - id: q19_trailing_3_month_revenue_by_month
     title: Trailing 3 Month Revenue By Month

@@ -6,7 +6,7 @@
     "@duckdb/node-api": "1.5.5-r.5",
     "node": "v24.6.0"
   },
-  "generated_at": "2026-09-26T02:15:24+00:00",
+  "generated_at": "2026-09-26T02:34:06+00:00",
   "layer": "cube",
   "questions": [
     {
@@ -119,6 +119,13 @@
       "question_id": "q16_revenue_by_customer_segment_as_of_delivered_time",
       "result_path": "comparisons/semantic_layers/shared/results/cube/q16_revenue_by_customer_segment_as_of_delivered_time/load.json",
       "sql_path": "comparisons/semantic_layers/shared/results/cube/q16_revenue_by_customer_segment_as_of_delivered_time/sql.json",
+      "status": "executed"
+    },
+    {
+      "query_path": "comparisons/semantic_layers/cube/queries/q18_same_store_session_to_order_conversion_50m.sql",
+      "question_id": "q18_same_store_session_to_order_conversion_50m",
+      "result_path": "comparisons/semantic_layers/shared/results/cube/q18_same_store_session_to_order_conversion_50m/load.json",
+      "sql_path": "comparisons/semantic_layers/shared/results/cube/q18_same_store_session_to_order_conversion_50m/sql.json",
       "status": "executed"
     },
     {

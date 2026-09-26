@@ -1,10 +1,10 @@
 {
-  "answer_key_fingerprint": "e46d16dc113b0e0fc8997f39752beb77d13b7f1f7f98686e51c1395329f4bcad",
+  "answer_key_fingerprint": "0523e67489601f46c52d1fb9d0ffba944488ee2fb84a5786622676400be81412",
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "environment": {
     "duckdb": "1.5.3"
   },
-  "generated_at": "2026-09-26T02:01:57+00:00",
+  "generated_at": "2026-09-26T02:32:50+00:00",
   "layer": "answer_key",
   "questions": [
     {

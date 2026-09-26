@@ -531,6 +531,9 @@ LAYER_META: dict[str, dict[str, Any]] = {
         },
         "notes": {
             "q05_orders_and_item_revenue_by_store_by_month": "One query for the order count and item revenue: Cube aggregates each measure on its own cube and joins the results, so neither fans out.",
+            "q19_trailing_3_month_revenue_by_month": "An SQL API moving sum (`ROWS BETWEEN 2 PRECEDING`) over monthly revenue; it steps over month rows, which equals the rule's calendar months only because every month in this data has orders.",
+            "q20_revenue_and_prior_month_revenue_by_month": "An SQL API `LAG` over monthly revenue; it steps over month rows, which equals the rule's calendar months only because every month in this data has orders.",
+            "q22_average_and_max_item_revenue_by_product_type_by_month": "An SQL API query of `AVG` and `MAX` over the `item_revenue_usd` sum measure. Cube pushes it down as the average and maximum of the measure's row expression (`query_type: pushdown` in its `sql.json`), and it only selects and aggregates members, so the rubric labels it native; q21's answer differs only in its derived table. See https://docs.cube.dev/reference/core-data-apis/sql-api/query-format.",
             "q08_revenue_by_customer_segment_as_of_order_time": "Modeled as a declared join from orders to customer history whose `sql` carries the validity condition.",
             "q09_session_to_order_conversion_7d": "Sessions join the same customer's orders within 7 days after the session start; a subquery dimension counts each session's matches, and the rate is converted sessions over all sessions.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "Multi-stage measures count orders at a fixed customer and calendar-month grain, then sum the orders of groups with more than 10.",
@@ -555,7 +558,9 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Join-tree aggregation is expressive without a large semantic scaffolding layer.",
             "Arbitrary-condition joins and query-derived sources answer q08-q16 without SQL blocks.",
         ],
-        "weaknesses": [],
+        "weaknesses": [
+            "The model's q09 and q15 join counts (started_at, started_at + 7 days], the stated rule, while the q17 and q18 queries count [started_at, started_at + N), the duration convention the frozen-model answer keys use. No order in this data falls on either boundary.",
+        ],
         "scale": {
             "baseline_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
             "stretch_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
@@ -631,6 +636,10 @@ LAYER_META: dict[str, dict[str, Any]] = {
         },
         "notes": {
             "q05_orders_and_item_revenue_by_store_by_month": "Malloy's join-tree aggregation keeps the mixed-grain query native and compact.",
+            "q17_session_to_order_conversion_14d": "The query extends the model's session source with its own 14-day `join_many` (a query-level source extension; the model file is unchanged).",
+            "q18_same_store_session_to_order_conversion_50m": "The query extends the model's session source with its own 50-minute `join_many` (a query-level source extension; the model file is unchanged).",
+            "q19_trailing_3_month_revenue_by_month": "`sum_moving(revenue_usd, 2)` steps over month rows, which equals the rule's calendar months only because every month in this data has orders.",
+            "q20_revenue_and_prior_month_revenue_by_month": "`lag(revenue_usd)` steps over month rows, which equals the rule's calendar months only because every month in this data has orders.",
             "q08_revenue_by_customer_segment_as_of_order_time": "An arbitrary-condition `join_one` picks the customer-history row valid at the order time.",
             "q09_session_to_order_conversion_7d": "A `join_many` to the same customer's orders within 7 days after the session; `count()` counts each session once across the join.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "A query-derived source counts each customer-month's orders and is joined back to filter on more than 10.",
@@ -991,7 +1000,10 @@ def entry_for_question(
         if layer_id == "metricflow":
             sql_text = clean_metricflow_sql(sql_text)
         elif layer_id == "cube":
-            sql_text = json.loads(sql_text)["sql"]["sql"][0]  # [sql, params]
+            generated = json.loads(sql_text)["sql"]  # [sql, params], or an SQL API query's error
+            sql_text = (
+                generated["sql"][0] if "sql" in generated else read_text(abs_path(query_path))
+            )
         # Excerpts show the SQL itself; captured comments are commentary, not evidence.
         sql_lines = [line for line in sql_text.splitlines() if not line.lstrip().startswith("--")]
         sql_excerpt = "\n".join(sql_lines[:36])
@@ -1170,13 +1182,30 @@ def claim_findings(
     variants = [item for item in all_items if item["slice"] == FROZEN]
     if variants:
         answers = sum(len(item["current_layers"]) for item in variants)
-        differing = [item for item in variants if item["comparison_status"] != "matched"]
+        by_status = {
+            status: [
+                short_id(item["question_id"])
+                for item in variants
+                if item["comparison_status"] == status
+            ]
+            for status in ("mismatched", "not_comparable")
+        }
         output_check += (
             f" On the {len(variants)} frozen-model questions, all {answers} answers the layers "
             "executed on the current dataset match it too."
-            if not differing
-            else f" On the frozen-model questions, at least one executed answer differs on "
-            f"{', '.join(short_id(item['question_id']) for item in differing)}."
+            if not any(by_status.values())
+            else f" On the frozen-model questions, {answers} answers were executed"
+            + (
+                f"; at least one differs on {', '.join(by_status['mismatched'])}"
+                if by_status["mismatched"]
+                else ""
+            )
+            + (
+                f"; none on {', '.join(by_status['not_comparable'])}"
+                if by_status["not_comparable"]
+                else ""
+            )
+            + "."
         )
     claims = [output_check]
     captured = {layer["id"]: layer["captured"] for layer in layers_payload}
@@ -1250,7 +1279,8 @@ def claim_findings(
                 for item in layer["questions"]
                 if item["question_id"] == question["id"]
             )
-            by_label.setdefault(label_of, []).append(layer["label"])
+            if label_of not in ("requires_model_change", "not_assessed"):  # nothing was read
+                by_label.setdefault(label_of, []).append(layer["label"])
         described = "; ".join(
             f"{label_of} for {join_names(names)}" for label_of, names in by_label.items()
         )
@@ -1281,8 +1311,8 @@ def frozen_model_claims(
     if not variants:
         return []
     written = id_range([qid for name, ids in slice_ids.items() if name != FROZEN for qid in ids])
+    # In the pack's fixed layer order: the counts aren't a ranking.
     assessed = [layer for layer in layers_payload if layer["answered_with_model_frozen"]]
-    assessed.sort(key=lambda layer: -layer["answered_with_model_frozen"]["answered"])
     parts = []
     for layer in assessed:
         frozen = layer["answered_with_model_frozen"]
@@ -1291,18 +1321,35 @@ def frozen_model_claims(
     skipped = [
         layer["label"] for layer in layers_payload if not layer["answered_with_model_frozen"]
     ]
+    failed = [
+        f"{layer['label']} ({id_range(ids)})"
+        for layer in assessed
+        if (
+            ids := [
+                item["question_id"]
+                for item in layer["questions"]
+                if item["question_id"] in variants and item["support_status"] == "unsupported"
+            ]
+        )
+    ]
     lead = (
         f"The {len(variants)} frozen-model questions ({id_range(variants)}) each change one "
         f"parameter of a metric that {written} already use: a window, an offset, a filter, an "
         "aggregation or a threshold. No layer's model defines the variant. With each layer's "
         f"model left exactly as written for {written}, answered through the layer's query-time "
-        f"interface, out of {len(variants)}: {join_names(parts)}. Each other answer requires a "
-        "model change, for the reason and the documentation given in shared/frozen_model.yml."
+        f"interface, out of {len(variants)}: {join_names(parts)}. Each other answer is labeled "
+        "requires_model_change, with the reason and the documentation in "
+        "shared/frozen_model.yml"
+        + (f", except those that failed to run: {join_names(failed)}." if failed else ".")
     )
     if skipped:
         lead += f" {join_names(skipped)} wasn't assessed: its capture can't be re-run."
     return [
         lead,
+        f"The {len(variants)} frozen-model questions are few, and the Semantic Rails authors chose "
+        "them knowing which parameters Semantic Rails composes at query time and which some "
+        "other layers set in the model. They probe where each layer's frozen-model boundary lies; "
+        "they aren't a ranking, and they don't weigh what a model change costs in each layer.",
         f"Every layer's model was written with {written} in view, so a {written} label says where "
         "an answer's logic lives, not whether the layer could answer a question its model "
         "wasn't written for; the frozen-model questions test that.",

@@ -110,8 +110,11 @@ def main() -> None:
             validated = runtime.validate(query)
             _write_json(target_dir / "query.json", query)
             _write_json(target_dir / "validate.json", validated)
-            # A query the engine refuses is recorded with its validation errors, not compiled.
+            # A query the engine refuses is recorded with its validation errors, not compiled,
+            # and no plan or SQL from an earlier run is left beside them.
             result = {"query": query}
+            for stale in ("explain.json", "sql.sql"):
+                (target_dir / stale).unlink(missing_ok=True)
             if validated.get("ok"):
                 _write_json(target_dir / "explain.json", runtime.compile(query))
                 result = runtime.query(query)

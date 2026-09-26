@@ -897,25 +897,84 @@ def test_ktx_inline_measures_are_checked_against_the_sources_they_read(
     assert found == [[], ["SQL source facts"]]
 
 
-def test_malloy_reads_a_variant_query_from_its_own_file(tmp_path, monkeypatch) -> None:
+def test_malloy_reads_a_variant_query_only_from_its_own_query_file(tmp_path, monkeypatch) -> None:
     (tmp_path / "malloy" / "models").mkdir(parents=True)
     (tmp_path / "malloy" / "queries").mkdir()
     (tmp_path / "malloy" / "models" / "jaffle.malloy").write_text(
         "source: orders is jaffle.table('comparison_orders')\n", encoding="utf-8"
     )
-    (tmp_path / "malloy" / "queries" / "q17_x.malloy").write_text(
-        'import "../models/jaffle.malloy"\n'
-        'source: facts is jaffle.sql("""select order_id from comparison_order_items""")\n'
-        "query: q17_x is orders extend { join_one: facts on true } -> { aggregate: n is count() }\n",
-        encoding="utf-8",
+    query = (
+        "query: q17_x is orders extend {\n"
+        '  join_one: facts is jaffle.sql("""select order_id from comparison_order_items""") on true\n'
+        "} -> { aggregate: n is count() }\n"
     )
+    query_file = tmp_path / "malloy" / "queries" / "q17_x.malloy"
+    query_file.write_text(f'import "../models/jaffle.malloy"\n{query}', encoding="utf-8")
     (tmp_path / "q17.sql").write_text(
         "SELECT 1 FROM comparison_orders LEFT JOIN (select order_id from comparison_order_items)",
         encoding="utf-8",
     )
     monkeypatch.setattr(rubric, "PACK", tmp_path)
     monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
-    assert rubric.malloy({"question_id": "q17_x", "sql_path": "q17.sql"})[0] == ["SQL source facts"]
+    entry = {"question_id": "q17_x", "sql_path": "q17.sql"}
+    assert rubric.malloy(entry)[0] == ["SQL source facts"]
+    # A source declared beside the query would be model authoring outside the pinned model.
+    query_file.write_text(
+        f'import "../models/jaffle.malloy"\nsource: orders2 is orders extend {{}}\n{query}', "utf-8"
+    )
+    with pytest.raises(SystemExit, match="one import of the model and one query"):
+        rubric.malloy(entry)
+
+
+def test_a_missing_result_fails_the_check_unless_the_question_is_a_variant(
+    tmp_path, monkeypatch
+) -> None:
+    assert _run_validator(tmp_path, monkeypatch, {"fingerprint": "fp-now", "orders": 5})
+    ktx_summary = tmp_path / "results" / "ktx" / "summary.json"
+    summary = json.loads(ktx_summary.read_text(encoding="utf-8"))
+    summary["questions"] = []
+    ktx_summary.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(SystemExit, match="ktx has no result for q01_x"):
+        validator.main()
+    questions = tmp_path / "questions.yml"
+    questions.write_text(questions.read_text("utf-8").replace("required", "variant"), "utf-8")
+    key_summary = tmp_path / "results" / "oracle" / "summary.json"
+    key = json.loads(key_summary.read_text(encoding="utf-8"))
+    key["answer_key_fingerprint"] = validator.answer_key_fingerprint(tmp_path / "oracle", questions)
+    key_summary.write_text(json.dumps(key), encoding="utf-8")
+    validator.main()
+    report = json.loads((tmp_path / "validation" / "output_consistency.json").read_text("utf-8"))
+    assert report["questions"][0]["layer_statuses"]["ktx"] == "not_run"
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        ('{"schema": [{"name": "m"}, {"name": "n"}]}\n{"data": [["2016-09", "5"]]}\n', None),
+        ('{"schema": [{"name": "m"}]}\n{"error": "Planning Error: no"}\n', "Planning Error: no"),
+        ('{"data": [["2016-09"]]}\n', "no schema"),
+    ],
+)
+def test_cube_sql_api_rows_come_back_in_the_rest_shape(monkeypatch, body, error) -> None:
+    cube = _load_runner("cube")
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cube.urllib.request, "urlopen", lambda *a, **k: Response(body.encode()))
+    if error:
+        with pytest.raises(cube.SqlApiError, match=error):
+            cube._cubesql("SELECT 1")
+    else:
+        assert json.loads(cube._cubesql("SELECT 1"))["data"] == [{"m": "2016-09", "n": "5"}]
+    monkeypatch.setattr(cube, "SQL_API_ROW_LIMIT", 1)
+    if not error:  # a result that reaches the row limit may be cut off
+        with pytest.raises(cube.SqlApiError, match="row limit"):
+            cube._cubesql("SELECT 1")
 
 
 def test_every_assessed_layer_answers_or_declares_each_variant() -> None:
@@ -955,7 +1014,16 @@ def test_the_published_frozen_model_counts_come_from_the_labels() -> None:
             continue
         answered = sum(label in {"native", "workaround", "precomputed"} for label in got)
         assert frozen == {"answered": answered, "questions": 8, **Counter(got)}, layer["id"]
-    assert matrix["claims"][0].startswith("The 8 frozen-model questions (q17-q24)")
+    lead, disclosure = matrix["claims"][:2]
+    assert lead.startswith("The 8 frozen-model questions (q17-q24)")
+    # The counts follow the pack's fixed layer order, not a ranking, and the set's origin is said.
+    listed = [
+        label
+        for label in (generator.LAYER_META[layer]["label"] for layer in LAYERS)
+        if f"{label} " in lead.split(": ", 1)[1]
+    ]
+    assert lead.index(listed[0]) < lead.index(listed[-1])
+    assert "Semantic Rails authors chose them" in disclosure and "aren't a ranking" in disclosure
 
 
 def test_committed_labels_are_what_the_rubric_derives() -> None:
@@ -979,8 +1047,7 @@ def test_contracts_take_rubric_labels_and_every_layer_on_current_data_counts() -
     for row in matrix["rows"]:
         qid = row["question_id"]
         assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
-    output_check = next(claim for claim in matrix["claims"] if claim.startswith("On all 16"))
-    assert "(Semantic Rails, MetricFlow, Cube, Malloy and KtX)" in output_check
+    assert any("(Semantic Rails, MetricFlow, Cube, Malloy and KtX)" in c for c in matrix["claims"])
     stale = [layer["id"] for layer in matrix["layers"] if layer["dataset"] == "stale"]
     assert stale == ["snowflake_semantic_views"]
 

@@ -5,4 +5,5 @@
   `requires_model_change` label, which `comparisons/semantic_layers/shared/frozen_model.yml`
   backs with a reason and a documentation link, and the published matrix gives each layer's
   count answered with the model frozen. Cube's runner now also sends SQL API queries through
-  `/cubesql`.
+  `/cubesql`, so Cube's start script opens its SQL API port (15432, on every interface) with a
+  random password that no client receives.

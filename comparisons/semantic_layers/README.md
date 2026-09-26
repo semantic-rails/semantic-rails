@@ -13,8 +13,8 @@ compare latency, token use or cost. It runs without touching the active
   same-store window, a trailing 3-month window, the prior month's value, large-order revenue
   beside total revenue, the average and maximum of a measure modeled as a sum, and two new
   thresholds. Every layer answers them with its model exactly as written for q01-q16, through
-  its query-time interface only. Answered, out of 8: **Malloy 8, Semantic Rails 6, Cube 6 (4 of
-  them through SQL API workarounds), KtX 3 and MetricFlow 2**; each other answer needs a model
+  its query-time interface only. Answered, out of 8, in the pack's layer order: **Semantic Rails 6, MetricFlow 2, Cube 7
+  (5 of them through SQL API workarounds), Malloy 8 and KtX 3**; each other answer needs a model
   change, for the reason in [`shared/frozen_model.yml`](shared/frozen_model.yml). Snowflake
   Semantic Views isn't assessed. See *Frozen-Model Questions* below.
 - **Output check: on all 16 questions, the five layers checked on the current dataset return an
@@ -131,18 +131,18 @@ its documented query-time interface only. A layer that can't express a variant i
 | --- | --- | --- | --- |
 | Semantic Rails | 6 native, 2 requires_model_change (q19, q20) | 6 of 8 | Query API conversion windows, aggregate overrides, a scoped aggregate and metric predicates. `rolling` and `prior_period` run over a dense calendar, and this package declares no calendar entity, so q19 and q20 need one |
 | MetricFlow | 2 native (q23, q24), 6 requires_model_change (q17-q22) | 2 of 8 | `--where` metric filters over existing entities answer the new thresholds. A conversion window, a cumulative window, a period offset, a per-metric filter and an aggregation are each part of a metric's definition |
-| Cube | 2 native (q22, q24), 4 workaround (q19-q21, q23), 2 requires_model_change (q17, q18) | 6 of 8 | A REST filter answers q24, and an SQL API query's `AVG` and `MAX` over the item revenue measure answer q22 (Cube pushes them down as aggregates of the measure's row expression). SQL API queries answer q19, q20, q21 and q23 by wrapping a Cube query in SQL (window functions, a derived table). The 7-day window is on a declared join, the SQL API joins cubes only along declared joins, and the model hides the session key a narrower window would group by |
+| Cube | 2 native (q22, q24), 5 workaround (q18-q21, q23), 1 requires_model_change (q17) | 7 of 8 | A REST filter answers q24, and an SQL API query's `AVG` and `MAX` over the item revenue measure answer q22 (Cube pushes them down as aggregates of the measure's row expression). SQL API queries answer q18-q21 and q23 by wrapping a Cube query in SQL (a derived table, window functions, `CASE`). The 7-day window is on a declared join and the SQL API joins cubes only along declared joins, so it can narrow the window (q18) but not widen it (q17) |
 | Malloy | 8 native | 8 of 8 | Filtered and ad hoc aggregates, calculations (`sum_moving`, `lag`) and, for q17 and q18, a join the query declares on the model's source |
 | KtX | 2 native (q21, q22), 1 precomputed (q24), 5 requires_model_change (q17-q20, q23) | 3 of 8 | Inline measure expressions answer q21 and q22, and a filter on the precomputed spend column answers q24. The windows and the customer-month threshold are inside SQL sources, joins are equality-only and measures reject window functions |
 | Snowflake Semantic Views | 8 not_assessed | not assessed | A stale capture: no variant can be run without a live account |
 
-Output check: every one of the 25 answers the layers executed matches the answer key.
+Output check: every one of the 26 answers the layers executed matches the answer key.
 
 What this doesn't show:
 
 - **The label says how, not only whether.** Malloy answers q17 and q18 by declaring a windowed
   join in the query itself; it is Malloy syntax, not SQL, so the rubric labels it `native`. Cube's
-  four SQL API answers that wrap a Cube query in SQL are `workaround`, while its SQL API `AVG`
+  five SQL API answers that wrap a Cube query in SQL are `workaround`, while its SQL API `AVG`
   and `MAX` over a measure (q22) select members only and are `native`. q19's moving sum
   and q20's `lag` in Malloy and Cube step over month rows, which equals the calendar rule here
   only because every month has orders.

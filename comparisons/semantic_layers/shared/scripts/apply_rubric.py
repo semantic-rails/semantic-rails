@@ -142,17 +142,27 @@ def metricflow(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     return helpers, texts
 
 
+# SQL an SQL API query writes around Cube's members, beyond selecting and aggregating them.
+SQL_AROUND_MEMBERS = {
+    "SQL API query over a derived table": r"\(\s*select\b",
+    "SQL API window function": r"\bover\s*\(",
+    "SQL API CASE expression": r"\bcase\b",
+    "SQL API HAVING, FILTER or UNION": r"\bhaving\b|\bfilter\s*\(|\bunion\b",
+}
+
+
 def cube(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
-    helpers = []
-    if entry["query_path"].endswith(".sql"):
-        # An SQL API query: SQL around a Cube query is hand-written, whether Cube post-processes
-        # it or pushes it down.
+    cubes, helpers = PACK / "cube" / "model" / "cubes", []
+    sql_api = entry["query_path"].endswith(".sql")
+    if sql_api:
+        # An SQL API query. Anything beyond selecting and aggregating members (and filtering on
+        # them) is SQL written by hand, whether Cube post-processes it or pushes it down.
         sql = _read(entry["query_path"])
         names = re.findall(r"\b(?:from|join)\s+([a-z_]\w*)", sql, flags=re.IGNORECASE)
-        if re.search(r"\(\s*select\b", sql, flags=re.IGNORECASE):
-            helpers.append("SQL API query over a derived table")
-        if re.search(r"\bover\s*\(", sql, flags=re.IGNORECASE):
-            helpers.append("SQL API window function")
+        names = [name for name in names if (cubes / f"{name}.yml").is_file()]
+        helpers += [
+            what for what, found in SQL_AROUND_MEMBERS.items() if re.search(found, sql, re.I)
+        ]
     else:
         query = json.loads(_read(entry["query_path"]))
         members = [*query.get("measures", []), *query.get("dimensions", [])]
@@ -160,11 +170,12 @@ def cube(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
         members += [item["member"] for item in query.get("filters", []) if "member" in item]
         names = [member.split(".")[0] for member in members]
     for name in _require(sorted(set(names)), "cubes", entry):
-        model = PACK / "cube" / "model" / "cubes" / f"{name}.yml"
-        spec = yaml.safe_load(model.read_text(encoding="utf-8"))["cubes"][0]
+        spec = yaml.safe_load((cubes / f"{name}.yml").read_text(encoding="utf-8"))["cubes"][0]
         if "sql" in spec and not is_passthrough(spec["sql"]):
             helpers.append(f"cube {name}")
-    executed = json.loads(_executed_sql(entry))["sql"]["sql"][0]
+    generated = json.loads(_executed_sql(entry))["sql"]
+    # Cube has no single SQL for an SQL API query it post-processes; its own statement is what ran.
+    executed = generated["sql"][0] if "sql" in generated or not sql_api else sql
     return helpers, [executed]
 
 
@@ -182,7 +193,13 @@ def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     # A frozen-model question's query is its own file, which imports the model.
     query_file = PACK / "malloy" / "queries" / f"{entry['question_id']}.malloy"
     if query_file.is_file():
-        model += "\n" + query_file.read_text(encoding="utf-8")
+        text = query_file.read_text(encoding="utf-8")
+        # Only the import and the question's own query: a source or another query declared here
+        # would be model authoring outside the pinned model.
+        top = re.findall(r"^(\w+):", text, flags=re.MULTILINE)
+        if top != ["query"] or not re.search(r'^import "\.\./models/jaffle\.malloy"$', text, re.M):
+            raise SystemExit(f"{query_file.name} must hold one import of the model and one query")
+        model += "\n" + text
     query = rf"^query:\s+{re.escape(entry['question_id'])}\s+is\b"
     _require(re.findall(query, model, flags=re.MULTILINE), "named query", entry)
     executed = _executed_sql(entry)
@@ -243,7 +260,11 @@ def model_digest(paths: list[str]) -> str:
     files = []
     for relative in paths:
         root = PACK / relative
-        files += [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+        found = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+        # A dotfile (.DS_Store, an editor's swap file) isn't part of the model.
+        files += [
+            p for p in found if not any(part.startswith(".") for part in p.relative_to(PACK).parts)
+        ]
     digest = hashlib.sha256()
     for path in sorted(files):
         data = path.read_bytes().replace(b"\r\n", b"\n")  # the same text on a CRLF checkout

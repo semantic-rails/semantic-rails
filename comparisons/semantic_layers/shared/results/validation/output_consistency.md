@@ -1,6 +1,6 @@
 # Output Consistency
 
-Generated at `2026-09-26T02:15:31+00:00` on dataset `4f24ad8276da`. Every layer is compared with the independent answer key in `shared/oracle/`.
+Generated at `2026-09-26T02:34:17+00:00` on dataset `4f24ad8276da`. Every layer is compared with the independent answer key in `shared/oracle/`.
 
 - Matched: `24`
 - Mismatched: `0`
@@ -132,19 +132,19 @@ Generated at `2026-09-26T02:15:31+00:00` on dataset `4f24ad8276da`. Every layer 
 
 ## q18_same_store_session_to_order_conversion_50m Same Store Session To Order Conversion Within 50 Minutes
 
-- Layer statuses: `semantic_rails=executed, metricflow=not_run, cube=not_run, malloy=executed, snowflake_semantic_views=not_run, ktx=not_run`
+- Layer statuses: `semantic_rails=executed, metricflow=not_run, cube=executed, malloy=executed, snowflake_semantic_views=not_run, ktx=not_run`
 - Comparison status: `matched`
-- Layers compared: `semantic_rails, malloy`
+- Layers compared: `semantic_rails, cube, malloy`
 
 ## q19_trailing_3_month_revenue_by_month Trailing 3 Month Revenue By Month
 
-- Layer statuses: `semantic_rails=unsupported, metricflow=not_run, cube=executed, malloy=executed, snowflake_semantic_views=not_run, ktx=not_run`
+- Layer statuses: `semantic_rails=unsupported, metricflow=not_run, cube=executed, malloy=executed, snowflake_semantic_views=not_run, ktx=unsupported`
 - Comparison status: `matched`
 - Layers compared: `cube, malloy`
 
 ## q20_revenue_and_prior_month_revenue_by_month Revenue And Prior Month Revenue By Month
 
-- Layer statuses: `semantic_rails=unsupported, metricflow=not_run, cube=executed, malloy=executed, snowflake_semantic_views=not_run, ktx=not_run`
+- Layer statuses: `semantic_rails=unsupported, metricflow=not_run, cube=executed, malloy=executed, snowflake_semantic_views=not_run, ktx=unsupported`
 - Comparison status: `matched`
 - Layers compared: `cube, malloy`
 

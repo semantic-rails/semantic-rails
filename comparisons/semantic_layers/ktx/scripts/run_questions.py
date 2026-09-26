@@ -163,8 +163,30 @@ QUERIES: dict[str, dict[str, Any]] = {
             "delivered_revenue_by_customer_segment.customer_segment",
         ],
     },
-    # Frozen-model questions the query interface can express, with inline measure expressions
-    # where needed; the others are listed with their reasons in shared/frozen_model.yml.
+    # Frozen-model questions, with inline measure expressions where needed. ktx-sl refuses q19's
+    # and q20's window functions, so their runs record the refusal; shared/frozen_model.yml gives
+    # the reasons for those and for the variants no query can express.
+    "q19_trailing_3_month_revenue_by_month": {
+        "measures": [
+            {
+                "name": "trailing_3_month_revenue_usd",
+                "expr": "sum(sum(orders.order_total_cents / 100.0)) over "
+                "(order by date_trunc('month', orders.ordered_at) rows 2 preceding)",
+            }
+        ],
+        "dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
+    },
+    "q20_revenue_and_prior_month_revenue_by_month": {
+        "measures": [
+            "orders.revenue_usd",
+            {
+                "name": "prior_month_revenue_usd",
+                "expr": "lag(sum(orders.order_total_cents / 100.0)) over "
+                "(order by date_trunc('month', orders.ordered_at))",
+            },
+        ],
+        "dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
+    },
     "q21_revenue_and_large_order_revenue_by_month": {
         "measures": [
             "orders.revenue_usd",
