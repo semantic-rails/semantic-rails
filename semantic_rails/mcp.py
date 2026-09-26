@@ -224,7 +224,12 @@ QUERY_SCHEMA: dict[str, Any] = {
 # open-object documentation hints, not validators.
 QUERY_SCHEMA_SLIM: dict[str, Any] = {
     "type": "object",
-    "description": "Query IR so far, as context (shape: see execute).",
+    # Keep this neutral: "Query IR so far, as context" made models pass their drafts to plan,
+    # which then drafted a second copy of the same select item.
+    "description": (
+        "Semantic Layer Query IR (JSON object). IR + time-block shape: "
+        "see the 'execute' tool schema, or schemas/query_ir.v1.json."
+    ),
 }
 
 VERBOSITY_SCHEMA: dict[str, Any] = {

@@ -244,7 +244,7 @@
             "type": "object"
           },
           "query": {
-            "description": "Query IR so far, as context (shape: see execute).",
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
           },
           "request_id": {
@@ -330,7 +330,7 @@
             "type": "object"
           },
           "query": {
-            "description": "Query IR so far, as context (shape: see execute).",
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
           },
           "request_id": {
@@ -431,7 +431,7 @@
             "type": "object"
           },
           "query": {
-            "description": "Query IR so far, as context (shape: see execute).",
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
           },
           "request_id": {
@@ -523,7 +523,7 @@
             "type": "object"
           },
           "query": {
-            "description": "Query IR so far, as context (shape: see execute).",
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
           },
           "request_id": {
