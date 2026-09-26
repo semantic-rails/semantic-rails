@@ -132,6 +132,12 @@ audit event. Like the built-in tools, `handler` runs inside the adapter's respon
 envelope, so an exception it raises becomes a tool error response. The private
 `_tool_handlers` mapping keeps working through the 0.3 series.
 
+A replaced handler takes over the tool's policy enforcement. The metric and dimension
+allowlists and the resource-access checks run inside the built-in handlers, not in
+`call_tool`. A replacement receives the trusted `policy_context` in its arguments, and the
+host is responsible for applying it. To keep the engine's checks, read the built-in with
+`adapter.tool_handlers[name]` before replacing it, and call that from your handler.
+
 ## Package authoring
 
 `ArchitectProject(project_path, workspace_root=None)` is the transactional authoring
