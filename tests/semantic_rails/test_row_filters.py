@@ -30,6 +30,7 @@ from semantic_rails.sql_ast import (
     SqlBinary,
     SqlField,
     SqlIdentifier,
+    SqlJoin,
     SqlLiteral,
     SqlSelect,
     SqlTableFunction,
@@ -77,6 +78,9 @@ OWN_ORDERS = {
 # Declared categorical while the column is INTEGER: the driver can't convert a bound string.
 MISTYPED = {**OWN_ORDERS, "id": "policy.rf.mistyped", "audiences": ["mistyped"]}
 MISTYPED["dimension"] = "dimension.rf_order_order_ref"
+# A second filter on the same relation for callers with this role; id dimensions declare a type.
+OWN_STORE = {**OWN_ORDERS, "id": "policy.rf.own_store", "attribute": "store_id", "type": "string"}
+OWN_STORE.update(dimension="dimension.rf_order_store_id", audiences=[], roles=["store_scoped"])
 
 
 def _package(root, policies):
@@ -153,7 +157,7 @@ def _package(root, policies):
 
 @pytest.fixture
 def package(tmp_path):
-    root = _package(tmp_path / "rf", [OWN_ORDERS, MISTYPED])
+    root = _package(tmp_path / "rf", [OWN_ORDERS, MISTYPED, OWN_STORE])
     with duckdb.connect(str(root / "rf.duckdb")) as connection:
         connection.execute(SEED)
     return root
@@ -270,8 +274,11 @@ def test_segment_preview_and_count_bind_the_filter(runtime):
     b = runtime.segment_preview(
         "segment.rf.in_s1", policy_context=_ctx(customer_id=B).to_policy_context()
     )
-    assert (a["member_count"], b["member_count"]) == (1, 1)
-    assert a["rows"] != b["rows"] and "?" in a["count_sql"]
+    assert (a["member_count"], b["member_count"]) == (1, 1) and "?" in a["count_sql"]
+    assert (a["rows"], b["rows"]) == (
+        [{"dimension.rf_order_order_ref": 1}],
+        [{"dimension.rf_order_order_ref": 4}],
+    )
     assert (
         _denied(lambda: runtime.segment_preview("segment.rf.big_store", policy_context=context))
         == "row_filter_unsupported_query"
@@ -341,6 +348,9 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
         ({"op": "!="}, "unsupported keys ['op']"),
         ({"object_ids": ["measure.rf.revenue"]}, "unsupported keys ['object_ids']"),
         ({"type": "integer"}, "has type 'string'"),
+        ({"kind": "row_filters"}, "looks like a row filter"),
+        ({"kind": "Row-Filter"}, "looks like a row filter"),
+        ({"kind": "object_access"}, "looks like a row filter"),  # a stray attribute
     ],
 )
 def test_the_package_rejects_a_row_filter_it_cannot_enforce(tmp_path, change, problem):
@@ -361,11 +371,38 @@ def test_a_row_filter_that_skipped_the_loader_still_fails_closed(runtime):
         row_filters_for_context(config, _ctx(audience="internal").to_policy_context())
 
 
-def test_a_table_function_read_is_not_filterable():
-    scan = SqlSelect([SqlField(SqlIdentifier(["v"]), "v")], SqlTableFunction("UNNEST", alias="t"))
+def test_a_pipeline_backed_relation_cannot_be_filtered(runtime):
+    config = runtime._config
+    entities = [replace(row, relation_id="relation.rf.orders") for row in config.entities]
+    with pytest.raises(SemanticLayerError, match="must be a plain column"):
+        row_filters_for_context(replace(config, entities=entities), _ctx().to_policy_context())
+
+
+def test_two_filters_on_one_relation_bind_in_placeholder_order(runtime):
+    context = RequestContext(audience="customer", roles=("store_scoped",),
+                             attributes={"customer_id": B, "store_id": "s1"})  # fmt: skip
+    result = runtime.query({**BY_STORE, "policy_context": context.to_policy_context()})
+    assert [row["revenue"] for row in result["rows"]] == [400]
+    assert "order_fact.customer_id = ? AND order_fact.store_id = ?" in result["rendered_sql"]
+
+
+def _scan(source, joins=()):
+    return SqlSelect([SqlField(SqlIdentifier(["v"]), "v")], source, joins=list(joins))
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        _scan(SqlTableFunction("UNNEST", alias="t")),
+        _scan(SqlTableRef("other")),  # reads only a relation no filter covers
+        _scan(SqlTableRef("other"), [SqlJoin("INNER", SqlTableRef("t"), SqlLiteral(True))]),
+    ],
+    ids=["table_function", "unfiltered_relation", "filtered_relation_joined"],
+)
+def test_only_a_filtered_from_is_filterable(statement):
     row = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string"))
     with pytest.raises(SemanticLayerError, match="only a query that reads"):
-        apply_row_filters(scan, [row])
+        apply_row_filters(statement, [row])
 
 
 def test_every_mcp_surface_shows_each_customer_only_their_rows(package, monkeypatch):
@@ -424,5 +461,6 @@ def test_every_mcp_surface_shows_each_customer_only_their_rows(package, monkeypa
     assert all(response["ok"] is True for response in [*a.values(), *b.values()]), (a, b)
     assert a["run"]["rows"] != b["run"]["rows"] and a["preview"]["rows"] != b["preview"]["rows"]
     assert [row["value"] for row in a["values"]["values"]] == [1, 2]
+    assert [row["value"] for row in b["values"]["values"]] == [3, 4]
     assert B not in json.dumps(a, default=str) and A not in json.dumps(b, default=str)
     assert A not in json.dumps(events, default=str) and B not in json.dumps(events, default=str)

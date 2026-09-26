@@ -589,8 +589,13 @@ behavior:
   filters, calendar spines (prior-period comparisons, fill) and other second
   scans are refused, and rollups are not routed to. The zero-row
   data-coverage probe is skipped. Only DuckDB executes these statements today.
-  Scope a row filter by audience, environment or role only when the host sets
-  them from verified identity; an unscoped row filter applies to every request.
+  An unscoped row filter applies to every request. A scoped one applies only
+  when the request context carries the listed audience, environment or role,
+  so a request without it is not filtered: scope by them only when the host
+  always sets them from verified identity for end-user requests. A policy of
+  another kind that carries `attribute:`, or a kind that is a near miss of
+  `row_filter` (`row-filter`, `row_filters`, ...), fails to load rather than
+  being ignored.
 
 
 Scoping works the same way as caveats: `audiences:`, `environments:`, and

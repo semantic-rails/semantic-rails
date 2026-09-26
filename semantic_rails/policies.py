@@ -18,7 +18,7 @@ from .ast import normalize_query
 from .compiler import BoundQuery, bind_query
 from .errors import SemanticLayerError
 from .request_context import context_from_policy_context
-from .row_filters import ROW_FILTER, RowFilter, row_filter
+from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import PackageConfig, SemanticPolicyConfig
 from .sql_preparation import checked_slot_value
 
@@ -186,7 +186,7 @@ def row_filters_for_context(
     context = context_from_policy_context(policy_context)
     filters = []
     for policy in config.semantic_policies:
-        if policy.kind != ROW_FILTER:
+        if not is_row_filter(policy):
             continue
         row = row_filter(config, policy)  # checked first: an unenforceable one is never skipped
         if _policy_matches(

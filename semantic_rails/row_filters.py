@@ -67,7 +67,13 @@ def row_filter(config: PackageConfig, policy: SemanticPolicyConfig) -> RowFilter
             "string, integer or boolean column (an id dimension needs 'type')"
         )
     entity = next((row for row in config.entities if row.id == dimension.entity), None)
-    if entity is None or not entity.table or not _COLUMN.fullmatch(dimension.column):
+    # A relation-pipeline entity is read through a CTE of the same name, never directly.
+    if (
+        entity is None
+        or not entity.table
+        or entity.relation_id
+        or not _COLUMN.fullmatch(dimension.column)
+    ):
         raise invalid(f"dimension '{dimension.id}' must be a plain column of its entity's relation")
     try:
         slot = ParameterSlot(str(policy.config.get("attribute", "")), cast(Any, slot_type))
@@ -76,9 +82,28 @@ def row_filter(config: PackageConfig, policy: SemanticPolicyConfig) -> RowFilter
     return RowFilter(policy.id, entity.table, dimension.column, slot)
 
 
+def is_row_filter(policy: SemanticPolicyConfig) -> bool:
+    """Whether ``policy`` is a row filter; a near miss is an error, never an ignored policy."""
+    if policy.kind == ROW_FILTER:
+        return True
+    kind = str(policy.kind).strip().lower().replace("-", "_").replace(" ", "_").rstrip("s")
+    nested = policy.config.get("config")
+    if (
+        kind == ROW_FILTER
+        or "attribute" in policy.config
+        or (isinstance(nested, dict) and "attribute" in nested)
+    ):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"policy '{policy.id}' of kind {policy.kind!r} looks like a row filter; "
+            f"use kind '{ROW_FILTER}' exactly",
+        )
+    return False
+
+
 def validate_row_filters(config: PackageConfig) -> None:
     for policy in config.semantic_policies:
-        if policy.kind == ROW_FILTER:
+        if is_row_filter(policy):
             row_filter(config, policy)
 
 
@@ -100,18 +125,10 @@ def apply_row_filters(
     scan = next(
         (node for node in nodes if isinstance(node, SqlSelect) and node.from_table is read), None
     )
+    # A read is never a CTE name, so a filtered relation shadowed by a CTE is never applied.
     applied = [row for row in filters if read is not None and row.table == read.name]
-    # A relation named like one of the statement's CTEs would be read through the CTE.
-    if read is None or scan is None or not applied or any(row.table in ctes for row in filters):
-        raise SemanticLayerError(
-            "POLICY_DENIED",
-            "A row filter applies to this request, and only a query that reads the filtered "
-            "relation once, without joins, rollups or other relations, can be answered under it.",
-            details={
-                "reason": "row_filter_unsupported_query",
-                "policy_ids": sorted({row.policy_id for row in filters}),
-            },
-        )
+    if read is None or scan is None or not applied:
+        raise _unsupported(filters)
     qualifier = (read.alias or read.name).split(".")
     condition = _conjunction(
         [
@@ -123,14 +140,29 @@ def apply_row_filters(
         # One AND node keeps the filter outside any OR in the existing conditions.
         condition = SqlBinary(condition, "AND", _conjunction(scan.where))
     filtered = _rewrite(sql, scan, replace(scan, where=[condition]))
+    if sum(isinstance(node, SqlParameter) for node in _walk(filtered)) != len(applied):
+        raise _unsupported(filters)  # the rewrite missed the scan: never run it unfiltered
     return filtered, tuple(row.slot for row in applied)
 
 
+def _unsupported(filters: Sequence[RowFilter]) -> SemanticLayerError:
+    return SemanticLayerError(
+        "POLICY_DENIED",
+        "A row filter applies to this request, and only a query that reads the filtered "
+        "relation once, without joins, rollups or other relations, can be answered under it.",
+        details={
+            "reason": "row_filter_unsupported_query",
+            "policy_ids": sorted({row.policy_id for row in filters}),
+        },
+    )
+
+
 def _conjunction(items: Sequence[SqlExpr]) -> SqlExpr:
-    out = items[0]
-    for item in items[1:]:
-        out = SqlBinary(out, "AND", item)
-    return out
+    """``AND`` of ``items``, balanced so a long condition list can't exhaust the recursion limit."""
+    if len(items) == 1:
+        return items[0]
+    middle = len(items) // 2
+    return SqlBinary(_conjunction(items[:middle]), "AND", _conjunction(items[middle:]))
 
 
 def _walk(node: Any) -> Iterator[Any]:
@@ -147,9 +179,10 @@ def _walk(node: Any) -> Iterator[Any]:
 def _rewrite(node: Any, target: Any, new: Any) -> Any:
     if node is target:
         return new
-    if isinstance(node, list):
+    if isinstance(node, list | tuple):
         items = [_rewrite(item, target, new) for item in node]
-        return items if any(a is not b for a, b in zip(items, node, strict=True)) else node
+        changed = any(a is not b for a, b in zip(items, node, strict=True))
+        return type(node)(items) if changed else node
     if is_dataclass(node) and not isinstance(node, type):
         changes = {}
         for item in fields(node):
