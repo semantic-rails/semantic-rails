@@ -1647,7 +1647,11 @@ def _author_segment(
         )
     key, label, existing = _author_identity(project, inventory, "segment", "active_customers")
     current = dict(existing.get("spec", {}) or {}) if existing else {}
-    entity = _select_inventory_item("Entity whose members this segment contains", entities)
+    entity = _select_inventory_item(
+        "Entity whose members this segment contains",
+        entities,
+        default_key=str(current.get("entity", "")),
+    )
     entity_model = str((entity.get("spec", {}) or {}).get("model", ""))
     entity_dimensions = [row for row in dimensions if str(row.get("parent", "")) == entity_model]
     if not entity_dimensions:

@@ -1622,6 +1622,14 @@ def test_segment_values_keep_their_type_from_the_wizard_to_preview(
     finally:
         runtime.close()
 
+    # Enter at every prompt keeps the saved segment, byte for byte.
+    created = (project / "segments" / "core.yml").read_bytes()
+    update = ("Segment key", "Manage and update this existing segment?", "Update this segment?")
+    _repl(
+        project, "author segment", _Script({**dict.fromkeys(update, True), "Segment key": "s"}), []
+    )
+    assert (project / "segments" / "core.yml").read_bytes() == created
+
 
 @pytest.mark.parametrize("kind", ["boolean", "categorical"])
 def test_a_membership_value_its_column_cannot_hold_fails_validation_with_a_hint(
