@@ -165,6 +165,9 @@ def trailing_window_runtime(tmp_path_factory):
         ("unique visitors in the last two weeks by week", "low_confidence"),
         ("unique visitors in the last 2 weeks by week", "low_confidence"),
         ("unique visitors in September 2026 by day", "low_confidence"),
+        # A window with no bucket: each value covers the window (7 and 30 days, never 14).
+        ("unique visitors this week", "low_confidence"),
+        ("unique visitors in September 2026", "low_confidence"),
         # Nothing the question says turns the check off: these rows are 14-day counts too.
         ("unique visitors over 14 days by week", "low_confidence"),
         ("rolling unique visitors by week", "low_confidence"),
@@ -185,3 +188,29 @@ def test_rolling_metrics_are_not_checked(runtime_factory) -> None:
     # A rolling metric is read by day as a matter of course; its window is follow-up work.
     payload = plan_payload(runtime_factory("jaffle_shop"), intent="rolling revenue by day")
     assert "subject_window_mismatch" not in _gap_kinds(payload)
+
+
+@pytest.mark.parametrize(
+    ("time", "flagged"),
+    [
+        # No bucket: each value covers the whole window.
+        ({"start": "2026-09-01", "end": "2026-10-01"}, True),
+        ({"start": "2026-09-21", "end": "2026-09-28"}, True),
+        ({"start": "2026-09-08", "end": "2026-09-22"}, False),
+        ({"range": {"last": {"unit": "week", "value": 2}}}, False),
+        # A bucket wins over the window it sits in.
+        ({"grain": "week", "start": "2026-09-08", "end": "2026-09-22"}, True),
+    ],
+)
+def test_the_period_is_the_bucket_else_the_whole_window(
+    trailing_window_runtime, time: dict, flagged: bool
+) -> None:
+    from semantic_rails.planner.faithfulness import _subject_window_gaps
+
+    role = "temporal_role.f4win_repo_snapshot_snapshot_date"
+    query = {
+        "select": [{"expression": {"metric": "metric.f4win.unique_visitors_14d"}, "as": "v"}],
+        "time": {"temporal_role": role, **time},
+    }
+    gaps = _subject_window_gaps(trailing_window_runtime.config, query)
+    assert bool(gaps) is flagged
