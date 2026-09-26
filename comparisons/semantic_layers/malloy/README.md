@@ -1,6 +1,6 @@
 # Malloy Comparison Pack
 
-This project pins `@malloydata/cli` `0.0.57` (exact version, locked in `package-lock.json`) and runs the shared Jaffle comparison dataset through a single Malloy model, `models/jaffle.malloy`, with one named query per question.
+This project pins `@malloydata/cli` `0.0.57` (exact version, locked in `package-lock.json`) and runs the shared Jaffle comparison dataset through a single Malloy model, `models/jaffle.malloy`, with one named query per question for q01-q16; each frozen-model question (q17-q24) is a query in its own file under `queries/` that imports the model.
 
 ## Setup
 

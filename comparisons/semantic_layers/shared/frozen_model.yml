@@ -88,8 +88,9 @@ cube:
         for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each
         group's session count. (Cube's join excludes an order at the session's start minute, which
         the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000
-        rows; no order in this data falls on the start minute, and that result has 34 rows. It
-        has no ORDER BY, because Cube refuses to post-process the sorted query.)
+        rows; no order in this data falls on the start minute, and that result holds only the
+        10 sessions' same-store orders within 7 days. It has no ORDER BY, because Cube refuses to
+        post-process the sorted query.)
         The rubric counts SQL written around a layer's members as hand-written, as it does SQL
         outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query
         has no such option: its filters apply to the whole query, and compareDateRange returns

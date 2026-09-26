@@ -855,22 +855,44 @@ def test_cube_sql_api_queries_around_a_cube_query_are_hand_written(tmp_path, mon
     member = (
         "SELECT DATE_TRUNC('month', ordered_at) AS m, MEASURE(revenue) AS r FROM orders GROUP BY 1"
     )
+    flat = "SELECT DATE_TRUNC('month', ordered_at) AS m, {} FROM orders GROUP BY 1"
     queries = {
         "plain.sql": member,
+        "aggregate.sql": flat.format("AVG(revenue), MAX(revenue)"),
         "derived.sql": f"SELECT m, SUM(r) FROM ({member}) AS t WHERE r > 5 GROUP BY 1",
         "window.sql": f"SELECT m, LAG(r) OVER (ORDER BY m) FROM ( {member} ) AS t",
+        "case.sql": flat.format("SUM(CASE WHEN revenue >= 50 THEN revenue END)"),
+        "having.sql": flat.format("MEASURE(revenue)") + " HAVING MEASURE(revenue) > 5",
+        "filter.sql": flat.format("SUM(revenue) FILTER (WHERE revenue >= 50)"),
+        "union.sql": f"{member} UNION ALL {member}",
+        # EXTRACT(... FROM column) names no cube.
+        "extract.sql": flat.format("EXTRACT(EPOCH FROM ordered_at)"),
     }
     found = {}
     for name, sql in queries.items():
         (tmp_path / name).write_text(sql, encoding="utf-8")
         entry = {"question_id": "q_x", "query_path": name, "sql_path": "sql.json"}
         found[name] = rubric.cube(entry)[0]
-    derived = "SQL API query over a derived table"
+    derived, other = "SQL API query over a derived table", "SQL API HAVING, FILTER or UNION"
     assert found == {
         "plain.sql": [],
+        "aggregate.sql": [],
         "derived.sql": [derived],
         "window.sql": [derived, "SQL API window function"],
+        "case.sql": ["SQL API CASE expression"],
+        "having.sql": [other],
+        "filter.sql": [other],
+        "union.sql": [other],
+        "extract.sql": [],
     }
+
+
+def test_an_unassessed_answer_publishes_no_evidence() -> None:
+    data, _ = generator.build_contracts()
+    for layer in data["layers"]:
+        for entry in layer["questions"]:
+            if entry["support_status"] == "not_assessed":
+                assert not entry["query_excerpt"] and not entry["sql_excerpt"], entry["question_id"]
 
 
 def test_ktx_inline_measures_are_checked_against_the_sources_they_read(
@@ -918,12 +940,19 @@ def test_malloy_reads_a_variant_query_only_from_its_own_query_file(tmp_path, mon
     monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
     entry = {"question_id": "q17_x", "sql_path": "q17.sql"}
     assert rubric.malloy(entry)[0] == ["SQL source facts"]
-    # A source declared beside the query would be model authoring outside the pinned model.
-    query_file.write_text(
-        f'import "../models/jaffle.malloy"\nsource: orders2 is orders extend {{}}\n{query}', "utf-8"
-    )
-    with pytest.raises(SystemExit, match="one import of the model and one query"):
-        rubric.malloy(entry)
+    raw = query.replace("aggregate: n is count()", 'aggregate: n is sql_number("count(*)")')
+    query_file.write_text(f'import "../models/jaffle.malloy"\n{raw}', encoding="utf-8")
+    assert rubric.malloy(entry)[0] == ["SQL source facts", "raw SQL expression in the query"]
+    # Anything else here would be model authoring outside the pinned model.
+    for extra in (
+        "source: orders2 is orders extend {}\n",
+        "  source: orders2 is orders extend {}\n",
+        'import "../extra.malloy"\n',
+        "run: orders -> { aggregate: n is count() }\n",
+    ):
+        query_file.write_text(f'import "../models/jaffle.malloy"\n{extra}{query}', "utf-8")
+        with pytest.raises(SystemExit, match="one import of the model and one query"):
+            rubric.malloy(entry)
 
 
 def test_a_missing_result_fails_the_check_unless_the_question_is_a_variant(
@@ -1017,12 +1046,10 @@ def test_the_published_frozen_model_counts_come_from_the_labels() -> None:
     lead, disclosure = matrix["claims"][:2]
     assert lead.startswith("The 8 frozen-model questions (q17-q24)")
     # The counts follow the pack's fixed layer order, not a ranking, and the set's origin is said.
-    listed = [
-        label
-        for label in (generator.LAYER_META[layer]["label"] for layer in LAYERS)
-        if f"{label} " in lead.split(": ", 1)[1]
-    ]
-    assert lead.index(listed[0]) < lead.index(listed[-1])
+    counts = lead.split("out of 8: ", 1)[1].split(". ", 1)[0]
+    listed = [generator.LAYER_META[layer]["label"] for layer in LAYERS]
+    listed = [label for label in listed if f"{label} " in counts]
+    assert sorted(listed, key=counts.index) == listed  # every layer in the pack's order
     assert "Semantic Rails authors chose them" in disclosure and "aren't a ranking" in disclosure
 
 

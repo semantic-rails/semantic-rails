@@ -73,8 +73,10 @@ and `/cubesql` for SQL API queries). `index.js` fixes everything else:
 - The SQL API is on, because `/cubesql` needs it. Cube starts it only with a Postgres-protocol
   port, so it also listens on port 15432 on every interface, with user `cube` and a random
   password generated at each start and never shown; the runner uses only `/cubesql`, with the
-  same JWT. An SQL API query whose post-processing would truncate a result above Cube's row
-  limit fails instead (`CUBESQL_FAIL_ON_LIMITLESS_POST_PROCESSING`).
+  same JWT. `CUBESQL_FAIL_ON_LIMITLESS_POST_PROCESSING` makes Cube refuse an SQL API query it
+  would post-process over a Cube query with no row limit. Cube still caps the Cube query it
+  post-processes, and a pushed-down query's result, at 50,000 rows; the runner refuses a result
+  that reaches the cap, but it can't see an inner Cube query's row count.
 - An in-memory cache and queue, no Cube Store and no pre-aggregations. Cube caches each result
   in memory and re-checks it every 10 seconds; pass `cache=no-cache` on `/load` to skip it.
 - Overrides when started by hand: `PORT` and `CUBE_DUCKDB_PATH` (another DuckDB file).
@@ -127,7 +129,8 @@ Every cube reads one `comparison_*` view with `sql_table`; the model has no SQL-
   revenue (an ungrouped query of the revenue measure); and a filter on each customer-month's
   order count. The rubric labels them `workaround`, since the logic is SQL around Cube's
   members. Cube pushes q19-q21 and q23 down to DuckDB whole; it post-processes q18 over a Cube
-  query result it caps at 50,000 rows (34 here), and refuses to when q18 is sorted. The moving
+  query result it caps at 50,000 rows (here, the 10 sessions' same-store orders within 7 days),
+  and refuses to when q18 is sorted. The moving
   sum and `LAG` step over month rows, which equals the calendar rule only because every month has
   orders (the SQL API refuses a `RANGE` frame with an interval). q17 needs a model change: the
   7-day window is on a declared join, and the SQL API joins cubes only along declared joins, so
@@ -136,7 +139,8 @@ Every cube reads one `comparison_*` view with `sql_table`; the model has no SQL-
 
 ## Workarounds
 
-No question needs hand-written SQL or a precomputed column. Two modeling detours remain:
+None of q01-q16 needs hand-written SQL or a precomputed column (the frozen-model SQL API answers
+above are workarounds). Two modeling detours remain:
 
 - `customers.lifetime_orders` counts `orders.order_count` (`type: count`) rather than
   `orders.orders`. When a query selects `orders.orders` and filters on a subquery dimension

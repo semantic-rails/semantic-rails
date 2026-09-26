@@ -53,7 +53,10 @@ query-time interface only, and the same rules then label each answer:
   link, and the rubric refuses a frozen-model `workaround` without one. A Cube SQL API query that
   only selects members and aggregates them, a Malloy query that extends a source with its own
   join, or a KtX or Semantic Rails query that composes an aggregate inline uses the layer's
-  semantic constructs and is `native`.
+  semantic constructs and is `native`. A KtX inline measure (for example `sum(case when ...)`) is
+  part of ktx-sl's documented semantic query, which its planner compiles with its join and
+  fan-out handling, so a `CASE` there is native; the same `CASE` in a Cube SQL API query is SQL
+  around Cube's members. A subquery in a KtX inline measure is hand-written.
 
 The published matrix gives each layer's count as "answered with the model frozen": the
 frozen-model questions it answered (`native`, `workaround` or `precomputed`), out of 8.

@@ -59,9 +59,9 @@ if (process.env.CUBEJS_DEV_MODE !== undefined) {
   process.exit(1);
 }
 
-// An SQL API query that Cube would post-process with a Cube query result cut off at its row
-// limit fails instead. (Pushed-down queries still end in that limit; the runner refuses a
-// result that reaches it.)
+// Refuse an SQL API query that Cube would post-process over a Cube query with no row limit.
+// Cube still caps the Cube query it post-processes, and pushed-down results, at 50,000 rows;
+// the runner refuses a result that reaches the cap.
 process.env.CUBESQL_FAIL_ON_LIMITLESS_POST_PROCESSING = "true";
 
 const database = path.resolve(

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-26T02:35:22+00:00",
+  "generated_at": "2026-09-26T02:50:52+00:00",
   "headline_findings": [
     "The 8 frozen-model questions (q17-q24) each change one parameter of a metric that q01-q16 already use: a window, an offset, a filter, an aggregation or a threshold. No layer's model defines the variant. With each layer's model left exactly as written for q01-q16, answered through the layer's query-time interface, out of 8: Semantic Rails 6 (6 native), MetricFlow 2 (2 native), Cube 7 (2 native, 5 workaround), Malloy 8 (8 native) and KtX 3 (2 native, 1 precomputed). Each other answer is labeled requires_model_change, with the reason and the documentation in shared/frozen_model.yml. Snowflake Semantic Views wasn't assessed: its capture can't be re-run.",
     "The 8 frozen-model questions are few, and the Semantic Rails authors chose them knowing which parameters Semantic Rails composes at query time and which some other layers set in the model. They probe where each layer's frozen-model boundary lies; they aren't a ranking, and they don't weigh what a model change costs in each layer.",
@@ -1497,7 +1497,7 @@
           "label_evidence": [
             "SQL API CASE expression",
             "SQL API query over a derived table",
-            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result has 34 rows. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
+            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result holds only the 10 sessions' same-store orders within 7 days. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
             "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
           ],
           "snippet_path": "comparisons/semantic_layers/cube/queries/q18_same_store_session_to_order_conversion_50m.sql",
@@ -1517,7 +1517,7 @@
           "label_evidence": [
             "SQL API query over a derived table",
             "SQL API window function",
-            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result has 34 rows. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
+            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result holds only the 10 sessions' same-store orders within 7 days. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
             "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
           ],
           "snippet_path": "comparisons/semantic_layers/cube/queries/q19_trailing_3_month_revenue_by_month.sql",
@@ -1537,7 +1537,7 @@
           "label_evidence": [
             "SQL API query over a derived table",
             "SQL API window function",
-            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result has 34 rows. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
+            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result holds only the 10 sessions' same-store orders within 7 days. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
             "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
           ],
           "snippet_path": "comparisons/semantic_layers/cube/queries/q20_revenue_and_prior_month_revenue_by_month.sql",
@@ -1557,7 +1557,7 @@
           "label_evidence": [
             "SQL API CASE expression",
             "SQL API query over a derived table",
-            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result has 34 rows. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
+            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result holds only the 10 sessions' same-store orders within 7 days. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
             "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
           ],
           "snippet_path": "comparisons/semantic_layers/cube/queries/q21_revenue_and_large_order_revenue_by_month.sql",
@@ -1591,7 +1591,7 @@
           "support_status": "workaround",
           "label_evidence": [
             "SQL API query over a derived table",
-            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result has 34 rows. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
+            "An SQL API query answers it by wrapping a Cube query in SQL of its own, a derived table: with SUM OVER for q19, LAG for q20, a filter on each customer-month's order count for q23, a CASE over each order's revenue (an ungrouped query of the revenue measure) for q21, and for q18 a 50-minute flag over the declared 7-day same-store join, weighted by each group's session count. (Cube's join excludes an order at the session's start minute, which the rule counts, and Cube post-processes q18 over a Cube query result it caps at 50,000 rows; no order in this data falls on the start minute, and that result holds only the 10 sessions' same-store orders within 7 days. It has no ORDER BY, because Cube refuses to post-process the sorted query.) The rubric counts SQL written around a layer's members as hand-written, as it does SQL outside SEMANTIC_VIEW(...), so the label is workaround rather than native. A REST query has no such option: its filters apply to the whole query, and compareDateRange returns each date range as a separate result set, not the prior month beside each month. In the model these would be a rolling_window or time_shift measure, a measure with filters, or a multi-stage measure with the new threshold.",
             "https://docs.cube.dev/reference/core-data-apis/sql-api/query-format"
           ],
           "snippet_path": "comparisons/semantic_layers/cube/queries/q23_orders_from_customers_with_5plus_orders_in_month.sql",
@@ -1639,9 +1639,7 @@
         "Join-tree aggregation is expressive without a large semantic scaffolding layer.",
         "Arbitrary-condition joins and query-derived sources answer q08-q16 without SQL blocks."
       ],
-      "weaknesses": [
-        "The model's q09 and q15 join counts (started_at, started_at + 7 days], the stated rule, while the q17 and q18 queries count [started_at, started_at + N), the duration convention the frozen-model answer keys use. No order in this data falls on either boundary."
-      ],
+      "weaknesses": [],
       "capture_notes": [],
       "status_totals_by_slice": {
         "shared": {
@@ -2383,120 +2381,120 @@
           "support_status": "not_assessed",
           "label_evidence": [],
           "snippet_path": null,
-          "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+          "query_path": null,
           "result_path": null,
           "sql_path": null,
           "notes": "Not assessed: this capture can't be re-run on the frozen-model questions.",
           "row_count": null,
           "snippet_excerpt": "",
-          "query_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd",
+          "query_excerpt": "",
           "result_excerpt": "",
-          "sql_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+          "sql_excerpt": ""
         },
         {
           "question_id": "q18_same_store_session_to_order_conversion_50m",
           "support_status": "not_assessed",
           "label_evidence": [],
           "snippet_path": null,
-          "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+          "query_path": null,
           "result_path": null,
           "sql_path": null,
           "notes": "Not assessed: this capture can't be re-run on the frozen-model questions.",
           "row_count": null,
           "snippet_excerpt": "",
-          "query_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd",
+          "query_excerpt": "",
           "result_excerpt": "",
-          "sql_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+          "sql_excerpt": ""
         },
         {
           "question_id": "q19_trailing_3_month_revenue_by_month",
           "support_status": "not_assessed",
           "label_evidence": [],
           "snippet_path": null,
-          "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+          "query_path": null,
           "result_path": null,
           "sql_path": null,
           "notes": "Not assessed: this capture can't be re-run on the frozen-model questions.",
           "row_count": null,
           "snippet_excerpt": "",
-          "query_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd",
+          "query_excerpt": "",
           "result_excerpt": "",
-          "sql_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+          "sql_excerpt": ""
         },
         {
           "question_id": "q20_revenue_and_prior_month_revenue_by_month",
           "support_status": "not_assessed",
           "label_evidence": [],
           "snippet_path": null,
-          "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+          "query_path": null,
           "result_path": null,
           "sql_path": null,
           "notes": "Not assessed: this capture can't be re-run on the frozen-model questions.",
           "row_count": null,
           "snippet_excerpt": "",
-          "query_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd",
+          "query_excerpt": "",
           "result_excerpt": "",
-          "sql_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+          "sql_excerpt": ""
         },
         {
           "question_id": "q21_revenue_and_large_order_revenue_by_month",
           "support_status": "not_assessed",
           "label_evidence": [],
           "snippet_path": null,
-          "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+          "query_path": null,
           "result_path": null,
           "sql_path": null,
           "notes": "Not assessed: this capture can't be re-run on the frozen-model questions.",
           "row_count": null,
           "snippet_excerpt": "",
-          "query_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd",
+          "query_excerpt": "",
           "result_excerpt": "",
-          "sql_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+          "sql_excerpt": ""
         },
         {
           "question_id": "q22_average_and_max_item_revenue_by_product_type_by_month",
           "support_status": "not_assessed",
           "label_evidence": [],
           "snippet_path": null,
-          "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+          "query_path": null,
           "result_path": null,
           "sql_path": null,
           "notes": "Not assessed: this capture can't be re-run on the frozen-model questions.",
           "row_count": null,
           "snippet_excerpt": "",
-          "query_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd",
+          "query_excerpt": "",
           "result_excerpt": "",
-          "sql_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+          "sql_excerpt": ""
         },
         {
           "question_id": "q23_orders_from_customers_with_5plus_orders_in_month",
           "support_status": "not_assessed",
           "label_evidence": [],
           "snippet_path": null,
-          "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+          "query_path": null,
           "result_path": null,
           "sql_path": null,
           "notes": "Not assessed: this capture can't be re-run on the frozen-model questions.",
           "row_count": null,
           "snippet_excerpt": "",
-          "query_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd",
+          "query_excerpt": "",
           "result_excerpt": "",
-          "sql_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+          "sql_excerpt": ""
         },
         {
           "question_id": "q24_orders_by_month_with_lifetime_spend_1000_filter",
           "support_status": "not_assessed",
           "label_evidence": [],
           "snippet_path": null,
-          "query_path": "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql",
+          "query_path": null,
           "result_path": null,
           "sql_path": null,
           "notes": "Not assessed: this capture can't be re-run on the frozen-model questions.",
           "row_count": null,
           "snippet_excerpt": "",
-          "query_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd",
+          "query_excerpt": "",
           "result_excerpt": "",
-          "sql_excerpt": "-- Verify the YAML without creating a production object.\nCALL SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML(\n  'ANALYTICS.SEMANTIC_COMPARISON',\n  $$<contents of jaffle_semantic_view.yaml>$$,\n  TRUE\n);\n\n-- q01_orders_by_month\n-- Baseline: orders by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.orders\n)\nORDER BY ordered_month;\n\n-- q02_revenue_by_store_by_month\n-- Baseline: revenue by store by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON\n  DIMENSIONS stores.store_name, DATE_TRUNC('month', orders.ordered_at) AS ordered_month\n  METRICS orders.revenue_usd\n)\nORDER BY ordered_month, store_name;\n\n-- q03_item_revenue_by_product_type_by_month\n-- Baseline: item revenue by product type by month.\nSELECT *\nFROM SEMANTIC_VIEW(\n  ANALYTICS.SEMANTIC_COMPARISON.JAFFLE_SEMANTIC_COMPARISON"
+          "sql_excerpt": ""
         }
       ]
     },

@@ -147,8 +147,9 @@ What this doesn't show:
   and q20's `lag` in Malloy and Cube step over month rows, which equals the calendar rule here
   only because every month has orders.
 - **Some variants don't discriminate on this data.** q17's 14-day rate equals q09's 7-day rate
-  (every session converts within an hour), and q22's maxima are each product type's top price in
-  every month, so a layer returning the base metric would still match there
+  (every session converts within an hour), q18's same-store condition removes nothing (every
+  session and candidate order is at one store), and q22's maxima are each product type's top
+  price in every month, so a layer returning the base metric would still match there
   ([`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md)). The labels don't depend on it:
   each layer's query for a variant is in its `queries/` folder.
 - **The set is small, and the Semantic Rails authors chose it** knowing which parameters Semantic

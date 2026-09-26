@@ -194,10 +194,11 @@ def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     query_file = PACK / "malloy" / "queries" / f"{entry['question_id']}.malloy"
     if query_file.is_file():
         text = query_file.read_text(encoding="utf-8")
-        # Only the import and the question's own query: a source or another query declared here
-        # would be model authoring outside the pinned model.
-        top = re.findall(r"^(\w+):", text, flags=re.MULTILINE)
-        if top != ["query"] or not re.search(r'^import "\.\./models/jaffle\.malloy"$', text, re.M):
+        # Only the model's import and the question's own query: another import, a source or a
+        # run here would be model authoring outside the pinned model.
+        imports = re.findall(r"^\s*import\b.*$", text, flags=re.MULTILINE)
+        declared = re.findall(r"^\s*(source|query|run)\s*:", text, flags=re.MULTILINE)
+        if imports != ['import "../models/jaffle.malloy"'] or declared != ["query"]:
             raise SystemExit(f"{query_file.name} must hold one import of the model and one query")
         model += "\n" + text
     query = rf"^query:\s+{re.escape(entry['question_id'])}\s+is\b"
@@ -212,6 +213,9 @@ def malloy(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
         for name, _, body in MALLOY_SQL.findall(model)
         if not is_passthrough(body) and f"({_squash(body)})" in _squash(executed)
     }
+    # A raw SQL expression (sql_number, sql_string, ...) in a variant's query is hand-written.
+    if query_file.is_file() and re.search(r"\bsql_\w+\s*\(", query_file.read_text("utf-8")):
+        helpers.add("raw SQL expression in the query")
     return sorted(helpers), [executed]
 
 
@@ -228,8 +232,12 @@ def ktx(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     fields += [
         item if isinstance(item, str) else item["field"] for item in payload.get("dimensions", [])
     ]
+    helpers = [
+        f"SQL subquery in the inline measure {item['name']}"
+        for item in payload.get("measures", [])
+        if isinstance(item, dict) and re.search(r"\(\s*select\b", item["expr"], re.IGNORECASE)
+    ]
     fields += [re.split(r"\s", item)[0] for item in payload.get("filters", [])]
-    helpers = []
     for name in _require(sorted({field.split(".")[0] for field in fields}), "sources", entry):
         spec = yaml.safe_load(
             (PACK / "ktx" / "sources" / f"{name}.yaml").read_text(encoding="utf-8")

@@ -558,9 +558,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "Join-tree aggregation is expressive without a large semantic scaffolding layer.",
             "Arbitrary-condition joins and query-derived sources answer q08-q16 without SQL blocks.",
         ],
-        "weaknesses": [
-            "The model's q09 and q15 join counts (started_at, started_at + 7 days], the stated rule, while the q17 and q18 queries count [started_at, started_at + N), the duration convention the frozen-model answer keys use. No order in this data falls on either boundary.",
-        ],
+        "weaknesses": [],
         "scale": {
             "baseline_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
             "stretch_files": [COMPARISON_ROOT / "malloy" / "models" / "jaffle.malloy"],
@@ -975,7 +973,9 @@ def entry_for_question(
     query_path = entry.get("query_path")
     result_path = entry.get("result_path")
     sql_path = entry.get("sql_path")
-    if query_path is None:
+    if status == "not_assessed":  # nothing ran, so there is no evidence to excerpt
+        query_path = snippet_path = None
+    elif query_path is None:
         if layer_id == "snowflake_semantic_views":
             query_path = "comparisons/semantic_layers/snowflake_semantic_views/query_examples.sql"
         else:
@@ -1007,7 +1007,7 @@ def entry_for_question(
         # Excerpts show the SQL itself; captured comments are commentary, not evidence.
         sql_lines = [line for line in sql_text.splitlines() if not line.lstrip().startswith("--")]
         sql_excerpt = "\n".join(sql_lines[:36])
-    elif layer_id == "snowflake_semantic_views":
+    elif layer_id == "snowflake_semantic_views" and status != "not_assessed":
         sql_excerpt = excerpt_text(
             COMPARISON_ROOT / "snowflake_semantic_views" / "query_examples.sql",
             around=qid,

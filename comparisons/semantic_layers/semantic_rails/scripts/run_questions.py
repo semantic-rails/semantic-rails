@@ -115,6 +115,9 @@ def main() -> None:
             result = {"query": query}
             for stale in ("explain.json", "sql.sql"):
                 (target_dir / stale).unlink(missing_ok=True)
+            # Only a frozen-model variant may be refused; a refused q01-q16 question is a failure.
+            if not validated.get("ok") and question.get("scope_level") != "variant":
+                raise SystemExit(f"The engine refused {question_id}: {validated.get('errors')}")
             if validated.get("ok"):
                 _write_json(target_dir / "explain.json", runtime.compile(query))
                 result = runtime.query(query)
