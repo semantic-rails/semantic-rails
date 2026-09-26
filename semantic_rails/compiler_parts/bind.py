@@ -636,6 +636,38 @@ def _parse_public_expr(payload: dict[str, Any]) -> SemanticExpr:
     return parse_semantic_expression(payload, context="query")
 
 
+def _bound_metric_predicates(bound: BoundMeasure) -> list[MetricPredicateExpr]:
+    filter_spec = dict(bound.filter_spec or {})
+    clauses = list(filter_spec.get("all", []) or [])
+    predicates: list[MetricPredicateExpr] = []
+    for clause in clauses:
+        raw_expr = clause.get("expression")
+        if raw_expr is None:
+            continue
+        expr = _parse_public_expr(dict(raw_expr))
+        if not isinstance(expr, MetricPredicateExpr):
+            raise SemanticLayerError(
+                "INVALID_METRIC_PREDICATE",
+                "Only metric_predicate expressions are supported in aggregate filters",
+            )
+        predicates.append(expr)
+    return predicates
+
+
+def _measure_count_distinct_key_columns(measure: MeasureConfig, config: PackageConfig) -> list[str]:
+    if measure.measure_class not in {"event_count", "distinct_population"}:
+        return []
+    if not isinstance(measure.expr, ColumnRefExpr):
+        return []
+    if measure.expr.entity or measure.expr.table:
+        return []
+    entity = _entity_index(config).get(measure.entity)
+    if entity is None:
+        return []
+    key_cols = list(entity.key or [entity.primary_key])
+    return key_cols if measure.expr.column in set(key_cols) else []
+
+
 def _collect_measure_refs(
     expr: SemanticExpr, config: PackageConfig, query: NormalizedQuery, out: list[BoundMeasure]
 ) -> None:
