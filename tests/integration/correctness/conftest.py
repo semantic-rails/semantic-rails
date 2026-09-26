@@ -102,10 +102,10 @@ def _rows(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
 @pytest.fixture(scope="session")
 def duckdb_backend(packages: dict[str, Path]) -> Iterator[Backend]:
     runtimes = {name: _runtime(path) for name, path in packages.items()}
-    for runtime in runtimes.values():
-        # GLOBAL: the engine queries on cursors, which don't inherit a session setting.
-        _rows(runtime, f"SET GLOBAL TimeZone = '{SESSION_ZONE}'")
     try:
+        for runtime in runtimes.values():
+            # GLOBAL: the engine queries on cursors, which don't inherit a session setting.
+            _rows(runtime, f"SET GLOBAL TimeZone = '{SESSION_ZONE}'")
         yield Backend("duckdb", runtimes, lambda sql: _rows(runtimes["utc_authored"], sql))
     finally:
         for runtime in runtimes.values():
@@ -134,10 +134,10 @@ def postgres_backend(packages: dict[str, Path]) -> Iterator[Backend]:
         if _strict():
             raise
         pytest.skip(f"postgres: unreachable ({type(exc).__name__}); is the server up?")
-    runtimes = {
-        name: _postgres(path, {**options, "schema": schema}) for name, path in packages.items()
-    }
+    runtimes: dict[str, Runtime] = {}
     try:
+        for name, path in packages.items():
+            runtimes[name] = _postgres(path, {**options, "schema": schema})
         for runtime in runtimes.values():
             _rows(runtime, f"SET TimeZone = '{SESSION_ZONE}'")
         _rows(runtimes["utc_authored"], SEED)
@@ -145,8 +145,10 @@ def postgres_backend(packages: dict[str, Path]) -> Iterator[Backend]:
     finally:
         for runtime in runtimes.values():
             runtime.close()
-        _rows(admin, f"DROP SCHEMA IF EXISTS {schema} CASCADE")
-        admin.close()
+        try:
+            _rows(admin, f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        finally:
+            admin.close()
 
 
 def _postgres(package: Path, options: dict[str, str]) -> Runtime:

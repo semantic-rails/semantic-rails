@@ -1,8 +1,9 @@
--- Portable seed: the suite runs this same script on DuckDB and on Postgres, which splits
--- it on semicolons, so comments here have none.
+-- Portable seed: the suite runs this same script on DuckDB and on Postgres. DuckDB's seed
+-- loader splits it on semicolons, so comments here have none.
 -- Edge cases: no orders in February 2024 (UTC), store b has none from December 2023 to
 -- February 2024, order 7 has a NULL amount and order 8 a NULL store, and orders 3, 5 and
--- 10 fall in the previous day, month or quarter in New York.
+-- 10 fall in the previous day, month or quarter in New York, and order 11 in the previous
+-- fiscal quarter.
 CREATE TABLE orders (
   order_id INTEGER, customer_id INTEGER, store_id VARCHAR(8),
   ordered_at TIMESTAMP, order_date DATE, amount DECIMAL(10, 2)
@@ -17,7 +18,8 @@ INSERT INTO orders VALUES
   (7, 105, 'a', TIMESTAMP '2024-05-06 09:00:00', DATE '2024-05-06', NULL),
   (8, 101, NULL, TIMESTAMP '2024-05-20 09:00:00', DATE '2024-05-20', 6.00),
   (9, 103, 'b', TIMESTAMP '2024-06-30 12:00:00', DATE '2024-06-30', 3.00),
-  (10, 106, 'b', TIMESTAMP '2024-07-01 03:30:00', DATE '2024-07-01', 9.00);
+  (10, 106, 'b', TIMESTAMP '2024-07-01 03:30:00', DATE '2024-07-01', 9.00),
+  (11, 108, 'a', TIMESTAMP '2024-08-01 02:00:00', DATE '2024-08-01', 2.00);
 -- The same instants in a zone-aware column.
 ALTER TABLE orders ADD COLUMN ordered_at_tz TIMESTAMP WITH TIME ZONE;
 UPDATE orders SET ordered_at_tz = ordered_at AT TIME ZONE 'UTC';

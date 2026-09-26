@@ -51,7 +51,8 @@ ISSUES = "https://github.com/semantic-rails/semantic-rails/issues/"
 DUPLICATE_PERIODS = (
     "duplicate periods: a distribution beside a rolling or prior_period sibling returns every"
     " period twice on Postgres (the DATE calendar key and the TIMESTAMP bucket miss each other"
-    " in the text-cast branch combine)"
+    " in the text-cast branch combine; fixed by"
+    " https://github.com/semantic-rails/semantic-rails/pull/166)"
 )
 ZONE_AWARE = (
     "zone-aware column: a TIMESTAMP WITH TIME ZONE column is bucketed in the session's time"
@@ -210,10 +211,12 @@ def _per_order(aggregate: str, grain: str = "month") -> str:
     return f"(SELECT {aggregate} FROM orders AS o WHERE date_trunc('{grain}', o.ordered_at) = s.b)"
 
 
-def _fiscal(grain: str, clock: str) -> str:
+def _fiscal(grain: str, clock: str, start: str, end: str) -> str:
+    """Revenue per fiscal ``grain`` over the calendar's days in [start, end), 0 without orders."""
     return (
-        f"SELECT f.{grain}_start, SUM(o.amount) FROM orders AS o"
-        f" JOIN dim_fiscal AS f ON f.date_day = CAST({CLOCK[clock]} AS DATE) GROUP BY 1"
+        f"SELECT f.{grain}_start, COALESCE(SUM(o.amount), 0) FROM dim_fiscal AS f"
+        f" LEFT JOIN orders AS o ON f.date_day = CAST({CLOCK[clock]} AS DATE)"
+        f" WHERE f.date_day >= DATE '{start}' AND f.date_day < DATE '{end}' GROUP BY 1"
     )
 
 
@@ -323,9 +326,16 @@ def _cases() -> Iterator[Case]:
             for grain in ("day", "week", "month", "quarter", "year"):
                 known = BOTH(ZONE_AWARE) if clock == "tz" and grain in ("day", "week") else {}
                 yield _plain(f"{variant}-revenue_by_{grain}", variant, grain, known=known)
-    for clock, grain in [*((clock, "quarter") for clock in CLOCK), ("utc", "year")]:
-        query = _ask(grain, revenue, calendar_id="fiscal", fill=True)
-        yield Case(f"{clock}-fiscal_{grain}", f"{clock}_authored", query, _fiscal(grain, clock))
+    # Fiscal quarters: order 11 crosses into the previous one in New York, and the window
+    # starts and ends with an empty quarter there (the first one in every clock).
+    for clock, grain, start, end in [
+        *((clock, "quarter", "2023-08-01", "2024-11-01") for clock in CLOCK),
+        ("utc", "year", "2023-02-01", "2025-02-01"),
+    ]:
+        query = _ask(grain, revenue, calendar_id="fiscal", start=start, end=end, fill=True)
+        known = BOTH(ZONE_AWARE) if clock == "tz" else {}
+        reference = _fiscal(grain, clock, start, end)
+        yield Case(f"{clock}-fiscal_{grain}", f"{clock}_authored", query, reference, known=known)
 
     # Nulls, groups, filters and bounds; whole-month bounds may use the rollup.
     yield _plain("null_store_group", "utc_authored", "month", "revenue orders average", store=True)
@@ -545,7 +555,9 @@ def _params(check: str, backends: tuple[str, ...]) -> list[Any]:
     for case in CASES:
         for backend in backends:
             reason = case.known.get(check if check == "agree" else backend)
-            marks = [pytest.mark.xfail(strict=True, reason=reason)] if reason else []
+            # A known wrong answer fails its assertion; any other error still fails the test.
+            xfail = pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
+            marks = [xfail] if reason else []
             ident = case.name if check == "agree" else f"{backend}-{case.name}"
             params.append(pytest.param(backend, case, id=ident, marks=marks))
     return params

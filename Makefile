@@ -67,4 +67,4 @@ test-integration:
 # Differential correctness suite (tests/integration/correctness): DuckDB always, plus a
 # throwaway Postgres 16 in Docker (removed afterwards; the Postgres checks skip without Docker).
 test-postgres:
-	tests/integration/correctness/with_postgres.sh uv run --extra postgres pytest -q tests/integration/correctness
+	tests/integration/correctness/with_postgres.sh uv run --locked --extra postgres pytest -q tests/integration/correctness
