@@ -8,6 +8,83 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.2rc2 — 2026-09-26 — Embedding seams and zone-aware time buckets
+
+**Pre-release.** Install it with `pip install semantic-rails==0.3.2rc2`; `pip install
+semantic-rails` and `<0.4` ranges keep resolving 0.3.1.
+
+**Upgrading from 0.3.2rc1** (from 0.3.1, read the 0.3.2rc1 note below first): check these
+changes; each has its entry below.
+
+- **Zone-aware time columns bucket in their time role's zone** on DuckDB, MotherDuck, DuckLake
+  and Postgres (Fixed). A `TIMESTAMP WITH TIME ZONE` column's buckets at every grain, and its
+  window filters, follow the role's `timezone` (UTC without one) instead of the session zone:
+  the machine's local zone on DuckDB, the server's `TimeZone` on Postgres. So answers change
+  wherever the two differ, for a role with a non-UTC `timezone` and for a UTC role on a machine
+  or server that isn't on UTC: an event near a bucket boundary can move to the neighbouring day,
+  week or month, and a window's totals can change. Authored SQL that depends on the session
+  zone follows the role's zone too (`now()`, `current_date`, a `call` over a zone-aware value),
+  and zone-aware values in rows show its offset. A query whose measures use time roles in other
+  zones returns a new `TIME_ZONE_NOT_APPLIED` warning. Naive `TIMESTAMP` and `DATE` columns
+  bucket and filter as before, and other warehouses are unchanged. To reproduce an answer in a
+  SQL console, set `TimeZone` to the role's zone first.
+- **`certify_aggregate_relation` no longer certifies a rollup under a role whose `timezone`
+  isn't `UTC` or `Etc/UTC`** (`timezone_not_utc`, on every warehouse; Fixed). A host that
+  certifies with it stops certifying such a rollup, so its queries run on the base tables. On
+  DuckDB, MotherDuck, DuckLake and Postgres, build a rollup you certify, and run its paired
+  queries, with the session time zone set to UTC.
+- **A distribution beside a `rolling` or `prior_period` item** returns each period once on
+  Postgres and BigQuery, where 0.3.2rc1 returned every period twice (Fixed).
+- **Embedding hosts:** nothing is removed. `semantic_rails.embedding` gains the Architect
+  authoring seams, `handle_streamable_http_request`, the `MCPAdapter` protocol, and
+  `SemanticLayerMCPAdapter.replace_tool_handler` to use instead of the private
+  `_tool_handlers` mapping (Added). A warehouse adapter, including one set with
+  `Runtime.set_adapter`, now also finds the zone the query runs in under `limits["time_zone"]`:
+  one that forwards `limits` to a built-in adapter gets the fix above, and one that rejects keys
+  it doesn't know must accept this one. A request's own `limits` still take only
+  `statement_timeout_ms` and `max_rows`.
+
+### Added
+
+- `semantic_rails.embedding` exports the package authoring seams `ArchitectProject`,
+  `ArchitectMutation`, `project_revision`, `ABSENT_PROJECT_REVISION` and `impact_report`, and
+  the stateless Streamable HTTP handler `handle_streamable_http_request` with its
+  `MCPHTTPResponse`. See "Serving MCP over HTTP" and "Package authoring" in
+  [docs/EMBEDDING.md](docs/EMBEDDING.md).
+- `handle_jsonrpc_message` and `handle_streamable_http_request` accept any adapter that
+  satisfies the new `MCPAdapter` protocol, so a host's own adapter type-checks.
+- `SemanticLayerMCPAdapter.replace_tool_handler(name, handler)` swaps the body of one tool on
+  one adapter and keeps its argument validation, trusted request context and audit event; an
+  exception the handler raises becomes a tool error response, as for the built-in tools. Use it
+  instead of the private `_tool_handlers` mapping, which keeps working through the 0.3 series.
+- [docs/EMBEDDING.md](docs/EMBEDDING.md) ends with a reference of every facade name and its
+  call shape, checked against the facade by a test.
+
+### Fixed
+
+- A long-running process that authors many package directories no longer keeps one Architect
+  lock per directory in memory: a project's in-process lock is dropped once no thread holds or
+  waits for it.
+- A distribution beside a `rolling` or `prior_period` item no longer returns every period twice
+  on Postgres and BigQuery. The items are answered separately and joined on the period, which one
+  item typed as a date and the other as a timestamp; the join now compares both as the
+  warehouse's timestamp, so each period is one row with every item's value.
+- A `TIMESTAMP WITH TIME ZONE` time column on DuckDB, MotherDuck, DuckLake and Postgres now
+  buckets and filters in its time role's `timezone` (UTC by default) at every grain. Before,
+  day and week answers, and month answers from the base table, followed the server's or
+  machine's session time zone, so they could disagree with each other and with a rollup built
+  in UTC. Each query now runs with the session time zone set to its time role's zone (UTC
+  without one), only for that query, on the engine's connection or a host's. Everything
+  zone-dependent in the query follows that zone: authored `call` expressions over zone-aware
+  values, `now()` and `current_date`, and the offset shown on zone-aware values in rows. A query
+  whose measures use time roles in other zones returns a `TIME_ZONE_NOT_APPLIED` warning. Naive
+  `TIMESTAMP` and `DATE` columns are unaffected, and other warehouses are unchanged; see
+  "`times:` — temporal roles" in [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).
+  On every warehouse, `certify_aggregate_relation` no longer certifies a rollup under a role
+  whose `timezone` isn't UTC (`timezone_not_utc`), so those queries use the base tables. On
+  DuckDB, MotherDuck, DuckLake and Postgres, a host builds a rollup it certifies, and runs the
+  paired queries, with the session time zone set to UTC.
+
 ## 0.3.2rc1 — 2026-09-26 — Exact rollups, row filters, Ossie and a v2-only query MCP
 
 **Pre-release.** Install it with `pip install semantic-rails==0.3.2rc1`; `pip install
