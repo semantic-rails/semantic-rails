@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..dialects import dialect_for_warehouse
 from ..expressions import (
     ArithmeticExpr,
     BooleanExpr,
@@ -94,7 +95,9 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         "percentile_metrics": "percentile" in measure_aggs
         or "median" in measure_aggs
         or any("p95" in row or "median" in row for row in recipe_ids),
-        "dense_fill": any(row.kind == "time" for row in config.entities),
+        # An authored calendar, or the warehouse's implicit Gregorian one.
+        "dense_fill": any(row.kind == "time" for row in config.entities)
+        or dialect_for_warehouse(config.package.warehouse).has_implicit_calendar,
         "alternate_calendars": len(calendar_ids) > 1,
     }
     reasons = {

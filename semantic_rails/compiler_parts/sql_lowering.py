@@ -3776,13 +3776,12 @@ def _calendar_fill_binding(
             "REWRITE_NOT_SUPPORTED", f"time.fill does not support grain '{grain}'"
         )
 
-    requested_calendar = str(plan.time.get("calendar_id", "default") or "default")
-    calendar_candidates = [row for row in config.entities if row.kind == "time"]
+    requested_calendar = _normalized_calendar_id(plan.time.get("calendar_id"))
     calendar_entity = next(
         (
             row
-            for row in calendar_candidates
-            if (row.calendar_id or "default") == requested_calendar
+            for row in config.entities
+            if row.kind == "time" and _normalized_calendar_id(row.calendar_id) == requested_calendar
         ),
         None,
     )
@@ -3793,11 +3792,10 @@ def _calendar_fill_binding(
                 f"Calendar '{requested_calendar}' is not available in the package",
                 details={"calendar_id": requested_calendar},
             )
-        calendar_entity = next(iter(calendar_candidates), None)
-    if calendar_entity is None:
-        raise SemanticLayerError(
-            "REWRITE_NOT_SUPPORTED", "time.fill requires a calendar entity in the package"
-        )
+        # No authored default calendar: the implicit Gregorian one, never another
+        # calendar's grains (a fiscal quarter_start misses every Gregorian bucket).
+        bounded = plan.time.get("start") is not None and plan.time.get("end") is not None
+        return _IMPLICIT_CALENDAR, "bucket", "date_day" if bounded else None
 
     calendar_column = column_by_grain[grain]
     dimension = next(
@@ -3816,6 +3814,72 @@ def _calendar_fill_binding(
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(dimension.id)
     return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)
+
+
+_IMPLICIT_CALENDAR = "implicit_calendar"
+
+
+def _normalized_calendar_id(value: Any) -> str:
+    return str(value or "").strip().lower() or "default"
+
+
+def _implicit_calendar_ctes(plan: LogicalPlan, config: PackageConfig) -> list[SqlCte]:
+    """The implicit Gregorian calendar: a day spine bucketed like the leaf.
+
+    The days run over ``dense_bounds``: the leaf's own first and last buckets, or,
+    for a ``start``/``end`` window, the bounds' dates widened by three days (a
+    UTC-offset bound can fall two days away in the role's zone), which the exact
+    ``_whole_day_window`` predicate then narrows. Each day's bucket is the leaf's
+    own ``date_trunc``, so labels, week starts and types match the leaf's buckets.
+    """
+    dialect = _dialect(config)
+    ctes: list[SqlCte] = []
+    if plan.time.get("start") is not None and plan.time.get("end") is not None:
+        ordinals = []
+        for key in ("start", "end"):
+            moment = _calendar_bound(plan.time[key])
+            if moment is None:
+                raise SemanticLayerError(
+                    "REWRITE_NOT_SUPPORTED",
+                    f"time.{key} must be an ISO date or timestamp for the implicit calendar",
+                    details={key: plan.time[key]},
+                )
+            ordinals.append(moment.toordinal())
+        first = max(ordinals[0] - 3, 1)
+        last = max(min(ordinals[1] + 3, datetime.max.toordinal()), first)
+        ctes.append(
+            SqlCte(
+                name="dense_bounds",
+                query=SqlSelect(
+                    select=[
+                        SqlField(
+                            SqlCast(
+                                SqlLiteral(datetime.fromordinal(day).date().isoformat()), "DATE"
+                            ),
+                            alias,
+                        )
+                        for day, alias in ((first, "range_start"), (last, "range_end"))
+                    ]
+                ),
+            )
+        )
+    start, end = (
+        SqlCast(SqlIdentifier(parts=["dense_bounds", column]), "DATE")
+        for column in ("range_start", "range_end")
+    )
+    ctes.append(SqlCte(name="implicit_days", query=dialect.day_series(start, end, "dense_bounds")))
+    day = SqlIdentifier(parts=["implicit_days", "date_day"])
+    bucket = dialect.date_trunc(str(plan.time["grain"]).lower(), day)
+    ctes.append(
+        SqlCte(
+            name=_IMPLICIT_CALENDAR,
+            query=SqlSelect(
+                select=[SqlField(day, "date_day"), SqlField(bucket, "bucket")],
+                from_table=SqlTableRef(name="implicit_days"),
+            ),
+        )
+    )
+    return ctes
 
 
 def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, Any]) -> str | None:
@@ -3985,6 +4049,12 @@ def _source_bucket_recovery_ctes(time_alias: str) -> list[SqlCte]:
                 SqlField(SqlLiteral(1), "source_present"),
             ],
             from_table=SqlTableRef(name="leaf_base"),
+            # A NULL time has no place in a series (the calendar never holds it).
+            where=[
+                SqlBinary(
+                    SqlIdentifier(parts=["leaf_base", time_alias]), "IS NOT", SqlLiteral(None)
+                )
+            ],
             group_by=[SqlIdentifier(parts=["leaf_base", time_alias])],
         ),
     )
@@ -4004,6 +4074,72 @@ def _source_bucket_recovery_ctes(time_alias: str) -> list[SqlCte]:
         ),
     )
     return [keys, dense]
+
+
+def _dense_time_ctes(
+    plan: LogicalPlan, config: PackageConfig, binding: tuple[str, str, str | None], time_alias: str
+) -> list[SqlCte]:
+    """The ``dense_time`` series of time buckets a filled query's rows hang off."""
+    ctes: list[SqlCte] = []
+    calendar_table, calendar_column, day = binding
+    calendar_expr = _column_ref(calendar_table, calendar_column)
+    dense_time_where: list[Any] = []
+    dense_time_joins: list[SqlJoin] = []
+    implicit = calendar_table == _IMPLICIT_CALENDAR
+    if plan.time.get("start") is not None and plan.time.get("end") is not None:
+        dense_time_where = _bounded_calendar_window(
+            calendar_expr, _column_ref(calendar_table, day) if day else None, plan.time, config
+        )
+    else:
+        ctes.append(
+            SqlCte(
+                name="dense_bounds",
+                query=SqlSelect(
+                    select=[
+                        SqlField(
+                            SqlCall("MIN", [SqlIdentifier(parts=["leaf_base", time_alias])]),
+                            "range_start",
+                        ),
+                        SqlField(
+                            SqlCall("MAX", [SqlIdentifier(parts=["leaf_base", time_alias])]),
+                            "range_end",
+                        ),
+                    ],
+                    from_table=SqlTableRef(name="leaf_base"),
+                ),
+            )
+        )
+        # CROSS JOIN with a 1-row scalar source reads more honestly than
+        # `INNER JOIN ... ON TRUE`, which looks like a bailout.
+        dense_time_joins.append(
+            SqlJoin(join_type="CROSS", table=SqlTableRef(name="dense_bounds"), on=None)
+        )
+        dense_time_where = [
+            SqlBinary(calendar_expr, ">=", SqlIdentifier(parts=["dense_bounds", "range_start"])),
+            SqlBinary(calendar_expr, "<=", SqlIdentifier(parts=["dense_bounds", "range_end"])),
+        ]
+    if implicit:
+        ctes.extend(_implicit_calendar_ctes(plan, config))
+    # Offset bounds can select a source bucket the calendar misses. The implicit spine
+    # keeps every source bucket too, so a generated series that falls short can only
+    # lose an empty bucket, never data.
+    recover = implicit or bool(day and _has_offset_bound(plan.time))
+    spine_name = "calendar_time" if recover else "dense_time"
+    ctes.append(
+        SqlCte(
+            name=spine_name,
+            query=SqlSelect(
+                select=[SqlField(calendar_expr, time_alias)],
+                from_table=SqlTableRef(name=calendar_table),
+                joins=dense_time_joins,
+                where=dense_time_where,
+                group_by=[calendar_expr],
+            ),
+        )
+    )
+    if recover:
+        ctes.extend(_source_bucket_recovery_ctes(time_alias))
+    return ctes
 
 
 def _tier_internal_aliases(
@@ -4166,59 +4302,7 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         base_name = "leaf_base"
 
     if fill_binding is not None:
-        calendar_table, calendar_column, day = fill_binding
-        calendar_expr = _column_ref(calendar_table, calendar_column)
-        dense_time_where: list[Any] = []
-        dense_time_joins: list[SqlJoin] = []
-        if plan.time.get("start") is not None and plan.time.get("end") is not None:
-            dense_time_where = _bounded_calendar_window(
-                calendar_expr, _column_ref(calendar_table, day) if day else None, plan.time, config
-            )
-        else:
-            ctes.append(
-                SqlCte(
-                    name="dense_bounds",
-                    query=SqlSelect(
-                        select=[
-                            SqlField(
-                                SqlCall("MIN", [SqlIdentifier(parts=["leaf_base", time_alias])]),
-                                "range_start",
-                            ),
-                            SqlField(
-                                SqlCall("MAX", [SqlIdentifier(parts=["leaf_base", time_alias])]),
-                                "range_end",
-                            ),
-                        ],
-                        from_table=SqlTableRef(name="leaf_base"),
-                    ),
-                )
-            )
-            # CROSS JOIN with a 1-row scalar source reads more honestly than
-            # `INNER JOIN ... ON TRUE`, which looks like a bailout.
-            dense_time_joins.append(
-                SqlJoin(join_type="CROSS", table=SqlTableRef(name="dense_bounds"), on=None)
-            )
-            dense_time_where = [
-                SqlBinary(
-                    calendar_expr, ">=", SqlIdentifier(parts=["dense_bounds", "range_start"])
-                ),
-                SqlBinary(calendar_expr, "<=", SqlIdentifier(parts=["dense_bounds", "range_end"])),
-            ]
-        spine_name = "calendar_time" if day and _has_offset_bound(plan.time) else "dense_time"
-        ctes.append(
-            SqlCte(
-                name=spine_name,
-                query=SqlSelect(
-                    select=[SqlField(calendar_expr, time_alias)],
-                    from_table=SqlTableRef(name=calendar_table),
-                    joins=dense_time_joins,
-                    where=dense_time_where,
-                    group_by=[calendar_expr],
-                ),
-            )
-        )
-        if spine_name != "dense_time":
-            ctes.extend(_source_bucket_recovery_ctes(time_alias))
+        ctes.extend(_dense_time_ctes(plan, config, fill_binding, time_alias))
 
         joins: list[SqlJoin] = []
         filled_fields: list[SqlField] = []

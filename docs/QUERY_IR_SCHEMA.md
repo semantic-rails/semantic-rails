@@ -438,6 +438,32 @@ size — and it is engaged automatically by features that depend on
 dense rows (for example, the inline `prior_period` LAG window in the
 "Period shifts" section above).
 
+### Which calendar fills
+
+- A calendar the package authors for the requested `calendar_id` always
+  fills (the `default` one when the query names none).
+- With no authored `default` calendar, the **implicit calendar** fills a
+  `default` query: a Gregorian day spine the engine generates in SQL, bucketed
+  with the same truncation as the query's time column (calendar months,
+  quarters and years; Monday weeks), in the temporal role's time zone. It spans
+  the window for a query with `start` and `end`, and otherwise the data's first
+  to last bucket, so an outlying date (say `1900-01-01`) widens the series
+  rather than being dropped. The rendered SQL names it `implicit_calendar`.
+  (An authored calendar fills only the days it holds, so it must cover the data.)
+- Any other `calendar_id` (for example a fiscal calendar) needs that calendar
+  authored. Without it the query is refused; it never falls back to Gregorian
+  periods, and a `default` query never borrows another calendar's periods.
+- The implicit calendar is not available on ClickHouse (an unmatched outer-join
+  field there reads 0 rather than NULL), and on Athena a series is capped at
+  10,000 days (about 27 years); past that the warehouse refuses the query.
+  Author a calendar for those, for Sunday weeks, and for holidays or business
+  days.
+
+Two consequences apply to any calendar. The first rows of a `rolling` window
+cover only the periods the series has (a 3-month window at the first month
+holds one month), and a `group_by` value (a store) is filled for periods
+before its first row too, so an additive `prior_period` there compares with 0.
+
 With an explicit `start` and `end` and a calendar `date_day` declared and stored
 as `date`, the spine holds every bucket that contains a day of the window,
 including buckets without source rows.
