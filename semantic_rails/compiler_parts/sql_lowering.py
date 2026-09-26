@@ -3514,7 +3514,7 @@ def build_performance_plan(
         aggregate_routing={
             "selected": sorted(set(routed_aggregates)),
             "selected_count": len(routed_aggregates),
-            "candidates": routing_candidates(plan, config),
+            "candidates": routing_candidates(plan, physical_plan, config),
         },
     )
 

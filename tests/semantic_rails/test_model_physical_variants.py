@@ -226,7 +226,8 @@ CREATE TABLE order_fact AS SELECT * FROM (VALUES
  (3, 'c2', 's1', TIMESTAMP '2026-03-30', 30.0), (4, 'c1', 's1', TIMESTAMP '2026-03-31', 40.0),
  (5, 'c3', 's2', TIMESTAMP '2026-04-02', 50.0), (6, 'c2', 's1', TIMESTAMP '2026-01-20', 60.0),
  (7, 'c1', 's2', TIMESTAMP '2026-01-25', 5.0), (8, 'c3', 's1', TIMESTAMP '2026-04-01 02:00', 8.0),
- (9, 'c2', 's2', TIMESTAMP '2026-03-31 12:00', 7.0)
+ (9, 'c2', 's2', TIMESTAMP '2026-03-31 12:00', 7.0), (10, 'c3', 's1', TIMESTAMP '2026-01-01 00:30', 3.0),
+ (11, 'c2', 's2', TIMESTAMP '2026-03-31 23:30', 4.0), (12, 'c1', 's1', TIMESTAMP '2026-04-01 00:30', 2.0)
 ) t(order_id, customer_id, store_id, ordered_at, amount);
 CREATE TABLE order_monthly AS SELECT date_trunc('month', ordered_at) AS month_start, store_id,
  sum(amount) AS revenue, count(DISTINCT order_id) AS order_count,
@@ -234,6 +235,8 @@ CREATE TABLE order_monthly AS SELECT date_trunc('month', ordered_at) AS month_st
 CREATE TABLE order_weekly AS SELECT date_trunc('week', ordered_at) AS week_start, store_id,
  sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
 CREATE TABLE order_hourly AS SELECT date_trunc('hour', ordered_at) AS hour_start, store_id,
+ sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
+CREATE TABLE order_minutely AS SELECT date_trunc('minute', ordered_at) AS minute_start, store_id,
  sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
 CREATE TABLE order_days AS SELECT ordered_at::DATE AS date_day, store_id FROM order_fact GROUP BY 1, 2;
 CREATE TABLE order_days_monthly AS SELECT date_trunc('month', date_day) AS month_start, store_id,
@@ -267,6 +270,12 @@ _HOURLY = {
     "relation": "order_hourly",
     "grain": {"time": "hour", "entities": []},
     "time": {"role": "ordered_at", "column": "hour_start"},
+}
+_MINUTELY = {
+    **_HOURLY,
+    "relation": "order_minutely",
+    "grain": {"time": "minute", "entities": []},
+    "time": {"role": "ordered_at", "column": "minute_start"},
 }
 _S1_ONLY = {
     "id": "aggregate_relation.s1_only",
@@ -418,6 +427,16 @@ _TWO_LEAVES = _rollup_query("measure.revenue", "sum", "quarter")
 _TWO_LEAVES["select"].append(
     {**_rollup_query("measure.buyers", "count_distinct", "quarter")["select"][0], "as": "b"}
 )
+_DISTRIBUTION = _rollup_query("measure.revenue", "sum", "quarter")
+_DISTRIBUTION["select"][0]["expression"] = {
+    "kind": "distribution",
+    "function": "avg",
+    "over": {
+        "kind": "entity_value",
+        "entity": "entity.order",
+        "input": {"measure": "measure.revenue"},
+    },
+}
 _DAYS_QUERY = {
     **_rollup_query("measure.days", "count_distinct", "quarter"),
     "time": {"temporal_role": "temporal_role.day", "grain": "quarter"},
@@ -554,6 +573,12 @@ _BUYERS, _REVENUE = "measure.buyers", "measure.revenue"
             id="hourly-day-bounds",
         ),
         pytest.param(
+            ({"minutely": _MINUTELY}, []),
+            _rollup_query(_REVENUE, "sum", "day", start="2026-01-01", end="2026-04-01"),
+            None,
+            id="minutely-day-bounds",
+        ),
+        pytest.param(
             ({"monthly": _MONTHLY}, [], {"time": {"timezone": "America/New_York"}}),
             _rollup_query(_REVENUE, "sum", "month"),
             None,
@@ -623,15 +648,18 @@ def test_rollup_routing_matches_base_tables(
             },
             id="one-leaf-routed-one-on-base-tables",
         ),
+        pytest.param(
+            _MONTHLY_ONLY,
+            _DISTRIBUTION,
+            {"leaf_1:aggregate_relation.orders_monthly": "query_shape_not_routed"},
+            id="distribution-runs-on-base-tables",
+        ),
     ],
 )
 def test_routing_report_lists_each_rollup_per_leaf(
     tmp_path: Path, rollups: tuple, query: dict, decisions: dict
 ):
-    routing = _routed_answers(tmp_path, rollups, query)
-
-    assert _decisions(routing) == decisions
-    assert routing["selected"] == ["aggregate_relation.orders_monthly"]
+    assert _decisions(_routed_answers(tmp_path, rollups, query)) == decisions
 
 
 def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
@@ -652,7 +680,12 @@ def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
     off = compiled["off"]["explain"].performance_plan["aggregate_routing"]
     assert off["selected"] == []
     assert {row["reason"] for row in off["candidates"]} == {ROUTING_OFF}
-    return compiled["rollup"]["explain"].performance_plan["aggregate_routing"]
+    routing = compiled["rollup"]["explain"].performance_plan["aggregate_routing"]
+    reported = {
+        row["relation_id"] for row in routing["candidates"] if row["decision"] == "selected"
+    }
+    assert reported == set(routing["selected"])  # the report agrees with the scans
+    return routing
 
 
 def _decisions(routing: dict) -> dict[str, str]:
@@ -679,6 +712,8 @@ def test_routing_switch_applies_on_a_warm_compile_cache(tmp_path: Path, monkeypa
     assert compile_once(runtime) == ([], False)
     runtime.set_aggregate_routing(True)
     assert compile_once(runtime) == (routed, True)
+    with pytest.raises(TypeError):
+        runtime.set_aggregate_routing("off")  # type: ignore[arg-type]
 
     monkeypatch.setenv("SEMANTIC_RAILS_AGGREGATE_ROUTING", "OFF")
     assert compile_once(Runtime.from_path(str(tmp_path / "p"))) == ([], False)

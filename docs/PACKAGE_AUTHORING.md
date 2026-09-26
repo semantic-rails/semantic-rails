@@ -1302,9 +1302,9 @@ Routing is conservative in the MVP:
   Build it on Monday-start (ISO) weeks, the weeks the compiled SQL uses; the
   engine doesn't check this.
 - The query's `start` and `end` must fall on the rollup's bucket boundaries, with
-  no UTC offset: a monthly table answers `2026-01-01` to `2026-04-01`, not
-  `2026-01-15` to `2026-03-31`. A minute or hour rollup needs bounds on day
-  boundaries.
+  no UTC offset (or a zero one): a monthly table answers `2026-01-01` to
+  `2026-04-01`, not `2026-01-15` to `2026-03-31`. A minute or hour rollup needs
+  bounds on day boundaries.
 - A `count_distinct` routes only when it counts the single-column row key of a
   model that isn't a fact model (for example distinct `order_id` on an orders
   model with `grain: [order_id]`). Distinct counts of anything else, such as

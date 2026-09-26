@@ -304,7 +304,9 @@ When package authors declare physical rollups with `model.variants:` or explicit
 - `performance_plan.aggregate_routing.candidates` lists every rollup considered
   for each measure leaf: `{leaf_id, measure_id, relation_id, decision, reason}`,
   where `decision` is `selected`, `eligible` (it could answer, but another rollup
-  ranked higher) or `rejected` (with the reason code).
+  ranked higher) or `rejected` (with the reason code). A leaf of a query shape that
+  runs on the base tables whatever the rollups, such as a `distribution`, reports
+  its rollups as `query_shape_not_routed`.
 
 Routing is on by default. An operator turns it off with the environment variable
 `SEMANTIC_RAILS_AGGREGATE_ROUTING=off` (read when the runtime starts; `on` or

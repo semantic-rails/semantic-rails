@@ -3426,7 +3426,7 @@ def _aggregate_measure_coverage(row: AggregateRelationConfig) -> set[str]:
 
 
 def _time_bound_on_grain(value: Any, grain: str) -> bool:
-    """Whether a query time bound falls on a UTC bucket boundary of ``grain``.
+    """Whether a query time bound, without a UTC offset (or a zero one), starts a ``grain`` bucket.
 
     A day boundary is also an hour and minute boundary, so finer rollups check the day.
     """
