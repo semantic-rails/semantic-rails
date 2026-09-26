@@ -31,6 +31,7 @@ from .compiler import (
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
+    CONVERSION_MATCHING_MODES,
     AggregateExpr,
     ArithmeticExpr,
     BooleanExpr,
@@ -51,6 +52,7 @@ from .expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    expr_to_dict,
     parse_semantic_expression,
 )
 from .metadata_parts.capabilities import (
@@ -765,6 +767,30 @@ def _predicate_exprs_from_expr(
     return []
 
 
+def _without_empty(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_empty(item)
+            for key, item in value.items()
+            if item not in (None, "", [], {})
+        }
+    return value
+
+
+def _conversion_metadata(expr: SemanticExpr) -> dict[str, Any]:
+    """A conversion metric's own expression, so a caller can re-run it over another window."""
+    if not isinstance(expr, ConversionExpr):
+        return {}
+    return {
+        "conversion": {
+            "expression": _without_empty(expr_to_dict(expr)),
+            "matching_modes": list(CONVERSION_MATCHING_MODES),
+            "rewindow": "select this expression with another window {unit: "
+            "minute|hour|day|week|month|quarter|year, value: positive integer}",
+        }
+    }
+
+
 def _predicate_metadata(
     config: PackageConfig, expr: SemanticExpr, partial_query: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -912,6 +938,7 @@ def _object_card(
                 **_example_test_metadata(recipe),
                 **predicate_meta,
                 **_comparison_metadata(recipe),
+                **_conversion_metadata(recipe.expression),
             }
         )
     elif obj.kind == "dimension":

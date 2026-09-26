@@ -676,8 +676,8 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_ORDER_BY` | `order_by[]` entry has the wrong shape. |
 | `CONVERSION_NOT_SUPPORTED` | Conversion semantics are not supported for this metric. |
 | `CONVERSION_ENTITY_REQUIRED` | Conversion must declare an anchor entity. |
-| `CONVERSION_WINDOW_REQUIRED` | Conversion is missing a required time window. |
-| `CONVERSION_MATCHING_MODE_REQUIRED` | Conversion is missing the matching mode (`first_after`, `last_before`, ...). |
+| `CONVERSION_WINDOW_REQUIRED` | Conversion needs `window: {unit, value}` with a supported unit (`minute` … `year`) and a positive value. |
+| `CONVERSION_MATCHING_MODE_REQUIRED` | Conversion needs `matching_mode`: `first_converted_after_base` or `closest_converted_after_base`. `details.allowed_values` says what each matches and `details.expression` is the sent expression with the first one set. A conversion metric's `inspect` card shows its own expression under `conversion`, to run it over another window. |
 | `UNKNOWN_MCP_PROMPT` | Prompt name isn't in the catalog; see `details.available_prompts`. |
 | `UNKNOWN_MCP_RESOURCE` | Resource URI isn't in the catalog; see `details.available_resources`. |
 | `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`, and `details.replacement` for a removed v1 tool. |
