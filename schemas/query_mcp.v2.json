@@ -205,12 +205,12 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list ids per kind instead, 100 at a time (limit, offset). Default: slim cards (id, label, description, score); verbosity='compact' adds match_reasons and starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "description": "Rank measures, metrics, dimensions, entities and segments against business terms ('revenue by store'), first, to find ids: slim cards, up to limit per kind. Empty terms list every id, 100 per kind per page (offset). verbosity='compact' adds root entities, match reasons and starter patches. Gotcha: unknown terms return status out_of_scope or low_relevance; don't treat a weak candidate as a match.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
           "kinds": {
-            "description": "Object kinds to rank, such as measure or metric. Default: all.",
+            "description": "Such as measure or metric; default all.",
             "oneOf": [
               {
                 "items": {
@@ -224,19 +224,17 @@
             ]
           },
           "limit": {
-            "description": "Per kind (default 10); with empty terms, ids per kind (default 100).",
+            "description": "Per kind: 10, or 100 ids with empty terms.",
             "minimum": 1,
             "type": "integer"
           },
           "offset": {
             "default": 0,
-            "description": "With empty terms, ids to skip per kind.",
             "minimum": 0,
             "type": "integer"
           },
           "policy_context": {
             "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
             "properties": {
               "audience": {
                 "type": "string"
@@ -249,14 +247,14 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "description": "Query IR so far, as context (shape: see execute).",
             "type": "object"
           },
           "request_id": {
             "type": "string"
           },
           "stage": {
-            "description": "Builder stage that tunes ranking: initial, post_measure, post_dimension or comparison. Inferred when omitted.",
+            "description": "initial, post_measure, post_dimension or comparison; inferred.",
             "type": "string"
           },
           "terms": {
@@ -317,7 +315,7 @@
         "readOnlyHint": true,
         "title": "Inspect"
       },
-      "description": "Return one object's card: label, description, aggregations or values, temporal roles, related objects, policy. Default: the card without duplicate fields; verbosity='compact' returns the full card. Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
+      "description": "Return one object's card (aggregations or values, time roles, related objects, policy) after discover, when its slim card isn't enough; verbosity='compact' returns the whole card. Gotcha: object_id must be a full id such as measure.jaffle.revenue_usd, not a label.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -326,7 +324,6 @@
           },
           "policy_context": {
             "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
             "properties": {
               "audience": {
                 "type": "string"
@@ -339,7 +336,7 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "description": "Query IR so far, as context (shape: see execute).",
             "type": "object"
           },
           "request_id": {
@@ -403,7 +400,7 @@
         "readOnlyHint": true,
         "title": "Valid Values"
       },
-      "description": "Return a dimension's governed values: from its declared value domain, or from a constrained warehouse probe with allow_live_query: true. Use it before writing a 'where' filter on a categorical dimension. Gotcha: 'dimension_id' must be a full id like 'dimension.jaffle_store_name'; allow_live_query costs a warehouse round-trip, so use it only when no domain is declared.",
+      "description": "Return a dimension's governed values, before writing a where filter on it. Gotcha: dimension_id must be a full id such as dimension.jaffle_store_name; allow_live_query probes the warehouse, so use it only when no value domain is declared.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -416,7 +413,7 @@
           },
           "include_counts": {
             "default": false,
-            "description": "With allow_live_query, add each value's row count.",
+            "description": "Row counts, with allow_live_query.",
             "type": "boolean"
           },
           "limit": {
@@ -431,7 +428,6 @@
           },
           "policy_context": {
             "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
             "properties": {
               "audience": {
                 "type": "string"
@@ -444,7 +440,7 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "description": "Query IR so far, as context (shape: see execute).",
             "type": "object"
           },
           "request_id": {
@@ -502,7 +498,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Draft one best Query IR from a natural-language intent; call it before 'execute' instead of writing Query IR from scratch. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are no warnings.",
+      "description": "Draft Query IR from the question; call it before 'execute' instead of writing Query IR from scratch. Returns status (ok, low_confidence, unrealizable or out_of_scope), best.query_ir, and why or warnings naming what the draft doesn't honor. detail 'best' or 'full' adds the trace and alternatives. Gotcha: execute best.query_ir only when status is ok and there are no warnings.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -521,13 +517,12 @@
           },
           "limit": {
             "default": 3,
-            "description": "Drafts to consider; detail='full' returns the runners-up.",
+            "description": "Drafts to consider.",
             "minimum": 1,
             "type": "integer"
           },
           "policy_context": {
             "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
             "properties": {
               "audience": {
                 "type": "string"
@@ -540,7 +535,7 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "description": "Query IR so far, as context (shape: see execute).",
             "type": "object"
           },
           "request_id": {
@@ -595,20 +590,19 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted (call plan first), or Query IR you fixed from it. time.end is exclusive. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query; mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. IR: select[]={expression,as}, group_by[]=[<dim>,...] (bare ids), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
+      "description": "Validate, compile and run the best.query_ir that plan drafted (call plan first), or Query IR fixed from it. mode 'validate' only checks it; 'sql' adds the SQL without running it. Gotcha: time.end is exclusive, and query must be a JSON object. IR: select[]={expression,as}, group_by[]=[<dim id>,...], where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
           "max_rows": {
             "default": 200,
-            "description": "Rows to return in mode 'run'. A larger result sets truncated=true and total_row_count (null past 10,000 rows).",
+            "description": "A larger result sets truncated and total_row_count.",
             "maximum": 100000,
             "minimum": 1,
             "type": "integer"
           },
           "mode": {
             "default": "run",
-            "description": "'run' returns rows; 'validate' only checks the query; 'sql' also returns rendered_sql. Only 'run' queries the warehouse.",
             "enum": [
               "run",
               "validate",
@@ -618,7 +612,6 @@
           },
           "policy_context": {
             "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
             "properties": {
               "audience": {
                 "type": "string"
@@ -631,19 +624,18 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as INVALID_QUERY (offenders under details.unsupported_keys).",
+            "description": "Query IR (schemas/query_ir.v1.json); unknown keys are rejected.",
             "properties": {
               "time": {
                 "additionalProperties": true,
-                "description": "Time anchor: temporal_role + grain + start|end|range + fill + calendar_id. Omit entirely for an all-time scalar aggregate.",
+                "description": "Omit for an all-time total.",
                 "properties": {
                   "calendar_id": {
                     "default": "default",
-                    "description": "Calendar for dense spine (Gregorian or authored fiscal).",
                     "type": "string"
                   },
                   "end": {
-                    "description": "ISO-8601, exclusive: March 2017 is start 2017-03-01, end 2017-04-01.",
+                    "description": "exclusive: March 2017 is start 2017-03-01, end 2017-04-01.",
                     "type": [
                       "string",
                       "null"
@@ -651,11 +643,11 @@
                   },
                   "fill": {
                     "default": false,
-                    "description": "Dense calendar spine for grain buckets (0 / NULL fill). Requires grain; otherwise fails as INVALID_QUERY.",
+                    "description": "Return every grain bucket, empty ones too.",
                     "type": "boolean"
                   },
                   "grain": {
-                    "description": "Bucket size. Required when fill=true or for inline prior_period.",
+                    "description": "Bucket size; required by fill and inline prior_period.",
                     "enum": [
                       "",
                       "day",
@@ -670,11 +662,10 @@
                   },
                   "range": {
                     "additionalProperties": true,
-                    "description": "Relative window {last: {unit, value}}: window ends at the floor of now (start of current period) — covers the last N completed periods, NOT a rolling-to-today window. Mutually exclusive with start/end; string shorthand rejected as USE_OBJECT_SHAPE.",
+                    "description": "{last: {unit, value}}: the last N completed periods, not with start/end.",
                     "properties": {
                       "last": {
                         "additionalProperties": false,
-                        "description": "{unit, value} — e.g. {unit: 'day', value: 90}.",
                         "properties": {
                           "unit": {
                             "enum": [
@@ -703,14 +694,13 @@
                     "type": "object"
                   },
                   "start": {
-                    "description": "ISO-8601.",
                     "type": [
                       "string",
                       "null"
                     ]
                   },
                   "temporal_role": {
-                    "description": "Clock id, e.g. 'temporal_role.<x>'. Must match the metric's anchor; mismatch fails as INVALID_TEMPORAL_BINDING.",
+                    "description": "Clock id (temporal_role.<x>) of the measure or metric.",
                     "type": "string"
                   }
                 },
@@ -727,7 +717,7 @@
           },
           "row_format": {
             "default": "records",
-            "description": "Execute row shape. 'records' (default)=rows as objects; 'columns'=columns plus array rows, avoiding repeated field names.",
+            "description": "'columns' returns column names once, rows as arrays.",
             "enum": [
               "records",
               "columns"
@@ -736,7 +726,7 @@
           },
           "sql_profile": {
             "default": "audit",
-            "description": "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; 'off' suppresses rendered_sql + sql_plan entirely.",
+            "description": "SQL formatting; 'off' leaves the SQL out.",
             "enum": [
               "audit",
               "compact",
@@ -747,7 +737,7 @@
           },
           "verbosity": {
             "default": "minimal",
-            "description": "Response detail. 'minimal' (default)={ok,errors,warnings}, plus rendered_sql in mode 'sql' and rows in mode 'run'. 'compact' adds sql_plan, explain and the normalized query; 'full' is the maximal envelope (~100KB).",
+            "description": "'compact' adds explain and the plans (large); 'full' is larger still.",
             "enum": [
               "minimal",
               "compact",
@@ -801,7 +791,7 @@
         "readOnlyHint": true,
         "title": "Segment"
       },
-      "description": "Work with a package-authored segment, after discover finds its id: action='validate' checks it and the Query IR derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows and the total member count. Default verbosity='minimal' leaves out compiler plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like 'segment.jaffle.high_value_customers' (discover with empty terms lists them); 'preview' queries the warehouse.",
+      "description": "Work with a package-authored segment after discover finds its id: action 'validate' checks it and its derived Query IR, 'explain' adds the SQL, 'preview' returns sample members and the member count. Gotcha: segment_id must be a full id such as segment.jaffle.high_value_customers; preview queries the warehouse.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -815,13 +805,12 @@
           },
           "limit": {
             "default": 50,
-            "description": "Sample rows for action 'preview'.",
+            "description": "Preview rows.",
             "minimum": 1,
             "type": "integer"
           },
           "policy_context": {
             "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
             "properties": {
               "audience": {
                 "type": "string"

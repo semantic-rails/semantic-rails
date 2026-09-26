@@ -873,6 +873,14 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
                 )
             promoted_group_by.append(dim_id)
             continue
+        if "expression" not in row and row.keys() & {"metric", "measure", "aggregation", "kind"}:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST",
+                f"select[{idx}] needs its expression under 'expression': "
+                '{"expression": {"metric": "<id>"}, "as": "<alias>"}; '
+                f"got keys {sorted(row)}.",
+                details={"path": f"select[{idx}]", "received_keys": sorted(row)},
+            )
         expression = parse_semantic_expression(row.get("expression", {}) or {}, context="query")
         _validate_query_expr(expression)
         if isinstance(expression, MetricPredicateExpr):
