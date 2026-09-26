@@ -559,6 +559,7 @@ def test_a_filled_distribution_beside_windows_and_groups_matches_the_key(
              range(TIMESTAMP '2023-10-01', TIMESTAMP '2024-08-01', INTERVAL 1 MONTH) AS s(bucket)""",
     )
     assert _answers(packages["authored"], by_store) == [rows, rows]
+    assert "__row = 1" in _rendered(packages["authored"], by_store, "clickhouse")
 
 
 PRIOR_REVENUE = _prior("month")["expression"]
@@ -583,6 +584,25 @@ def test_a_distribution_over_a_per_entity_window_refuses(
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     assert "rolling or prior-period window" in str(refused.value)
+
+
+def test_a_filled_distribution_refuses_a_value_metric_filter(packages: dict[str, Path]) -> None:
+    """It kept orders under 8, the filled periods months under 8: November (10 + 5) vanished."""
+    select = {**_distribution("median", REVENUE), "as": "value"}
+    small = [{"expression": REVENUE, "op": "<", "value": 8}]
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages["authored"], {**_ask("month", select, fill=True), "metric_filters": small})
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert "metric filter on a value" in str(refused.value)
+
+    large = [{"expression": LARGE_ORDER, "op": "=", "value": True}]  # an entity filter still fills
+    filled = _answers(
+        packages["authored"], {**_ask("month", select, fill=True), "metric_filters": large}
+    )
+    unfilled = _query(packages["authored"], {**_ask("month", select), "metric_filters": large})[0]
+    assert filled[0] == filled[1]
+    assert [row for row in filled[0] if row[1] is not None] == unfilled
+    assert [row[0] for row in filled[0] if row[1] is None] == [date(2024, 2, 1), date(2024, 4, 1)]
 
 
 def test_a_filled_distribution_on_a_fiscal_calendar_refuses(packages: dict[str, Path]) -> None:

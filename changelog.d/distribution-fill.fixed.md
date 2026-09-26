@@ -4,4 +4,5 @@
   periods match the unfilled answer. Refused now instead of answering wrong: a `distribution`
   with a `rolling` or `prior_period` window in its input or in a metric filter, which counted
   entities in periods where they had no rows, and a filled `distribution` on a non-default
-  calendar (for example fiscal quarters). See [docs/QUERY_IR_SCHEMA.md](docs/QUERY_IR_SCHEMA.md).
+  calendar (for example fiscal quarters) or with a metric filter on a value. See
+  [docs/QUERY_IR_SCHEMA.md](docs/QUERY_IR_SCHEMA.md).
