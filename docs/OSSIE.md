@@ -79,12 +79,13 @@ uv run semantic-rails import --from ossie --source dist/ossie/jaffle_shop.ossie.
 
 It reads documents written by `export --format ossie`, writes the package to
 `<output>/<package-id>/`, and prints a JSON report with the counts and warnings. Like the export,
-it never drops anything silently: every construct it skips or fills with a default gets one
-warning with the affected names. Other Ossie 0.1.x documents (the first model in
-`semantic_model`) and 0.2 documents (one model at the root) are read the same way, but that is
-experimental: the spec's own examples and the dbt and Snowflake converters' output aren't in the
-tests yet. Input it can't read, such as a malformed document or a sidecar of another format
-version, is refused with `INVALID_CONFIG`.
+it never drops anything silently: every construct it skips gets one warning with the affected
+names, and so do the dimensions, measures and temporal roles it types by default. Other Ossie
+0.1.x documents (the first model in `semantic_model`) and 0.2 documents (one model at the root)
+are read the same way, but that is experimental: the spec's own examples and the dbt and
+Snowflake converters' output aren't in the tests yet. Input it can't read, such as a malformed
+document or a sidecar of another format version, is refused with `INVALID_CONFIG`, and a refused
+import leaves no files behind.
 
 - **With the sidecar** (`<name>.semantic_rails.json` beside the document, as the export writes
   it), every object comes back exactly: the document supplies what it carries and the sidecar
@@ -92,7 +93,8 @@ version, is refused with `INVALID_CONFIG`.
   id and namespace. The import then exports what it wrote and compares that with the document
   and sidecar it read, and reports `round_trip: exact`. A document edited after the export (an
   element added, removed or renamed, or its SQL changed) no longer matches its sidecar, so the
-  import is refused and names the differences; import the document alone, or export again. A
+  import is refused and names the differences; import the document alone, or export again. So is
+  a document with anything the import would skip, such as a dataset without its primary key. A
   package that uses relation pipelines, aggregate relations or path preferences is refused too,
   naming those objects, because they can't be written back as package files yet.
 - **Without it**, the import keeps what the document states and uses defaults for the rest:
@@ -102,7 +104,8 @@ version, is refused with `INVALID_CONFIG`.
     to year grains;
   - fields without `dimension` become measures when their SQL is a column or simple arithmetic,
     aggregated the way the metrics use them, and counted distinct if any metric does;
-  - relationships become many-to-one joins;
+  - relationships to their target's primary key become many-to-one joins. Others are skipped:
+    the document doesn't say they are many-to-one;
   - metrics are imported when their SQL is the aggregate SQL the export writes:
     - `SUM`, `AVG`, `MIN`, `MAX` or `COUNT(DISTINCT ...)` over `dataset.field`;
     - numbers, parentheses, and `+`, `-` and `*`;
@@ -118,4 +121,4 @@ The imported package reads data another tool built: `--default-db` names the Duc
 Snowflake gets a `snowflake_cli` connection named after the package; other warehouses are
 refused. `--warehouse`,
 `--description` and `--schema-strict` apply to `--from metricflow` only. With a sidecar,
-`--package-id` must name the sidecar's package, and `--namespace` is left out.
+`--package-id` and `--namespace`, when given, must be the sidecar's.
