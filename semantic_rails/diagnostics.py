@@ -587,7 +587,7 @@ def recovery_hints_for_error(
             }
         ]
     if code == "ROLLUP_UNSAFE":
-        return [
+        return list(details.get("recovery_hints", []) or []) or [
             {
                 "kind": "change_aggregation",
                 "message": "Use an additive primitive, provide sketch metadata, or query at the declared aggregation entity.",

@@ -239,6 +239,9 @@ class MeasureConfig:
     external_discontinuities: list[MeasureExternalDiscontinuity] = field(default_factory=list)
     cross_window_policy: str = "caveat"
     authoring_warnings: list[str] = field(default_factory=list)
+    # False for already-aggregated values (a vendor's distinct count, a ratio): the
+    # engine never sums two of them.
+    additive: bool = True
 
 
 @dataclass(frozen=True)

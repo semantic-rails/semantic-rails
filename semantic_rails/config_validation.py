@@ -1583,7 +1583,15 @@ def _run_probe(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        runtime.query(query)
+        try:
+            runtime.query(query)
+        except SemanticLayerError as exc:
+            # An `additive: false` measure answers only at its stored grain: probe it there.
+            missing = exc.details.get("missing_dimensions") if exc.code == "ROLLUP_UNSAFE" else None
+            if not missing or query.get("group_by"):
+                raise
+            query = {**query, "group_by": list(missing)}
+            runtime.query(query)
         return {
             "object_id": object_id,
             "kind": kind,

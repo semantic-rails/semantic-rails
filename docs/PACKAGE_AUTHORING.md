@@ -971,6 +971,7 @@ measures:
     expr: amount_usd                  # column or scalar expression
     default_agg: sum                  # default the API uses if no override
     rollup: additive                  # optional physical-variant routing hint
+    additive: true                    # false: already aggregated, never summed (see below)
     accumulation: { kind: flow }
     value_type: currency
     disallowed_aggregations: [median] # subtract from accumulation-derived allowed set
@@ -1012,6 +1013,27 @@ check below but still sums). Give the snapshot time `class: as_of_time`.
 - On an `as_of_time` clock, queries of such a stock are refused with `INVALID_CONFIG`.
 - A current-state table with one row per series (a customer's lifetime spend on the
   customers table) has the same shape and is right as keyed; the warning is expected there.
+
+`additive: false` marks an `aggregate` measure whose values are already aggregated
+and must never be added together: a vendor's pre-counted distinct values (daily unique
+visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages with 3,
+2 and 2 unique visitors can have 4 distinct visitors between them, not 7.
+
+- A query that would sum more than one of its rows into an output row is refused with
+  `ROLLUP_UNSAFE` (`details.unsupported_construct: non_additive_sum`). A stock sums its
+  series' last snapshots, so there each series must be one output row.
+- An output row holds one row when every column of the row key (for a stock, the key
+  without its clock) is grouped by, pinned with a top-level `=` filter or a one-value
+  `in`, or reached through the key of a many-to-one relationship on that column (when
+  it's the only relationship between the two entities); a `date` clock also counts at
+  `grain: day`. Metric and segment filters don't count.
+  The refusal names the dimensions to group by.
+- `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
+  visitors is a real question), and so does `prior_period`. Cumulative, rolling and
+  period-to-date metrics, scoped aggregates and metric predicates over it are refused.
+- `project validate` probes such a measure grouped by those dimensions.
+- It only applies to `kind: aggregate`: an `entity_count` is a distinct count the
+  engine computes itself.
 
 `default_agg:` (the new name for `agg_function:`) is the default aggregation the
 API uses if the caller doesn't specify. The accumulation class drives the

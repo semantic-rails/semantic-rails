@@ -1377,6 +1377,18 @@ def _normalize_accumulation(spec: dict[str, Any]) -> AccumulationConfig:
     return AccumulationConfig(kind=kind, snapshot=legacy_snapshot)
 
 
+def _authored_additive(spec: dict[str, Any], kind: str, where: str) -> bool:
+    """A measure's ``additive:`` flag: a boolean, and ``false`` only on ``kind: aggregate``."""
+    additive = spec.get("additive", True)
+    if not isinstance(additive, bool) or (not additive and kind != "aggregate"):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{where} additive must be true or false, and false only on kind: aggregate "
+            "(an entity_count is a distinct count the engine computes itself)",
+        )
+    return additive
+
+
 def _derive_measure_semantics(spec: dict[str, Any]) -> tuple[str, list[str], list[str], str]:
     accumulation = _normalize_accumulation(spec)
     kind = str(spec.get("kind", "")).strip().lower()
@@ -2226,6 +2238,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     measure_spec.get("cross_window_policy", "caveat") or "caveat"
                 ),
                 authoring_warnings=authoring_warnings,
+                additive=_authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'"),
             )
             measures.append(measure)
             measure_lookup[(model_id, str(measure_key))] = measure_id
