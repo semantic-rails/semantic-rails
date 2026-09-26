@@ -275,9 +275,14 @@ def package_documents(config: PackageConfig, *, namespace: str) -> dict[str, dic
     return _Writer(config, namespace).documents()
 
 
-def write_package(config: PackageConfig, directory: str | Path, *, namespace: str) -> Path:
+def write_package(
+    config: PackageConfig, directory: str | Path, *, namespace: str, exact: bool = True
+) -> Path:
     """Write ``config`` into ``directory``, which must not exist yet, and load it back. Unless it
-    loads to the same objects, remove the directory and raise INVALID_CONFIG naming them."""
+    loads to the same objects, remove the directory and raise INVALID_CONFIG naming them.
+
+    ``exact=False`` is for a config built with only some attributes set: the written package
+    must still load, and keeps the loader's defaults for the rest."""
     rendered = {
         path: dump_project_yaml(document)
         for path, document in package_documents(config, namespace=namespace).items()
@@ -288,7 +293,8 @@ def write_package(config: PackageConfig, directory: str | Path, *, namespace: st
         for relative, text in rendered.items():
             (root / relative).parent.mkdir(parents=True, exist_ok=True)
             (root / relative).write_text(text, encoding="utf-8")
-        differences = _differences(semantic_payload(config), load_package_snapshot(root).semantic)
+        loaded = load_package_snapshot(root).semantic
+        differences = _differences(semantic_payload(config), loaded) if exact else []
         if differences:
             raise SemanticLayerError(
                 "INVALID_CONFIG",

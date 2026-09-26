@@ -97,6 +97,16 @@ def test_what_does_not_come_back_is_refused_by_name(changes, refused, tmp_path) 
     assert not (tmp_path / "shop_starter").exists()
 
 
+def test_a_partial_config_keeps_the_loader_defaults_when_not_exact(tmp_path) -> None:
+    config = replace(
+        STARTER.config, measures=[replace(m, topics=[]) for m in STARTER.config.measures]
+    )
+    with pytest.raises(SemanticLayerError):
+        write_package(config, tmp_path / "exact", namespace="shop")
+    directory = write_package(config, tmp_path / "defaults", namespace="shop", exact=False)
+    assert load_package_snapshot(directory).semantic == STARTER.semantic
+
+
 def test_write_package_refuses_an_existing_directory(tmp_path) -> None:
     with pytest.raises(FileExistsError):
         write_package(STARTER.config, tmp_path, namespace="shop")
