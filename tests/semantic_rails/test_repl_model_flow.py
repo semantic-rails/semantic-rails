@@ -149,7 +149,9 @@ def test_a_table_becomes_a_whole_model_in_one_change(
     assert _files(shop) == before
 
 
-def test_the_table_list_marks_modeled_tables_and_defaults_to_an_unmodeled_one(shop: Path) -> None:
+def test_the_table_list_marks_modeled_tables_and_defaults_to_the_largest_unmodeled_one(
+    shop: Path,
+) -> None:
     _author(shop, {"Table to model": ORDERS, "Create this model?": True})
     script, _ = _author(
         shop,
@@ -167,7 +169,8 @@ def test_the_table_list_marks_modeled_tables_and_defaults_to_an_unmodeled_one(sh
     assert any(text.startswith(ORDERS) and text.endswith("; modeled by orders)") for text in listed)
     assert "main_staging.stg_orders (view, 6 columns)" in listed
     assert listed[-1] == "Type a table name instead"
-    assert script.defaults[label] == "raw_customers"
+    # Facts are usually the largest table; raw_customers only sorts first.
+    assert script.defaults[label] == "raw_order_lines"
 
 
 def test_a_low_confidence_suggestion_ticked_by_the_person_is_kept(shop: Path) -> None:
@@ -293,6 +296,24 @@ def test_a_saved_relation_or_a_relation_pipeline_is_not_checked_as_a_table(shop:
     _author(shop, {**typed, "Model key": "recent", "Warehouse table": "recent_orders"})
 
 
+def test_a_boolean_column_is_a_boolean_dimension_and_an_ordinal_is_not_prechecked(
+    shop: Path,
+) -> None:
+    with duckdb.connect(str(shop / "data" / "shop.duckdb")) as connection:
+        connection.execute(
+            "ALTER TABLE main_marts.fct_orders ADD COLUMN is_large BOOLEAN DEFAULT true; "
+            "ALTER TABLE main_marts.fct_orders ADD COLUMN customer_order_number BIGINT"
+        )
+
+    script, _ = _author(shop, {"Table to model": ORDERS, "Create this model?": True})
+
+    # As `categorical`, a filter on it would compare text with a BOOLEAN column.
+    assert _model(shop, "orders")["dimensions"]["is_large"] == {"kind": "boolean"}
+    measures = next(key for key in script.defaults if key.startswith("Measures"))
+    assert "customer_order_number" not in script.defaults[measures]
+    assert "line_count" in script.defaults[measures]
+
+
 def test_a_cents_column_is_not_prechecked_as_money(shop: Path) -> None:
     with duckdb.connect(str(shop / "data" / "shop.duckdb")) as connection:
         connection.execute("ALTER TABLE main_marts.fct_orders ADD COLUMN tax_paid_cents BIGINT")
@@ -335,7 +356,11 @@ def test_without_a_database_file_it_says_why_and_types_the_table_in(
 
     script, _ = _author(shop, {"Model key": "orders", "Create this model?": False})
 
-    assert "Can't list the warehouse tables: DuckDB database" in capsys.readouterr().out
+    # The starter builds its database from seed files: name the command that does it.
+    assert (
+        "data/shop.duckdb isn't built yet. Build it from the package's seed files with "
+        "`validate runtime`, then run `author model` again, or enter the table by hand."
+    ) in capsys.readouterr().out
     assert script.asked[0] == "Model key"
 
 

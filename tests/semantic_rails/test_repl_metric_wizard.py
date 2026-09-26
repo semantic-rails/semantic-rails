@@ -1,8 +1,9 @@
-"""The REPL metric wizard, driven by prompt label through the public REPL entry point.
+"""The REPL metric and segment wizards, driven by prompt label through the public REPL entry point.
 
 Tables cover recipe answers -> YAML, saved YAML -> Enter everywhere -> the same
 metric, and changed inputs -> refreshed defaults, then filters, expressions the
-recipes cannot write, both real prompt backends and undo. Metrics run on DuckDB.
+recipes cannot write, both real prompt backends and undo. Metrics run on DuckDB, and
+segments are validated and previewed there.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ class _Script:
     """A prompt backend that answers by label and records the default each prompt offered.
 
     ``answers`` maps a prompt label to its answer; for a choice, the answer is a
-    piece of the option's description. Unlisted prompts take their default.
+    piece of the option's description. An iterator answers each ask in turn.
+    Unlisted prompts take their default.
     """
 
     name = "script"
@@ -45,7 +47,8 @@ class _Script:
         # A wizard that re-asks the same question forever fails the test instead of hanging.
         self._asked[label] = self._asked.get(label, 0) + 1
         assert self._asked[label] <= 5, f"asked {label!r} more than 5 times"
-        return self.answers.get(label)
+        answer = self.answers.get(label)
+        return next(answer) if isinstance(answer, Iterator) else answer
 
     def text(self, label: str, *, default: str = "") -> str:
         wanted = self._ask(label)
@@ -622,7 +625,7 @@ CREATE = [
         {"calendar": True},
         {"Metric recipe": "Growth", "Measure": "revenue - ", "Compare with how far back": "Days"},
         {"kind": "derived", "measure": ABSENT, "expression": _growth(REVENUE, "sum", "day"),
-         "value_type": "percent"},
+         "value_type": "percent", "examples": ["What is m by day?"]},
         {"Result type": "Percent"},
         [None, 1.0, 0.5], id="growth",
     ),
@@ -887,7 +890,7 @@ FILTERS = [
     ("stage", ["Completed orders (completed)"], "IN", ["completed"], 10.0, ["1"]),
     ("channel", "phone, store", "NOT IN", ["phone", "store"], 10.0, "phone, store"),
     ("code", "001, true", "IN", ["001", "true"], 30.0, "001, true"),
-    ("is_priority", "true", "IN", [True], 40.0, "true"),
+    ("is_priority", ["true"], "IN", [True], 40.0, ["0"]),
     ("tier", "001", "IN", [1], 30.0, "1"),
 ]
 OPERATORS = {"IN": "is one of", "NOT IN": "is not one of"}
@@ -926,15 +929,23 @@ def test_filter_values_keep_their_type_through_create_and_enter(
     assert _path(project, "m").read_bytes() == created
 
 
-@pytest.mark.parametrize(("dimension", "typed"), [("is_priority", "maybe"), ("tier", "1.5")])
-def test_typed_filter_values_refuse_other_types(tmp_path: Path, dimension: str, typed: str) -> None:
+def test_a_boolean_filter_offers_true_and_false_and_a_mistyped_value_is_asked_again(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     project = _shop(tmp_path)
     filtered = {"Metric recipe": "Filtered", "Measure to publish": "revenue - "}
-    answers = {"Filter by": f"{dimension} - ", "Values, comma separated": typed}
+    answers = {"Filter by": "tier - ", "Values, comma separated": iter(["1.5", "2"])}
 
-    with pytest.raises(SemanticLayerError, match="filter value"):
-        _author(project, {"Metric key": "m", **filtered, **answers})
-    assert not _path(project, "m").exists()
+    _, metric = _author(project, {"Metric key": "m", **filtered, **answers})
+    script, _ = _author(
+        project, {"Metric key": "m", "Filter by": "is_priority - ", "Values": ["true"]}
+    )
+
+    assert metric["expression"]["filter"] == _one_filter("dimension.shop_order_tier", "IN", [2])
+    assert (
+        "Integer filter value '1.5' is not numeric. Enter other values" in capsys.readouterr().out
+    )
+    assert script.options["Values"] == ["true", "false"]
 
 
 def test_another_filter_dimension_or_measure_asks_for_new_values(tmp_path: Path) -> None:
@@ -1538,3 +1549,117 @@ def test_a_new_default_aggregation_names_the_metrics_it_changes(
         # The metrics on the measure's default and those built on them; not `top`.
         changed = "per_event, per_event_2, scoped, total_amount"
         assert f"different numbers: metric.shop.{changed.replace(', ', ', metric.shop.')}\n" in out
+
+
+def test_model_to_extend_recommends_a_model_with_facts_and_aggregates_name_median(
+    tmp_path: Path,
+) -> None:
+    project = _shop(tmp_path, calendar=True)
+    script = _Script({"Measure key": "net", "Create this measure?": False})
+
+    _repl(project, "author measure", script, [])
+
+    assert not script.offered["Model to extend"].startswith("calendar")
+    assert script.options["Model to extend"][-1].startswith("calendar - ")
+    assert "median" in script.options["What primitive fact is this?"][0]
+
+
+# Segments: a membership value keeps its dimension's type from the wizard to the warehouse.
+
+COMPARISON_VALUE = "Comparison value (use a value from the authored domain when available)"
+SEGMENT_VALUES = [
+    # dimension, answers at the value prompt, stored value, members
+    ("is_priority", {"Comparison value": "false"}, False, 1),  # a true/false picker
+    ("status", {COMPARISON_VALUE: "'completed'"}, "completed", 1),  # quotes are not the value
+    ("tier", {COMPARISON_VALUE: iter(["high", "2"])}, 2, 1),  # a mistyped number is asked again
+]
+
+
+def _segment_metrics(project: Path) -> None:
+    for key, measure in (("revenue", REVENUE), ("customers", "measure.shop.customer_count")):
+        _write_metric(
+            project, key, {"kind": "aggregate", "measure": measure, "value_type": "number"}
+        )
+
+
+@pytest.mark.parametrize(("dimension", "answers", "stored", "members"), SEGMENT_VALUES)
+def test_segment_values_keep_their_type_from_the_wizard_to_preview(
+    tmp_path: Path, dimension: str, answers: dict[str, Any], stored: Any, members: int
+) -> None:
+    from semantic_rails.runtime import Runtime
+
+    project = _shop(tmp_path, calendar=True)
+    _segment_metrics(project)
+    script = _Script(
+        {
+            "Segment key": "s",
+            "Entity whose members this segment contains": "order - ",
+            "Membership dimension": f"{dimension} - ",
+            **answers,
+            "Create this segment?": True,
+        }
+    )
+
+    _repl(project, "author segment", script, [])
+
+    # Only entities with a metric over their rows, and only that entity's metrics.
+    entities = [
+        text.split(" - ")[0]
+        for text in script.options["Entity whose members this segment contains"]
+    ]
+    assert "order" in entities and "customer" in entities and "time" not in entities
+    assert script.options["Metric used when previewing segment size"] == [
+        "revenue - [metric] REVENUE"
+    ]
+    saved = yaml.safe_load((project / "segments" / "core.yml").read_text("utf-8"))["segments"]["s"]
+    where = saved["membership"]["where"]
+    assert where == [{"field": f"dimension.shop_order_{dimension}", "op": "=", "value": stored}]
+    assert type(where[0]["value"]) is type(stored)
+    runtime = Runtime.from_path(str(project))
+    try:
+        assert runtime.segment_validate("segment.shop.s")["ok"] is True
+        assert runtime.segment_preview("segment.shop.s")["member_count"] == members
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("kind", ["boolean", "categorical"])
+def test_a_membership_value_its_column_cannot_hold_fails_validation_with_a_hint(
+    tmp_path: Path, kind: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from semantic_rails.diagnostics import exception_issue
+    from semantic_rails.runtime import Runtime
+
+    project = _shop(tmp_path)
+    _segment_metrics(project)
+    orders = project / "models" / "core" / "orders.yml"
+    # is_priority is a BOOLEAN column; `categorical` declares its values as text.
+    orders.write_text(orders.read_text("utf-8").replace("kind: boolean", f"kind: {kind}"), "utf-8")
+    segment = {
+        "entity": "entity.shop_order",
+        "basis_metric": "metric.shop.revenue",
+        "membership": {"where": [{"field": "dimension.shop_order_is_priority", "value": "'true'"}]},
+    }
+    (project / "segments").mkdir(exist_ok=True)
+    _write_yaml(project / "segments" / "core.yml", {"segments": {"s": segment}})
+    runtime = Runtime.from_path(str(project))
+    try:
+        validated = runtime.segment_validate("segment.shop.s")
+        if kind == "boolean":  # the declared type catches it before the warehouse
+            assert validated["ok"] is False
+            assert validated["recovery_hints"][0]["kind"] == "fix_filter_value_type"
+            return
+        # A text dimension can't know its column is BOOLEAN; the warehouse rejects the value.
+        assert validated["ok"] is True
+        with pytest.raises(SemanticLayerError) as preview:
+            runtime.segment_preview("segment.shop.s")
+    finally:
+        runtime.close()
+    hints = exception_issue(preview.value, stage="segment_preview")["recovery_hints"]
+    assert hints[0]["kind"] == "check_segment_membership_values"
+
+    _repl(project, "validate runtime", _Script({"Continue with operational validation?": True}), [])
+
+    output = capsys.readouterr().out
+    assert "failed=1" in output
+    assert "hint: The warehouse rejected segment segment.shop.s's query" in output

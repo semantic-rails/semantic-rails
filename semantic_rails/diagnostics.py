@@ -152,6 +152,14 @@ def semantic_issue(
     return issue
 
 
+_FILTER_VALUE_FORMS = {
+    "boolean": "true or false, unquoted (YAML `value: true`)",
+    "string": "text; in YAML, quote text that looks like a number or boolean (`value: 'true'`)",
+    "integer": "a whole number (YAML `value: 10`)",
+    "number": "a number (YAML `value: 9.5`)",
+}
+
+
 def recovery_hints_for_error(
     code: str, details: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
@@ -976,7 +984,36 @@ def recovery_hints_for_error(
                     }
                 )
             return grain_hints
+        data_type = str(details.get("data_type", "") or "")
+        if data_type and details.get("dimension") and "value" in details:
+            # A where value of the wrong type for its dimension (see compiler).
+            expected = _FILTER_VALUE_FORMS.get(data_type, f"a {data_type} value")
+            return [
+                {
+                    "kind": "fix_filter_value_type",
+                    "message": (
+                        f"Filter {details['dimension']} on {expected}. If the warehouse column "
+                        "holds another type, change the dimension's `kind` to match it (a "
+                        "true/false column is `kind: boolean`)."
+                    ),
+                    "dimension": details["dimension"],
+                    "data_type": data_type,
+                }
+            ]
         return list(details.get("recovery_hints", []) or [])
+    if code == "QUERY_EXECUTION_ERROR" and details.get("segment_id"):
+        return [
+            {
+                "kind": "check_segment_membership_values",
+                "message": (
+                    f"The warehouse rejected segment {details['segment_id']}'s query. Check that "
+                    "each membership value can be compared with its column there, and that each "
+                    "dimension's `kind` matches its column (a true/false column is `kind: "
+                    "boolean`, compared with `value: true`); then validate the segment again."
+                ),
+                "segment_id": details["segment_id"],
+            }
+        ]
     if code == "UNKNOWN_MCP_RESOURCE":
         return [
             {

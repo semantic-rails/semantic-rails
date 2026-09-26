@@ -389,6 +389,25 @@ def test_package_registry_falls_back_to_installed_data_root(
         config_module.list_package_paths.cache_clear()
 
 
+def test_an_installed_bundled_package_builds_its_database_in_the_user_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import semantic_rails.runtime as runtime_module
+    from semantic_rails.package_snapshot import load_package_snapshot
+
+    monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
+    snapshot = load_package_snapshot(config_module.get_package_path("jaffle_shop"))
+    checkout = runtime_module.Runtime.from_snapshot(snapshot, package_id="jaffle_shop")
+    assert checkout.db_path == config_module.resolve_repo_path("data/jaffle_shop.duckdb")
+
+    # Installed, the package's files live outside the code's root (site-packages).
+    monkeypatch.setattr(runtime_module, "repo_root", lambda: str(tmp_path / "site-packages"))
+    installed = runtime_module.Runtime.from_snapshot(snapshot, package_id="jaffle_shop")
+
+    cached = tmp_path / "home" / "cache" / "jaffle_shop" / "data" / "jaffle_shop.duckdb"
+    assert installed.db_path == str(cached)
+
+
 def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
     package_dir = tmp_path / "snowflake_loader_demo"
 

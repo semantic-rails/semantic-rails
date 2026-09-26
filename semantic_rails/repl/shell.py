@@ -325,6 +325,7 @@ _HELP_ROWS = (
     ("undo", "Undo the last authoring change this session"),
     ("ask <question>", "Plan a query"),
     ("run <question>", "Plan and execute a query"),
+    ("help [command]", "List commands, or explain one"),
     ("exit", "Quit"),
 )
 

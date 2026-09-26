@@ -78,6 +78,7 @@ from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
 from .fanout import build_hop_profile
 from .ir import ValidationReport
+from .local_config import semantic_rails_home
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects
 from .registry import Registry
@@ -1401,7 +1402,13 @@ class Runtime:
         package_candidate = os.path.abspath(os.path.join(self.package_root, value))
         repo_candidate = resolve_repo_path(value)
         if kind == "default_db":
-            return package_candidate if self.prefer_package_root_assets else repo_candidate
+            if self.prefer_package_root_assets:
+                return package_candidate
+            if not _is_repo_managed_source(self.package_root):
+                # An installed bundled package builds its database in the user's cache, not
+                # beside the installed code (maybe read-only; uninstall would leave it behind).
+                return os.path.join(semantic_rails_home(), "cache", self.package_id, value)
+            return repo_candidate
         if self.prefer_package_root_assets and os.path.exists(package_candidate):
             return package_candidate
         if not os.path.exists(repo_candidate) and os.path.exists(package_candidate):

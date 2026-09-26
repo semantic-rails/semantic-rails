@@ -892,6 +892,7 @@ def test_repl_help_exposes_guided_authoring_undo_and_safe_validation(capsys) -> 
     assert "Create or update a semantic abstraction" in output
     assert "undo" in output
     assert "Undo the last authoring change this session" in output
+    assert "help [command]" in output
 
 
 def test_repl_author_refuses_non_tty_without_writing(

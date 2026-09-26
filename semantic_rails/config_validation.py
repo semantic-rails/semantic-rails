@@ -44,7 +44,7 @@ from .config_parts.shape_checks import (
     _check_typed_field_enums,
     add_error,
 )
-from .diagnostics import object_id_suggestions
+from .diagnostics import object_id_suggestions, recovery_hints_for_error
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
@@ -1583,6 +1583,20 @@ def _run_probe(
         return result
 
 
+def _probe_failure(probe: dict[str, Any]) -> dict[str, Any]:
+    kind, object_id = probe["kind"], probe["object_id"]
+    details = {
+        **dict(probe["error"].get("details", {}) or {}),
+        "object_id": object_id,
+        "kind": kind,
+    }
+    if kind == "segment":
+        details["segment_id"] = object_id
+    failure = {"code": probe["error"]["code"], "message": probe["error"]["message"]}
+    hints = recovery_hints_for_error(failure["code"], details)
+    return {**failure, "details": details, **({"recovery_hints": hints} if hints else {})}
+
+
 def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:
     query = _probe_query_for_metric(recipe, runtime)
     result = _run_probe(runtime, kind="metric", object_id=recipe.id, query=query)
@@ -1743,17 +1757,7 @@ def validate_config_report(
             )
             probes.append(probe)
             if not probe["ok"]:
-                failures.append(
-                    {
-                        "code": probe["error"]["code"],
-                        "message": probe["error"]["message"],
-                        "details": {
-                            **dict(probe["error"].get("details", {}) or {}),
-                            "object_id": measure.id,
-                            "kind": "measure",
-                        },
-                    }
-                )
+                failures.append(_probe_failure(probe))
                 if progress is not None:
                     progress(f"WARNING measure failed: {measure.id} ({probe['error']['code']})")
 
@@ -1763,19 +1767,21 @@ def validate_config_report(
             probe = _run_metric_probe(recipe, runtime)
             probes.append(probe)
             if not probe["ok"]:
-                failures.append(
-                    {
-                        "code": probe["error"]["code"],
-                        "message": probe["error"]["message"],
-                        "details": {
-                            **dict(probe["error"].get("details", {}) or {}),
-                            "object_id": recipe.id,
-                            "kind": "metric",
-                        },
-                    }
-                )
+                failures.append(_probe_failure(probe))
                 if progress is not None:
                     progress(f"WARNING metric failed: {recipe.id} ({probe['error']['code']})")
+
+        for segment in runtime._config.segments:
+            # Preview's query: a membership value its column can't hold fails only in the warehouse.
+            query = build_segment_query(
+                normalize_segment(runtime._config, segment.id),
+                include_preview_dimensions=True,
+                limit=1,
+            )
+            probe = _run_probe(runtime, kind="segment", object_id=segment.id, query=query)
+            probes.append(probe)
+            if not probe["ok"]:
+                failures.append(_probe_failure(probe))
 
         warnings.extend(_filter_value_warnings(runtime))
         passed = sum(1 for probe in probes if probe["ok"])
