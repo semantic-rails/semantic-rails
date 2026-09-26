@@ -6,7 +6,7 @@
   "query.error.inspect_label_not_id_tokens": 335,
   "query.error.validate_fanout_tokens": 3233,
   "query.error.validate_unknown_dimension_tokens": 376,
-  "query.hosted.discover_tokens": 3820,
+  "query.hosted.discover_tokens": 7113,
   "query.hosted.inspect_tokens": 962,
   "query.prompts_list_tokens": 225,
   "query.resource.capabilities-summary_tokens": 545,

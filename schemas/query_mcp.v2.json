@@ -205,7 +205,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank measures, metrics, dimensions, entities and segments against business terms ('revenue by store'), first, to find ids: slim cards, up to limit per kind. Empty terms list every id, 100 per kind per page (offset). verbosity='compact' adds root entities, match reasons and starter patches. Gotcha: unknown terms return status out_of_scope or low_relevance; don't treat a weak candidate as a match.",
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list ids per kind instead, 100 at a time (limit, offset). Default: slim cards (id, label, description, score); verbosity='compact' adds match_reasons and starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
       "inputSchema": {
         "properties": {
           "kinds": {
@@ -583,7 +583,7 @@
         "properties": {
           "max_rows": {
             "default": 200,
-            "description": "A larger result sets truncated and total_row_count.",
+            "description": "A larger result sets truncated and total_row_count (null past 10,000 rows).",
             "maximum": 100000,
             "minimum": 1,
             "type": "integer"

@@ -2,12 +2,11 @@
 
 Full cards (match reasons, starter patches, comparison metadata) made
 discover over half of a typical agent session's context. verbosity="minimal"
-(the default) returns slim cards; verbosity="compact" adds root entities, at
-most three match reasons and starter patches; verbosity="full" returns the
-whole cards. Below "full", a card leaves out its bucket's kind, available=true
-and empty fields. When the question names an object outright ("revenue by
-store"), that object outranks near-duplicates that add a qualifier the question
-never used ("delivered revenue", "drink revenue").
+(the default) returns slim cards, which leave out their bucket's kind,
+available=true and empty fields; verbosity="compact" returns the full cards.
+When the question names an object outright ("revenue by store"), that object
+outranks near-duplicates that add a qualifier the question never used
+("delivered revenue", "drink revenue").
 """
 
 from __future__ import annotations
@@ -114,19 +113,23 @@ def test_unavailable_candidates_keep_their_reason(adapter: SemanticLayerMCPAdapt
     assert all("blocked_reason" not in row for row in available if row.get("available", True))
 
 
-def test_compact_and_full_cards_on_request(adapter: SemanticLayerMCPAdapter) -> None:
-    arguments = {"terms": "revenue by store", "limit": 10}
-    compact = adapter.call_tool("discover", {**arguments, "verbosity": "compact"})
-    full = adapter.call_tool("discover", {**arguments, "verbosity": "full"})
-    card, whole = compact["measures"][0], full["measures"][0]
-    assert card["id"] == whole["id"]
-    assert {"match_reasons", "starter_query_patch", "root_entity", "description"} <= set(card)
-    assert card["starter_query_patch"] == whole["starter_query_patch"]
-    assert card["match_reasons"] == whole["match_reasons"][:3]
-    # Repeats of the id, kind or label, builder metadata and empty fields stay in "full".
-    assert not {"kind", "name", "object_type", "topics", "available"} & set(card)
-    assert {"kind", "name", "object_type", "topics", "available"} <= set(whole)
-    assert len(compact["measures"]) == len(full["measures"]) > 5
+def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter) -> None:
+    response = adapter.call_tool(
+        "discover", {"terms": "revenue by store", "verbosity": "compact", "limit": 10}
+    )
+    card = response["measures"][0]
+    assert {"match_reasons", "starter_query_patch", "topics", "kind"} <= set(card)
+    assert len(response["measures"]) > 5
+
+
+def test_nonsense_terms_return_a_relevance_block_with_empty_buckets(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    discover = next(tool for tool in list_tool_definitions() if tool["name"] == "discover")
+    assert "'out_of_scope' or 'low_relevance' with empty buckets" in discover["description"]
+    response = adapter.call_tool("discover", {"terms": "unladen swallow airspeed"})
+    assert response.get("out_of_scope") or response.get("low_relevance")
+    assert not response["measures"] and not response["metrics"]
 
 
 @pytest.mark.parametrize(
@@ -151,7 +154,14 @@ def test_canonical_objects_outrank_near_duplicates(
 
 
 @pytest.mark.parametrize(
-    "kinds", [["measure", "metric"], "measure,metric", '["measure", "metric"]']
+    "kinds",
+    [
+        ["measure", "metric"],
+        "measure,metric",
+        "measure,\nmetric",
+        '["measure", "metric"]',
+        '[\n  "measure",\n  "metric"\n]',
+    ],
 )
 def test_kinds_filter_accepts_a_list_in_any_encoding(
     adapter: SemanticLayerMCPAdapter, kinds: Any

@@ -483,3 +483,27 @@ def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
     assert failed["recovery_hints"] == issue["recovery_hints"]
     empty = [key for key, value in issue.items() if value in (None, "", [], {})]
     assert empty == [] and "why_invalid" not in issue and "unsupported_construct" not in issue
+
+
+def test_lean_issues_drop_only_empty_fields_and_echoes() -> None:
+    from semantic_rails.mcp import _lean_issue
+
+    details = {"path": "select[0]"}
+    issue = {
+        "code": "C",
+        "message": "m",
+        "why_invalid": "m",
+        "unsupported_construct": "C",
+        "details": details,
+        "path": "",
+        "object_ids": [],
+        "recovery_hints": [{"kind": "k", "message": "h", "details": details, "shape": {}}],
+    }
+    assert _lean_issue(issue) == {
+        "code": "C",
+        "message": "m",
+        "details": details,
+        "recovery_hints": [{"kind": "k", "message": "h"}],
+    }
+    kept = {"code": "C", "message": "m", "why_invalid": "w", "unsupported_construct": "U"}
+    assert _lean_issue(kept) == kept

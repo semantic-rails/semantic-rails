@@ -437,12 +437,13 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="discover",
         description=(
-            "Rank measures, metrics, dimensions, entities and segments against business terms "
-            "('revenue by store'), first, to find ids: slim cards, up to limit per kind. Empty "
-            f"terms list every id, {_DISCOVER_ID_PAGE} per kind per page (offset). "
-            "verbosity='compact' adds root entities, match reasons and starter patches. "
-            "Gotcha: unknown terms return status out_of_scope or low_relevance; don't treat a "
-            "weak candidate as a match."
+            "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). "
+            "Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; "
+            f"empty terms list ids per kind instead, {_DISCOVER_ID_PAGE} at a time "
+            "(limit, offset). Default: slim cards (id, label, "
+            "description, score); verbosity='compact' adds match_reasons and starter patches. "
+            "Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty "
+            "buckets; branch before using a candidate."
         ),
         input_schema=_schema(
             {
@@ -583,7 +584,10 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "minimum": 1,
                     "maximum": MCP_MAX_ROWS_LIMIT,
                     "default": MCP_DEFAULT_MAX_ROWS,
-                    "description": "A larger result sets truncated and total_row_count.",
+                    "description": (
+                        "A larger result sets truncated and total_row_count (null past "
+                        f"{MCP_ROW_COUNT_CEILING:,} rows)."
+                    ),
                 },
             },
             additional_properties=True,
@@ -1430,9 +1434,12 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
 def _coerce_kinds(value: Any) -> list[str]:
     if value is None or value == "":
         return []
+    if isinstance(value, str) and value.strip().startswith("["):
+        # A JSON array sent as a string ('["measure", "metric"]'), as some models encode it.
+        with contextlib.suppress(ValueError):
+            value = json.loads(value)
     if isinstance(value, str):
-        # Also a JSON array sent as a string ('["measure", "metric"]'), as some models encode it.
-        return [part.strip(" []\"'") for part in value.split(",") if part.strip(" []\"'")]
+        return [part.strip() for part in value.split(",") if part.strip()]
     if isinstance(value, (list, tuple, set)):
         return [str(part).strip() for part in value if str(part).strip()]
     raise _argument_error(
@@ -1469,12 +1476,6 @@ def _status_label(payload: Mapping[str, Any]) -> str:
     return "ok" if bool(payload.get("ok", True)) else "error"
 
 
-# Discover card fields an agent doesn't act on: repeats of the id or kind, and builder metadata.
-# verbosity="full" keeps them.
-_DISCOVER_BUILDER_KEYS = frozenset(
-    {"name", "object_type", "topics", "review_priority", "recommended_next_actions"}
-)
-_DISCOVER_MATCH_REASONS = 3
 _EMPTY: tuple[Any, ...] = (None, "", [], {})
 _DISCOVER_BUCKETS = (
     "measures",
@@ -1488,26 +1489,24 @@ _DISCOVER_BUCKETS = (
 
 
 def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
-    """Send each discover fact once below verbosity="full".
+    """State each fact of a minimal discover response once.
 
     A card in a kind's bucket leaves out its kind, ``available: true`` and empty fields; blocked
     and dimension-value cards keep their explicit fields. The terms and verbosity echoes and an
-    empty query state or selection context go too.
+    empty query state or selection context go too. "compact" and "full" keep the whole cards.
     """
 
-    if payload.get("verbosity") == "full":
+    if payload.get("verbosity") != "minimal":
         return payload
 
     def lean(row: Any, bucket: str) -> Any:
         if not isinstance(row, dict) or bucket in ("blocked", "dimension_values"):
             return row
-        repeats = {"kind": row.get("kind"), "available": True, "description": row.get("label")}
+        repeats = {"kind": row.get("kind"), "available": True}
         return {
-            key: value[:_DISCOVER_MATCH_REASONS] if key == "match_reasons" else value
+            key: value
             for key, value in row.items()
-            if key not in _DISCOVER_BUILDER_KEYS
-            and value not in _EMPTY
-            and not (key in repeats and value == repeats[key])
+            if value not in _EMPTY and not (key in repeats and value == repeats[key])
         }
 
     for key in ("terms", "verbosity"):
@@ -1722,7 +1721,7 @@ class SemanticLayerMCPAdapter:
                 if warning["details"]["received"] not in handler_warned_keys
             ]
             if deduped:
-                response["warnings"] = existing + deduped
+                response["warnings"] = existing + [_lean_issue(warning) for warning in deduped]
         return finish(response)
 
     def read_resource(

@@ -141,11 +141,10 @@ alias index (see [Resources And Prompts](#resources-and-prompts)).
 characters (left out when it only repeats the label) and `default_temporal_role`, plus
 `available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
 bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
-with. `verbosity="compact"` adds each card's `root_entity`, up to three match reasons, its starter
-patch and non-empty comparison metadata; `verbosity="full"` returns the whole cards, with `name`,
-`object_type`, topics, review priority and recommended next actions. When the question uses an
-object's whole name ("revenue by store"), that object ranks above near-duplicates that add a
-qualifier the question doesn't use ("Delivered revenue").
+with. `verbosity="compact"` returns full cards with match reasons, starter patches and comparison
+metadata. When the question uses an object's whole name ("revenue by store"), that object ranks
+above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
+`kinds` takes an array or a comma-separated string, and also a JSON array sent as a string.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
 `available` flag, including when a value is blocked.
 
