@@ -78,9 +78,10 @@ def test_check_preview_and_release_fold_in_order_and_existing_style(root, capsys
     assert _run(root, "preview") == 0
     assert capsys.readouterr().out == f"## Unreleased\n\n{body}"
 
-    # Reproduce the newest real heading, "## X.Y.Z — YYYY-MM-DD — Title", byte for byte.
+    # Reproduce the newest real heading, "## X.Y.Z[rcN] — YYYY-MM-DD — Title", byte for byte.
     real = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    heading = re.search(r"(?m)^## (\d+\.\d+\.\d+) — (\d{4}-\d{2}-\d{2}) — (.+)$", real)
+    version_re = changelog_fragments.VERSION.pattern
+    heading = re.search(rf"(?m)^## ({version_re}) — (\d{{4}}-\d{{2}}-\d{{2}}) — (.+)$", real)
     version, day, title = heading.groups()
     assert _run(root, "release", "--version", version, "--date", day, "--title", title) == 0
     folded = f"{TOP}{heading[0]}\n\n{body}\n{REST}"
@@ -97,6 +98,8 @@ def test_check_preview_and_release_fold_in_order_and_existing_style(root, capsys
         ("# Changelog\n\n## Unreleased\n", "", [], "## 0.2.0 — 2026-10-01"),  # empty Unreleased
         (TOP, REST, ["--title", "  Theme  "], "## 0.2.0 — 2026-10-01 — Theme"),
         (TOP, REST, ["--title", " "], "## 0.2.0 — 2026-10-01"),
+        (TOP, REST, ["--version", "0.2.0rc1"], "## 0.2.0rc1 — 2026-10-01"),
+        (TOP, REST.replace("0.1.0", "0.2.0rc1"), [], "## 0.2.0 — 2026-10-01"),  # final after rc
     ],
 )
 def test_release_folds_edge_cases_exactly(root, top, rest, args, heading):
@@ -112,6 +115,8 @@ def test_release_folds_edge_cases_exactly(root, top, rest, args, heading):
     [
         (CHANGELOG, OK, ["--version", "0.1.0"], "already has a ## 0.1.0 section"),
         (CHANGELOG, OK, ["--version", "0.2"], "is not X.Y.Z"),
+        (CHANGELOG, OK, ["--version", "0.2.0-rc1"], "is not X.Y.Z"),
+        (CHANGELOG, OK, ["--version", "0.2.0.dev1"], "is not X.Y.Z"),
         (CHANGELOG, OK, ["--date", "2026-9-1"], "is not a YYYY-MM-DD date"),
         (CHANGELOG, OK, ["--date", "2026-02-30"], "is not a YYYY-MM-DD date"),
         (CHANGELOG, OK, ["--date", "20261001"], "is not a YYYY-MM-DD date"),

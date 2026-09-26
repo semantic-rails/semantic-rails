@@ -25,9 +25,11 @@ fast enough for the default test run.
 from __future__ import annotations
 
 import json
+import os
 import re
 import runpy
 import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -295,6 +297,31 @@ def test_publish_builds_once_and_transfers_exact_artifacts_through_post_publish(
     assert "release-assets/github/*.tar.gz" in release_commands
     assert "release-assets/github/*.json" in release_commands
     assert "release-assets/github/SHA256SUMS" in release_commands
+
+
+@pytest.mark.parametrize(
+    ("tag", "prerelease"),
+    [("v0.3.2", "false"), ("v0.3.2rc1", "true"), ("v1.0.0a1", "true"), ("v1.0.0b2", "true")]
+    + [("v0.3.2.post1", "false"), ("v0.3.2rc1-x", "false")],
+)
+def test_release_marks_only_pre_release_tags_as_github_pre_releases(tmp_path, tag, prerelease):
+    """Run the release step with a stub `gh`: a failure there lands after PyPI took the upload."""
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text(encoding="utf-8"))
+    (script,) = [
+        str(step["run"])
+        for step in workflow["jobs"]["release"]["steps"]
+        if "gh release create" in str(step.get("run", ""))
+    ]
+    stub = tmp_path / "gh"
+    stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$GH_ARGS"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+    env |= {"GITHUB_REF_NAME": tag, "GH_ARGS": str(tmp_path / "args")}
+    subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", script], cwd=tmp_path, env=env, check=True
+    )
+    args = (tmp_path / "args").read_text(encoding="utf-8").splitlines()
+    assert args[:2] == ["release", "create"] and f"--prerelease={prerelease}" in args
 
 
 def test_gh_cli_steps_outside_a_checkout_pin_the_repository():

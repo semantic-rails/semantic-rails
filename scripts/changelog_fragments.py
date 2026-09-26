@@ -25,7 +25,8 @@ FRAGMENT_NAME = re.compile(r"(?P<slug>[^.]+)\.(?P<category>[^.]+)\.md")
 SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 HEADING_LINE = re.compile(r"\s*#{1,6}(?:\s|$)")
 BODY_LINE = re.compile(r"(?:- |  )\s*\S")
-VERSION = re.compile(r"\d+\.\d+\.\d+")
+# X.Y.Z, or a PEP 440 pre-release of it such as 0.3.2rc1.
+VERSION = re.compile(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?")
 UNRELEASED = re.compile(r"^## Unreleased[ \t]*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 
 
@@ -107,7 +108,7 @@ def release(root: Path, version: str, day: str, title: str | None) -> list[str]:
     if not fragments:
         problems.append("changelog.d/ has no fragments to fold")
     if not VERSION.fullmatch(version):
-        problems.append(f"--version {version!r} is not X.Y.Z")
+        problems.append(f"--version {version!r} is not X.Y.Z or a pre-release such as X.Y.Zrc1")
     if not is_iso_date(day):
         problems.append(f"--date {day!r} is not a YYYY-MM-DD date")
     if title and ("\n" in title or "\r" in title):
@@ -136,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("check", help="validate every fragment")
     commands.add_parser("preview", help="print the pending Unreleased section")
     fold = commands.add_parser("release", help="fold the fragments into CHANGELOG.md")
-    fold.add_argument("--version", required=True, help="X.Y.Z")
+    fold.add_argument("--version", required=True, help="X.Y.Z, or a pre-release such as X.Y.Zrc1")
     fold.add_argument("--date", required=True, help="YYYY-MM-DD")
     fold.add_argument("--title", help="optional release title")
     args = parser.parse_args(argv)
