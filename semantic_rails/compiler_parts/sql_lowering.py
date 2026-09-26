@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
@@ -903,6 +903,14 @@ def _distribution_select(
 ) -> SqlSelect:
     from ..compiler import _compile_query_sql_ast
 
+    # A dense per-entity series holds every entity in every period, so an entity with no rows
+    # in a period (not yet created, or long gone) would enter that period's distribution.
+    if _expr_requires_dense_series(expr.over.input, config):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "A distribution over a rolling or prior-period value per entity is not supported: "
+            "it would count entities in periods where they have no rows.",
+        )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
         entity_key_dims = _entity_key_dimension_ids(expr.over.entity, config)
@@ -913,6 +921,8 @@ def _distribution_select(
         value_alias,
         extra_group_by=entity_key_dims,
     )
+    # Never fill the per-entity grain, for the same reason; `_fill_distribution` adds the periods.
+    entity_value_query.get("time", {}).pop("fill", None)
     sql_ast = _compile_query_sql_ast(
         config, entity_value_query, project_cut=project_is_cut() or bool(expr.over.where)
     )
@@ -941,7 +951,7 @@ def _distribution_select(
         raise SemanticLayerError(
             "UNSUPPORTED_AGGREGATION", f"Unsupported distribution function '{expr.function}'"
         )
-    return SqlSelect(
+    distribution = SqlSelect(
         ctes=[
             SqlCte(
                 name=source_name,
@@ -959,6 +969,58 @@ def _distribution_select(
             if str(item.get("kind", "value_filter")) == "value_filter"
         ],
         group_by=[SqlIdentifier(parts=[source_name, key]) for key in key_aliases],
+    )
+    if not (plan.time or {}).get("fill"):
+        return distribution
+    return _fill_distribution(distribution, expr, alias=alias, plan=plan, config=config)
+
+
+def _fill_distribution(
+    distribution: SqlSelect,
+    expr: DistributionExpr,
+    *,
+    alias: str,
+    plan: LogicalPlan,
+    config: PackageConfig,
+) -> SqlSelect:
+    """``time.fill`` for a distribution: the periods of its input's filled series.
+
+    A period where no entity has a value reads NULL, like ``median`` over no rows. The full join
+    keeps every period the distribution has, whatever the filled series holds. A constant marker
+    finds the distribution's rows (an unmatched ClickHouse outer-join field reads 0, not NULL).
+    """
+    periods = _single_expression_branch_select(
+        expr.over.input, alias="__filled", plan=plan, config=config
+    )
+    marked = replace(distribution, select=[*distribution.select, SqlField(SqlLiteral(1), "__row")])
+    names = [f"{alias}__periods", f"{alias}__distribution"]
+
+    def _from_distribution(column: str, otherwise: Any = None) -> SqlCase:
+        present = SqlBinary(SqlIdentifier(parts=[names[1], "__row"]), "=", SqlLiteral(1))
+        value = SqlIdentifier(parts=[names[1], column])
+        return SqlCase(whens=[SqlCaseWhen(condition=present, result=value)], else_expr=otherwise)
+
+    keys = _query_key_aliases(plan)
+    return SqlSelect(
+        ctes=[
+            SqlCte(name=name, query=_namespace_sql_select(query, f"{name}__"))
+            for name, query in zip(names, (periods, marked), strict=True)
+        ],
+        select=[
+            *[
+                SqlField(_from_distribution(key, SqlIdentifier(parts=[names[0], key])), key)
+                for key in keys
+            ],
+            SqlField(_from_distribution(alias), alias),
+        ],
+        from_table=SqlTableRef(name=names[0]),
+        joins=[
+            SqlJoin(
+                join_type="FULL OUTER",
+                table=SqlTableRef(name=names[1]),
+                on=_join_condition(keys, *names, dialect=_dialect(config)),
+            )
+        ],
     )
 
 

@@ -483,6 +483,80 @@ def test_a_query_compiled_as_sub_queries_refuses_the_implicit_calendar(
     _query(packages["authored"], query)  # an authored calendar still answers
 
 
+def _distribution(function: str, input_: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    over = {"kind": "entity_value", "entity": "entity.cal_order", "input": input_, **extra}
+    expression = {"kind": "distribution", "function": function, "over": over}
+    return {"expression": {**expression, "p": 0.8} if function == "percentile" else expression}
+
+
+def _per_order(aggregate: str) -> str:
+    """``aggregate`` over the bucket's orders (one row per order); NULL when it has none."""
+    return f"(SELECT {aggregate} FROM orders WHERE date_trunc('month', ordered_at) = s.bucket)"
+
+
+# Regression: fill densified the per-order grain, so every order entered every month as a 0.
+@pytest.mark.parametrize(
+    ("function", "aggregate"),
+    [
+        ("median", "median(amount)"),
+        ("percentile", "quantile_cont(amount, 0.8)"),
+        ("avg", "avg(amount)"),
+        ("sum", "sum(amount)"),
+        ("min", "min(amount)"),
+        ("max", "max(amount)"),
+    ],
+)
+def test_a_filled_distribution_matches_the_key(
+    packages: dict[str, Path], function: str, aggregate: str
+) -> None:
+    select = {**_distribution(function, REVENUE), "as": "value"}
+    key = _key(packages["authored"], _series_key("month", _per_order(aggregate)))
+
+    assert _query(packages["authored"], _ask("month", select, fill=True))[0] == key
+    assert _query(packages["authored"], _ask("month", select))[0] == [
+        row for row in key if row[1] is not None
+    ]
+
+
+def test_a_filled_distribution_beside_windows_and_groups_matches_the_key(
+    packages: dict[str, Path],
+) -> None:
+    p80 = {**_distribution("percentile", REVENUE), "as": "p80"}
+    beside = _ask("month", NOW, _prior("month"), p80, fill=True)
+    key = f"{REVENUE_NOW}, {_revenue_at('1 MONTH')}, {_per_order('quantile_cont(amount, 0.8)')}"
+    assert _query(packages["authored"], beside)[0] == _key(
+        packages["authored"], _series_key("month", key)
+    )
+
+    large = {**_distribution("median", REVENUE, where=[{"op": ">", "value": 5}]), "as": "median"}
+    by_store = {
+        **_ask("month", large, fill=True, start="2023-10-15", end="2024-08-01"),
+        "group_by": [STORE],
+    }
+    assert _query(packages["authored"], by_store)[0] == _key(
+        packages["authored"],
+        """SELECT g.store_id, s.bucket, (SELECT median(amount) FROM orders
+             WHERE store_id = g.store_id AND date_trunc('month', ordered_at) = s.bucket
+             AND amount > 5)
+           FROM (SELECT DISTINCT store_id FROM orders) AS g,
+             range(TIMESTAMP '2023-10-01', TIMESTAMP '2024-08-01', INTERVAL 1 MONTH) AS s(bucket)""",
+    )
+
+
+@pytest.mark.parametrize("input_", [_rolling("month", 3), _prior("month")])
+@pytest.mark.parametrize("fill", [False, True])
+def test_a_distribution_over_a_per_entity_window_refuses(
+    packages: dict[str, Path], input_: dict[str, Any], fill: bool
+) -> None:
+    """Its dense series held every order in every month: November's median read 0, not 7.5."""
+    select = {**_distribution("median", input_["expression"]), "as": "value"}
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages["authored"], _ask("month", select, fill=fill))
+
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert "per entity" in str(refused.value)
+
+
 @pytest.mark.parametrize(
     "query",
     [
