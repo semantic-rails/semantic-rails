@@ -108,3 +108,67 @@ def test_positive_value_filter_is_not_mistaken_for_negation(runtime_factory) -> 
     assert payload["best"]["query_ir"]["where"] == [
         {"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}
     ]
+
+
+@pytest.fixture(scope="module")
+def trailing_window_runtime(tmp_path_factory):
+    """A snapshot stock labelled with its own trailing window, like a vendor's 14-day uniques."""
+    import duckdb
+
+    from semantic_rails.runtime import Runtime
+
+    package = tmp_path_factory.mktemp("subject_window") / "f4win"
+    (package / "models").mkdir(parents=True)
+    (package / "metrics").mkdir()
+    (package / "data").mkdir()
+    (package / "package.yml").write_text(
+        "schema_version: 1\npackage: {id: f4win, namespace: f4win, name: f4win, "
+        "warehouse: duckdb, default_db: data/f4win.duckdb, seed: {kind: external}, "
+        "schema_strict: true, environments: [development]}\n"
+    )
+    (package / "graph.yml").write_text(
+        "graph:\n  entities:\n    repo_snapshot: {key: [repo, snapshot_date], "
+        "model: repo_snapshots, allowed_as_root: true}\n"
+    )
+    (package / "models" / "repo_snapshots.yml").write_text(
+        "model:\n  id: repo_snapshots\n  relation: repo_snapshot\n  entities: {repo_snapshot: {}}\n"
+        "  times:\n    snapshot_date: {column: snapshot_date, kind: date, class: as_of_time, "
+        "default: true}\n"
+        "  measures:\n    visitors_14d: {label: Unique visitors (14 days), kind: aggregate, "
+        "expr: visitors_14d, accumulation: {kind: stock, snapshot: end_of_period}, "
+        "value_type: count}\n"
+    )
+    (package / "metrics" / "metrics.yml").write_text(
+        "metrics:\n  unique_visitors_14d: {label: Unique visitors (14 days), "
+        "description: Distinct visitors in the trailing 14-day window as of the snapshot., "
+        "kind: semi_additive, measure: visitors_14d, value_type: count, "
+        "temporal_role: temporal_role.f4win_repo_snapshot_snapshot_date}\n"
+    )
+    connection = duckdb.connect(str(package / "data" / "f4win.duckdb"))
+    connection.execute(
+        "create table repo_snapshot as select * from (values "
+        "('a', date '2026-09-21', 4), ('a', date '2026-09-22', 4)) "
+        "t(repo, snapshot_date, visitors_14d)"
+    )
+    connection.close()
+    return Runtime.from_path(str(package))
+
+
+@pytest.mark.parametrize(
+    ("intent", "status"),
+    [
+        # A 14-day count bucketed or bounded by week is not the week's unique visitors.
+        ("unique visitors by week", "low_confidence"),
+        ("unique visitors last week", "low_confidence"),
+        ("unique visitors in September 2026 by day", "low_confidence"),
+        # No period asked for, or the question names the subject's own window.
+        ("how many unique visitors", "ok"),
+        ("unique visitors over 14 days by week", "ok"),
+    ],
+)
+def test_a_subject_with_its_own_window_is_flagged_for_another_period(
+    trailing_window_runtime, intent: str, status: str
+) -> None:
+    payload = plan_payload(trailing_window_runtime, intent=intent)
+    assert payload["status"] == status, payload.get("why")
+    assert ("subject_window_mismatch" in _gap_kinds(payload)) == (status != "ok")
