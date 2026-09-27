@@ -908,26 +908,26 @@ def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: Packag
     return next(iter(entities))
 
 
-def _reads_non_additive_value(
+def _non_additive_read(
     value: SemanticExpr | None, entity_id: str, config: PackageConfig
-) -> bool:
-    """Whether an ``aggregate_if`` value may hold an ``additive: false`` measure's values.
+) -> dict[str, str] | None:
+    """The ``additive: false`` measure whose column an ``aggregate_if`` value reads, if any.
 
-    It may when it reads every column such a measure of the same entity reads:
-    its column, or all the inputs of a computed one, however they're wrapped.
-    Names compare case-insensitively, as the warehouse resolves them. Reading
-    only some inputs of a computed one (a ratio's numerator) stays additive.
+    Any column such a measure of the same entity reads counts, whatever else the
+    value reads: its values may pass through a ratio's input, a weighted sum or a
+    filtered measure's column alike. Names compare case-insensitively, as the
+    warehouse resolves them.
     """
     if value is None:
-        return False
+        return None
     read = {ref.column.casefold() for ref in collect_column_refs(value)}
     for measure in config.measures:
         if measure.additive or measure.entity != entity_id:
             continue
-        columns = {ref.column.casefold() for ref in collect_column_refs(measure.expr)}
-        if columns and columns <= read:
-            return True
-    return False
+        for ref in collect_column_refs(measure.expr):
+            if ref.column.casefold() in read:
+                return {"measure_id": measure.id, "column": ref.column}
+    return None
 
 
 def _synthetic_conditional_measure(
@@ -946,6 +946,7 @@ def _synthetic_conditional_measure(
     entity_id = _conditional_aggregate_entity(expr, config)
     entities = _entity_index(config)
     entity = entities[entity_id]
+    non_additive = _non_additive_read(expr.value, entity_id, config)
 
     # Build the column-level expression: CASE WHEN cond THEN value END.
     # For COUNT_IF (value omitted) the body is literal 1 so COUNT()
@@ -983,12 +984,16 @@ def _synthetic_conditional_measure(
         measure_class="additive",
         # Summing an additive: false measure's values through aggregate_if follows the
         # measure's own rule: refused unless each output row holds one of its rows.
-        additive=not _reads_non_additive_value(expr.value, entity_id, config),
+        additive=non_additive is None,
         value_type="number",
         name=f"aggregate_if[{aggregation}]",
         label=f"aggregate_if({aggregation}, …)",
         description=("Synthetic measure produced by the aggregate_if binding-time rewrite."),
-        meta={"synthetic": True, "source": "aggregate_if"},
+        meta={
+            "synthetic": True,
+            "source": "aggregate_if",
+            **({"non_additive_read": non_additive} if non_additive else {}),
+        },
     )
     return measure_id, measure
 

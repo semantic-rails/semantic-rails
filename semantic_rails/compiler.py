@@ -607,20 +607,30 @@ def _raise_non_additive_sum(
         for dimension in config.dimensions
         if dimension.entity == measure.entity and dimension.column in missing
     ]
+    # An aggregate_if reading an additive: false measure's column follows that measure.
+    read = measure.meta.get("non_additive_read")
+    subject = (
+        f"This aggregate_if's value reads column {read['column']!r} of measure "
+        f"'{read['measure_id']}', which is additive: false, so it follows the measure's rule"
+        if read
+        else f"Measure '{measure.id}' is additive: false"
+    )
     if missing:
         statistics = [
-            name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
+            name
+            for name in ("avg", "min", "max", "median")
+            if read or name in measure.allowed_aggregations
         ]
         instead = f", or use aggregation {' / '.join(statistics)}" if statistics else ""
         message = (
-            f"Measure '{measure.id}' is additive: false, and this query would sum more than one "
-            f"of its rows into an output row: group by or filter (=) each of {missing}{instead}."
+            f"{subject}, and this query would sum more than one of its rows into an output "
+            f"row: group by or filter (=) each of {missing}{instead}."
         )
         hint = f"Group by, or filter with = to one value, {dimensions or missing}{instead}."
     else:
         message = (
-            f"Measure '{measure.id}' is additive: false, so it can't feed a {construct}: that "
-            "adds its values across periods or rows."
+            f"{subject}, so it can't feed a {construct}: that adds its values across periods "
+            "or rows."
         )
         hint = "Query the measure itself at the grain it's stored at."
     raise SemanticLayerError(
@@ -633,6 +643,7 @@ def _raise_non_additive_sum(
             "missing_columns": missing,
             "missing_dimensions": dimensions,
             "recovery_hints": [{"kind": "stay_at_stored_grain", "message": hint}],
+            **({"non_additive_read": read} if read else {}),
         },
     )
 

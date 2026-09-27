@@ -71,8 +71,11 @@ def package_dir(tmp_path_factory) -> Path:
         "    views: {kind: aggregate, expr: views, value_type: count}\n"
         "    signup_rate: {kind: aggregate, expr: signups / views, additive: false, "
         "value_type: number}\n"
-        "    repeat_visitors: {kind: aggregate, expr: repeat_visits * 1.0, "
-        "additive: false, value_type: count}\n",
+        # A filtered measure: CASE WHEN signups > 0 THEN repeat_visits END.
+        "    repeat_visitors: {kind: aggregate, additive: false, value_type: count, expr: "
+        "{kind: case, whens: [{when: {kind: comparison, op: '>', left: {kind: column, "
+        "column: signups}, right: {kind: literal, value: 0}}, "
+        "then: {kind: column, column: repeat_visits}}]}}\n",
     )
     _write(
         package / "models" / "repo_snapshots.yml",
@@ -113,9 +116,9 @@ def package_dir(tmp_path_factory) -> Path:
     )
     connection.execute(
         "create table traffic_daily as select * from (values "
-        "('a', date '2026-09-21', 3, 10, 1, 1), ('a', date '2026-09-22', 2, 20, 2, 1), "
-        "('b', date '2026-09-21', 5, 30, 3, 2)) "
-        "t(repo, day, daily_visitors, views, signups, repeat_visits)"
+        "('a', date '2026-09-21', 3, 10, 1, 1, 4), ('a', date '2026-09-22', 2, 20, 2, 1, 5), "
+        "('b', date '2026-09-21', 5, 30, 3, 2, 6)) "
+        "t(repo, day, daily_visitors, views, signups, repeat_visits, sessions)"
     )
     connection.execute(
         "create table repo_snapshot as select * from (values "
@@ -419,38 +422,67 @@ def _call(name: str, *args: dict[str, Any]) -> dict[str, Any]:
 ONE = {"kind": "literal", "value": 1}
 
 
+DAILY_ID = f"measure.{NS}.daily_visitors"
+RATE_ID = f"measure.{NS}.signup_rate"
+REPEAT_ID = f"measure.{NS}.repeat_visitors"
+
+
 @pytest.mark.parametrize(
-    "value",
+    ("value", "measure"),
     [
-        _column("daily_visitors"),
-        _column("DAILY_VISITORS"),  # the warehouse resolves names case-insensitively
-        _column("repeat_visits"),  # the one column of a `repeat_visits * 1.0` measure
-        SIGNUP_RATE,  # a non-additive measure's own expression
-        {"kind": "arithmetic", "op": "*", "left": SIGNUP_RATE, "right": ONE},
-        _call("coalesce", SIGNUP_RATE, {"kind": "literal", "value": 0}),
-        {
-            "kind": "arithmetic",
-            "op": "*",
-            "left": _column("daily_visitors"),
-            "right": {"kind": "literal", "value": 1},
-        },
+        (_column("daily_visitors"), DAILY_ID),
+        (_column("DAILY_VISITORS"), DAILY_ID),  # the warehouse resolves names case-insensitively
+        # A filtered measure's value column, its filter column left to the condition.
+        (_column("repeat_visits"), REPEAT_ID),
+        # A ratio's inputs, alone or weighted: refused too, like weighted sums.
+        (_column("signups"), RATE_ID),
+        (_column("views"), RATE_ID),
+        (SIGNUP_RATE, RATE_ID),
+        ({"kind": "arithmetic", "op": "*", "left": SIGNUP_RATE, "right": ONE}, RATE_ID),
+        (_call("coalesce", SIGNUP_RATE, {"kind": "literal", "value": 0}), RATE_ID),
+        (
+            {"kind": "arithmetic", "op": "*", "left": _column("daily_visitors"), "right": ONE},
+            DAILY_ID,
+        ),
+        (
+            {
+                "kind": "arithmetic",
+                "op": "*",
+                "left": _column("sessions"),
+                "right": _column("daily_visitors"),
+            },
+            DAILY_ID,
+        ),
     ],
 )
-def test_aggregate_if_over_a_non_additive_column_follows_the_measure(runtime, value) -> None:
+def test_aggregate_if_over_a_non_additive_column_follows_the_measure(
+    runtime, value: dict[str, Any], measure: str
+) -> None:
     # It used to return 5 for repository a (3 + 2 distinct visitors across two days).
     details = _refused(runtime, _aggregate_if("sum", value, group_by=[REPO_DAY]))
     assert details["missing_columns"] == ["day"]
+    assert details["non_additive_read"]["measure_id"] == measure
     # Grouped to one row per cell, or a statistic, it answers like the measure.
     grouped = _values(runtime, _aggregate_if("sum", value, group_by=[REPO_DAY, DAY_DIM]))
     assert len(grouped) == 3
     assert len(_values(runtime, _aggregate_if("max", value, group_by=[REPO_DAY]))) == 2
 
 
+def test_the_aggregate_if_refusal_names_the_measure_and_why(runtime) -> None:
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(_aggregate_if("sum", _column("repeat_visits"), group_by=[REPO_DAY]))
+    assert str(raised.value).startswith(
+        f"This aggregate_if's value reads column 'repeat_visits' of measure '{REPEAT_ID}', which "
+        "is additive: false, so it follows the measure's rule, and this query would sum more "
+        "than one of its rows into an output row: group by or filter (=) each of ['day'], or "
+        "use aggregation avg / min / max / median."
+    )
+
+
 @pytest.mark.parametrize(
     ("aggregation", "value", "expected"),
     [
-        ("sum", _column("views"), [30, 30]),  # an additive column
-        ("sum", _column("signups"), [3, 3]),  # a non-additive ratio's input stays additive
+        ("sum", _column("sessions"), [6, 9]),  # a column no additive: false measure reads
         ("count", None, [1, 2]),  # counts rows, adds no values
     ],
 )
@@ -467,32 +499,15 @@ def test_a_pinned_aggregate_if_over_a_non_additive_column_answers(runtime) -> No
     assert _values(runtime, _aggregate_if("avg", value, group_by=[REPO_DAY])) == [2.5, 5]
 
 
-def test_aggregate_if_refuses_a_non_additive_column_anywhere_in_its_value(runtime) -> None:
-    # A weighted sum reads the column too: refused, like the measure (declare the
-    # product as its own measure instead).
-    weighted = {
-        "kind": "arithmetic",
-        "op": "*",
+def test_a_non_additive_column_counts_in_the_value_not_the_condition(runtime) -> None:
+    over_two = {
+        "kind": "comparison",
+        "op": ">",
         "left": _column("daily_visitors"),
-        "right": _column("views"),
+        "right": {"kind": "literal", "value": 2},
     }
-    _refused(runtime, _aggregate_if("sum", weighted, group_by=[REPO_DAY]))
-    # A filter on the column counts only in the value, not in the condition.
-    guarded = {
-        "kind": "case",
-        "whens": [
-            {
-                "when": {
-                    "kind": "comparison",
-                    "op": ">",
-                    "left": _column("daily_visitors"),
-                    "right": {"kind": "literal", "value": 2},
-                },
-                "then": _column("views"),
-            }
-        ],
-    }
+    guarded = {"kind": "case", "whens": [{"when": over_two, "then": _column("sessions")}]}
     _refused(runtime, _aggregate_if("sum", guarded, group_by=[REPO_DAY]))
-    in_condition = _aggregate_if("sum", _column("views"), group_by=[REPO_DAY])
-    in_condition["select"][0]["expression"]["condition"] = guarded["whens"][0]["when"]
-    assert _values(runtime, in_condition) == [10, 30]
+    in_condition = _aggregate_if("sum", _column("sessions"), group_by=[REPO_DAY])
+    in_condition["select"][0]["expression"]["condition"] = over_two
+    assert _values(runtime, in_condition) == [4, 6]

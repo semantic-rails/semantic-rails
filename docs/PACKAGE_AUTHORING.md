@@ -1031,14 +1031,10 @@ visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages 
 - `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
   visitors is a real question), and so does `prior_period`. Cumulative, rolling and
   period-to-date metrics, scoped aggregates and metric predicates over it are refused.
-- A query's `aggregate_if` whose `value` reads every column such a measure reads (its
-  column, or all the inputs of a computed one, however wrapped; names match
-  case-insensitively) follows the same rule, even when it reads other columns too: with
-  `unit_price` non-additive, `aggregate_if(sum, …, value: unit_price * quantity)` is
-  refused. Declare such a product as its own measure (`line_amount: unit_price *
-  quantity`) and query that. Reading only some inputs of a computed one, such as a
-  ratio's numerator, stays additive; filter on such a column in the `aggregate_if`
-  `condition`, which doesn't count, rather than in `value`.
+- A query's `aggregate_if` whose `value` reads any column of such a measure (names
+  match case-insensitively) follows the same rule, whatever else it reads: a ratio's
+  inputs and weighted sums included. Declare such an input or product as its own
+  measure and query that.
 - `project validate` probes such a measure grouped by those dimensions.
 - It only applies to `kind: aggregate`: an `entity_count` is a distinct count the
   engine computes itself.
