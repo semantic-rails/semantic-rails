@@ -908,6 +908,41 @@ def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: Packag
     return next(iter(entities))
 
 
+def _unqualified(payload: Any) -> Any:
+    """An expression payload without the entity/table qualifiers of its column refs."""
+    if isinstance(payload, dict):
+        return {
+            key: _unqualified(value)
+            for key, value in payload.items()
+            if key not in {"entity", "table"}
+        }
+    if isinstance(payload, list):
+        return [_unqualified(value) for value in payload]
+    return payload
+
+
+def _reads_non_additive_value(
+    value: SemanticExpr | None, entity_id: str, config: PackageConfig
+) -> bool:
+    """Whether an ``aggregate_if`` value holds an ``additive: false`` measure's values.
+
+    That is, it reads a column that such a measure of the same entity is defined as,
+    or it is such a measure's expression. The inputs of a computed one (a ratio's
+    numerator) stay additive on their own.
+    """
+    if value is None:
+        return False
+    read = {ref.column for ref in collect_column_refs(value)}
+    shape = _unqualified(expr_to_dict(value))
+    return any(
+        measure.expr.column in read
+        if isinstance(measure.expr, ColumnRefExpr)
+        else _unqualified(expr_to_dict(measure.expr)) == shape
+        for measure in config.measures
+        if not measure.additive and measure.entity == entity_id and measure.expr is not None
+    )
+
+
 def _synthetic_conditional_measure(
     expr: ConditionalAggregateExpr, config: PackageConfig
 ) -> tuple[str, MeasureConfig]:
@@ -959,6 +994,9 @@ def _synthetic_conditional_measure(
         allowed_aggregations=[aggregation],
         source_relation=entity.table,
         measure_class="additive",
+        # Summing an additive: false measure's values through aggregate_if follows the
+        # measure's own rule: refused unless each output row holds one of its rows.
+        additive=not _reads_non_additive_value(expr.value, entity_id, config),
         value_type="number",
         name=f"aggregate_if[{aggregation}]",
         label=f"aggregate_if({aggregation}, …)",

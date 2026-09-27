@@ -68,7 +68,9 @@ def package_dir(tmp_path_factory) -> Path:
         "  measures:\n"
         "    daily_visitors: {kind: aggregate, expr: daily_visitors, additive: false, "
         "value_type: count}\n"
-        "    views: {kind: aggregate, expr: views, value_type: count}\n",
+        "    views: {kind: aggregate, expr: views, value_type: count}\n"
+        "    signup_rate: {kind: aggregate, expr: signups / views, additive: false, "
+        "value_type: number}\n",
     )
     _write(
         package / "models" / "repo_snapshots.yml",
@@ -109,8 +111,8 @@ def package_dir(tmp_path_factory) -> Path:
     )
     connection.execute(
         "create table traffic_daily as select * from (values "
-        "('a', date '2026-09-21', 3, 10), ('a', date '2026-09-22', 2, 20), "
-        "('b', date '2026-09-21', 5, 30)) t(repo, day, daily_visitors, views)"
+        "('a', date '2026-09-21', 3, 10, 1), ('a', date '2026-09-22', 2, 20, 2), "
+        "('b', date '2026-09-21', 5, 30, 3)) t(repo, day, daily_visitors, views, signups)"
     )
     connection.execute(
         "create table repo_snapshot as select * from (values "
@@ -373,3 +375,72 @@ def test_refusal_hints_reach_the_error_envelope(runtime: Runtime) -> None:
     # A parent-entity rollup refusal carries no hints of its own and keeps the generic one.
     legacy = {"unsupported_construct": "non_additive_parent_rollup"}
     assert recovery_hints_for_error("ROLLUP_UNSAFE", legacy)[0]["kind"] == "change_aggregation"
+
+
+def _aggregate_if(aggregation: str, value: dict[str, Any] | None, **query: Any) -> dict[str, Any]:
+    column = {"kind": "column", "column": "views", "entity": f"entity.{NS}_traffic_day"}
+    expression: dict[str, Any] = {
+        "kind": "aggregate_if",
+        "aggregation": aggregation,
+        "condition": {
+            "kind": "comparison",
+            "op": ">=",
+            "left": column,
+            "right": {"kind": "literal", "value": 0},
+        },
+    }
+    if value is not None:
+        expression["value"] = value
+    return {"version": 1, "select": [{"expression": expression, "as": "v"}], **query}
+
+
+def _column(name: str) -> dict[str, Any]:
+    return {"kind": "column", "column": name, "entity": f"entity.{NS}_traffic_day"}
+
+
+DAY_DIM = f"dimension.{NS}_traffic_day_day"
+
+
+SIGNUP_RATE = {
+    "kind": "arithmetic",
+    "op": "/",
+    "left": _column("signups"),
+    "right": _column("views"),
+}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        _column("daily_visitors"),
+        SIGNUP_RATE,  # a non-additive measure's own expression
+        {
+            "kind": "arithmetic",
+            "op": "*",
+            "left": _column("daily_visitors"),
+            "right": {"kind": "literal", "value": 1},
+        },
+    ],
+)
+def test_aggregate_if_over_a_non_additive_column_follows_the_measure(runtime, value) -> None:
+    # It used to return 5 for repository a (3 + 2 distinct visitors across two days).
+    details = _refused(runtime, _aggregate_if("sum", value, group_by=[REPO_DAY]))
+    assert details["missing_columns"] == ["day"]
+    # Grouped to one row per cell, or a statistic, it answers like the measure.
+    grouped = _values(runtime, _aggregate_if("sum", value, group_by=[REPO_DAY, DAY_DIM]))
+    assert len(grouped) == 3
+    assert len(_values(runtime, _aggregate_if("max", value, group_by=[REPO_DAY]))) == 2
+
+
+@pytest.mark.parametrize(
+    ("aggregation", "value", "expected"),
+    [
+        ("sum", _column("views"), [30, 30]),  # an additive column
+        ("sum", _column("signups"), [3, 3]),  # a non-additive ratio's input stays additive
+        ("count", None, [1, 2]),  # counts rows, adds no values
+    ],
+)
+def test_aggregate_if_over_other_columns_is_unchanged(
+    runtime, aggregation: str, value: dict[str, Any] | None, expected: list[int]
+) -> None:
+    assert _values(runtime, _aggregate_if(aggregation, value, group_by=[REPO_DAY])) == expected
