@@ -46,7 +46,6 @@ from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
 from .compiler import BoundQuery, bind_query, compile_query
 from .compiler_parts.paths import _leaf_time_role
-from .compiler_parts.sql_lowering import _stock_clock_key_gap
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
@@ -752,7 +751,7 @@ def _compiled_warnings(
         *(rewrite_warning_payload(step) for step in compiled["logical_plan"].rewrite_steps),
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
-        *_stock_key_gap_warnings(config, compiled["logical_plan"]),
+        *_stock_key_gap_warnings(compiled),
         *_path_alternates_warnings(config, compiled["logical_plan"]),
         *_time_zone_warnings(config, compiled),
     ]
@@ -1074,20 +1073,18 @@ def _crosses_boundary(start: str, end: str, window_start: str, window_end: str) 
     return bool(window_end and (not start or start < window_end) and end and end > window_end)
 
 
-def _stock_key_gap_warnings(config, logical_plan) -> list[dict[str, Any]]:
+def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     """Say when a stock answered as if each row were its own series.
 
     A stock whose key lacks its event- or state-time clock takes every row as a
     series, so each cell adds up every row in it. That is right for a table with one
     row per series and wrong for one that keeps snapshots, which the engine can't
     tell apart, so the answer carries the warning (an as-of clock refuses instead).
+    The lowering records each such stock it reads, metric predicates included.
     """
-    measures = {row.id: row for row in config.measures}
     gaps = {
-        (bound.measure_id, bound.temporal_role): gap
-        for bound in list(getattr(logical_plan, "bound_measures", []) or [])
-        if bound.measure_id in measures
-        and (gap := _stock_clock_key_gap(measures[bound.measure_id], bound.temporal_role, config))
+        (gap["measure_id"], gap["temporal_role"]): gap
+        for gap in list(compiled.get("stock_key_gaps") or [])
     }
     return [
         semantic_issue(

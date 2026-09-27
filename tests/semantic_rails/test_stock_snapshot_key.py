@@ -179,6 +179,59 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
     finally:
         adapter.close()
     assert [row["code"] for row in response["warnings"]].count(WARNING) == 1
+    # So does a dry-run validation, and a ratio reading both stocks warns for each.
+    validated = runtime.validate(
+        {"version": 1, "select": [{"expression": {"measure": "measure.f4stock.stars"}, "as": "v"}]}
+    )
+    assert [row["code"] for row in validated["warnings"]].count(WARNING) == 1
+    ratio = {
+        "kind": "ratio",
+        "numerator": {"measure": "measure.f4stock.stars"},
+        "denominator": {"measure": "measure.f4stock.visitors_14d"},
+    }
+    result = runtime.query({"version": 1, "select": [{"expression": ratio, "as": "v"}]})
+    assert [row["code"] for row in result["warnings"]].count(WARNING) == 2
+    # A key holding the clock warns about nothing.
+    keyed = _package(tmp_path / "keyed", key="[repo, snapshot_date]", clock_class=clock_class)
+    assert WARNING not in _query_warning_codes(
+        Runtime.from_path(str(keyed)), "measure.f4stock.stars"
+    )
+
+
+def test_a_stock_read_only_by_a_metric_predicate_warns_too(tmp_path: Path) -> None:
+    # A predicate compiles as its own nested query; its stock is warned about as well,
+    # and a compile served from the cache still carries the warning.
+    package = _package(tmp_path, key="[repo_snapshot_key]", clock_class="state_time")
+    runtime = Runtime.from_path(str(package))
+    predicate = {
+        "kind": "metric_predicate",
+        "entity": "entity.f4stock_repo_snapshot",
+        "input": {"measure": "measure.f4stock.stars"},
+        "op": ">",
+        "value": 0,
+    }
+    visitors = {"kind": "aggregate", "measure": "measure.f4stock.visitors_14d"}
+    for query in (
+        {
+            "version": 1,
+            "select": [{"expression": visitors, "as": "v"}],
+            "metric_filters": [{"expression": predicate, "op": "=", "value": True}],
+        },
+        {
+            "version": 1,
+            "select": [
+                {
+                    "expression": {**visitors, "filter": {"all": [{"expression": predicate}]}},
+                    "as": "v",
+                }
+            ],
+        },
+    ):
+        for cached in (False, True):
+            result = runtime.query(query)
+            assert result["explain"]["compile_stats"]["cache_hit"] is cached
+            warned = [row["details"]["measure_id"] for row in result["warnings"]]
+            assert "measure.f4stock.stars" in warned
 
 
 def test_declared_grain_and_series_key_agree(tmp_path: Path) -> None:

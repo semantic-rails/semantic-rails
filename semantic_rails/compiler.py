@@ -81,7 +81,13 @@ from .compiler_parts.post_aggregation import (
     _expr_requires_dense_series,
     _namespace_sql_select,
 )
-from .compiler_parts.sql_lowering import _count_key_expr, _last_token, _preferred_path, _slug
+from .compiler_parts.sql_lowering import (
+    _count_key_expr,
+    _last_token,
+    _preferred_path,
+    _slug,
+    recording_stock_key_gaps,
+)
 from .compiler_parts.temporal import (
     _add_grain,
     _combine_temporal_roles,
@@ -3750,6 +3756,8 @@ class BoundQuery:
     rollup_scans: frozenset[str] = frozenset()
     # The statement's ``?`` placeholders, in order: one per applied row filter.
     parameters: tuple[ParameterSlot, ...] = ()
+    # The key gap of every event/state-clock stock the SQL reads, nested compiles included.
+    stock_key_gaps: tuple[dict[str, Any], ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``.
@@ -3847,6 +3855,7 @@ def _bind_query(
         binding_dependencies() as dependencies,
         plan_bindings(plan) as leaves,
         recording_rollup_scans() as rollup_scans,
+        recording_stock_key_gaps() as stock_key_gaps,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
         sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
@@ -3868,6 +3877,7 @@ def _bind_query(
             for alias, ids in leaves.leaves.items()
         },
         frozenset(rollup_scans),
+        stock_key_gaps=tuple(stock_key_gaps),
     )
 
 
@@ -3947,4 +3957,5 @@ def compile_query(
         "physical_plan": physical_plan,
         "performance_plan": performance_plan,
         "compile_stats": compile_stats,
+        "stock_key_gaps": list(bound.stock_key_gaps),
     }
