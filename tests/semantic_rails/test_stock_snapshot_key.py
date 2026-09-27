@@ -22,6 +22,7 @@ from semantic_rails.compiler import bind_query
 from semantic_rails.compiler_parts.sql_lowering import _snapshot_series_columns
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.runtime import Runtime
 
 ROLE = "temporal_role.f4stock_repo_snapshot_snapshot_date"
@@ -107,6 +108,18 @@ def _weekly(runtime: Runtime, measure: str, role: str | None = ROLE) -> list[dic
     return [row["v"] for row in result["rows"]]
 
 
+def _query_warning_codes(runtime: Runtime, measure: str) -> list[str]:
+    result = runtime.query(
+        {
+            "version": 1,
+            "select": [{"expression": {"measure": measure}, "as": "v"}],
+            "time": {"temporal_role": ROLE, "grain": "week"},
+        }
+    )
+    assert result["ok"], result.get("errors")
+    return [warning["code"] for warning in result["warnings"]]
+
+
 def _warning_codes(package: Path) -> list[str]:
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
     assert report["ok"], report["errors"]
@@ -119,6 +132,7 @@ def test_compound_key_takes_one_snapshot_per_series(tmp_path: Path) -> None:
     assert _weekly(runtime, "visitors_14d") == [4]
     assert _weekly(runtime, "stars") == [1]
     assert WARNING not in _warning_codes(package)
+    assert WARNING not in _query_warning_codes(runtime, "measure.f4stock.stars")
 
 
 def test_surrogate_key_on_an_as_of_clock_refuses(tmp_path: Path) -> None:
@@ -145,9 +159,26 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
     package = _package(tmp_path, key="[repo_snapshot_key]", clock_class=clock_class)
     runtime = Runtime.from_path(str(package))
     # Knowingly unrefused: this sums the two snapshots (the true value is 1), which
-    # is also the right answer for a table with one row per series.
+    # is also the right answer for a table with one row per series. The answer says so.
     assert _weekly(runtime, "stars") == [2]
     assert _warning_codes(package).count(WARNING) == 2
+    assert _query_warning_codes(runtime, "measure.f4stock.stars").count(WARNING) == 1
+    # MCP execute returns it at its default (minimal) verbosity.
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        response = adapter.call_tool(
+            "execute",
+            {
+                "query": {
+                    "version": 2,
+                    "select": [{"as": "v", "expression": {"measure": "measure.f4stock.stars"}}],
+                    "time": {"temporal_role": ROLE, "grain": "week"},
+                }
+            },
+        )
+    finally:
+        adapter.close()
+    assert [row["code"] for row in response["warnings"]].count(WARNING) == 1
 
 
 def test_declared_grain_and_series_key_agree(tmp_path: Path) -> None:
@@ -277,6 +308,7 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
         }
     )
     assert result["ok"] and result["rows"][0]["spend"] > 0
+    assert [row["code"] for row in result["warnings"]] == [WARNING]
 
 
 def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_factory) -> None:
