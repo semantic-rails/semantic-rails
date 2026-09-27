@@ -870,3 +870,32 @@ def test_a_rank_or_sequence_number_is_a_low_confidence_measure() -> None:
     }
     # The REPL leaves it unticked; the Architect's and dbt imports' drafts keep every measure.
     assert set(draft["measures"]) == {"order_count", "customer_order_number", "order_total"}
+
+
+def test_a_pre_counted_distinct_column_is_flagged_but_never_applied() -> None:
+    from semantic_rails.architect_introspection import draft_roles, upsert_model_draft
+
+    columns = [
+        {"name": "daily_visitors", "type": "BIGINT"},
+        {"name": "uniques", "type": "BIGINT"},
+        {"name": "new_users", "type": "BIGINT"},
+        {"name": "views", "type": "BIGINT"},
+        # An average or rate of distinct people keeps its average.
+        {"name": "avg_daily_users", "type": "DOUBLE"},
+    ]
+    roles, _ = draft_roles("event", ["event_id"], [], columns)
+    flagged = {item["key"]: item for item in roles["measures"] if item.get("additive") is False}
+    assert set(flagged) == {"daily_visitors", "uniques", "new_users"}
+    assert {item["confidence"] for item in flagged.values()} == {"low"}
+    # The reason asks the author to declare it; it must not claim the draft sets it.
+    assert all(
+        "declare additive: false" in item["reason"] and "drafted" not in item["reason"]
+        for item in flagged.values()
+    )
+
+    # The draft doesn't set additivity: new_users is an additive flow despite its name.
+    draft = upsert_model_draft(
+        entity="event", relation="raw_events", key_columns=["event_id"], **roles
+    )
+    assert not any("additive" in spec for spec in draft["measures"].values())
+    assert draft["measures"]["avg_daily_users"]["default_agg"] == "avg"

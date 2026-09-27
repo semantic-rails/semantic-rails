@@ -63,6 +63,10 @@ _SUM_WORDS = (
     "fee",
 )
 _AVERAGE_WORDS = ("price", "rate", "ratio", "pct", "percent", "score", "avg", "average")
+# A vendor's count of distinct people per row (GitHub's daily "uniques"): adding rows counts a
+# person once per day or page, so its suggestion is flagged `additive: false`; the draft never
+# applies it.
+_DISTINCT_COUNT_WORDS = ("unique", "uniques", "distinct", "visitors", "users", "cloners")
 _TABLE_PREFIXES = ("fct_", "fact_", "dim_", "stg_", "int_", "raw_", "mart_", "vw_")
 _BOOKKEEPING_WORDS = ("updated", "modified", "deleted", "loaded", "synced")
 _CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -418,6 +422,13 @@ def classify_column(name: str, data_type: str) -> str:
 def measure_aggregation(name: str) -> tuple[str, str, str]:
     """(aggregation, confidence, reason) for a numeric column, from its name."""
     average = _has_word(name, _AVERAGE_WORDS)
+    if _distinct_count_like(name):
+        return (
+            "sum",
+            "low",
+            "may be a pre-counted distinct count; adding rows counts a person more than once, "
+            "so declare additive: false if it is one",
+        )
     summed = _has_word(name, _SUM_WORDS)
     if average and not summed:
         return "avg", "high", "a per-row price or rate: averaging is safe, summing is not"
@@ -496,6 +507,7 @@ def draft_roles(
                     "aggregation": aggregation,
                     "confidence": confidence,
                     "reason": reason,
+                    **({"additive": False} if _distinct_count_like(name) else {}),
                     **described,
                 }
             )
@@ -609,6 +621,11 @@ def entity_name(table: str) -> str:
 def _key_like(column: str) -> bool:
     lowered = column.lower()
     return lowered == "id" or lowered.endswith(_KEY_SUFFIXES)
+
+
+def _distinct_count_like(column: str) -> bool:
+    """A count of distinct people per row, and not an average or rate of one."""
+    return _has_word(column, _DISTINCT_COUNT_WORDS) and not _has_word(column, _AVERAGE_WORDS)
 
 
 def _has_word(column: str, words: tuple[str, ...]) -> bool:

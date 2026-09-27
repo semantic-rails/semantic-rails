@@ -145,6 +145,11 @@ never create, seed or change it.
   relations declare that key. Single-column links use `column`; composite links use `columns` and
   preserve the ordered local and referenced columns. Foreign-key links are review evidence, not
   arguments in the draft `upsert_model` call.
+  A numeric column named like a count of distinct people (`unique`, `uniques`, `distinct`,
+  `visitors`, `users`, `cloners`, but not an average or rate of one) is a `low`-confidence measure
+  whose suggestion carries `additive: false` and says why: a vendor's pre-counted uniques can't be
+  added up across days or pages. The draft `upsert_model` call doesn't set `additive` (it still
+  sums the measure); declare it yourself when the column really is a distinct count.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
