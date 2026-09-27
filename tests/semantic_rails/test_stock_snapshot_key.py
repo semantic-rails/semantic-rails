@@ -198,10 +198,16 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
     )
 
 
-def test_a_stock_read_only_by_a_metric_predicate_warns_too(tmp_path: Path) -> None:
-    # A predicate compiles as its own nested query; its stock is warned about as well,
-    # and a compile served from the cache still carries the warning.
-    package = _package(tmp_path, key="[repo_snapshot_key]", clock_class="state_time")
+@pytest.mark.parametrize(
+    ("key", "warnings"), [("[repo_snapshot_key]", 1), ("[repo, snapshot_date]", 0)]
+)
+def test_a_stock_read_only_by_a_metric_predicate_warns_too(
+    tmp_path: Path, key: str, warnings: int
+) -> None:
+    # A predicate compiles as its own nested query; its stock is warned about as well
+    # (once), and a compile served from the cache still carries the warning. Keyed by
+    # its series and clock, it stays silent.
+    package = _package(tmp_path, key=key, clock_class="state_time")
     runtime = Runtime.from_path(str(package))
     predicate = {
         "kind": "metric_predicate",
@@ -230,8 +236,10 @@ def test_a_stock_read_only_by_a_metric_predicate_warns_too(tmp_path: Path) -> No
         for cached in (False, True):
             result = runtime.query(query)
             assert result["explain"]["compile_stats"]["cache_hit"] is cached
-            warned = [row["details"]["measure_id"] for row in result["warnings"]]
-            assert "measure.f4stock.stars" in warned
+            warned = [
+                row["details"]["measure_id"] for row in result["warnings"] if row["code"] == WARNING
+            ]
+            assert warned.count("measure.f4stock.stars") == warnings
 
 
 def test_declared_grain_and_series_key_agree(tmp_path: Path) -> None:
@@ -365,6 +373,15 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
     )
     assert result["ok"] and result["rows"][0]["spend"] > 0
     assert [row["code"] for row in result["warnings"]] == [WARNING]
+    # A segment filtering on it through a metric predicate carries the warning too.
+    runtime = Runtime.from_path(str(package))
+    for answer in (
+        runtime.segment_validate("segment.jaffle.high_value_customers"),
+        runtime.segment_explain("segment.jaffle.high_value_customers"),
+    ):
+        assert [(row["code"], row["details"]["measure_id"]) for row in answer["warnings"]] == [
+            (WARNING, "measure.jaffle.lifetime_spend_usd")
+        ]
 
 
 def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_factory) -> None:
