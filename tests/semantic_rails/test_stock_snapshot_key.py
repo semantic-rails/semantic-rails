@@ -5,7 +5,10 @@ that is unique per snapshot row (``a@2026-09-21``), "the last snapshot per key"
 keeps every snapshot, and a week holding two daily snapshots of one repository
 reported 8 unique visitors instead of 4 (and 2 stars instead of 1), with parse
 and runtime validation green. Queries on an ``as_of_time`` clock now refuse, and
-every such stock gets a parse warning whatever its clock's class.
+every such stock gets a parse warning whatever its clock's class. A stock with a
+second clock refuses too wherever a series could still hold several snapshots:
+on any clock when its key lacks an as-of clock, and on a clock whose series still
+holds one.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from semantic_rails.compiler import bind_query
 from semantic_rails.compiler_parts.sql_lowering import _snapshot_series_columns
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
@@ -22,10 +26,23 @@ from semantic_rails.runtime import Runtime
 
 ROLE = "temporal_role.f4stock_repo_snapshot_snapshot_date"
 WARNING = "STOCK_SNAPSHOT_KEY_MISSING_CLOCK"
+SERIES_WARNING = "STOCK_SERIES_HOLDS_AS_OF_CLOCK"
+COLLECTED = "temporal_role.f4stock_repo_snapshot_collected_at"
+TWO_SNAPSHOTS = (
+    "('a@2026-09-21', 'a', date '2026-09-21', timestamp '2026-09-21 06:00', 4, 1), "
+    "('a@2026-09-22', 'a', date '2026-09-22', timestamp '2026-09-22 06:00', 4, 1)"
+)
 
 
 def _package(
-    root: Path, *, key: str, clock_class: str, grain: str = "", measure_times: str = ""
+    root: Path,
+    *,
+    key: str,
+    clock_class: str,
+    grain: str = "",
+    measure_times: str = "",
+    collected_class: str = "event_time",
+    rows: str = TWO_SNAPSHOTS,
 ) -> Path:
     package = root / "f4stock"
     (package / "models").mkdir(parents=True)
@@ -51,7 +68,7 @@ def _package(
         "  times:\n"
         f"    snapshot_date: {{column: snapshot_date, kind: date, class: {clock_class}, "
         "default: true}\n"
-        "    collected_at: {column: collected_at, kind: timestamp, class: event_time}\n"
+        f"    collected_at: {{column: collected_at, kind: timestamp, class: {collected_class}}}\n"
         "  measures:\n"
         f"    visitors_14d: {{kind: aggregate, expr: visitors_14d, {stock}, value_type: count"
         f"{measure_times}}}\n"
@@ -71,23 +88,21 @@ def _package(
     )
     connection = duckdb.connect(str(package / "data" / "f4stock.duckdb"))
     connection.execute(
-        "create table repo_snapshot as select * from (values "
-        "('a@2026-09-21', 'a', date '2026-09-21', timestamp '2026-09-21 06:00', 4, 1), "
-        "('a@2026-09-22', 'a', date '2026-09-22', timestamp '2026-09-22 06:00', 4, 1)) "
+        f"create table repo_snapshot as select * from (values {rows}) "
         "t(repo_snapshot_key, repo, snapshot_date, collected_at, visitors_14d, stars)"
     )
     connection.close()
     return package
 
 
-def _weekly(runtime: Runtime, measure: str) -> list[dict]:
-    result = runtime.query(
-        {
-            "version": 1,
-            "select": [{"expression": {"measure": f"measure.f4stock.{measure}"}, "as": "v"}],
-            "time": {"temporal_role": ROLE, "grain": "week"},
-        }
-    )
+def _weekly(runtime: Runtime, measure: str, role: str | None = ROLE) -> list[dict]:
+    query: dict = {
+        "version": 1,
+        "select": [{"expression": {"measure": f"measure.f4stock.{measure}"}, "as": "v"}],
+    }
+    if role:
+        query["time"] = {"temporal_role": role, "grain": "week"}
+    result = runtime.query(query)
     assert result["ok"], result.get("errors")
     return [row["v"] for row in result["rows"]]
 
@@ -154,9 +169,92 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
     flagged = [row for row in report["warnings"] if row["code"] == WARNING]
     assert {row["details"]["clock_class"] for row in flagged} == {"as_of_time"}
-    assert all("are refused" in row["message"] for row in flagged)
-    with pytest.raises(SemanticLayerError):
-        _weekly(Runtime.from_path(str(package)), "stars")
+    assert all("Its queries are refused" in row["message"] for row in flagged)
+    # The key can't tell snapshots apart, so the stock refuses on its event clock and
+    # untimed too (the untimed query orders by collected_at, listed first), not just
+    # on the as-of clock: each used to return 2 (true 1).
+    runtime = Runtime.from_path(str(package))
+    for role in (ROLE, COLLECTED, None):
+        with pytest.raises(SemanticLayerError) as raised:
+            _weekly(runtime, "stars", role)
+        assert raised.value.code == "INVALID_CONFIG"
+        assert raised.value.details["clock_column"] == "snapshot_date"
+        assert raised.value.details["row_key"] == ["repo_snapshot_key"]
+
+
+@pytest.mark.parametrize(
+    ("key", "collected_class", "answers"),
+    [
+        # The as-of clock is in the key: right on it, but ordered by collected_at the
+        # series is [repo, snapshot_date] and each snapshot is its own series.
+        ("[repo, snapshot_date]", "event_time", {ROLE: [1], COLLECTED: "snapshot_date"}),
+        # Two as-of clocks with one in the key: right on that one, refused on the other.
+        ("[repo, snapshot_date]", "as_of_time", {ROLE: [1], COLLECTED: "snapshot_date"}),
+        # Two as-of clocks in the key: either one leaves the other in the series.
+        (
+            "[repo, snapshot_date, collected_at]",
+            "as_of_time",
+            {ROLE: "collected_at", COLLECTED: "snapshot_date"},
+        ),
+    ],
+)
+def test_a_series_holding_an_as_of_clock_refuses(
+    tmp_path: Path, key: str, collected_class: str, answers: dict
+) -> None:
+    package = _package(
+        tmp_path,
+        key=key,
+        clock_class="as_of_time",
+        collected_class=collected_class,
+        measure_times=", times: [snapshot_date, collected_at]",
+    )
+    runtime = Runtime.from_path(str(package))
+    for role, answer in answers.items():
+        if isinstance(answer, list):
+            assert _weekly(runtime, "stars", role) == answer
+            # Examining the model's other clocks doesn't make them query inputs.
+            query = {
+                "version": 1,
+                "select": [{"expression": {"measure": "measure.f4stock.stars"}, "as": "v"}],
+                "time": {"temporal_role": role, "grain": "week"},
+            }
+            assert COLLECTED not in bind_query(runtime.config, None, query).object_ids
+            continue
+        # Each used to return 2 (true 1).
+        with pytest.raises(SemanticLayerError) as raised:
+            _weekly(runtime, "stars", role)
+        assert raised.value.code == "INVALID_CONFIG"
+        assert raised.value.details["clock_column"] == answer
+    assert _warning_codes(package).count(SERIES_WARNING) == 2
+    if isinstance(answers[ROLE], list):
+        # The hint names the clock that answers.
+        with pytest.raises(SemanticLayerError) as raised:
+            _weekly(runtime, "stars", COLLECTED)
+        assert ROLE in raised.value.details["fix"]
+
+
+def test_an_event_clock_in_the_key_still_identifies_a_series(tmp_path: Path) -> None:
+    # A cohort table: the event clock (here collected_at, as the cohort) is part of what
+    # identifies a series, so on the as-of clock each cohort keeps its last snapshot.
+    cohorts = ", ".join(
+        f"('{cohort}@{day}', 'a', date '{day}', timestamp '{cohort}', 0, {stars})"
+        for cohort in ("2026-08-01", "2026-09-01")
+        for day, stars in (("2026-09-21", 9), ("2026-09-22", 10))
+    )
+    package = _package(
+        tmp_path,
+        key="[collected_at, snapshot_date]",
+        clock_class="as_of_time",
+        measure_times=", times: [snapshot_date, collected_at]",
+        rows=cohorts,
+    )
+    runtime = Runtime.from_path(str(package))
+    assert _weekly(runtime, "stars") == [20]
+    # On the cohort clock the series would be the snapshot date, summing each
+    # cohort's two snapshots (19, not 10): refused.
+    with pytest.raises(SemanticLayerError) as raised:
+        _weekly(runtime, "stars", COLLECTED)
+    assert raised.value.details["clock_column"] == "snapshot_date"
 
 
 def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> None:
@@ -179,3 +277,31 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
         }
     )
     assert result["ok"] and result["rows"][0]["spend"] > 0
+
+
+def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_factory) -> None:
+    # Fact models share their time entity, so one fact's as-of clock must not count as
+    # a clock of another fact's stocks.
+    from tests.semantic_rails.conftest import copy_package_config
+
+    package = copy_package_config(tmp_path_factory.mktemp("facts"), "jaffle_shop", preseed_db=True)
+    monthly = package / "models" / "core" / "monthly_metrics.yml"
+    monthly.write_text(monthly.read_text().replace("class: calendar_time", "class: as_of_time", 1))
+    report, _ = parse_config_report(PackageReference(source_path=str(package)))
+    flagged = [row for row in report["warnings"] if str(row.get("code", "")).startswith("STOCK_")]
+    assert [row["details"]["measure_id"] for row in flagged] == [
+        "measure.jaffle.lifetime_spend_usd"
+    ]
+    runtime = Runtime.from_path(str(package))
+    for measure, role in (
+        ("rolling_7d_revenue_usd", "temporal_role.jaffle_daily_metric_day"),
+        ("prior_period_revenue_usd", "temporal_role.jaffle_monthly_metric_month"),
+    ):
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": f"measure.jaffle.{measure}"}, "as": "v"}],
+                "time": {"temporal_role": role, "grain": "month"},
+            }
+        )
+        assert result["ok"] and result["rows"], (measure, result.get("errors"))

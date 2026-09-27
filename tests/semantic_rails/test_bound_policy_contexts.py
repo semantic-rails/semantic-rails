@@ -1177,13 +1177,15 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
     )
     measure = next(m for m in config.measures if m.id == measure_id)
     role = next(r for r in config.temporal_roles if r.id == measure.compatible_temporal_roles[0])
+    if shape == "anchored":
+        # A stock with an as-of clock refuses on any other clock (its series would still
+        # hold the as-of column), so this binding test gives the stock calendar clocks,
+        # which still align at month grain.
+        role = replace(role, temporal_class="calendar_time")
     dimension = next(d for d in config.dimensions if d.id == role.dimension)
     other_dimension = replace(dimension, id="dimension.test.other_clock", column="other_clock")
     other_role = replace(role, id="temporal_role.test.other_clock", dimension=other_dimension.id)
     measure = replace(measure, compatible_temporal_roles=[role.id, other_role.id])
-    if shape == "anchored":
-        # The synthetic as-of clock must be in the key, or queries on it are refused.
-        measure = replace(measure, row_grain=[*measure.row_grain, other_dimension.column])
     expression = {
         "kind": "scoped_aggregate" if shape == "anchored" else "measure",
         "measure": measure_id,
@@ -1204,7 +1206,10 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
         config,
         measures=[measure if m.id == measure_id else m for m in config.measures],
         dimensions=[*config.dimensions, other_dimension],
-        temporal_roles=[*config.temporal_roles, other_role],
+        temporal_roles=[
+            *(role if r.id == role.id else r for r in config.temporal_roles),
+            other_role,
+        ],
         metric_recipes=[*config.metric_recipes, recipe],
     )
     if shape == "conversion":
