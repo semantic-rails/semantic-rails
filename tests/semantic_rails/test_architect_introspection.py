@@ -899,3 +899,30 @@ def test_a_pre_counted_distinct_column_is_flagged_but_never_applied() -> None:
     )
     assert not any("additive" in spec for spec in draft["measures"].values())
     assert draft["measures"]["avg_daily_users"]["default_agg"] == "avg"
+
+
+def test_a_snapshot_named_time_is_drafted_as_an_as_of_clock() -> None:
+    from semantic_rails.architect_introspection import draft_roles, upsert_model_draft
+
+    columns = [
+        {"name": "snapshot_date", "type": "DATE"},
+        {"name": "as_of_date", "type": "DATE"},
+        {"name": "created_at", "type": "TIMESTAMP"},
+        {"name": "stars", "type": "BIGINT"},
+    ]
+    roles, _ = draft_roles("repo_snapshot", ["repo_snapshot_id"], [], columns)
+    classes = {item["column"]: item.get("class") for item in roles["times"]}
+    assert classes == {
+        "snapshot_date": "as_of_time",
+        "as_of_date": "as_of_time",
+        "created_at": None,
+    }
+    draft = upsert_model_draft(
+        entity="repo_snapshot", relation="repo_snapshot", key_columns=["repo_snapshot_id"], **roles
+    )
+    # A stock on it whose key lacks the clock is then refused instead of summing snapshots.
+    assert {name: spec["class"] for name, spec in draft["times"].items()} == {
+        "snapshot_date": "as_of_time",
+        "as_of_date": "as_of_time",
+        "created_at": "event_time",
+    }

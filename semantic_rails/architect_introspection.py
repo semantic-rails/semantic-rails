@@ -487,6 +487,7 @@ def draft_roles(
         described = {"description": column["description"]} if column.get("description") else {}
         if role == "time":
             late = _has_word(name, _BOOKKEEPING_WORDS)
+            snapshot = _snapshot_clock_like(name)
             roles["times"].append(
                 {
                     "column": name,
@@ -494,7 +495,11 @@ def draft_roles(
                     "confidence": "low" if late else "high" if nulls == 0 else "medium",
                     "reason": "bookkeeping timestamp; rarely the time to analyze by"
                     if late
-                    else f"{data_type.lower()} column" + (f" ({nulls} nulls)" if nulls else ""),
+                    else f"{data_type.lower()} column"
+                    + (f" ({nulls} nulls)" if nulls else "")
+                    + ("; named like a snapshot's as-of time" if snapshot else ""),
+                    # A stock on an as-of clock whose key lacks it is refused, not summed.
+                    **({"class": "as_of_time"} if snapshot else {}),
                     **described,
                 }
             )
@@ -561,7 +566,7 @@ def upsert_model_draft(
             item["column"]: {
                 "column": item["column"],
                 "kind": item["kind"],
-                "class": "event_time",
+                "class": item.get("class", "event_time"),
                 **({"description": item["description"]} if item.get("description") else {}),
                 **({"default": True} if index == 0 else {}),
             }
@@ -621,6 +626,11 @@ def entity_name(table: str) -> str:
 def _key_like(column: str) -> bool:
     lowered = column.lower()
     return lowered == "id" or lowered.endswith(_KEY_SUFFIXES)
+
+
+def _snapshot_clock_like(column: str) -> bool:
+    """A time column named like a snapshot's as-of time (``snapshot_date``, ``as_of_date``)."""
+    return _has_word(column, ("snapshot", "asof")) or "as_of" in column.lower()
 
 
 def _distinct_count_like(column: str) -> bool:

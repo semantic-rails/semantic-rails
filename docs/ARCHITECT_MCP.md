@@ -150,6 +150,9 @@ never create, seed or change it.
   whose suggestion carries `additive: false` and says why: a vendor's pre-counted uniques can't be
   added up across days or pages. The draft `upsert_model` call doesn't set `additive` (it still
   sums the measure); declare it yourself when the column really is a distinct count.
+  A time column named like a snapshot's as-of time (`snapshot`, `as_of` or `asof` in its name)
+  is drafted `class: as_of_time`, so a stock on it whose key lacks the column is refused rather
+  than summing snapshots; other times are drafted `event_time`.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
