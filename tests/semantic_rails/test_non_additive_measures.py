@@ -9,12 +9,14 @@ one series); anything else is refused, and avg/min/max stay available.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pytest
 
+from semantic_rails.compiler import NonAdditiveRefusal
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 
@@ -163,7 +165,9 @@ def _refused(runtime: Runtime, payload: dict[str, Any]) -> dict[str, Any]:
         runtime.query(payload)
     assert raised.value.code == "ROLLUP_UNSAFE"
     assert raised.value.details["unsupported_construct"] == "non_additive_sum"
-    return raised.value.details
+    # The key columns the refusal keeps off its message and details stay on the object.
+    assert isinstance(raised.value, NonAdditiveRefusal)
+    return {**raised.value.details, "missing_columns": raised.value.columns}
 
 
 def _eq(field: str, value: Any, op: str = "=") -> dict[str, Any]:
@@ -361,7 +365,7 @@ def test_a_role_playing_key_pins_nothing(runtime: Runtime) -> None:
     config = replace(config, relationships=[*config.relationships, second])
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, None, _query("daily_visitors", group_by=[REPO_KEY], time=BY_DAY))
-    assert raised.value.details["missing_columns"] == ["repo"]
+    assert isinstance(raised.value, NonAdditiveRefusal) and raised.value.columns == ["repo"]
 
 
 def test_refusal_hints_reach_the_error_envelope(runtime: Runtime) -> None:
@@ -373,3 +377,38 @@ def test_refusal_hints_reach_the_error_envelope(runtime: Runtime) -> None:
     # A parent-entity rollup refusal carries no hints of its own and keeps the generic one.
     legacy = {"unsupported_construct": "non_additive_parent_rollup"}
     assert recovery_hints_for_error("ROLLUP_UNSAFE", legacy)[0]["kind"] == "change_aggregation"
+
+
+def test_the_refusal_lists_no_key_under_any_policy(runtime: Runtime, package_dir: Path) -> None:
+    # The diagnostic lists no key column or dimension, so it reads the same under an
+    # object_visibility policy.
+    from dataclasses import replace
+
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    hidden = [f"dimension.{NS}_traffic_day_day", REPO_DAY]
+    assert set(hidden) <= {dimension.id for dimension in runtime.config.dimensions}
+    policy = SemanticPolicyConfig(
+        id="policy.test.hide_the_key",
+        kind="object_visibility",
+        object_ids=hidden,
+        audiences=["external"],
+        action="hidden",
+    )
+    hiding = Runtime.from_config(
+        replace(runtime.config, semantic_policies=[policy]), source_path=str(package_dir)
+    )
+    query = {**_query("daily_visitors"), "policy_context": {"audience": "external"}}
+    refusals = []
+    for engine in (runtime, hiding):
+        with pytest.raises(SemanticLayerError) as raised:
+            engine.query(query)
+        assert raised.value.code == "ROLLUP_UNSAFE"
+        refusals.append(f"{raised.value} {raised.value.details}")
+    assert refusals[0] == refusals[1]
+    assert raised.value.columns  # the key columns stay on the error object
+    for name in hidden:
+        assert name not in refusals[1]
+    # No key column appears as a word (the measure id aside).
+    shown = refusals[1].replace(f"measure.{NS}.daily_visitors", "")
+    assert re.search(r"\b(repo|day)\b", shown) is None

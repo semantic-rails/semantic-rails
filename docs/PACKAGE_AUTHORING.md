@@ -1036,7 +1036,7 @@ visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages 
   `in`, or reached through the key of a many-to-one relationship on that column (when
   it's the only relationship between the two entities); a `date` clock also counts at
   `grain: day`. Metric and segment filters don't count.
-  The refusal names the dimensions to group by.
+  The refusal points to the measure's key or a finer grain.
 - `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
   visitors is a real question), and so does `prior_period`. Cumulative, rolling and
   period-to-date metrics, scoped aggregates and metric predicates over it are refused.

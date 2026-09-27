@@ -23,6 +23,7 @@ import yaml
 
 from .ast import NormalizedQuery
 from .compiler import (
+    NonAdditiveRefusal,
     _collect_conversion_exprs,
     _conversion_sources,
     _expr_leaf_temporal_role_sets,
@@ -1598,7 +1599,7 @@ def _run_probe(
             runtime.query(query)
         except SemanticLayerError as exc:
             # An `additive: false` measure answers only at its stored grain: probe it there.
-            missing = exc.details.get("missing_dimensions") if exc.code == "ROLLUP_UNSAFE" else None
+            missing = exc.dimensions if isinstance(exc, NonAdditiveRefusal) else None
             if not missing or query.get("group_by"):
                 raise
             query = {**query, "group_by": list(missing)}
