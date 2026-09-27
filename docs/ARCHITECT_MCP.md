@@ -215,7 +215,11 @@ a many-to-one relationship. It follows the usual mutation contract (`expected_re
 `idempotency_key`, `dry_run`). A model whose target is imported in the same call, or already in the
 package, gets the reference; references elsewhere are listed in `skipped_references`, and dbt models
 without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
-(`fct_orders` and a model `orders` for entity `order`) updates that model.
+(`fct_orders` and a model `orders` for entity `order`) updates that model. An update adds only the
+dimensions, times and measures the model doesn't have yet and leaves the existing ones as
+authored, listing them in the model's `kept_objects` in `models`, so a re-import never reverts
+what an author changed (a stock accumulation, a clock's class, `additive: false`) or refreshes an
+existing object's dbt description; change an existing object with `upsert_model`.
 Measure keys are package-wide, so a drafted measure whose key another model already has, in the
 package or earlier in the call, gets its entity as a prefix (`order_line_usd_to_local_rate`), like
 the drafted `<entity>_count`, unless that key is taken too; a re-imported model keeps its own keys.

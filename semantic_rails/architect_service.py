@@ -1004,6 +1004,7 @@ class ArchitectProject:
         calendar: bool | None = None,
         calendar_id: str = "",
         replace: bool = False,
+        keep_existing: bool = False,
     ) -> dict[str, Any]:
         """Apply one model upsert to ``documents`` (files load on first use).
 
@@ -1090,6 +1091,7 @@ class ArchitectProject:
         elif calendar is False and was_calendar:
             model.pop("calendar_id", None)
         object_drops: list[str] = []
+        kept: list[str] | None = [] if keep_existing else None
         for block, updates in (
             ("dimensions", dimensions),
             ("times", times),
@@ -1098,7 +1100,7 @@ class ArchitectProject:
         ):
             if updates is not None:
                 model[block] = _merge_named_objects(
-                    block, dict(model.get(block, {}) or {}), dict(updates), object_drops
+                    block, dict(model.get(block, {}) or {}), dict(updates), object_drops, kept
                 )
         self._store_model(model_doc, model_wrapper, model_slug, model)
         # A partial rewrite of an existing object lists what it dropped, as a replace does.
@@ -1139,6 +1141,7 @@ class ArchitectProject:
             "entity_key": entity_slug,
             "calendar_changed": calendar is not None or bool(requested_calendar),
             "dropped_fields": dropped_fields,
+            "kept_objects": kept,
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
@@ -2438,8 +2441,11 @@ class ArchitectProject:
 
 
 def _field_reports(staged: dict[str, Any]) -> dict[str, Any]:
-    """A staged model's ``dropped_fields``: a replace's, or a partial object rewrite's."""
-    return {} if staged["dropped_fields"] is None else {"dropped_fields": staged["dropped_fields"]}
+    """A staged model's ``dropped_fields`` (a replace's, or a partial object rewrite's) and
+    ``kept_objects`` (the existing objects a ``keep_existing`` update left as authored)."""
+    return {
+        key: staged[key] for key in ("dropped_fields", "kept_objects") if staged[key] is not None
+    }
 
 
 # Fields that describe an object without changing what it computes.
@@ -2447,7 +2453,11 @@ _DESCRIPTIVE_FIELDS = frozenset({"label", "description", "synonyms", "meta"})
 
 
 def _merge_named_objects(
-    block: str, current: dict[str, Any], updates: dict[str, Any], dropped: list[str]
+    block: str,
+    current: dict[str, Any],
+    updates: dict[str, Any],
+    dropped: list[str],
+    kept: list[str] | None = None,
 ) -> dict[str, Any]:
     """Apply ``updates`` to a model block's named objects.
 
@@ -2455,7 +2465,21 @@ def _merge_named_objects(
     label, say) merges into it. Any other update replaces the object whole, as a
     wizard that rebuilds an object and leaves out fields that no longer apply
     expects, and each field it leaves out is listed in ``dropped``.
+
+    With a ``kept`` list (a dbt re-import, which restates every object from its
+    draft), existing objects stay as authored and are listed there instead, so a
+    re-import can't revert an accumulation, a clock's class or ``additive:
+    false``; the block's existing default clock stays the default.
     """
+    if kept is not None:
+        kept += [f"{block}.{name}" for name in updates if name in current]
+        updates = {
+            name: {k: v for k, v in spec.items() if not (current and k == "default")}
+            if isinstance(spec, dict) and block == "times"
+            else spec
+            for name, spec in updates.items()
+            if name not in current
+        }
     merged = dict(current)
     for name, spec in updates.items():
         old = current.get(name)

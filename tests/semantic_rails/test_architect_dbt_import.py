@@ -1182,3 +1182,66 @@ def test_contract_composite_width_and_target_column_mismatches_are_reported(
         row.get("to_columns") == ["wrong_key"] and "not customer's key" in row["reason"]
         for row in skipped
     )
+
+
+def test_a_reimport_leaves_what_the_author_changed(workspace: Path) -> None:
+    # The dbt draft restates every object whole: it used to turn this stock back into
+    # a flow, the state-time clock back into an event-time one, and drop additive: false.
+    path = workspace / "shop" / "models" / "orders.yml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    model = document["model"]
+    model["times"]["ordered_at"]["class"] = "state_time"
+    model["measures"]["order_total"].update(
+        {"accumulation": {"kind": "stock", "snapshot": "end_of_period"}, "additive": False}
+    )
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    authored = _model(path)
+
+    server = create_architect_mcp_server(workspace_root=workspace)
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["fct_orders"],
+        "expected_revision": project_revision(workspace / "shop"),
+        "idempotency_key": "reimport",
+    }
+    imported, replayed = _calls(
+        server, [("import_dbt_project", request), ("import_dbt_project", request)]
+    )
+    assert imported["ok"] is True, imported
+    # The kept objects are resolved inside the transaction, so a replay still matches.
+    assert replayed["idempotent_replay"] is True
+    assert replayed["models"] == imported["models"]
+
+    after = _model(path)
+    order_total = after["measures"]["order_total"]
+    assert (order_total["accumulation"]["kind"], order_total.get("additive")) == ("stock", False)
+    assert after["times"]["ordered_at"]["class"] == "state_time"
+    for block in ("measures", "times", "dimensions"):
+        for name, spec in authored[block].items():
+            assert after[block][name] == spec
+    (orders,) = imported["models"]
+    assert {"dimensions.status", "times.ordered_at", "measures.order_total"} <= set(
+        orders["kept_objects"]
+    )
+    assert "dropped_fields" not in orders
+    # Columns the model didn't have yet are still added, without a second default clock.
+    assert set(after["measures"]) > set(authored["measures"])
+    assert [name for name, spec in after["times"].items() if spec.get("default")] == ["ordered_at"]
+
+    # A plain upsert_models call (the flag off) still rewrites the object and says what it
+    # dropped, and replays as before.
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+    rewrite = {
+        "model_id": "orders",
+        "entity_key": "order",
+        "relation": after["relation"],
+        "primary_key": ["order_id"],
+        "measures": {"order_total": {"kind": "aggregate", "expr": "order_total"}},
+    }
+    plain = {"expected_revision": project_revision(workspace / "shop"), "idempotency_key": "plain"}
+    first = project.upsert_models([rewrite], **plain).report
+    again = project.upsert_models([rewrite], **plain).report
+    assert first["ok"] is True and "kept_objects" not in first["models"][0]
+    assert "measures.order_total.additive" in first["models"][0]["dropped_fields"]
+    assert again["idempotent_replay"] is True
