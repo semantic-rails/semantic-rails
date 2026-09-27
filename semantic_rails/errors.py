@@ -1,7 +1,8 @@
 """Error type and the registered error-code catalog.
 
-Defines :class:`SemanticLayerError` — the single exception type the
-runtime raises — plus the canonical ``SEMANTIC_ERROR_CODES`` tuple that
+Defines :class:`SemanticLayerError` — the exception type the runtime
+raises (``compiler.NonAdditiveRefusal`` is a subclass carrying in-process-only
+data) — plus the canonical ``SEMANTIC_ERROR_CODES`` tuple that
 the contract test in ``tests/semantic_rails/test_error_codes_contract.py``
 pins down. Adding a new error code without registering it here will
 fail that test, which is intentional.

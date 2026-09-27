@@ -605,6 +605,22 @@ def _validate_non_additive_sums(
             _raise_non_additive_sum(measure, aggregation, missing, config)
 
 
+class NonAdditiveRefusal(SemanticLayerError):
+    """``ROLLUP_UNSAFE`` for an ``additive: false`` measure summed above its stored grain.
+
+    Its message and details point to the measure's key rather than list it; the key
+    columns and dimensions stay on the object for in-process callers, such as
+    ``project validate``'s probe.
+    """
+
+    def __init__(
+        self, message: str, *, details: dict[str, Any], columns: list[str], dimensions: list[str]
+    ) -> None:
+        super().__init__("ROLLUP_UNSAFE", message, details=details)
+        self.columns = columns
+        self.dimensions = dimensions
+
+
 def _raise_non_additive_sum(
     measure: MeasureConfig, construct: str, missing: list[str], config: PackageConfig
 ) -> None:
@@ -614,32 +630,35 @@ def _raise_non_additive_sum(
         if dimension.entity == measure.entity and dimension.column in missing
     ]
     if missing:
+        key = "series key" if measure.measure_class == "semi_additive" else "key"
         statistics = [
             name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
         ]
         instead = f", or use aggregation {' / '.join(statistics)}" if statistics else ""
         message = (
             f"Measure '{measure.id}' is additive: false, and this query would sum more than one "
-            f"of its rows into an output row: group by or filter (=) each of {missing}{instead}."
+            f"of its rows into an output row: group by or filter (=) each column of its {key}, "
+            f"or query a finer grain{instead}."
         )
-        hint = f"Group by, or filter with = to one value, {dimensions or missing}{instead}."
+        hint = (
+            f"Group by, or filter with = to one value, each column of the measure's {key}{instead}."
+        )
     else:
         message = (
             f"Measure '{measure.id}' is additive: false, so it can't feed a {construct}: that "
             "adds its values across periods or rows."
         )
         hint = "Query the measure itself at the grain it's stored at."
-    raise SemanticLayerError(
-        "ROLLUP_UNSAFE",
+    raise NonAdditiveRefusal(
         message,
         details={
             "measure_id": measure.id,
             "unsupported_construct": "non_additive_sum",
             "construct": construct,
-            "missing_columns": missing,
-            "missing_dimensions": dimensions,
             "recovery_hints": [{"kind": "stay_at_stored_grain", "message": hint}],
         },
+        columns=missing,
+        dimensions=dimensions,
     )
 
 
