@@ -611,7 +611,7 @@ def _raise_non_additive_sum(
     read = measure.meta.get("non_additive_read")
     subject = (
         f"This aggregate_if's value reads column {read['column']!r} of measure "
-        f"'{read['measure_id']}', which is additive: false, so it follows the measure's rule"
+        f"'{read['measure_id']}', which is additive: false"
         if read
         else f"Measure '{measure.id}' is additive: false"
     )

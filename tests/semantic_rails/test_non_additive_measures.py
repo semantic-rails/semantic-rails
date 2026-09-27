@@ -473,9 +473,8 @@ def test_the_aggregate_if_refusal_names_the_measure_and_why(runtime) -> None:
         runtime.query(_aggregate_if("sum", _column("repeat_visits"), group_by=[REPO_DAY]))
     assert str(raised.value).startswith(
         f"This aggregate_if's value reads column 'repeat_visits' of measure '{REPEAT_ID}', which "
-        "is additive: false, so it follows the measure's rule, and this query would sum more "
-        "than one of its rows into an output row: group by or filter (=) each of ['day'], or "
-        "use aggregation avg / min / max / median."
+        "is additive: false, and this query would sum more than one of its rows into an output "
+        "row: group by or filter (=) each of ['day'], or use aggregation avg / min / max / median."
     )
 
 
