@@ -64,7 +64,8 @@ _SUM_WORDS = (
 )
 _AVERAGE_WORDS = ("price", "rate", "ratio", "pct", "percent", "score", "avg", "average")
 # A vendor's count of distinct people per row (GitHub's daily "uniques"): adding rows counts a
-# person once per day or page, so such a column is drafted `additive: false`.
+# person once per day or page, so its suggestion is flagged `additive: false`; the draft never
+# applies it.
 _DISTINCT_COUNT_WORDS = ("unique", "uniques", "distinct", "visitors", "users", "cloners")
 _TABLE_PREFIXES = ("fct_", "fact_", "dim_", "stg_", "int_", "raw_", "mart_", "vw_")
 _BOOKKEEPING_WORDS = ("updated", "modified", "deleted", "loaded", "synced")
@@ -426,7 +427,7 @@ def measure_aggregation(name: str) -> tuple[str, str, str]:
             "sum",
             "low",
             "may be a pre-counted distinct count; adding rows counts a person more than once, "
-            "so it is drafted additive: false",
+            "so declare additive: false if it is one (the draft leaves additivity unchanged)",
         )
     summed = _has_word(name, _SUM_WORDS)
     if average and not summed:

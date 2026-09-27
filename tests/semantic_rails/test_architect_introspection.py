@@ -889,7 +889,11 @@ def test_a_pre_counted_distinct_column_is_flagged_but_never_applied(tmp_path) ->
     flagged = {item["key"]: item for item in roles["measures"] if item.get("additive") is False}
     assert set(flagged) == {"daily_visitors", "uniques", "new_users"}
     assert {item["confidence"] for item in flagged.values()} == {"low"}
-    assert all("additive: false" in item["reason"] for item in flagged.values())
+    # The reason asks the author to declare it; it must not claim the draft sets it.
+    assert all(
+        "declare additive: false" in item["reason"] and "drafted" not in item["reason"]
+        for item in flagged.values()
+    )
 
     # The draft an import applies leaves additivity alone: new_users is an additive flow
     # despite its name, and a re-import must not switch an existing measure off.
