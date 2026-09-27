@@ -1245,3 +1245,8 @@ def test_a_reimport_leaves_what_the_author_changed(workspace: Path) -> None:
     assert first["ok"] is True and "kept_objects" not in first["models"][0]
     assert "measures.order_total.additive" in first["models"][0]["dropped_fields"]
     assert again["idempotent_replay"] is True
+    # A replace reports what it dropped and keeps nothing.
+    revision = project_revision(workspace / "shop")
+    replace = {**rewrite, "replace": True}
+    (replaced,) = project.upsert_models([replace], expected_revision=revision).report["models"]
+    assert "kept_objects" not in replaced and replaced["dropped_fields"]

@@ -1091,7 +1091,7 @@ class ArchitectProject:
         elif calendar is False and was_calendar:
             model.pop("calendar_id", None)
         object_drops: list[str] = []
-        kept: list[str] | None = [] if keep_existing else None
+        kept_ids: list[str] | None = [] if keep_existing else None
         for block, updates in (
             ("dimensions", dimensions),
             ("times", times),
@@ -1100,7 +1100,7 @@ class ArchitectProject:
         ):
             if updates is not None:
                 model[block] = _merge_named_objects(
-                    block, dict(model.get(block, {}) or {}), dict(updates), object_drops, kept
+                    block, dict(model.get(block, {}) or {}), dict(updates), object_drops, kept_ids
                 )
         self._store_model(model_doc, model_wrapper, model_slug, model)
         # A partial rewrite of an existing object lists what it dropped, as a replace does.
@@ -1141,7 +1141,7 @@ class ArchitectProject:
             "entity_key": entity_slug,
             "calendar_changed": calendar is not None or bool(requested_calendar),
             "dropped_fields": dropped_fields,
-            "kept_objects": kept,
+            "kept_objects": kept_ids,
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,
