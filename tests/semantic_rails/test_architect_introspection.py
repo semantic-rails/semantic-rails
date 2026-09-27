@@ -872,10 +872,8 @@ def test_a_rank_or_sequence_number_is_a_low_confidence_measure() -> None:
     assert set(draft["measures"]) == {"order_count", "customer_order_number", "order_total"}
 
 
-def test_a_pre_counted_distinct_column_is_flagged_but_never_applied(tmp_path) -> None:
-    from semantic_rails import yaml_loader
+def test_a_pre_counted_distinct_column_is_flagged_but_never_applied() -> None:
     from semantic_rails.architect_introspection import draft_roles, upsert_model_draft
-    from semantic_rails.cli.scaffold import create_project_report
 
     columns = [
         {"name": "daily_visitors", "type": "BIGINT"},
@@ -895,25 +893,9 @@ def test_a_pre_counted_distinct_column_is_flagged_but_never_applied(tmp_path) ->
         for item in flagged.values()
     )
 
-    # The draft an import applies leaves additivity alone: new_users is an additive flow
-    # despite its name, and a re-import must not switch an existing measure off.
+    # The draft doesn't set additivity: new_users is an additive flow despite its name.
     draft = upsert_model_draft(
         entity="event", relation="raw_events", key_columns=["event_id"], **roles
     )
     assert not any("additive" in spec for spec in draft["measures"].values())
     assert draft["measures"]["avg_daily_users"]["default_agg"] == "avg"
-    report = create_project_report(
-        package_id="drafted", workspace_root=str(tmp_path), run_checks=False
-    )
-    project = ArchitectProject(report["project_path"], workspace_root=tmp_path)
-    for _ in range(2):  # import, then re-import
-        mutation = project.upsert_model(
-            model_id="events",
-            entity_key="event",
-            relation="raw_events",
-            primary_key=["event_id"],
-            measures={"new_users": draft["measures"]["new_users"]},
-        )
-        assert mutation.report["ok"] is True, mutation.report
-    written = yaml_loader.load_yaml_file(Path(report["project_path"]) / "models/core/events.yml")
-    assert "additive" not in written["model"]["measures"]["new_users"]

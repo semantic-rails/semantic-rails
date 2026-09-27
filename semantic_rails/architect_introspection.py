@@ -427,7 +427,7 @@ def measure_aggregation(name: str) -> tuple[str, str, str]:
             "sum",
             "low",
             "may be a pre-counted distinct count; adding rows counts a person more than once, "
-            "so declare additive: false if it is one (the draft leaves additivity unchanged)",
+            "so declare additive: false if it is one",
         )
     summed = _has_word(name, _SUM_WORDS)
     if average and not summed:
