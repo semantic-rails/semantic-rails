@@ -262,8 +262,9 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
         with pytest.raises(SemanticLayerError) as raised:
             _weekly(runtime, "stars", role)
         assert raised.value.code == "INVALID_CONFIG"
-        assert raised.value.details["clock_column"] == "snapshot_date"
-        assert raised.value.details["row_key"] == ["repo_snapshot_key"]
+        assert raised.value.details["reason"] == "key_missing_as_of_clock"
+        # Only an error on the clock at fault names it (a policy may hide the others).
+        assert ("snapshot_date" in str(raised.value)) == (role == ROLE)
 
 
 @pytest.mark.parametrize(
@@ -304,17 +305,19 @@ def test_a_series_holding_an_as_of_clock_refuses(
             }
             assert COLLECTED not in bind_query(runtime.config, None, query).object_ids
             continue
-        # Each used to return 2 (true 1).
+        # Each used to return 2 (true 1). The error names neither the as-of clock at
+        # fault nor a key holding it (a policy may hide it); the parse warning does.
         with pytest.raises(SemanticLayerError) as raised:
             _weekly(runtime, "stars", role)
         assert raised.value.code == "INVALID_CONFIG"
-        assert raised.value.details["clock_column"] == answer
-    assert _warning_codes(package).count(SERIES_WARNING) == 2
+        assert raised.value.details["reason"] == "series_holds_as_of_clock"
+        assert answer not in f"{raised.value} {raised.value.details}"
+    report, _ = parse_config_report(PackageReference(source_path=str(package)))
+    flagged = [row for row in report["warnings"] if row["code"] == SERIES_WARNING]
+    assert len(flagged) == 2
     if isinstance(answers[ROLE], list):
-        # The hint names the clock that answers.
-        with pytest.raises(SemanticLayerError) as raised:
-            _weekly(runtime, "stars", COLLECTED)
-        assert ROLE in raised.value.details["fix"]
+        # The warning names the clock that answers.
+        assert all(ROLE in row["message"] for row in flagged)
 
 
 def test_an_event_clock_in_the_key_still_identifies_a_series(tmp_path: Path) -> None:
@@ -338,7 +341,7 @@ def test_an_event_clock_in_the_key_still_identifies_a_series(tmp_path: Path) -> 
     # cohort's two snapshots (19, not 10): refused.
     with pytest.raises(SemanticLayerError) as raised:
         _weekly(runtime, "stars", COLLECTED)
-    assert raised.value.details["clock_column"] == "snapshot_date"
+    assert raised.value.details["reason"] == "series_holds_as_of_clock"
 
 
 def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> None:
@@ -390,3 +393,31 @@ def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_fac
             }
         )
         assert result["ok"] and result["rows"], (measure, result.get("errors"))
+
+
+def test_a_refusal_names_no_clock_a_policy_hides(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    package = _package(
+        tmp_path,
+        key="[repo, snapshot_date]",
+        clock_class="as_of_time",
+        measure_times=", times: [snapshot_date, collected_at]",
+    )
+    config = Runtime.from_path(str(package)).config
+    policy = SemanticPolicyConfig(
+        id="policy.test.collected_only",
+        kind="metric_constraint",
+        object_ids=["measure.f4stock.stars"],
+        config={"allowed_temporal_roles": [COLLECTED]},
+    )
+    runtime = Runtime.from_config(
+        replace(config, semantic_policies=[policy]), source_path=str(package)
+    )
+    with pytest.raises(SemanticLayerError) as raised:
+        _weekly(runtime, "stars", COLLECTED)
+    assert raised.value.code == "INVALID_CONFIG"
+    shown = f"{raised.value} {raised.value.details}"
+    assert ROLE not in shown and "snapshot_date" not in shown

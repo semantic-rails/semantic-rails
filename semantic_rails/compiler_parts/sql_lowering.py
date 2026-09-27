@@ -339,20 +339,30 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
             "INVALID_CONFIG", f"Semi-additive measure '{measure.id}' requires a row grain"
         )
     refusal = _stock_snapshot_refusal(measure, temporal_role_id, config)
-    if refusal:
+    if refusal.get("clock_column") == order_column:
         # An as-of clock declares a snapshot table, so a series that can't tell its
         # snapshots apart is never a current-state table: refuse rather than sum them.
-        where = (
-            f"its key {refusal['row_key']} doesn't contain that column"
-            if refusal["reason"] == "key_missing_as_of_clock"
-            else f"ordered by {order_column!r}, its series still holds that column"
-        )
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"Stock measure '{measure.id}' is on a snapshot table with the as-of clock "
-            f"{refusal['clock_column']!r}, but {where}, so each snapshot would count as its "
-            f"own series and be summed. {refusal['fix']}",
+            f"Stock measure '{measure.id}' takes the last snapshot per key on the as-of clock "
+            f"{order_column!r}, but its key {refusal['row_key']} doesn't contain that column, so "
+            f"each snapshot would count as its own series and be summed. {refusal['fix']}",
             details=refusal,
+        )
+    if refusal:
+        # The clock at fault isn't the one queried, and a policy may hide it from the
+        # caller, so the error names neither it nor a key that holds it; the parse
+        # warning tells the author which one it is.
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Stock measure '{measure.id}' can't be answered on the clock {temporal_role_id!r}: "
+            "its key doesn't tell apart the snapshots of another of its clocks (an as-of "
+            "clock), so each snapshot would count as its own series and be summed. "
+            "Query it on its as-of clock; the package's parse warning names it.",
+            details={
+                key: refusal[key]
+                for key in ("measure_id", "temporal_role", "clock_class", "reason")
+            },
         )
     gaps = _stock_key_gaps.get()
     if gaps is not None and (gap := _stock_clock_key_gap(measure, temporal_role_id, config)):
