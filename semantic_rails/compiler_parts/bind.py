@@ -908,26 +908,27 @@ def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: Packag
     return next(iter(entities))
 
 
-def _non_additive_read(
+def _non_additive_column(
     value: SemanticExpr | None, entity_id: str, config: PackageConfig
-) -> dict[str, str] | None:
-    """The ``additive: false`` measure whose column an ``aggregate_if`` value reads, if any.
+) -> str | None:
+    """The column of an ``aggregate_if`` value that an ``additive: false`` measure reads.
 
     Any column such a measure of the same entity reads counts, whatever else the
     value reads: its values may pass through a ratio's input, a weighted sum or a
     filtered measure's column alike. Names compare case-insensitively, as the
-    warehouse resolves them.
+    warehouse resolves them. The value's own spelling is returned, so a refusal
+    names nothing the caller didn't write (a policy may hide the measure).
     """
     if value is None:
         return None
-    read = {ref.column.casefold() for ref in collect_column_refs(value)}
-    for measure in config.measures:
-        if measure.additive or measure.entity != entity_id:
-            continue
-        for ref in collect_column_refs(measure.expr):
-            if ref.column.casefold() in read:
-                return {"measure_id": measure.id, "column": ref.column}
-    return None
+    non_additive = {
+        ref.column.casefold()
+        for measure in config.measures
+        if not measure.additive and measure.entity == entity_id
+        for ref in collect_column_refs(measure.expr)
+    }
+    refs = collect_column_refs(value)
+    return next((ref.column for ref in refs if ref.column.casefold() in non_additive), None)
 
 
 def _synthetic_conditional_measure(
@@ -946,7 +947,7 @@ def _synthetic_conditional_measure(
     entity_id = _conditional_aggregate_entity(expr, config)
     entities = _entity_index(config)
     entity = entities[entity_id]
-    non_additive = _non_additive_read(expr.value, entity_id, config)
+    non_additive = _non_additive_column(expr.value, entity_id, config)
 
     # Build the column-level expression: CASE WHEN cond THEN value END.
     # For COUNT_IF (value omitted) the body is literal 1 so COUNT()
@@ -992,7 +993,7 @@ def _synthetic_conditional_measure(
         meta={
             "synthetic": True,
             "source": "aggregate_if",
-            **({"non_additive_read": non_additive} if non_additive else {}),
+            **({"non_additive_column": non_additive} if non_additive else {}),
         },
     )
     return measure_id, measure

@@ -607,19 +607,19 @@ def _raise_non_additive_sum(
         for dimension in config.dimensions
         if dimension.entity == measure.entity and dimension.column in missing
     ]
-    # An aggregate_if reading an additive: false measure's column follows that measure.
-    read = measure.meta.get("non_additive_read")
+    # An aggregate_if reading an additive: false measure's column follows that measure. It
+    # names only the column the caller wrote: a policy may hide the measure.
+    column = measure.meta.get("non_additive_column")
     subject = (
-        f"This aggregate_if's value reads column {read['column']!r} of measure "
-        f"'{read['measure_id']}', which is additive: false"
-        if read
+        f"This aggregate_if's value reads column {column!r}, which a non-additive measure reads"
+        if column
         else f"Measure '{measure.id}' is additive: false"
     )
     if missing:
         statistics = [
             name
             for name in ("avg", "min", "max", "median")
-            if read or name in measure.allowed_aggregations
+            if column or name in measure.allowed_aggregations
         ]
         instead = f", or use aggregation {' / '.join(statistics)}" if statistics else ""
         message = (
@@ -643,7 +643,6 @@ def _raise_non_additive_sum(
             "missing_columns": missing,
             "missing_dimensions": dimensions,
             "recovery_hints": [{"kind": "stay_at_stored_grain", "message": hint}],
-            **({"non_additive_read": read} if read else {}),
         },
     )
 

@@ -422,27 +422,23 @@ def _call(name: str, *args: dict[str, Any]) -> dict[str, Any]:
 ONE = {"kind": "literal", "value": 1}
 
 
-DAILY_ID = f"measure.{NS}.daily_visitors"
-RATE_ID = f"measure.{NS}.signup_rate"
-REPEAT_ID = f"measure.{NS}.repeat_visitors"
-
-
 @pytest.mark.parametrize(
-    ("value", "measure"),
+    ("value", "column"),
     [
-        (_column("daily_visitors"), DAILY_ID),
-        (_column("DAILY_VISITORS"), DAILY_ID),  # the warehouse resolves names case-insensitively
+        (_column("daily_visitors"), "daily_visitors"),
+        # The warehouse resolves names case-insensitively; the refusal names the caller's.
+        (_column("DAILY_VISITORS"), "DAILY_VISITORS"),
         # A filtered measure's value column, its filter column left to the condition.
-        (_column("repeat_visits"), REPEAT_ID),
+        (_column("repeat_visits"), "repeat_visits"),
         # A ratio's inputs, alone or weighted: refused too, like weighted sums.
-        (_column("signups"), RATE_ID),
-        (_column("views"), RATE_ID),
-        (SIGNUP_RATE, RATE_ID),
-        ({"kind": "arithmetic", "op": "*", "left": SIGNUP_RATE, "right": ONE}, RATE_ID),
-        (_call("coalesce", SIGNUP_RATE, {"kind": "literal", "value": 0}), RATE_ID),
+        (_column("signups"), "signups"),
+        (_column("views"), "views"),
+        (SIGNUP_RATE, "signups"),
+        ({"kind": "arithmetic", "op": "*", "left": SIGNUP_RATE, "right": ONE}, "signups"),
+        (_call("coalesce", SIGNUP_RATE, {"kind": "literal", "value": 0}), "signups"),
         (
             {"kind": "arithmetic", "op": "*", "left": _column("daily_visitors"), "right": ONE},
-            DAILY_ID,
+            "daily_visitors",
         ),
         (
             {
@@ -451,31 +447,63 @@ REPEAT_ID = f"measure.{NS}.repeat_visitors"
                 "left": _column("sessions"),
                 "right": _column("daily_visitors"),
             },
-            DAILY_ID,
+            "daily_visitors",
         ),
     ],
 )
 def test_aggregate_if_over_a_non_additive_column_follows_the_measure(
-    runtime, value: dict[str, Any], measure: str
+    runtime, value: dict[str, Any], column: str
 ) -> None:
     # It used to return 5 for repository a (3 + 2 distinct visitors across two days).
-    details = _refused(runtime, _aggregate_if("sum", value, group_by=[REPO_DAY]))
-    assert details["missing_columns"] == ["day"]
-    assert details["non_additive_read"]["measure_id"] == measure
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(_aggregate_if("sum", value, group_by=[REPO_DAY]))
+    assert raised.value.code == "ROLLUP_UNSAFE"
+    assert raised.value.details["missing_columns"] == ["day"]
+    assert f"reads column {column!r}, which a non-additive measure reads" in str(raised.value)
     # Grouped to one row per cell, or a statistic, it answers like the measure.
     grouped = _values(runtime, _aggregate_if("sum", value, group_by=[REPO_DAY, DAY_DIM]))
     assert len(grouped) == 3
     assert len(_values(runtime, _aggregate_if("max", value, group_by=[REPO_DAY]))) == 2
 
 
-def test_the_aggregate_if_refusal_names_the_measure_and_why(runtime) -> None:
+def test_the_aggregate_if_refusal_names_the_column_and_why(runtime) -> None:
     with pytest.raises(SemanticLayerError) as raised:
         runtime.query(_aggregate_if("sum", _column("repeat_visits"), group_by=[REPO_DAY]))
     assert str(raised.value).startswith(
-        f"This aggregate_if's value reads column 'repeat_visits' of measure '{REPEAT_ID}', which "
-        "is additive: false, and this query would sum more than one of its rows into an output "
-        "row: group by or filter (=) each of ['day'], or use aggregation avg / min / max / median."
+        "This aggregate_if's value reads column 'repeat_visits', which a non-additive measure "
+        "reads, and this query would sum more than one of its rows into an output row: group by "
+        "or filter (=) each of ['day'], or use aggregation avg / min / max / median."
     )
+
+
+def test_the_aggregate_if_refusal_names_no_measure_a_policy_hides(runtime, package_dir) -> None:
+    from dataclasses import replace
+
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    measure = f"measure.{NS}.repeat_visitors"
+    hidden = SemanticPolicyConfig(
+        id="policy.test.hide_repeat_visitors",
+        kind="object_visibility",
+        object_ids=[measure],
+        audiences=["external"],
+        action="hidden",
+    )
+    config = replace(runtime.config, semantic_policies=[hidden])
+    hiding = Runtime.from_config(config, source_path=str(package_dir))
+    external = {"policy_context": {"audience": "external"}}
+    with pytest.raises(SemanticLayerError) as denied:
+        hiding.query({**_query("repeat_visitors", group_by=[REPO_DAY, DAY_DIM]), **external})
+    assert denied.value.code == "POLICY_DENIED"
+    query = {**_aggregate_if("sum", _column("repeat_visits"), group_by=[REPO_DAY]), **external}
+    refusals = []
+    for engine in (runtime, hiding):
+        with pytest.raises(SemanticLayerError) as raised:
+            engine.query(query)
+        refusals.append((raised.value.code, str(raised.value), raised.value.details))
+    # Byte-identical whether or not the measure is visible, and it names no measure.
+    assert refusals[0] == refusals[1]
+    assert "repeat_visitors" not in f"{refusals[1][1]} {refusals[1][2]}"
 
 
 @pytest.mark.parametrize(
