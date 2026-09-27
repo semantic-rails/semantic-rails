@@ -589,7 +589,6 @@ def upsert_model_draft(
                     "expr": {"kind": "column", "column": item["key"]},
                     "default_agg": item["aggregation"],
                     "accumulation": {"kind": "flow"},
-                    **({"additive": False} if item.get("additive") is False else {}),
                     "value_type": "number",
                     **({"description": item["description"]} if item.get("description") else {}),
                 }
