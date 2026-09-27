@@ -465,3 +465,34 @@ def test_a_pinned_aggregate_if_over_a_non_additive_column_answers(runtime) -> No
     pinned = _aggregate_if("sum", value, where=[_eq(REPO_DAY, "a"), _eq(DAY_DIM, "2026-09-21")])
     assert _values(runtime, pinned) == [3]
     assert _values(runtime, _aggregate_if("avg", value, group_by=[REPO_DAY])) == [2.5, 5]
+
+
+def test_aggregate_if_refuses_a_non_additive_column_anywhere_in_its_value(runtime) -> None:
+    # A weighted sum reads the column too: refused, like the measure (declare the
+    # product as its own measure instead).
+    weighted = {
+        "kind": "arithmetic",
+        "op": "*",
+        "left": _column("daily_visitors"),
+        "right": _column("views"),
+    }
+    _refused(runtime, _aggregate_if("sum", weighted, group_by=[REPO_DAY]))
+    # A filter on the column counts only in the value, not in the condition.
+    guarded = {
+        "kind": "case",
+        "whens": [
+            {
+                "when": {
+                    "kind": "comparison",
+                    "op": ">",
+                    "left": _column("daily_visitors"),
+                    "right": {"kind": "literal", "value": 2},
+                },
+                "then": _column("views"),
+            }
+        ],
+    }
+    _refused(runtime, _aggregate_if("sum", guarded, group_by=[REPO_DAY]))
+    in_condition = _aggregate_if("sum", _column("views"), group_by=[REPO_DAY])
+    in_condition["select"][0]["expression"]["condition"] = guarded["whens"][0]["when"]
+    assert _values(runtime, in_condition) == [10, 30]

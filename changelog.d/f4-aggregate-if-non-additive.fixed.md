@@ -4,4 +4,5 @@
   `aggregate_if` whose `value` reads every column such a measure reads (its column, or all the
   inputs of a computed one, however wrapped, in any letter case) now follows the measure's rule:
   summing is refused with `ROLLUP_UNSAFE` unless each output row holds one of its rows, and
-  `avg`, `min`, `max` and `count` stay available.
+  `avg`, `min`, `max` and `count` stay available. A value that also reads other columns (a weighted
+  sum such as `unit_price * quantity`) is refused too: declare the product as its own measure.

@@ -922,7 +922,7 @@ def _reads_non_additive_value(
         return False
     read = {ref.column.casefold() for ref in collect_column_refs(value)}
     for measure in config.measures:
-        if measure.additive or measure.entity != entity_id or measure.expr is None:
+        if measure.additive or measure.entity != entity_id:
             continue
         columns = {ref.column.casefold() for ref in collect_column_refs(measure.expr)}
         if columns and columns <= read:
