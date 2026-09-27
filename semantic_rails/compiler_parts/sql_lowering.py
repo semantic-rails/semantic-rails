@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from contextlib import nullcontext
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
@@ -299,6 +300,26 @@ def _stock_snapshot_refusal(
     }
 
 
+_stock_key_gaps: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "stock_key_gaps", default=None
+)
+
+
+@contextmanager
+def recording_stock_key_gaps() -> Iterator[list[dict[str, Any]]]:
+    """Collect the key gap of every stock lowered in this block, nested compiles included.
+
+    A stock whose key lacks its event- or state-time clock answers as if each row
+    were a series; the runtime warns about each one the SQL actually reads.
+    """
+    gaps: list[dict[str, Any]] = []
+    token = _stock_key_gaps.set(gaps)
+    try:
+        yield gaps
+    finally:
+        _stock_key_gaps.reset(token)
+
+
 def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConfig) -> list[str]:
     """The columns that identify one snapshot series of a stock measure.
 
@@ -333,6 +354,9 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
             f"own series and be summed. {refusal['fix']}",
             details=refusal,
         )
+    gaps = _stock_key_gaps.get()
+    if gaps is not None and (gap := _stock_clock_key_gap(measure, temporal_role_id, config)):
+        gaps.append(gap)
     return [column for column in key if column != order_column]
 
 

@@ -1019,6 +1019,8 @@ check below but still sums). Give the snapshot time `class: as_of_time`.
   of the series and is fine on the as-of clock.
 - A current-state table with one row per series (a customer's lifetime spend on the
   customers table) has the same shape and is right as keyed; the warning is expected there.
+  Because the engine can't tell the two apart on an event- or state-time clock, each query
+  answer from such a stock also carries the `STOCK_SNAPSHOT_KEY_MISSING_CLOCK` warning.
 
 `additive: false` marks an `aggregate` measure whose values are already aggregated
 and must never be added together: a vendor's pre-counted distinct values (daily unique

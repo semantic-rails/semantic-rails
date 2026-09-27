@@ -751,6 +751,7 @@ def _compiled_warnings(
         *(rewrite_warning_payload(step) for step in compiled["logical_plan"].rewrite_steps),
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
+        *_stock_key_gap_warnings(compiled),
         *_path_alternates_warnings(config, compiled["logical_plan"]),
         *_time_zone_warnings(config, compiled),
     ]
@@ -1070,6 +1071,39 @@ def _crosses_boundary(start: str, end: str, window_start: str, window_end: str) 
     if window_start and start and start < window_start and (not end or end > window_start):
         return True
     return bool(window_end and (not start or start < window_end) and end and end > window_end)
+
+
+def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
+    """Say when a stock answered as if each row were its own series.
+
+    A stock whose key lacks its event- or state-time clock takes every row as a
+    series, so each cell adds up every row in it. That is right for a table with one
+    row per series and wrong for one that keeps snapshots, which the engine can't
+    tell apart, so the answer carries the warning (an as-of clock refuses instead).
+    The lowering records each such stock it reads, metric predicates included.
+    """
+    gaps = {
+        (gap["measure_id"], gap["temporal_role"]): gap
+        for gap in list(compiled.get("stock_key_gaps") or [])
+    }
+    return [
+        semantic_issue(
+            code="STOCK_SNAPSHOT_KEY_MISSING_CLOCK",
+            message=(
+                f"Stock measure '{gap['measure_id']}' is keyed by {gap['row_key']}, which doesn't "
+                f"contain its {gap['clock_class']} clock {gap['clock_column']!r}, so each row counts "
+                "as its own series and each result adds up every row in it. That's right only if "
+                "the table holds one row per series (current state); if it keeps snapshots, "
+                f"they were summed. {gap['fix']} With that clock declared class: as_of_time, a "
+                "key without it is refused instead."
+            ),
+            severity="warning",
+            stage="planning",
+            details=gap,
+            object_ids=[gap["measure_id"]],
+        )
+        for gap in gaps.values()
+    ]
 
 
 def _measure_validity_warnings(config, logical_plan) -> list[dict[str, Any]]:
