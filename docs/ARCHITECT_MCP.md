@@ -148,8 +148,9 @@ never create, seed or change it.
   A numeric column named like a count of distinct people (`unique`, `uniques`, `distinct`,
   `visitors`, `users`, `cloners`, but not an average or rate of one) is a `low`-confidence measure
   whose suggestion carries `additive: false` and says why: a vendor's pre-counted uniques can't be
-  added up across days or pages. The draft `upsert_model` call leaves it out, so an import never
-  changes a measure's additivity; declare it yourself when the column really is a distinct count.
+  added up across days or pages. The draft `upsert_model` call still sums the measure and leaves
+  `additive` out, so an import never changes a measure's additivity; declare it yourself when the
+  column really is a distinct count.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
