@@ -1010,7 +1010,13 @@ check below but still sums). Give the snapshot time `class: as_of_time`.
 - A stock whose key doesn't contain its clock's column gets a
   `STOCK_SNAPSHOT_KEY_MISSING_CLOCK` parse warning: each key value counts as its own
   series, so two snapshots of one series in the same week are added together.
-- On an `as_of_time` clock, queries of such a stock are refused with `INVALID_CONFIG`.
+- If the key lacks an `as_of_time` clock of the stock's model, every query of the stock is
+  refused with `INVALID_CONFIG`, whatever clock it's ordered by.
+- A key holds at most the one as-of clock the stock is queried on. Ordered by another
+  clock of the model, the series still holds the as-of column, so each snapshot is its
+  own series: those queries are refused too, with a `STOCK_SERIES_HOLDS_AS_OF_CLOCK`
+  parse warning. An event-time column in the key, such as a cohort month, is part of the
+  series and is fine on the as-of clock.
 - A current-state table with one row per series (a customer's lifetime spend on the
   customers table) has the same shape and is right as keyed; the warning is expected there.
 

@@ -243,6 +243,50 @@ def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) 
     }
 
 
+def _stock_snapshot_refusal(
+    measure, temporal_role_id: str, config: PackageConfig
+) -> dict[str, Any]:
+    """Why a stock's queries on this clock would add up snapshots of one series, or ``{}``.
+
+    An ``as_of_time`` clock of the stock's own model declares a snapshot table. If the
+    row key lacks its column, the key can't tell snapshots apart on any clock. If the
+    key holds it but the query orders by another clock, the series still holds it, so
+    each snapshot is its own series. Either way a bucket would sum snapshots, so the
+    caller refuses. The model's clocks are read from the package analysis, not the
+    binding index: examining them doesn't make them query inputs.
+    """
+    if measure.measure_class != "semi_additive":
+        return {}
+    analysis = get_package_analysis(config)
+    as_of = [
+        dimension.column
+        for role in analysis.temporal_roles.values()
+        if role.temporal_class == "as_of_time"
+        and (dimension := analysis.dimensions.get(role.dimension)) is not None
+        and dimension.entity == measure.entity
+        and dimension.column
+    ]
+    key = _stock_row_key(measure, config)
+    role = analysis.temporal_roles.get(temporal_role_id)
+    clock = analysis.dimensions.get(role.dimension) if role is not None else None
+    ordering = clock.column if clock is not None else ""
+    missing = [column for column in as_of if column not in key]
+    held = [column for column in as_of if column in key and column != ordering]
+    if not key or not (missing or held):
+        return {}
+    return {
+        "measure_id": measure.id,
+        "temporal_role": temporal_role_id,
+        "clock_column": (missing or held)[0],
+        "row_key": key,
+        "reason": "key_missing_as_of_clock" if missing else "series_holds_as_of_clock",
+        "fix": "Key the entity by the series columns plus its snapshot time, "
+        "e.g. key: [store_id, date_day]."
+        if missing
+        else f"Query it on the {held[0]!r} clock, with one as-of clock in the key.",
+    }
+
+
 def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConfig) -> list[str]:
     """The columns that identify one snapshot series of a stock measure.
 
@@ -261,17 +305,21 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
         raise SemanticLayerError(
             "INVALID_CONFIG", f"Semi-additive measure '{measure.id}' requires a row grain"
         )
-    gap = _stock_clock_key_gap(measure, temporal_role_id, config)
-    if gap.get("clock_class") == "as_of_time":
-        # An as-of clock declares a snapshot table, so a key without it is never a
-        # current-state table: refuse rather than sum every snapshot in a bucket.
+    refusal = _stock_snapshot_refusal(measure, temporal_role_id, config)
+    if refusal:
+        # An as-of clock declares a snapshot table, so a series that can't tell its
+        # snapshots apart is never a current-state table: refuse rather than sum them.
+        where = (
+            f"its key {refusal['row_key']} doesn't contain that column"
+            if refusal["reason"] == "key_missing_as_of_clock"
+            else f"ordered by {order_column!r}, its series still holds that column"
+        )
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"Stock measure '{measure.id}' takes the last snapshot per key on the as-of "
-            f"clock {gap['clock_column']!r}, but its key {gap['row_key']} doesn't contain "
-            f"that column, so each snapshot would count as its own series and be summed. "
-            f"{gap['fix']}",
-            details=gap,
+            f"Stock measure '{measure.id}' is on a snapshot table with the as-of clock "
+            f"{refusal['clock_column']!r}, but {where}, so each snapshot would count as its "
+            f"own series and be summed. {refusal['fix']}",
+            details=refusal,
         )
     return [column for column in key if column != order_column]
 
