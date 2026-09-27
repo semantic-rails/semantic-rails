@@ -1141,7 +1141,7 @@ class ArchitectProject:
             "entity_key": entity_slug,
             "calendar_changed": calendar is not None or bool(requested_calendar),
             "dropped_fields": dropped_fields,
-            "kept_objects": kept_ids,
+            "kept_objects": kept_ids or None,
             "existed": existing_model is not None,
             "model_path": model_path,
             "graph_path": graph_path,

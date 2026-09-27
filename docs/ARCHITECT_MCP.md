@@ -220,9 +220,11 @@ package, gets the reference; references elsewhere are listed in `skipped_referen
 without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
 (`fct_orders` and a model `orders` for entity `order`) updates that model. An update adds only the
 dimensions, times and measures the model doesn't have yet and leaves the existing ones as
-authored, listing them in the model's `kept_objects` in `models`, so a re-import never reverts
-what an author changed (a stock accumulation, a clock's class, `additive: false`) or refreshes an
-existing object's dbt description; change an existing object with `upsert_model`.
+authored, listing them in the model's `kept_objects` in `models`, so a re-import doesn't revert
+those objects (a stock accumulation, a clock's class, `additive: false`) or refresh their dbt
+descriptions; change an existing object with `upsert_model`. The model's relation, its entity's
+key and its foreign-key entries still follow dbt: after a re-import, check a key you changed
+(for example a snapshot table keyed by its series and snapshot date).
 Measure keys are package-wide, so a drafted measure whose key another model already has, in the
 package or earlier in the call, gets its entity as a prefix (`order_line_usd_to_local_rate`), like
 the drafted `<entity>_count`, unless that key is taken too; a re-imported model keeps its own keys.

@@ -1250,3 +1250,27 @@ def test_a_reimport_leaves_what_the_author_changed(workspace: Path) -> None:
     replace = {**rewrite, "replace": True}
     (replaced,) = project.upsert_models([replace], expected_revision=revision).report["models"]
     assert "kept_objects" not in replaced and replaced["dropped_fields"]
+
+
+def test_a_reimport_adds_a_new_time_without_a_second_default(workspace: Path) -> None:
+    # The package names its clock order_time, so the draft's defaulted ordered_at is new:
+    # it's added, and the existing default stays the only one.
+    path = workspace / "shop" / "models" / "orders.yml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    times = document["model"]["times"]
+    times["order_time"] = times.pop("ordered_at")
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    server = create_architect_mcp_server(workspace_root=workspace)
+    request = {
+        "project_path": "shop",
+        "target_dir": "dbt/target",
+        "select": ["fct_orders"],
+        "expected_revision": project_revision(workspace / "shop"),
+        "idempotency_key": "new-time",
+    }
+    (imported,) = _calls(server, [("import_dbt_project", request)])
+    assert imported["ok"] is True, imported
+    after = _model(path)
+    assert "ordered_at" in after["times"]
+    assert [name for name, spec in after["times"].items() if spec.get("default")] == ["order_time"]

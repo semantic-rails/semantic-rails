@@ -630,7 +630,8 @@ def _key_like(column: str) -> bool:
 
 def _snapshot_clock_like(column: str) -> bool:
     """A time column named like a snapshot's as-of time (``snapshot_date``, ``as_of_date``)."""
-    return _has_word(column, ("snapshot", "asof")) or "as_of" in column.lower()
+    as_of = re.search(r"(?:^|[^a-z0-9])as_of(?:[^a-z0-9]|$)", column.lower())
+    return _has_word(column, ("snapshot", "asof")) or as_of is not None
 
 
 def _distinct_count_like(column: str) -> bool:

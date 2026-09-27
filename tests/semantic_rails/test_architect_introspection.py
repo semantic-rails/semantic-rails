@@ -908,6 +908,7 @@ def test_a_snapshot_named_time_is_drafted_as_an_as_of_clock() -> None:
         {"name": "snapshot_date", "type": "DATE"},
         {"name": "as_of_date", "type": "DATE"},
         {"name": "created_at", "type": "TIMESTAMP"},
+        {"name": "was_offered_at", "type": "TIMESTAMP"},  # "as_of" inside a word doesn't count
         {"name": "stars", "type": "BIGINT"},
     ]
     roles, _ = draft_roles("repo_snapshot", ["repo_snapshot_id"], [], columns)
@@ -916,6 +917,7 @@ def test_a_snapshot_named_time_is_drafted_as_an_as_of_clock() -> None:
         "snapshot_date": "as_of_time",
         "as_of_date": "as_of_time",
         "created_at": None,
+        "was_offered_at": None,
     }
     draft = upsert_model_draft(
         entity="repo_snapshot", relation="repo_snapshot", key_columns=["repo_snapshot_id"], **roles
@@ -925,4 +927,5 @@ def test_a_snapshot_named_time_is_drafted_as_an_as_of_clock() -> None:
         "snapshot_date": "as_of_time",
         "as_of_date": "as_of_time",
         "created_at": "event_time",
+        "was_offered_at": "event_time",
     }
