@@ -908,39 +908,26 @@ def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: Packag
     return next(iter(entities))
 
 
-def _unqualified(payload: Any) -> Any:
-    """An expression payload without the entity/table qualifiers of its column refs."""
-    if isinstance(payload, dict):
-        return {
-            key: _unqualified(value)
-            for key, value in payload.items()
-            if key not in {"entity", "table"}
-        }
-    if isinstance(payload, list):
-        return [_unqualified(value) for value in payload]
-    return payload
-
-
 def _reads_non_additive_value(
     value: SemanticExpr | None, entity_id: str, config: PackageConfig
 ) -> bool:
-    """Whether an ``aggregate_if`` value holds an ``additive: false`` measure's values.
+    """Whether an ``aggregate_if`` value may hold an ``additive: false`` measure's values.
 
-    That is, it reads a column that such a measure of the same entity is defined as,
-    or it is such a measure's expression. The inputs of a computed one (a ratio's
-    numerator) stay additive on their own.
+    It may when it reads every column such a measure of the same entity reads:
+    its column, or all the inputs of a computed one, however they're wrapped.
+    Names compare case-insensitively, as the warehouse resolves them. Reading
+    only some inputs of a computed one (a ratio's numerator) stays additive.
     """
     if value is None:
         return False
-    read = {ref.column for ref in collect_column_refs(value)}
-    shape = _unqualified(expr_to_dict(value))
-    return any(
-        measure.expr.column in read
-        if isinstance(measure.expr, ColumnRefExpr)
-        else _unqualified(expr_to_dict(measure.expr)) == shape
-        for measure in config.measures
-        if not measure.additive and measure.entity == entity_id and measure.expr is not None
-    )
+    read = {ref.column.casefold() for ref in collect_column_refs(value)}
+    for measure in config.measures:
+        if measure.additive or measure.entity != entity_id or measure.expr is None:
+            continue
+        columns = {ref.column.casefold() for ref in collect_column_refs(measure.expr)}
+        if columns and columns <= read:
+            return True
+    return False
 
 
 def _synthetic_conditional_measure(

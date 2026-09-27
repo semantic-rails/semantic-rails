@@ -70,7 +70,9 @@ def package_dir(tmp_path_factory) -> Path:
         "value_type: count}\n"
         "    views: {kind: aggregate, expr: views, value_type: count}\n"
         "    signup_rate: {kind: aggregate, expr: signups / views, additive: false, "
-        "value_type: number}\n",
+        "value_type: number}\n"
+        "    repeat_visitors: {kind: aggregate, expr: repeat_visits * 1.0, "
+        "additive: false, value_type: count}\n",
     )
     _write(
         package / "models" / "repo_snapshots.yml",
@@ -111,8 +113,9 @@ def package_dir(tmp_path_factory) -> Path:
     )
     connection.execute(
         "create table traffic_daily as select * from (values "
-        "('a', date '2026-09-21', 3, 10, 1), ('a', date '2026-09-22', 2, 20, 2), "
-        "('b', date '2026-09-21', 5, 30, 3)) t(repo, day, daily_visitors, views, signups)"
+        "('a', date '2026-09-21', 3, 10, 1, 1), ('a', date '2026-09-22', 2, 20, 2, 1), "
+        "('b', date '2026-09-21', 5, 30, 3, 2)) "
+        "t(repo, day, daily_visitors, views, signups, repeat_visits)"
     )
     connection.execute(
         "create table repo_snapshot as select * from (values "
@@ -409,11 +412,22 @@ SIGNUP_RATE = {
 }
 
 
+def _call(name: str, *args: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "call", "name": name, "args": list(args)}
+
+
+ONE = {"kind": "literal", "value": 1}
+
+
 @pytest.mark.parametrize(
     "value",
     [
         _column("daily_visitors"),
+        _column("DAILY_VISITORS"),  # the warehouse resolves names case-insensitively
+        _column("repeat_visits"),  # the one column of a `repeat_visits * 1.0` measure
         SIGNUP_RATE,  # a non-additive measure's own expression
+        {"kind": "arithmetic", "op": "*", "left": SIGNUP_RATE, "right": ONE},
+        _call("coalesce", SIGNUP_RATE, {"kind": "literal", "value": 0}),
         {
             "kind": "arithmetic",
             "op": "*",
@@ -444,3 +458,10 @@ def test_aggregate_if_over_other_columns_is_unchanged(
     runtime, aggregation: str, value: dict[str, Any] | None, expected: list[int]
 ) -> None:
     assert _values(runtime, _aggregate_if(aggregation, value, group_by=[REPO_DAY])) == expected
+
+
+def test_a_pinned_aggregate_if_over_a_non_additive_column_answers(runtime) -> None:
+    value = _column("daily_visitors")
+    pinned = _aggregate_if("sum", value, where=[_eq(REPO_DAY, "a"), _eq(DAY_DIM, "2026-09-21")])
+    assert _values(runtime, pinned) == [3]
+    assert _values(runtime, _aggregate_if("avg", value, group_by=[REPO_DAY])) == [2.5, 5]
