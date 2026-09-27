@@ -150,6 +150,9 @@ never create, seed or change it.
   whose suggestion carries `additive: false` and says why: a vendor's pre-counted uniques can't be
   added up across days or pages. The draft `upsert_model` call doesn't set `additive` (it still
   sums the measure); declare it yourself when the column really is a distinct count.
+  A time column named like a snapshot's as-of time (`snapshot`, `as_of` or `asof` in its name)
+  is drafted `class: as_of_time`, so a stock on it whose key lacks the column is refused rather
+  than summing snapshots; other times are drafted `event_time`.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
@@ -215,7 +218,13 @@ a many-to-one relationship. It follows the usual mutation contract (`expected_re
 `idempotency_key`, `dry_run`). A model whose target is imported in the same call, or already in the
 package, gets the reference; references elsewhere are listed in `skipped_references`, and dbt models
 without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
-(`fct_orders` and a model `orders` for entity `order`) updates that model.
+(`fct_orders` and a model `orders` for entity `order`) updates that model. An update adds only the
+dimensions, times and measures the model doesn't have yet and leaves the existing ones as
+authored, listing them in the model's `kept_objects` in `models`, so a re-import doesn't revert
+those objects (a stock accumulation, a clock's class, `additive: false`) or refresh their dbt
+descriptions; change an existing object with `upsert_model`. The model's relation, its entity's
+key and its foreign-key entries still follow dbt: after a re-import, check a key you changed
+(for example a snapshot table keyed by its series and snapshot date).
 Measure keys are package-wide, so a drafted measure whose key another model already has, in the
 package or earlier in the call, gets its entity as a prefix (`order_line_usd_to_local_rate`), like
 the drafted `<entity>_count`, unless that key is taken too; a re-imported model keeps its own keys.

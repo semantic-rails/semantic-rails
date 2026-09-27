@@ -1587,7 +1587,9 @@ def create_architect_mcp_server(
                     details={"skipped_models": skipped},
                 )
             report = project.upsert_models(
-                items,
+                # Existing objects stay as authored: the draft would revert what an
+                # author changed. The flag is part of each item, so replays still match.
+                [{**item, "keep_existing": True} for item in items],
                 group=group,
                 expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
