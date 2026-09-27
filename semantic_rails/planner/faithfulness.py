@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from ._base import (
@@ -492,6 +493,7 @@ def intent_faithfulness_why(
     ):
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
+    gaps.extend(_subject_window_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
@@ -620,6 +622,90 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
             },
         )
     ]
+
+
+# A span a label, name or question states: "(14 days)", "14-day", "_14d", "4 weeks", "1 year";
+# not the upper end of a range such as "31-60 days".
+_SPAN_RE = re.compile(
+    r"(?<![\w.\-\u2013])(\d+)\s*-?\s*(d|days?|w|wks?|weeks?|mo|months?|q|quarters?|y|yrs?|years?)\b"
+)
+_SPAN_UNIT_DAYS = {"d": 1, "w": 7, "m": 30, "q": 91, "y": 365}
+_GRAIN_DAYS = {"day": 1, "week": 7, "month": 30, "quarter": 91, "year": 365}
+
+
+def _stated_spans(text: str) -> set[int]:
+    """Every span, in days, that ``text`` states (identifiers read with spaces for ``_``)."""
+    lowered = str(text or "").lower().replace("_", " ")
+    return {int(n) * _SPAN_UNIT_DAYS[unit[0]] for n, unit in _SPAN_RE.findall(lowered)}
+
+
+def _same_span(a: int, b: int) -> bool:
+    # A month is 28-31 days, a year 360-366.
+    return a == b or (a >= 28 and b >= 28 and abs(a - b) <= max(3, max(a, b) // 50))
+
+
+def _draft_span_days(query: dict[str, Any]) -> int:
+    """Days in the period the draft reports each value for: its bucket, else its window."""
+    time = _time_block(query)
+    if str(time.get("grain") or "") in _GRAIN_DAYS:
+        return _GRAIN_DAYS[str(time["grain"])]
+    try:
+        if time.get("start") and time.get("end"):
+            start, end = (date.fromisoformat(str(time[key])[:10]) for key in ("start", "end"))
+            return (end - start).days
+    except ValueError:
+        pass
+    last = dict(dict(time.get("range") or {}).get("last") or {})
+    if last.get("unit") in _GRAIN_DAYS:
+        return _GRAIN_DAYS[last["unit"]] * int(last.get("value") or 1)
+    return 0
+
+
+def _subject_window_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
+    """The subject is a stock over its own trailing window, and each row reports another period.
+
+    "Unique visitors (14 days)" filtered to this week is the 14-day count as of the week's
+    last snapshot, not this week's unique visitors. The window is read from the stock's
+    label, name or id. Nothing the question says turns the check off: a false match only
+    lowers confidence, while a missed one returns a wrong number as the period's.
+    """
+    asked = _draft_span_days(query)
+    if not asked:
+        return []
+    objects = {row.id: row for row in [*config.measures, *config.metric_recipes]}
+    gaps: list[CoverageGap] = []
+    for subject_id in _projected_subject_ids(query):
+        row = objects.get(subject_id)
+        kind = getattr(row, "measure_class", "") or getattr(row, "kind", "")
+        if kind != "semi_additive":
+            continue
+        label = str(getattr(row, "label", "") or subject_id)
+        spans = _stated_spans(f"{label} {getattr(row, 'name', '')} {subject_id}")
+        if len(spans) != 1:
+            continue
+        (own,) = spans
+        if _same_span(own, asked):
+            continue
+        gaps.append(
+            CoverageGap(
+                kind="subject_window_mismatch",
+                clause=label,
+                message=(
+                    f"{label} is a value over its own {own}-day window as of each point in time, "
+                    f"not a total for the {asked}-day period the question asks about."
+                ),
+                expected={"period_days": asked},
+                actual={"subject": subject_id, "subject_window_days": own},
+                recovery_hint={
+                    "kind": "ask_within_the_subject_window",
+                    "message": (
+                        f"Ask for {label} as of a date (it covers the {own} days before it), or "
+                        "choose a measure that covers the period you asked about."
+                    ),
+                },
+            )
+        )
+    return gaps
 
 
 def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
