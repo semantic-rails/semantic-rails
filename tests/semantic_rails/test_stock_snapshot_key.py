@@ -188,6 +188,8 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
         # The as-of clock is in the key: right on it, but ordered by collected_at the
         # series is [repo, snapshot_date] and each snapshot is its own series.
         ("[repo, snapshot_date]", "event_time", {ROLE: [1], COLLECTED: "snapshot_date"}),
+        # Two as-of clocks with one in the key: right on that one, refused on the other.
+        ("[repo, snapshot_date]", "as_of_time", {ROLE: [1], COLLECTED: "snapshot_date"}),
         # Two as-of clocks in the key: either one leaves the other in the series.
         (
             "[repo, snapshot_date, collected_at]",
@@ -224,6 +226,11 @@ def test_a_series_holding_an_as_of_clock_refuses(
         assert raised.value.code == "INVALID_CONFIG"
         assert raised.value.details["clock_column"] == answer
     assert _warning_codes(package).count(SERIES_WARNING) == 2
+    if isinstance(answers[ROLE], list):
+        # The hint names the clock that answers.
+        with pytest.raises(SemanticLayerError) as raised:
+            _weekly(runtime, "stars", COLLECTED)
+        assert ROLE in raised.value.details["fix"]
 
 
 def test_an_event_clock_in_the_key_still_identifies_a_series(tmp_path: Path) -> None:
@@ -270,3 +277,31 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
         }
     )
     assert result["ok"] and result["rows"][0]["spend"] > 0
+
+
+def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_factory) -> None:
+    # Fact models share their time entity, so one fact's as-of clock must not count as
+    # a clock of another fact's stocks.
+    from tests.semantic_rails.conftest import copy_package_config
+
+    package = copy_package_config(tmp_path_factory.mktemp("facts"), "jaffle_shop", preseed_db=True)
+    monthly = package / "models" / "core" / "monthly_metrics.yml"
+    monthly.write_text(monthly.read_text().replace("class: calendar_time", "class: as_of_time", 1))
+    report, _ = parse_config_report(PackageReference(source_path=str(package)))
+    flagged = [row for row in report["warnings"] if str(row.get("code", "")).startswith("STOCK_")]
+    assert [row["details"]["measure_id"] for row in flagged] == [
+        "measure.jaffle.lifetime_spend_usd"
+    ]
+    runtime = Runtime.from_path(str(package))
+    for measure, role in (
+        ("rolling_7d_revenue_usd", "temporal_role.jaffle_daily_metric_day"),
+        ("prior_period_revenue_usd", "temporal_role.jaffle_monthly_metric_month"),
+    ):
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": f"measure.jaffle.{measure}"}, "as": "v"}],
+                "time": {"temporal_role": role, "grain": "month"},
+            }
+        )
+        assert result["ok"] and result["rows"], (measure, result.get("errors"))

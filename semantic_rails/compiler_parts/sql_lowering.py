@@ -248,42 +248,54 @@ def _stock_snapshot_refusal(
 ) -> dict[str, Any]:
     """Why a stock's queries on this clock would add up snapshots of one series, or ``{}``.
 
-    An ``as_of_time`` clock of the stock's own model declares a snapshot table. If the
-    row key lacks its column, the key can't tell snapshots apart on any clock. If the
-    key holds it but the query orders by another clock, the series still holds it, so
-    each snapshot is its own series. Either way a bucket would sum snapshots, so the
-    caller refuses. The model's clocks are read from the package analysis, not the
-    binding index: examining them doesn't make them query inputs.
+    An ``as_of_time`` clock of the stock (one of its own ``times:``) declares a
+    snapshot table. If the row key holds none of them, the key can't tell snapshots
+    apart on any clock. If it holds one that the query isn't ordered by, the series
+    still holds it, so each snapshot is its own series. Either way a bucket would sum
+    snapshots, so the caller refuses. The clocks are read from the package analysis,
+    not the binding index: examining them doesn't make them query inputs.
     """
     if measure.measure_class != "semi_additive":
         return {}
     analysis = get_package_analysis(config)
-    as_of = [
-        dimension.column
-        for role in analysis.temporal_roles.values()
-        if role.temporal_class == "as_of_time"
-        and (dimension := analysis.dimensions.get(role.dimension)) is not None
-        and dimension.entity == measure.entity
-        and dimension.column
-    ]
+    as_of: dict[str, str] = {}  # column -> temporal role
+    for role_id in measure.compatible_temporal_roles or []:
+        role = analysis.temporal_roles.get(role_id)
+        dimension = analysis.dimensions.get(role.dimension) if role is not None else None
+        if (
+            role is not None
+            and role.temporal_class == "as_of_time"
+            and dimension is not None
+            and dimension.entity == measure.entity
+            and dimension.column
+        ):
+            as_of.setdefault(dimension.column, role_id)
     key = _stock_row_key(measure, config)
     role = analysis.temporal_roles.get(temporal_role_id)
     clock = analysis.dimensions.get(role.dimension) if role is not None else None
     ordering = clock.column if clock is not None else ""
-    missing = [column for column in as_of if column not in key]
-    held = [column for column in as_of if column in key and column != ordering]
-    if not key or not (missing or held):
+    in_key = [column for column in as_of if column in key]
+    held = [column for column in in_key if column != ordering]
+    if not key or not as_of or (in_key and not held):
         return {}
+    column = (held or list(as_of))[0]
+    if not in_key:
+        fix = (
+            "Key the entity by the series columns plus its snapshot time, "
+            "e.g. key: [store_id, date_day]."
+        )
+    elif len(in_key) > 1:
+        fix = "Keep one as-of clock in the key and query the stock on it."
+    else:
+        fix = f"Query it on the {as_of[column]!r} clock."
     return {
         "measure_id": measure.id,
         "temporal_role": temporal_role_id,
-        "clock_column": (missing or held)[0],
+        "clock_column": column,
+        "clock_class": "as_of_time",
         "row_key": key,
-        "reason": "key_missing_as_of_clock" if missing else "series_holds_as_of_clock",
-        "fix": "Key the entity by the series columns plus its snapshot time, "
-        "e.g. key: [store_id, date_day]."
-        if missing
-        else f"Query it on the {held[0]!r} clock, with one as-of clock in the key.",
+        "reason": "series_holds_as_of_clock" if held else "key_missing_as_of_clock",
+        "fix": fix,
     }
 
 

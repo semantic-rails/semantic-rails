@@ -1306,56 +1306,8 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
             )
         for warning in list(getattr(measure, "authoring_warnings", []) or []):
             warnings.append(f"{prefix}: {warning}")
-        # One warning per stock; the clocks whose queries refuse win.
-        clocks = list(dict.fromkeys(measure.compatible_temporal_roles or [])) or [""]
-        refusals = [
-            refusal
-            for role_id in clocks
-            if (refusal := _stock_snapshot_refusal(measure, role_id, config))
-        ]
-        gaps = [
-            gap for role_id in clocks if (gap := _stock_clock_key_gap(measure, role_id, config))
-        ]
-        if refusals and refusals[0]["reason"] == "key_missing_as_of_clock":
-            refusal = refusals[0]
-            warnings.append(
-                _error_payload(
-                    "STOCK_SNAPSHOT_KEY_MISSING_CLOCK",
-                    f"{prefix} is a stock on a snapshot table with the as_of_time clock "
-                    f"{refusal['clock_column']!r}, but its key {refusal['row_key']} doesn't "
-                    "contain that column: each key value counts as its own series, so a grain "
-                    f"coarser than the snapshots sums them. {refusal['fix']} Its queries are "
-                    "refused.",
-                    details={**refusal, "clock_class": "as_of_time"},
-                )
-            )
-        elif refusals:
-            refused = [row["temporal_role"] for row in refusals]
-            warnings.append(
-                _error_payload(
-                    "STOCK_SERIES_HOLDS_AS_OF_CLOCK",
-                    f"{prefix} is a stock whose key {refusals[0]['row_key']} holds the as_of_time "
-                    f"clock {refusals[0]['clock_column']!r}: ordered by another clock, its series "
-                    "still holds that column, so each snapshot counts as its own series and a "
-                    f"coarser grain sums them. {refusals[0]['fix']} Its queries on {refused} are "
-                    "refused.",
-                    details={**refusals[0], "refused_temporal_roles": refused},
-                )
-            )
-        elif gaps:
-            gap = gaps[0]
-            warnings.append(
-                _error_payload(
-                    "STOCK_SNAPSHOT_KEY_MISSING_CLOCK",
-                    f"{prefix} is a stock on the {gap['clock_class']} clock "
-                    f"{gap['clock_column']!r}, but its key {gap['row_key']} doesn't contain that "
-                    "column: each key value counts as its own series, so if the table keeps "
-                    "several snapshots of a series, a coarser grain sums them. "
-                    f"{gap['fix']} Ignore this only if the table holds one row per series "
-                    "(current state).",
-                    details=gap,
-                )
-            )
+        if stock_warning := _stock_key_warning(prefix, measure, config):
+            warnings.append(stock_warning)
         if not str(meta.get("owner_team", "") or "").strip():
             warnings.append(f"{prefix} should declare meta.owner_team")
         if not str(meta.get("review_priority", "") or "").strip():
@@ -1417,6 +1369,39 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
 def _semantic_collision_warnings(config, source_path: Path) -> list[dict[str, Any]]:
     """Compatibility wrapper for the dedicated collision detector."""
     return semantic_collision_warnings(config, source_path)
+
+
+def _stock_key_warning(prefix: str, measure, config) -> dict[str, Any] | None:
+    """One warning per stock whose key can't tell its snapshots apart; refusals win."""
+    clocks = list(dict.fromkeys(measure.compatible_temporal_roles or []))
+    refusals = [row for role in clocks if (row := _stock_snapshot_refusal(measure, role, config))]
+    gap = next((row for role in clocks if (row := _stock_clock_key_gap(measure, role, config))), {})
+    row = refusals[0] if refusals else gap
+    if not row:
+        return None
+    if row.get("reason") == "series_holds_as_of_clock":
+        refused = [refusal["temporal_role"] for refusal in refusals]
+        return _error_payload(
+            "STOCK_SERIES_HOLDS_AS_OF_CLOCK",
+            f"{prefix} is a stock whose key {row['row_key']} holds the as_of_time clock "
+            f"{row['clock_column']!r}: ordered by another clock, its series still holds that "
+            "column, so each snapshot counts as its own series and a coarser grain sums them. "
+            f"{row['fix']} Its queries on {refused} are refused.",
+            details={**row, "refused_temporal_roles": refused},
+        )
+    outcome = (
+        "Its queries are refused."
+        if refusals
+        else "Ignore this only if the table holds one row per series (current state)."
+    )
+    return _error_payload(
+        "STOCK_SNAPSHOT_KEY_MISSING_CLOCK",
+        f"{prefix} is a stock on the {row['clock_class']} clock {row['clock_column']!r}, but "
+        f"its key {row['row_key']} doesn't contain that column: each key value counts as its "
+        "own series, so if the table keeps several snapshots of a series, a coarser grain sums "
+        f"them. {row['fix']} {outcome}",
+        details=row,
+    )
 
 
 def _error_payload(
