@@ -244,6 +244,13 @@ def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) 
     }
 
 
+# The fixes that name no clock, so a refusal can pass them on to any caller.
+_KEY_BY_SNAPSHOT_FIX = (
+    "Key the entity by the series columns plus its snapshot time, e.g. key: [store_id, date_day]."
+)
+_ONE_AS_OF_CLOCK_FIX = "Keep one as-of clock in the key and query the stock on it."
+
+
 def _stock_snapshot_refusal(
     measure, temporal_role_id: str, config: PackageConfig
 ) -> dict[str, Any]:
@@ -281,12 +288,9 @@ def _stock_snapshot_refusal(
         return {}
     column = (held or list(as_of))[0]
     if not in_key:
-        fix = (
-            "Key the entity by the series columns plus its snapshot time, "
-            "e.g. key: [store_id, date_day]."
-        )
+        fix = _KEY_BY_SNAPSHOT_FIX
     elif len(in_key) > 1:
-        fix = "Keep one as-of clock in the key and query the stock on it."
+        fix = _ONE_AS_OF_CLOCK_FIX
     else:
         fix = f"Query it on the {as_of[column]!r} clock."
     return {
@@ -339,20 +343,33 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
             "INVALID_CONFIG", f"Semi-additive measure '{measure.id}' requires a row grain"
         )
     refusal = _stock_snapshot_refusal(measure, temporal_role_id, config)
-    if refusal:
+    if refusal.get("clock_column") == order_column:
         # An as-of clock declares a snapshot table, so a series that can't tell its
         # snapshots apart is never a current-state table: refuse rather than sum them.
-        where = (
-            f"its key {refusal['row_key']} doesn't contain that column"
-            if refusal["reason"] == "key_missing_as_of_clock"
-            else f"ordered by {order_column!r}, its series still holds that column"
-        )
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"Stock measure '{measure.id}' is on a snapshot table with the as-of clock "
-            f"{refusal['clock_column']!r}, but {where}, so each snapshot would count as its "
-            f"own series and be summed. {refusal['fix']}",
-            details=refusal,
+            f"Stock measure '{measure.id}' takes the last snapshot per key on the as-of clock "
+            f"{order_column!r}, but its key doesn't contain that column, so each snapshot would "
+            f"count as its own series and be summed. {refusal['fix']}",
+            # The key may hold another clock a policy hides: it's left out.
+            details={key: value for key, value in refusal.items() if key != "row_key"},
+        )
+    if refusal:
+        # The clock at fault isn't the one queried, and a policy may hide it from the
+        # caller, so the error names neither it nor a key that holds it; the parse
+        # warning tells the author which one it is.
+        fix = refusal["fix"]
+        if fix not in (_KEY_BY_SNAPSHOT_FIX, _ONE_AS_OF_CLOCK_FIX):
+            fix = "Query it on its as-of clock; the package's parse warning names it."
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Stock measure '{measure.id}' can't be answered on the clock {temporal_role_id!r}: "
+            "its key doesn't tell apart the snapshots of one of its as-of clocks, so each "
+            f"snapshot would count as its own series and be summed. {fix}",
+            details={
+                key: refusal[key]
+                for key in ("measure_id", "temporal_role", "clock_class", "reason")
+            },
         )
     gaps = _stock_key_gaps.get()
     if gaps is not None and (gap := _stock_clock_key_gap(measure, temporal_role_id, config)):

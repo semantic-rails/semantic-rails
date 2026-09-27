@@ -143,7 +143,9 @@ def test_surrogate_key_on_an_as_of_clock_refuses(tmp_path: Path) -> None:
             _weekly(runtime, measure)
         assert raised.value.code == "INVALID_CONFIG"
         assert "snapshot_date" in str(raised.value)
-        assert raised.value.details["row_key"] == ["repo_snapshot_key"]
+        assert "Key the entity by the series columns" in str(raised.value)
+        # The key may hold another clock a policy hides.
+        assert "repo_snapshot_key" not in f"{raised.value} {raised.value.details}"
     # Both lowering paths (the snapshot leaf and the anchored entity-set window)
     # take the series key from this helper.
     measure = next(row for row in runtime.config.measures if row.id.endswith(".stars"))
@@ -198,10 +200,16 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
     )
 
 
-def test_a_stock_read_only_by_a_metric_predicate_warns_too(tmp_path: Path) -> None:
-    # A predicate compiles as its own nested query; its stock is warned about as well,
-    # and a compile served from the cache still carries the warning.
-    package = _package(tmp_path, key="[repo_snapshot_key]", clock_class="state_time")
+@pytest.mark.parametrize(
+    ("key", "warnings"), [("[repo_snapshot_key]", 1), ("[repo, snapshot_date]", 0)]
+)
+def test_a_stock_read_only_by_a_metric_predicate_warns_too(
+    tmp_path: Path, key: str, warnings: int
+) -> None:
+    # A predicate compiles as its own nested query; its stock is warned about as well
+    # (once), and a compile served from the cache still carries the warning. Keyed by
+    # its series and clock, it stays silent.
+    package = _package(tmp_path, key=key, clock_class="state_time")
     runtime = Runtime.from_path(str(package))
     predicate = {
         "kind": "metric_predicate",
@@ -230,8 +238,10 @@ def test_a_stock_read_only_by_a_metric_predicate_warns_too(tmp_path: Path) -> No
         for cached in (False, True):
             result = runtime.query(query)
             assert result["explain"]["compile_stats"]["cache_hit"] is cached
-            warned = [row["details"]["measure_id"] for row in result["warnings"]]
-            assert "measure.f4stock.stars" in warned
+            warned = [
+                row["details"]["measure_id"] for row in result["warnings"] if row["code"] == WARNING
+            ]
+            assert warned.count("measure.f4stock.stars") == warnings
 
 
 def test_declared_grain_and_series_key_agree(tmp_path: Path) -> None:
@@ -262,8 +272,11 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
         with pytest.raises(SemanticLayerError) as raised:
             _weekly(runtime, "stars", role)
         assert raised.value.code == "INVALID_CONFIG"
-        assert raised.value.details["clock_column"] == "snapshot_date"
-        assert raised.value.details["row_key"] == ["repo_snapshot_key"]
+        assert raised.value.details["reason"] == "key_missing_as_of_clock"
+        # Only an error on the clock at fault names it (a policy may hide the others);
+        # each says how to key the table.
+        assert ("snapshot_date" in str(raised.value)) == (role == ROLE)
+        assert "Key the entity by the series columns" in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -304,17 +317,22 @@ def test_a_series_holding_an_as_of_clock_refuses(
             }
             assert COLLECTED not in bind_query(runtime.config, None, query).object_ids
             continue
-        # Each used to return 2 (true 1).
+        # Each used to return 2 (true 1). The error names neither the as-of clock at
+        # fault nor a key holding it (a policy may hide it); the parse warning does.
         with pytest.raises(SemanticLayerError) as raised:
             _weekly(runtime, "stars", role)
         assert raised.value.code == "INVALID_CONFIG"
-        assert raised.value.details["clock_column"] == answer
-    assert _warning_codes(package).count(SERIES_WARNING) == 2
+        assert raised.value.details["reason"] == "series_holds_as_of_clock"
+        assert answer not in f"{raised.value} {raised.value.details}"
+        # With two as-of clocks in the key, querying on the other one can't help.
+        advice = "Keep one as-of clock" if "collected_at" in key else "Query it on its as-of"
+        assert advice in str(raised.value)
+    report, _ = parse_config_report(PackageReference(source_path=str(package)))
+    flagged = [row for row in report["warnings"] if row["code"] == SERIES_WARNING]
+    assert len(flagged) == 2
     if isinstance(answers[ROLE], list):
-        # The hint names the clock that answers.
-        with pytest.raises(SemanticLayerError) as raised:
-            _weekly(runtime, "stars", COLLECTED)
-        assert ROLE in raised.value.details["fix"]
+        # The warning names the clock that answers.
+        assert all(ROLE in row["message"] for row in flagged)
 
 
 def test_an_event_clock_in_the_key_still_identifies_a_series(tmp_path: Path) -> None:
@@ -338,7 +356,7 @@ def test_an_event_clock_in_the_key_still_identifies_a_series(tmp_path: Path) -> 
     # cohort's two snapshots (19, not 10): refused.
     with pytest.raises(SemanticLayerError) as raised:
         _weekly(runtime, "stars", COLLECTED)
-    assert raised.value.details["clock_column"] == "snapshot_date"
+    assert raised.value.details["reason"] == "series_holds_as_of_clock"
 
 
 def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> None:
@@ -362,6 +380,15 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
     )
     assert result["ok"] and result["rows"][0]["spend"] > 0
     assert [row["code"] for row in result["warnings"]] == [WARNING]
+    # A segment filtering on it through a metric predicate carries the warning too.
+    runtime = Runtime.from_path(str(package))
+    for answer in (
+        runtime.segment_validate("segment.jaffle.high_value_customers"),
+        runtime.segment_explain("segment.jaffle.high_value_customers"),
+    ):
+        assert [(row["code"], row["details"]["measure_id"]) for row in answer["warnings"]] == [
+            (WARNING, "measure.jaffle.lifetime_spend_usd")
+        ]
 
 
 def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_factory) -> None:
@@ -390,3 +417,35 @@ def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_fac
             }
         )
         assert result["ok"] and result["rows"], (measure, result.get("errors"))
+
+
+def test_a_refusal_names_no_clock_a_policy_hides(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    package = _package(
+        tmp_path,
+        key="[repo, snapshot_date]",
+        clock_class="as_of_time",
+        measure_times=", times: [snapshot_date, collected_at]",
+    )
+    config = Runtime.from_path(str(package)).config
+    policy = SemanticPolicyConfig(
+        id="policy.test.collected_only",
+        kind="metric_constraint",
+        object_ids=["measure.f4stock.stars"],
+        config={"allowed_temporal_roles": [COLLECTED]},
+    )
+    runtime = Runtime.from_config(
+        replace(config, semantic_policies=[policy]), source_path=str(package)
+    )
+    # The policy hides the as-of clock: querying on it is denied.
+    with pytest.raises(SemanticLayerError) as denied:
+        _weekly(runtime, "stars", ROLE)
+    assert denied.value.code == "POLICY_DENIED"
+    with pytest.raises(SemanticLayerError) as raised:
+        _weekly(runtime, "stars", COLLECTED)
+    assert raised.value.code == "INVALID_CONFIG"
+    shown = f"{raised.value} {raised.value.details}"
+    assert ROLE not in shown and "snapshot_date" not in shown
