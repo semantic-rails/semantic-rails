@@ -143,7 +143,9 @@ def test_surrogate_key_on_an_as_of_clock_refuses(tmp_path: Path) -> None:
             _weekly(runtime, measure)
         assert raised.value.code == "INVALID_CONFIG"
         assert "snapshot_date" in str(raised.value)
-        assert raised.value.details["row_key"] == ["repo_snapshot_key"]
+        assert "Key the entity by the series columns" in str(raised.value)
+        # The key may hold another clock a policy hides.
+        assert "repo_snapshot_key" not in f"{raised.value} {raised.value.details}"
     # Both lowering paths (the snapshot leaf and the anchored entity-set window)
     # take the series key from this helper.
     measure = next(row for row in runtime.config.measures if row.id.endswith(".stars"))
@@ -271,8 +273,10 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
             _weekly(runtime, "stars", role)
         assert raised.value.code == "INVALID_CONFIG"
         assert raised.value.details["reason"] == "key_missing_as_of_clock"
-        # Only an error on the clock at fault names it (a policy may hide the others).
+        # Only an error on the clock at fault names it (a policy may hide the others);
+        # each says how to key the table.
         assert ("snapshot_date" in str(raised.value)) == (role == ROLE)
+        assert "Key the entity by the series columns" in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -320,6 +324,9 @@ def test_a_series_holding_an_as_of_clock_refuses(
         assert raised.value.code == "INVALID_CONFIG"
         assert raised.value.details["reason"] == "series_holds_as_of_clock"
         assert answer not in f"{raised.value} {raised.value.details}"
+        # With two as-of clocks in the key, querying on the other one can't help.
+        advice = "Keep one as-of clock" if "collected_at" in key else "Query it on its as-of"
+        assert advice in str(raised.value)
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
     flagged = [row for row in report["warnings"] if row["code"] == SERIES_WARNING]
     assert len(flagged) == 2
@@ -433,6 +440,10 @@ def test_a_refusal_names_no_clock_a_policy_hides(tmp_path: Path) -> None:
     runtime = Runtime.from_config(
         replace(config, semantic_policies=[policy]), source_path=str(package)
     )
+    # The policy hides the as-of clock: querying on it is denied.
+    with pytest.raises(SemanticLayerError) as denied:
+        _weekly(runtime, "stars", ROLE)
+    assert denied.value.code == "POLICY_DENIED"
     with pytest.raises(SemanticLayerError) as raised:
         _weekly(runtime, "stars", COLLECTED)
     assert raised.value.code == "INVALID_CONFIG"
