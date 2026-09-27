@@ -24,6 +24,7 @@ fast enough for the default test run.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -364,6 +365,71 @@ def test_post_publish_verifier_rejects_every_unexpected_release_file(monkeypatch
 
     with pytest.raises(RuntimeError, match="unexpected=.*manylinux"):
         verifier._wait_for_exact_publish(expected, "0.2.0", attempts=1, delay=0)
+
+
+def test_post_publish_verifier_waits_for_exact_version_on_index(monkeypatch):
+    from scripts import verify_published_release as verifier
+
+    expected = {
+        "semantic_rails-0.2.0-py3-none-any.whl": "wheel-digest",
+        "semantic_rails-0.2.0.tar.gz": "sdist-digest",
+    }
+    polls = iter([set(), {"semantic_rails-0.2.0.tar.gz"}, set(expected)])
+    sleeps = []
+    monkeypatch.setattr(verifier, "_published_artifacts", lambda _version: expected)
+    monkeypatch.setattr(verifier, "_indexed_artifacts", lambda _url: next(polls))
+    monkeypatch.setattr(verifier.time, "sleep", sleeps.append)
+
+    verifier._wait_for_exact_publish(expected, "0.2.0", attempts=3, delay=15)
+    assert sleeps == [15, 30]
+
+
+def test_post_publish_verifier_reads_simple_index_links(monkeypatch):
+    from scripts import verify_published_release as verifier
+
+    page = b'<a href="/files/semantic_rails-0.2.0-py3-none-any.whl#sha256=abc">wheel</a>'
+    monkeypatch.setattr(
+        verifier.urllib.request, "urlopen", lambda _request, timeout: io.BytesIO(page)
+    )
+
+    assert verifier._indexed_artifacts("https://pypi.org/simple") == {
+        "semantic_rails-0.2.0-py3-none-any.whl"
+    }
+
+
+def test_post_publish_verifier_fails_when_version_never_appears(monkeypatch):
+    from scripts import verify_published_release as verifier
+
+    expected = {"semantic_rails-0.2.0-py3-none-any.whl": "wheel-digest"}
+    polls = []
+    sleeps = []
+    monkeypatch.setattr(verifier, "_published_artifacts", lambda _version: expected)
+    monkeypatch.setattr(verifier, "_indexed_artifacts", lambda _url: polls.append(1) or set())
+    monkeypatch.setattr(verifier.time, "sleep", sleeps.append)
+
+    with pytest.raises(RuntimeError, match="after 3 attempts.*not visible on the index yet"):
+        verifier._wait_for_exact_publish(expected, "0.2.0", attempts=3, delay=15)
+    assert len(polls) == 3
+    assert sleeps == [15, 30]
+
+
+def test_post_publish_verifier_fails_on_first_digest_mismatch(monkeypatch):
+    from scripts import verify_published_release as verifier
+
+    expected = {"semantic_rails-0.2.0-py3-none-any.whl": "wheel-digest"}
+    polls = []
+
+    def wrong_digest(_version):
+        polls.append(1)
+        return {next(iter(expected)): "bad"}
+
+    monkeypatch.setattr(verifier, "_published_artifacts", wrong_digest)
+    monkeypatch.setattr(verifier, "_indexed_artifacts", lambda _url: pytest.fail("index queried"))
+    monkeypatch.setattr(verifier.time, "sleep", lambda _delay: pytest.fail("retried"))
+
+    with pytest.raises(RuntimeError, match="digest_mismatches"):
+        verifier._wait_for_exact_publish(expected, "0.2.0", attempts=3, delay=15)
+    assert len(polls) == 1
 
 
 def test_release_readiness_derives_version_and_rejects_mismatched_tag():
