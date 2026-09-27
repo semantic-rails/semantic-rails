@@ -37,7 +37,10 @@ remaining controls live in GitHub or PyPI and must be confirmed by a repository 
   to the next release. The publish workflow rejects a tag/version mismatch.
 - Approve the PyPI environment only after the release gate succeeds. The publish workflow builds
   wheel and sdist once, publishes those verified bytes, matches both PyPI digests, and repeats one
-  governed `plan → validate → compile → query` smoke from the public index.
+  governed `plan → validate → compile → query` smoke from the public index. The post-publish
+  verifier makes up to three visibility attempts (about two minutes by default) for both exact
+  files to appear; a published digest mismatch fails immediately. Its `--attempts` and `--delay`
+  options adjust the polling bound when running it manually.
 - Confirm the post-publish byte verification is green. Only then may the
   workflow create the matching GitHub Release and attach the exact wheel,
   sdist, every public contract JSON artifact, and `SHA256SUMS`.
