@@ -25,6 +25,8 @@ from ..dialects import CLICKHOUSE_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError, query_execution_error
 from .base import WarehouseAdapter, _clip_rows, _limit_timeout_seconds
 from .common import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     import_driver,
     int_option,
     normalize_connection_options,
@@ -32,6 +34,7 @@ from .common import (
     redacted_error_details,
     require_missing_env,
     secret_value,
+    timeout_option,
 )
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -89,6 +92,22 @@ class ClickHouseAdapter(WarehouseAdapter):
             # Non-equi JOIN ON conditions (conversion-window joins) need
             # this on ClickHouse 24.x; see module docstring.
             "settings": {"allow_experimental_join_condition": 1},
+            "connect_timeout": timeout_option(
+                self.options,
+                "connect_timeout_seconds",
+                DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                engine=self.engine,
+                connection_kind=self.connection_kind,
+                label="ClickHouse",
+            ),
+            "send_receive_timeout": timeout_option(
+                self.options,
+                "read_timeout_seconds",
+                DEFAULT_READ_TIMEOUT_SECONDS,
+                engine=self.engine,
+                connection_kind=self.connection_kind,
+                label="ClickHouse",
+            ),
         }
         if self.options.get("database"):
             # Default namespace so unqualified table names (jaffle_order,

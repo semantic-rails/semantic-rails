@@ -247,14 +247,20 @@ def test_adapter_reports_missing_env_without_leaking_values(monkeypatch: pytest.
     assert "super-secret" not in repr(exc.value.details)
 
 
-def test_adapter_queries_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("timeouts", "connect_timeout", "read_timeout"),
+    [({}, 10, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45)],
+)
+def test_adapter_queries_and_maps_rows(
+    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout
+):
     captured: dict = {}
     _install_fake_driver(monkeypatch, captured)
     monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
     monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
     monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
 
-    adapter = ClickHouseAdapter(_adapter_options())
+    adapter = ClickHouseAdapter({**_adapter_options(), **timeouts})
     rows = adapter.query("select 1")
     adapter.close()
 
@@ -267,6 +273,8 @@ def test_adapter_queries_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
     assert kwargs["database"] == "sr_jaffle"
     assert kwargs["secure"] is False
     assert kwargs["settings"] == {"allow_experimental_join_condition": 1}
+    assert kwargs["connect_timeout"] == connect_timeout
+    assert kwargs["send_receive_timeout"] == read_timeout
     assert captured["settings"] is None  # no limits -> no per-query settings
     assert captured["closed"] is True
 

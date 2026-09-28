@@ -263,7 +263,8 @@ def _install_fake_bigquery(
         def __init__(self, payload: list[dict[str, Any]]) -> None:
             self._payload = payload
 
-        def result(self):
+        def result(self, *, timeout: int):
+            captured["result_timeout"] = timeout
             return [FakeRow(row) for row in self._payload]
 
     class FakeClient:
@@ -271,9 +272,10 @@ def _install_fake_bigquery(
             captured["client_kwargs"] = kwargs
             self.project = kwargs.get("project", "adc-default-project")
 
-        def query(self, sql: str, job_config: Any = None) -> FakeJob:
+        def query(self, sql: str, job_config: Any = None, *, timeout: int) -> FakeJob:
             captured["sql"] = sql
             captured["job_config"] = job_config
+            captured["query_timeout"] = timeout
             if fail is not None:
                 raise fail
             return FakeJob(rows or [])
@@ -351,7 +353,13 @@ def test_adapter_reports_missing_env_without_values(monkeypatch: pytest.MonkeyPa
     assert "sql" not in exc.value.details
 
 
-def test_adapter_query_defaults_dataset_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("timeouts", "connect_timeout", "read_timeout"),
+    [({}, 10, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45)],
+)
+def test_adapter_query_defaults_dataset_and_maps_rows(
+    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout
+):
     captured: dict[str, Any] = {}
     _install_fake_bigquery(
         monkeypatch,
@@ -365,6 +373,7 @@ def test_adapter_query_defaults_dataset_and_maps_rows(monkeypatch: pytest.Monkey
             "project_env": "SR_BQ_TEST_PROJECT",
             "credentials_file_env": "SR_BQ_TEST_CREDS",
             "dataset": "jaffle",
+            **timeouts,
         }
     )
 
@@ -379,6 +388,8 @@ def test_adapter_query_defaults_dataset_and_maps_rows(monkeypatch: pytest.Monkey
     assert job_config.default_dataset == "demo-project.jaffle"
     assert job_config.job_timeout_ms == 2000  # 1500ms rounds up to 2s
     assert captured["closed"] is True
+    assert captured["query_timeout"] == connect_timeout
+    assert captured["result_timeout"] == read_timeout
 
 
 def test_adapter_query_maps_safe_aliases_back_to_contract_names(monkeypatch: pytest.MonkeyPatch):

@@ -119,7 +119,18 @@ class Database:
                 raise RuntimeError(
                     "duckdb is not installed. Add it to your environment dependencies."
                 )
-            return cls(conn=duckdb.connect(db_path, read_only=read_only), engine=engine)
+            config: dict[str, str | bool | int | float | list[str]] = {}
+            if read_only:
+                config = {
+                    "enable_external_access": False,
+                    "autoinstall_known_extensions": False,
+                    "autoload_known_extensions": False,
+                    "lock_configuration": True,
+                    "allowed_configs": ["TimeZone"],
+                }
+            return cls(
+                conn=duckdb.connect(db_path, read_only=read_only, config=config), engine=engine
+            )
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return cls(conn=conn, engine="sqlite")

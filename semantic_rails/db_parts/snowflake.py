@@ -31,13 +31,16 @@ from .base import (
     restore_column_names,
 )
 from .common import (
-    env_value as _env_value,
-)
-from .common import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     normalize_connection_options,
     require_missing_env,
     rows_from_cursor,
     secret_value,
+    timeout_option,
+)
+from .common import (
+    env_value as _env_value,
 )
 
 
@@ -302,12 +305,35 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
         session_parameters: dict[str, Any] = {}
         if self.options.get("query_tag"):
             session_parameters["QUERY_TAG"] = self.options["query_tag"]
-        if self.options.get("statement_timeout_seconds"):
-            session_parameters["STATEMENT_TIMEOUT_IN_SECONDS"] = int(
-                self.options["statement_timeout_seconds"]
-            )
+        statement_timeout = timeout_option(
+            self.options,
+            "statement_timeout_seconds",
+            60,
+            engine=self.engine,
+            connection_kind="snowflake_native",
+            label="Snowflake native",
+        )
+        session_parameters["STATEMENT_TIMEOUT_IN_SECONDS"] = statement_timeout
         if session_parameters:
             kwargs["session_parameters"] = session_parameters
+        kwargs["login_timeout"] = timeout_option(
+            self.options,
+            "connect_timeout_seconds",
+            DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            engine=self.engine,
+            connection_kind="snowflake_native",
+            label="Snowflake native",
+        )
+        read_timeout = timeout_option(
+            self.options,
+            "read_timeout_seconds",
+            max(DEFAULT_READ_TIMEOUT_SECONDS, statement_timeout + 5),
+            engine=self.engine,
+            connection_kind="snowflake_native",
+            label="Snowflake native",
+        )
+        kwargs["network_timeout"] = read_timeout
+        kwargs["socket_timeout"] = read_timeout
         kwargs.setdefault("application", "semantic-rails")
         return kwargs
 
@@ -343,7 +369,17 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
             finally:
                 if timeout_s > 0:
                     with contextlib.suppress(Exception):  # best-effort reset
-                        cursor.execute("alter session unset statement_timeout_in_seconds")
+                        default_timeout = timeout_option(
+                            self.options,
+                            "statement_timeout_seconds",
+                            60,
+                            engine=self.engine,
+                            connection_kind="snowflake_native",
+                            label="Snowflake native",
+                        )
+                        cursor.execute(
+                            f"alter session set statement_timeout_in_seconds = {default_timeout}"
+                        )
                 cursor.close()
         except SemanticLayerError:
             raise

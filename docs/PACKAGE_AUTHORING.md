@@ -494,6 +494,34 @@ Two connection kinds are supported:
 
 Literal credentials in YAML are rejected.
 
+### Native adapter timeouts
+
+Postgres, ClickHouse, Databricks, Snowflake native, BigQuery, and Athena
+connections accept `connect_timeout_seconds` and `read_timeout_seconds` in
+`package.connection.options`. Both must be positive integers. The defaults are
+10 seconds for connecting and 65 seconds for network reads or query waiting.
+Set a larger read timeout when queries normally take longer. Postgres and
+Snowflake native also accept `statement_timeout_seconds`; its default is 60
+seconds, and an explicit statement timeout raises the default read timeout to
+at least five seconds beyond it.
+
+The drivers apply these limits differently: ClickHouse bounds connection and
+HTTP send/receive time; Snowflake bounds login, network, and socket operations;
+BigQuery bounds query submission and result waiting; Athena bounds API calls
+and query polling. Databricks exposes one socket timeout for connection and
+reads, so the larger configured value applies to both. Postgres uses libpq's
+connection timeout, a server statement timeout, and TCP keepalives; libpq has
+no separate socket read timeout. Per-request `limits.statement_timeout_ms`
+continues to set each supported warehouse's statement deadline.
+
+Read-only DuckDB package connections disable external file and network access,
+extension autoinstall/autoload, and changes to those settings. Tables stored in
+the database file remain available; views that read other files need to be
+materialized before using the read-only adapter. DuckLake uses a separate
+writable DuckDB connection because its catalog and data files require external
+file access; install its extension before use in environments that disallow
+extension downloads.
+
 ### Secrets
 
 **Secrets must come from process environment or an external secret store. Package

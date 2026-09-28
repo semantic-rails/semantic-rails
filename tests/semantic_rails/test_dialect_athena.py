@@ -199,6 +199,17 @@ def _install_fake_pyathena(
 
     module.connect = _connect
     monkeypatch.setitem(sys.modules, "pyathena", module)
+    botocore = types.ModuleType("botocore")
+    config = types.ModuleType("botocore.config")
+
+    class FakeConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.connect_timeout = kwargs["connect_timeout"]
+            self.read_timeout = kwargs["read_timeout"]
+
+    config.Config = FakeConfig
+    monkeypatch.setitem(sys.modules, "botocore", botocore)
+    monkeypatch.setitem(sys.modules, "botocore.config", config)
 
 
 def test_athena_adapter_normalizes_options_and_disables_statement_timeout():
@@ -268,8 +279,12 @@ def test_athena_adapter_requires_region_and_staging_dir(monkeypatch: pytest.Monk
     assert exc.value.details["missing_options"] == ["region", "s3_staging_dir"]
 
 
+@pytest.mark.parametrize(
+    ("timeouts", "connect_timeout", "read_timeout"),
+    [({}, 10, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45)],
+)
 def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout
 ):
     log: dict[str, Any] = {}
     _install_fake_pyathena(monkeypatch, log)
@@ -281,6 +296,7 @@ def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
             "s3_staging_dir_env": "SR_TEST_ATHENA_STAGING",
             "database": "sr_jaffle",
             "workgroup": "primary",
+            **timeouts,
         }
     )
 
@@ -289,7 +305,11 @@ def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
 
     assert rows == [{"ONE": 1, "TWO": "x"}]
     assert log["sql"] == "select 1"
-    assert log["connect_kwargs"] == {
+    assert {
+        key: value
+        for key, value in log["connect_kwargs"].items()
+        if key not in {"config", "on_poll"}
+    } == {
         "s3_staging_dir": "s3://sr-bucket/athena-results/",
         "region_name": "eu-central-1",
         # Namespace defaults from connection options so unqualified
@@ -297,8 +317,23 @@ def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
         "schema_name": "sr_jaffle",
         "work_group": "primary",
     }
+    assert log["connect_kwargs"]["config"].connect_timeout == connect_timeout
+    assert log["connect_kwargs"]["config"].read_timeout == read_timeout
+    assert log["connect_kwargs"]["on_poll"] == adapter._on_poll
     assert log["cursor_closed"] is True
     assert log["connection_closed"] is True
+
+
+def test_athena_poll_deadline_stops_an_unfinished_query(monkeypatch: pytest.MonkeyPatch):
+    now = [0.0]
+    monkeypatch.setattr("semantic_rails.db_parts.athena.time.monotonic", lambda: now[0])
+    adapter = AthenaAdapter({"read_timeout_seconds": "3"})
+    execution = types.SimpleNamespace(query_id="query-1", state="RUNNING")
+    adapter._on_poll(execution)
+    now[0] = 3.0
+    with pytest.raises(TimeoutError, match="polling timed out"):
+        adapter._on_poll(execution)
+    assert adapter._poll_started == {}
 
 
 def test_athena_adapter_defaults_schema_and_omits_workgroup(monkeypatch: pytest.MonkeyPatch):

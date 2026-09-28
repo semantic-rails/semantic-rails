@@ -36,11 +36,14 @@ from .base import (
     restore_column_names,
 )
 from .common import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     import_driver,
     normalize_connection_options,
     option_or_env,
     redacted_error_details,
     require_missing_env,
+    timeout_option,
 )
 
 _ENGINE = "bigquery"
@@ -146,8 +149,24 @@ class BigQueryNativeAdapter(WarehouseAdapter):
                 job_config.default_dataset = default_dataset
             if timeout_s > 0:
                 job_config.job_timeout_ms = timeout_s * 1000
-            job = client.query(prepared.sql, job_config=job_config)
-            rows = [dict(row.items()) for row in job.result()]
+            connect_timeout = timeout_option(
+                self.options,
+                "connect_timeout_seconds",
+                DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                engine=self.engine,
+                connection_kind=self.connection_kind,
+                label=_LABEL,
+            )
+            read_timeout = timeout_option(
+                self.options,
+                "read_timeout_seconds",
+                DEFAULT_READ_TIMEOUT_SECONDS,
+                engine=self.engine,
+                connection_kind=self.connection_kind,
+                label=_LABEL,
+            )
+            job = client.query(prepared.sql, job_config=job_config, timeout=connect_timeout)
+            rows = [dict(row.items()) for row in job.result(timeout=read_timeout)]
             return restore_column_names(_clip_rows(rows, limits), prepared)
         except SemanticLayerError:
             raise

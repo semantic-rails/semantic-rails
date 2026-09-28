@@ -48,6 +48,8 @@ from .base import (
 FORBIDDEN_LITERAL_SECRET_KEYS = frozenset(
     {"password", "token", "private_key", "secret", "api_key", "credentials"}
 )
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
+DEFAULT_READ_TIMEOUT_SECONDS = 65
 
 
 def env_value(name: str, missing_env: list[str] | None = None) -> str:
@@ -202,6 +204,28 @@ def int_option(
                 "option": name,
             },
         ) from exc
+
+
+def timeout_option(
+    options: dict[str, str],
+    name: str,
+    default: int,
+    *,
+    engine: str,
+    connection_kind: str,
+    label: str = "",
+) -> int:
+    """Return a positive timeout in seconds without exposing option values in errors."""
+    value = int_option(
+        options, name, default, engine=engine, connection_kind=connection_kind, label=label
+    )
+    if value <= 0:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{label or engine} package.connection option '{name}' must be positive",
+            details={"engine": engine, "connection_kind": connection_kind, "option": name},
+        )
+    return value
 
 
 def redacted_error_details(

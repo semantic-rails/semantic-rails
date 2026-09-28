@@ -243,12 +243,18 @@ def test_adapter_requires_host_http_path_and_token():
     assert "host" in message and "http_path" in message and "token" in message
 
 
-def test_adapter_connects_with_namespace_and_stripped_host(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("timeouts", "socket_timeout"),
+    [({}, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 45)],
+)
+def test_adapter_connects_with_namespace_and_stripped_host(
+    monkeypatch: pytest.MonkeyPatch, timeouts, socket_timeout
+):
     captured: dict = {}
     _install_fake_driver(monkeypatch, captured)
     _set_connection_env(monkeypatch)
 
-    adapter = DatabricksNativeAdapter(_adapter_options())
+    adapter = DatabricksNativeAdapter(_adapter_options(**timeouts))
     rows = adapter.query("select 1")
     adapter.close()
 
@@ -262,6 +268,7 @@ def test_adapter_connects_with_namespace_and_stripped_host(monkeypatch: pytest.M
     # names (jaffle_order, …) resolve.
     assert kwargs["catalog"] == "sr_catalog"
     assert kwargs["schema"] == "sr_schema"
+    assert kwargs["_socket_timeout"] == socket_timeout
     assert captured["statements"] == ["select 1"]
     assert captured["cursor_closed"] is True
     assert captured["connection_closed"] is True

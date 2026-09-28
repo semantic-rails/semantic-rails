@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from semantic_rails.db import (
+    Database,
     DuckDBAdapter,
     SnowflakeCliAdapter,
     SnowflakeNativeAdapter,
@@ -65,6 +66,29 @@ def test_dbapi_cursor_fetch_is_bounded_and_reports_truncation():
     assert cursor.requested == 3
     assert rows == [{"value": 1}, {"value": 2}]
     assert rows.truncated is True
+
+
+def test_read_only_duckdb_disables_external_access_and_locks_configuration(tmp_path):
+    import duckdb
+
+    db_path = tmp_path / "warehouse.duckdb"
+    text_path = tmp_path / "outside.txt"
+    text_path.write_text("outside", encoding="utf-8")
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE local_data AS SELECT 1 AS value")
+
+    db = Database.connect(str(db_path), read_only=True)
+    try:
+        assert db.query("SELECT value FROM local_data") == [{"value": 1}]
+        assert db.query("SELECT current_setting('TimeZone') AS zone", time_zone="UTC") == [
+            {"zone": "UTC"}
+        ]
+        with pytest.raises(duckdb.Error, match="file system operations are disabled"):
+            db.query("SELECT * FROM read_text(?)", [str(text_path)])
+        with pytest.raises(duckdb.Error):
+            db.conn.execute("SET enable_external_access = true")
+    finally:
+        db.close()
 
 
 def test_duckdb_timeout_interrupts_the_active_connection(monkeypatch: pytest.MonkeyPatch):
@@ -295,7 +319,25 @@ def test_create_warehouse_adapter_selects_snowflake_native_direct_connect(
     assert kwargs["database"] == "ANALYTICS"
 
 
-def test_snowflake_native_adapter_queries_with_optional_connector(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
+    [
+        ({}, 10, 65, 60),
+        (
+            {
+                "connect_timeout_seconds": "7",
+                "read_timeout_seconds": "45",
+                "statement_timeout_seconds": "40",
+            },
+            7,
+            45,
+            40,
+        ),
+    ],
+)
+def test_snowflake_native_adapter_queries_with_optional_connector(
+    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout, statement_timeout
+):
     captured = {}
 
     class FakeCursor:
@@ -335,6 +377,7 @@ def test_snowflake_native_adapter_queries_with_optional_connector(monkeypatch: p
             "account_env": "SNOW_ACCOUNT",
             "authenticator": "oauth",
             "token_env": "SNOW_TOKEN",
+            **timeouts,
         },
     )
     rows = adapter.query("select 1")
@@ -346,6 +389,12 @@ def test_snowflake_native_adapter_queries_with_optional_connector(monkeypatch: p
     assert captured["kwargs"]["connection_name"] == "prod_native"
     assert captured["kwargs"]["authenticator"] == "oauth"
     assert captured["kwargs"]["token"] == "oauth-token"
+    assert captured["kwargs"]["login_timeout"] == connect_timeout
+    assert captured["kwargs"]["network_timeout"] == read_timeout
+    assert captured["kwargs"]["socket_timeout"] == read_timeout
+    assert captured["kwargs"]["session_parameters"] == {
+        "STATEMENT_TIMEOUT_IN_SECONDS": statement_timeout
+    }
     assert captured["closed"] is True
     assert captured["connection_closed"] is True
 

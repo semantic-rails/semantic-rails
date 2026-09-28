@@ -16,17 +16,21 @@ False and the runtime surfaces best-effort-limit warnings.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from ..dialects import ATHENA_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError
 from .base import WarehouseAdapter
 from .common import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     DbApiAdapter,
     import_driver,
     normalize_connection_options,
     option_or_env,
     require_missing_env,
+    timeout_option,
 )
 
 _LABEL = "Athena"
@@ -48,6 +52,27 @@ class AthenaAdapter(DbApiAdapter):
             ATHENA_CONNECTION_OPTIONS,
             label=_LABEL,
         )
+        self._poll_started: dict[str, float] = {}
+
+    def _on_poll(self, execution: Any) -> None:
+        """Bound PyAthena's polling loop, which has no built-in query deadline."""
+        query_id = execution.query_id
+        if not query_id:
+            return
+        now = time.monotonic()
+        started = self._poll_started.setdefault(query_id, now)
+        if execution.state in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+            self._poll_started.pop(query_id, None)
+        elif now - started >= timeout_option(
+            self.options,
+            "read_timeout_seconds",
+            DEFAULT_READ_TIMEOUT_SECONDS,
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+            label=_LABEL,
+        ):
+            self._poll_started.pop(query_id, None)
+            raise TimeoutError("Athena query polling timed out")
 
     def _create_connection(self) -> Any:
         driver = import_driver(
@@ -78,6 +103,12 @@ class AthenaAdapter(DbApiAdapter):
                     "missing_options": missing_options,
                 },
             )
+        botocore_config = import_driver(
+            "botocore.config",
+            extra="athena",
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+        )
         # Default the namespace from connection options so UNQUALIFIED
         # table names (jaffle_order, …) resolve. AWS credentials come
         # from the ambient boto3 chain — never from options.
@@ -86,6 +117,25 @@ class AthenaAdapter(DbApiAdapter):
             region_name=region,
             schema_name=self.options.get("database") or "default",
             work_group=self.options.get("workgroup") or None,
+            config=botocore_config.Config(
+                connect_timeout=timeout_option(
+                    self.options,
+                    "connect_timeout_seconds",
+                    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                    engine=self.engine,
+                    connection_kind=self.connection_kind,
+                    label=_LABEL,
+                ),
+                read_timeout=timeout_option(
+                    self.options,
+                    "read_timeout_seconds",
+                    DEFAULT_READ_TIMEOUT_SECONDS,
+                    engine=self.engine,
+                    connection_kind=self.connection_kind,
+                    label=_LABEL,
+                ),
+            ),
+            on_poll=self._on_poll,
         )
 
 

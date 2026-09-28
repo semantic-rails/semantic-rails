@@ -28,6 +28,8 @@ from ..dialects import POSTGRES_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError
 from .base import WarehouseAdapter
 from .common import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     DbApiAdapter,
     import_driver,
     int_option,
@@ -35,6 +37,7 @@ from .common import (
     option_or_env,
     require_missing_env,
     secret_value,
+    timeout_option,
 )
 
 _LABEL = "Postgres"
@@ -125,7 +128,36 @@ class PostgresAdapter(DbApiAdapter):
         kwargs: dict[str, Any] = {
             "port": self._int_option("port", _DEFAULT_PORT),
             "autocommit": True,
+            "connect_timeout": timeout_option(
+                self.options,
+                "connect_timeout_seconds",
+                DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                engine=self.engine,
+                connection_kind=self.connection_kind,
+                label=_LABEL,
+            ),
         }
+        statement_timeout = timeout_option(
+            self.options,
+            "statement_timeout_seconds",
+            60,
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+            label=_LABEL,
+        )
+        read_timeout = timeout_option(
+            self.options,
+            "read_timeout_seconds",
+            max(DEFAULT_READ_TIMEOUT_SECONDS, statement_timeout + 5),
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+            label=_LABEL,
+        )
+        # libpq has no socket read deadline. Keepalives detect lost peers;
+        # statement_timeout below bounds healthy but stalled queries.
+        kwargs.update(
+            keepalives=1, keepalives_idle=read_timeout, keepalives_interval=1, keepalives_count=1
+        )
         if host:
             kwargs["host"] = host
         if user:
@@ -141,9 +173,7 @@ class PostgresAdapter(DbApiAdapter):
         startup_options: list[str] = []
         if self.options.get("schema"):
             startup_options.append(f"-c search_path={self.options['schema']}")
-        timeout_seconds = self._int_option("statement_timeout_seconds", 0)
-        if timeout_seconds > 0:
-            startup_options.append(f"-c statement_timeout={timeout_seconds * 1000}")
+        startup_options.append(f"-c statement_timeout={statement_timeout * 1000}")
         if startup_options:
             kwargs["options"] = " ".join(startup_options)
         return kwargs

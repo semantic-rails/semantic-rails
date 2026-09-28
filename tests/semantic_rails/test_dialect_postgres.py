@@ -276,11 +276,16 @@ def test_adapter_normalizes_options_and_builds_connect_kwargs(monkeypatch: pytes
     assert kwargs == {
         "port": 5433,
         "autocommit": True,
+        "connect_timeout": 10,
+        "keepalives": 1,
+        "keepalives_idle": 65,
+        "keepalives_interval": 1,
+        "keepalives_count": 1,
         "host": "pg.example.test",
         "user": "svc_user",
         "password": "super-secret",
         "dbname": "sr_jaffle",
-        "options": "-c search_path=analytics",
+        "options": "-c search_path=analytics -c statement_timeout=60000",
     }
 
 
@@ -346,11 +351,29 @@ def test_adapter_reports_every_missing_env_var_without_secret_values(
     assert exc.value.details["connection_kind"] == "postgres_native"
 
 
-def test_adapter_queries_with_fake_driver_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
+    [
+        ({}, 10, 65, 60000),
+        (
+            {
+                "connect_timeout_seconds": "7",
+                "read_timeout_seconds": "45",
+                "statement_timeout_seconds": "40",
+            },
+            7,
+            45,
+            40000,
+        ),
+    ],
+)
+def test_adapter_queries_with_fake_driver_and_maps_rows(
+    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout, statement_timeout
+):
     _set_pg_env(monkeypatch)
     captured: dict = {}
     _install_fake_psycopg(monkeypatch, captured)
-    adapter = PostgresAdapter(VALID_OPTIONS)
+    adapter = PostgresAdapter({**VALID_OPTIONS, **timeouts})
 
     rows = adapter.query("select 1")
     adapter.close()
@@ -358,7 +381,11 @@ def test_adapter_queries_with_fake_driver_and_maps_rows(monkeypatch: pytest.Monk
     assert rows == [{"one": 1, "two": "x"}]
     assert captured["sql"] == ["select 1"]
     assert captured["kwargs"]["autocommit"] is True
-    assert captured["kwargs"]["options"] == "-c search_path=analytics"
+    assert captured["kwargs"]["connect_timeout"] == connect_timeout
+    assert captured["kwargs"]["keepalives_idle"] == read_timeout
+    assert captured["kwargs"]["options"] == (
+        f"-c search_path=analytics -c statement_timeout={statement_timeout}"
+    )
     assert captured["cursor_closed"] is True
     assert captured["connection_closed"] is True
 
