@@ -27,8 +27,13 @@ from typing import Any
 from ..ast import rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
-from ._base import _with_fiscal_calendar
-from .faithfulness import intent_faithfulness_why, intent_subject_why, unmatched_intent_terms
+from ._base import _time_window, _with_fiscal_calendar
+from .faithfulness import (
+    intent_faithfulness_why,
+    intent_subject_why,
+    unconsumed_terms,
+    unmatched_intent_terms,
+)
 from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
@@ -270,9 +275,14 @@ def plan_payload(
         else None
     )
     unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
+    # The readiness invariant: every numeral and clock word in the question is consumed by
+    # something the draft carries. Otherwise an hour, a range or a threshold was dropped.
     value_why = (
-        _dropped_value_why(intent_str, unmatched, catalog_tokens, set(intent_ir.unresolved))
-        if not (faithfulness_why or time_why or conversion_why or subject_why)
+        (
+            _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            or _dropped_value_why(intent_str, unmatched, catalog_tokens, set(intent_ir.unresolved))
+        )
+        if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
     )
     ready = best_ok and not (
@@ -546,22 +556,25 @@ def _with_time_gap(why: dict[str, Any], time_why: dict[str, Any] | None) -> dict
     }
 
 
-def _unknown_terms_why(terms: list[str]) -> dict[str, Any]:
-    """Explain a draft that leaves out words the catalog has no object for."""
+def _unconsumed_terms_why(terms: list[str]) -> dict[str, Any] | None:
+    """Explain a draft that leaves out a number or a clock or zone word of the question."""
 
+    if not terms:
+        return None
     return {
         "code": "PLAN_UNMATCHED_TERMS",
         "message": (
-            f"The question uses words that match nothing in the catalog: {', '.join(terms)}. "
-            "The draft doesn't use them, so it may have dropped a value or a condition."
+            f"The question has numbers or time words the draft doesn't use: {', '.join(terms)}. "
+            "It may have dropped an hour, a range or a threshold, so plan doesn't call it ready."
         ),
         "details": {"terms": terms},
         "recovery_hints": [
             {
-                "kind": "add_missing_condition",
+                "kind": "state_missing_condition",
                 "message": (
-                    "Add the missing filter or condition to best.query_ir, or ask again "
-                    "without those words, then validate."
+                    "Add the filter or limit to best.query_ir, or (plan resolves days and "
+                    "coarser windows only) state an hour range as query.time start and end "
+                    "ISO timestamps, or ask again without those words, then validate."
                 ),
             }
         ],
@@ -608,9 +621,7 @@ def _dropped_value_why(
 
 
 def _time_assumptions(intent: str, query: dict[str, Any]) -> list[str]:
-    """The reading plan took of an open end or zone in the window the draft carries."""
-
-    from ._base import _time_window  # noqa: WPS433
+    """The reading plan took of an open end in the window the draft carries."""
 
     window = _time_window(intent)
     time = query.get("time")
@@ -1335,7 +1346,6 @@ def _unresolved_time_why(
         _FISCAL_RE,
         _MAX_TIME_TEXT,
         _SUPPORTED_WINDOW_FORMS,
-        _time_window,
     )
 
     window = _time_window(intent)
@@ -1355,15 +1365,14 @@ def _unresolved_time_why(
             {
                 "kind": "state_hour_range",
                 "message": (
-                    "State the hours yourself in the plan tool's query argument: set "
+                    "State the window yourself in the plan tool's query argument: set "
                     "query.time.start and query.time.end as ISO timestamps (end-exclusive, in "
-                    "the temporal role's time zone; the role must be a timestamp), for example "
-                    "start '2017-03-15T12:00:00' and end '2017-03-15T13:00:00' for 12:00 to "
-                    "13:00 on 15 March 2017, with the selected temporal_role and grain."
+                    "the temporal role's time zone; the role must be a timestamp), with the "
+                    "selected temporal_role and grain."
                 ),
             }
         ]
-        if window.time_of_day and not too_long
+        if window.sub_day and not too_long
         else []
     )
     return {
@@ -1372,11 +1381,10 @@ def _unresolved_time_why(
             f"The question exceeds the {_MAX_TIME_TEXT}-character time-resolution limit; "
             "its complete time scope could not be checked."
             if too_long
-            else "The question names a time of day or time zone "
-            f"({'; '.join(window.time_of_day)}). plan resolves days and coarser windows only, so "
-            "it returns no query: one without the hours (or in another zone) would answer a "
-            "different question."
-            if window.time_of_day
+            else "The question names a window shorter than a day "
+            f"({'; '.join(window.sub_day)}). plan resolves days and coarser windows only, so "
+            "it returns no query: one over all time would answer a different question."
+            if window.sub_day
             else "The question states windows that differ from one another "
             f"({'; '.join(window.conflicts)}), so plan returns no query: picking one would "
             "answer a different question."
@@ -1389,7 +1397,7 @@ def _unresolved_time_why(
             "path": "time",
             "unresolved_phrases": list(phrases),
             **({"conflicting_phrases": list(window.conflicts)} if window.conflicts else {}),
-            **({"time_of_day_phrases": list(window.time_of_day)} if window.time_of_day else {}),
+            **({"sub_day_phrases": list(window.sub_day)} if window.sub_day else {}),
             **({"max_intent_chars": _MAX_TIME_TEXT} if too_long else {}),
         },
         "recovery_hints": [

@@ -22,7 +22,7 @@ from semantic_rails.planner._base import (
     _time_window,
     _unresolved_time_phrases,
 )
-from semantic_rails.planner.faithfulness import unmatched_intent_terms
+from semantic_rails.planner.faithfulness import unconsumed_terms, unmatched_intent_terms
 
 MARCH_15 = "2017-03-15"
 HOUR = {"start": f"{MARCH_15}T12:00:00", "end": f"{MARCH_15}T13:00:00"}
@@ -43,10 +43,18 @@ def _measures(payload: dict[str, Any]) -> list[str]:
     ]
 
 
-# --- times of day and zones -----------------------------------------------------
+def _draft(measure: str = "measure.jaffle.revenue_usd", **parts: Any) -> dict[str, Any]:
+    select = [{"as": "value", "expression": {"measure": measure}}]
+    return {"version": 2, "select": select, **parts}
 
 
-# Every shape a reviewer found that plan read, or half-read, into the wrong hour or zone.
+# --- hours, zones and windows shorter than a day --------------------------------------
+
+
+# The invariant: a draft is ready only if every numeral and every clock or zone word in the
+# question is consumed by something the draft carries. Each question below states an hour or a
+# zone that no window form resolves; each was once widened to its whole day or dropped while
+# the plan reported ok.
 HOUR_QUESTIONS = [
     "revenue from 12:00 to 13:00 on 15 March 2017",
     "revenue between 12:00 and 13:00 on March 15, 2017",
@@ -64,12 +72,20 @@ HOUR_QUESTIONS = [
     "revenue from 12:00 to 13:00 yesterday",
     "revenue on 15 March 2017 in the morning",
     "revenue on 15 March 2017 at 9 o'clock",
-    # Forms the first round did not read.
     "orders from 12.30 to 13.30 on 15 March 2017",
     "orders from 9 to 5 on 15 March 2017",
     "orders 1200-1300 hours on 15 March 2017",
     "orders from 1200 hours to 1300 hours on 15 March 2017",
     "orders on 15 March 2017 9 - 17",
+    # Hours with no colon or unit-suffix cue beside the day.
+    "revenue on 15 March 2017 between 9 and 17",
+    "revenue between 12 and 13 on 15 March 2017",
+    "revenue at 9 on 15 March 2017",
+    "revenue on 15 March 2017 at 14h30",
+    "revenue on 15 March 2017 at 14h",
+    "revenue on 15 March 2017 at 1400",
+    "revenue on 15 March 2017 for 3 hours",
+    "orders on 15 March 2017 by the hour",
 ]
 ZONE_QUESTIONS = [
     "orders from 12:00 to 13:00 UTC on 15 March 2017",
@@ -79,48 +95,198 @@ ZONE_QUESTIONS = [
     "orders from 12:00 to 13:00 +02:00 on 15 March 2017",
     "orders from 12:00 to 13:00 (UTC+2) on 15 March 2017",
     "orders on 15 March 2017 from 12:00 to 13:00 Pacific",
-    "orders from 12:00 to 13:00 on 15 March 2017 Eastern",
     "orders from 12:00 to 13:00 on 15 March 2017 in CET",
     "orders from 12:00 to 13:00 Pacific time on 15 March 2017",
-    "orders from 12:00 to 13:00 London time on 15 March 2017",
     "orders from 12:00 to 13:00 Europe/Berlin on 15 March 2017",
-    "orders in the Pacific time zone from 12:00 to 13:00 on 15 March 2017",
     "orders from 12:00Z to 13:00Z on 15 March 2017",
     # A zone alone changes the day's edges, with no hour named.
     "orders on 15 March 2017 in UTC",
-    "orders on 15 March 2017 local time",
-    "orders by day in Central",
+    "orders on 15 March 2017 in GMT",
     "orders on 15 March 2017 (AEST)",
+    "orders on 15 March 2017 in Europe/Berlin",
+    "orders on 15 March 2017 in the america/new_york time zone",
 ]
-# Day-and-coarser questions, and words that only look like an hour or a zone.
-DAY_QUESTIONS = [
-    "revenue on 15 March 2017",
-    "revenue on 2017-03-15",
-    "revenue in March 2017 by store",
-    "revenue over time in 2017",
+# Windows shorter than a day: never widened to all time.
+SUB_DAY_QUESTIONS = [
+    "revenue for the last 24 hours",
+    "revenue for the past hour",
+    "orders in the last 30 minutes",
+    "orders over the previous few hours",
+    "revenue this hour",
+    "revenue in the trailing 12 hours",
+    "revenue by store for the last hour",
+]
+# Numbers and words that look like an hour or a zone and aren't one. plan reads the window
+# they sit beside; a number the draft doesn't carry is named, and never read as an hour.
+NOT_AN_HOUR_QUESTIONS = [
+    "revenue from customers aged 25-34 in 2017",
+    "customers with 2 to 5 orders in 2017",
+    "top 10 to 20 products by revenue in Q1 2017",
+    "orders with a discount above 10.50 in 2017",
+    "orders with 10 to 20 items in March 2017",
+    "average delivery time by month",
+    "median time between orders in 2017",
+    "revenue at the time of order in 2017",
+    "revenue by signup time in 2017",
     "revenue by order time in 2017",
     "revenue in 2017 for first time customers",
     "orders in 2017 for the west region",
-    "revenue for the last 24 hours",
-    "orders from 2017-03-01 to 2017-03-31",
-    "orders from 3-15-2017",
+    "orders by day in Central",
+    "orders on 15 March 2017 local time",
 ]
 
 
+def _plan(runtime_factory: Any, text: str, **kwargs: Any) -> dict[str, Any]:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        return plan_payload(runtime, intent=text, detail="best", **kwargs)
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("text", [*HOUR_QUESTIONS, *ZONE_QUESTIONS])
-def test_a_time_of_day_or_zone_is_reported_and_never_resolved(text: str) -> None:
+def test_plan_is_never_ready_with_an_hour_or_zone_it_did_not_consume(
+    runtime_factory: Any, text: str
+) -> None:
+    payload = _plan(runtime_factory, text)
+    assert payload["status"] == "low_confidence", payload
+    assert "ready_for" not in payload["next"]
+    assert payload["why"]["code"] in {"PLAN_UNMATCHED_TERMS", "TIME_WINDOW_UNRESOLVED"}
+    if payload["why"]["code"] == "PLAN_UNMATCHED_TERMS":
+        assert payload["why"]["details"]["terms"]
+        # The terms are named in the message, so a caller sees what was left over.
+        assert payload["why"]["details"]["terms"][0] in payload["why"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("text", "terms"),
+    [
+        ("revenue on 15 March 2017 between 9 and 17", ["9", "17"]),
+        ("revenue between 12 and 13 on 15 March 2017", ["12", "13"]),
+        ("revenue on 15 March 2017 at 9", ["9"]),
+        ("revenue on 15 March 2017 at 14h30", ["14h30"]),
+        ("revenue on 15 March 2017 at 1400", ["1400"]),
+        ("revenue on 15 March 2017 at noon", ["noon"]),
+        ("orders on 15 March 2017 by the hour", ["hour"]),
+        ("orders on 15 March 2017 in UTC", ["utc"]),
+        ("orders on 15 March 2017 (AEST)", ["aest"]),
+        ("orders on 15 March 2017 in Europe/Berlin", ["europe/berlin"]),
+        ("orders in the tz of the store", ["tz"]),
+        ("revenue for stores over 12.50 in 2017", ["12.50"]),
+    ],
+)
+def test_every_unconsumed_number_and_clock_word_is_named(
+    runtime_factory: Any, text: str, terms: list[str]
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unconsumed_terms(runtime, text, _draft()) == terms
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("text", "query"),
+    [
+        ("top 10 stores by revenue", _draft(limit=10)),
+        ("stores with revenue over 12.50", _draft(having=[{"op": ">", "value": 12.5}])),
+        ("stores with 1,000 or more orders", _draft(having=[{"op": ">=", "value": 1000}])),
+        ("stores in the 90th percentile", _draft(having=[{"op": ">", "value": 90}])),
+        ("revenue on 15 March 2017", _draft()),
+        ("revenue in Q1 2017 by month", _draft()),
+        ("revenue for the last 7 days", _draft()),
+        ("average delivery time by month", _draft()),
+        ("revenue by order time in 2017", _draft()),
+        # A caller's stated hours account for the question's.
+        ("revenue from 12:00 to 13:00 on 15 March 2017", _draft(time={"grain": "day", **HOUR})),
+    ],
+)
+def test_a_number_or_clock_word_the_draft_carries_is_consumed(
+    runtime_factory: Any, text: str, query: dict[str, Any]
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unconsumed_terms(runtime, text, query) == []
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("text", SUB_DAY_QUESTIONS)
+def test_a_window_shorter_than_a_day_is_unresolved_and_never_all_time(
+    runtime_factory: Any, text: str
+) -> None:
     window = _time_window(text)
-    assert window.bounds == {}
-    assert window.time_of_day != () and window.unresolved != ()
+    assert window.bounds == {} and window.sub_day != () and window.unresolved != ()
     assert _time_bounds_from_text(text) == {}
-    assert _unresolved_time_phrases(text) != []
-    # Every entry point that drafts a window goes through the same guard.
     assert not {"start", "end", "range"} & set(_time_spec(ORDER_TIME, text))
+    payload = _plan(runtime_factory, text)
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+    assert payload["why"]["details"]["sub_day_phrases"]
+    assert payload["why"]["recovery_hints"][0]["kind"] == "state_hour_range"
+    assert "query_ir" not in payload["best"] and "validate" not in payload["next"]
 
 
-@pytest.mark.parametrize("text", DAY_QUESTIONS)
-def test_a_question_with_no_hour_or_zone_is_not_refused_for_one(text: str) -> None:
-    assert _time_window(text).time_of_day == ()
+def test_plan_accepts_a_window_shorter_than_a_day_the_caller_states(runtime_factory: Any) -> None:
+    payload = _plan(
+        runtime_factory,
+        "revenue for the last 24 hours",
+        partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    assert {key: _query(payload)["time"][key] for key in ("start", "end")} == HOUR
+
+
+@pytest.mark.parametrize("text", NOT_AN_HOUR_QUESTIONS)
+def test_a_number_or_time_word_that_is_not_an_hour_is_never_refused_as_one(
+    runtime_factory: Any, text: str
+) -> None:
+    window = _time_window(text)
+    assert window.sub_day == () and window.unresolved == ()
+    payload = _plan(runtime_factory, text)
+    why = payload.get("why") or {}
+    assert why.get("code") != "TIME_WINDOW_UNRESOLVED", why
+    if why.get("code") == "PLAN_UNMATCHED_TERMS":
+        # Left over, and named, only because the draft doesn't carry the number.
+        assert all(term.replace(".", "").isdigit() for term in why["details"]["terms"]), why
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "average delivery time by month in 2017",
+        "revenue by order time in 2017",
+        "top 5 stores by revenue in 2017",
+        "revenue for the last 3 months by store",
+        "orders in Q1 2017 by month",
+    ],
+)
+def test_a_question_whose_numbers_and_time_words_are_all_consumed_is_ok(
+    runtime_factory: Any, text: str
+) -> None:
+    payload = _plan(runtime_factory, text)
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+
+
+@pytest.mark.parametrize("detail", ["best", "query", "full", "debug"])
+@pytest.mark.parametrize("partial", [None, {"limit": 5}, {"time": {"grain": "day"}}])
+def test_no_detail_level_or_caller_block_gets_past_the_invariant(
+    runtime_factory: Any, detail: str, partial: dict[str, Any] | None
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime,
+            intent="revenue on 15 March 2017 between 9 and 17",
+            partial_query=partial,
+            detail=detail,
+        )
+        assert payload["status"] == "low_confidence"
+        assert "ready_for" not in payload.get("next", {})
+        assert payload["why"]["details"]["terms"] == ["9", "17"]
+    finally:
+        runtime.close()
 
 
 def test_a_day_is_still_resolved_as_a_day() -> None:
@@ -129,50 +295,29 @@ def test_a_day_is_still_resolved_as_a_day() -> None:
     assert window.unresolved == () and window.assumptions == ()
 
 
-@pytest.mark.parametrize("text", [*HOUR_QUESTIONS, *ZONE_QUESTIONS])
-def test_plan_offers_no_query_for_an_hour_or_zone(runtime_factory: Any, text: str) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=text, detail="query")
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-        assert payload["why"]["details"]["time_of_day_phrases"]
-        assert "plan resolves days and coarser windows only" in payload["why"]["message"]
-        hint = payload["why"]["recovery_hints"][0]
-        assert hint["kind"] == "state_hour_range" and "query.time.start" in hint["message"]
-        assert "query_ir" not in payload["best"]
-    finally:
-        runtime.close()
-
-
 def test_plan_refuses_an_hour_on_a_date_role_too(runtime_factory: Any) -> None:
-    # The refusal doesn't depend on the role's column type, so a date column never gets a
+    # The invariant doesn't depend on the role's column type, so a date column never gets a
     # timestamp bound it can't compare.
     runtime = runtime_factory("tpch_sf1_showcase")
     try:
         payload = plan_payload(
-            runtime, intent="orders from 12:00 to 13:00 on 15 March 1995", detail="query"
+            runtime, intent="orders from 12:00 to 13:00 on 15 March 1995", detail="best"
         )
         assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-        assert "query_ir" not in payload["best"]
+        assert "ready_for" not in payload["next"]
+        assert payload["why"]["code"] in {"PLAN_UNMATCHED_TERMS", "TIME_WINDOW_UNRESOLVED"}
     finally:
         runtime.close()
 
 
 def test_plan_accepts_an_hour_range_the_caller_states(runtime_factory: Any) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(
-            runtime,
-            intent="orders from 12:00 to 13:00 on 15 March 2017",
-            partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
-            detail="query",
-        )
-        assert payload["status"] == "ok", payload.get("why")
-        assert {key: _query(payload)["time"][key] for key in ("start", "end")} == HOUR
-    finally:
-        runtime.close()
+    payload = _plan(
+        runtime_factory,
+        "orders from 12:00 to 13:00 on 15 March 2017",
+        partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    assert {key: _query(payload)["time"][key] for key in ("start", "end")} == HOUR
 
 
 def test_plan_still_plans_a_day(runtime_factory: Any) -> None:
@@ -504,11 +649,6 @@ def test_a_single_measure_still_plans(runtime_factory: Any, intent: str) -> None
 
 
 # --- unmatched terms ---------------------------------------------------------------
-
-
-def _draft(measure: str = "measure.jaffle.revenue_usd", **parts: Any) -> dict[str, Any]:
-    select = [{"as": "value", "expression": {"measure": measure}}]
-    return {"version": 2, "select": select, **parts}
 
 
 @pytest.mark.parametrize(

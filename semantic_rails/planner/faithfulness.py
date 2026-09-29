@@ -1988,15 +1988,30 @@ _MAX_UNMATCHED_TERMS = 8
 _MAX_SCANNED_WORDS = 256
 
 
-def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
-    """Question words the draft accounts for nowhere, in question order.
+# Words that state a clock time or a zone. Like a numeral, one the draft doesn't account for
+# means the answer may differ from the question (see unconsumed_terms). "second" alone is an
+# ordinal ("second order"); a count of seconds is caught as a numeral.
+_CLOCK_WORDS = frozenset(
+    {"seconds", "minute", "minutes", "min", "mins", "hour", "hours", "hr", "hrs"}
+    | {"noon", "midnight", "midday", "morning", "afternoon", "evening", "overnight", "tonight"}
+    | {"utc", "gmt", "zulu", "tz", "timezone", "timezones"}
+)
+_ZONE_ABBREVIATION_RE = re.compile(r"UTC|GMT|[A-Z]{2,4}T")
+_ZONE_NAME_RE = re.compile(
+    r"\b(?:africa|america|antarctica|arctic|asia|atlantic|australia|europe|indian|pacific|etc)"
+    r"/[a-z_]+",
+    re.IGNORECASE,
+)
+_TERM_RE = re.compile(r"\d+(?:[.,]\d+)+(?![^\W_])|[^\W_]+")
 
-    A word is accounted for when it frames the question, sits in a time phrase
-    the planner read, counts or orders ("five", "3rd"), or appears (allowing a
-    plural or one typo) in the text of an object the draft uses or in one of
-    its filter values. Words come back as the question spells them, at most
-    eight.
-    """
+
+def _number_key(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
+
+
+def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list[tuple[str, bool]]:
+    """Question words the draft accounts for nowhere, each with whether it is a numeral or a
+    clock or zone word."""
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
@@ -2022,6 +2037,10 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
         by_initial.setdefault(known[:1], []).append(known)
     skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
     text = str(question or "")
+    lowered = text.lower()
+    # Zone abbreviations are read in the question's own case ("EST"), and only where the
+    # question isn't all capitals ("LAST", "COST"); the lengths must agree to slice by span.
+    cased = text if len(lowered) == len(text) and text != text.upper() else ""
     time_spans = _time_window(text).spans
     numbers = _query_numbers(query)
     has_window = bool(_time_block(query))
@@ -2030,36 +2049,85 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
         # A year the draft's window carries, also where the window came from the caller.
         return has_window and re.fullmatch(r"(?:19|20)\d{2}", word) is not None
 
-    seen: set[str] = set()
-    out: list[str] = []
-    for match in re.finditer(r"[^\W_]+", text.lower()):
+    def in_time(start: int, end: int) -> bool:
+        return any(start < span_end and span_start < end for span_start, span_end in time_spans)
+
+    scanned: set[str] = set()
+    reported: set[str] = set()
+    out: list[tuple[str, bool]] = []
+    for match in _TERM_RE.finditer(lowered):
         word = match.group(0)
-        if word in seen:
-            continue
-        seen.add(word)
-        if len(seen) > _MAX_SCANNED_WORDS or len(out) >= _MAX_UNMATCHED_TERMS:
-            break
-        token = _TERM_SYNONYMS.get(word, word)
         start, end = match.span()
+        scanned.add(word)
+        if len(scanned) > _MAX_SCANNED_WORDS:
+            break
+        if word in reported:
+            continue
+        numeral = any(char.isdigit() for char in word)
+        plain = re.fullmatch(r"\d+(?:[.,]\d+)*", word) is not None
+        token = _TERM_SYNONYMS.get(word, word)
         if (
-            (len(word) < 2 and not word.isdigit())
+            (len(word) < 2 and not numeral)
             # A number counts, so the draft must carry it: a "2 or more" it dropped is named.
-            or (word.isdigit() and (word in numbers or token in vocabulary or dated(word)))
+            or (
+                plain
+                and (
+                    _number_key(float(word.replace(",", ""))) in numbers
+                    or token in vocabulary
+                    or dated(word)
+                )
+            )
             or _ORDINAL_RE.fullmatch(word)
             or word in skipped
             or token in skipped
             or token in vocabulary
             or _singular(token) in vocabulary
-            or any(start < span_end and span_start < end for span_start, span_end in time_spans)
-            or _one_typo_away(token, by_initial)
+            or in_time(start, end)
+            or (not numeral and _one_typo_away(token, by_initial))
         ):
             continue
-        out.append(word)
+        reported.add(word)
+        zone = bool(cased) and _ZONE_ABBREVIATION_RE.fullmatch(cased[start:end]) is not None
+        out.append((word, numeral or word in _CLOCK_WORDS or zone))
+    for zone_name in _ZONE_NAME_RE.finditer(text):
+        # "Europe/Berlin" reads as two plain words, so it is named whole.
+        name = zone_name.group(0).lower()
+        if name not in reported and not in_time(*zone_name.span()):
+            reported.add(name)
+            out.append((name, True))
     return out
 
 
+def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """Question words the draft accounts for nowhere, in question order.
+
+    A word is accounted for when it frames the question, sits in a time phrase
+    the planner read, counts or orders ("five", "3rd"), or appears (allowing a
+    plural or one typo) in the text of an object the draft uses or in one of
+    its filter values. Words come back as the question spells them, at most
+    eight.
+    """
+
+    words = [word for word, _clock in _unmatched_words(runtime, question, query)]
+    return words[:_MAX_UNMATCHED_TERMS]
+
+
+def unconsumed_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """The numerals and clock or zone words no part of the draft accounts for.
+
+    The invariant plan holds a draft to before it calls it ready: every number and every
+    time-unit word ("hour", "minute", "noon", "UTC", "Europe/Berlin") in the question is
+    consumed by a construct the draft carries (a date or window, a filter value, a limit, a
+    percentile, an object's name). One left over is an hour, a range or a threshold the draft
+    silently dropped.
+    """
+
+    return [word for word, clock in _unmatched_words(runtime, question, query) if clock]
+
+
 def _query_numbers(query: dict[str, Any]) -> set[str]:
-    """Every number the draft carries (a limit, a threshold, a filter value), as digits.
+    """Every number the draft carries (a limit, a threshold, a filter value, an hour of a
+    time bound), as digits.
 
     A fraction also counts as its percentage: 0.5 accounts for "50".
     """
@@ -2067,8 +2135,7 @@ def _query_numbers(query: dict[str, Any]) -> set[str]:
     out: set[str] = set()
 
     def add(value: float) -> None:
-        if float(value).is_integer():
-            out.add(str(int(value)))
+        out.add(_number_key(value))
         if 0 < value <= 1 and float(value * 100).is_integer():
             out.add(str(int(value * 100)))
 
@@ -2079,6 +2146,12 @@ def _query_numbers(query: dict[str, Any]) -> set[str]:
             add(value)
         elif isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value.strip()):
             add(float(value))
+        elif isinstance(value, str):
+            clock = re.search(r"\d{4}-\d\d-\d\d[T ](\d\d):(\d\d)(?::(\d\d))?", value)
+            for part in clock.groups() if clock else ():
+                # A caller's stated hours account for the question's: "00" and "0" alike.
+                if part is not None:
+                    out.update({part, _number_key(float(part))})
         elif isinstance(value, dict):
             for child in value.values():
                 walk(child)
@@ -2131,4 +2204,4 @@ def _within_one_edit(left: str, right: str) -> bool:
     return shorter[index:] == longer[index + 1 :]
 
 
-__all__ = ["CoverageGap", "intent_faithfulness_why", "unmatched_intent_terms"]
+__all__ = ["CoverageGap", "intent_faithfulness_why", "unconsumed_terms", "unmatched_intent_terms"]

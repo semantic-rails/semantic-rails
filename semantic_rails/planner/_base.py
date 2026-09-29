@@ -10,7 +10,7 @@ import copy
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -532,18 +532,6 @@ def _explicit_grain(text: str, clock: str = "") -> str:
 def _single_bucket_grain(bounds: dict[str, Any]) -> str:
     """The finest calendar grain that holds the whole window in one bucket, or ``""``."""
 
-    if any("T" in str(bounds.get(key, "")) for key in ("start", "end")):
-        # A window within one day is one day bucket: a temporal role may not offer finer ones.
-        try:
-            first, stop = (
-                datetime.fromisoformat(str(bounds[key]).replace("Z", "+00:00"))
-                for key in ("start", "end")
-            )
-        except (KeyError, ValueError):
-            return ""
-        if stop <= first or first.date() != stop.date():
-            return ""
-        return "day"
     try:
         start = date.fromisoformat(str(bounds["start"])[:10])
         last = date.fromisoformat(str(bounds["end"])[:10]) - timedelta(days=1)
@@ -1065,55 +1053,15 @@ _RANGE_END_UNITS: dict[re.Pattern[str], str] = {
     _YEAR_SPAN_RE: "year",
 }
 
-# plan resolves days and coarser windows only. A time of day or a time zone anywhere in the
-# question ("12:00 to 13:00", "9 am", "noon", "1200 hours", "EST", "Pacific", "London time",
-# "Europe/Berlin") is reported and the window is left unset: the day forms alone would widen
-# an hour to its whole day, and a bound carries no zone. Over-refusing is deliberate; the
-# caller states an hour range in the query's ``time`` block.
-_HOUR = r"(?:[01]?\d|2[0-3])"
-_TIME_OF_DAY_RE = re.compile(
-    # 9:30, 12:00:15, T12:00; 9.30 and 9 to 5 are weaker (see _WEAK_TIME_RE).
-    r"(?<!\d)\d{1,2}:\d{2}"
-    # 3pm, 9 a.m., noon, midnight, o'clock, part of the day
-    rf"|\b\d{{1,2}}\s*[ap]\.?m\b|\b[ap]\.m\.|\b(?:noon|midnight|midday|o'?clock)\b"
-    r"|\b(?:morning|afternoon|evening|tonight|overnight|(?:business|working|office|after|off)\s+hours)\b"
-    # 1200 hours, 0930h
-    rf"|\b{_HOUR}[0-5]\d\s*(?:hours?|hrs?|h)\b"
+# plan resolves days and coarser windows only. A window shorter than a day ("last 24 hours",
+# "past hour") is reported and the window is left unset, never widened to all time. Hours and
+# zones stated any other way ("9 am", "between 9 and 17", "UTC") are caught where plan decides
+# readiness: every numeral and clock word must be accounted for (see unconsumed_terms).
+_SUBDAY_WINDOW_RE = re.compile(
+    rf"{_COMPARISON_GUARD}\b(?:(?:last|past|previous|prior|trailing)"
+    rf"|(?:current|this))\s+(?:(?:\d+|{_NUMBER_WORD_ALT}|an?|few|couple(?:\s+of)?|several)\s+)?"
+    r"(?:second|minute|hour)s?\b"
 )
-# 12.30 and "9 to 5" read as hours only beside a day, since they are also decimals and counts.
-_WEAK_TIME_RE = re.compile(
-    rf"(?<![\d.$/-]){_HOUR}\.[0-5]\d(?![\d.%/])"
-    r"|(?<![\d/.:-])\d{1,2}\s*(?:to|until|till|through|thru|[-–—])\s*\d{1,2}(?![\d/.:-])"
-)
-_ZONE_ABBREVIATIONS = (
-    "utc|gmt|z|[aecmp][sd]t|[ecmp]t|cest|cet|eest|eet|bst|ist|jst|kst|hkt|sgt|pkt|msk|sast"
-    "|aest|aedt|acst|acdt|awst|nzst|nzdt|hst|akst|akdt"
-)
-_ZONE_AREAS = (
-    "africa|america|antarctica|arctic|asia|atlantic|australia|europe|indian|pacific|etc|us|canada"
-)
-# Words before "time" that don't name a zone ("over time", "order time"); any other word
-# ("London time", "local time") is read as a zone.
-_NOT_A_ZONE_WORD = (
-    "over|all|first|last|next|one|each|every|any|part|full|real|lead|life|same|this|that|at|"
-    "order|ordered|placed|created|creation|by|per|what|which|long|short|response|delivery|"
-    "shipping|processing|cycle|wait|handling|event|ship|shipped|start|end|ticket"
-)
-_ZONE_RE = re.compile(
-    rf"\b(?:{_ZONE_ABBREVIATIONS})\b"
-    r"|\b(?:time\s*zones?|tz)\b"
-    rf"|\b(?:{_ZONE_AREAS})/[a-z_]+"
-    r"|\b(?:pacific|eastern|central|mountain|atlantic|alaska|alaskan|hawaii|hawaiian|zulu|"
-    r"greenwich)\b"
-    rf"|\b(?!(?:{_NOT_A_ZONE_WORD})\b)[a-z]+\s+(?:(?:standard|daylight|summer)\s+)?time\b"
-)
-
-
-def _time_of_day_spans(lowered: str, other_time: bool) -> list[tuple[int, int]]:
-    """Every span that states a time of day or a time zone; ``other_time`` says a day is stated."""
-
-    patterns = [_TIME_OF_DAY_RE, _ZONE_RE, *([_WEAK_TIME_RE] if other_time else [])]
-    return [match.span() for pattern in patterns for match in pattern.finditer(lowered)]
 
 
 @dataclass(frozen=True)
@@ -1129,8 +1077,8 @@ class _TimeWindow:
     conflicts: tuple[str, ...] = ()
     # The reading taken where the question leaves an end open.
     assumptions: tuple[str, ...] = ()
-    # The times of day and zones named, which plan does not resolve.
-    time_of_day: tuple[str, ...] = ()
+    # The windows shorter than a day named, which plan does not resolve.
+    sub_day: tuple[str, ...] = ()
 
 
 def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
@@ -1310,13 +1258,13 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     for span in sorted(_time_cues(lowered), key=lambda item: item[0] - item[1]):
         if not _overlaps(span, covered + unresolved_spans):
             unresolved_spans.append(span)
-    # The one guard for hours and zones: every plan resolves its window here.
-    hours = [
-        span
-        for span in _time_of_day_spans(lowered, bool(covered or unresolved_spans))
-        if not _overlaps(span, covered)
+    # A window shorter than a day is reported, never dropped to all time.
+    sub_day = [
+        match.span()
+        for match in _SUBDAY_WINDOW_RE.finditer(lowered)
+        if not _overlaps(match.span(), covered)
     ]
-    unresolved_spans += [span for span in hours if not _overlaps(span, unresolved_spans)]
+    unresolved_spans += [span for span in sub_day if not _overlaps(span, unresolved_spans)]
     time_spans = tuple(sorted(covered + unresolved_spans))
     if unresolved_spans or len(windows) > 1:
         # Report every time phrase, resolved or not: resolving part of an
@@ -1332,7 +1280,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             unresolved=tuple(phrases),
             spans=time_spans,
             conflicts=conflicts,
-            time_of_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(hours))),
+            sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
         )
     if not windows:
         return _TimeWindow()

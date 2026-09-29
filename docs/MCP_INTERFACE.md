@@ -206,9 +206,10 @@ draft includes it.
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),
 time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
 window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
-`details.terms`. A number the draft doesn't carry stays in the list, with the comparative
-beside it ("2", "more" for "2 or more orders"), as do measure nouns; check them before
-executing. Two words or more that no catalog object has, the first straight after "for",
+`details.terms`. Other words stay warnings, as do measure nouns; check them before executing.
+A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
+`low_confidence` (below), since the draft dropped an hour, a range or a
+threshold. Two words or more that no catalog object has, the first straight after "for",
 "from", "of" or "with", make it `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`
 instead: "for tangaroo and vanilla ice" is a filter the draft dropped. Every measure a
 question lists ("item revenue and orders in Q1 2017") is in the draft's select list or the
@@ -231,13 +232,19 @@ relative window ("last 7 days"). A range's spoken end is included: the response'
 itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
 one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are a
 conflict, and `TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. `plan`
-does not resolve times of day or time zones. Any hour or zone cue anywhere in the question
-("12:00 to 13:00", "9 am", "noon", "1200 hours", "12.30", "9 to 5" beside a day, "EST",
-"UTC+2", "Pacific", "London time", "Europe/Berlin") returns `TIME_WINDOW_UNRESOLVED` with
-`why.details.time_of_day_phrases`, and no `best.query_ir`: the day forms alone would widen an
-hour to its whole day, and a bound carries no zone. The check is deliberately broad, so it also
-refuses a question where such a word means something else ("Central region", a decimal like
-"12.30" beside a date). To ask for an hour range, pass it in `query.time` yourself, as
+resolves days and coarser windows only. A window shorter than a day ("last 24 hours", "past
+hour", "last 30 minutes") returns `TIME_WINDOW_UNRESOLVED` with `why.details.sub_day_phrases` and
+no `best.query_ir`, never a query over all time. Every other hour or zone is caught by one
+rule: a draft is `ok` only if every number and every clock or zone word in the question ("hour",
+"minutes", "noon", "midnight", "morning", "UTC", "GMT", an all-caps zone code such as "EST", a
+name such as "Europe/Berlin") is used by something the draft carries: a date or window, a
+filter value, a limit, a percentile, or the name of an object it selects. Otherwise the plan is
+`low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, the leftover words in `details.terms`
+and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "at 14h30" and "in UTC" are not
+ready, and neither is a number range plan doesn't read ("aged 25-34", "2 to 5 orders"); a
+number the draft does carry ("top 10") is fine. A zone written as an ordinary word ("Pacific
+time", "London time", "local time") is not recognised by itself, so with no hour beside it the
+question reads as its day; an all-caps state code such as "CT" is read as a zone. To ask for an hour range, pass it in `query.time` yourself, as
 end-exclusive ISO timestamps in the temporal role's time zone (the role must be a timestamp),
 for example `start: "2017-03-15T12:00:00"`, `end: "2017-03-15T13:00:00"`, with the role and
 grain, and plan again. "and" joins a range only after "between": "between March and May 2017" is
@@ -342,7 +349,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`) when two or more of them are names the catalog doesn't have |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |

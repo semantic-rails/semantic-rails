@@ -1,11 +1,17 @@
 - `plan` no longer changes what a question asks when it reads a time or a name. "Revenue from
-  12:00 to 13:00 on 15 March 2017" drafted the whole day and reported `ok`. `plan` does not
-  resolve hours: it resolves days and coarser windows only, and a time of day or time zone
-  anywhere in the question ("12:00", "9 am", "noon", "1200 hours", "EST", "Pacific", "London
-  time", "Europe/Berlin") is `TIME_WINDOW_UNRESOLVED` with no query. The check is broad on
-  purpose, so it can also refuse a question where such a word means something else ("Central
-  region"). To ask for an hour range, pass `query.time.start` and `query.time.end` as
-  end-exclusive ISO timestamps in the temporal role's time zone. A window restated beside
+  12:00 to 13:00 on 15 March 2017" drafted the whole day and reported `ok`. `plan` resolves days
+  and coarser windows only, under one rule: a draft is `ok` only if every number and every
+  clock or zone word in the question ("hour", "minutes", "noon", "UTC", "EST",
+  "Europe/Berlin") is used by something the draft carries (a date or window, a filter value, a
+  limit, a percentile, an object's name). Otherwise the plan is `low_confidence` with
+  `PLAN_UNMATCHED_TERMS`, the leftover words in `why.details.terms` and no `next.ready_for`, so
+  "between 9 and 17", "at 14h30" and "in UTC" beside a date are not ready. A number range the
+  draft doesn't carry ("aged 25-34", "2 to 5 orders") is named the same way; it is never read
+  as an hour. A window shorter than a day ("last 24 hours", "past hour", "last 30 minutes") is
+  `TIME_WINDOW_UNRESOLVED` with no query, not a query over all time. A zone written as an
+  ordinary word ("Pacific time", "local time") is not recognised on its own. To ask for an hour
+  range, pass `query.time.start` and `query.time.end` as end-exclusive ISO timestamps in the
+  temporal role's time zone. A window restated beside
   itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
   one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are
   named in `why.details.conflicting_phrases`. "Year 2017" and "calendar year 2017" resolve;
@@ -19,7 +25,6 @@
   `low_confidence` with a `multiple_subjects_unrealized` gap when the draft leaves one out,
   also when a time phrase follows the list.
 - `PLAN_UNMATCHED_TERMS` no longer names verbs and function words such as "dated", "placed",
-  "only", "while" and "using", and names a number the draft doesn't carry ("2 or more orders"
-  lists "2" and "more"). Two or more names the catalog doesn't have after "for", "from", "of"
+  "only", "while" and "using". Two or more names the catalog doesn't have after "for", "from", "of"
   or "with" ("for tangaroo and vanilla ice") make the plan `low_confidence` instead of a
   warning, since the draft dropped a filter.
