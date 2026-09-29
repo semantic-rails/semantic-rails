@@ -244,26 +244,26 @@ is consumed by a construct the draft carries. The words it counts are numerals (
 name such as "Europe/Berlin". A word is consumed only where it sits inside the text of a
 construct, not because its value equals something the draft holds: the words of the date or
 window plan resolved, the count of the ranking that states the draft's limit ("top 5", "the 5
-customers who spent the most", "3 stores with the highest revenue"), the number of a threshold or
+customers who spent the most", "3 stores with the highest revenue"; a threshold that repeats
+the limit's number, as in "top 10 stores with at least 10 orders", does not consume it), the number of a threshold or
 percentile the question states ("over 12.50", "90th percentile", "1,000 or more"), a filter
 value, or the name, label or alias of an object the draft selects (not its description). A number
 counts as a percentage only when "%", "percent" or "percentile" follows it: "50 percent" states
 0.5, while "500" never states 5. So a "1930" or "2000" that is not a window's year or a
 threshold's own number is left over, and so is a "9" that a limit of 9 does not state. Otherwise
-the plan is
-`low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, the leftover words in `details.terms`
+the plan is `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, the leftover words in `details.terms`
 and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "from nine to five", "at
 14h30", "at 2000" and "in UTC" are not ready, and neither is a number range plan doesn't read
-("aged 25-34", "2 to 5 orders"); a number the draft does carry ("top 10") is fine. A zone
+("aged 25-34", "2 to 5 orders") or a token that is not one number ("15.03.2017", "1.2.3",
+"10.0.0.1"); a number the draft does carry ("top 10") is fine. A zone
 written as an ordinary word ("Pacific time", "London time", "local time") is not recognised by
 itself, so with no hour beside it the question reads as its day. A window you pass in
 `query.time` answers the time phrases plan could not resolve ("last 24 hours"), but not a bare
 year its bounds don't carry: "at 2000" is left over (in a question over 2,000 characters, it
-answers only a year after "in", "for" or "during"). Its hours consume a clock time the question
-spells in a form that is not also a number ("12:00", "9:30 am", "5pm", "14h30", "9 o'clock",
-"noon") and that one of its bounds states, so "from 12:00 to 13:00" answers a 12:00 to 13:00
-window and "from noon to midnight" is refused against a whole-day window. A bare "9 to 17" or
-"at 1930" is left over whatever the window holds; write it as "9:00 to 17:00". To ask for an hour range, pass it in `query.time` yourself, as
+answers only a year after "in", "for", "during" or "year"). It never consumes a time of day,
+an hour or a zone, whatever hours its bounds carry: a question that states "12:00 to 13:00" or
+"noon" is refused (`PLAN_UNMATCHED_TERMS`) even against a window with those hours, so write the
+question without the hours and let the window carry them. To ask for an hour range, pass it in `query.time` yourself, as
 end-exclusive ISO timestamps in the temporal role's time zone (the role must be a timestamp),
 for example `start: "2017-03-15T12:00:00"`, `end: "2017-03-15T13:00:00"`, with the role and
 grain, and plan again. "and" joins a range only after "between": "between March and May 2017" is

@@ -2116,12 +2116,8 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     text = str(question or "")
     lowered = text.lower()
     time_spans = _time_window(text).spans
-    numbers = _query_numbers(query)
-    has_window = bool(_time_block(query))
-
-    def dated(word: str) -> bool:
-        # A year the draft's window carries, also where the window came from the caller.
-        return has_window and re.fullmatch(r"(?:19|20)\d{2}", word) is not None
+    tokens = [(match.group(0), *match.span()) for match in _TERM_RE.finditer(lowered)]
+    consumed = _consumed_spans(runtime, lowered, tokens, query)
 
     def in_time(start: int, end: int) -> bool:
         return any(start < span_end and span_start < end for span_start, span_end in time_spans)
@@ -2129,9 +2125,7 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     scanned: set[str] = set()
     reported: set[str] = set()
     out: list[str] = []
-    for match in _TERM_RE.finditer(lowered):
-        word = match.group(0)
-        start, end = match.span()
+    for word, start, end in tokens:
         scanned.add(word)
         if len(scanned) > _MAX_SCANNED_WORDS:
             break
@@ -2142,15 +2136,9 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
         token = _TERM_SYNONYMS.get(word, word)
         if (
             (len(word) < 2 and not numeral)
-            # A number counts, so the draft must carry it: a "2 or more" it dropped is named.
-            or (
-                plain
-                and (
-                    _number_key(float(word.replace(",", ""))) in numbers
-                    or token in vocabulary
-                    or dated(word)
-                )
-            )
+            # A number counts, so a construct of the draft must read it where the question
+            # states it: a "2 or more" the draft dropped is named.
+            or (plain and any(low <= start and end <= high for low, high in consumed))
             or _ORDINAL_RE.fullmatch(word)
             or word in skipped
             or token in skipped
@@ -2244,7 +2232,7 @@ def _consumed_spans(
     """The character spans of the question the draft's constructs consume.
 
     A window consumes the spans the planner read it from, only when the draft carries one (a
-    start, an end or a range), and the clock times the caller's own bounds state. A limit
+    start, an end or a range); never a clock time. A limit
     consumes the count of the ranking that states it ("top 5", "the 5 customers who spent the
     most"); a threshold, percentile or numeric filter value consumes its own number token, found
     where the question states it ("over 12.50", "90th percentile", "1,000 or more", "size 12").
@@ -2335,20 +2323,17 @@ def _name_spans(
     return spans
 
 
-# Where a question states a threshold, a percentile, or a limit no ranking states: a cue before
-# its number ("first 10", "over 12.50", "at least 2") or after it ("90th percentile", "1,000 or
-# more", "10 largest"). A limit a ranking states is read by the ranking parser instead.
+# Where a question states a threshold or a percentile: a comparison before its number ("over
+# 12.50", "at least 2") or after it ("1,000 or more", "5+"). Never a ranking's cue ("top",
+# "first", "10 largest"): a ranking's count is the limit's, read by the ranking parser, so a
+# threshold cannot consume it and the limit cannot consume a threshold.
 _NUMBER_BEFORE_RE = re.compile(
-    r"(?:\b(?:top|bottom|first|last|limit|best|worst|highest|lowest|biggest|largest|smallest"
-    r"|which|more\s+than|greater\s+than|over|above|exceeds?|exceeded|exceeding|at\s+least"
+    r"(?:\b(?:more\s+than|greater\s+than|over|above|exceeds?|exceeded|exceeding|at\s+least"
     r"|no\s+fewer\s+than|minimum\s+of|less\s+than|fewer\s+than|under|below|at\s+most"
-    r"|no\s+more\s+than|maximum\s+of|equals?|equal\s+to)|[<>=]=?)[\s-]*(?:the\s+)?[$£€]?$"
+    r"|no\s+more\s+than|maximum\s+of|equals?|equal\s+to)|[<>=]=?)[\s-]*[$£€]?$"
 )
 _NUMBER_AFTER_RE = re.compile(
-    r"^\s*(?:\+"
-    r"|or\s+(?:more|less|fewer|greater|higher|lower|above|below|over|under)\b"
-    r"|(?:\w+\s+){0,2}(?:highest|lowest|best|worst|largest|smallest|biggest|most|least"
-    r"|fewest|greatest)\b)"
+    r"^\s*(?:\+|or\s+(?:more|less|fewer|greater|higher|lower|above|below|over|under)\b)"
 )
 # A number is a percentage only when the question says so: "50 %", "50 percent", "90th percentile".
 _PERCENT_AFTER_RE = re.compile(r"^\s*(?:%|percent\b|pct\b|(?:st|nd|rd|th)?\s*percentile\b)")
@@ -2405,18 +2390,6 @@ def _number_spans(
 
 # A year a date phrase states: after "in", "for" or "during", or the word "year".
 _YEAR_CUE_RE = re.compile(r"\b(?:in|for|during|year)\s+((?:19|20)\d{2})\b")
-_BOUND_CLOCK_RE = re.compile(r"\d{4}-\d\d-\d\d[T ](\d\d):(\d\d)(?::(\d\d))?")
-# A clock time the question spells in a form that is not also a number: "12:00", "9:30 am",
-# "5pm", "14h30", "9 o'clock", "noon". A bare "9" or "1930" is never one.
-_CLOCK_READING_RE = re.compile(
-    r"(?<![\w:.])(?:"
-    r"(?P<h>\d{1,2}):(?P<m>\d\d)(?::(?P<s>\d\d))?(?:\s*(?P<ap>am|pm))?"
-    r"|(?P<h2>\d{1,2})(?:[.:](?P<m2>\d\d))?\s*(?P<ap2>am|pm)"
-    r"|(?P<h3>\d{1,2})h(?P<m3>\d\d)?"
-    r"|(?P<h4>\d{1,2})\s*o['’]clock"
-    r"|(?P<word>noon|midday|midnight)"
-    r")(?!\w)"
-)
 
 
 def _bound_years(time: dict[str, Any]) -> set[str]:
@@ -2429,30 +2402,15 @@ def _bound_years(time: dict[str, Any]) -> set[str]:
     }
 
 
-def _bound_clock_times(time: dict[str, Any]) -> set[int]:
-    """The seconds into the day of the times the caller's start and end state; none when they
-    are all midnight, since a bound at midnight states no hour (a day is bounded the same way)."""
-
-    seconds: set[int] = set()
-    for bound in (time.get("start"), time.get("end")):
-        clock = _BOUND_CLOCK_RE.search(str(bound or ""))
-        if clock:
-            hour, minute, second = (int(part or 0) for part in clock.groups())
-            seconds.add(hour * 3600 + minute * 60 + second)
-    return seconds if any(seconds) else set()
-
-
 def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
     """The spans of the question a caller's window in ``query.time`` consumes.
 
     The time phrases plan read (a date, a year, "last 24 hours": a caller's window answers the
     phrases plan cannot resolve itself), except a bare year the caller's bounds don't carry: an
     "at 2000" is an hour, not the year 2000. In a question too long to read, only the years a
-    date phrase states ("in 2017", "for 2017"; never "at 1930"). And the clock times the
-    question spells that are the ones the caller's bounds state: "from 12:00 to 13:00" against a
-    12:00 to 13:00 window. A time of day the bounds don't state, a bare number or "noon" against
-    a whole-day window stays unconsumed, so a window that contradicts the question's hours is
-    refused.
+    date phrase states ("in 2017", "for 2017"; never "at 1930"). A time of day, an hour, a
+    bare number or a zone is never consumed here, whatever hours the caller's bounds carry, so a
+    question that states one is refused rather than matched to the window by value.
     """
 
     years = _bound_years(time)
@@ -2466,51 +2424,18 @@ def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
         # Too long for plan to read a window from: the caller's window settles the years the
         # question's date phrases state; an hour, a number or a zone still has to be consumed.
         spans.extend(match.span(1) for match in _YEAR_CUE_RE.finditer(lowered))
-    stated = _bound_clock_times(time)
-    if stated:
-        spans.extend(
-            reading.span()
-            for reading in _CLOCK_READING_RE.finditer(lowered)
-            if _reading_seconds(reading) in stated
-        )
     return spans
 
 
-def _reading_seconds(reading: re.Match[str]) -> int | None:
-    """Seconds into the day of a clock reading, or ``None`` for one that is no time."""
-
-    word = reading.group("word")
-    if word:
-        return 0 if word == "midnight" else 12 * 3600
-    hour = int(
-        reading.group("h") or reading.group("h2") or reading.group("h3") or reading.group("h4")
-    )
-    minute = int(reading.group("m") or reading.group("m2") or reading.group("m3") or 0)
-    second = int(reading.group("s") or 0)
-    meridiem = reading.group("ap") or reading.group("ap2")
-    if meridiem:
-        if not 1 <= hour <= 12:
-            return None
-        hour = hour % 12 + (12 if meridiem == "pm" else 0)
-    if hour > 23 or minute > 59 or second > 59:
-        return None
-    return hour * 3600 + minute * 60 + second
-
-
 def _draft_numbers(query: dict[str, Any]) -> tuple[set[str], set[str]]:
-    """Every number the draft carries outside its time block (a limit, a threshold, a filter
-    value, a percentile), as digits, and the percentages its fractions state (0.9 is the "top 10
-    percent" it cuts)."""
+    """Every number the draft carries outside its time block and its limit (a threshold, a
+    filter value, a percentile), as digits, and the percentages its fractions state (0.9 is the
+    "top 10 percent" it cuts). The limit is read by the ranking that states it, never here: a
+    threshold that repeats its number ("top 10 stores with at least 10 orders") is not the limit."""
 
-    return _number_sets({key: value for key, value in query.items() if key != "time"})
-
-
-def _query_numbers(query: dict[str, Any]) -> set[str]:
-    """Every number the draft carries (a limit, a threshold, a filter value, an hour of a
-    time bound), as digits, and the percentages its fractions state."""
-
-    plain, percents = _number_sets(query)
-    return plain | percents
+    return _number_sets(
+        {key: value for key, value in query.items() if key not in ("time", "limit")}
+    )
 
 
 def _number_sets(query: dict[str, Any]) -> tuple[set[str], set[str]]:
@@ -2535,13 +2460,6 @@ def _number_sets(query: dict[str, Any]) -> tuple[set[str], set[str]]:
             add(value)
         elif isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value.strip()):
             add(float(value))
-        elif isinstance(value, str):
-            clock = _BOUND_CLOCK_RE.search(value)
-            for part in clock.groups() if clock else ():
-                # A caller's stated hours account for the question's: "00" and "0" alike.
-                if part is not None:
-                    plain.add(part)
-                    plain.add(_number_key(float(part)) or part)
         elif isinstance(value, dict):
             for child in value.values():
                 walk(child)

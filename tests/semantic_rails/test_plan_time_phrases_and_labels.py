@@ -203,8 +203,8 @@ def test_every_unconsumed_number_and_clock_word_is_named(
         ("revenue for the last 7 days", _draft(time=LAST_7_DAYS)),
         ("average delivery time by month", _draft()),
         ("revenue by order time in 2017", _draft(time=WINDOW)),
-        # A caller's stated hours account for the question's.
-        ("revenue from 12:00 to 13:00 on 15 March 2017", _draft(time={"grain": "day", **HOUR})),
+        # A caller's hour window is answered by the date the question states, not by its hours.
+        ("orders on 15 March 2017", _draft(time={"grain": "day", **HOUR})),
     ],
 )
 def test_a_number_or_clock_word_the_draft_carries_is_consumed(
@@ -379,14 +379,23 @@ def test_a_number_word_or_zone_no_construct_reads_is_never_ok(
         ("ORDERS ON 15 MARCH 2017 IN EST", _draft(time=WINDOW), ["est"]),
         ("orders on 15 March 2017 in MSK", _draft(time=WINDOW), ["msk"]),
         ("orders on 15 March 2017 at 12:00 Z", _draft(time=WINDOW), ["12", "00", "z"]),
-        # A caller's stated hours consume only their own: 9 and 17 are not 12 and 13.
+        # A caller's hours consume nothing: the question's hours are left over, whatever they are.
+        (
+            "revenue from 12:00 to 13:00 on 15 March 2017",
+            _draft(time={"grain": "day", **HOUR}),
+            ["12", "00", "13"],
+        ),
         (
             "revenue from 9 to 17 on 15 March 2017",
             _draft(time={"grain": "day", **HOUR}),
             ["9", "17"],
         ),
         # A caller's window is not a zone.
-        ("orders from 12:00 to 13:00 UTC", _draft(time={"grain": "day", **HOUR}), ["utc"]),
+        (
+            "orders from 12:00 to 13:00 UTC",
+            _draft(time={"grain": "day", **HOUR}),
+            ["12", "00", "13", "utc"],
+        ),
     ],
 )
 def test_a_term_is_consumed_only_by_the_span_of_the_construct_that_reads_it(
@@ -444,7 +453,20 @@ def test_a_ranking_consumes_its_count_by_span(runtime_factory: Any, text: str, l
             _draft(limit=2),
             ["10"],
         ),
-        ("first 10 customers by revenue", _draft(limit=10), []),
+        # A "first N" is not a ranking plan reads, so no construct states its number: refused.
+        ("first 10 customers by revenue", _draft(limit=10), ["10"]),
+        # A threshold that repeats the limit's number is not the limit, and the limit is not it.
+        ("top 10 stores by revenue with at least 10 orders", _draft(limit=10), ["10"]),
+        (
+            "top 10 stores by revenue with at least 10 orders",
+            _draft(limit=10, having=[{"op": ">=", "value": 10}]),
+            [],
+        ),
+        (
+            "top 10 stores by revenue with at least 10 orders",
+            _draft(having=[{"op": ">=", "value": 10}]),
+            ["10"],
+        ),
         ("the 10 largest stores by revenue", _draft(limit=10), []),
         # A number is a percentage only before %, percent or percentile.
         ("stores with revenue over 500", _draft(having=[{"op": ">", "value": 5}]), ["500"]),
@@ -602,6 +624,82 @@ def test_a_number_too_large_to_read_is_not_a_crash(runtime_factory: Any, huge: i
         runtime.close()
 
 
+# A token that looks like a number but is not one: a dotted date, a version, an address.
+ODD_NUMERALS = [
+    "15.03.2017",
+    "1.234.567",
+    "1,234,567",
+    "10.0.0.1",
+    "1.2.3",
+    "1,2,3",
+    "1.2,3.4",
+    "0.0.0",
+    "1..2",
+    "1.",
+    ".5",
+    "1e5",
+    "5th",
+    "3rd.4th",
+    "٣.٤.٥",
+    "１２.３４.５６",
+    "²",
+    "1" * 400,
+    "1." * 200 + "1",
+]
+
+
+def test_the_warning_reads_a_number_by_span_too(runtime_factory: Any) -> None:
+    # "5" equals the draft's limit but no ranking states it there, and a threshold it doesn't
+    # carry doesn't either: named, as unconsumed_terms names it.
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unmatched_intent_terms(runtime, "revenue over 5", _draft(limit=5)) == ["5"]
+        assert unmatched_intent_terms(runtime, "top 5 stores by revenue", _draft(limit=5)) == [
+            "stores"
+        ]
+        having = _draft(having=[{"op": ">", "value": 5}])
+        assert unmatched_intent_terms(runtime, "revenue over 5", having) == []
+        assert unmatched_intent_terms(runtime, "top 5 stores by revenue", having) == ["5", "stores"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("token", ODD_NUMERALS)
+def test_a_numeral_that_is_not_one_number_is_never_a_crash(
+    runtime_factory: Any, token: str
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        for query in (_draft(), _draft(time=WINDOW, limit=5, having=[{"op": ">", "value": 5}])):
+            for text in (
+                f"revenue on 15 March 2017 for {token}",
+                f"{token} orders over {token}",
+                f"top 5 stores by revenue in 2017 version {token}",
+                token,
+            ):
+                assert isinstance(unmatched_intent_terms(runtime, text, query), list)
+                assert isinstance(unconsumed_terms(runtime, text, query), list)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "revenue on 15.03.2017",
+        "revenue in 2017 for version 1.2.3",
+        "1.234.567 orders",
+        "revenue for 10.0.0.1",
+    ],
+)
+def test_plan_returns_low_confidence_for_a_token_that_is_not_one_number(
+    runtime_factory: Any, text: str
+) -> None:
+    payload = _plan(runtime_factory, text)
+    assert payload["status"] == "low_confidence", payload
+    assert "ready_for" not in payload["next"]
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -686,7 +784,7 @@ BUSINESS_HOURS = {"start": f"{MARCH_15}T09:30:00", "end": f"{MARCH_15}T17:00:00"
 @pytest.mark.parametrize(
     ("text", "time", "terms"),
     [
-        # Bounds that state no hour (a day, written with a time or without) answer no clock word.
+        # A day's bounds answer no clock word...
         ("revenue from noon to midnight on 15 March 2017", DAY_BOUNDS, ["noon", "midnight"]),
         (
             "revenue from noon to midnight on 15 March 2017",
@@ -695,21 +793,28 @@ BUSINESS_HOURS = {"start": f"{MARCH_15}T09:30:00", "end": f"{MARCH_15}T17:00:00"
         ),
         ("revenue on 15 March 2017 for 3 hours", DAY_BOUNDS, ["3", "hours"]),
         ("revenue on 15 March 2017 at 0", DAY_BOUNDS, ["0"]),
-        # Bounds that state hours consume the clock times the question spells as theirs...
-        ("revenue from noon to midnight on 15 March 2017", NOON_TO_MIDNIGHT, []),
-        ("revenue from 9:30 am to 5 pm on 15 March 2017", BUSINESS_HOURS, []),
-        ("revenue from 09:30 to 17:00 on 15 March 2017", BUSINESS_HOURS, []),
-        ("revenue on 15 March 2017 from 9.30am to 17h", BUSINESS_HOURS, []),
-        # ...and not the same numbers elsewhere, nor a time the bounds do not state.
-        ("revenue on 15 March 2017 from 9:30 to 18:00", BUSINESS_HOURS, ["18", "00"]),
+        # ...and neither do bounds that state hours: no clock time is consumed by its value,
+        # whether it matches a bound, is reversed, or sits in another role.
+        ("revenue from noon to midnight on 15 March 2017", NOON_TO_MIDNIGHT, ["noon", "midnight"]),
+        (
+            "revenue from 9:30 am to 5 pm on 15 March 2017",
+            BUSINESS_HOURS,
+            ["9", "30", "5"],
+        ),
+        ("revenue from 09:30 to 17:00 on 15 March 2017", BUSINESS_HOURS, ["09", "30", "17", "00"]),
+        ("revenue on 15 March 2017 from 17:00 to 09:30", BUSINESS_HOURS, ["17", "00", "09", "30"]),
+        ("revenue on 15 March 2017 except 17:00-09:30", BUSINESS_HOURS, ["17", "00", "09", "30"]),
+        ("revenue on 15 March 2017 from 9:30 to 18:00", BUSINESS_HOURS, ["9", "30", "18", "00"]),
         ("revenue on 15 March 2017 at 17 or 1700", BUSINESS_HOURS, ["17", "1700"]),
         ("revenue on 15 March 2017 at 9 o'clock", BUSINESS_HOURS, ["9", "clock"]),
         ("revenue on 15 March 2017 from 9 to 17", BUSINESS_HOURS, ["9", "17"]),
-        ("revenue on 15 March 2017 per hour, 17:00", BUSINESS_HOURS, ["hour"]),
-        ("revenue on 15 March 2017 at 17:00 UTC", BUSINESS_HOURS, ["utc"]),
+        ("revenue on 15 March 2017 per hour, 17:00", BUSINESS_HOURS, ["hour", "17", "00"]),
+        ("revenue on 15 March 2017 at 17:00 UTC", BUSINESS_HOURS, ["17", "00", "utc"]),
+        # What a window answers is the date the question states.
+        ("revenue on 15 March 2017", BUSINESS_HOURS, []),
     ],
 )
-def test_a_caller_window_consumes_only_the_clock_times_its_bounds_state(
+def test_a_caller_window_consumes_no_clock_time_by_its_value(
     runtime_factory: Any, text: str, time: dict[str, str], terms: list[str]
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
@@ -720,16 +825,19 @@ def test_a_caller_window_consumes_only_the_clock_times_its_bounds_state(
         runtime.close()
 
 
-def test_a_caller_window_that_states_a_clock_time_is_ok_for_that_time(
+def test_a_caller_hour_window_answers_the_date_and_refuses_the_hours_the_question_states(
     runtime_factory: Any,
 ) -> None:
-    payload = _plan(
-        runtime_factory,
-        "revenue from 12:00 to 13:00 on 15 March 2017",
-        partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+    partial = {"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}}
+    ok = _plan(runtime_factory, "revenue on 15 March 2017", partial_query=partial)
+    assert ok["status"] == "ok", ok.get("why")
+    assert {key: _query(ok)["time"][key] for key in ("start", "end")} == HOUR
+    refused = _plan(
+        runtime_factory, "revenue from 12:00 to 13:00 on 15 March 2017", partial_query=partial
     )
-    assert payload["status"] == "ok", payload.get("why")
-    assert payload["next"]["ready_for"] == ["execute"]
+    assert refused["status"] == "low_confidence", refused
+    assert refused["why"]["details"]["terms"] == ["12", "00", "13"]
+    assert "ready_for" not in refused["next"]
 
 
 def test_a_noon_to_midnight_question_against_a_whole_day_window_is_refused(
@@ -800,7 +908,7 @@ def test_plan_refuses_an_hour_on_a_date_role_too(runtime_factory: Any) -> None:
 def test_plan_accepts_an_hour_range_the_caller_states(runtime_factory: Any) -> None:
     payload = _plan(
         runtime_factory,
-        "orders from 12:00 to 13:00 on 15 March 2017",
+        "orders on 15 March 2017",
         partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
     )
     assert payload["status"] == "ok", payload.get("why")
