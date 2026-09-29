@@ -69,7 +69,6 @@ from .compiler_parts.paths import (
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
     _entity_key_dimension_ids,
-    _entity_key_present,
     _expression_root_entity,
     _join_condition,
     _joins_for_paths,
@@ -1805,25 +1804,15 @@ def _predicate_ctes_and_join(
             strict=True,
         ):
             dim = _dimension_index(config)[dim_id]
-            set_key = SqlIdentifier(parts=[set_name, dim_id])
-            direct_key_expr = _direct_entity_key_source_expr(
-                measure_plan.source_entity, entity_id, _key_col, config
+            join_condition = SqlBinary(
+                join_condition,
+                "AND",
+                SqlBinary(
+                    _column_ref(_entity_index(config)[dim.entity].table, dim.column),
+                    "=",
+                    SqlIdentifier(parts=[set_name, dim_id]),
+                ),
             )
-            if direct_key_expr is not None:
-                # The set reads the key from the measure's own foreign key, so a row with an
-                # unknown or NULL context entity is in it: match it null-safely on that same
-                # column, as reading the looked-up table's key would drop the row.
-                condition = dialect_for_warehouse(config.package.warehouse).null_safe_eq(
-                    direct_key_expr, set_key
-                )
-            else:
-                # Read through the looked-up table, an unmatched row's key is NULL, but the set
-                # holds that row under its own foreign key: NULL must not pair with the set's
-                # NULL group, so the row stays out, as with an inner join.
-                condition = SqlBinary(
-                    _column_ref(_entity_index(config)[dim.entity].table, dim.column), "=", set_key
-                )
-            join_condition = SqlBinary(join_condition, "AND", condition)
     if scope["time_spec"] is not None and scope["time_alias"]:
         query = normalize_query(plan.query)
         outer_temporal_role = _leaf_time_role(measure_plan.bound_measure, query, config)
@@ -2719,28 +2708,10 @@ def _conversion_event_cte(
         if alias not in selected_aliases:
             select_fields.append(SqlField(expr, alias))
             selected_aliases.add(alias)
-        if match_entity != source_entity:
-            # The lookup keeps an event with no match entity, but events pair on this key
-            # with null-safe equality: it would pair with every other event that has none.
-            where_items = [*where_items, SqlBinary(expr, "IS NOT", SqlLiteral(None))]
     for index, dim_id in enumerate(property_dimensions):
         dim_expr, _ = _resolve_dimension_expr(dim_id, config)
         select_fields.append(SqlField(dim_expr, f"__property_{index + 1}"))
         selected_aliases.add(f"__property_{index + 1}")
-        if dimensions[dim_id].entity != source_entity:
-            # Properties pair with null-safe equality: two events whose lookup found nothing
-            # would both read NULL and count as having the same property. Test that the lookup
-            # matched (its entity's key is set), not the value: a match with a NULL property
-            # still pairs.
-            where_items = [
-                *where_items,
-                *[
-                    SqlBinary(key_expr, "IS NOT", SqlLiteral(None))
-                    for _, key_expr in _conversion_entity_key_fields(
-                        dimensions[dim_id].entity, config
-                    )
-                ],
-            ]
     for dim_id in extra_dimensions:
         dim_expr, alias = _resolve_dimension_expr(dim_id, config)
         if alias not in selected_aliases:
@@ -2819,10 +2790,7 @@ def _conversion_predicate_set_ctes(
         query=SqlSelect(
             select=select_fields,
             from_table=SqlTableRef(name=source_name, alias="predicate_source"),
-            where=[
-                _predicate_where_condition(predicate.op, predicate.value),
-                *_entity_key_present(predicate.entity, config),
-            ],
+            where=[_predicate_where_condition(predicate.op, predicate.value)],
             distinct=True,
         ),
     )

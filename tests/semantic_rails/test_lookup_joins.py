@@ -1,9 +1,14 @@
-"""Lookups keep the rows they find no match for.
+"""Lookups keep the rows they find no match for, on the main path.
 
 A many-to-one (or one-to-one) hop only adds attributes, so a row whose foreign key is NULL or
-matches no row must keep its measure value: it groups under NULL for the looked-up dimensions,
-and grouped rows add up to the ungrouped total. A filter on a looked-up dimension still drops
-such rows unless it asks for NULL, as it does for a NULL value in the row itself.
+matches no row must keep its measure value when the query groups or filters by a dimension the
+hop looks up: it groups under NULL, and grouped rows add up to the ungrouped total. A filter on
+a looked-up dimension still drops such rows unless it asks for NULL, as it does for a NULL value
+in the row itself.
+
+Every other read of a lookup keeps the inner join it always had (see the last section): a time
+role, a metric filter and its context, a conversion, a qualified set, an entity-set ratio, and
+a dimension a rollup holds.
 
 Fixture: boardings of flight legs, with a crew roster keyed by (leg, person). Boarding 7 has
 no person, boarding 8 a person with no record (P9), boarding 11 a leg with no record (L9),
@@ -28,6 +33,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.dialects import _WAREHOUSE_CONNECTORS
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import AggregateRelationConfig
 
 SEED_SQL = """
 CREATE TABLE airports (airport_code VARCHAR, city VARCHAR);
@@ -145,6 +151,9 @@ MODELS = {
               accumulation: {kind: flow}}
             boarding_population: {label: Boarding population, kind: entity_count,
               entity_key: boarding_id, accumulation: {kind: population}}
+            departing_boardings: {label: Boardings by departure, kind: entity_count,
+              entity_key: boarding_id, accumulation: {kind: event},
+              times: [temporal_role.crew_leg_departure_date]}
         """,
     "checkins": """
         model:
@@ -287,9 +296,7 @@ def _ask(runtime: Runtime, measure: str, *, group_by: str = "", where=()) -> dic
     return {row.get(group_by) if group_by else None: float(row["value"]) for row in rows}
 
 
-def _conversion_rate(
-    runtime: Runtime, properties: tuple[str, ...] = (), **extra: Any
-) -> list[dict[str, Any]]:
+def _conversion_query(properties: tuple[str, ...] = (), **extra: Any) -> dict[str, Any]:
     expression = {
         **({"constant_properties": list(properties)} if properties else {}),
         "kind": "conversion",
@@ -299,8 +306,13 @@ def _conversion_rate(
         "base": {"kind": "aggregate", "measure": "measure.crew.checkin_count"},
         "converted": {"kind": "aggregate", "measure": "measure.crew.boarding_count"},
     }
-    query = {"version": 1, "select": [{"as": "rate", "expression": expression}], **extra}
-    return runtime.query(query)["rows"]
+    return {"version": 1, "select": [{"as": "rate", "expression": expression}], **extra}
+
+
+def _conversion_rate(
+    runtime: Runtime, properties: tuple[str, ...] = (), **extra: Any
+) -> list[dict[str, Any]]:
+    return runtime.query(_conversion_query(properties, **extra))["rows"]
 
 
 def test_null_and_orphan_foreign_keys_group_under_null(runtime, gold):
@@ -512,6 +524,8 @@ def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
 
 BOARDED_MONTH = "temporal_role.crew_boarding_boarded_at__month"
 BOARDED_MONTHLY = {"temporal_role": "temporal_role.crew_boarding_boarded_at", "grain": "month"}
+DEPARTED_MONTHLY = {"temporal_role": "temporal_role.crew_leg_departure_date", "grain": "month"}
+LOOKUP_TABLES = ("airports", "legs", "people", "crew_roster")
 
 
 def _busy_leg(measure: str, boardings: int) -> dict[str, Any]:
@@ -532,55 +546,119 @@ def _scoped(measure: str, *predicates: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _monthly(runtime: Runtime, expression: dict[str, Any], *, group_by=()) -> list[dict[str, Any]]:
-    query = {
+def _monthly_query(expression: dict[str, Any], *, group_by=(), time=None) -> dict[str, Any]:
+    return {
         "version": 1,
         "select": [{"as": "value", "expression": expression}],
-        "time": BOARDED_MONTHLY,
+        "time": time or BOARDED_MONTHLY,
         **({"group_by": list(group_by)} if group_by else {}),
     }
-    return runtime.query(query)["rows"]
 
 
-def test_a_metric_filter_keeps_a_row_whose_context_entity_has_no_match(runtime, gold):
-    """Boardings whose leg has any boarding that month, grouped by the boarder's kind: the
-    person is a context entity of the filter. Boarding 7 (no person) and 8 (a person with no
-    record) qualify on their own leg and must stay, under NULL, so the grouped rows add up to
-    the ungrouped total (boardings 12 and 13 have no leg, so no filter row applies to them)."""
-    expression = _scoped("boarding_count", _busy_leg("boarding_count", 1))
-
-    total = sum(row["value"] for row in _monthly(runtime, expression))
-    grouped = _monthly(runtime, expression, group_by=[EMPLOYEE])
-
-    by_employee: dict[Any, int] = {}
-    for row in grouped:
-        by_employee[row[EMPLOYEE]] = by_employee.get(row[EMPLOYEE], 0) + row["value"]
-    assert total == 11
-    assert by_employee == {False: 4, True: 5, None: 2}
-    assert by_employee == gold(
-        f"SELECT {SQL_EMPLOYEE}, COUNT(*) FROM boardings AS b WHERE b.leg_id IS NOT NULL GROUP BY 1"
-    )
+def _contextual_person_filter(measure: str, boardings: int) -> dict[str, Any]:
+    return {
+        "expression": {
+            "kind": "metric_predicate",
+            "entity": "entity.crew_person",
+            "scope_mode": "contextual",
+            "input": {"measure": f"measure.crew.{measure}"},
+            "op": "=",
+            "value": boardings,
+        },
+        "op": "=",
+        "value": True,
+    }
 
 
-def test_an_entity_set_ratio_does_not_qualify_rows_without_the_predicate_entity(runtime):
-    """Of each month's boardings on a leg, the share on a leg with two boardings or more that
-    month. Boardings 12 and 13 have no leg, so no set qualifies them: March has no row, where a
-    NULL key in the set would give it the share 1.0."""
+def _ratio_of_busy_legs() -> dict[str, Any]:
     measure = "boarding_population"  # a population count takes the anchored entity-set path
-    expression = {
+    return {
         "kind": "ratio",
         "numerator": _scoped(measure, _busy_leg(measure, 1), _busy_leg(measure, 2)),
         "denominator": _scoped(measure, _busy_leg(measure, 1)),
     }
 
-    rows = _monthly(runtime, expression)
+
+def _lookup_left_joins(config, query: dict[str, Any]) -> list[str]:
+    sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
+    return re.findall(rf"LEFT JOIN ({'|'.join(LOOKUP_TABLES)})\b", sql)
+
+
+def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, package):
+    """Departing boardings by month of the leg's departure, grouped by the boarder's kind. The
+    leg is what the time role reads, so a boarding with no leg record (11, 12, 13) has no
+    month: it stays out, as before, and no NULL time bucket appears. The person hop, which only
+    the grouping reads, keeps its rows (boardings 7 and 8, under NULL)."""
+    query = _monthly_query(
+        {"measure": "measure.crew.departing_boardings"}, group_by=[EMPLOYEE], time=DEPARTED_MONTHLY
+    )
+
+    rows = runtime.query(query)["rows"]
+
+    role = "temporal_role.crew_leg_departure_date__month"
+    assert all(row[role] is not None for row in rows)
+    assert sum(row["value"] for row in rows) == 10  # boardings 1-10
+    assert {(row[EMPLOYEE], row[role].month): row["value"] for row in rows} == {
+        (False, 1): 3,
+        (True, 1): 3,
+        (None, 1): 1,  # boarding 7
+        (True, 2): 2,
+        (None, 2): 1,  # boarding 8
+    }
+    assert _lookup_left_joins(load_package_config(str(package)), query) == ["people"]
+
+
+def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime, package):
+    """The airport city is read through the leg, which the time role reads too: the leg hop is
+    inner, the airport hop only the grouping reads keeps its rows (boardings 8-10, whose
+    airport has no record, group under NULL)."""
+    query = _monthly_query(
+        {"measure": "measure.crew.departing_boardings"}, group_by=[CITY], time=DEPARTED_MONTHLY
+    )
+
+    rows = runtime.query(query)["rows"]
+
+    by_city: dict[Any, int] = {}
+    for row in rows:
+        by_city[row[CITY]] = by_city.get(row[CITY], 0) + row["value"]
+    assert by_city == {"New York": 4, "Chicago": 3, None: 3}
+    assert _lookup_left_joins(load_package_config(str(package)), query) == ["airports"]
+
+
+def test_a_metric_filter_and_its_context_keep_the_inner_join(runtime, package, gold):
+    """Boardings whose leg has any boarding that month, grouped by the boarder's kind: the
+    person is a context entity of the filter. The filter's set is matched on the person, so a
+    boarding whose person lookup found nothing (7 and 8) has no set to be in: it stays out, as
+    before, and the query joins nothing with LEFT."""
+    query = _monthly_query(
+        _scoped("boarding_count", _busy_leg("boarding_count", 1)), group_by=[EMPLOYEE]
+    )
+
+    rows = runtime.query(query)["rows"]
+
+    by_employee: dict[Any, int] = {}
+    for row in rows:
+        by_employee[row[EMPLOYEE]] = by_employee.get(row[EMPLOYEE], 0) + row["value"]
+    assert by_employee == {False: 4, True: 5}
+    assert by_employee == gold(
+        f"SELECT {SQL_EMPLOYEE}, COUNT(*) FROM boardings AS b"
+        f" WHERE b.leg_id IS NOT NULL AND {SQL_EMPLOYEE} IS NOT NULL GROUP BY 1"
+    )
+    assert _lookup_left_joins(load_package_config(str(package)), query) == []
+
+
+def test_an_entity_set_ratio_keeps_the_inner_join(runtime):
+    """Of each month's boardings on a leg, the share on a leg with two boardings or more that
+    month. Boardings 12 and 13 have no leg, so no set qualifies them: March's share is 0.0, as
+    the inner joins have always answered, and never the 1.0 a NULL key in the set would give."""
+    rows = runtime.query(_monthly_query(_ratio_of_busy_legs()))["rows"]
 
     months = {row[BOARDED_MONTH].month: row["value"] for row in rows}
     # January: legs L1 (4) and L2 (3), all qualify. February: L3 (3) qualifies, L9 (1) doesn't.
-    assert months == {1: pytest.approx(7 / 7), 2: pytest.approx(3 / 4)}
+    assert months == {1: pytest.approx(7 / 7), 2: pytest.approx(3 / 4), 3: 0.0}
 
 
-def test_a_metric_filter_context_read_through_a_lookup_does_not_pair_with_a_null_group(
+def test_a_contextual_filter_read_through_a_lookup_does_not_pair_with_a_null_group(
     orphan_leg_runtime,
 ):
     """Meals per leg, for people with exactly two boardings on that leg. The meal is two hops
@@ -591,22 +669,98 @@ def test_a_metric_filter_context_read_through_a_lookup_does_not_pair_with_a_null
         "version": 1,
         "select": [{"as": "value", "expression": {"measure": "measure.crew.meal_count"}}],
         "group_by": [LEG],
-        "metric_filters": [
-            {
-                "expression": {
-                    "kind": "metric_predicate",
-                    "entity": "entity.crew_person",
-                    "scope_mode": "contextual",
-                    "input": {"measure": "measure.crew.boarding_count"},
-                    "op": "=",
-                    "value": 2,
-                },
-                "op": "=",
-                "value": True,
-            }
-        ],
+        "metric_filters": [_contextual_person_filter("boarding_count", 2)],
     }
 
     rows = orphan_leg_runtime.query(query)["rows"]
 
     assert {row[LEG]: row["value"] for row in rows} == {"L1": 1}
+
+
+def test_a_dimension_a_rollup_holds_keeps_the_inner_join(package):
+    """The base tables answer as a rollup that pre-joined the dimension does, so routing never
+    changes an answer: a rollup of the boardings that holds the airport city keeps every
+    lookup of that city inner, however the query reaches it."""
+    base = load_package_config(str(package))
+    rollup = AggregateRelationConfig(
+        id="aggregate_relation.city",
+        relation="boardings_by_city",
+        source_entity="entity.crew_boarding",
+        dimensions=[CITY],
+    )
+    query = {
+        "version": 1,
+        "select": [{"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}],
+        "group_by": [CITY, EMPLOYEE],
+    }
+
+    with_rollup = dataclasses.replace(base, aggregate_relations=[rollup])
+
+    assert _lookup_left_joins(base, query) == ["legs", "airports", "people"]
+    assert _lookup_left_joins(with_rollup, query) == ["people"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        pytest.param(_conversion_query(), id="conversion-match-key"),
+        pytest.param(_conversion_query((CITY,)), id="conversion-property"),
+        pytest.param(_conversion_query(group_by=[EMPLOYEE]), id="conversion-grouped"),
+        pytest.param(
+            _conversion_query(
+                metric_filters=[
+                    {
+                        "expression": {
+                            "kind": "metric_predicate",
+                            "entity": "entity.crew_leg",
+                            "scope_mode": "entity_only",
+                            "input": {"measure": "measure.crew.boarding_count"},
+                            "op": ">=",
+                            "value": 2,
+                        },
+                        "op": "=",
+                        "value": True,
+                    }
+                ]
+            ),
+            id="conversion-predicate-set",
+        ),
+        pytest.param(_monthly_query(_ratio_of_busy_legs()), id="entity-set-ratio"),
+        pytest.param(
+            _monthly_query(_scoped("boarding_count", _busy_leg("boarding_count", 1))),
+            id="qualified-set",
+        ),
+        pytest.param(
+            # The set's own query groups by the airport, read through the leg: a nested query.
+            _monthly_query(
+                _scoped(
+                    "boarding_count",
+                    {**_busy_leg("boarding_count", 1), "entity": "entity.crew_airport"},
+                )
+            ),
+            id="nested-query-of-a-qualified-set",
+        ),
+        pytest.param(
+            {
+                "version": 1,
+                "select": [{"as": "value", "expression": {"measure": "measure.crew.meal_count"}}],
+                "group_by": [LEG],
+                "metric_filters": [_contextual_person_filter("boarding_count", 2)],
+            },
+            id="metric-filter-context",
+        ),
+        pytest.param(
+            {
+                "version": 1,
+                "select": [
+                    {"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}
+                ],
+                "group_by": [EMPLOYEE],
+                "metric_filters": [_contextual_person_filter("boarding_count", 2)],
+            },
+            id="metric-filter-with-a-lookup-grouping",
+        ),
+    ],
+)
+def test_every_other_read_of_a_lookup_keeps_the_inner_join(package, query):
+    assert _lookup_left_joins(load_package_config(str(package)), query) == []

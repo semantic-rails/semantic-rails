@@ -1266,18 +1266,19 @@ join paths.
   prefers the direct table over the multi-hop path
   (`path_preference` on `RelationshipConfig` handles this).
 
-A hop that looks up the one side of a relationship (`N:1`, or `1:1` either way)
-is a left join, so it never drops a row. A row whose foreign key is NULL, or
-matches no row, keeps its measure value and groups under NULL for the dimensions
-it looks up; grouped rows add up to the ungrouped total. A filter on such a
-dimension treats the row as it treats a NULL value in the row itself: `IS NULL`
-selects it, so "passengers excluding crew" through a crew-roster lookup is a
-`crew_role IS NULL` filter, while `=`, `!=`, `IN` and `NOT IN` never match it.
-Hops that fan out keep their inner joins. So does every lookup on ClickHouse, which
-still drops the rows a lookup finds no match for: without `join_use_nulls` (which
-breaks its conversion-window joins), an unmatched outer-join column reads `''` or
-`0` there unless it is `Nullable`, so a kept row would pair, group and filter as if
-it had a real value.
+A query that groups or filters by a dimension looked up through a many-to-one or
+one-to-one hop joins it with a left join, so the measure keeps a row whose foreign key
+is NULL or matches no row: it groups under NULL, and grouped rows add up to the
+ungrouped total. A filter on such a dimension treats the row as it treats a NULL
+value in the row itself: `IS NULL` selects it, so "passengers excluding crew"
+through a crew-roster lookup is a `crew_role IS NULL` filter, while `=`, `!=`, `IN`
+and `NOT IN` never match it. Every other read of a lookup keeps its inner join, so a
+row with no match is left out, as before: a time role read through a lookup, a
+measure's own filter, a metric filter and the context entities it matches on,
+conversions (their match keys and properties), qualified sets and metric predicates,
+anchored entity-set ratios, and a dimension a rollup of the measure's model holds
+(below). So do hops that fan out, and every hop on ClickHouse, where an unmatched
+outer-join column reads `''` or `0` unless it is `Nullable`, not NULL.
 
 Long chains are first-class: a measure can be grouped or filtered by a
 dimension four relationships away (`line_item → order → customer → city →
@@ -1466,12 +1467,12 @@ Routing is conservative in the MVP:
   join would have repeated fact rows in every other column.
   Another model's key read from a foreign key (such as the customer key) needs a
   `path` of the one relationship between the two models, and doesn't route when
-  two relationships link them. Build a pre-joined column with a left join, as the
-  base path joins it: a fact row with no match stays, under NULL. A rollup with a
-  pre-joined column answers only queries that group or filter by that column, and
-  only once certified, as if it declared `requires_certification` (below): a rollup
-  built with an inner join, as earlier versions of this guide said to, leaves those
-  rows out and would answer differently from the base tables. A measure whose
+  two relationships link them. Build a pre-joined column with an inner join: the
+  base path joins a dimension a rollup of the measure's model holds with an inner
+  join too, so a fact row with no match is left out of both and routing never
+  changes an answer. So a rollup with a pre-joined column answers only queries that
+  group or filter by that column; the base path doesn't join it otherwise and keeps
+  such rows. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
   An `aggregate_relations:` entry must declare its `temporal_role`.
 - Every selected measure must have a column in the variant.
@@ -1483,8 +1484,7 @@ Routing is conservative in the MVP:
 - An `aggregate_relations:` entry that declares `filters` doesn't route yet: it
   holds only the rows its filters kept.
 - A rollup that declares `requires_certification: true` (on a variant or an
-  `aggregate_relations:` entry; default `false`), or holds a pre-joined column,
-  routes only while the host's
+  `aggregate_relations:` entry; default `false`) routes only while the host's
   certification provider says it is certified, and never when none is installed
   (`not_certified`). A host installs one at startup with
   `semantic_rails.acceleration.routing.set_certification_provider(provider)`, where
@@ -1497,7 +1497,7 @@ Routing is conservative in the MVP:
   rollup's buckets. Every other query the rules let it answer re-aggregates those
   buckets. A rollup whose own grain its time role can't be queried at (an hour
   rollup under a role that starts at day) isn't certifiable. A runtime doesn't
-  use its compile cache for a package with such a rollup (either kind): every request compiles
+  use its compile cache for a package with such a rollup: every request compiles
   again, which costs compile time, so that a revoked certification applies to the
   next request. A rollup under a role whose `timezone:` isn't `UTC` or `Etc/UTC`
   isn't certifiable yet (`timezone_not_utc`), so its queries use the base tables.

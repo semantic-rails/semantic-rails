@@ -10,7 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
-from ..acceleration.selection import recombine_aggregation
+from ..acceleration.selection import recombine_aggregation, rollup_dimension_entities
 from ..ast import normalize_query
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -85,6 +85,7 @@ from .dependencies import (
     capture_objects,
     cut_owners,
     leaf_predicate_roles,
+    plan_is_root,
     project_is_cut,
     recipe_objects,
     record_ids,
@@ -104,7 +105,6 @@ from .paths import (
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
     _entity_key_dimension_ids,
-    _entity_key_present,
     _expression_root_entity,
     _join_condition,
     _joins_for_paths,
@@ -1929,6 +1929,29 @@ def _source_rollup_leaf_select(
     )
 
 
+def _lookup_selections(
+    plan: LogicalPlan, measure_plans: list[MeasurePlan], config: PackageConfig
+) -> frozenset[tuple[str, str]]:
+    """The path selections whose N:1 and 1:1 hops keep the rows they find no match for.
+
+    Only the request's own measure leaf, and only the dimensions the query groups or filters
+    by. Every other read of a lookup keeps its INNER join: a time role, a measure or metric
+    filter, a metric predicate and its context, a nested query, a conversion, an entity-set
+    ratio, and a dimension some rollup of the measure's model holds pre-joined.
+    """
+    from ..compiler import _all_metric_predicates
+
+    if not plan_is_root() or any(_all_metric_predicates(plan, mp) for mp in measure_plans):
+        return frozenset()
+    first = measure_plans[0]
+    prejoined = rollup_dimension_entities(config, first.source_entity)
+    return frozenset(
+        (selection.target_entity, selection.purpose)
+        for selection in first.path_selections
+        if selection.purpose in {"group_by", "where"} and selection.target_entity not in prejoined
+    )
+
+
 def _measure_leaf_select(
     plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
 ) -> SqlSelect:
@@ -2080,7 +2103,11 @@ def _measure_leaf_select(
         return source_rollup
     joins = [
         *_joins_for_paths(
-            measure.entity, measure_plan.path_selections, config, time_spec=plan.time
+            measure.entity,
+            measure_plan.path_selections,
+            config,
+            time_spec=plan.time,
+            lookup_selections=_lookup_selections(plan, [measure_plan], config),
         ),
         *predicate_joins,
     ]
@@ -2219,7 +2246,7 @@ def _minimal_predicate_set_ctes(
             select=select_fields,
             from_table=SqlTableRef(name=source_name, alias="predicate_source"),
             joins=extra_joins,
-            where=[where_condition, *_entity_key_present(predicate.entity, config)],
+            where=[where_condition],
             distinct=True,
         ),
     )
@@ -3801,7 +3828,11 @@ def _measure_group_leaf_select(
 
     joins = list(
         _joins_for_paths(
-            first_measure.entity, first_plan.path_selections, config, time_spec=plan.time
+            first_measure.entity,
+            first_plan.path_selections,
+            config,
+            time_spec=plan.time,
+            lookup_selections=_lookup_selections(plan, measure_plans, config),
         )
     )
     if leaf_calendar_join is not None:

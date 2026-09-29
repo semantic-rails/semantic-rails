@@ -99,7 +99,7 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
                 inventory.date_day,
                 inventory.active_menu_count
               FROM jaffle_store_inventory_snapshot AS inventory
-              LEFT JOIN jaffle_store AS store
+              INNER JOIN jaffle_store AS store
                 ON inventory.store_id = store.store_id
               INNER JOIN order_qualified AS orders
                 ON inventory.store_id = orders.store_id
@@ -192,7 +192,7 @@ def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(run
                 inventory.date_day,
                 inventory.active_menu_count
               FROM jaffle_store_inventory_snapshot AS inventory
-              LEFT JOIN jaffle_store AS store
+              INNER JOIN jaffle_store AS store
                 ON inventory.store_id = store.store_id
               INNER JOIN session_qualified AS sessions
                 ON inventory.store_id = sessions.store_id
@@ -369,7 +369,7 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
                 session.customer_id,
                 session.started_at
               FROM jaffle_storefront_session AS session
-              LEFT JOIN jaffle_store AS store
+              INNER JOIN jaffle_store AS store
                 ON session.store_id = store.store_id
               INNER JOIN qualified_stores AS qualified
                 ON session.store_id IS NOT DISTINCT FROM qualified.store_id

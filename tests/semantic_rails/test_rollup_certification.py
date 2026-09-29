@@ -10,7 +10,6 @@ import pytest
 
 from semantic_rails.acceleration.certification import certify_aggregate_relation
 from semantic_rails.acceleration.routing import aggregate_routing, set_certification_provider
-from semantic_rails.acceleration.selection import relation_needs_certification
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
@@ -103,67 +102,6 @@ def test_revoked_certification_applies_to_the_next_request(tmp_path: Path, insta
     ungated = Runtime.from_path(str(tmp_path / "ungated"))
     ungated.compile(payload)
     assert ungated.compile(payload)["compile_stats"]["cache_hit"]  # other packages still cache
-
-
-_INNER_REGION = {
-    **_REGION,
-    "id": "aggregate_relation.region_inner",
-    "relation": "order_region_inner_monthly",  # built with an inner join: no row for order 13
-}
-_BY_REGION = {**_rollup_query(_REVENUE, "sum", "month"), "group_by": ["dimension.region"]}
-
-
-@pytest.mark.parametrize(
-    ("rollup", "answer", "reason"),
-    [
-        # The rollup doesn't declare requires_certification: its pre-joined column needs it.
-        pytest.param(_INNER_REGION, None, "not_certified", id="inner-built-uncertified"),
-        pytest.param(_INNER_REGION, False, "not_certified", id="inner-built-refused"),
-        pytest.param(_REGION, None, "not_certified", id="left-built-uncertified"),
-        pytest.param(_REGION, True, None, id="left-built-certified"),
-    ],
-)
-def test_a_pre_joined_column_routes_only_when_certified(
-    tmp_path: Path, install, rollup, answer, reason
-):
-    provider = None if answer is None else _Provider(answer)
-    install(provider)
-
-    routing = _routed_answers(tmp_path, ({}, [rollup], {"ship_to": False}), _BY_REGION)
-
-    assert _decisions(routing) == {f"leaf_1:{rollup['id']}": reason or "selected"}
-
-
-def test_a_pre_joined_rollup_is_not_served_from_the_compile_cache(tmp_path: Path, install):
-    """Its certification can be revoked between requests, as for a declared requirement."""
-    _rollup_package(tmp_path / "p", {}, [_REGION], {"ship_to": False})
-    runtime = Runtime.from_path(str(tmp_path / "p"))
-    provider = _Provider(True)
-    install(provider)
-
-    def selected() -> list[str]:
-        compiled = runtime.compile({**_BY_REGION, "verbosity": "full"})
-        return compiled["performance_plan"]["aggregate_routing"]["selected"]
-
-    assert selected() == [_REGION["id"]]
-    provider.answer = False
-    assert selected() == []
-
-
-def test_a_rollup_that_can_never_route_needs_no_certification(tmp_path: Path, install):
-    """Its pre-joined column has no declared path, so the query is refused for the join path
-    before certification is asked, and the runtime keeps caching the package's compiles."""
-    _rollup_package(tmp_path / "p", {}, [_NO_PATH], {"ship_to": False})
-    runtime = Runtime.from_path(str(tmp_path / "p"))
-    provider = _Provider(True)
-    install(provider)
-    payload = {**_BY_REGION, "verbosity": "full"}
-
-    (row,) = runtime._config.aggregate_relations
-    assert not relation_needs_certification(row, runtime._config)
-    assert runtime.compile(payload)["performance_plan"]["aggregate_routing"]["selected"] == []
-    assert runtime.compile(payload)["compile_stats"]["cache_hit"]
-    assert provider.asked == []
 
 
 def _entry(**fields) -> tuple:
@@ -372,17 +310,17 @@ def test_certify_pairs_answer_alike(tmp_path: Path, rollups: tuple, relation_id:
         assert bool(item["error"]) == (item["reason"] == "query_not_compiled")
         if not item["reason"]:  # the pair a host compares before certifying
             assert re.search(rf"\b{table}\b", item["rollup_sql"])
-            rollup = sorted(connection.execute(item["rollup_sql"]).fetchall(), key=str)
-            assert rollup == sorted(connection.execute(item["base_sql"]).fetchall(), key=str)
+            rollup = sorted(connection.execute(item["rollup_sql"]).fetchall())
+            assert rollup == sorted(connection.execute(item["base_sql"]).fetchall())
 
 
 def test_certify_pair_tells_a_mis_built_rollup_apart(tmp_path: Path):
-    """A region rollup built with an inner join leaves out order 13 (no such customer); the base
-    path's lookup keeps it under a null region. The rules pass; the rows don't."""
-    inner = {**_REGION, "id": "aggregate_relation.region_inner"}
-    inner["relation"] = "order_region_inner_monthly"
-    _rollup_package(tmp_path / "p", {}, [inner], {"ship_to": False})
-    verdict = certify_aggregate_relation(load_package_config(str(tmp_path / "p")), inner["id"])
+    """A region rollup built with an outer join keeps order 13 (no such customer) under a null
+    region; the base path's inner join leaves it out. The rules pass; the rows don't."""
+    left = {**_REGION, "id": "aggregate_relation.region_left"}
+    left["relation"] = "order_region_left_monthly"
+    _rollup_package(tmp_path / "p", {}, [left], {"ship_to": False})
+    verdict = certify_aggregate_relation(load_package_config(str(tmp_path / "p")), left["id"])
     (item,) = verdict["measures"]
     connection = duckdb.connect()
     connection.execute(_ROLLUP_SEED)

@@ -173,7 +173,7 @@ def test_entity_in_terms_of_order_count_by_product_type_keeps_order_time_lookup(
         assert report["ok"] is True
         rendered = report["explain"]["rendered_sql"]
         assert "FROM jaffle_item" in rendered
-        assert "LEFT JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id" in rendered
+        assert "INNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id" in rendered
         assert "DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))" in rendered
 
         join_nodes = [
@@ -217,8 +217,10 @@ def test_entity_in_terms_of_order_count_by_product_type_allows_root_lookup_filte
         assert report["ok"] is True
         rendered = report["explain"]["rendered_sql"]
         assert "FROM jaffle_item" in rendered
-        assert "LEFT JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id" in rendered
-        assert "LEFT JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id" in rendered
+        assert "INNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id" in rendered
+        assert (
+            "INNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id" in rendered
+        )
         assert "jaffle_store.store_name = 'Brooklyn'" in rendered
     finally:
         runtime.close()
@@ -1346,7 +1348,7 @@ def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(pack
 
     predicate_section = rendered.split("predicate_jaffle_store_set_1 AS (", 1)[0]
     assert "jaffle_store.store_name" not in predicate_section
-    assert "LEFT JOIN jaffle_store ON" in rendered
+    assert "INNER JOIN jaffle_store ON" in rendered
     assert "LEFT JOIN predicate_jaffle_store_set_1" in rendered
     assert "FULL OUTER JOIN" not in rendered
     assert compiled["explain"].performance_plan["full_outer_alignments"] == 0
@@ -1713,7 +1715,7 @@ def test_contextual_metric_predicates_inherit_time_and_minimal_context_entities(
     assert '"dimension.jaffle_store_id"' in store_sql
     assert '"temporal_role.jaffle_order_time__month"' in store_sql
     assert (
-        'jaffle_order.store_id IS NOT DISTINCT FROM leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id"'
+        'jaffle_store.store_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id"'
         in store_sql
     )
 
@@ -1915,7 +1917,7 @@ def test_conversion_by_converted_side_product_type_uses_bound_denominator_policy
         assert "conversion_numerator" in rendered
         assert "RANK() OVER" in rendered
         assert "INNER JOIN jaffle_item ON jaffle_order.order_id = jaffle_item.order_id" in rendered
-        assert "LEFT JOIN jaffle_product ON jaffle_item.sku = jaffle_product.sku" in rendered
+        assert "INNER JOIN jaffle_product ON jaffle_item.sku = jaffle_product.sku" in rendered
 
         result = runtime.query(
             {

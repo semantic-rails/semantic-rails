@@ -34,7 +34,6 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .acceleration.selection import relation_needs_certification
 from .ast import normalize_query, rewrite_select_shorthand
 from .cache import (
     CachedCompilation,
@@ -1979,10 +1978,7 @@ class Runtime:
         # see cache.py:33,37).
         # A certification can be revoked between requests, so a package with a rollup that
         # requires one compiles every request.
-        cacheable = not any(
-            relation_needs_certification(row, self._config)
-            for row in self._config.aggregate_relations
-        )
+        cacheable = not any(row.requires_certification for row in self._config.aggregate_relations)
         with self._cache_lock:
             cached = self._compile_cache.get(key) if cacheable else None
         if cached is not None:

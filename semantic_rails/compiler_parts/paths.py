@@ -29,7 +29,6 @@ from ..expressions import (
     SemanticExpr,
     expr_kind,
 )
-from ..fanout import hop_sides
 from ..ir import BoundMeasure, PathSelection
 from ..schema import PackageConfig, RelationshipConfig
 from ..sql_ast import SqlBinary, SqlIdentifier, SqlIsNull, SqlJoin, SqlLiteral, SqlTableRef
@@ -150,18 +149,6 @@ def _entity_key_dimension_ids(entity_id: str, config: PackageConfig) -> list[str
         _dimension_index(config).get(dim.id)
         key_dims.append(dim.id)
     return key_dims
-
-
-def _entity_key_present(entity_id: str, config: PackageConfig) -> list[Any]:
-    """``IS NOT NULL`` on a qualified set's entity key columns.
-
-    The set joins with null-safe equality, and rows whose lookup found no such entity carry
-    a NULL key: a NULL key in the set would qualify every one of them.
-    """
-    return [
-        SqlBinary(SqlIdentifier(parts=["predicate_source", dim_id]), "IS NOT", SqlLiteral(None))
-        for dim_id in _entity_key_dimension_ids(entity_id, config)
-    ]
 
 
 def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
@@ -353,17 +340,17 @@ def _join_on_for_relationship(
 
 
 def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
-    """True when the hop reaches at most one row for each current row (N:1, 1:1).
-
-    A lookup only adds attributes, so it must keep the rows it finds no match for: they
-    group under NULL, and a filter on the looked-up attribute still excludes them unless
-    it asks for NULL. A hop that fans out (1:N, M:N) keeps its inner join, and so does every
-    hop on a warehouse whose outer join doesn't read NULL for an unmatched row.
+    """True when the hop reaches at most one row for each current row (N:1, 1:1) and the
+    warehouse's outer join reads NULL, not a type default, for an unmatched row (not ClickHouse).
     """
     if not dialect_for_warehouse(config.package.warehouse).outer_lookup_joins:
         return False
-    sides = hop_sides(rel.cardinality, forward=current_entity == rel.source_entity)
-    return sides is not None and sides[1] == "1" and sides[0] in ("1", "N")
+    if ":" not in rel.cardinality:
+        return False
+    near, far = [part.strip() for part in rel.cardinality.upper().split(":", 1)]
+    if current_entity != rel.source_entity:
+        near, far = far, near
+    return far == "1" and near in ("1", "N")
 
 
 def _joins_for_paths(
@@ -373,9 +360,28 @@ def _joins_for_paths(
     *,
     time_spec: dict[str, Any] | None = None,
     table_overrides: dict[str, str] | None = None,
+    lookup_selections: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[SqlJoin]:
+    """The joins for ``path_selections``, all INNER unless the path is temporal.
+
+    The one exception is the lookup left join: a selection named in ``lookup_selections``
+    (by ``(target_entity, purpose)``) joins its N:1 and 1:1 hops with LEFT, so a row whose
+    foreign key is NULL or unmatched stays, with NULL for what the hop looks up. A hop that
+    any other selection also walks stays INNER.
+    """
     entities = _entity_index(config)
     relationships = _relationship_index(config)
+    path_selections = list(path_selections)
+    inner_hops: set[tuple[str, str]] = set()
+    if lookup_selections:
+        for selection in path_selections:
+            if (selection.target_entity, selection.purpose) in lookup_selections:
+                continue
+            current = source_entity
+            for rel_id in selection.chosen_path:
+                rel = relationships[rel_id]
+                inner_hops.add((rel.id, current))
+                current = rel.target_entity if current == rel.source_entity else rel.source_entity
     joins: list[SqlJoin] = []
     overrides = dict(table_overrides or {})
     # Each physical table may appear in the FROM clause once, so it can
@@ -401,14 +407,16 @@ def _joins_for_paths(
             join_key = (rel.id, current_entity)
             existing = joined_via.get(right_table)
             if existing is None:
-                left = (
-                    nullable_path
-                    or bool(rel.temporal_validity)
-                    or _is_lookup_hop(rel, current_entity, config)
+                keep_rows = (
+                    (selection.target_entity, selection.purpose) in lookup_selections
+                    and join_key not in inner_hops
+                    and _is_lookup_hop(rel, current_entity, config)
                 )
                 joins.append(
                     SqlJoin(
-                        join_type="LEFT" if left else "INNER",
+                        join_type="LEFT"
+                        if nullable_path or rel.temporal_validity or keep_rows
+                        else "INNER",
                         table=SqlTableRef(name=right_table),
                         on=join_on,
                     )

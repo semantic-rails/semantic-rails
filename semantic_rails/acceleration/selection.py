@@ -194,11 +194,19 @@ def _prejoined_dimensions(row: AggregateRelationConfig, config: PackageConfig) -
     return prejoined
 
 
-def relation_needs_certification(row: AggregateRelationConfig, config: PackageConfig) -> bool:
-    """Whether ``row`` routes only once certified: it says so, or it holds a pre-joined column,
-    whose join (inner or left) decides which fact rows the rollup has, and no declaration says.
-    A rollup whose pre-joined columns can't be told (``None``) never routes, so needs none."""
-    return row.requires_certification or bool(_prejoined_dimensions(row, config))
+def rollup_dimension_entities(config: PackageConfig, source_entity: str) -> set[str]:
+    """The models whose dimensions a rollup of ``source_entity`` holds, pre-joined or not.
+
+    Read from the config, not the binding index: this is a routing fact, not an object read.
+    """
+    entity_of = {dim.id: dim.entity for dim in config.dimensions}
+    return {
+        entity_of[dim_id]
+        for row in config.aggregate_relations
+        if row.source_entity == source_entity
+        for dim_id in _aggregate_dimension_coverage(row)
+        if dim_id in entity_of
+    }
 
 
 def _aggregate_relation_rejection_reason(
@@ -244,8 +252,8 @@ def _aggregate_relation_rejection_reason(
             path is None or row.dimension_paths.get(dim) != path
             for dim, path in leaf.join_paths.items()
         )
-        # A pre-joined column answers only a query that groups or filters by that column too,
-        # since the base path doesn't join it otherwise and keeps the rows it finds no match for.
+        # A pre-joined column holds only the fact rows its inner join matched, as the base path
+        # has them only when the query groups or filters by that column too.
         or prejoined is None
         or prejoined - leaf.dimensions
     ):
@@ -267,9 +275,7 @@ def _aggregate_relation_rejection_reason(
         and not (row.measure_holds.get(measure_id) and _one_row_per_group(row, leaf, config))
     ):
         return "aggregation_not_reaggregable"
-    if not relation_certified(  # R9, once R1-R8 hold
-        config, row, required=relation_needs_certification(row, config)
-    ):
+    if not relation_certified(config, row):  # R9, once R1-R8 hold
         return NOT_CERTIFIED
     return ""
 

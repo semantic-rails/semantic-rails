@@ -9,6 +9,7 @@ import yaml
 
 from semantic_rails.acceleration import routing
 from semantic_rails.acceleration.routing import ROUTING_OFF, aggregate_routing
+from semantic_rails.acceleration.selection import rollup_dimension_entities
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
@@ -255,10 +256,10 @@ CREATE TABLE customers AS SELECT * FROM (VALUES ('c1', 'east', 1), ('c2', 'west'
 ALTER TABLE order_fact ADD COLUMN ship_to_id VARCHAR;
 UPDATE order_fact SET ship_to_id = CASE customer_id WHEN 'c1' THEN 'c2' ELSE 'c1' END;
 CREATE TABLE order_region_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
+ region, sum(amount) AS revenue FROM order_fact JOIN customers USING (customer_id) GROUP BY 1, 2;
+CREATE TABLE order_region_left_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  region, sum(amount) AS revenue FROM order_fact LEFT JOIN customers USING (customer_id)
  GROUP BY 1, 2;
-CREATE TABLE order_region_inner_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
- region, sum(amount) AS revenue FROM order_fact JOIN customers USING (customer_id) GROUP BY 1, 2;
 CREATE TABLE order_ship_to_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  ship_to_id AS customer_key, sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
 CREATE TABLE order_buyer_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
@@ -780,15 +781,12 @@ _SHIP_TO_KEY = {
             id="distinct-entity-grain-not-a-dimension",  # rows per order can't be grouped
         ),
         # A column pre-joined from another model routes only along the query's join path.
-        # ... and only once certified: no provider is installed here (see test_rollup_certification).
-        pytest.param(
-            ({}, [_REGION], {"ship_to": False}), _BY_REGION, "not_certified", id="pre-joined-path"
-        ),
+        pytest.param(({}, [_REGION], {"ship_to": False}), _BY_REGION, None, id="pre-joined-path"),
         pytest.param(
             ({}, [_REGION], {"ship_to": False}),
             _rollup_query(_REVENUE, "sum", "month"),
             "join_path_mismatch",
-            id="pre-joined-column-unused",  # how its join treated order 13 (no customer) is unknown
+            id="pre-joined-column-unused",  # its inner join left out order 13 (no such customer)
         ),
         pytest.param(
             ({}, [_NO_ROLE], {"ship_to": False}),
@@ -814,7 +812,7 @@ _SHIP_TO_KEY = {
                 _rollup_query(_REVENUE, "sum", "month"),
                 where=[{"field": "dimension.region", "op": "=", "value": "east"}],
             ),
-            "not_certified",
+            None,
             id="pre-joined-path-filter",
         ),
         pytest.param(
@@ -1055,7 +1053,15 @@ def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
         for name, c in compiled.items()
     }
 
-    assert rows["rollup"] == rows["base"] == rows["off"]
+    assert rows["rollup"] == rows["off"]
+    # A dimension a rollup holds from another model keeps its inner join in this package (see
+    # test_lookup_joins), so that routing never changes an answer; the package without the
+    # rollup has no such dimension to keep, and keeps the rows the lookup found no match for.
+    if not any(
+        rollup_dimension_entities(config, row.source_entity) - {row.source_entity}
+        for row in config.aggregate_relations
+    ):
+        assert rows["base"] == rows["off"]
     tables = {row.id: row.relation for row in config.aggregate_relations}
 
     def read(sql: str) -> set[str]:
