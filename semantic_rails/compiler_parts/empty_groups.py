@@ -6,6 +6,10 @@ measure counts as observed when at least one group holds a value: a non-NULL sum
 count above zero. Averages, minimums, maximums, stocks and distinct populations have no
 value for nothing and stay NULL, as do measures of already-aggregated values.
 
+A distinct population is settled the other way round: its count over no rows is 0 to SQL, but
+that is unobserved, not a count of nothing. It keeps its value while some group holds a
+count above zero and reads NULL when none does. Nothing turns its NULL into 0.
+
 Invariant: every such measure the projection reads comes from ``guarded_base``, and
 nothing else turns a measure NULL into 0. :func:`resolves_to_zero` is the only predicate
 and :func:`guard_empty_groups` the only place that builds the guard. Lowering checks its own
@@ -60,6 +64,9 @@ _ZERO_AGGREGATIONS = {"sum", "count", "count_distinct"}
 _COUNTING = {"count", "count_distinct"}
 # Semi-additive stocks and distinct populations have no value for nothing.
 ZERO_MEASURE_CLASSES = frozenset({"additive", "event_count", "entity_count"})
+_POPULATION_CLASSES = frozenset({"distinct_population"})
+# What ``zero`` holds for a distinct population instead of an aggregation.
+POPULATION = "population"
 
 
 def resolves_to_zero(
@@ -81,7 +88,11 @@ def resolves_to_zero(
 
 
 def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str, str]:
-    """The measure aliases of ``rows`` that resolve to zero, each with its aggregation."""
+    """The measure aliases of ``rows`` that guarded_base settles, each with its aggregation.
+
+    A measure that resolves to zero maps to its aggregation, and a distinct population to
+    ``POPULATION``.
+    """
     measures = _measure_index(config)
     zero: dict[str, str] = {}
     for row in rows:
@@ -89,6 +100,8 @@ def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str
         measure = measures.get(bound.measure_id)
         if measure is not None and resolves_to_zero(bound.aggregation, measure):
             zero[bound.alias] = (bound.aggregation or measure.default_aggregation).lower()
+        elif resolves_to_zero(bound.aggregation, measure, _POPULATION_CLASSES):
+            zero[bound.alias] = POPULATION
     return zero
 
 
@@ -109,13 +122,23 @@ def expr_resolves_to_zero(
     return False
 
 
+def settled_as(expr: SemanticExpr, config: PackageConfig) -> str | None:
+    """How guarded_base settles a whole expression: ``"sum"`` for a plain value that reads 0
+    over no rows, ``POPULATION`` for distinct populations, and None for any other output."""
+    if expr_resolves_to_zero(expr, config):
+        return "sum"
+    if expr_resolves_to_zero(expr, config, _POPULATION_CLASSES):
+        return POPULATION
+    return None
+
+
 def zero_outputs(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
-    """The outputs of a branch-combined plan that are 0 over no rows, each as a plain value."""
-    return {
-        alias: "sum"
+    """The outputs of a branch-combined plan that guarded_base settles, each as a plain value."""
+    settled = {
+        alias: settled_as(_parse_public_expr(payload), config)
         for alias, payload in plan.post_aggregation_exprs.items()
-        if expr_resolves_to_zero(_parse_public_expr(payload), config)
     }
+    return {alias: how for alias, how in settled.items() if how is not None}
 
 
 def guard_empty_groups(
@@ -124,8 +147,9 @@ def guard_empty_groups(
     """The ``guarded_base`` CTE: ``source`` with each ``zero`` measure's NULLs settled.
 
     ``zero`` maps a measure alias to its aggregation. Its NULL reads 0 while some row of the
-    whole grouped result holds a value, and stays NULL when none does. The other measures
-    pass through. It sits below the projection, so a LIMIT or a metric filter can't change
+    whole grouped result holds a value, and stays NULL when none does. A ``POPULATION`` keeps
+    its value while some row holds a count above zero and reads NULL when none does. The
+    other measures pass through. It sits below the projection, so a LIMIT or a metric filter can't change
     which groups it sees.
     """
     fields_: list[SqlField] = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
@@ -133,12 +157,15 @@ def guard_empty_groups(
         value: Any = SqlIdentifier(parts=["base", alias])
         aggregation = zero.get(alias)
         if aggregation is not None:
-            seen = SqlCall("MAX" if aggregation in _COUNTING else "COUNT", [value])
+            counting = aggregation in _COUNTING or aggregation == POPULATION
+            seen = SqlCall("MAX" if counting else "COUNT", [value])
             value = SqlCase(
                 whens=[
                     SqlCaseWhen(
                         SqlBinary(SqlWindow(function=seen), ">", SqlLiteral(0)),
-                        SqlCall("COALESCE", [value, SqlLiteral(0)]),
+                        value
+                        if aggregation == POPULATION
+                        else SqlCall("COALESCE", [value, SqlLiteral(0)]),
                     )
                 ],
                 else_expr=None,

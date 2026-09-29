@@ -168,6 +168,24 @@ def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) 
     assert warning["severity"] == "warning"
 
 
+def test_a_distinct_population_over_nothing_reads_null_and_says_so(runtime: Runtime) -> None:
+    customers = {"measure": "measure.jaffle.customer_count"}
+    everyone = runtime.query({"version": 2, "select": _select(customers=customers)})
+    (raw,) = _gold(runtime, "SELECT COUNT(DISTINCT customer_id) AS customers FROM jaffle_customer")
+    assert raw["customers"] > 0
+    assert everyone["rows"] == [{"customers": raw["customers"]}]
+    assert not _warnings(everyone)
+
+    # SQL counts 0 distinct customers over no rows; nothing was observed, so this answer is NULL.
+    nothing = runtime.query(
+        {"version": 2, "select": _select(customers=customers), "where": NO_SUCH_STORE}
+    )
+    assert nothing["rows"] == [{"customers": None}]
+    (warning,) = _warnings(nothing)
+    assert warning["details"]["outputs"] == ["customers"]
+    assert warning["object_ids"] == ["measure.jaffle.customer_count"]
+
+
 def test_only_the_input_with_no_data_reads_null_beside_one_that_has_data(runtime: Runtime) -> None:
     none = {**REVENUE, "kind": "aggregate", "filter": {"all": NO_SUCH_STORE}}
     response = runtime.query(
