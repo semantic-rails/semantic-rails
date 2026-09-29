@@ -1350,12 +1350,33 @@ def _unresolved_time_why(
         complete = caller_time.get("range") or (caller_time.get("start") and caller_time.get("end"))
         if complete or (not too_long and any(caller_time.get(key) for key in ("start", "end"))):
             return None
+    hour_hint = (
+        [
+            {
+                "kind": "state_hour_range",
+                "message": (
+                    "State the hours yourself in the plan tool's query argument: set "
+                    "query.time.start and query.time.end as ISO timestamps (end-exclusive, in "
+                    "the temporal role's time zone; the role must be a timestamp), for example "
+                    "start '2017-03-15T12:00:00' and end '2017-03-15T13:00:00' for 12:00 to "
+                    "13:00 on 15 March 2017, with the selected temporal_role and grain."
+                ),
+            }
+        ]
+        if window.time_of_day and not too_long
+        else []
+    )
     return {
         "code": "TIME_WINDOW_UNRESOLVED",
         "message": (
             f"The question exceeds the {_MAX_TIME_TEXT}-character time-resolution limit; "
             "its complete time scope could not be checked."
             if too_long
+            else "The question names a time of day or time zone "
+            f"({'; '.join(window.time_of_day)}). plan resolves days and coarser windows only, so "
+            "it returns no query: one without the hours (or in another zone) would answer a "
+            "different question."
+            if window.time_of_day
             else "The question states windows that differ from one another "
             f"({'; '.join(window.conflicts)}), so plan returns no query: picking one would "
             "answer a different question."
@@ -1368,9 +1389,11 @@ def _unresolved_time_why(
             "path": "time",
             "unresolved_phrases": list(phrases),
             **({"conflicting_phrases": list(window.conflicts)} if window.conflicts else {}),
+            **({"time_of_day_phrases": list(window.time_of_day)} if window.time_of_day else {}),
             **({"max_intent_chars": _MAX_TIME_TEXT} if too_long else {}),
         },
         "recovery_hints": [
+            *hour_hint,
             {
                 "kind": "rephrase_time_window",
                 "message": (

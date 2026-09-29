@@ -1,6 +1,6 @@
 """plan resolves time phrases and labels without changing the question.
 
-A time of day used to widen to its whole day, a restated window (``Q1 2017
+A time of day or zone used to widen to its whole day (plan now refuses it), a restated window (``Q1 2017
 (January 1 to March 31, 2017)``) was reported as two windows, "item revenue"
 resolved to the shorter "revenue", a second measure was dropped, and question
 words about how a value is worded ("dated", "placed") drowned out the ones that
@@ -43,136 +43,147 @@ def _measures(payload: dict[str, Any]) -> list[str]:
     ]
 
 
-# --- times of day ---------------------------------------------------------------
+# --- times of day and zones -----------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("text", "bounds"),
-    [
-        ("revenue from 12:00 to 13:00 on 15 March 2017", HOUR),
-        ("revenue between 12:00 and 13:00 on March 15, 2017", HOUR),
-        ("revenue on 2017-03-15 from 12:00 until 13:00", HOUR),
-        # A day stated twice, with the range beside it, is still one day.
-        ("revenue from 12:00 to 13:00 on 15 March 2017 (2017-03-15)", HOUR),
-        (
-            "revenue on March 15, 2017 from 9:30 am to 5 pm",
-            {"start": f"{MARCH_15}T09:30:00", "end": f"{MARCH_15}T17:00:00"},
-        ),
-        (
-            "orders on March 15, 2017 from 9am to noon",
-            {"start": f"{MARCH_15}T09:00:00", "end": f"{MARCH_15}T12:00:00"},
-        ),
-        (
-            "orders on March 15, 2017 from 12:15:30 to 12:45",
-            {"start": f"{MARCH_15}T12:15:30", "end": f"{MARCH_15}T12:45:00"},
-        ),
-    ],
-)
-def test_a_time_range_on_a_day_resolves_to_timestamps(text: str, bounds: dict[str, str]) -> None:
-    assert _time_bounds_from_text(text) == bounds
-    assert _unresolved_time_phrases(text) == []
-    # A window inside one day is one day bucket, whatever finer grain the role offers.
-    assert _time_spec(ORDER_TIME, text)["grain"] == "day"
+# Every shape a reviewer found that plan read, or half-read, into the wrong hour or zone.
+HOUR_QUESTIONS = [
+    "revenue from 12:00 to 13:00 on 15 March 2017",
+    "revenue between 12:00 and 13:00 on March 15, 2017",
+    "revenue on 2017-03-15 from 12:00 until 13:00",
+    "revenue on March 15, 2017 from 9:30 am to 5 pm",
+    "orders on March 15, 2017 from 9am to noon",
+    "orders on March 15, 2017 from 12:15:30 to 12:45",
+    "revenue at 12:00 on 15 March 2017",
+    "revenue on 15 March 2017 at noon",
+    "revenue on 15 March 2017 after midnight",
+    "revenue after 3pm on 15 March 2017",
+    "revenue at 12:00",
+    "revenue from 22:00 to 02:00 on 15 March 2017",
+    "revenue from 12:00 to 13:00 in March 2017",
+    "revenue from 12:00 to 13:00 yesterday",
+    "revenue on 15 March 2017 in the morning",
+    "revenue on 15 March 2017 at 9 o'clock",
+    # Forms the first round did not read.
+    "orders from 12.30 to 13.30 on 15 March 2017",
+    "orders from 9 to 5 on 15 March 2017",
+    "orders 1200-1300 hours on 15 March 2017",
+    "orders from 1200 hours to 1300 hours on 15 March 2017",
+    "orders on 15 March 2017 9 - 17",
+]
+ZONE_QUESTIONS = [
+    "orders from 12:00 to 13:00 UTC on 15 March 2017",
+    "orders in EST from 12:00 to 13:00 on 15 March 2017",
+    "EST: orders from 12:00 to 13:00 on 15 March 2017",
+    "orders (PST) from 12:00 to 13:00 on 15 March 2017",
+    "orders from 12:00 to 13:00 +02:00 on 15 March 2017",
+    "orders from 12:00 to 13:00 (UTC+2) on 15 March 2017",
+    "orders on 15 March 2017 from 12:00 to 13:00 Pacific",
+    "orders from 12:00 to 13:00 on 15 March 2017 Eastern",
+    "orders from 12:00 to 13:00 on 15 March 2017 in CET",
+    "orders from 12:00 to 13:00 Pacific time on 15 March 2017",
+    "orders from 12:00 to 13:00 London time on 15 March 2017",
+    "orders from 12:00 to 13:00 Europe/Berlin on 15 March 2017",
+    "orders in the Pacific time zone from 12:00 to 13:00 on 15 March 2017",
+    "orders from 12:00Z to 13:00Z on 15 March 2017",
+    # A zone alone changes the day's edges, with no hour named.
+    "orders on 15 March 2017 in UTC",
+    "orders on 15 March 2017 local time",
+    "orders by day in Central",
+    "orders on 15 March 2017 (AEST)",
+]
+# Day-and-coarser questions, and words that only look like an hour or a zone.
+DAY_QUESTIONS = [
+    "revenue on 15 March 2017",
+    "revenue on 2017-03-15",
+    "revenue in March 2017 by store",
+    "revenue over time in 2017",
+    "revenue by order time in 2017",
+    "revenue in 2017 for first time customers",
+    "orders in 2017 for the west region",
+    "revenue for the last 24 hours",
+    "orders from 2017-03-01 to 2017-03-31",
+    "orders from 3-15-2017",
+]
 
 
-@pytest.mark.parametrize(
-    ("text", "phrase"),
-    [
-        # A lone time is not a range.
-        ("revenue at 12:00 on 15 March 2017", "12:00"),
-        ("revenue on 15 March 2017 at noon", "noon"),
-        ("revenue after 3pm on 15 March 2017", "3pm"),
-        # A bound carries no zone, so any zone named is reported, UTC too: the role's zone
-        # may be another, and a literal "Z" is dropped when it meets a timestamp without one.
-        ("revenue from 12:00 to 13:00 UTC on 15 March 2017", "13:00 utc"),
-        ("revenue on March 15, 2017 from 12:00 UTC to 13:00 UTC", "12:00 utc"),
-        ("revenue from 12:00 to 13:00 EST on 15 March 2017", "13:00 est"),
-        ("revenue from 12:00 to 13:00 +02:00 on 15 March 2017", "+02:00"),
-        ("revenue from 12:00 UTC to 13:00 EST on 15 March 2017", "13:00 est"),
-        # A zone written any other way is never read as the role's zone.
-        ("revenue from 12:00 to 13:00 UTC +2 on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00 (UTC+2) on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00 (UTC) on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00 on 15 March 2017 in UTC", "13:00"),
-        ("revenue from 12:00 to 13:00 Pacific time on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00 London time on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00 AEST on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00 HST on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00 Europe/Berlin on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00 on 15 March 2017 in EST", "13:00"),
-        ("revenue in the Pacific time zone from 12:00 to 13:00 on 15 March 2017", "13:00"),
-        # Other words between the range and its day, and a range that ends before it starts.
-        ("revenue from 12:00 to 13:00 for stores on 15 March 2017", "13:00"),
-        ("revenue from 22:00 to 02:00 on 15 March 2017", "02:00"),
-        ("revenue from 13:00 to 13:00 on 15 March 2017", "13:00"),
-        ("revenue from 25:00 to 26:00 on 15 March 2017", "25:00"),
-        # A range needs one day, and "and" needs "between".
-        ("revenue from 12:00 to 13:00 in March 2017", "12:00"),
-        ("revenue from 12:00 to 13:00 yesterday", "12:00"),
-        ("revenue from 12:00 to 13:00 in 2017", "12:00"),
-        ("revenue at 12:00 and 13:00 on 15 March 2017", "13:00"),
-        ("revenue from 12:00 to 13:00", "12:00"),
-    ],
-)
-def test_a_time_of_day_it_cannot_resolve_is_reported(text: str, phrase: str) -> None:
+@pytest.mark.parametrize("text", [*HOUR_QUESTIONS, *ZONE_QUESTIONS])
+def test_a_time_of_day_or_zone_is_reported_and_never_resolved(text: str) -> None:
+    window = _time_window(text)
+    assert window.bounds == {}
+    assert window.time_of_day != () and window.unresolved != ()
     assert _time_bounds_from_text(text) == {}
-    phrases = _unresolved_time_phrases(text)
-    assert any(phrase in reported for reported in phrases), phrases
+    assert _unresolved_time_phrases(text) != []
+    # Every entry point that drafts a window goes through the same guard.
+    assert not {"start", "end", "range"} & set(_time_spec(ORDER_TIME, text))
 
 
-def test_a_time_range_states_its_reading() -> None:
-    window, zone = _time_window("revenue on 15 March 2017 from 12:00 to 13:00").assumptions
-    assert "excludes 13:00" in window and "time.end is exclusive" in window
-    assert "No time zone was named" in zone and "temporal role time zone" in zone
+@pytest.mark.parametrize("text", DAY_QUESTIONS)
+def test_a_question_with_no_hour_or_zone_is_not_refused_for_one(text: str) -> None:
+    assert _time_window(text).time_of_day == ()
 
 
-def test_plan_keeps_the_hour_it_was_asked_for(runtime_factory: Any) -> None:
+def test_a_day_is_still_resolved_as_a_day() -> None:
+    window = _time_window("revenue on 15 March 2017")
+    assert window.bounds == {"start": MARCH_15, "end": "2017-03-16"}
+    assert window.unresolved == () and window.assumptions == ()
+
+
+@pytest.mark.parametrize("text", [*HOUR_QUESTIONS, *ZONE_QUESTIONS])
+def test_plan_offers_no_query_for_an_hour_or_zone(runtime_factory: Any, text: str) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        hour = plan_payload(
-            runtime, intent="orders from 12:00 to 13:00 on 15 March 2017", detail="best"
+        payload = plan_payload(runtime, intent=text, detail="query")
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+        assert payload["why"]["details"]["time_of_day_phrases"]
+        assert "plan resolves days and coarser windows only" in payload["why"]["message"]
+        hint = payload["why"]["recovery_hints"][0]
+        assert hint["kind"] == "state_hour_range" and "query.time.start" in hint["message"]
+        assert "query_ir" not in payload["best"]
+    finally:
+        runtime.close()
+
+
+def test_plan_refuses_an_hour_on_a_date_role_too(runtime_factory: Any) -> None:
+    # The refusal doesn't depend on the role's column type, so a date column never gets a
+    # timestamp bound it can't compare.
+    runtime = runtime_factory("tpch_sf1_showcase")
+    try:
+        payload = plan_payload(
+            runtime, intent="orders from 12:00 to 13:00 on 15 March 1995", detail="query"
         )
-        assert hour["status"] == "ok"
-        assert not hour.get("warnings")
-        assert {key: _query(hour)["time"][key] for key in ("start", "end")} == HOUR
-        assert "time.end is exclusive" in hour["assumptions"][0]
-        assert "No time zone was named" in hour["assumptions"][1]
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+        assert "query_ir" not in payload["best"]
+    finally:
+        runtime.close()
+
+
+def test_plan_accepts_an_hour_range_the_caller_states(runtime_factory: Any) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime,
+            intent="orders from 12:00 to 13:00 on 15 March 2017",
+            partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+            detail="query",
+        )
+        assert payload["status"] == "ok", payload.get("why")
+        assert {key: _query(payload)["time"][key] for key in ("start", "end")} == HOUR
+    finally:
+        runtime.close()
+
+
+def test_plan_still_plans_a_day(runtime_factory: Any) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
         day = plan_payload(runtime, intent="orders on 15 March 2017", detail="best")
         assert day["status"] == "ok" and "assumptions" not in day
         assert {key: _query(day)["time"][key] for key in ("start", "end")} == {
             "start": MARCH_15,
             "end": "2017-03-16",
         }
-        # The window narrows what the engine counts.
-        counts = [
-            runtime.query(_query(payload))["rows"][0]["order_count"] for payload in (hour, day)
-        ]
-        assert 0 < counts[0] < counts[1]
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize(
-    "intent",
-    [
-        "orders at 12:00 on 15 March 2017",
-        "orders from 12:00 to 13:00 UTC on 15 March 2017",
-        "orders from 12:00 to 13:00 (UTC) on 15 March 2017",
-        "orders from 12:00 to 13:00 Pacific time on 15 March 2017",
-        "orders from 12:00 to 13:00 EST on 15 March 2017",
-        "orders from 12:00 to 13:00 in March 2017",
-    ],
-)
-def test_plan_offers_no_query_for_a_time_it_cannot_resolve(
-    runtime_factory: Any, intent: str
-) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=intent, detail="query")
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-        assert any(":" in phrase for phrase in payload["why"]["details"]["unresolved_phrases"])
-        assert "query_ir" not in payload["best"]
     finally:
         runtime.close()
 
@@ -376,6 +387,38 @@ def test_an_exact_multi_word_label_outranks_a_partial_one(
         payload = plan_payload(runtime, intent=text, detail="query")
         assert _measures(payload) == [measure]
         assert payload["status"] == "ok", payload.get("why")
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("text", "replaces_target"),
+    [
+        ("item revenue by month", True),
+        # A ratio or growth question keeps its metric-first target: a measure's full name
+        # never replaces it.
+        ("item revenue growth by month", False),
+        ("item revenue share by product", False),
+        ("item revenue per order by store", False),
+    ],
+)
+def test_a_full_measure_name_never_replaces_a_ratio_or_growth_target(
+    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, text: str, replaces_target: bool
+) -> None:
+    from semantic_rails.planner._base import _tokens
+    from semantic_rails.planner.patterns import metric_by_dimension_rollup as rollup
+
+    asked: list[str] = []
+    real = rollup._named_measure
+    monkeypatch.setattr(
+        rollup,
+        "_named_measure",
+        lambda *args, **kwargs: asked.append(text) or real(*args, **kwargs),
+    )
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert rollup._match(runtime, text, set(_tokens(text))) is not None
+        assert bool(asked) is replaces_target
     finally:
         runtime.close()
 

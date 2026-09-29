@@ -964,8 +964,8 @@ Response keys:
 - `best` (`null` unless a draft exists)
 - `next`
 - `why` when `status != "ok"`
-- `assumptions` when the draft's window rests on a reading of the question's open end or time
-  zone, such as an inclusive last day or a time of day with no zone
+- `assumptions` when the draft's window rests on a reading of the question's open end, such
+  as an inclusive last day
 - `alternatives` and `blocked` when `detail` is `full` or `debug`
 - `compose_hints` when `detail` is `debug`
 

@@ -1065,137 +1065,55 @@ _RANGE_END_UNITS: dict[re.Pattern[str], str] = {
     _YEAR_SPAN_RE: "year",
 }
 
-# A time of day: "12:00", "9:30:15", "9:30 pm", "3pm", "noon", "midnight". The day forms
-# above read "12:00 to 13:00 on 15 March 2017" as the whole day, so a time of day is
-# resolved with its day or reported, never dropped. A zone after it ("utc", "est",
-# "+02:00") is reported: a bound carries no zone, so it is read in the temporal role's zone,
-# and a zone the question names may not be that one.
-_CLOCK_RE = re.compile(
-    r"\b(?:(?P<h>\d{1,2}):(?P<m>\d{2})(?::(?P<s>\d{2}))?(?:\s*(?P<ap>[ap])\.?m\b\.?)?"
-    r"|(?P<h12>\d{1,2})\s*(?P<ap12>[ap])\.?m\b\.?"
-    r"|(?P<word>noon|midnight)\b)"
-    r"(?:\s*(?P<zone>(?:utc|gmt|z)\b|(?:utc|gmt)?\s*[+\-]\d{1,2}(?::?\d{2})?\b"
-    r"|(?:[aecmp][sd]t|cet|cest|bst|ist|jst|ct|et|pt|mt)\b))?"
+# plan resolves days and coarser windows only. A time of day or a time zone anywhere in the
+# question ("12:00 to 13:00", "9 am", "noon", "1200 hours", "EST", "Pacific", "London time",
+# "Europe/Berlin") is reported and the window is left unset: the day forms alone would widen
+# an hour to its whole day, and a bound carries no zone. Over-refusing is deliberate; the
+# caller states an hour range in the query's ``time`` block.
+_HOUR = r"(?:[01]?\d|2[0-3])"
+_TIME_OF_DAY_RE = re.compile(
+    # 9:30, 12:00:15, T12:00; 9.30 and 9 to 5 are weaker (see _WEAK_TIME_RE).
+    r"(?<!\d)\d{1,2}:\d{2}"
+    # 3pm, 9 a.m., noon, midnight, o'clock, part of the day
+    rf"|\b\d{{1,2}}\s*[ap]\.?m\b|\b[ap]\.m\.|\b(?:noon|midnight|midday|o'?clock)\b"
+    r"|\b(?:morning|afternoon|evening|tonight|overnight|(?:business|working|office|after|off)\s+hours)\b"
+    # 1200 hours, 0930h
+    rf"|\b{_HOUR}[0-5]\d\s*(?:hours?|hrs?|h)\b"
 )
-_CLOCK_JOIN_RE = re.compile(r"^\s*(?:to|until|till|through|thru|and|[-–—])\s*$")
-# Zone text the clock pattern doesn't read: "(UTC)", "Pacific time", "Europe/Berlin", "in EST",
-# "AEST". A time range resolves only when every word around it is a joiner, so a zone written
-# any way the planner didn't read is reported and never taken for the role's zone.
-_CLOCK_RESIDUE_RE = re.compile(
-    r"^(?:\s|[-–—,]|\b(?:from|between|to|and|until|till|through|thru|on|at|the|of)\b)*$"
+# 12.30 and "9 to 5" read as hours only beside a day, since they are also decimals and counts.
+_WEAK_TIME_RE = re.compile(
+    rf"(?<![\d.$/-]){_HOUR}\.[0-5]\d(?![\d.%/])"
+    r"|(?<![\d/.:-])\d{1,2}\s*(?:to|until|till|through|thru|[-–—])\s*\d{1,2}(?![\d/.:-])"
 )
-_ZONE_ANYWHERE_RE = re.compile(
-    r"\b(?:utc|gmt|time\s*zones?)\b|\b[a-z_]+/[a-z_]+\b"
-    r"|\b(?!(?:order|ordered|placed|created|creation|over)\b)[a-z]+\s+"
-    r"(?:(?:standard|daylight)\s+)?time\b"
+_ZONE_ABBREVIATIONS = (
+    "utc|gmt|z|[aecmp][sd]t|[ecmp]t|cest|cet|eest|eet|bst|ist|jst|kst|hkt|sgt|pkt|msk|sast"
+    "|aest|aedt|acst|acdt|awst|nzst|nzdt|hst|akst|akdt"
 )
-_ZONE_AFTER_RE = re.compile(r"^\s*(?:[(\[]|[+\-]\d|(?:(?:in|at)\s+)?[a-z]{2,5}t\b)")
+_ZONE_AREAS = (
+    "africa|america|antarctica|arctic|asia|atlantic|australia|europe|indian|pacific|etc|us|canada"
+)
+# Words before "time" that don't name a zone ("over time", "order time"); any other word
+# ("London time", "local time") is read as a zone.
+_NOT_A_ZONE_WORD = (
+    "over|all|first|last|next|one|each|every|any|part|full|real|lead|life|same|this|that|at|"
+    "order|ordered|placed|created|creation|by|per|what|which|long|short|response|delivery|"
+    "shipping|processing|cycle|wait|handling|event|ship|shipped|start|end|ticket"
+)
+_ZONE_RE = re.compile(
+    rf"\b(?:{_ZONE_ABBREVIATIONS})\b"
+    r"|\b(?:time\s*zones?|tz)\b"
+    rf"|\b(?:{_ZONE_AREAS})/[a-z_]+"
+    r"|\b(?:pacific|eastern|central|mountain|atlantic|alaska|alaskan|hawaii|hawaiian|zulu|"
+    r"greenwich)\b"
+    rf"|\b(?!(?:{_NOT_A_ZONE_WORD})\b)[a-z]+\s+(?:(?:standard|daylight|summer)\s+)?time\b"
+)
 
 
-def _unread_zone_text(lowered: str, spans: list[tuple[int, int]]) -> bool:
-    """Whether the words around a time range could name a time zone the resolver didn't read.
+def _time_of_day_spans(lowered: str, other_time: bool) -> list[tuple[int, int]]:
+    """Every span that states a time of day or a time zone; ``other_time`` says a day is stated."""
 
-    ``spans`` are the clocks and the day, whose own zone (if read) is inside them.
-    """
-
-    start, end = min(s for s, _ in spans), max(e for _, e in spans)
-    masked = list(lowered)
-    residue: list[str] = []
-    cursor = start
-    for span_start, span_end in sorted(spans):
-        residue.append(lowered[cursor:span_start])
-        cursor = max(cursor, span_end)
-        masked[span_start:span_end] = " " * (span_end - span_start)
-    return bool(
-        not _CLOCK_RESIDUE_RE.match("".join(residue))
-        or _ZONE_AFTER_RE.match(lowered[end:])
-        or _ZONE_ANYWHERE_RE.search("".join(masked))
-    )
-
-
-@dataclass(frozen=True)
-class _Clock:
-    span: tuple[int, int]
-    seconds: int
-    zone: str  # "" or "other" (a zone was written after it)
-
-    @property
-    def text(self) -> str:
-        return f"{self.seconds // 3600:02d}:{self.seconds % 3600 // 60:02d}:{self.seconds % 60:02d}"
-
-    @property
-    def short(self) -> str:
-        return self.text[:5] if self.seconds % 60 == 0 else self.text
-
-
-def _clocks(lowered: str) -> list[_Clock]:
-    """Every time of day in the text; one that isn't a valid time reads as zone ``other``."""
-
-    out: list[_Clock] = []
-    for match in _CLOCK_RE.finditer(lowered):
-        hour = int(match["h"] or match["h12"] or 0)
-        minute, second = int(match["m"] or 0), int(match["s"] or 0)
-        meridiem = match["ap"] or match["ap12"]
-        zone = "other" if match["zone"] else ""
-        if match["word"]:
-            hour = 12 if match["word"] == "noon" else 0
-        elif meridiem:
-            valid = 1 <= hour <= 12
-            hour = hour % 12 + (12 if meridiem == "p" else 0)
-            zone = zone if valid else "other"
-        valid_time = hour < 24 and minute < 60 and second < 60
-        out.append(
-            _Clock(
-                span=match.span(),
-                seconds=hour * 3600 + minute * 60 + second,
-                zone=zone if valid_time else "other",
-            )
-        )
-    return out
-
-
-def _clock_range(
-    lowered: str, clocks: list[_Clock], windows: list[tuple[tuple[int, int], dict[str, Any], str]]
-) -> tuple[dict[str, str], list[str]] | None:
-    """The window ``from 12:00 to 13:00 on 15 March 2017`` names, with its assumptions.
-
-    Only two times of day joined as a range, no zone, and one calendar day. The end is
-    exclusive. Anything else (a lone time, a range across midnight, any zone, no single day)
-    is ``None``, and the caller reports it.
-    """
-
-    if len(clocks) != 2 or len(windows) != 1:
-        return None
-    first, second = clocks
-    day = windows[0][1]
-    join = lowered[first.span[1] : second.span[0]]
-    if (
-        not _CLOCK_JOIN_RE.match(join)
-        # "and" makes a range only after "between", as it does for dates.
-        or (join.strip() == "and" and not lowered[: first.span[0]].rstrip().endswith("between"))
-        or "other" in (first.zone, second.zone)
-        or first.seconds >= second.seconds
-        or set(day) != {"start", "end"}
-        or _unread_zone_text(lowered, [first.span, second.span, windows[0][0]])
-    ):
-        return None
-    try:
-        start = date.fromisoformat(day["start"])
-        end = date.fromisoformat(day["end"])
-    except ValueError:
-        return None
-    if end - start != timedelta(days=1):
-        return None
-    bounds = {
-        "start": f"{start.isoformat()}T{first.text}",
-        "end": f"{start.isoformat()}T{second.text}",
-    }
-    notes = [
-        f"{first.short} to {second.short} on {start.isoformat()} is read as a window that "
-        f"includes {first.short} and excludes {second.short} (time.end is exclusive).",
-        "No time zone was named, so the times are read in the query's temporal role time zone.",
-    ]
-    return bounds, notes
+    patterns = [_TIME_OF_DAY_RE, _ZONE_RE, *([_WEAK_TIME_RE] if other_time else [])]
+    return [match.span() for pattern in patterns for match in pattern.finditer(lowered)]
 
 
 @dataclass(frozen=True)
@@ -1209,8 +1127,10 @@ class _TimeWindow:
     spans: tuple[tuple[int, int], ...] = ()
     # Windows the question states that differ from one another.
     conflicts: tuple[str, ...] = ()
-    # The reading taken where the question leaves an end or a zone open.
+    # The reading taken where the question leaves an end open.
     assumptions: tuple[str, ...] = ()
+    # The times of day and zones named, which plan does not resolve.
+    time_of_day: tuple[str, ...] = ()
 
 
 def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
@@ -1384,22 +1304,19 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     if len(windows) > 1 and _is_restatement(lowered, windows):
         span = (windows[0][0][0], windows[-1][0][1])
         windows = [(span, windows[0][1], next((row[2] for row in windows if row[2]), ""))]
-    clocks = [clock for clock in _clocks(lowered) if not _overlaps(clock.span, covered)]
-    if clocks:
-        # A time of day narrows its day; the day forms alone would widen it to the whole day.
-        resolved = _clock_range(lowered, clocks, windows)
-        if resolved is None:
-            unresolved_spans += [clock.span for clock in clocks]
-        else:
-            bounds, assumptions = resolved
-            windows = [(windows[0][0], bounds, "")]
-            covered += [clock.span for clock in clocks]
     # Two years compared ("2017 over 2016") are reported, whatever resolved.
     unresolved_spans += [match.span() for match in _YEAR_COMPARISON_RE.finditer(lowered)]
     # Longest cues first, so a year inside "4/3/2017" isn't reported twice.
     for span in sorted(_time_cues(lowered), key=lambda item: item[0] - item[1]):
         if not _overlaps(span, covered + unresolved_spans):
             unresolved_spans.append(span)
+    # The one guard for hours and zones: every plan resolves its window here.
+    hours = [
+        span
+        for span in _time_of_day_spans(lowered, bool(covered or unresolved_spans))
+        if not _overlaps(span, covered)
+    ]
+    unresolved_spans += [span for span in hours if not _overlaps(span, unresolved_spans)]
     time_spans = tuple(sorted(covered + unresolved_spans))
     if unresolved_spans or len(windows) > 1:
         # Report every time phrase, resolved or not: resolving part of an
@@ -1411,13 +1328,18 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             if len(windows) > 1
             else ()
         )
-        return _TimeWindow(unresolved=tuple(phrases), spans=time_spans, conflicts=conflicts)
+        return _TimeWindow(
+            unresolved=tuple(phrases),
+            spans=time_spans,
+            conflicts=conflicts,
+            time_of_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(hours))),
+        )
     if not windows:
         return _TimeWindow()
     _span, bounds, unit = windows[0]
     for span, _bounds, pattern in accepted:
         end_unit = _RANGE_END_UNITS.get(pattern)
-        if end_unit and not clocks and bounds == _bounds:
+        if end_unit and bounds == _bounds:
             assumptions.append(
                 f"'{lowered[span[0] : span[1]].strip()}' includes its last {end_unit}, so "
                 f"time.end is {bounds['end']} (exclusive)."
@@ -1467,7 +1389,6 @@ _SUPPORTED_WINDOW_FORMS = (
     "a month with a year, or a month range (e.g. 'March 2017', 'January 2017 through June 2017')",
     "days with a year, or ISO dates (e.g. 'April 3, 2017', 'April 1 to April 7, 2017', "
     "'2017-04-03')",
-    "a time range on one day, with no time zone (e.g. 'from 12:00 to 13:00 on 15 March 2017')",
     "explicit time.start / time.end ISO dates via partial_query",
 )
 

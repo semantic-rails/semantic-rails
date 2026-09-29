@@ -230,13 +230,17 @@ relative window ("last 7 days"). A range's spoken end is included: the response'
 `assumptions` says so, with the exclusive `time.end` it chose. A window restated right beside
 itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
 one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are a
-conflict, and `TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. A time
-of day resolves only as a range on one day, with no time zone ("from 12:00 to 13:00 on 15
-March 2017"): the bounds are timestamps, the end is exclusive, and the times are in the
-temporal role's time zone, which `assumptions` says. A lone time, a range across midnight,
-any zone named ("UTC", "EST", "+02:00", "(UTC)", "Pacific time", "Europe/Berlin"), other words
-between the range and its day, or a range without one day is unresolved, never widened to
-its day and never read in a zone the question didn't ask for. "and" joins a range only after "between": "between March and May 2017" is
+conflict, and `TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. `plan`
+does not resolve times of day or time zones. Any hour or zone cue anywhere in the question
+("12:00 to 13:00", "9 am", "noon", "1200 hours", "12.30", "9 to 5" beside a day, "EST",
+"UTC+2", "Pacific", "London time", "Europe/Berlin") returns `TIME_WINDOW_UNRESOLVED` with
+`why.details.time_of_day_phrases`, and no `best.query_ir`: the day forms alone would widen an
+hour to its whole day, and a bound carries no zone. The check is deliberately broad, so it also
+refuses a question where such a word means something else ("Central region", a decimal like
+"12.30" beside a date). To ask for an hour range, pass it in `query.time` yourself, as
+end-exclusive ISO timestamps in the temporal role's time zone (the role must be a timestamp),
+for example `start: "2017-03-15T12:00:00"`, `end: "2017-03-15T13:00:00"`, with the role and
+grain, and plan again. "and" joins a range only after "between": "between March and May 2017" is
 a range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
 bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
