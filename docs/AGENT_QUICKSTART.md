@@ -161,16 +161,18 @@ executing it.
 
 Statuses are:
 
-- `ok`: the best draft validated, and no check found part of the question it leaves out.
-  `warnings` can still name question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
+- `ok`: the best draft validated, no check found part of the question it leaves out, and every
+  number and clock or zone word in the question is used by the draft. `warnings` can still name
+  other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
   which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and
   plan again),
   or a validating fallback would drift from the requested target, grouping, qualification,
   filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
-  `why.details.unresolved_phrases` names one window twice, as in "Q2 2017 (April 1 to June 30
-  2017)", keep one form and plan again.
+  `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
+  June 29, 2017)", keep the one you mean and plan again. (One window stated twice the same way
+  resolves.)
 - `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 

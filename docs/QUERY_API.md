@@ -979,11 +979,13 @@ Response keys:
 - `best` (`null` unless a draft exists)
 - `next`
 - `why` when `status != "ok"`
+- `assumptions` when the draft's window rests on a reading of the question's open end, such
+  as an inclusive last day
 - `alternatives` and `blocked` when `detail` is `full` or `debug`
 - `compose_hints` when `detail` is `debug`
 
 `detail="query"` is an MCP-oriented compact projection. It preserves
-`plan_version`, `intent`, `status`, `why`, `tie_break_hints`, and a compact
+`plan_version`, `intent`, `status`, `why`, `tie_break_hints`, `assumptions`, `warnings`, and a compact
 `best` containing `pattern`, `query_ir`, `resolved`, `validation_ok`, and
 `subject_ids_used`.
 

@@ -393,6 +393,70 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
     return metric, f"{text[:first]}{metric.id}{text[last:]}"
 
 
+_NAME_CONNECTORS = frozenset(
+    {"a", "across", "along", "and", "at", "by", "during", "for", "from", "in", "of", "on", "over"}
+    | {"per", "the", "to", "with"}
+)
+
+
+def _named_measure(config: Any, text: str, ordinary: Any | None = None) -> Any | None:
+    """The measure the question names by a label or alias of two words or more.
+
+    An exact multi-word name outranks a partial one: "item revenue" names Item revenue,
+    not Revenue, which only shares a word with it. The longest name wins; a tie between
+    different measures names none, so the ordinary ranking decides. The question's words
+    stay in order, so "revenue by item" names neither.
+
+    The name replaces the ordinary reading (``ordinary``, the target the ranking chose)
+    only when it contains every word of that target's label: "large order revenue" names
+    Large orders inside it, but asks for revenue, so the ordinary target stays. Another
+    measure noun right after the name ("item revenue orders") leaves the question alone too.
+    """
+
+    said = _tokens(text)
+    best_size = 0
+    best: list[tuple[Any, tuple[str, ...], int]] = []
+    for row in config.measures:
+        names = [row.label, re.sub(r"\s*\(.*?\)", "", str(row.label or "")), *(row.aliases or [])]
+        for name in names:
+            parts = _tokens(name)
+            size = len(parts)
+            if size < 2 or size < best_size:
+                continue
+            at = next(
+                (
+                    start
+                    for start in range(len(said) - size + 1)
+                    if said[start : start + size] == parts
+                ),
+                None,
+            )
+            if at is None:
+                continue
+            if size > best_size:
+                best_size, best = size, []
+            if all(item[0] is not row for item in best):
+                best.append((row, parts, at + size))
+    if len(best) != 1:
+        return None
+    row, parts, end = best[0]
+    if ordinary is not None:
+        label = re.sub(r"\s*\(.*?\)", "", str(getattr(ordinary, "label", "") or ""))
+        if not set(_tokens(label)) <= set(parts):
+            return None
+    following = said[end] if end < len(said) else ""
+    if following and following not in _NAME_CONNECTORS:
+        other_nouns = {
+            token
+            for other in config.measures
+            if other is not row
+            for token in _tokens(getattr(other, "label", ""))
+        }
+        if following in other_nouns:
+            return None
+    return row
+
+
 def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
     allowed = set(getattr(measure, "allowed_aggregations", []) or [])
     if ("sum" in terms or "total" in terms) and "sum" in allowed:
@@ -699,13 +763,19 @@ _YEAR_SPAN_RE = re.compile(
     rf"(and|through|thru|until|till|to|[-–—])\s*{_YEAR}\b"
 )
 # A single calendar year resolves only after a preposition that scopes a
-# window: "in 2017", "for 2017", "during 2017", "the year 2017". Anything
-# else ("2017 revenue", "early 2017", "end of 2017", "2000 customers") is
-# reported, never guessed.
+# window ("in 2017", "for 2017", "during 2017") or after the word "year"
+# ("year 2017", "the calendar year 2017"). Anything else ("2017 revenue",
+# "early 2017", "end of 2017", "2000 customers") is reported, never guessed.
 _YEAR_IN_RE = re.compile(
     rf"\b(?:(?:in|for|during|throughout|within)\s+(?:the\s+)?(?:(?:calendar\s+)?year\s+)?"
-    rf"|the\s+(?:calendar\s+)?year\s+){_YEAR}\b"
+    rf"|(?:the\s+)?(?:calendar\s+)?year\s+){_YEAR}\b"
 )
+# "year 2017" with no scoping preposition stands for a calendar year only where nothing
+# qualifies it: at the start of the text or after punctuation. After a word it is a
+# different year ("financial year 2017", "model year 2017", "tax year 2017"), reported.
+_BARE_YEAR_LEAD_RE = re.compile(r"(?:the\s+)?(?:calendar\s+)?year\b")
+_UNQUALIFIED_BEFORE_RE = re.compile(r"(?:^|[,;:(])\s*$")
+_LAST_WORD_RE = re.compile(r"[^\s,;:()]+\s*$")
 
 # A calendar phrase directly after one of these is a bound or a comparison,
 # not a window ("before 2017", "since March 2017", "as of June 30, 2017",
@@ -714,7 +784,8 @@ _YEAR_IN_RE = re.compile(
 _BOUNDARY_BEFORE_RE = re.compile(
     r"(?:\b(?:before|after|since|until|till|through|thru|by|from|ending|starting|beginning|"
     r"prior\s+to|up\s+to|as\s+of|earlier\s+than|later\s+than|pre|post|vs\.?|versus|"
-    r"compared\s+(?:to|with)|relative\s+to|against|over|than|of)[\s-]+(?:the\s+)?)$"
+    r"compared\s+(?:to|with)|relative\s+to|against|over|than|of|"
+    r"last|prior|previous|past|next|this|current|each|every|per)[\s-]+(?:the\s+)?)$"
 )
 # The tail or head of a range the resolver couldn't parse: "1-7 April 2017",
 # "from Jan 1 2017 to Mar 2017".
@@ -972,6 +1043,27 @@ _CALENDAR_FORMS: tuple[tuple[re.Pattern[str], Any], ...] = (
 )
 
 
+# Range forms whose spoken end is inclusive, with the unit that end names. The Query IR
+# end is exclusive, so plan states the reading it took.
+_RANGE_END_UNITS: dict[re.Pattern[str], str] = {
+    _ISO_RANGE_RE: "day",
+    _DAY_RANGE_RE: "day",
+    _MONTH_YEAR_RANGE_RE: "month",
+    _MONTH_RANGE_SHARED_YEAR_RE: "month",
+    _YEAR_SPAN_RE: "year",
+}
+
+# plan resolves days and coarser windows only. A window shorter than a day ("last 24 hours",
+# "past hour") is reported and the window is left unset, never widened to all time. Hours and
+# zones stated any other way ("9 am", "between 9 and 17", "UTC") are caught where plan decides
+# readiness: every numeral and clock word must be accounted for (see unconsumed_terms).
+_SUBDAY_WINDOW_RE = re.compile(
+    rf"{_COMPARISON_GUARD}\b(?:(?:last|past|previous|prior|trailing)"
+    rf"|(?:current|this))\s+(?:(?:\d+|{_NUMBER_WORD_ALT}|an?|few|couple(?:\s+of)?|several)\s+)?"
+    r"(?:second|minute|hour)s?\b"
+)
+
+
 @dataclass(frozen=True)
 class _TimeWindow:
     """What a question says about time: its window, or what couldn't be resolved."""
@@ -981,6 +1073,12 @@ class _TimeWindow:
     unresolved: tuple[str, ...] = ()
     # Every span of the lowercased text read as time, resolved or not.
     spans: tuple[tuple[int, int], ...] = ()
+    # Windows the question states that differ from one another.
+    conflicts: tuple[str, ...] = ()
+    # The reading taken where the question leaves an end open.
+    assumptions: tuple[str, ...] = ()
+    # The windows shorter than a day named, which plan does not resolve.
+    sub_day: tuple[str, ...] = ()
 
 
 def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
@@ -989,10 +1087,10 @@ def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
 
 def _calendar_windows(
     lowered: str,
-) -> tuple[list[tuple[tuple[int, int], dict[str, str]]], list[tuple[int, int]]]:
-    """Resolved calendar spans with their bounds, and calendar spans rejected as bounds."""
+) -> tuple[list[tuple[tuple[int, int], dict[str, str], re.Pattern[str]]], list[tuple[int, int]]]:
+    """Resolved calendar spans with their bounds and form, and calendar spans rejected as bounds."""
 
-    accepted: list[tuple[tuple[int, int], dict[str, str]]] = []
+    accepted: list[tuple[tuple[int, int], dict[str, str], re.Pattern[str]]] = []
     rejected: list[tuple[int, int]] = []
     fiscal = _FISCAL_RE.search(lowered) is not None
     for pattern, to_bounds in _CALENDAR_FORMS:
@@ -1013,16 +1111,26 @@ def _calendar_windows(
             if boundary:
                 # Report the bound with its word: "since march 2017".
                 span = (boundary.start(), span[1])
+            qualified = bool(
+                pattern is _YEAR_IN_RE
+                and _BARE_YEAR_LEAD_RE.match(text)
+                and not _UNQUALIFIED_BEFORE_RE.search(before)
+            )
+            if qualified and not boundary:
+                # Report the qualifier with its year: "financial year 2017".
+                word = _LAST_WORD_RE.search(before)
+                span = (word.start() if word else span[0], span[1])
             if (
                 not bounds
                 or boundary
+                or qualified
                 or (fiscal and pattern not in _DAY_EXACT_FORMS)
                 or _UNPARSED_RANGE_BEFORE_RE.search(before)
                 or _UNPARSED_RANGE_AFTER_RE.search(after)
             ):
                 rejected.append(span)
                 continue
-            accepted.append((span, bounds))
+            accepted.append((span, bounds, pattern))
     return accepted, rejected
 
 
@@ -1075,6 +1183,27 @@ def _phrase(lowered: str, span: tuple[int, int]) -> str:
     return text
 
 
+# What may sit between a window and its restatement: "(", ",", ":", "i.e.".
+_RESTATEMENT_JOIN_RE = re.compile(r"^\s*[(,:;–—-]?\s*(?:(?:i\.?e\.?|that\s+is)\s*,?\s*)?$")
+
+
+def _is_restatement(
+    lowered: str, windows: list[tuple[tuple[int, int], dict[str, Any], str]]
+) -> bool:
+    """Whether every window says the same thing about the one before it.
+
+    Equal bounds are not enough: "revenue in 2017 from customers who signed up in 2017" has
+    two windows with one set of bounds and two different conditions. A restatement sits
+    right beside what it restates, joined by a bracket, a comma or "i.e.".
+    """
+
+    return all(
+        row[1] == windows[0][1]
+        and _RESTATEMENT_JOIN_RE.match(lowered[before[0][1] : row[0][0]]) is not None
+        for before, row in zip(windows, windows[1:], strict=False)
+    )
+
+
 def _time_window(text: str) -> _TimeWindow:
     """Resolve the question's time window, or report why it can't be resolved.
 
@@ -1111,30 +1240,64 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         rejected += [row[0] for row in relative if row[2] != "day"]
         relative = [row for row in relative if row[2] == "day"]
     windows: list[tuple[tuple[int, int], dict[str, Any], str]] = [
-        (span, bounds, "") for span, bounds in accepted
+        (span, bounds, "") for span, bounds, _pattern in accepted
     ]
     for row in relative:
         if not _overlaps(row[0], [item[0] for item in windows]):
             windows.append(row)
+    windows.sort(key=lambda row: row[0])
     covered = [row[0] for row in windows]
     unresolved_spans = [span for span in rejected if not _overlaps(span, covered)]
+    assumptions: list[str] = []
+    if len(windows) > 1 and _is_restatement(lowered, windows):
+        span = (windows[0][0][0], windows[-1][0][1])
+        windows = [(span, windows[0][1], next((row[2] for row in windows if row[2]), ""))]
     # Two years compared ("2017 over 2016") are reported, whatever resolved.
     unresolved_spans += [match.span() for match in _YEAR_COMPARISON_RE.finditer(lowered)]
     # Longest cues first, so a year inside "4/3/2017" isn't reported twice.
     for span in sorted(_time_cues(lowered), key=lambda item: item[0] - item[1]):
         if not _overlaps(span, covered + unresolved_spans):
             unresolved_spans.append(span)
+    # A window shorter than a day is reported, never dropped to all time.
+    sub_day = [
+        match.span()
+        for match in _SUBDAY_WINDOW_RE.finditer(lowered)
+        if not _overlaps(match.span(), covered)
+    ]
+    unresolved_spans += [span for span in sub_day if not _overlaps(span, unresolved_spans)]
     time_spans = tuple(sorted(covered + unresolved_spans))
     if unresolved_spans or len(windows) > 1:
         # Report every time phrase, resolved or not: resolving part of an
         # ambiguous question would answer a different one.
         spans = sorted(unresolved_spans + (covered if len(windows) > 1 else []))
         phrases = list(dict.fromkeys(_phrase(lowered, span) for span in spans))
-        return _TimeWindow(unresolved=tuple(phrases), spans=time_spans)
+        conflicts = (
+            tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(covered)))
+            if len(windows) > 1
+            else ()
+        )
+        return _TimeWindow(
+            unresolved=tuple(phrases),
+            spans=time_spans,
+            conflicts=conflicts,
+            sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
+        )
     if not windows:
         return _TimeWindow()
     _span, bounds, unit = windows[0]
-    return _TimeWindow(bounds=dict(bounds), relative_unit=unit, spans=time_spans)
+    for span, _bounds, pattern in accepted:
+        end_unit = _RANGE_END_UNITS.get(pattern)
+        if end_unit and bounds == _bounds:
+            assumptions.append(
+                f"'{lowered[span[0] : span[1]].strip()}' includes its last {end_unit}, so "
+                f"time.end is {bounds['end']} (exclusive)."
+            )
+    return _TimeWindow(
+        bounds=dict(bounds),
+        relative_unit=unit,
+        spans=time_spans,
+        assumptions=tuple(dict.fromkeys(assumptions)),
+    )
 
 
 def _time_bounds_from_text(text: str) -> dict[str, Any]:
