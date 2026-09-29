@@ -880,13 +880,29 @@ def recovery_hints_for_error(
                     "details": {"field": field, "argument_type": argument_type},
                 }
             )
+        elif field == "kinds" and details.get("unknown_kinds"):
+            valid_kinds = list(details.get("valid_kinds") or [])
+            hints.append(
+                {
+                    "kind": "use_valid_kind",
+                    "message": (
+                        f"Unknown kinds {list(details['unknown_kinds'])}; use one of {valid_kinds}."
+                    ),
+                    "details": {
+                        "field": field,
+                        "unknown_kinds": list(details["unknown_kinds"]),
+                        "valid_kinds": valid_kinds,
+                    },
+                }
+            )
         elif field == "kinds":
             hints.append(
                 {
                     "kind": "use_string_or_array",
                     "message": (
-                        "'kinds' must be either a comma-separated string "
-                        '("measure,metric") or an array of strings (["measure", "metric"]).'
+                        "'kinds' must be a comma-separated string "
+                        '("measure,metric"), an array of strings (["measure", "metric"]), '
+                        'or a JSON array in a string (\'["measure", "metric"]\').'
                     ),
                     "details": {"field": field, "argument_type": argument_type},
                 }

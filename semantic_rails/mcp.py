@@ -1481,6 +1481,9 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+_DISCOVER_SCREENED_KEYS = ("low_relevance", "out_of_scope")
+
+
 def _coerce_kinds(value: Any) -> list[str]:
     try:
         return parse_string_list(value)
@@ -2080,16 +2083,19 @@ class SemanticLayerMCPAdapter:
             if terms_warnings:
                 existing = list(payload.get("warnings") or [])
                 payload["warnings"] = existing + terms_warnings
-            # When discover returns no matches across every bucket, emit
-            # a recovery hint so the agent doesn't dead-end. Mirrors the
-            # empty-terms `DISCOVER_NO_TERMS` warning.
-            bucket_keys = ("measures", "metrics", "dimensions", "entities", "segments")
-            if terms_str.strip() and all(not payload.get(key) for key in bucket_keys):
+            # Read the payload's own signal instead of re-deriving emptiness: it
+            # counts every bucket (dimension values included) and says whether the
+            # search ran (`no_matches`) or was screened out before it did
+            # (`low_relevance`, `out_of_scope`). Mirrors the empty-terms
+            # `DISCOVER_NO_TERMS` warning: give the agent a concrete next step.
+            searched_nothing = "no_matches" in payload
+            screened = any(isinstance(payload.get(key), dict) for key in _DISCOVER_SCREENED_KEYS)
+            if terms_str.strip() and (searched_nothing or screened):
                 existing_hints = list(payload.get("recovery_hints") or [])
                 # Hoist any nested low_relevance/out_of_scope recovery_hint
                 # up to the top-level recovery_hints list so callers don't
                 # have to dig for it.
-                for nested_key in ("low_relevance", "out_of_scope"):
+                for nested_key in _DISCOVER_SCREENED_KEYS:
                     nested = payload.get(nested_key)
                     if isinstance(nested, dict):
                         nested_hint = nested.get("recovery_hint")
@@ -2099,15 +2105,20 @@ class SemanticLayerMCPAdapter:
                             existing_hints.append(
                                 {"kind": f"discover_{nested_key}", "message": nested_hint}
                             )
-                # And add a browse hint so the agent has a concrete next step.
                 # "No semantic objects matched" is only true for a search that
-                # ran as requested; a misspelled `kind` was never applied.
+                # ran over the requested kinds; a misspelled `kind` was never
+                # applied, and a screened-out search never ran at all.
                 if filter_dropped:
                     browse_message = (
                         f"Nothing ranked for '{terms_str}', and the 'kind' argument was "
                         "ignored (the argument is 'kinds'), so the requested kind filter "
                         "was not applied. Retry with 'kinds', or call discover with empty "
                         "terms to list every id."
+                    )
+                elif screened:
+                    browse_message = (
+                        f"'{terms_str}' was not searched as a catalog query (see the hint "
+                        "above). Call discover with empty terms to list every id."
                     )
                 else:
                     of_kinds = f" of kind {sorted(set(requested_kinds))}" if requested_kinds else ""

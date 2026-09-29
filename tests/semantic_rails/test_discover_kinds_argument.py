@@ -1,22 +1,25 @@
 """``discover`` never answers "no match" because of how ``kinds`` was encoded.
 
 Invariant: the "no semantic objects matched" text appears only when the search
-ran over the requested kinds and found nothing. A JSON-encoded ``kinds`` string
+ran over the requested kinds and found nothing (the payload's own ``no_matches``). A JSON-encoded ``kinds`` string
 means the same as the array, and a value that names no real kind is refused.
 """
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
+from semantic_rails.cli.commands import query as cli_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.http_request import HTTPInputError, coerce_string_list
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import DISCOVER_RANKED_KINDS, discover_payload
+from semantic_rails.request_context import context_from_headers, context_from_policy_context
 from semantic_rails.request_payload import parse_string_list
 
 NO_MATCH = "No semantic objects"
@@ -39,7 +42,14 @@ def adapter(runtime: Any) -> Iterator[SemanticLayerMCPAdapter]:
 def _ids(response: dict[str, Any]) -> list[str]:
     return [
         card["id"]
-        for bucket in ("measures", "metrics", "segments", "dimensions", "entities")
+        for bucket in (
+            "measures",
+            "metrics",
+            "segments",
+            "dimensions",
+            "dimension_values",
+            "entities",
+        )
         for card in response.get(bucket) or []
     ]
 
@@ -145,9 +155,64 @@ def test_misspelled_kind_argument_never_claims_a_closed_world(
 def test_a_real_search_over_the_requested_kinds_still_says_no_match(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
+    # "revenue" passes the relevance floor, so the search really runs over the
+    # requested kind (a measure-only term never ranks a segment).
+    out = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["segment"]})
+    assert out["ok"] is True and not _ids(out)
+    assert "low_relevance" not in out and "out_of_scope" not in out
+    assert "No semantic objects of kind ['segment'] matched" in _hints_text(out)
+    assert out["no_matches"]["reason"] == (
+        "no candidate of kind ['segment'] matched the supplied search terms"
+    )
+
+
+def test_a_search_screened_out_before_it_ran_never_claims_a_kind_scoped_no_match(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
     out = adapter.call_tool("discover", {"terms": "zxqv plugh", "kinds": ["metric"]})
     assert out["ok"] is True and not _ids(out)
-    assert "No semantic objects of kind ['metric'] matched" in _hints_text(out)
+    assert "low_relevance" in out and "no_matches" not in out
+    text = _hints_text(out)
+    assert NO_MATCH not in text and "['metric']" not in text
+    assert "not searched" in text
+
+
+@pytest.mark.parametrize("kinds", [["dimension_value"], "dimension_value", None])
+def test_dimension_value_matches_never_come_with_a_no_match_hint(
+    adapter: SemanticLayerMCPAdapter, kinds: Any
+) -> None:
+    arguments: dict[str, Any] = {"terms": "Food"}
+    if kinds is not None:
+        arguments["kinds"] = kinds
+    out = adapter.call_tool("discover", arguments)
+    assert out["ok"] is True
+    assert out["dimension_values"], "the fixture must match a dimension value for 'Food'"
+    assert "dimension.jaffle_item_product_type=jaffle" in _ids(out)
+    assert "no_matches" not in out
+    assert NO_MATCH not in _hints_text(out)
+
+
+def test_refusal_hint_for_an_unknown_kind_names_the_valid_kinds(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    out = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["metirc"]})
+    hints = out["recovery_hints"]
+    (hint,) = [h for h in hints if h["kind"] == "use_valid_kind"]
+    assert "['metirc']" in hint["message"]
+    assert all(kind in hint["message"] for kind in DISCOVER_RANKED_KINDS)
+    assert hint["details"]["valid_kinds"] == sorted(DISCOVER_RANKED_KINDS)
+    assert not [h for h in hints if h["kind"] == "use_string_or_array"]
+    assert "argument_type" not in out["error"]["details"]
+
+
+def test_refusal_hint_for_a_malformed_kinds_value_still_teaches_the_encodings(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    out = adapter.call_tool("discover", {"terms": "revenue", "kinds": {"oops": True}})
+    hints = out["recovery_hints"]
+    (hint,) = [h for h in hints if h["kind"] == "use_string_or_array"]
+    assert "JSON array in a string" in hint["message"]
+    assert not [h for h in hints if h["kind"] == "use_valid_kind"]
 
 
 def test_discover_payload_refuses_a_bypass_of_the_transport_checks(runtime: Any) -> None:
@@ -177,3 +242,135 @@ def test_http_discover_reads_string_encoded_kinds_and_refuses_bad_ones(runtime: 
         out, status = service.exception_payload(raised.value, stage="http")
         assert status == 400 and out["ok"] is False
         assert not _ids(out)
+
+
+def _granted(runtime: Any, **extra: Any) -> dict[str, Any]:
+    """A policy context in resource-grant mode: one allowed metric."""
+    metric = discover_payload(runtime, terms="revenue")["metrics"][0]["id"]
+    return {"metric_allowlist": [metric], **extra}
+
+
+@pytest.mark.parametrize("kinds", [["metirc"], "metirc", "metric,bogus", ["dimension_value"]])
+def test_resource_grant_mode_refuses_a_kind_it_cannot_search(runtime: Any, kinds: Any) -> None:
+    """Grant mode answers from its own path, so it needs the same guard."""
+    service = SemanticHTTPService(runtime)
+    with pytest.raises(SemanticLayerError) as raised:
+        service.handle(
+            "POST",
+            "/discover",
+            {"terms": "revenue", "kinds": kinds, "policy_context": _granted(runtime)},
+        )
+    out, status = service.exception_payload(raised.value, stage="http")
+    assert status == 400 and out["ok"] is False
+    assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
+    assert not _ids(out)
+
+
+def test_resource_grant_mode_keeps_ranking_and_reports_its_own_no_match(runtime: Any) -> None:
+    context = {"policy_context": _granted(runtime)}
+    found = discover_payload(
+        runtime, terms="revenue", kinds=["metric"], partial_query=dict(context)
+    )
+    assert found["metrics"] and "no_matches" not in found
+    empty = discover_payload(
+        runtime, terms="revenue", kinds=["segment"], partial_query=dict(context)
+    )
+    assert not _ids(empty)
+    assert empty["no_matches"]["reason"] == (
+        "no candidate of kind ['segment'] matched the supplied search terms"
+    )
+
+
+def test_resource_grant_mode_hint_follows_the_payload_signal(
+    runtime: Any, adapter: SemanticLayerMCPAdapter
+) -> None:
+    context = _granted(runtime)
+    hit = adapter.call_tool(
+        "discover", {"terms": "revenue", "kinds": ["metric"], "policy_context": context}
+    )
+    assert _ids(hit) and NO_MATCH not in _hints_text(hit)
+    miss = adapter.call_tool(
+        "discover", {"terms": "revenue", "kinds": ["segment"], "policy_context": context}
+    )
+    assert not _ids(miss)
+    assert "No semantic objects of kind ['segment'] matched" in _hints_text(miss)
+
+
+@pytest.mark.parametrize(
+    ("kinds", "expected"),
+    [("metric, measure", ["metric", "measure"]), ('["metric"]', ["metric"])],
+)
+def test_cli_kinds_use_the_shared_list_normaliser(
+    monkeypatch: pytest.MonkeyPatch, kinds: str, expected: list[str]
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_discover(runtime: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {"ok": True}
+
+    class FakeRuntime:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli_query, "discover_payload", fake_discover)
+    monkeypatch.setattr(cli_query, "_runtime_from_package_or_path", lambda args: FakeRuntime())
+    monkeypatch.setattr(cli_query, "_print", lambda payload: None)
+    args = argparse.Namespace(
+        terms="revenue", kinds=kinds, query_json="", stage="", verbosity="compact", limit=10
+    )
+    monkeypatch.setattr(cli_query, "_query_with_policy_context", lambda query, args: None)
+    cli_query.cmd_discover(args)
+    assert seen["kinds"] == expected
+
+
+def test_cli_refuses_a_kinds_value_that_does_not_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeRuntime:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli_query, "_runtime_from_package_or_path", lambda args: FakeRuntime())
+    monkeypatch.setattr(cli_query, "_query_with_policy_context", lambda query, args: None)
+    args = argparse.Namespace(
+        terms="revenue", kinds='["metric"', query_json="", stage="", verbosity="compact", limit=10
+    )
+    with pytest.raises(SemanticLayerError) as raised:
+        cli_query.cmd_discover(args)
+    assert raised.value.code == "INVALID_MCP_ARGUMENTS"
+    assert raised.value.details["field"] == "kinds"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ('["finance"]', ("finance",)),
+        ('["finance", " audit "]', ("finance", "audit")),
+        ("finance, audit", ("finance", "audit")),
+        ("finance;audit", ("finance", "audit")),
+        (["finance", "finance"], ("finance",)),
+        ("", ()),
+        (None, ()),
+    ],
+)
+def test_roles_are_read_by_the_shared_list_normaliser(
+    value: Any, expected: tuple[str, ...]
+) -> None:
+    assert context_from_policy_context({"roles": value}).roles == expected
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [('["finance"]', ("finance",)), ("finance, audit", ("finance", "audit")), ("", ())],
+)
+def test_role_headers_are_read_by_the_shared_list_normaliser(
+    header: str, expected: tuple[str, ...]
+) -> None:
+    assert context_from_headers({"X-Semantic-Roles": header}).roles == expected
+
+
+@pytest.mark.parametrize("value", ['["finance"', '{"role": "finance"}', "[1]", ["finance", 3]])
+def test_roles_that_do_not_parse_are_refused_not_read_as_a_literal_role(value: Any) -> None:
+    with pytest.raises(SemanticLayerError) as raised:
+        context_from_policy_context({"roles": value})
+    assert raised.value.code == "INVALID_MCP_ARGUMENTS"
+    assert raised.value.details["field"] == "roles"

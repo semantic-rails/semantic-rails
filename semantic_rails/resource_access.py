@@ -18,6 +18,7 @@ from .ast import normalize_query
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
+from .metadata import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .policies import enforce_query_policies
 from .request_context import RequestContext, context_from_policy_context
 from .schema import PackageConfig
@@ -261,8 +262,14 @@ def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
+    # The grant path never reaches ``discover_payload``'s own body, so it
+    # applies the same kinds guard: an unknown kind is refused, not emptied.
+    # It ranks object cards only and never searches dimension values, so that
+    # kind is refused too rather than answered with an empty result.
+    kinds = checked_discover_kinds(
+        kwargs.get("kinds"), DISCOVER_RANKED_KINDS - frozenset({"dimension_value"})
+    )
     terms = set(re.findall(r"[a-z0-9]+", str(kwargs.get("terms", "")).lower()))
-    kinds = kwargs.get("kinds") or ()
     rows = []
     for row in access.visible_rows():
         if kinds and row["kind"] not in kinds:
@@ -285,7 +292,7 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         )
     rows.sort(key=lambda row: (-row["score"], row["id"]))
     limit = max(1, int(kwargs.get("limit", 10)))
-    return {
+    payload: dict[str, Any] = {
         **{
             bucket: [row for row in rows if row["kind"] == kind][:limit]
             for kind, bucket in _BUCKETS.items()
@@ -295,6 +302,18 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         "selection_context": {},
         "query_state": {},
     }
+    if terms and not rows:
+        # The payload's own signal, as in ``discover_payload``: adapters read it
+        # instead of re-deriving emptiness.
+        payload["no_matches"] = {
+            "terms": kwargs.get("terms", ""),
+            "reason": (
+                f"no candidate of kind {sorted(set(kinds))} matched the supplied search terms"
+                if kinds
+                else "no candidate matched the supplied search terms"
+            ),
+        }
+    return payload
 
 
 def _restricted_plan(

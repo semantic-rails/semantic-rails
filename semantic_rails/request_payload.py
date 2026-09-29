@@ -11,6 +11,8 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from .errors import SemanticLayerError
+
 
 def clean_request_id(value: Any) -> str:
     raw = str(value or "").strip()
@@ -59,6 +61,23 @@ def parse_string_list(value: Any) -> list[str]:
             raise ValueError("must contain only strings")
         return [part.strip() for part in value if part.strip()]
     raise ValueError("must be a string or array of strings")
+
+
+def checked_string_list(value: Any, *, field: str) -> list[str]:
+    """:func:`parse_string_list` for callers outside HTTP and MCP (CLI, request context).
+
+    A value that does not parse is refused with ``INVALID_MCP_ARGUMENTS`` naming
+    ``field``, never read as a literal item.
+    """
+
+    try:
+        return parse_string_list(value)
+    except ValueError as exc:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            f"Argument '{field}' {exc}.",
+            details={"field": field, "argument_type": type(value).__name__},
+        ) from exc
 
 
 def without_policy_context(payload: Mapping[str, Any]) -> dict[str, Any]:

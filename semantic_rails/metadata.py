@@ -2009,7 +2009,6 @@ def checked_discover_kinds(kinds: Sequence[str] | None, valid: frozenset[str]) -
             f"Unknown kinds value(s) {unknown}; valid kinds: {sorted(valid)}.",
             details={
                 "field": "kinds",
-                "argument_type": "list",
                 "unknown_kinds": unknown,
                 "valid_kinds": sorted(valid),
             },
