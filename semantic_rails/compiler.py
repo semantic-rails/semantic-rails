@@ -1539,8 +1539,9 @@ def _predicate_includes_entities_without_rows(
     An entity with no rows never reaches the predicate's aggregate, so a
     threshold that zero passes (``count = 0``, ``< 3``, ``<= 0``) would
     otherwise match nothing. Only where "no rows" is 0 (a count or sum) does the
-    entity qualify. An average, minimum, maximum or ratio over no rows is NULL,
-    which no threshold satisfies, so those entities stay out.
+    entity qualify, and, as for every entity the source lists, only while the measure has
+    data somewhere in the predicate's scope. An average, minimum, maximum or ratio over no
+    rows is NULL, which no threshold satisfies, so those entities stay out.
     """
     return _zero_satisfies_threshold(
         predicate.op, predicate.value
@@ -4148,8 +4149,9 @@ def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]
 
     An add or subtract settles each operand the way the guard does (0 where the measure has
     data in the predicate's scope), so a predicate and a projection of the same expression
-    agree. An entity with no rows at all is absent, and the threshold path counts it as 0. The
-    value is internal, so it never becomes a ``NO_DATA_IN_SCOPE`` output.
+    agree. An entity with no rows at all is absent from the source, and the anti-join reads it
+    like the entities the source lists (``absent_entities_gate``). The value is internal, so it
+    never becomes a ``NO_DATA_IN_SCOPE`` output.
     """
     with recording_zero_outputs():
         return _compile_query_sql_ast(config, payload, project_cut=True)

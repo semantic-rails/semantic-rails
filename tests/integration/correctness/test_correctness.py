@@ -389,6 +389,53 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
     )
 
 
+def _absent_entity_cases() -> Iterator[Case]:
+    """ "Customers with no large orders": an entity reads like any other, listed or not.
+
+    Signups are the customers. 107 never ordered, 105's only order has no amount, and only
+    customers 101 and 103 have an order of 10 or more. A count of the orders at or above a floor
+    is 0, not NULL, for a customer whose orders all fall short, and no order reaches 1000.
+    """
+    signups = _item({"measure": "measure.shop.signup_count"}, "signups")
+    floor_10 = {"measure": "measure.shop.large_order_count"}
+    floor_1000 = {"measure": "measure.shop.huge_order_count"}
+
+    def count_if(floor: int) -> dict[str, Any]:
+        condition = {
+            "kind": "comparison",
+            "op": ">=",
+            "left": {"kind": "column", "column": "amount", "entity": "entity.shop_order"},
+            "right": {"kind": "literal", "value": floor},
+        }
+        return {"kind": "aggregate_if", "aggregation": "count", "condition": condition}
+
+    def reference(floor: int, count: str) -> str:
+        # The rule: with some order at or above the floor, a customer with none reads 0 (the
+        # ones with no orders at all too); with none anywhere, every customer reads NULL.
+        return f"""
+            SELECT {count} FROM signups AS s
+            WHERE EXISTS (SELECT 1 FROM orders WHERE amount >= {floor})
+              AND (SELECT COUNT(*) FROM orders AS o
+                   WHERE o.customer_id = s.customer_id AND o.amount >= {floor}) = 0
+        """
+
+    for form, floor_10_input, floor_1000_input in (
+        ("case_count", floor_10, floor_1000),
+        ("aggregate_if", count_if(10), count_if(1000)),
+    ):
+        for name, predicate_input, floor, count in (
+            ("one_match_keeps_every_other_customer", floor_10_input, 10, "COUNT(*)"),
+            ("no_match_keeps_no_customer", floor_1000_input, 1000, "NULLIF(COUNT(*), 0)"),
+        ):
+            predicate = _predicate("entity.shop_customer", "entity_only", predicate_input, "=", 0)
+            yield Case(
+                f"customers_with_no_large_orders-{form}-{name}",
+                "utc_authored",
+                {"select": [signups], "metric_filters": [predicate]},
+                reference(floor, count),
+            )
+
+
 def _cases() -> Iterator[Case]:
     revenue, average = _item(REVENUE, "revenue"), _item(AVERAGE, "average")
     orders = _item(ORDERS, "orders")
@@ -432,6 +479,7 @@ def _cases() -> Iterator[Case]:
         sql_where="o.store_id IS NULL",
     )
     yield from _empty_group_cases(revenue, orders)
+    yield from _absent_entity_cases()
     for name, variant, grain, start, end, routes in (
         ("utc-march_bounds_by_day", "utc_implicit", "day", "2024-03-01", "2024-04-01", None),
         ("ny-march_bounds_by_day", "ny_implicit", "day", "2024-03-01", "2024-04-01", None),

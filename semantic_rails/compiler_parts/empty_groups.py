@@ -11,6 +11,11 @@ nothing else turns a measure NULL into 0. :func:`resolves_to_zero` is the only p
 and :func:`guard_empty_groups` the only place that builds the guard. Lowering checks its own
 projection with :func:`refuse_unsettled`, so a path that skips the guard is refused with a
 stable code instead of answering with a silent NULL.
+
+A metric predicate keeps the same invariant for the entities its source doesn't list: they
+read what an entity with no match reads there, 0 where the measure has data in the predicate's
+scope and NULL where it has none. :func:`absent_entities_gate` decides that from the settled
+source, and :func:`require_settled_source` refuses a source that skipped the guard.
 """
 
 from __future__ import annotations
