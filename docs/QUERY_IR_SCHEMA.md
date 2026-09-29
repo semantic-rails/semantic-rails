@@ -110,9 +110,13 @@ with `closest_matches`:
 }
 ```
 
-Four unambiguous slips are rewritten, not refused, and the response carries a
-`QUERY_SHORTHAND_NORMALIZED` warning naming the canonical form. The item must hold exactly the
-keys shown; a rewrite never drops a key:
+Four unambiguous slips are rewritten, not refused. `validate`, `compile` and `execute` (the MCP
+`execute` tool in every mode) add a `QUERY_SHORTHAND_NORMALIZED` warning naming the canonical
+form; `plan` accepts the same shapes in its `query` but returns no such warning, and its
+`best.query_ir` is the canonical form. The item must hold exactly the keys shown; a rewrite
+never drops a key. A dimension moved to `group_by` leaves `select`, so later select items are
+numbered in the rewritten `select`: an unaliased expression after it gets a default alias
+(`expr_N`) and a diagnostic path (`select[N]`) by that new position. Give it an `as`:
 
 | Sent | Treated as |
 |---|---|

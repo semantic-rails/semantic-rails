@@ -1,9 +1,15 @@
 - A select item sent as `{"metric": "<id>"}` or `{"measure": "<id>", "aggregation": "sum"}`
   without its `expression` wrapper, and a `{"dimension": "<id>"}` in `select[].expression`
   beside an empty `group_by`, are now accepted instead of refused with `Expression requires a
-  'kind'`. They compile exactly like the canonical form, and `plan` accepts the same shapes in
-  its `query`. Every rewrite, including the existing bare `{"dimension": "<id>"}` select item,
-  now adds a `QUERY_SHORTHAND_NORMALIZED` warning naming the canonical form.
+  'kind'`. They compile exactly like the canonical form. `validate`, `compile` and `execute`
+  (the MCP `execute` tool in every mode) report every rewrite, including the existing bare
+  `{"dimension": "<id>"}` select item, with a `QUERY_SHORTHAND_NORMALIZED` warning naming the
+  canonical form. `plan` accepts the same shapes in its `query` but returns no such warning:
+  the canonical form is in `best.query_ir`.
+- A dimension moved out of `select` into `group_by` shifts the position of every later select
+  item, so an unaliased expression after it takes a default alias (`expr_N`) and a diagnostic
+  path (`select[N]`) numbered in the rewritten `select`, not in the query as sent. Give such an
+  expression an `as`.
 - A rewrite never drops a key: a select item naming more than one of `metric`, `measure` and
   `dimension`, a dimension item with `as` or any other key, and `expression` beside `metric`,
   `measure` or `dimension` are refused with the canonical form in the message. The bare

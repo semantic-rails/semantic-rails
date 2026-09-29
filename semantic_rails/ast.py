@@ -953,8 +953,9 @@ def rewrite_select_shorthand(
     """Return ``payload`` with select shorthands rewritten, and a note per rewrite.
 
     Every query entry point (validate, compile, execute, plan) rewrites through this one
-    function, and the response warnings are its notes, so what is reported is what was
-    done. The returned payload is the canonical form: rewriting it again changes nothing.
+    function. validate, compile and execute report its notes as response warnings; plan
+    discards them and returns the canonical form in ``best.query_ir``. The returned payload
+    is the canonical form: rewriting it again changes nothing.
     """
     raw_select = payload.get("select", [])
     if not isinstance(raw_select, list):
