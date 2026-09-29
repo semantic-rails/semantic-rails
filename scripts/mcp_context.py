@@ -275,8 +275,8 @@ Q3 = {
     "where": [{"field": STORE, "op": "in", "value": ["Philadelphia", "Brooklyn"]}],
     "order_by": [{"field": "aov_usd", "direction": "DESC"}],
 }
-# A plausible agent mistake: a time window with no grain groups by the raw
-# timestamp and returns one row per distinct order time.
+# A plausible agent mistake: a time window with no grain. It returns one total per
+# store, with no time column.
 NO_GRAIN_WINDOW = {
     **Q3,
     "time": {"temporal_role": ORDER_TIME, "start": "2017-04-01", "end": "2017-07-01"},

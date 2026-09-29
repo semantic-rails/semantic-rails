@@ -13,6 +13,7 @@ layer.
 
 from __future__ import annotations
 
+import operator
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
@@ -82,7 +83,9 @@ from .compiler_parts.post_aggregation import (
     _namespace_sql_select,
 )
 from .compiler_parts.sql_lowering import (
+    _ZERO_ON_MISSING_MEASURE_CLASSES,
     _count_key_expr,
+    _expr_zero_on_missing,
     _last_token,
     _preferred_path,
     _slug,
@@ -132,7 +135,7 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, choose_path
+from .fanout import analyze_fanout, choose_path, one_to_many_descent
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -174,6 +177,7 @@ from .sql_ast import (
     SqlTableRef,
     SqlWindow,
     SqlWithinGroup,
+    _compact_token,
     build_filter_condition,
     validate_single_value_filter_shape,
 )
@@ -431,23 +435,24 @@ def _can_project_entity_key_from_source(
 def _validate_rollup_safety(bound_measures: Iterable[BoundMeasure], config: PackageConfig) -> None:
     measures = _measure_index(config)
     unsafe_aggregations = {"avg", "median", "percentile", "count_distinct"}
-    rollup_hints_by_pair: dict[tuple[str, str], list[str]] = {}
+    # Relationships between one pair (role-playing keys) may each list rollup-safe
+    # aggregations; only what every one of them allows is allowed, whatever the order.
+    rollup_hints_by_pair: dict[tuple[str, str], set[str]] = {}
     for rel in config.relationships:
         if not rel.rollup_safe_aggregations:
             continue
-        rollup_hints_by_pair[(rel.source_entity, rel.target_entity)] = list(
-            rel.rollup_safe_aggregations
-        )
+        hints = {str(item).lower() for item in rel.rollup_safe_aggregations}
+        pair = (rel.source_entity, rel.target_entity)
+        rollup_hints_by_pair[pair] = rollup_hints_by_pair.get(pair, hints) & hints
     for bound in bound_measures:
         measure = measures[bound.measure_id]
         if not measure.aggregation_entity or measure.aggregation_entity == measure.entity:
             continue
         aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-        allowed_raw = rollup_hints_by_pair.get((measure.entity, measure.aggregation_entity))
-        allowed = {str(item).lower() for item in (allowed_raw or [])}
+        allowed = rollup_hints_by_pair.get((measure.entity, measure.aggregation_entity))
         sketch_safe = bool(measure.meta.get("rollup_sketch") or measure.meta.get("sketch"))
         if (aggregation in unsafe_aggregations and not sketch_safe) or (
-            allowed and aggregation not in allowed and not sketch_safe
+            allowed is not None and aggregation not in allowed and not sketch_safe
         ):
             raise SemanticLayerError(
                 "ROLLUP_UNSAFE",
@@ -476,6 +481,49 @@ _SUMMING_WRAPPERS = (
     MetricPredicateExpr,
     ScopedAggregateExpr,
 )
+
+
+# Constructs whose result depends on a time axis, so a window without a grain can't collapse.
+_TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, PriorPeriodExpr, ConversionExpr)
+
+
+def _uses_time_axis(expr: Any, config: PackageConfig) -> bool:
+    if isinstance(expr, _TIME_AXIS_EXPRS):
+        return True
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return recipe is not None and _uses_time_axis(recipe.expression, config)
+    if not is_dataclass(expr):
+        return False
+    for item in fields(expr):
+        value = getattr(expr, item.name)
+        if any(
+            _uses_time_axis(child, config)
+            for child in (value if isinstance(value, list) else [value])
+        ):
+            return True
+    return False
+
+
+def _is_window_total(
+    query: NormalizedQuery, config: PackageConfig, bound_measures: Iterable[BoundMeasure]
+) -> bool:
+    """A time window with no grain, over plain measures: one total, not a row per timestamp."""
+    time = query.time
+    if time is None or not time.temporal_role or time.grain or time.fill:
+        return False
+    if time.start is None and time.end is None:
+        return False
+    # A predicate (in an aggregate's filter or a metric recipe) is tested per raw timestamp
+    # here, so its threshold would not mean "over the window". Keep today's behaviour.
+    if any(_bound_metric_predicates(bound) for bound in bound_measures):
+        return False
+    expressions = [item.expression for item in query.select] + [
+        item.expression for item in query.metric_filters
+    ]
+    return bool(query.select) and not any(
+        expr is not None and _uses_time_axis(expr, config) for expr in expressions
+    )
 
 
 def _measures_under_summing_wrappers(
@@ -743,6 +791,211 @@ def _entity_in_terms_of_rewrite_supported(
         path=path,
         config=config,
     )
+
+
+# Query roles a de-duplicated leaf serves across a one-to-many hop, and the aggregations it
+# answers: any one-value-per-row aggregation under a filter, and only a distinct count when the
+# child dimension splits the output ("orders that included it").
+_FANOUT_DEDUP_PURPOSES = frozenset({"group_by", "where", "metric_filter"})
+_FANOUT_DEDUP_AGGREGATIONS = frozenset(
+    {"sum", "count", "count_distinct", "avg", "min", "max", "median", "percentile"}
+)
+_FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
+_NEGATED_FILTER_OPS = frozenset(
+    {"!=", "<>", "IS NOT", "IS DISTINCT FROM", "NOT IN", "NOT LIKE", "NOT ILIKE"}
+)
+
+
+def _negated_filter(item: dict[str, Any], dim: Any) -> bool:
+    """A filter whose EXISTS reading ("has a row that is not X") differs from "has no row that
+    is X": a negated operator, a null test, or on a boolean dimension anything but ``= true``."""
+    op = _compact_token(str(item.get("op") or "=")).upper()
+    value = item.get("value")
+    values = value if isinstance(value, (list, tuple)) else [value]
+    if dim.data_type == "boolean":
+        return op not in {"=", "==", "IS", "IN"} or not all(
+            value is True or str(value).lower() == "true" for value in values
+        )
+    if op == "IS NOT NULL" or (value is None and op in {"!=", "<>", "IS NOT"}):
+        return False  # "has a row with a value" reads one way
+    return op in _NEGATED_FILTER_OPS or op == "IS NULL" or value is None
+
+
+def _fanout_dedup_refusal(
+    *,
+    measure: MeasureConfig,
+    bound: BoundMeasure,
+    selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> tuple[str, PathSelection] | None:
+    """Why this leaf can't count each measure row once across its one-to-many hops, and the
+    path at fault; None when it can.
+
+    ``selections`` are the leaf's paths that need a rewrite. The de-duplicated leaf
+    (``sql_lowering._fanout_dedup_leaf_select``) keeps one row per (measure-entity key, output
+    grain) before it aggregates, so a row counts once at all under a filter (EXISTS), and once
+    per group it has a matching child row in.
+
+    Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
+    item dimension reads as the item-level split ("revenue by product type") as often as the
+    orders-that-included-it total, and the two differ, so that shape stays refused.
+    """
+    for row in selections:
+        if row.purpose not in _FANOUT_DEDUP_PURPOSES:
+            return (
+                f"A {row.purpose} path from '{measure.entity}' to '{row.target_entity}' crosses "
+                "a one-to-many hop; only filters and distinct-count groupings can.",
+                row,
+            )
+    keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
+    for row in selections:
+        if not one_to_many_descent(row.analysis, keys):
+            return (
+                f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
+                "lookup before the one-to-many hop, an M:N or time-bounded relationship, or a "
+                "join off the declared key), so no single set of rows belongs to each row.",
+                row,
+            )
+    aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
+    grouped = [row for row in selections if row.purpose == "group_by"]
+    if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
+        return (
+            f"'{aggregation}' of '{measure.id}' grouped by a dimension of "
+            f"'{grouped[0].target_entity}' is ambiguous across a one-to-many hop: the amount "
+            "split over the child rows and the full amount of every row that has one differ. "
+            "Use a measure at the child's grain, group by a dimension of the measure's own "
+            "grain, or filter on the child dimension (each row then counts once).",
+            grouped[0],
+        )
+    entity = _entity_index(config)[measure.entity]
+    if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
+        measure.additive
+        and measure.measure_class not in {"semi_additive", "snapshot"}
+        and not measure.source_relation
+        and measure.aggregation_entity in {"", measure.entity}
+        and (entity.key or entity.primary_key)
+        and sorted(measure.row_grain or entity.key or [entity.primary_key])
+        == sorted(entity.key or [entity.primary_key])
+    ):
+        return (
+            f"'{aggregation}' of measure '{measure.id}' is not defined over one row per "
+            f"'{measure.entity}' key (a non-additive value, a stock, an ordered aggregation, "
+            "or a measure whose rows are finer than its entity's key).",
+            (grouped or selections)[0],
+        )
+    roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
+    roots += [item.expression for item in query.metric_filters if item.expression is not None]
+    if (
+        bound.window_spec
+        or _bound_metric_predicates(bound)
+        or any(isinstance(root, MetricPredicateExpr) for root in roots)
+        or any(
+            measure_id == bound.measure_id
+            for root in roots
+            for measure_id, _ in _measures_under_summing_wrappers(root, config)
+        )
+    ):
+        return (
+            "A window, per-entity rollup, distribution or metric predicate over this measure "
+            "is not supported across a one-to-many hop.",
+            (grouped or selections)[0],
+        )
+    conditions = _hop_conditions(bound, selections, config, query)
+    if len(conditions) > 1:
+        return _two_hop_conditions(conditions)
+    for dim, item, hop in conditions:
+        if item and _negated_filter(item, dim):
+            return (
+                f"A negated or null test on '{dim.id}' across a one-to-many hop is ambiguous: "
+                "'has a row that is not X' and 'has no row that is X' differ. Filter on the "
+                "values to keep instead.",
+                hop,
+            )
+    return None
+
+
+def _hop_conditions(
+    bound: BoundMeasure,
+    selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> list[tuple[Any, dict[str, Any], PathSelection]]:
+    """Each group or filter of the leaf whose path crosses a one-to-many hop: its dimension,
+    the filter clause (empty for a group) and the path."""
+    crossing = {(row.target_entity, row.purpose): row for row in selections}
+    dimensions = _dimension_index(config)
+    conditions: list[tuple[Any, dict[str, Any], PathSelection]] = []
+    candidates: list[tuple[str, dict[str, Any], str]] = [
+        (dim_id, {}, "group_by") for dim_id in query.group_by
+    ]
+    candidates += [(row.field, asdict(row), "where") for row in query.where]
+    candidates += [
+        (str(clause.get("field", "")), clause, "metric_filter")
+        for clause in _bound_filter_clauses(bound, config)
+    ]
+    for dim_id, item, purpose in candidates:
+        dim = dimensions.get(dim_id)
+        hop = crossing.get((dim.entity, purpose)) if dim is not None else None
+        if hop is not None:
+            conditions.append((dim, item, hop))
+    return conditions
+
+
+def _two_hop_conditions(
+    conditions: list[tuple[Any, dict[str, Any], PathSelection]],
+) -> tuple[str, PathSelection]:
+    """At most one group or filter may cross a one-to-many hop: with two, one child row may have
+    to meet both, or any rows each, and which depends on where their paths part."""
+    (first, _, _), (second, _, hop) = conditions[:2]
+    return (
+        f"'{first.id}' and '{second.id}' both cross a one-to-many hop, so they may have to "
+        "match one row or any rows each. Ask one such condition per query, or combine its "
+        "values with IN on one dimension.",
+        hop,
+    )
+
+
+def _hop_steps(
+    crossing: str, bound: BoundMeasure, path_selections: list[PathSelection], config: PackageConfig
+) -> list[RewriteStep]:
+    """Disclose how a leaf crosses its one-to-many hops, so REWRITE_APPLIED reports it."""
+    entity = _measure_index(config)[bound.measure_id].entity
+    crossed = {
+        row.target_entity: list(row.chosen_path)
+        for row in path_selections
+        if row.analysis.get("status") != "ok"
+    }
+    if crossing == "entity_in_terms_of":
+        return [
+            RewriteStep(
+                kind="entity_in_terms_of",
+                status="applied",
+                measure_id=bound.measure_id,
+                reason="Count-distinct parent entity is computed from the qualifying child relation and rolled up by the requested child dimension.",
+                details={
+                    "target_entity": target,
+                    "path": path,
+                    "omits_semantic_root_entity": entity,
+                },
+            )
+            for target, path in crossed.items()
+        ]
+    if crossing != "fanout_dedup":
+        return []
+    return [
+        RewriteStep(
+            kind="fanout_dedup",
+            status="applied",
+            measure_id=bound.measure_id,
+            reason=(
+                f"Each '{entity}' counts once per group across the one-to-many hop to "
+                f"{', '.join(repr(target) for target in sorted(crossed))}; a filter there means "
+                "it has at least one matching row."
+            ),
+            details={"paths": crossed},
+        )
+    ]
 
 
 def _date_key(value: Any) -> str:
@@ -1197,6 +1450,104 @@ def _predicate_where_condition(op: str, value: Any) -> Any:
     return build_filter_condition(alias_ref, op, value, path="metric_predicate")
 
 
+_ZERO_COMPARISONS: dict[str, Any] = {
+    "=": operator.eq,
+    "!=": operator.ne,
+    "<>": operator.ne,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
+_INVERSE_THRESHOLD_OPS = {
+    "=": "!=",
+    "!=": "=",
+    "<>": "=",
+    "<": ">=",
+    "<=": ">",
+    ">": "<=",
+    ">=": "<",
+    "IN": "NOT IN",
+    "NOT IN": "IN",
+}
+
+
+# A distinct count of a population is 0 over no rows too; it stays out of the metric_filter
+# and dense-fill uses of the shared set, whose null semantics differ.
+_ZERO_ON_MISSING_PREDICATE_CLASSES = {*_ZERO_ON_MISSING_MEASURE_CLASSES, "distinct_population"}
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _zero_satisfies_threshold(op: str, value: Any) -> bool:
+    """Whether a value of 0 passes the ``op value`` threshold of a metric_predicate."""
+    token = " ".join(str(op or "").upper().split())
+    if token in {"IN", "NOT IN"}:
+        values = list(value) if isinstance(value, (list, tuple)) else [value]
+        if not values:
+            return token == "NOT IN"  # NOT IN () is always true, IN () never
+        if not all(_is_number(item) for item in values):
+            return False
+        return (0 in values) == (token == "IN")
+    compare = _ZERO_COMPARISONS.get(token)
+    return compare is not None and _is_number(value) and bool(compare(0, value))
+
+
+def _require_predicate_over_rows(
+    predicate: MetricPredicateExpr, config: PackageConfig, *, shape: str
+) -> None:
+    """Refuse, in a shape that only keeps entities with rows, a threshold that zero passes."""
+    if _predicate_includes_entities_without_rows(predicate, config):
+        raise SemanticLayerError(
+            "INVALID_METRIC_PREDICATE",
+            (
+                f"metric_predicate threshold '{predicate.op} {predicate.value}' is satisfied by "
+                f"an entity with no rows, which {shape} cannot count yet, so the query is "
+                "refused rather than answered from the entities that have rows."
+            ),
+            details={"entity": predicate.entity, "predicate": expr_to_dict(predicate)},
+        )
+
+
+def _predicate_input_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
+    """Whether the predicate input is 0, not NULL, for an entity with no rows.
+
+    A count or sum is. Arithmetic over several sources is NULL when any source
+    has no rows for the entity, unless every add/subtract node coalesces each
+    side to 0 (``null_behavior: coalesce_zero``); otherwise treating it as 0
+    would let entities with rows on one side pass a threshold they fail.
+    """
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return recipe is not None and _predicate_input_zero_on_missing(recipe.expression, config)
+    if isinstance(expr, ArithmeticExpr):
+        return (
+            expr.op in {"add", "subtract"}
+            and expr.null_behavior == "coalesce_zero"
+            and _predicate_input_zero_on_missing(expr.left, config)
+            and _predicate_input_zero_on_missing(expr.right, config)
+        )
+    return _expr_zero_on_missing(expr, config, _ZERO_ON_MISSING_PREDICATE_CLASSES)
+
+
+def _predicate_includes_entities_without_rows(
+    predicate: MetricPredicateExpr, config: PackageConfig
+) -> bool:
+    """Whether entities with no input rows must qualify for this predicate.
+
+    An entity with no rows never reaches the predicate's aggregate, so a
+    threshold that zero passes (``count = 0``, ``< 3``, ``<= 0``) would
+    otherwise match nothing. Only where "no rows" is 0 (a count or sum) does the
+    entity qualify. An average, minimum, maximum or ratio over no rows is NULL,
+    which no threshold satisfies, so those entities stay out.
+    """
+    return _zero_satisfies_threshold(
+        predicate.op, predicate.value
+    ) and _predicate_input_zero_on_missing(predicate.input, config)
+
+
 def _inline_threshold_cte_and_where(
     *,
     predicate: Any,
@@ -1395,6 +1746,37 @@ def _path_has_temporal_validity(path: list[str], config: PackageConfig) -> bool:
     )
 
 
+def _cross_clock_predicate_error(
+    predicate: MetricPredicateExpr, query: NormalizedQuery, compatible_roles: set[str]
+) -> SemanticLayerError:
+    assert query.time is not None
+    clocks = sorted(compatible_roles)
+    return SemanticLayerError(
+        "INVALID_TEMPORAL_BINDING",
+        (
+            f"The contextual metric_predicate measures {_predicate_metric_label(predicate)!r} "
+            f"on {', '.join(clocks)}, but the query's time is {query.time.temporal_role}. "
+            "Matching the two by calendar bucket would compare different clocks, so the "
+            "query is refused."
+        ),
+        details={
+            "requested": query.time.temporal_role,
+            "compatible": clocks,
+            "predicate": expr_to_dict(predicate),
+            "recovery_hints": [
+                {
+                    "code": "CHOOSE_PREDICATE_CLOCK",
+                    "message": (
+                        f"To apply the threshold per period on {clocks[0]}, set "
+                        "query.time.temporal_role to it. To apply it over all time, set "
+                        "scope_mode to 'entity_only'."
+                    ),
+                }
+            ],
+        },
+    )
+
+
 def _predicate_time_spec(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> dict[str, Any] | None:
@@ -1447,8 +1829,7 @@ def _predicate_time_spec(
     compatible_roles = _expr_compatible_temporal_roles(predicate.input, config, query)
     predicate_temporal_role = query.time.temporal_role
     if query.time.temporal_role not in compatible_roles:
-        predicate_temporal_role = next(iter(sorted(compatible_roles)), "")
-        if not predicate_temporal_role:
+        if not compatible_roles:
             raise SemanticLayerError(
                 "PREDICATE_GRAIN_UNSAFE",
                 "Metric predicate input does not expose a compatible temporal role",
@@ -1457,6 +1838,11 @@ def _predicate_time_spec(
                     "predicate": expr_to_dict(predicate),
                 },
             )
+        # Matching another clock's calendar buckets to the query's is only sound when the
+        # predicate asks for it and names exactly one clock; it is never a silent default.
+        if predicate.time_alignment != "same_query_period" or len(compatible_roles) != 1:
+            raise _cross_clock_predicate_error(predicate, query, compatible_roles)
+        predicate_temporal_role = next(iter(compatible_roles))
     outer_grain = str(query.time.grain or "").lower()
     predicate_grain = str(predicate.time_grain or outer_grain or "").lower()
     if predicate.time_grain:
@@ -1681,7 +2067,13 @@ def _predicate_ctes_and_join(
     plan: LogicalPlan,
     measure_plan: MeasurePlan,
     config: PackageConfig,
-) -> tuple[list[SqlCte], SqlJoin]:
+) -> tuple[list[SqlCte], SqlJoin, list[Any]]:
+    """Return the predicate's CTEs, the join to the outer leaf, and extra WHERE conditions.
+
+    Usually the set holds the qualifying entities and the join is INNER. When entities
+    with no rows must qualify, the set holds the entities that fail the threshold, and
+    the leaf keeps a row only if that LEFT JOIN finds no failing entity for it.
+    """
     entity_cfg = _entity_index(config).get(predicate.entity)
     if entity_cfg is None:
         raise SemanticLayerError(
@@ -1746,6 +2138,17 @@ def _predicate_ctes_and_join(
         source_name=source_name,
         config=config,
     )
+    without_rows = _predicate_includes_entities_without_rows(predicate, config)
+    if without_rows:
+        where_condition = build_filter_condition(
+            SqlCall(
+                "COALESCE",
+                [SqlIdentifier(parts=["predicate_source", "__predicate_value"]), SqlLiteral(0)],
+            ),
+            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
+            predicate.value,
+            path="metric_predicate",
+        )
     set_query = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=source_name, alias="predicate_source"),
@@ -1780,6 +2183,7 @@ def _predicate_ctes_and_join(
         else _column_ref(predicate_table, entity_cfg.key[0])
     )
     assert outer_key_expr is not None  # can_join_predicate_directly guarantees non-None
+    outer_keys = [outer_key_expr]
     join_condition: Any = SqlBinary(
         outer_key_expr,
         "=",
@@ -1792,6 +2196,7 @@ def _predicate_ctes_and_join(
             else _column_ref(predicate_table, key_col)
         )
         assert outer_key_expr is not None  # can_join_predicate_directly guarantees non-None
+        outer_keys.append(outer_key_expr)
         join_condition = SqlBinary(
             join_condition,
             "AND",
@@ -1804,40 +2209,51 @@ def _predicate_ctes_and_join(
             strict=True,
         ):
             dim = _dimension_index(config)[dim_id]
+            context_key_expr = _column_ref(_entity_index(config)[dim.entity].table, dim.column)
+            outer_keys.append(context_key_expr)
             join_condition = SqlBinary(
                 join_condition,
                 "AND",
-                SqlBinary(
-                    _column_ref(_entity_index(config)[dim.entity].table, dim.column),
-                    "=",
-                    SqlIdentifier(parts=[set_name, dim_id]),
-                ),
+                SqlBinary(context_key_expr, "=", SqlIdentifier(parts=[set_name, dim_id])),
             )
     if scope["time_spec"] is not None and scope["time_alias"]:
         query = normalize_query(plan.query)
         outer_temporal_role = _leaf_time_role(measure_plan.bound_measure, query, config)
+        outer_time_expr = _predicate_time_join_expr(
+            source_entity=measure_plan.source_entity,
+            role_id=outer_temporal_role,
+            grain=str(scope["time_spec"]["grain"]),
+            config=config,
+        )
+        outer_keys.append(outer_time_expr)
         join_condition = SqlBinary(
             join_condition,
             "AND",
-            SqlBinary(
-                _predicate_time_join_expr(
-                    source_entity=measure_plan.source_entity,
-                    role_id=outer_temporal_role,
-                    grain=str(scope["time_spec"]["grain"]),
-                    config=config,
-                ),
-                "=",
-                SqlIdentifier(parts=[set_name, scope["time_alias"]]),
-            ),
+            SqlBinary(outer_time_expr, "=", SqlIdentifier(parts=[set_name, scope["time_alias"]])),
         )
-    return [source_cte, *threshold_ctes, set_cte], SqlJoin(
-        join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition
+    if not without_rows:
+        return (
+            [source_cte, *threshold_ctes, set_cte],
+            SqlJoin(join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition),
+            [],
+        )
+    # A leaf row with no entity, context or period key is not an entity with no rows.
+    keep_rows: list[Any] = [
+        SqlIsNull(SqlIdentifier(parts=[set_name, key_dim_map[0][1]])),
+        *(SqlBinary(key_expr, "IS NOT", SqlLiteral(None)) for key_expr in outer_keys),
+    ]
+    return (
+        [source_cte, *threshold_ctes, set_cte],
+        SqlJoin(join_type="LEFT", table=SqlTableRef(name=set_name), on=join_condition),
+        keep_rows,
     )
 
 
 def _leaf_path_selections(
     bound: BoundMeasure, config: PackageConfig, query: NormalizedQuery
-) -> tuple[list[PathSelection], list[str]]:
+) -> tuple[list[PathSelection], list[str], str]:
+    """The leaf's paths, the entities it reads, and how it crosses one-to-many hops: "",
+    "entity_in_terms_of" or "fanout_dedup"."""
     measures = _measure_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
@@ -1964,20 +2380,37 @@ def _leaf_path_selections(
             )
             for row in unsupported
         ):
-            return selections, sorted(required_entities)
-        row = unsupported[0]
-        raise SemanticLayerError(
-            "REWRITE_NOT_SUPPORTED",
-            f"Measure '{bound.measure_id}' requires unsupported leaf rewrite toward '{row.target_entity}'",
-            details={
-                "measure": bound.measure_id,
-                "target_entity": row.target_entity,
-                "purpose": row.purpose,
-                "path": list(row.chosen_path),
-                "analysis": row.analysis,
-            },
+            conditions = _hop_conditions(bound, unsupported, config, query)
+            if len(conditions) <= 1:
+                return selections, sorted(required_entities), "entity_in_terms_of"
+            why_invalid, row = _two_hop_conditions(conditions)
+            raise _mixed_grain_error(
+                target_entity=row.target_entity,
+                purpose=row.purpose,
+                chosen=list(row.chosen_path),
+                analysis=row.analysis,
+                config=config,
+                query=query,
+                bound_measures=[bound],
+                why_invalid=why_invalid,
+            )
+        refusal = _fanout_dedup_refusal(
+            measure=measure, bound=bound, selections=unsupported, config=config, query=query
         )
-    return selections, sorted(required_entities)
+        if refusal is None:
+            return selections, sorted(required_entities), "fanout_dedup"
+        why_invalid, row = refusal
+        raise _mixed_grain_error(
+            target_entity=row.target_entity,
+            purpose=row.purpose,
+            chosen=list(row.chosen_path),
+            analysis=row.analysis,
+            config=config,
+            query=query,
+            bound_measures=[bound],
+            why_invalid=why_invalid,
+        )
+    return selections, sorted(required_entities), ""
 
 
 def _mixed_grain_error(
@@ -1989,14 +2422,14 @@ def _mixed_grain_error(
     config: PackageConfig,
     query: NormalizedQuery,
     bound_measures: list[BoundMeasure],
+    why_invalid: str = "",
 ) -> SemanticLayerError:
     """MIXED_GRAIN_INVALID with recovery enrichment for the failed pairing.
 
-    Beyond the path/analysis evidence, the details carry
+    Beyond the path/analysis evidence and ``why_invalid``, the details carry
     ``compatible_measures`` / ``compatible_dimensions`` /
-    ``time_axis_recovery`` so agents can pivot to a working query in
-    one step instead of brute-forcing the registry (see
-    ``compiler_parts.grain_recovery``).
+    ``time_axis_recovery`` so agents see the workable neighbours instead of
+    brute-forcing the registry (see ``compiler_parts.grain_recovery``).
     """
     details: dict[str, Any] = {
         "target_entity": target_entity,
@@ -2004,6 +2437,8 @@ def _mixed_grain_error(
         "path": list(chosen),
         "analysis": analysis,
     }
+    if why_invalid:
+        details["why_invalid"] = why_invalid
     details.update(
         mixed_grain_pairing_enrichment(
             config=config,
@@ -2128,59 +2563,8 @@ def _root_path_summary(
                     details={"path": list(chosen), "analysis": analysis},
                 )
             )
-        elif (
-            analysis.get("status") == "rewrite_required"
-            and purpose == "group_by"
-            and len(bound_measures) == 1
-        ):
-            measure_cfg = measures[bound_measures[0].measure_id]
-            selection = PathSelection(
-                target_entity=target_entity,
-                purpose=purpose,
-                chosen_path=list(chosen),
-                candidate_paths=[list(path) for path in candidates],
-                analysis=analysis,
-            )
-            if _entity_in_terms_of_rewrite_supported(
-                measure=measure_cfg,
-                bound=bound_measures[0],
-                selection=selection,
-                config=config,
-                query=query,
-            ):
-                rewrite_steps.append(
-                    RewriteStep(
-                        kind="entity_in_terms_of",
-                        status="applied",
-                        measure_id=bound_measures[0].measure_id,
-                        reason="Count-distinct parent entity is computed from the qualifying child relation and rolled up by the requested child dimension.",
-                        details={
-                            "target_entity": target_entity,
-                            "path": list(chosen),
-                            "omits_semantic_root_entity": measure_cfg.entity,
-                        },
-                    )
-                )
-            else:
-                raise _mixed_grain_error(
-                    target_entity=target_entity,
-                    purpose=purpose,
-                    chosen=list(chosen),
-                    analysis=analysis,
-                    config=config,
-                    query=query,
-                    bound_measures=bound_measures,
-                )
-        elif analysis.get("status") == "rewrite_required":
-            raise _mixed_grain_error(
-                target_entity=target_entity,
-                purpose=purpose,
-                chosen=list(chosen),
-                analysis=analysis,
-                config=config,
-                query=query,
-                bound_measures=bound_measures,
-            )
+        # A group_by or where path that needs a rewrite is left to each measure leaf, which
+        # crosses it (and says so in a rewrite step) or refuses (see _leaf_path_selections).
     return selected_paths, candidate_paths, rewrite_steps, analyses
 
 
@@ -2757,6 +3141,7 @@ def _conversion_predicate_set_ctes(
     if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
         mini_query["time"] = _public_time_spec(scope["time_spec"])
 
+    _require_predicate_over_rows(predicate, config, shape="a conversion metric")
     # Conversion leaves apply only query metric_filters predicates: whole-query cuts.
     with cut_owners():
         with binding_cut():
@@ -3504,14 +3889,22 @@ def resolve_compile_config(plan: LogicalPlan, config: PackageConfig) -> PackageC
 
 
 def plan_query(
-    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    *,
+    collapse_window: bool = True,
 ) -> LogicalPlan:
     with candidate_planning():
-        return _plan_query(config, registry, payload)
+        return _plan_query(config, registry, payload, collapse_window=collapse_window)
 
 
 def _plan_query(
-    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    *,
+    collapse_window: bool,
 ) -> LogicalPlan:
     raw_query = normalize_query(payload)
 
@@ -3597,7 +3990,9 @@ def _plan_query(
                     )
 
         for index, bound in enumerate(bound_measures):
-            path_selections, required_entities = _leaf_path_selections(bound, config, query)
+            path_selections, required_entities, crossing = _leaf_path_selections(
+                bound, config, query
+            )
             grain_keys = [*query.group_by]
             if query.time is not None:
                 grain_keys.append(
@@ -3610,6 +4005,10 @@ def _plan_query(
                 if any(step.measure_id == bound.measure_id for step in rewrite_steps)
                 else "direct"
             )
+            if crossing == "fanout_dedup":
+                rewrite_strategy = "fanout_dedup"
+            # Every leaf that crosses a one-to-many hop says how.
+            rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config))
             aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(
                 bound=bound,
                 query=query,
@@ -3681,6 +4080,9 @@ def _plan_query(
         for item in query.select
         if item.expression is not None
     }
+    plan_time = asdict(query.time) if query.time else {}
+    if collapse_window and bound_measures and _is_window_total(query, config, bound_measures):
+        plan_time["window_total"] = True
     return LogicalPlan(
         version=2,
         query=query.to_dict(),
@@ -3689,7 +4091,7 @@ def _plan_query(
         selected_paths=selected_paths,
         candidate_paths=candidate_paths,
         group_by=list(query.group_by),
-        time=asdict(query.time) if query.time else {},
+        time=plan_time,
         bound_measures=bound_measures,
         measure_plans=measure_plans,
         post_aggregation_exprs=post_exprs,
@@ -3718,7 +4120,7 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
 def _compile_query_sql_ast(
     config: PackageConfig, payload: dict[str, Any], *, project_cut: bool = False
 ) -> SqlSelect:
-    plan = plan_query(config, None, payload)
+    plan = plan_query(config, None, payload, collapse_window=False)
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)

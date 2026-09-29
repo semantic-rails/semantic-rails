@@ -95,6 +95,7 @@ from .metadata_parts.scope_gate import scope_block_payload as _scope_block_paylo
 from .metadata_parts.valid_values import valid_values_payload
 from .policies import hidden_object_ids, policy_effects_for_object
 from .request_context import context_from_policy_context
+from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
@@ -2000,6 +2001,15 @@ def discover_payload(
     limit: int = 10,
     enforce_scope: bool = False,
 ) -> dict[str, Any]:
+    kinds = checked_discover_kinds(kinds, DISCOVER_RANKED_KINDS)
+    if limit < 1:
+        # The buckets are cut to ``limit``, so a zero limit would empty them
+        # and read as "no match" for a search that found something.
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            "Argument 'limit' must be at least 1.",
+            details={"field": "limit", "argument_type": type(limit).__name__},
+        )
     config = runtime._config
     search_index = runtime._get_catalog_search_index()
     search_terms = SearchTerms.from_text(terms)
@@ -2066,7 +2076,6 @@ def discover_payload(
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
     stage = _infer_stage(partial_query, stage, terms)
-    kinds = list(kinds or [])
     maps = _config_maps(config)
     records: list[dict[str, Any]] = []
 
@@ -2553,7 +2562,11 @@ def discover_payload(
     if no_matches:
         payload["no_matches"] = {
             "terms": terms,
-            "reason": "no candidate matched the supplied search terms",
+            "reason": (
+                f"no candidate of kind {sorted(set(kinds))} matched the supplied search terms"
+                if kinds
+                else "no candidate matched the supplied search terms"
+            ),
             "recovery_hint": "Try simpler or more specific terms, or browse the catalog of available objects.",
         }
     # Empty-`terms` warning. The blind-agent benchmark caught a probe

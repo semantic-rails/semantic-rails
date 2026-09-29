@@ -39,10 +39,10 @@ QUERY = {
     "time": {"temporal_role": ORDER_TIME, "grain": "month", "start": "2017-01-01"},
     "order_by": [{"field": "time", "direction": "ASC"}, {"field": STORE, "direction": "ASC"}],
 }
-# A window without a grain groups by the raw timestamp: thousands of rows.
+# A time role without a grain or window groups by the raw timestamp: thousands of rows.
 UNGRAINED = {
     **QUERY,
-    "time": {"temporal_role": ORDER_TIME, "start": "2017-01-01"},
+    "time": {"temporal_role": ORDER_TIME},
     "order_by": [{"field": STORE, "direction": "ASC"}],
 }
 V2_TOOLS = ["discover", "inspect", "valid-values", "plan", "execute", "segment"]

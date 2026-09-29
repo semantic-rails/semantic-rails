@@ -252,6 +252,14 @@ The runtime rejects any `field` that does not resolve, with
 would silently exclude December 31. Half-open bounds make adjacent
 windows compose without overlap or gaps.
 
+**A window without a `grain` is one total.** With `start` and/or `end` (or `range`) and no `grain`,
+the query returns one total over the window for each `group_by` group, with no time column, even
+for a window inside one day. The response says so in `assumptions` and sets
+`time_shape: "window_total"`. Set `grain` for one row per period. A `time` block with no bounds and
+no grain still groups by the raw timestamp, and so do queries that need a time axis (rolling,
+prior-period and similar expressions) and queries with a metric predicate, including one in an
+aggregate's `filter` or a metric recipe.
+
 Buckets and bounds are in the temporal role's `timezone` (UTC by default).
 On DuckDB, MotherDuck, DuckLake and Postgres that holds for zone-aware
 (`TIMESTAMP WITH TIME ZONE`) columns too: the query runs with the session time

@@ -834,6 +834,15 @@ _SHIP_TO_KEY = {
             id="rollup-pre-joined-one-to-many",  # each order's revenue once per line
         ),
         pytest.param(
+            ({}, [_PRODUCT], {"lines": True}),
+            _grouped(
+                _rollup_query(_REVENUE, "sum", "month"),
+                where=[{"field": "dimension.product", "op": "=", "value": "a"}],
+            ),
+            "one_to_many_hop",
+            id="rollup-pre-joined-one-to-many-filter",  # the base counts each order once
+        ),
+        pytest.param(
             ({"monthly": _MONTHLY}, [], {"ship_to": None}),
             _rollup_query("measure.weight", "sum", "month"),
             "join_path_mismatch",

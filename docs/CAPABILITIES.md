@@ -147,7 +147,16 @@ In practice:
 
 - safe direct paths compile normally
 - some mixed-grain measure combinations compile via leaf pre-aggregation rewrite
-- unsupported grain-expanding shapes still fail fast rather than silently miscomputing
+- a measure filtered by a dimension across a one-to-many hop (order revenue where an
+  item is a beverage) counts each of its rows once: the leaf keeps one row per
+  (entity key, output grain) before it aggregates, so the filter means EXISTS
+- a distinct count grouped by such a dimension counts each row once in every group it
+  has a matching child in ("orders that included each product type"); both carry a
+  `REWRITE_APPLIED` warning (`fanout_dedup`)
+- unsupported grain-expanding shapes still fail fast rather than silently miscomputing:
+  other aggregations grouped across the hop (order revenue by item product type reads
+  as either an item split or each containing order's total), negated, null or `false`
+  tests across it, and many-to-many or off-key paths
 
 Relevant statuses and codes:
 
@@ -207,6 +216,8 @@ Current guardrails:
 - query-time predicates default to contextual scope
 - package-authored predicates must declare `scope_mode`
 - contextual predicates inherit the outer time bucket and compatible grouped context entities
+- a contextual predicate measured on another clock than the query's is refused (`INVALID_TEMPORAL_BINDING`) unless it sets `time_alignment: same_query_period` and names one clock
+- a threshold that zero satisfies counts entities with no rows as 0 for counts and sums; an average, minimum, maximum or ratio over no rows is NULL, so those entities never satisfy a threshold
 - outer compatible filters are inherited into the predicate subquery without widening the scoped join key
 - finer-grain or non-deterministic time mixes fail with semantic errors rather than smearing values
 
@@ -410,10 +421,12 @@ lands in one place rather than scattering across the codebase.
   `feature_pending_sql_lowering` recovery hint when the SQL
   lowering would be invoked. Authors can build queries against
   the locked IR shape today; SQL emission ships in the next
-  round. Supported shapes meanwhile: a pre-authored windowed
-  measure inside a metric recipe, or a query-time
-  rolling/prior-period/period-to-date primitive over a *uniform*
-  clock.
+  round. A metric recipe that authors the same anchor and window
+  is refused the same way, so it is not a workaround. Supported
+  shapes meanwhile: a column that carries the offset from the
+  anchor (for example days since the first order) with a measure
+  filtered on it, or a query-time rolling/prior-period/period-to-date
+  primitive over a *uniform* clock.
 - **Cross-clock filters without an authored conversion metric.**
   Free-form "filter on clock A, aggregate on clock B" queries are
   rejected with `INVALID_TEMPORAL_BINDING` (see "Cross-clock queries"
