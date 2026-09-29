@@ -95,7 +95,7 @@ from .metadata_parts.scope_gate import scope_block_payload as _scope_block_paylo
 from .metadata_parts.valid_values import valid_values_payload
 from .policies import hidden_object_ids, policy_effects_for_object
 from .request_context import context_from_policy_context
-from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
+from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds, checked_discover_limit
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
@@ -2002,14 +2002,7 @@ def discover_payload(
     enforce_scope: bool = False,
 ) -> dict[str, Any]:
     kinds = checked_discover_kinds(kinds, DISCOVER_RANKED_KINDS)
-    if limit < 1:
-        # The buckets are cut to ``limit``, so a zero limit would empty them
-        # and read as "no match" for a search that found something.
-        raise SemanticLayerError(
-            "INVALID_MCP_ARGUMENTS",
-            "Argument 'limit' must be at least 1.",
-            details={"field": "limit", "argument_type": type(limit).__name__},
-        )
+    limit = checked_discover_limit(limit)
     config = runtime._config
     search_index = runtime._get_catalog_search_index()
     search_terms = SearchTerms.from_text(terms)

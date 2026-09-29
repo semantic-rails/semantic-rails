@@ -12,5 +12,5 @@
   (`low_relevance`, `out_of_scope`) does not claim a kind-scoped search found nothing. In
   resource-grant mode the same refusal applies to any kind a grant cannot produce (only
   `metric`, `dimension` and `temporal_role` are searched, on MCP and HTTP alike), and it keeps
-  its `valid_kinds` detail; the empty-terms listing omits the kinds a grant cannot produce,
-  and a grant search never reports `no_matches`, because it covers a filtered view.
+  its `valid_kinds` detail (the empty-terms id listing refuses them too, and lists only the
+  kinds a grant produces), a `limit` below 1 is refused there as well, and a grant search never reports `no_matches`, because it covers a filtered view.

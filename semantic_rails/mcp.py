@@ -52,6 +52,7 @@ from .request_payload import (
 from .request_payload import (
     coerce_bool as _coerce_bool,
 )
+from .resource_access import discoverable_kinds
 from .runtime import Runtime
 
 __all__ = [
@@ -2032,13 +2033,16 @@ class SemanticLayerMCPAdapter:
             # know which kinds this call can produce.
             requested_kinds = _coerce_kinds(args.get("kinds", []))
             if not terms_str.strip():
-                requested_kinds = checked_discover_kinds(requested_kinds, _CATALOG_KIND_FILTERS)
                 # Empty terms list the ids instead of ranking, a page per kind.
+                policy_context = _policy_context_payload(args)
+                requested_kinds = checked_discover_kinds(
+                    requested_kinds, discoverable_kinds(policy_context, _CATALOG_KIND_FILTERS)
+                )
                 catalog = resolve_catalog(
                     self.runtime,
                     view="summary",
                     verbosity="summary",
-                    policy_context=_policy_context_payload(args),
+                    policy_context=policy_context,
                 )
                 kinds = set(requested_kinds)
                 size = _coerce_int(args.get("limit"), _DISCOVER_ID_PAGE, field="limit", minimum=1)

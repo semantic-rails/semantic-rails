@@ -364,6 +364,68 @@ def test_resource_grant_mode_listing_omits_the_kinds_it_cannot_produce(
     assert listed and listed <= GRANT_DISCOVER_KINDS
 
 
+@pytest.mark.parametrize(
+    "kinds", [["measure"], ["segment"], ["entity"], ["relationship"], ["value_domain"], ["bogus"]]
+)
+def test_resource_grant_mode_listing_refuses_a_kind_it_cannot_produce(
+    runtime: Any, adapter: SemanticLayerMCPAdapter, kinds: list[str]
+) -> None:
+    """Empty terms list ids; the kind check is the ranked path's, not the wider catalog's."""
+    out = adapter.call_tool(
+        "discover", {"terms": "", "kinds": kinds, "policy_context": _granted(runtime)}
+    )
+    assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
+    assert out["error"]["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
+    assert "catalog" not in out
+    (hint,) = [h for h in out["recovery_hints"] if h["kind"] == "use_valid_kind"]
+    assert hint["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
+    # Following the hint on the same call shape lists that kind's ids.
+    for kind in hint["details"]["valid_kinds"]:
+        followed = adapter.call_tool(
+            "discover", {"terms": "", "kinds": [kind], "policy_context": _granted(runtime)}
+        )
+        assert followed["ok"] is True, kind
+        assert f"{kind}_ids" in followed["catalog"], kind
+
+
+def test_listing_hint_outside_grant_mode_names_only_kinds_it_can_list(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    out = adapter.call_tool("discover", {"terms": "", "kinds": ["bogus"]})
+    assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
+    (hint,) = [h for h in out["recovery_hints"] if h["kind"] == "use_valid_kind"]
+    for kind in hint["details"]["valid_kinds"]:
+        followed = adapter.call_tool("discover", {"terms": "", "kinds": [kind]})
+        assert followed["ok"] is True and f"{kind}_ids" in followed["catalog"], kind
+
+
+def test_grant_error_sanitiser_names_the_grant_kinds_not_the_errors_own() -> None:
+    from semantic_rails.request_payload import unknown_discover_kinds_error
+    from semantic_rails.resource_access import _public_error
+
+    leaky = unknown_discover_kinds_error(["bogus"], frozenset({"a_hidden_package_object"}))
+    public = _public_error(leaky)
+    assert public.details == {
+        "field": "kinds",
+        "unknown_kinds": ["bogus"],
+        "valid_kinds": sorted(GRANT_DISCOVER_KINDS),
+    }
+    assert "a_hidden_package_object" not in str(public.details) + str(public)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_resource_grant_mode_refuses_a_limit_below_one(runtime: Any, limit: int) -> None:
+    context = {"policy_context": _granted(runtime)}
+    with pytest.raises(SemanticLayerError) as raised:
+        discover_payload(runtime, terms="revenue", partial_query=context, limit=limit)
+    assert raised.value.code == "INVALID_MCP_ARGUMENTS"
+    assert raised.value.details == {"field": "limit"}
+    with pytest.raises(SemanticLayerError) as no_grant:
+        discover_payload(runtime, terms="revenue", limit=limit)
+    assert no_grant.value.code == "INVALID_MCP_ARGUMENTS"
+    assert no_grant.value.details["field"] == "limit"
+
+
 def test_resource_grant_mode_still_searches_the_kinds_it_produces(runtime: Any) -> None:
     context = {"policy_context": _granted(runtime)}
     found = discover_payload(runtime, terms="revenue", kinds=["metric"], partial_query=context)
