@@ -4,7 +4,10 @@
   number and clock or zone word in the question ("9", "nine", "o'clock", "hour", "noon", "UTC",
   "EST", "ET", "Europe/Berlin") sits inside the text of a construct the draft carries (the date
   or window, a limit, threshold or percentile the question states, a filter value, an object's
-  name), never because its value equals one: "at 1930" is not a year. Otherwise the plan is
+  name), never because its value equals one: "at 1930" is not a year. A ranking's count ("top 5",
+  "the 5 customers who spent the most") is the limit's text, and a number is a percentage only
+  before "%", "percent" or "percentile". A window you pass in `query.time` consumes the clock
+  times its bounds state, not every number that equals one. Otherwise the plan is
   `low_confidence` with
   `PLAN_UNMATCHED_TERMS`, the leftover words in `why.details.terms` and no `next.ready_for`, so
   "between 9 and 17", "from nine to five", "at 14h30" and "in UTC" beside a date are not ready.

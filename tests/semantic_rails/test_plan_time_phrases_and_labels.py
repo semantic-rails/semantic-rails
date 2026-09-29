@@ -400,6 +400,94 @@ def test_a_term_is_consumed_only_by_the_span_of_the_construct_that_reads_it(
 
 
 @pytest.mark.parametrize(
+    ("text", "limit"),
+    [
+        ("top 5 stores by revenue", 5),
+        ("the top 5 stores by revenue", 5),
+        ("bottom 3 stores by revenue", 3),
+        ("top-3 stores by revenue", 3),
+        ("best 3 stores by revenue", 3),
+        ("5 best-selling products", 5),
+        ("the 3 lowest-selling products by item revenue", 3),
+        ("which 3 stores have the highest revenue", 3),
+        ("which 5 stores had the most orders", 5),
+        # A cue the number has no cue beside: the ranking parser reads the count.
+        ("the 5 customers who spent the most", 5),
+        ("3 stores with the highest revenue", 3),
+        ("the 3 stores with the least revenue", 3),
+        ("top 2000 customers by lifetime spend", 2000),
+    ],
+)
+def test_a_ranking_consumes_its_count_by_span(runtime_factory: Any, text: str, limit: int) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unconsumed_terms(runtime, text, _draft(limit=limit)) == []
+        # The count is the limit's text only where the ranking states it, and only the draft's.
+        assert unconsumed_terms(runtime, text, _draft(limit=limit + 1)) == [str(limit)]
+        assert unconsumed_terms(runtime, text, _draft()) == [str(limit)]
+        assert unconsumed_terms(runtime, f"{text} at {limit}", _draft(limit=limit)) == [str(limit)]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("text", "query", "terms"),
+    [
+        # A count and a threshold in one question: each is read where it is stated.
+        (
+            "the 2 stores with the most revenue among those with at\nleast 10 orders",
+            _draft(limit=2, having=[{"op": ">=", "value": 10}]),
+            [],
+        ),
+        (
+            "the 2 stores with the most revenue among those with at\nleast 10 orders",
+            _draft(limit=2),
+            ["10"],
+        ),
+        ("first 10 customers by revenue", _draft(limit=10), []),
+        ("the 10 largest stores by revenue", _draft(limit=10), []),
+        # A number is a percentage only before %, percent or percentile.
+        ("stores with revenue over 500", _draft(having=[{"op": ">", "value": 5}]), ["500"]),
+        ("top 1000 customers by revenue", _draft(limit=10), ["1000"]),
+        ("top 100 customers by revenue", _draft(limit=1), ["100"]),
+        ("stores in the top 10 percent", _draft(having=[{"op": ">", "value": 0.9}]), []),
+        ("stores over 50 percent of revenue", _draft(having=[{"op": ">", "value": 0.5}]), []),
+        ("stores over 50% of revenue", _draft(having=[{"op": ">", "value": 0.5}]), []),
+        ("stores over 50 of revenue", _draft(having=[{"op": ">", "value": 0.5}]), ["50"]),
+        ("stores in the 10 of revenue", _draft(having=[{"op": ">", "value": 0.9}]), ["10"]),
+    ],
+)
+def test_a_limit_or_threshold_is_read_where_the_question_states_it(
+    runtime_factory: Any, text: str, query: dict[str, Any], terms: list[str]
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unconsumed_terms(runtime, text, query) == terms
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("text", "limit"),
+    [
+        ("top 5 stores by revenue", 5),
+        ("top five stores by revenue", 5),
+        ("the top 5 stores by revenue", 5),
+        ("top 3 stores by orders", 3),
+        ("which 5 stores had the most orders", 5),
+        ("top 5 stores by revenue in 2017", 5),
+    ],
+)
+def test_a_ranking_question_with_its_limit_is_ok(
+    runtime_factory: Any, text: str, limit: int
+) -> None:
+    payload = _plan(runtime_factory, text)
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+    assert _query(payload)["limit"] == limit
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "min order value by store",
@@ -552,18 +640,127 @@ def test_a_question_with_a_day_or_coarser_window_is_still_ok(
     assert payload["next"]["ready_for"] == ["execute"]
 
 
-def test_a_caller_window_stands_in_for_the_time_phrases_the_question_states(
+def test_a_caller_window_answers_the_time_phrases_plan_could_not_resolve(
     runtime_factory: Any,
 ) -> None:
-    # The choice: a window the caller states in query.time is the answer to every time phrase
-    # of the question, whether or not plan could read it ("last 24 hours", a year-like "at 2000").
-    for text in ("revenue for the last 24 hours", "revenue in 2017 at 2000"):
+    # The exception to consumption by construct: a window the caller states in query.time
+    # answers a time phrase plan cannot resolve itself ("last 24 hours").
+    payload = _plan(
+        runtime_factory,
+        "revenue for the last 24 hours",
+        partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+
+
+@pytest.mark.parametrize(
+    ("text", "terms"),
+    [
+        # A year-shaped clock time is never the year of the caller's bounds.
+        ("revenue in 2017 at 2000", ["2000"]),
+        ("revenue in 2017 at 1930", ["1930"]),
+        ("revenue on 15 March 2017 from 1900 to 2000 hours", ["1900", "2000", "hours"]),
+        # Neither is a clock time the bounds do not state.
+        ("revenue from 9:30 to 17:00 on 15 March 2017", ["9", "30", "17", "00"]),
+    ],
+)
+def test_a_caller_window_never_consumes_a_year_shaped_or_other_clock_time_by_value(
+    runtime_factory: Any, text: str, terms: list[str]
+) -> None:
+    query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **HOUR})
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unconsumed_terms(runtime, text, query) == terms
+    finally:
+        runtime.close()
+    payload = _plan(runtime_factory, text, partial_query={"time": query["time"]})
+    assert payload["status"] == "low_confidence", payload
+    assert "ready_for" not in payload["next"]
+
+
+DAY_BOUNDS = {"start": f"{MARCH_15}T00:00:00", "end": "2017-03-16T00:00:00"}
+NOON_TO_MIDNIGHT = {"start": f"{MARCH_15}T12:00:00", "end": "2017-03-16T00:00:00"}
+BUSINESS_HOURS = {"start": f"{MARCH_15}T09:30:00", "end": f"{MARCH_15}T17:00:00"}
+
+
+@pytest.mark.parametrize(
+    ("text", "time", "terms"),
+    [
+        # Bounds that state no hour (a day, written with a time or without) answer no clock word.
+        ("revenue from noon to midnight on 15 March 2017", DAY_BOUNDS, ["noon", "midnight"]),
+        (
+            "revenue from noon to midnight on 15 March 2017",
+            {"start": MARCH_15, "end": "2017-03-16"},
+            ["noon", "midnight"],
+        ),
+        ("revenue on 15 March 2017 for 3 hours", DAY_BOUNDS, ["3", "hours"]),
+        ("revenue on 15 March 2017 at 0", DAY_BOUNDS, ["0"]),
+        # Bounds that state hours consume the clock times the question spells as theirs...
+        ("revenue from noon to midnight on 15 March 2017", NOON_TO_MIDNIGHT, []),
+        ("revenue from 9:30 am to 5 pm on 15 March 2017", BUSINESS_HOURS, []),
+        ("revenue from 09:30 to 17:00 on 15 March 2017", BUSINESS_HOURS, []),
+        ("revenue on 15 March 2017 from 9.30am to 17h", BUSINESS_HOURS, []),
+        # ...and not the same numbers elsewhere, nor a time the bounds do not state.
+        ("revenue on 15 March 2017 from 9:30 to 18:00", BUSINESS_HOURS, ["18", "00"]),
+        ("revenue on 15 March 2017 at 17 or 1700", BUSINESS_HOURS, ["17", "1700"]),
+        ("revenue on 15 March 2017 at 9 o'clock", BUSINESS_HOURS, ["9", "clock"]),
+        ("revenue on 15 March 2017 from 9 to 17", BUSINESS_HOURS, ["9", "17"]),
+        ("revenue on 15 March 2017 per hour, 17:00", BUSINESS_HOURS, ["hour"]),
+        ("revenue on 15 March 2017 at 17:00 UTC", BUSINESS_HOURS, ["utc"]),
+    ],
+)
+def test_a_caller_window_consumes_only_the_clock_times_its_bounds_state(
+    runtime_factory: Any, text: str, time: dict[str, str], terms: list[str]
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
+        assert unconsumed_terms(runtime, text, query) == terms
+    finally:
+        runtime.close()
+
+
+def test_a_caller_window_that_states_a_clock_time_is_ok_for_that_time(
+    runtime_factory: Any,
+) -> None:
+    payload = _plan(
+        runtime_factory,
+        "revenue from 12:00 to 13:00 on 15 March 2017",
+        partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+
+
+def test_a_noon_to_midnight_question_against_a_whole_day_window_is_refused(
+    runtime_factory: Any,
+) -> None:
+    for bounds in (DAY_BOUNDS, {"start": MARCH_15, "end": "2017-03-16"}):
         payload = _plan(
             runtime_factory,
-            text,
-            partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+            "revenue from noon to midnight on 15 March 2017",
+            partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **bounds}},
         )
-        assert payload["status"] == "ok", (text, payload.get("why"))
+        assert payload["status"] == "low_confidence", (bounds, payload)
+        assert payload["why"]["details"]["terms"] == ["noon", "midnight"]
+        assert "ready_for" not in payload["next"]
+
+
+def test_a_question_too_long_to_read_consumes_only_the_years_its_date_phrases_state(
+    runtime_factory: Any,
+) -> None:
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    filler = " ".join(a + b for a in letters for b in letters if a + b != "tz")[:2100]
+    text = f"revenue in 2017 {filler} at 1930 or 14h30 or 2000"
+    assert len(text) > 2000
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **HOUR})
+        assert unconsumed_terms(runtime, text, query) == ["1930", "14h30", "2000"]
+        # Without a caller window nothing consumes the year either.
+        assert unconsumed_terms(runtime, text, _draft()) == ["2017", "1930", "14h30", "2000"]
+    finally:
+        runtime.close()
 
 
 def test_a_caller_window_that_contradicts_the_questions_hours_is_refused(

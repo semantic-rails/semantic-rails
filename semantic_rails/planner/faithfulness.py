@@ -801,7 +801,7 @@ def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list
 
 
 def _ranking_request(text: str, nouns: frozenset[str] = frozenset()) -> dict[str, Any] | None:
-    """Parse a ranking request into (clause, limit, direction, noun, requires_order).
+    """Parse a ranking request into (clause, limit, direction, noun, requires_order, count_at).
 
     ``limit`` is None when the question fixes no count ("the top products"),
     and ``direction`` is None when it fixes no order ("rank stores by
@@ -812,15 +812,35 @@ def _ranking_request(text: str, nouns: frozenset[str] = frozenset()) -> dict[str
     highest revenue", revenue is what is measured, not what is ranked.
     """
 
-    lowered = " ".join(str(text or "").lower().split())
-    # "top-3 stores" is "top 3 stores".
-    lowered = re.sub(r"\b(top|bottom|best|worst)-(\d+)\b", r"\1 \2", lowered)
-    words = _WORD_RE.findall(lowered)
+    words = [word for word, _start, _end in _ranking_words(text)]
     for index in range(len(words)):
         request = _ranking_at(words, index, nouns)
         if request is not None:
             return request
     return None
+
+
+def _ranking_words(text: str) -> list[tuple[str, int, int]]:
+    """The words of a ranking question with their character spans in its lowercase form."""
+
+    # "top-3 stores" is "top 3 stores" (the same length, so spans still index the question).
+    lowered = re.sub(r"\b(top|bottom|best|worst)-(\d+)\b", r"\1 \2", str(text or "").lower())
+    return [(match.group(0), *match.span()) for match in _WORD_RE.finditer(lowered)]
+
+
+def _ranking_count_spans(text: str, limit: int, nouns: frozenset[str]) -> list[tuple[int, int]]:
+    """Where the question states ``limit`` as the count of a ranking ("top 5 stores", "the 5
+    customers who spent the most", "3 stores with the least revenue", "which 2 stores ...")."""
+
+    scanned = _ranking_words(text)
+    words = [word for word, _start, _end in scanned]
+    spans: list[tuple[int, int]] = []
+    for index in range(len(words)):
+        request = _ranking_at(words, index, nouns)
+        if request is not None and request["limit"] == limit and request["count_at"] is not None:
+            _word, start, end = scanned[request["count_at"]]
+            spans.append((start, end))
+    return spans
 
 
 def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str, Any] | None:
@@ -857,7 +877,8 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         if not noun:
             return None
         limit = count if count is not None else (1 if _singular(noun) == noun else None)
-        return _ranking(words, index, end, limit, direction, noun, False)
+        at = index + 1 if count is not None else None
+        return _ranking(words, index, end, limit, direction, noun, False, at)
     count = _count(words, index, years=False)
     if count is not None:
         # "the 3 lowest-selling products", "5 best-selling products",
@@ -877,7 +898,7 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         if not noun or not direction or not qualified:
             return None
         start = index - 1 if before == "the" else index
-        return _ranking(words, start, end, count, direction, noun, False)
+        return _ranking(words, start, end, count, direction, noun, False, index)
     if word == "the" and index + 1 < len(words) and words[index + 1] not in _NOT_RANKED:
         # "the store with the most orders", "the product that sold the least"
         noun, end = _noun_phrase(words, index + 1)
@@ -891,6 +912,7 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         # "which 2 stores ..."
         cursor = index + 1
         count = _count(words, cursor, years=False)
+        at = cursor if count is not None else None
         if count is not None:
             cursor += 1
         one = words[cursor : cursor + 1] == ["of"] and cursor + 1 < len(words)
@@ -901,14 +923,14 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         if not noun or not direction:
             return None
         limit = count if count is not None else (1 if one or _singular(noun) == noun else None)
-        return _ranking(words, index, end, limit, direction, noun, False)
+        return _ranking(words, index, end, limit, direction, noun, False, at)
     superlative = _superlative(words, index)
     if superlative and _count(words, index + 1, years=True) is not None:
         # "best 3 stores by revenue", "highest 5 products"
         noun, end = _noun_phrase(words, index + 2)
         if noun:
             count = _count(words, index + 1, years=True)
-            return _ranking(words, index, end, count, superlative, noun, False)
+            return _ranking(words, index, end, count, superlative, noun, False, index + 1)
     if superlative:
         # "the best-selling product", "the highest revenue month", "the best store"
         noun, end = _noun_phrase(words, index + 1)
@@ -931,6 +953,7 @@ def _ranking(
     direction: str | None,
     noun: str,
     requires_order: bool,
+    count_at: int | None = None,
 ) -> dict[str, Any]:
     return {
         "clause": " ".join(words[start:end]),
@@ -938,6 +961,8 @@ def _ranking(
         "direction": direction,
         "noun": noun,
         "requires_order": requires_order,
+        # The index of the word that states the count, when the question states one.
+        "count_at": count_at,
     }
 
 
@@ -2219,23 +2244,17 @@ def _consumed_spans(
     """The character spans of the question the draft's constructs consume.
 
     A window consumes the spans the planner read it from, only when the draft carries one (a
-    start, an end or a range). A limit, threshold, percentile or numeric filter value consumes
-    its own number token, found where the question states it ("top 5", "over 12.50", "90th
-    percentile", "1,000 or more", "size 12"). A filter value, or the name of an object the
-    draft selects, consumes the tokens that spell it.
+    start, an end or a range), and the clock times the caller's own bounds state. A limit
+    consumes the count of the ranking that states it ("top 5", "the 5 customers who spent the
+    most"); a threshold, percentile or numeric filter value consumes its own number token, found
+    where the question states it ("over 12.50", "90th percentile", "1,000 or more", "size 12").
+    A filter value, or the name of an object the draft selects, consumes the tokens that spell it.
     """
 
     spans: list[tuple[int, int]] = []
     time = _time_block(query)
     if any(time.get(key) for key in ("start", "end", "range")):
-        spans.extend(_time_window(lowered).spans)
-        spans.extend(_stated_clock_spans(tokens, time))
-        if len(lowered) > _MAX_TIME_TEXT:
-            # Too long for plan to read a window from: the caller's window settles the
-            # question's years (only); an hour, a number or a zone still has to be consumed.
-            spans.extend(
-                (start, end) for word, start, end in tokens if _YEAR_WORD_RE.fullmatch(word)
-            )
+        spans.extend(_window_spans(lowered, time))
     normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
     referenced = set(_referenced_ids(query))
     calendar_id = str(time.get("calendar_id") or "default")
@@ -2271,10 +2290,17 @@ def _consumed_spans(
             }
             spans.extend(
                 _number_spans(
-                    lowered, tokens, _draft_numbers({"value": items}), normal, field_words
+                    lowered, tokens, *_draft_numbers({"value": items}), normal, field_words
                 )
             )
-    spans.extend(_number_spans(lowered, tokens, _draft_numbers(query)))
+    spans.extend(_number_spans(lowered, tokens, *_draft_numbers(query)))
+    limit = query.get("limit")
+    limit = _number_key(limit) if isinstance(limit, (int, float)) else None
+    if limit is not None and limit.isdigit():
+        # A ranking's count is read where the ranking parser reads it, whatever words sit beside
+        # it. A limit the draft carries and the question doesn't state stays unconsumed.
+        nouns = _dimension_nouns(runtime._config)
+        spans.extend(_ranking_count_spans(lowered, int(limit), nouns))
     return spans
 
 
@@ -2309,119 +2335,198 @@ def _name_spans(
     return spans
 
 
-# Where a question states a limit, a threshold or a percentile: a cue before its number ("top
-# 5", "over 12.50", "at least 2") or after it ("50 percent", "90th percentile", "1,000 or more",
-# "3 best months").
+# Where a question states a threshold, a percentile, or a limit no ranking states: a cue before
+# its number ("first 10", "over 12.50", "at least 2") or after it ("90th percentile", "1,000 or
+# more", "10 largest"). A limit a ranking states is read by the ranking parser instead.
 _NUMBER_BEFORE_RE = re.compile(
     r"(?:\b(?:top|bottom|first|last|limit|best|worst|highest|lowest|biggest|largest|smallest"
-    r"|which|more than|greater than|over|above|exceeds?|exceeded|exceeding|at least"
-    r"|no fewer than|minimum of|less than|fewer than|under|below|at most|no more than"
-    r"|maximum of|equals?|equal to)|[<>=]=?)[\s-]*(?:the\s+)?[$£€]?$"
+    r"|which|more\s+than|greater\s+than|over|above|exceeds?|exceeded|exceeding|at\s+least"
+    r"|no\s+fewer\s+than|minimum\s+of|less\s+than|fewer\s+than|under|below|at\s+most"
+    r"|no\s+more\s+than|maximum\s+of|equals?|equal\s+to)|[<>=]=?)[\s-]*(?:the\s+)?[$£€]?$"
 )
 _NUMBER_AFTER_RE = re.compile(
-    r"^\s*(?:\+|%|percent\b|pct\b|(?:st|nd|rd|th)?\s*percentile\b"
+    r"^\s*(?:\+"
     r"|or\s+(?:more|less|fewer|greater|higher|lower|above|below|over|under)\b"
     r"|(?:\w+\s+){0,2}(?:highest|lowest|best|worst|largest|smallest|biggest|most|least"
     r"|fewest|greatest)\b)"
 )
+# A number is a percentage only when the question says so: "50 %", "50 percent", "90th percentile".
+_PERCENT_AFTER_RE = re.compile(r"^\s*(?:%|percent\b|pct\b|(?:st|nd|rd|th)?\s*percentile\b)")
 
 
-def _token_numbers(word: str) -> set[str]:
-    """The numbers a token states, as digits: "12.50" is 12.5, "90th" is 90, "five" is 5. As a
-    percentage it also states its fraction: "50" is 0.5."""
+def _token_value(word: str) -> float | None:
+    """The number a token states: "12.50" is 12.5, "90th" is 90, "five" is 5."""
 
     plain = re.fullmatch(r"(\d+(?:[.,]\d+)*)(?:st|nd|rd|th)?", word)
     try:
-        value = float(plain.group(1).replace(",", "")) if plain else _SPOKEN_NUMBERS.get(word)
+        return float(plain.group(1).replace(",", "")) if plain else _SPOKEN_NUMBERS.get(word)
     except ValueError:
-        return set()
-    if value is None:
-        return set()
-    return {key for key in (_number_key(value), _number_key(value / 100)) if key}
+        return None
 
 
 def _number_spans(
     lowered: str,
     tokens: list[tuple[str, int, int]],
     numbers: set[str],
+    percents: set[str],
     normal: list[str] | None = None,
     near: set[str] | None = None,
 ) -> list[tuple[int, int]]:
     """The number tokens that state one of the draft's numbers where a construct states it: a
-    limit, threshold or percentile cue beside it, or (with ``near``) a filter's field name."""
+    threshold or percentile cue beside it, or (with ``near``) a filter's field name.
+
+    A token is a percentage only with a percent cue after it: "50 percent" states 0.5 (and
+    "10 percent" the 0.9 of a "top 10 percent" cut), while a bare "50" or "500" never does.
+    """
 
     spans: list[tuple[int, int]] = []
     for index, (word, start, end) in enumerate(tokens):
-        if not numbers & _token_numbers(word):
+        value = _token_value(word)
+        if value is None:
+            continue
+        percent = _PERCENT_AFTER_RE.match(lowered[end : end + 60]) is not None
+        key = _number_key(value)
+        if not (
+            key in numbers or (percent and (key in percents or _number_key(value / 100) in numbers))
+        ):
             continue
         if near is not None and normal is not None:
             stated = bool(near & set(normal[max(index - 1, 0) : index + 2]))
         else:
-            stated = bool(
-                _NUMBER_BEFORE_RE.search(lowered[max(start - 40, 0) : start])
-                or _NUMBER_AFTER_RE.match(lowered[end : end + 60])
+            stated = (
+                percent
+                or _NUMBER_BEFORE_RE.search(lowered[max(start - 40, 0) : start]) is not None
+                or _NUMBER_AFTER_RE.match(lowered[end : end + 60]) is not None
             )
         if stated:
             spans.append((start, end))
     return spans
 
 
-_CLOCK_UNIT_WORDS = frozenset(
-    {"hour", "hours", "clock", "minute", "minutes", "seconds", "noon", "midnight", "midday"}
+# A year a date phrase states: after "in", "for" or "during", or the word "year".
+_YEAR_CUE_RE = re.compile(r"\b(?:in|for|during|year)\s+((?:19|20)\d{2})\b")
+_BOUND_CLOCK_RE = re.compile(r"\d{4}-\d\d-\d\d[T ](\d\d):(\d\d)(?::(\d\d))?")
+# A clock time the question spells in a form that is not also a number: "12:00", "9:30 am",
+# "5pm", "14h30", "9 o'clock", "noon". A bare "9" or "1930" is never one.
+_CLOCK_READING_RE = re.compile(
+    r"(?<![\w:.])(?:"
+    r"(?P<h>\d{1,2}):(?P<m>\d\d)(?::(?P<s>\d\d))?(?:\s*(?P<ap>am|pm))?"
+    r"|(?P<h2>\d{1,2})(?:[.:](?P<m2>\d\d))?\s*(?P<ap2>am|pm)"
+    r"|(?P<h3>\d{1,2})h(?P<m3>\d\d)?"
+    r"|(?P<h4>\d{1,2})\s*o['’]clock"
+    r"|(?P<word>noon|midday|midnight)"
+    r")(?!\w)"
 )
 
 
-def _stated_clock_spans(
-    tokens: list[tuple[str, int, int]], time: dict[str, Any]
-) -> list[tuple[int, int]]:
-    """The hours of a range the caller stated in ``query.time`` consume the question's: the
-    tokens that spell a stated hour, minute or second, and the words that name a clock time."""
+def _bound_years(time: dict[str, Any]) -> set[str]:
+    """The years a caller's start and end carry."""
 
-    forms: set[str] = set()
+    return {
+        match.group(1)
+        for bound in (time.get("start"), time.get("end"))
+        if (match := re.match(r"\s*(\d{4})-", str(bound or "")))
+    }
+
+
+def _bound_clock_times(time: dict[str, Any]) -> set[int]:
+    """The seconds into the day of the times the caller's start and end state; none when they
+    are all midnight, since a bound at midnight states no hour (a day is bounded the same way)."""
+
+    seconds: set[int] = set()
     for bound in (time.get("start"), time.get("end")):
-        clock = re.search(r"\d{4}-\d\d-\d\d[T ](\d\d):(\d\d)(?::(\d\d))?", str(bound or ""))
-        if not clock:
-            continue
-        hour, minute = int(clock.group(1)), int(clock.group(2))
-        twelve = hour % 12 or 12
-        forms.update({str(hour), f"{hour:02d}", str(twelve), str(minute), f"{minute:02d}"})
-        forms.update(
-            {f"{hour:02d}{minute:02d}", f"{hour}h", f"{hour:02d}h", f"{hour}h{minute:02d}"}
-        )
-        forms.update({f"{hour}.{minute:02d}", f"{twelve}{'am' if hour < 12 else 'pm'}"})
-        if clock.group(3):
-            forms.update({str(int(clock.group(3))), clock.group(3)})
-    if not forms:
-        return []
-    return [
-        (start, end) for word, start, end in tokens if word in forms or word in _CLOCK_UNIT_WORDS
+        clock = _BOUND_CLOCK_RE.search(str(bound or ""))
+        if clock:
+            hour, minute, second = (int(part or 0) for part in clock.groups())
+            seconds.add(hour * 3600 + minute * 60 + second)
+    return seconds if any(seconds) else set()
+
+
+def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
+    """The spans of the question a caller's window in ``query.time`` consumes.
+
+    The time phrases plan read (a date, a year, "last 24 hours": a caller's window answers the
+    phrases plan cannot resolve itself), except a bare year the caller's bounds don't carry: an
+    "at 2000" is an hour, not the year 2000. In a question too long to read, only the years a
+    date phrase states ("in 2017", "for 2017"; never "at 1930"). And the clock times the
+    question spells that are the ones the caller's bounds state: "from 12:00 to 13:00" against a
+    12:00 to 13:00 window. A time of day the bounds don't state, a bare number or "noon" against
+    a whole-day window stays unconsumed, so a window that contradicts the question's hours is
+    refused.
+    """
+
+    years = _bound_years(time)
+    spans = [
+        span
+        for span in _time_window(lowered).spans
+        if not _YEAR_WORD_RE.fullmatch(lowered[span[0] : span[1]].strip())
+        or lowered[span[0] : span[1]].strip() in years
     ]
+    if len(lowered) > _MAX_TIME_TEXT:
+        # Too long for plan to read a window from: the caller's window settles the years the
+        # question's date phrases state; an hour, a number or a zone still has to be consumed.
+        spans.extend(match.span(1) for match in _YEAR_CUE_RE.finditer(lowered))
+    stated = _bound_clock_times(time)
+    if stated:
+        spans.extend(
+            reading.span()
+            for reading in _CLOCK_READING_RE.finditer(lowered)
+            if _reading_seconds(reading) in stated
+        )
+    return spans
 
 
-def _draft_numbers(query: dict[str, Any]) -> set[str]:
+def _reading_seconds(reading: re.Match[str]) -> int | None:
+    """Seconds into the day of a clock reading, or ``None`` for one that is no time."""
+
+    word = reading.group("word")
+    if word:
+        return 0 if word == "midnight" else 12 * 3600
+    hour = int(
+        reading.group("h") or reading.group("h2") or reading.group("h3") or reading.group("h4")
+    )
+    minute = int(reading.group("m") or reading.group("m2") or reading.group("m3") or 0)
+    second = int(reading.group("s") or 0)
+    meridiem = reading.group("ap") or reading.group("ap2")
+    if meridiem:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if meridiem == "pm" else 0)
+    if hour > 23 or minute > 59 or second > 59:
+        return None
+    return hour * 3600 + minute * 60 + second
+
+
+def _draft_numbers(query: dict[str, Any]) -> tuple[set[str], set[str]]:
     """Every number the draft carries outside its time block (a limit, a threshold, a filter
-    value, a percentile), as digits. A fraction also counts as its percentage, and 0.9 as the
-    "top 10 percent" it cuts."""
+    value, a percentile), as digits, and the percentages its fractions state (0.9 is the "top 10
+    percent" it cuts)."""
 
-    return _query_numbers({key: value for key, value in query.items() if key != "time"})
+    return _number_sets({key: value for key, value in query.items() if key != "time"})
 
 
 def _query_numbers(query: dict[str, Any]) -> set[str]:
     """Every number the draft carries (a limit, a threshold, a filter value, an hour of a
-    time bound), as digits.
+    time bound), as digits, and the percentages its fractions state."""
 
-    A fraction also counts as its percentage: 0.5 accounts for "50".
-    """
+    plain, percents = _number_sets(query)
+    return plain | percents
 
-    out: set[str] = set()
+
+def _number_sets(query: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """The numbers a query carries as digits, and the percentages its fractions state: 0.5
+    states "50" (and the "50" of a "top 50 percent" cut)."""
+
+    plain: set[str] = set()
+    percents: set[str] = set()
 
     def add(value: float) -> None:
         key = _number_key(value)
         if key is None:
             return
-        out.add(key)
+        plain.add(key)
         if 0 < value < 1 and float(value * 100).is_integer():
-            out.update({str(int(value * 100)), str(100 - int(value * 100))})
+            percents.update({str(int(value * 100)), str(100 - int(value * 100))})
 
     def walk(value: Any) -> None:
         if isinstance(value, bool):
@@ -2431,12 +2536,12 @@ def _query_numbers(query: dict[str, Any]) -> set[str]:
         elif isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value.strip()):
             add(float(value))
         elif isinstance(value, str):
-            clock = re.search(r"\d{4}-\d\d-\d\d[T ](\d\d):(\d\d)(?::(\d\d))?", value)
+            clock = _BOUND_CLOCK_RE.search(value)
             for part in clock.groups() if clock else ():
                 # A caller's stated hours account for the question's: "00" and "0" alike.
                 if part is not None:
-                    out.add(part)
-                    out.add(_number_key(float(part)) or part)
+                    plain.add(part)
+                    plain.add(_number_key(float(part)) or part)
         elif isinstance(value, dict):
             for child in value.values():
                 walk(child)
@@ -2445,7 +2550,7 @@ def _query_numbers(query: dict[str, Any]) -> set[str]:
                 walk(child)
 
     walk({key: value for key, value in query.items() if key != "version"})
-    return out
+    return plain, percents
 
 
 def _one_typo_away(word: str, by_initial: dict[str, list[str]]) -> bool:
