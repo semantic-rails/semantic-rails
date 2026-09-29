@@ -127,6 +127,12 @@ def plan_bindings(plan: LogicalPlan, *, project_cut: bool = False) -> Iterator[P
         _plan.reset(token)
 
 
+def plan_is_root() -> bool:
+    """Whether the query being lowered is the request's own, not one nested inside it."""
+    plan = _plan.get()
+    return plan is not None and plan.root
+
+
 def project_is_cut() -> bool:
     plan = _plan.get()
     return plan is not None and plan.project_cut

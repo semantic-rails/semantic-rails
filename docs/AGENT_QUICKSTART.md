@@ -130,8 +130,10 @@ discover -> plan -> execute
   An invalid query fails with a structured error and, where possible, recovery hints instead of
   running. On MCP it returns at most `max_rows` rows (default 200); a capped result sets
   `truncated` and warns `EXECUTE_ROWS_TRUNCATED`.
-  For one total over a window, set `time.grain` so one bucket spans it (`quarter` for April 1 to
-  July 1): without a grain, `execute` returns one row per timestamp (`UNGRAINED_TIME_PROJECTION`).
+  A window (`start` and/or `end`) without a `time.grain` returns one total over the window, with no
+  time column, and says so in `assumptions`; set `time.grain` for one row per period. A time role
+  with no window and no grain still returns one row per timestamp (`UNGRAINED_TIME_PROJECTION`).
+  A result over 32,000 characters is refused with `RESULT_TOO_LARGE` rather than sent.
 - `validate` (optional dry run) returns diagnostics, repair hints, output columns, and risk
   metadata without executing.
 - `compile` (optional dry run) returns SQL and plan metadata without executing. At `compact` or `full` verbosity,

@@ -239,7 +239,10 @@ def test_time_grain_warning_reads_the_rewritten_group_by(runtime_factory):
         "time": no_grain,
     }
     for query in (shorthand, canonical):
-        assert _grouped_ungrained_time_warning(query)["code"] == "UNGRAINED_GROUPED_TIME_PROJECTION"
+        assert (
+            _grouped_ungrained_time_warning(query, {})["code"]
+            == "UNGRAINED_GROUPED_TIME_PROJECTION"
+        )
     runtime = runtime_factory("jaffle_shop")
     try:
         codes = {

@@ -207,6 +207,16 @@ Supported `op` values (all compile end-to-end):
   (`<`, `<=`, `>`, `>=`) and LIKE ops against `null` are rejected with a
   structured `INVALID_QUERY` and a recovery hint, since they would be
   always-UNKNOWN in SQL three-valued logic.
+- A dimension looked up through a many-to-one or one-to-one relationship is
+  NULL on a row whose lookup found no match, and a filter treats the row as
+  any other NULL: `IS NULL` keeps it (an anti-join, such as boardings with no
+  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds for
+  a `group_by` or `where` dimension of the measure. Other reads of a lookup
+  (a time role, a metric filter and its context, a conversion, a qualified
+  set) leave such a row out, as before, and so does a dimension any rollup of the
+  measure's model holds, even at a grain that rollup can never answer. ClickHouse is the exception: its
+  lookups stay inner joins, so it drops such a row from every query that reads
+  the looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
 
@@ -241,6 +251,14 @@ The runtime rejects any `field` that does not resolve, with
 `start: "2024-01-01"`, `end: "2025-01-01"` — an `end` of `"2024-12-31"`
 would silently exclude December 31. Half-open bounds make adjacent
 windows compose without overlap or gaps.
+
+**A window without a `grain` is one total.** With `start` and/or `end` (or `range`) and no `grain`,
+the query returns one total over the window for each `group_by` group, with no time column, even
+for a window inside one day. The response says so in `assumptions` and sets
+`time_shape: "window_total"`. Set `grain` for one row per period. A `time` block with no bounds and
+no grain still groups by the raw timestamp, and so do queries that need a time axis (rolling,
+prior-period and similar expressions) and queries with a metric predicate, including one in an
+aggregate's `filter` or a metric recipe.
 
 Buckets and bounds are in the temporal role's `timezone` (UTC by default).
 On DuckDB, MotherDuck, DuckLake and Postgres that holds for zone-aware

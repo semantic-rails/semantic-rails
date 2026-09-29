@@ -1479,7 +1479,6 @@ def _metric_predicate(metric: Any, entity: Any) -> dict[str, Any]:
         "entity": entity.id,
         "op": ">",
         "value": 0,
-        "time_alignment": "same_query_period",
     }
 
 

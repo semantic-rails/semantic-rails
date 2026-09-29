@@ -319,6 +319,7 @@ _METRIC_KEYS: frozenset[str] = frozenset(
         "denominator",
         "null_behavior",
         "window",
+        "window_scope",
         "offset",
         "period",
         "partition_by",

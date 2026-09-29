@@ -29,11 +29,7 @@ def test_ungrained_time_projection_fires_for_scalar_revenue_with_temporal_role(r
                     "as": "revenue",
                 }
             ],
-            "time": {
-                "temporal_role": "temporal_role.jaffle_order_time",
-                "start": "2017-01-01",
-                "end": "2017-02-01",
-            },
+            "time": {"temporal_role": "temporal_role.jaffle_order_time"},
         }
         result = runtime.compile(query)
         warnings = result.get("warnings") or []

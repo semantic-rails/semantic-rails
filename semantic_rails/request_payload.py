@@ -7,8 +7,11 @@ new transport cannot accidentally preserve a nested caller claim.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import json
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+
+from .errors import SemanticLayerError
 
 
 def clean_request_id(value: Any) -> str:
@@ -29,6 +32,83 @@ def coerce_bool(value: Any, default: bool = False) -> bool:
         if lowered in {"0", "false", "no", "off"}:
             return False
     return bool(value)
+
+
+def parse_string_list(value: Any) -> list[str]:
+    """Read a list-of-strings argument however a client encoded it.
+
+    Accepts an array, a comma-separated string, or a JSON-encoded array in a
+    string (some agents send ``'["metric"]'``). Anything else raises
+    ``ValueError`` so no transport turns a malformed list into an empty filter.
+    """
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("[", "{")):
+            try:
+                decoded = json.loads(text)
+            except (ValueError, RecursionError) as exc:
+                raise ValueError("looks like JSON but does not parse") from exc
+            if not isinstance(decoded, list):
+                raise ValueError("must be an array of strings")
+            value = decoded
+        else:
+            return [part.strip() for part in text.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        if not all(isinstance(part, str) for part in value):
+            raise ValueError("must contain only strings")
+        return [part.strip() for part in value if part.strip()]
+    raise ValueError("must be a string or array of strings")
+
+
+def checked_string_list(value: Any, *, field: str) -> list[str]:
+    """:func:`parse_string_list` for callers outside HTTP and MCP (the CLI).
+
+    A value that does not parse is refused with ``INVALID_MCP_ARGUMENTS`` naming
+    ``field``, never read as a literal item.
+    """
+
+    try:
+        return parse_string_list(value)
+    except ValueError as exc:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            f"Argument '{field}' {exc}.",
+            details={"field": field, "argument_type": type(value).__name__},
+        ) from exc
+
+
+DISCOVER_RANKED_KINDS: frozenset[str] = frozenset(
+    {"measure", "metric", "segment", "dimension", "entity", "dimension_value"}
+)
+
+
+def unknown_discover_kinds_error(
+    unknown: Sequence[str], valid: frozenset[str]
+) -> SemanticLayerError:
+    unknown = list(unknown)
+    return SemanticLayerError(
+        "INVALID_MCP_ARGUMENTS",
+        f"Unknown kinds value(s) {unknown}; valid kinds: {sorted(valid)}.",
+        details={"field": "kinds", "unknown_kinds": unknown, "valid_kinds": sorted(valid)},
+    )
+
+
+def checked_discover_kinds(kinds: Sequence[str] | None, valid: frozenset[str]) -> list[str]:
+    """Return ``kinds`` unchanged, or refuse when any value is not in ``valid``.
+
+    A ``kinds`` filter that names no real kind would empty every bucket, and an
+    empty result reads as "nothing matches". Refusing keeps that text for
+    searches that really ran over the requested kinds.
+    """
+
+    requested = list(kinds or [])
+    unknown = [kind for kind in requested if kind not in valid]
+    if unknown:
+        raise unknown_discover_kinds_error(unknown, valid)
+    return requested
 
 
 def without_policy_context(payload: Mapping[str, Any]) -> dict[str, Any]:

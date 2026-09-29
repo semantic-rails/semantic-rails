@@ -1,6 +1,6 @@
-"""Regression tests for round-two MCP feedback.
+"""Recovery hints and payload sizes on the MCP surface.
 
-First batch (already-shipped) — three reviewer complaints:
+First batch — three reviewer complaints:
 
 1. ``INVALID_EXPRESSION_AST`` for malformed inline ``prior_period``
    (e.g. ``offset: {unit: "month", n: 1}``) used to come back with no
@@ -13,7 +13,7 @@ First batch (already-shipped) — three reviewer complaints:
    The stripped row schema is now < 250 KB at compact and < 50 KB
    at minimal. ``plan`` honours both modes too.
 
-Second batch (Phase 1 recovery-hint papercuts) — four extensions:
+Second batch (recovery-hint papercuts) — four extensions:
 
 4. Nested parameter schemas (``percentile`` takes ``{p}``) surface
    in ``INVALID_EXPRESSION_KEY`` recovery hints.
@@ -170,30 +170,6 @@ def test_plan_minimal_strips_heavy_validation_payload(runtime_factory):
         runtime.close()
 
 
-def test_plan_compact_keeps_candidate_ir_but_slims_validation(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        compact = plan_candidate_envelope(
-            runtime, intent="revenue this year", limit=3, verbosity="compact"
-        )
-        for cand in compact["candidates"]:
-            # Round four collapsed ``query`` / ``query_patch`` / ``candidate_ir``
-            # — they were identical in every candidate — down to a single
-            # canonical ``candidate_ir`` key. Agents and tests read that.
-            assert "candidate_ir" in cand
-            assert "query_patch" not in cand
-            assert "query" not in cand
-            validation = cand.get("validation") or {}
-            # Heavy keys must be gone — explain / logical_plan / etc.
-            assert "explain" not in validation
-            assert "logical_plan" not in validation
-            assert "normalized_query" not in validation
-            # ok / errors / warnings remain so callers can still gate on validity.
-            assert "ok" in validation
-    finally:
-        runtime.close()
-
-
 # ---------- Phase 1 — recovery-hint papercut tests ----------
 
 
@@ -307,52 +283,6 @@ def test_object_not_found_with_no_close_matches_routes_to_discover(runtime_facto
         runtime.close()
 
 
-def test_zero_rows_with_time_filter_attaches_data_diagnostics(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # Query a real measure with a time interval that contains no
-        # data (jaffle data is 2016–2017; pick 2099). The query is
-        # valid and executes — but returns zero rows. The diagnostic
-        # tells the agent the data isn't there rather than implying a
-        # query bug.
-        result = runtime.query(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                        },
-                        "as": "rev",
-                    }
-                ],
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "day",
-                    "start": "2099-01-01",
-                    "end": "2099-12-31",
-                },
-            }
-        )
-        # ``rows`` is stripped at compact verbosity in the response
-        # envelope filter; query default keeps it. Either way we assert
-        # the diagnostic landed.
-        diagnostics = result.get("data_diagnostics")
-        assert diagnostics, (
-            f"expected data_diagnostics on empty result, got keys={list(result.keys())}"
-        )
-        assert diagnostics.get("rows_returned") == 0
-        applied = diagnostics.get("applied_time_filter", {})
-        assert applied.get("start") == "2099-01-01"
-        assert "inspect(" in diagnostics.get("hint", ""), (
-            f"expected an inspect handoff, got {diagnostics!r}"
-        )
-    finally:
-        runtime.close()
-
-
 # ---------- Round-three Phase 1 tests ----------
 
 
@@ -428,39 +358,6 @@ def test_path_not_found_envelope_lists_compatible_dimensions(runtime_factory):
         # carries them.
         if details.get("compatible_group_by_dimensions"):
             assert switch_dim, f"expected switch_group_by_dimension hint, got {hints!r}"
-    finally:
-        runtime.close()
-
-
-def test_zero_row_query_pushes_empty_result_window_warning(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.query(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                        },
-                        "as": "rev",
-                    }
-                ],
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "day",
-                    "start": "2099-01-01",
-                    "end": "2099-12-31",
-                },
-            }
-        )
-        warnings = result.get("warnings") or []
-        empty_window = [w for w in warnings if w.get("code") == "EMPTY_RESULT_WINDOW"]
-        assert empty_window, f"expected EMPTY_RESULT_WINDOW warning, got warnings={warnings!r}"
-        details = empty_window[0].get("details", {})
-        assert details.get("applied_time_filter", {}).get("start") == "2099-01-01"
     finally:
         runtime.close()
 
@@ -541,25 +438,40 @@ def test_inspect_drops_preferred_alias_fields(runtime_factory):
 
 def test_plan_candidate_emits_only_candidate_ir(runtime_factory):
     """``candidate_ir``, ``query``, and ``query_patch`` were three keys
-    holding the exact same dict on every planned candidate. Round
-    four collapsed them to a single canonical ``candidate_ir``."""
+    holding the exact same dict on every planned candidate. They are now
+    collapsed to a single canonical ``candidate_ir`` at every verbosity;
+    compact also slims the validation report down to ok / errors / warnings."""
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = plan_candidate_envelope(
-            runtime, intent="revenue this year", limit=3, verbosity="full"
-        )
-        candidates = result.get("candidates") or []
-        assert candidates, "expected at least one candidate for the revenue intent"
-        for cand in candidates:
-            assert "candidate_ir" in cand, "candidate missing canonical candidate_ir"
-            assert isinstance(cand["candidate_ir"], dict)
-            assert cand["candidate_ir"].get("select"), "candidate_ir has no select clause"
-            assert "query" not in cand, (
-                "candidate still emits redundant ``query`` alias of candidate_ir"
+        for verbosity in ("full", "compact"):
+            result = plan_candidate_envelope(
+                runtime, intent="revenue this year", limit=3, verbosity=verbosity
             )
-            assert "query_patch" not in cand, (
-                "candidate still emits redundant ``query_patch`` alias of candidate_ir"
+            candidates = result.get("candidates") or []
+            assert candidates, (
+                f"{verbosity}: expected at least one candidate for the revenue intent"
             )
+            for cand in candidates:
+                assert "candidate_ir" in cand, f"{verbosity}: candidate missing candidate_ir"
+                assert isinstance(cand["candidate_ir"], dict)
+                assert cand["candidate_ir"].get("select"), (
+                    f"{verbosity}: candidate_ir has no select"
+                )
+                assert "query" not in cand, (
+                    f"{verbosity}: redundant ``query`` alias of candidate_ir"
+                )
+                assert "query_patch" not in cand, (
+                    f"{verbosity}: redundant ``query_patch`` alias of candidate_ir"
+                )
+            if verbosity == "compact":
+                for cand in candidates:
+                    validation = cand.get("validation") or {}
+                    # Heavy keys must be gone — explain / logical_plan / etc.
+                    assert "explain" not in validation
+                    assert "logical_plan" not in validation
+                    assert "normalized_query" not in validation
+                    # ok / errors / warnings remain so callers can still gate on validity.
+                    assert "ok" in validation
     finally:
         runtime.close()
 
@@ -664,10 +576,10 @@ def test_catalog_summary_returns_counts_plus_id_lists_under_10kb(runtime_factory
 
 def test_windowed_time_filter_unsupported_emits_widen_and_drop_hints(runtime_factory):
     """A bounded ``query.time.start`` against a prior_period / rolling
-    metric used to ship the error with empty ``recovery_hints``. Round
-    five attaches two concrete patches the agent can mechanically
-    apply: ``widen_time_window`` with a computed ``suggested_start``,
-    and ``drop_time_start`` with the patch shape."""
+    metric used to ship the error with empty ``recovery_hints``. It now
+    attaches two concrete patches the agent can mechanically apply:
+    ``drop_time_start`` first, then ``widen_time_window`` with a computed
+    ``suggested_start``."""
     runtime = runtime_factory("jaffle_shop")
     try:
         result = runtime.validate(
@@ -695,21 +607,30 @@ def test_windowed_time_filter_unsupported_emits_widen_and_drop_hints(runtime_fac
         assert lookback.get("unit") == "day"
         assert lookback.get("value", 0) >= 1
         # Both hints must be present.
-        hint_kinds = {h.get("kind") for h in first.get("recovery_hints") or []}
+        hints = list(first.get("recovery_hints") or [])
+        hint_kinds = [h.get("kind") for h in hints]
         assert "widen_time_window" in hint_kinds
         assert "drop_time_start" in hint_kinds
-        widen = next(h for h in first["recovery_hints"] if h.get("kind") == "widen_time_window")
+        # ``drop_time_start`` is always safe; ``widen_time_window`` can still
+        # fail for prior_period at month grain. Callers tend to apply the first
+        # hint, so the safe one must come first.
+        assert hint_kinds[0] == "drop_time_start", f"expected drop_time_start first, got {hints!r}"
+        assert hint_kinds.index("widen_time_window") > 0
+        widen = next(h for h in hints if h.get("kind") == "widen_time_window")
         # ``suggested_start`` is concrete: 2017-03-15 minus 7 days.
         assert widen["suggested_start"] == "2017-03-08"
     finally:
         runtime.close()
 
 
-def test_empty_result_window_includes_actual_data_coverage(runtime_factory):
-    """Zero-row execute with a bounded time window now carries
-    ``actual_data_coverage`` (min/max of the root entity's time column)
-    + ``requested_window`` so agents distinguish wrong-question from
-    sparse-data without manual triage."""
+def test_empty_time_window_reports_diagnostics_warning_and_data_coverage(runtime_factory):
+    """A valid query whose time window holds no data (jaffle data is
+    2016-2017; the window is 2099) executes and returns zero rows. The
+    result must say the data is missing rather than imply a query bug:
+    ``data_diagnostics`` with a bounded ``requested_window`` and the root
+    entity's ``actual_data_coverage`` (min/max of its time column), and an
+    ``EMPTY_RESULT_WINDOW`` warning carrying the same fields for readers
+    that only look at warnings."""
     runtime = runtime_factory("jaffle_shop")
     try:
         result = runtime.query(
@@ -734,22 +655,25 @@ def test_empty_result_window_includes_actual_data_coverage(runtime_factory):
             }
         )
         assert result.get("row_count") == 0
-        diag = result.get("data_diagnostics") or {}
+        diag = result.get("data_diagnostics")
+        assert diag, f"expected data_diagnostics on empty result, got keys={list(result.keys())}"
+        assert diag.get("rows_returned") == 0
+        assert diag.get("applied_time_filter", {}).get("start") == "2099-01-01"
+        assert "inspect(" in diag.get("hint", ""), f"expected an inspect handoff, got {diag!r}"
+        requested = diag.get("requested_window") or {}
+        assert requested.get("start") == "2099-01-01"
         coverage = diag.get("actual_data_coverage") or {}
         assert coverage, "actual_data_coverage missing — probe failed silently"
         assert coverage.get("min"), "coverage min should be populated"
         assert coverage.get("max"), "coverage max should be populated"
         # Sanity: requested 2099 falls outside actual 2016-2017 coverage.
         assert coverage["min"] < "2099"
-        requested = diag.get("requested_window") or {}
-        assert requested.get("start") == "2099-01-01"
-        # Same fields appear on the warning so warnings-only readers see them.
-        warning = next(
-            (w for w in result.get("warnings") or [] if w.get("code") == "EMPTY_RESULT_WINDOW"),
-            None,
-        )
-        assert warning is not None
-        assert warning["details"].get("actual_data_coverage") == coverage
+        warnings = result.get("warnings") or []
+        empty_window = [w for w in warnings if w.get("code") == "EMPTY_RESULT_WINDOW"]
+        assert empty_window, f"expected EMPTY_RESULT_WINDOW warning, got warnings={warnings!r}"
+        details = empty_window[0].get("details", {})
+        assert details.get("applied_time_filter", {}).get("start") == "2099-01-01"
+        assert details.get("actual_data_coverage") == coverage
     finally:
         runtime.close()
 
