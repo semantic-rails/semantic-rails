@@ -2033,11 +2033,11 @@ def _measure_leaf_select(
             # Query metric_filters predicates filter every leaf: whole-query cuts.
             cut_owners() if predicate in query_predicates else nullcontext(),
         ):
-            ctes, join, row_conditions = _predicate_ctes_and_join(
+            ctes, joins, row_conditions = _predicate_ctes_and_join(
                 predicate, index=index, plan=plan, measure_plan=measure_plan, config=config
             )
         predicate_ctes.extend(ctes)
-        predicate_joins.append(join)
+        predicate_joins.extend(joins)
         predicate_row_conditions.extend(row_conditions)
 
     select_fields: list[SqlField] = []

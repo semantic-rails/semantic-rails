@@ -39,6 +39,7 @@ from ..sql_ast import (
     SqlCte,
     SqlField,
     SqlIdentifier,
+    SqlJoin,
     SqlLiteral,
     SqlSelect,
     SqlTableRef,
@@ -144,6 +145,28 @@ def guard_empty_groups(
     )
 
 
+def absent_entities_gate(name: str, source: str, value: str) -> tuple[SqlCte, SqlJoin, SqlBinary]:
+    """What lets an entity ``source`` doesn't list read 0: the source holds a settled value.
+
+    ``source`` is a query settled by :func:`guard_empty_groups`, so its ``value`` is non-NULL
+    on every row where the measures have data in scope, and NULL on every row where they have
+    none. An entity absent from it reads like an entity with no match: 0 in the first case
+    and NULL in the second, by the same test, so a threshold that 0 passes may keep it only
+    while some row holds a value. Nothing here turns a NULL into 0. Returns the one-row CTE,
+    the join to it, and the condition that keeps a row.
+    """
+    count = SqlCall("COUNT", [SqlIdentifier(parts=["settled", value])])
+    cte = SqlCte(
+        name=name,
+        query=SqlSelect(
+            select=[SqlField(count, "settled_rows")],
+            from_table=SqlTableRef(name=source, alias="settled"),
+        ),
+    )
+    join = SqlJoin(join_type="CROSS", table=SqlTableRef(name=name), on=None)
+    return cte, join, SqlBinary(SqlIdentifier(parts=[name, "settled_rows"]), ">", SqlLiteral(0))
+
+
 def refuse_unsettled(
     projection: SqlSelect, plan: LogicalPlan, config: PackageConfig, *, combined: bool
 ) -> None:
@@ -155,14 +178,32 @@ def refuse_unsettled(
     """
     expected = zero_outputs(plan, config) if combined else zero_aliases(plan.measure_plans, config)
     unsettled = sorted(base_reads(projection.select) & expected.keys())
-    source = projection.from_table
-    if unsettled and not (isinstance(source, SqlTableRef) and source.name == GUARDED_BASE):
-        raise SemanticLayerError(
-            "EMPTY_GROUPS_UNSETTLED",
-            "The query reads a sum or count without settling its empty groups, so a group with "
-            "no rows would read NULL instead of 0. This is an engine defect, not a query error.",
-            details={"measures": unsettled},
-        )
+    if unsettled and not reads_guarded_base(projection):
+        raise _unsettled_error({"measures": unsettled})
+
+
+def reads_guarded_base(select: SqlSelect) -> bool:
+    source = select.from_table
+    return isinstance(source, SqlTableRef) and source.name == GUARDED_BASE
+
+
+def require_settled_source(source: SqlSelect, details: Mapping[str, Any]) -> None:
+    """Refuse a source that a consumer reads as settled when it reads past the guard.
+
+    A metric predicate lets an entity its source doesn't list read like the ones it does, which
+    holds only while every row of the source is settled together.
+    """
+    if not reads_guarded_base(source):
+        raise _unsettled_error(details)
+
+
+def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:
+    return SemanticLayerError(
+        "EMPTY_GROUPS_UNSETTLED",
+        "The query reads a sum or count without settling its empty groups, so a group with "
+        "no rows would read NULL instead of 0. This is an engine defect, not a query error.",
+        details=dict(details),
+    )
 
 
 def sql_nodes(node: Any) -> Iterator[Any]:

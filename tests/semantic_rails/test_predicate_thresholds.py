@@ -125,6 +125,20 @@ def _count(name: str, key: str, accumulation: str = "event") -> str:
     )
 
 
+def _case_count(name: str, key: str, column: str, floor: int) -> str:
+    """A conditional count, like ``COUNT(CASE WHEN column >= floor THEN key END)``: 0, not NULL,
+    for an entity whose rows all fall short."""
+    return (
+        f"    {name}:\n      label: {name}\n      kind: entity_count\n"
+        "      accumulation: {kind: event}\n      value_type: count\n"
+        "      expr:\n        kind: case\n        whens:\n"
+        f"          - when: {{kind: comparison, op: '>=', left: {{kind: column, column: {column}}},"
+        f" right: {{kind: literal, value: {floor}}}}}\n"
+        f"            then: {{kind: column, column: {key}}}\n"
+        "        else: {kind: literal, value: null}\n"
+    )
+
+
 def _write_models(models: Path) -> None:
     amount = (
         "    revenue:\n      label: Revenue\n      kind: aggregate\n      expr: amount\n"
@@ -145,7 +159,10 @@ def _write_models(models: Path) -> None:
             "orders",
             ["order", "customer"],
             ("ordered_at", "ordered_at"),
-            _count("order_count", "order_id") + amount,
+            _count("order_count", "order_id")
+            + amount
+            + _case_count("large_order_count", "order_id", "amount", 100)
+            + _case_count("huge_order_count", "order_id", "amount", 1000),
             "  dimensions:\n    status:\n      as: dimension.pred_status\n"
             "      label: Status\n      kind: categorical\n",
         ),
@@ -166,7 +183,8 @@ def _write_models(models: Path) -> None:
             ["ticket", "member"],
             ("opened_on", "opened_on"),
             _count("ticket_count", "ticket_id")
-            + _count("ticketing_member_count", "member_id", "population"),
+            + _count("ticketing_member_count", "member_id", "population")
+            + _case_count("late_ticket_count", "ticket_id", "ticket_id", 100),
         ),
     }
     for name, text in files.items():
@@ -351,20 +369,16 @@ CANCELLED_ORDERS = {
 
 
 @pytest.mark.parametrize(("op", "value"), [("<", 1), ("=", 0), ("<=", 0), ("!=", 2), ("!=", 1)])
-def test_an_operand_with_no_data_leaves_the_entities_that_have_rows_out(runtime, op, value):
-    """No order is ever cancelled, so the difference is NULL for a customer with orders.
+def test_an_operand_with_no_data_reads_null_for_every_customer_present_or_absent(
+    runtime, op, value
+):
+    """No order is ever cancelled, so the difference is NULL for every customer.
 
-    A NULL fails every threshold, in a predicate as in a metric filter. Only customers with
-    no rows at all (4 and 5) count as 0.
+    Customers 1 to 3 have orders and customers 4 and 5 have none, and all five read the same:
+    NULL, which fails every threshold, in a predicate as in a metric filter.
     """
     net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": CANCELLED_ORDERS}
-    (without_orders,) = _gold(
-        "select count(*) from customers c where not exists "
-        "(select 1 from orders o where o.customer_id = c.customer_id)"
-    )[0]
-    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, net, op, value)]) == (
-        without_orders
-    )
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, net, op, value)]) == 0
     by_customer = runtime.query(
         {
             "version": 1,
@@ -376,21 +390,170 @@ def test_an_operand_with_no_data_leaves_the_entities_that_have_rows_out(runtime,
     assert by_customer == []
 
 
+FEBRUARY = {
+    "temporal_role": "temporal_role.pred_ordered_at",
+    "start": "2025-02-01",
+    "end": "2025-03-01",
+}
+
+
 @pytest.mark.parametrize(("op", "value"), [("=", 0), ("<", 1), ("!=", 2)])
-def test_a_window_in_which_an_operand_has_no_data_leaves_the_customers_with_orders_out(
-    runtime, op, value
-):
-    """The only return is in January, so in February the difference is NULL for customers 1 and 3."""
+def test_a_window_in_which_an_operand_has_no_data_keeps_no_customer(runtime, op, value):
+    """The only return is in January, so in February the difference is NULL for everyone."""
     net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": RETURNED_ORDERS}
-    february = {
-        "temporal_role": "temporal_role.pred_ordered_at",
-        "start": "2025-02-01",
-        "end": "2025-03-01",
-    }
     filters = [_predicate(CUSTOMER, net, op, value, scope_mode="contextual")]
-    # Orders 2 and 4 are the February orders of customers 1 and 3; order 5 has no customer.
-    rows = _run(runtime, "order_count", filters, time=february)
-    assert [row["n"] for row in rows] in ([], [None], [0])
+    # Orders 2 and 4 are the February orders of customers 1 and 3, and neither customer is kept.
+    # A window with nothing left in it returns no row at all, not a row of NULL.
+    assert _run(runtime, "order_count", filters, time=FEBRUARY) == []
+
+
+def _if_count(entity: str, column: str, floor: int) -> dict:
+    """The query-time form of a conditional count: a ``CASE`` with no ``ELSE``, counted."""
+    return {
+        "kind": "aggregate_if",
+        "aggregation": "count",
+        "condition": {
+            "kind": "comparison",
+            "op": ">=",
+            "left": {"kind": "column", "column": column, "entity": entity},
+            "right": {"kind": "literal", "value": floor},
+        },
+    }
+
+
+# Conditional counts, as a measure and at query time. Order 1 is the only one at or above 100,
+# no order reaches 1000, and no ticket is late (ticket_id >= 100).
+LARGE_ORDERS = {"measure": "measure.pred.large_order_count"}
+HUGE_ORDERS = {"measure": "measure.pred.huge_order_count"}
+LATE_TICKETS = {"measure": "measure.pred.late_ticket_count"}
+LARGE_ORDER_COUNTS = pytest.mark.parametrize(
+    "large",
+    [LARGE_ORDERS, _if_count("entity.pred_order", "amount", 100)],
+    ids=["case_count", "aggregate_if"],
+)
+HUGE_ORDER_COUNTS = pytest.mark.parametrize(
+    "huge",
+    [HUGE_ORDERS, _if_count("entity.pred_order", "amount", 1000)],
+    ids=["case_count", "aggregate_if"],
+)
+LATE_TICKET_COUNTS = pytest.mark.parametrize(
+    "late",
+    [LATE_TICKETS, _if_count("entity.pred_ticket", "ticket_id", 100)],
+    ids=["case_count", "aggregate_if"],
+)
+ZERO_PASSING = pytest.mark.parametrize(("op", "value"), [("=", 0), ("<", 1), ("<=", 0), ("!=", 1)])
+
+
+def _no_data_warnings(response: dict) -> list[dict]:
+    return [item for item in response["warnings"] if item["code"] == "NO_DATA_IN_SCOPE"]
+
+
+@LARGE_ORDER_COUNTS
+@ZERO_PASSING
+def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer_with_orders(
+    runtime, large, op, value
+):
+    """Only order 3 is returned, and it is small: customer 2 has an order in scope and a count of 0.
+
+    Nothing matched anywhere in scope, so that 0 is no data. Customer 2 reads NULL, so
+    `= 0` selects nobody, and the query says so instead of answering with a confident 0.
+    """
+    (kept,) = _gold(
+        "select count(*) from orders o where o.status = 'returned' and o.customer_id in ("
+        "select c.customer_id from customers c where exists (select 1 from orders x "
+        "where x.status = 'returned' and x.amount >= 100) and (select count(*) from orders y "
+        "where y.customer_id = c.customer_id and y.status = 'returned' and y.amount >= 100) = 0)"
+    )[0]
+    assert kept == 0
+    response = runtime.query(
+        {
+            "version": 1,
+            "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
+            "where": [{"field": "dimension.pred_status", "op": "=", "value": "returned"}],
+            "metric_filters": [_predicate(CUSTOMER, large, op, value, scope_mode="contextual")],
+        }
+    )
+    assert response["rows"] == [{"n": None}]
+    (warning,) = _no_data_warnings(response)
+    assert warning["details"]["outputs"] == ["n"]
+    assert warning["object_ids"] == ["measure.pred.order_count"]
+
+
+@HUGE_ORDER_COUNTS
+@ZERO_PASSING
+def test_a_conditional_count_with_no_match_over_all_time_selects_no_customer(
+    runtime, huge, op, value
+):
+    """No order reaches 1000: every customer's count of huge orders is 0, and none is data.
+
+    Customers 1 to 3 have orders and customers 4 and 5 have none. A raw count per customer
+    reads 0 for all five, but nothing matched anywhere, so all five read NULL and none is kept.
+    """
+    (naive,) = _gold(
+        "select count(*) from customers c where (select count(*) from orders o "
+        "where o.customer_id = c.customer_id and o.amount >= 1000) = 0"
+    )[0]
+    assert naive == 5
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, huge, op, value)]) == 0
+
+
+@LATE_TICKET_COUNTS
+@ZERO_PASSING
+def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_member_with_no_rows(
+    runtime, late, op, value
+):
+    """No ticket is late: member 1 has a ticket and members 2 to 5 have none, and all read NULL.
+
+    Members 2 to 4 would have 4 activities between them if an entity with no rows counted as
+    0 while the measure had no data anywhere, which is what one rule for every entity rules out.
+    """
+    (kept,) = _gold(
+        "select count(*) from activities a where a.member_id in (select m.member_id from members m "
+        "where exists (select 1 from tickets t where t.ticket_id >= 100) and (select count(*) "
+        "from tickets u where u.member_id = m.member_id and u.ticket_id >= 100) = 0)"
+    )[0]
+    assert kept == 0
+    response = runtime.query(
+        {
+            "version": 1,
+            "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
+            "metric_filters": [_predicate(MEMBER, late, op, value)],
+        }
+    )
+    assert response["rows"] == [{"n": None}]
+    (warning,) = _no_data_warnings(response)
+    assert warning["details"]["outputs"] == ["n"]
+
+
+@LARGE_ORDER_COUNTS
+@ZERO_PASSING
+def test_a_conditional_count_with_one_match_gives_every_other_customer_zero(
+    runtime, large, op, value
+):
+    """Order 1 is large, so customers 2 and 3 (orders, none large) and 4 and 5 (no orders) read 0."""
+    sql_op = "<>" if op == "!=" else op
+    (expected,) = _gold(
+        "select count(*) from (select c.customer_id, (select count(*) from orders o "
+        "where o.customer_id = c.customer_id and o.amount >= 100) n from customers c "
+        f"where exists (select 1 from orders x where x.amount >= 100)) where n {sql_op} {value}"
+    )[0]
+    assert expected == 4
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, large, op, value)]) == expected
+
+
+def test_a_conditional_count_with_one_match_in_a_period_gives_every_other_customer_zero(runtime):
+    """In January order 1 (customer 1) is large and order 3 (customer 2) is not: order 3 is kept."""
+    january = {**FEBRUARY, "start": "2025-01-01", "end": "2025-02-01"}
+    in_january = "ordered_at >= TIMESTAMP '2025-01-01' and ordered_at < TIMESTAMP '2025-02-01'"
+    (expected,) = _gold(
+        f"select count(*) from orders o where o.{in_january} and o.customer_id in ("
+        "select c.customer_id from customers c where exists (select 1 from orders x "
+        f"where x.amount >= 100 and x.{in_january}) and (select count(*) from orders y "
+        f"where y.customer_id = c.customer_id and y.amount >= 100 and y.{in_january}) = 0)"
+    )[0]
+    filters = [_predicate(CUSTOMER, LARGE_ORDERS, "=", 0, scope_mode="contextual")]
+    assert expected == 1
+    assert [row["n"] for row in _run(runtime, "order_count", filters, time=january)] == [1]
 
 
 def test_an_empty_not_in_list_is_satisfied_by_every_entity(runtime):

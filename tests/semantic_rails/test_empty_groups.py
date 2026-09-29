@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from semantic_rails import compiler
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.compiler_parts.empty_groups import resolves_to_zero
@@ -301,6 +302,24 @@ SHAPES = {
         "time": {"temporal_role": ORDER_TIME, "grain": "month", "fill": True},
     },
     # A threshold that 0 passes takes the anti-join, which must not coalesce the value.
+    "predicate_case_count": {
+        "select": _select(orders=ORDERS),
+        "group_by": [STORE],
+        "metric_filters": [
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": "entity.jaffle_customer",
+                    "scope_mode": "entity_only",
+                    "input": {"measure": "measure.jaffle.large_order_count"},
+                    "op": "=",
+                    "value": 0,
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    },
     "predicate_zero_passes": {
         "select": _select(revenue=REVENUE),
         "group_by": [STORE],
@@ -344,6 +363,22 @@ def test_a_lowering_path_that_skips_the_guard_is_refused(
 ) -> None:
     """Force the bypass: lowering builds no guard, and the check that works it out again refuses."""
     monkeypatch.setattr(sql_lowering, patched, lambda *args: {})
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+
+
+@pytest.mark.parametrize("shape", ["predicate_case_count", "predicate_zero_passes"])
+def test_a_predicate_source_that_skips_the_guard_is_refused(
+    config: Any, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """An entity the source doesn't list reads like the ones it does only while the source is
+    settled as a whole, so a source compiled without the guard is refused, not gated."""
+
+    def unguarded(config: Any, payload: dict[str, Any]) -> Any:
+        return compiler._compile_query_sql_ast(config, payload, project_cut=True, guard_empty=False)
+
+    monkeypatch.setattr(compiler, "_compile_predicate_source_ast", unguarded)
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"

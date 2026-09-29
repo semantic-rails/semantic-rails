@@ -467,12 +467,17 @@ stock has no value for a period nobody observed, so neither is ever made zero.
 - **Arithmetic** settles each operand first, then combines them, so `goods + shipping` by
   refund type returns numbers even where one column is NULL for a type. An operand with no
   data in scope stays `NULL` and so does the result: `revenue - refunds` is `NULL` if refunds
-  were never recorded. Division by zero is `NULL`. A `metric_predicate` settles its input the
-  same way, so `orders - returned_orders > 1` keeps a customer with 2 orders and no returns,
-  as a `metric_filter` on the same expression does. A customer that has rows, but whose
-  operand has no data in the predicate's scope (no order was returned in the window), has a
-  `NULL` difference, and `NULL` fails every threshold, `= 0` and `< 1` included. Only a
-  customer with no rows at all counts as 0, and only for a count or sum threshold that 0 passes.
+  were never recorded. Division by zero is `NULL`.
+- **A `metric_predicate` applies the rule to every entity alike.** An operand reads `0` for an
+  entity with no match where its measure has data somewhere in the predicate's scope, and
+  `NULL` where it has none, whether that entity has rows or none at all. So
+  `orders - returned_orders > 1` keeps a customer with 2 orders and no returns, as a
+  `metric_filter` on the same expression does, and `large_orders = 0` ("customers with no
+  large orders") keeps every customer without one when some order in scope is large, and
+  keeps nobody when none is: with no large order anywhere in scope there is no data, not a
+  count of zero. `NULL` fails every threshold, `= 0` and `< 1` included. Only a count or sum
+  threshold that 0 passes reaches an entity with no rows at all, and a distinct count of a
+  population is 0 for one whether or not the scope has data.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.

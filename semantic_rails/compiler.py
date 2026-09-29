@@ -56,8 +56,10 @@ from .compiler_parts.dependencies import (
 )
 from .compiler_parts.empty_groups import (
     ZERO_MEASURE_CLASSES,
+    absent_entities_gate,
     expr_resolves_to_zero,
     recording_zero_outputs,
+    require_settled_source,
 )
 from .compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from .compiler_parts.indexes import (
@@ -2064,12 +2066,13 @@ def _predicate_ctes_and_join(
     plan: LogicalPlan,
     measure_plan: MeasurePlan,
     config: PackageConfig,
-) -> tuple[list[SqlCte], SqlJoin, list[Any]]:
-    """Return the predicate's CTEs, the join to the outer leaf, and extra WHERE conditions.
+) -> tuple[list[SqlCte], list[SqlJoin], list[Any]]:
+    """Return the predicate's CTEs, the joins to the outer leaf, and extra WHERE conditions.
 
     Usually the set holds the qualifying entities and the join is INNER. When entities
     with no rows must qualify, the set holds the entities that fail the threshold, and
-    the leaf keeps a row only if that LEFT JOIN finds no failing entity for it.
+    the leaf keeps a row only if that LEFT JOIN finds no failing entity for it, and, for a
+    count or sum, only while the source holds a settled value (see ``empty_groups``).
     """
     entity_cfg = _entity_index(config).get(predicate.entity)
     if entity_cfg is None:
@@ -2137,19 +2140,15 @@ def _predicate_ctes_and_join(
     )
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
     if without_rows:
-        # Never coalesce the value: an entity present in the source whose value is NULL (an
-        # operand with no data in the predicate's scope) fails every threshold, as it does in a
-        # metric_filter. Only entities absent from the source count as 0.
-        value_ref = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
-        where_condition = SqlBinary(
-            SqlIsNull(value_ref),
-            "OR",
-            build_filter_condition(
-                value_ref,
-                _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
-                predicate.value,
-                path="metric_predicate",
-            ),
+        # The set holds the entities that fail the threshold. Never coalesce the value: the
+        # source is settled like any query, so an entity it lists already reads 0 or NULL by
+        # the guard, and NULL fails no threshold here because the gate below drops every row
+        # when the whole source is NULL.
+        where_condition = build_filter_condition(
+            SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
+            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
+            predicate.value,
+            path="metric_predicate",
         )
     set_query = SqlSelect(
         select=select_fields,
@@ -2233,10 +2232,11 @@ def _predicate_ctes_and_join(
             "AND",
             SqlBinary(outer_time_expr, "=", SqlIdentifier(parts=[set_name, scope["time_alias"]])),
         )
+    ctes = [source_cte, *threshold_ctes, set_cte]
     if not without_rows:
         return (
-            [source_cte, *threshold_ctes, set_cte],
-            SqlJoin(join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition),
+            ctes,
+            [SqlJoin(join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition)],
             [],
         )
     # A leaf row with no entity, context or period key is not an entity with no rows.
@@ -2244,11 +2244,18 @@ def _predicate_ctes_and_join(
         SqlIsNull(SqlIdentifier(parts=[set_name, key_dim_map[0][1]])),
         *(SqlBinary(key_expr, "IS NOT", SqlLiteral(None)) for key_expr in outer_keys),
     ]
-    return (
-        [source_cte, *threshold_ctes, set_cte],
-        SqlJoin(join_type="LEFT", table=SqlTableRef(name=set_name), on=join_condition),
-        keep_rows,
-    )
+    joins = [SqlJoin(join_type="LEFT", table=SqlTableRef(name=set_name), on=join_condition)]
+    if expr_resolves_to_zero(predicate.input, config):
+        # An entity absent from the source reads 0 only where the measures have data in scope,
+        # the test the guard applied to the entities it lists; a distinct population has none.
+        require_settled_source(predicate_sql, {"predicate": expr_to_dict(predicate)})
+        gate_cte, gate_join, gate_condition = absent_entities_gate(
+            f"{set_name}_gate", source_name, "__predicate_value"
+        )
+        ctes.append(gate_cte)
+        joins.append(gate_join)
+        keep_rows.append(gate_condition)
+    return ctes, joins, keep_rows
 
 
 def _leaf_path_selections(

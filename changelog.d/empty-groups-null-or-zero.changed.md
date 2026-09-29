@@ -8,9 +8,11 @@
   not `NULL`), a group whose amounts are all `NULL` reads `0` when other groups have amounts,
   and a measure beside a `distribution` no longer reads `NULL` for a period without rows. A
   `metric_predicate` follows the same rule, so `orders - returned_orders > 1` keeps a customer
-  with 2 orders and no returns, as a metric filter on the same expression does; a customer
-  with rows whose operand has no data in the predicate's scope reads `NULL`, which passes no
-  threshold, and only a customer with no rows counts as 0. One answer
+  with 2 orders and no returns, as a metric filter on the same expression does. Every entity,
+  with rows or none, reads the same: an operand is `0` where its measure has data somewhere in
+  the predicate's scope and `NULL` where it has none, and `NULL` passes no threshold. So
+  `large_orders = 0` keeps every customer without a large order when some order in scope is
+  large, and keeps nobody when none is. One answer
   changed the other way: a `sum` or `count` with nothing in scope reads `NULL`, not `0` (an
   ungrouped count of a filter that matches nothing). Arithmetic settles its operands first, so
   `revenue - refunds` is `NULL` if refunds were never recorded.
