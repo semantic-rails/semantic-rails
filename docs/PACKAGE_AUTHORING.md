@@ -1273,9 +1273,10 @@ the traversal direction (or carry a declared rewrite, e.g. `rollup_safe`
 reverse aggregations or `temporal_validity`); anything else is a structured
 refusal, never a silently fanned-out number. The one exception needs no
 declaration: a path that only goes down one-to-many hops before any lookup
-(`order → order_item → product`) lets a measure be filtered by the far
-dimension, counting each of its rows once, and lets a distinct count be grouped
-by it; the entity's key is what the engine de-duplicates on.
+(`order → order_item → product`), each hop joined on the declared key of its
+one side, lets a measure be filtered by the far dimension, counting each of its
+rows once, and lets a distinct count be grouped by it; the entity's key is what
+the engine de-duplicates on.
 
 ### `graph.path_policy:` — hop ceiling
 

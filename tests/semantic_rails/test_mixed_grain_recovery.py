@@ -15,7 +15,7 @@ These tests pin the enrichment contract added in
    ``closest_compatible_measure``.
 2. A ``replace_measure`` recovery hint names the closest compatible
    measure, but never as a query to run: a different measure answers a
-   different question (D2's d032 got item revenue for order revenue).
+   different question (item revenue is not order revenue).
 3. Calendar-date dimensions additionally carry a ``use_time_grain``
    hint pointing at the ``time`` block, listed first.
 """

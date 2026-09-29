@@ -366,18 +366,27 @@ tests:
       - dimension.jaffle_store_name: Philadelphia
         orders: 35857
 
-  revenue_of_orders_with_a_beverage_by_store_executes:
-    kind: query_row_count_bounds
+  revenue_of_orders_with_a_beverage_by_store_snapshot:
+    # Rounded to cents: the sum of the per-order doubles varies in its last digits.
+    kind: query_matches_snapshot
     query:
       version: 2
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
-          as: revenue_usd
+        - as: revenue_usd
+          expression:
+            kind: call
+            name: ROUND
+            args:
+              - {measure: measure.jaffle.revenue_usd}
+              - {kind: literal, value: 2}
       where:
         - {field: dimension.jaffle_item_product_type, op: "=", value: beverage}
       group_by: [dimension.jaffle_store_name]
-    min_rows: 2
-    max_rows: 2
+    expected_rows:
+      - dimension.jaffle_store_name: Brooklyn
+        revenue_usd: 238963.11
+      - dimension.jaffle_store_name: Philadelphia
+        revenue_usd: 452138.42
 
   ordering_customers_by_item_product_type_snapshot:
     # Grouped by an item dimension, a distinct count counts each order (here,
