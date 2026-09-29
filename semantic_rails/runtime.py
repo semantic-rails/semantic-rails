@@ -34,7 +34,7 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .ast import normalize_query
+from .ast import normalize_query, query_shorthand_normalizations
 from .cache import (
     CachedCompilation,
     CompiledSqlCache,
@@ -759,7 +759,26 @@ def _compiled_warnings(
         warnings.extend(caveat_warnings(config, compiled, payload))
         warnings.extend(_expression_normalized_away_warnings(payload, compiled))
         warnings.extend(_ungrained_time_projection_warnings(payload))
+        warnings.extend(_shorthand_normalized_warnings(payload))
     return warnings
+
+
+def _shorthand_normalized_warnings(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Tell the caller which select shorthands were rewritten, with the canonical form."""
+    return [
+        semantic_issue(
+            code="QUERY_SHORTHAND_NORMALIZED",
+            message=(
+                f"{note['path']} was accepted as shorthand and rewritten; next time send "
+                f"{json.dumps(note['canonical'], separators=(',', ':'))}."
+            ),
+            severity="warning",
+            stage="compile",
+            path=note["path"],
+            details=note,
+        )
+        for note in query_shorthand_normalizations(payload)
+    ]
 
 
 _UNGRAINED_INLINE_WINDOW_KINDS = frozenset(

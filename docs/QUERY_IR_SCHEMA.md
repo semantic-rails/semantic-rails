@@ -110,6 +110,19 @@ with `closest_matches`:
 }
 ```
 
+Two unambiguous slips are rewritten, not refused, and the response carries a
+`QUERY_SHORTHAND_NORMALIZED` warning naming the canonical form:
+
+| Sent | Treated as |
+|---|---|
+| `{ "metric": "..." }` or `{ "measure": "...", "aggregation": "sum" }` as the select item itself, with no `expression` wrapper (plus optional `as`) | `{ "expression": {"kind": "metric" \| "measure", ...}, "as": ... }` |
+| `{ "dimension": "..." }` as a select item, or as `expression`, when `group_by` is empty or already lists it | that id on `group_by[]` |
+
+Anything else without an `expression` (both `metric` and `measure`, `aggregation` on a metric,
+unknown keys) is refused with `INVALID_EXPRESSION_AST`, and the message shows the canonical
+form. A dimension in `select[].expression` beside a `group_by` naming other dimensions is
+refused too (`MOVE_DIMENSION_TO_GROUP_BY`).
+
 ## SelectExpression (discriminated union)
 
 Most shapes carry an explicit `kind`. The runtime also accepts two kindless

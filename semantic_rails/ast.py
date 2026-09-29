@@ -838,6 +838,111 @@ def _normalize_group_by_list(raw_items: Any) -> list[str]:
     return out
 
 
+_BARE_SELECT_MEASURE_KEYS: frozenset[str] = frozenset(
+    {"measure", "aggregation", "temporal_role", "parameters", "as"}
+)
+
+
+def _bare_select_expression(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the canonical expression for a select item sent without ``expression``.
+
+    Only the two unambiguous shapes convert: ``{metric, as?}`` and
+    ``{measure, aggregation?, as?}``. Anything else (both ``metric`` and ``measure``,
+    ``aggregation`` on a metric, unknown keys) returns None and stays an error.
+    """
+    keys = set(row) - {"as"}
+    if keys == {"metric"}:
+        return {"kind": "metric", "metric": row["metric"]}
+    if "measure" in keys and keys <= _BARE_SELECT_MEASURE_KEYS:
+        return {"kind": "measure", **{key: row[key] for key in keys}}
+    return None
+
+
+def _promotable_select_dimension(row: dict[str, Any], group_by: list[str]) -> str:
+    """Return the dimension id of ``{expression: {dimension}}`` when it can move to ``group_by``.
+
+    Empty when the shape differs or the query already groups by other dimensions: adding
+    one to an explicit ``group_by`` would be a guess, so that case keeps the error.
+    """
+    expression = row.get("expression")
+    if not isinstance(expression, dict) or set(expression) != {"dimension"}:
+        return ""
+    dim_id = str(expression["dimension"] or "").strip()
+    if dim_id and (not group_by or dim_id in group_by):
+        return dim_id
+    return ""
+
+
+def _reject_bare_select_row(row: dict[str, Any], idx: int) -> SemanticLayerError:
+    return SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        (
+            f"select[{idx}] has no 'expression', and its keys {sorted(row)} do not match one "
+            "unambiguous shape. Send "
+            '{"expression": {"kind": "measure", "measure": "<measure id>", "aggregation": '
+            '"sum"}, "as": "<alias>"} or '
+            '{"expression": {"kind": "metric", "metric": "<metric id>"}, "as": "<alias>"}.'
+        ),
+        details={
+            "path": f"select[{idx}]",
+            "received_keys": sorted(row),
+            "recovery_hints": [
+                {
+                    "code": "WRAP_SELECT_EXPRESSION",
+                    "message": (
+                        "Each select item is {expression, as}. Use kind 'measure' (with "
+                        "'aggregation') or kind 'metric', never both 'metric' and 'measure'."
+                    ),
+                }
+            ],
+        },
+    )
+
+
+def query_shorthand_normalizations(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """List the select shorthands :func:`normalize_query` rewrote, for the response warning."""
+    group_by = _normalize_group_by_list(payload.get("group_by", []))
+    notes: list[dict[str, Any]] = []
+    for idx, row in enumerate(list(payload.get("select", []) or [])):
+        if not isinstance(row, dict):
+            continue
+        if "expression" not in row:
+            if "dimension" in row:
+                dim_id = str(row.get("dimension", "") or "").strip()
+                if dim_id:
+                    notes.append(
+                        {
+                            "path": f"select[{idx}]",
+                            "received": {"dimension": dim_id},
+                            "canonical": {"group_by": [dim_id]},
+                        }
+                    )
+                continue
+            expression = _bare_select_expression(row)
+            if expression is not None:
+                notes.append(
+                    {
+                        "path": f"select[{idx}]",
+                        "received": dict(row),
+                        "canonical": {
+                            "expression": expression,
+                            **({"as": row["as"]} if "as" in row else {}),
+                        },
+                    }
+                )
+            continue
+        dim_id = _promotable_select_dimension(row, group_by)
+        if dim_id:
+            notes.append(
+                {
+                    "path": f"select[{idx}]",
+                    "received": {"expression": row["expression"]},
+                    "canonical": {"group_by": [dim_id]},
+                }
+            )
+    return notes
+
+
 def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
     _check_unknown_top_level_keys(payload)
     _check_supported_version(payload)
@@ -861,9 +966,19 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
     # bound to an unreachable entity would be silently dropped from
     # the SQL output).
     promoted_group_by: list[str] = []
+    group_by = _normalize_group_by_list(payload.get("group_by", []))
     for idx, row in enumerate(select_rows):
         if not isinstance(row, dict):
             raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
+        promoted = _promotable_select_dimension(row, group_by)
+        if promoted:
+            promoted_group_by.append(promoted)
+            continue
+        if "expression" not in row and "dimension" not in row:
+            bare_expression = _bare_select_expression(row)
+            if bare_expression is None:
+                raise _reject_bare_select_row(row, idx)
+            row = {**row, "expression": bare_expression}
         if "dimension" in row and "expression" not in row:
             dim_id = str(row.get("dimension", "") or "").strip()
             if not dim_id:
@@ -931,7 +1046,6 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
             item.expression is not None
         )  # parse_semantic_expression returns non-None for non-empty payload
         _validate_query_expr(item.expression)
-    group_by = _normalize_group_by_list(payload.get("group_by", []))
     # Append dim ids promoted from select[].dimension shorthand,
     # de-duplicating against any already-present group_by entries.
     seen_group = set(group_by)

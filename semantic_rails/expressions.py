@@ -1159,7 +1159,15 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                     ],
                 },
             )
-        raise SemanticLayerError("INVALID_EXPRESSION_AST", "Expression requires a 'kind'")
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            (
+                "Expression requires a 'kind'. Send "
+                '{"kind": "measure", "measure": "<measure id>", "aggregation": "sum"} or '
+                '{"kind": "metric", "metric": "<metric id>"}.'
+            ),
+            details={"expression_position": context, "received_keys": sorted(expr)},
+        )
 
     if kind == "column":
         column = str(expr.get("column", "")).strip()
