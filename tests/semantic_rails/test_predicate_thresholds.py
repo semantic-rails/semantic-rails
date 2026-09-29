@@ -18,7 +18,9 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 
 SEED_SQL = """
@@ -149,7 +151,8 @@ def _write_models(models: Path) -> None:
             "tickets",
             ["ticket", "member"],
             ("opened_on", "opened_on"),
-            _count("ticket_count", "ticket_id"),
+            _count("ticket_count", "ticket_id")
+            + _count("ticketing_member_count", "member_id", "population"),
         ),
     }
     for name, text in files.items():
@@ -279,6 +282,12 @@ def test_a_fact_measure_restricted_to_entities_with_no_related_rows(runtime):
     assert _scalar(runtime, "activity_count", filters) == expected == 4
 
 
+def test_a_distinct_count_of_a_population_is_zero_over_no_rows(runtime):
+    ticketing_members = {"measure": "measure.pred.ticketing_member_count"}
+    filters = [_predicate(MEMBER, ticketing_members, "=", 0)]
+    assert _scalar(runtime, "activity_count", filters) == 4
+
+
 def test_zero_threshold_composes_with_a_second_predicate(runtime):
     # Members with no tickets and fewer than two activities.
     (expected,) = _gold(
@@ -335,6 +344,22 @@ def test_zero_threshold_sql_is_an_anti_join(runtime):
     )
     sql = " ".join(compiled["rendered_sql"].upper().split())
     assert "LEFT JOIN" in sql and "IS NULL" in sql
+
+
+def test_explain_marks_the_predicate_set_as_an_anti_join(runtime):
+    def predicate_sets(op, value):
+        query = {
+            "version": 1,
+            "select": [{"as": "n", "expression": {"measure": "measure.pred.customer_count"}}],
+            "metric_filters": [_predicate(CUSTOMER, ORDERS, op, value)],
+        }
+        compiled = compile_query(runtime._config, Registry(runtime._config), query)
+        return [row for row in compiled["physical_plan"].nodes if row.kind == "PredicateSet"]
+
+    (zero,) = predicate_sets("=", 0)
+    (nonzero,) = predicate_sets(">", 0)
+    assert zero.details["anti_join"] is True
+    assert "anti_join" not in nonzero.details
 
 
 @pytest.mark.parametrize("aggregation", ["avg", "min", "max", "median"])

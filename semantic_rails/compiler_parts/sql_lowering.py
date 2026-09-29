@@ -404,13 +404,18 @@ _ADDITIVE_ZERO_AGGREGATIONS = {"sum", "count", "count_distinct"}
 _ZERO_ON_MISSING_MEASURE_CLASSES = {"additive", "event_count", "entity_count", ""}
 
 
-def _expr_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
+def _expr_zero_on_missing(
+    expr: SemanticExpr,
+    config: PackageConfig,
+    measure_classes: set[str] = _ZERO_ON_MISSING_MEASURE_CLASSES,
+) -> bool:
     """Return True if an expression's natural value is 0 when no rows contribute.
 
     Used to decide whether NULL produced by a FULL OUTER JOIN combine should be
     coerced to 0 in metric_filter projections, so that the natural translation
     of "orders with no items" (`item_count = 0`) returns the right rows instead
-    of silently returning empty.
+    of silently returning empty. ``measure_classes`` are the measure classes whose
+    additive aggregations count as 0.
     """
     if isinstance(expr, (MeasureRefExpr, AggregateExpr)):
         measure = _measure_index(config).get(expr.measure)
@@ -419,15 +424,15 @@ def _expr_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
         aggregation = (expr.aggregation or measure.default_aggregation or "").lower()
         if aggregation not in _ADDITIVE_ZERO_AGGREGATIONS:
             return False
-        return measure.measure_class in _ZERO_ON_MISSING_MEASURE_CLASSES
+        return measure.measure_class in measure_classes
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         if recipe is None:
             return False
-        return _expr_zero_on_missing(recipe.expression, config)
+        return _expr_zero_on_missing(recipe.expression, config, measure_classes)
     if isinstance(expr, ArithmeticExpr) and expr.op in {"add", "subtract"}:
-        return _expr_zero_on_missing(expr.left, config) and _expr_zero_on_missing(
-            expr.right, config
+        return _expr_zero_on_missing(expr.left, config, measure_classes) and (
+            _expr_zero_on_missing(expr.right, config, measure_classes)
         )
     return False
 

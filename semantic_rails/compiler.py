@@ -83,6 +83,7 @@ from .compiler_parts.post_aggregation import (
     _namespace_sql_select,
 )
 from .compiler_parts.sql_lowering import (
+    _ZERO_ON_MISSING_MEASURE_CLASSES,
     _count_key_expr,
     _expr_zero_on_missing,
     _last_token,
@@ -1221,6 +1222,11 @@ _INVERSE_THRESHOLD_OPS = {
 }
 
 
+# A distinct count of a population is 0 over no rows too; it stays out of the metric_filter
+# and dense-fill uses of the shared set, whose null semantics differ.
+_ZERO_ON_MISSING_PREDICATE_CLASSES = {*_ZERO_ON_MISSING_MEASURE_CLASSES, "distinct_population"}
+
+
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -1266,7 +1272,7 @@ def _predicate_includes_entities_without_rows(
     """
     if not _zero_satisfies_threshold(predicate.op, predicate.value):
         return False
-    if _expr_zero_on_missing(predicate.input, config):
+    if _expr_zero_on_missing(predicate.input, config, _ZERO_ON_MISSING_PREDICATE_CLASSES):
         return True
     raise SemanticLayerError(
         "INVALID_METRIC_PREDICATE",

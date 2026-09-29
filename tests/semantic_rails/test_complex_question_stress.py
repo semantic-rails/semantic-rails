@@ -468,6 +468,50 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         runtime.close()
 
 
+def test_conversion_metric_refuses_a_threshold_that_zero_satisfies(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        report = runtime.validate(
+            {
+                "version": 1,
+                "select": [
+                    {
+                        "as": "signup_to_send_28d",
+                        "expression": {
+                            "metric": "metric.adoption.signup_to_send_conversion_rate_28d"
+                        },
+                    }
+                ],
+                "group_by": ["dimension.jaffle_store_name"],
+                "time": {
+                    "temporal_role": "temporal_role.jaffle_session_started_at",
+                    "grain": "month",
+                },
+                "metric_filters": [
+                    {
+                        "expression": {
+                            "kind": "metric_predicate",
+                            "entity": "entity.jaffle_store",
+                            "scope_mode": "contextual",
+                            "input": {"measure": "measure.jaffle.order_count"},
+                            "op": "=",
+                            "value": 0,
+                            "time_alignment": "same_query_period",
+                        },
+                        "op": "=",
+                        "value": True,
+                    }
+                ],
+            }
+        )
+        assert report["ok"] is False
+        error = report["errors"][0]
+        assert error["code"] == "INVALID_METRIC_PREDICATE"
+        assert "a conversion metric" in error["message"]
+    finally:
+        runtime.close()
+
+
 def test_metric_predicate_filter_envelope_rejects_non_true_outer_filter(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:

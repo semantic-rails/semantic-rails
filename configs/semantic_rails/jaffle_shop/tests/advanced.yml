@@ -183,7 +183,6 @@ tests:
               metric: metric.sales.session_to_order_conversion_rate_7d_same_store
             op: ">"
             value: 0.9
-            time_alignment: same_query_period
           op: "="
           value: true
       time:
