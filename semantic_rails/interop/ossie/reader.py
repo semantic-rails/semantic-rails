@@ -114,23 +114,10 @@ def _fact(sql: str) -> SemanticExpr | None:
     return expr if rendered.split() == sql.split() else None
 
 
-class _Coalesced:
-    """``COALESCE(x, 0)``, which the export writes only as both operands of + or -."""
-
-    def __init__(self, expr: SemanticExpr) -> None:
-        self.expr = expr
-
-
-def _plain(node: Any) -> SemanticExpr:
-    if isinstance(node, _Coalesced):
-        raise ValueError("COALESCE outside + or -")
-    return node
-
-
 class _MetricParser:
     """The aggregate SQL the export writes: SUM, AVG, MIN, MAX and COUNT(DISTINCT) over
-    ``dataset.field``, numbers, + - *, ``/ NULLIF(x, 0)``, ``COALESCE(x, 0)`` on both sides of
-    + or -, and parentheses. ``parse`` returns ``None`` for anything else."""
+    ``dataset.field``, numbers, + - *, ``/ NULLIF(x, 0)`` and parentheses. ``parse`` returns
+    ``None`` for anything else."""
 
     def __init__(self, sql: str, measures: dict[str, str]) -> None:
         self.tokens = [next(t for t in match.groups() if t) for match in _TOKEN.finditer(sql)]
@@ -139,7 +126,7 @@ class _MetricParser:
 
     def parse(self) -> SemanticExpr | None:
         try:
-            expr = _plain(self.expression())
+            expr = self.expression()
         except (IndexError, KeyError, ValueError):
             return None
         return expr if self.position == len(self.tokens) else None
@@ -154,36 +141,32 @@ class _MetricParser:
     def next_is(self, *tokens: str) -> bool:
         return self.position < len(self.tokens) and self.tokens[self.position] in tokens
 
-    def zero_call(self, function: str) -> Any:
-        """``function(x, 0)``, returning x."""
-        self.take(function)
+    def nullif_zero(self) -> SemanticExpr:
+        """``NULLIF(x, 0)``, returning x."""
+        self.take("NULLIF")
         self.take("(")
         inner = self.expression()
         for token in (",", "0", ")"):
             self.take(token)
         return inner
 
-    def expression(self) -> Any:
+    def expression(self) -> SemanticExpr:
         left = self.term()
         while self.next_is("+", "-"):
             op, right = "add" if self.take() == "+" else "subtract", self.term()
-            if isinstance(left, _Coalesced) and isinstance(right, _Coalesced):
-                left = ArithmeticExpr(op, left.expr, right.expr, "coalesce_zero")
-            else:
-                left = ArithmeticExpr(op, _plain(left), _plain(right))
+            left = ArithmeticExpr(op, left, right)
         return left
 
-    def term(self) -> Any:
+    def term(self) -> SemanticExpr:
         left = self.factor()
         while self.next_is("*", "/"):
             if self.take() == "*":
-                left = ArithmeticExpr("multiply", _plain(left), _plain(self.factor()))
+                left = ArithmeticExpr("multiply", left, self.factor())
             else:  # the export divides as the engine does, by NULLIF(denominator, 0)
-                right = _plain(self.zero_call("NULLIF"))
-                left = ArithmeticExpr("divide", _plain(left), right, "null_if_zero")
+                left = ArithmeticExpr("divide", left, self.nullif_zero())
         return left
 
-    def factor(self) -> Any:
+    def factor(self) -> SemanticExpr:
         if self.next_is("("):
             self.take()
             inner = self.expression()
@@ -193,8 +176,6 @@ class _MetricParser:
         if re.fullmatch(r"\d+(\.\d+)?", token):
             self.take()
             return LiteralExpr(float(token) if "." in token else int(token))
-        if token.upper() == "COALESCE":
-            return _Coalesced(_plain(self.zero_call("COALESCE")))
         aggregation = _AGGREGATES[self.take().upper()]
         self.take("(")
         if aggregation == "count_distinct":

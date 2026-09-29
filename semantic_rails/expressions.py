@@ -68,7 +68,6 @@ class ArithmeticExpr:
     op: str
     left: SemanticExpr
     right: SemanticExpr
-    null_behavior: str = ""
 
 
 @dataclass(frozen=True)
@@ -211,7 +210,6 @@ class ScopedAggregateExpr:
     parameters: dict[str, Any] = field(default_factory=dict)
     where: list[dict[str, Any]] = field(default_factory=list)
     predicates: list[dict[str, Any]] = field(default_factory=list)
-    null_behavior: str = ""
     # Per-row event-anchored window (round-three Phase 2). When set,
     # the lowering path materialises an anchor CTE and constrains the
     # measure source to events within the per-entity window.
@@ -228,7 +226,6 @@ class ScopedAggregateExpr:
 class RatioExpr:
     numerator: SemanticExpr
     denominator: SemanticExpr
-    null_behavior: str = "null_if_zero"
 
 
 @dataclass(frozen=True)
@@ -470,15 +467,12 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
     if isinstance(expr, LiteralExpr):
         return {"kind": "literal", "value": expr.value}
     if isinstance(expr, ArithmeticExpr):
-        out = {
+        return {
             "kind": "arithmetic",
             "op": expr.op,
             "left": expr_to_dict(expr.left),
             "right": expr_to_dict(expr.right),
         }
-        if expr.null_behavior:
-            out["null_behavior"] = expr.null_behavior
-        return out
     if isinstance(expr, ComparisonExpr):
         return {
             "kind": "comparison",
@@ -620,8 +614,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             out["where"] = [dict(item) for item in expr.where]
         if expr.predicates:
             out["predicates"] = [dict(item) for item in expr.predicates]
-        if expr.null_behavior:
-            out["null_behavior"] = expr.null_behavior
         if expr.anchor:
             out["anchor"] = dict(expr.anchor)
         if expr.window:
@@ -632,7 +624,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             "kind": "ratio",
             "numerator": expr_to_dict(expr.numerator),
             "denominator": expr_to_dict(expr.denominator),
-            "null_behavior": expr.null_behavior,
         }
     if isinstance(expr, EntityValueExpr):
         return {
@@ -781,8 +772,8 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
     "metric": _COMMON_KEYS | {"metric"},
     "column": _COMMON_KEYS | {"column", "entity", "table"},
     "literal": _COMMON_KEYS | {"value"},
-    "arithmetic": _COMMON_KEYS | {"op", "left", "right", "null_behavior"},
-    "binary": _COMMON_KEYS | {"op", "left", "right", "null_behavior"},
+    "arithmetic": _COMMON_KEYS | {"op", "left", "right"},
+    "binary": _COMMON_KEYS | {"op", "left", "right"},
     "comparison": _COMMON_KEYS | {"op", "left", "right"},
     "boolean": _COMMON_KEYS | {"op", "args"},
     "call": _COMMON_KEYS | {"name", "args", "distinct"},
@@ -816,13 +807,12 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
         "parameters",
         "where",
         "predicates",
-        "null_behavior",
         # Round 3: per-row event-anchored window keys. SQL lowering
         # is staged; parser + validator land here.
         "anchor",
         "window",
     },
-    "ratio": _COMMON_KEYS | {"numerator", "denominator", "null_behavior"},
+    "ratio": _COMMON_KEYS | {"numerator", "denominator"},
     "entity_value": _COMMON_KEYS | {"entity", "input", "where"},
     "distribution": _COMMON_KEYS | {"function", "over", "p", "parameters"},
     "conversion": _COMMON_KEYS
@@ -1187,7 +1177,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             op=_normalize_arithmetic_op(expr.get("op", "")),
             left=parse_semantic_expression(expr.get("left"), context=context),
             right=parse_semantic_expression(expr.get("right"), context=context),
-            null_behavior=str(expr.get("null_behavior", "")).strip(),
         )
     if kind == "comparison":
         return ComparisonExpr(
@@ -1803,7 +1792,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             parameters=dict(expr.get("parameters", {}) or {}),
             where=[dict(item) for item in list(expr.get("where", []) or [])],
             predicates=[dict(item) for item in list(expr.get("predicates", []) or [])],
-            null_behavior=str(expr.get("null_behavior", "")).strip(),
             anchor=anchor_payload,
             window=window_payload,
         )
@@ -1815,7 +1803,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         return RatioExpr(
             numerator=parse_semantic_expression(expr.get("numerator"), context=context),
             denominator=parse_semantic_expression(expr.get("denominator"), context=context),
-            null_behavior=str(expr.get("null_behavior", "null_if_zero") or "null_if_zero"),
         )
     if kind == "entity_value":
         entity = str(expr.get("entity", "")).strip()

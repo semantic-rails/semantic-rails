@@ -38,6 +38,18 @@ INSERT INTO signups VALUES
   (106, TIMESTAMP '2024-06-25 03:30:00'),
   (107, TIMESTAMP '2024-06-10 08:00:00');
 
+-- Refunds pivoted by type: a goods refund fills goods_amount and a shipping refund fills
+-- shipping_amount, each leaving the other columns NULL, and tax_amount is never filled. Order 8
+-- (no store) and every order but 2, 4 and 6 have no refund.
+CREATE TABLE refunds (
+  refund_id INTEGER, order_id INTEGER, refund_type VARCHAR(16),
+  goods_amount DECIMAL(10, 2), shipping_amount DECIMAL(10, 2), tax_amount DECIMAL(10, 2)
+);
+INSERT INTO refunds VALUES
+  (1, 2, 'goods', 5.00, NULL, NULL),
+  (2, 4, 'shipping', NULL, 3.00, NULL),
+  (3, 6, 'goods', 4.00, NULL, NULL);
+
 -- A monthly rollup of orders by store, keyed by a DATE (the base table's key is a TIMESTAMP).
 CREATE TABLE orders_monthly AS
 SELECT CAST(date_trunc('month', ordered_at) AS DATE) AS month_start, store_id,

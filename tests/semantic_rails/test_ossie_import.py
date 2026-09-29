@@ -354,9 +354,8 @@ def _aggregate(measure: str, aggregation: str) -> dict:
     }
 
 
-def _arithmetic(op: str, left: dict, right: dict, null_behavior: str = "") -> dict:
-    row = {"kind": "arithmetic", "op": op, "left": left, "right": right}
-    return {**row, "null_behavior": null_behavior} if null_behavior else row
+def _arithmetic(op: str, left: dict, right: dict) -> dict:
+    return {"kind": "arithmetic", "op": op, "left": left, "right": right}
 
 
 SUM_A, COUNT_B = _aggregate("measure.a", "sum"), _aggregate("measure.b", "count_distinct")
@@ -368,7 +367,7 @@ SUM_A, COUNT_B = _aggregate("measure.a", "sum"), _aggregate("measure.b", "count_
         ("SUM(d.a)", SUM_A),
         (
             "sum(d.a) / NULLIF(count(DISTINCT d.b), 0)",
-            _arithmetic("divide", SUM_A, COUNT_B, "null_if_zero"),
+            _arithmetic("divide", SUM_A, COUNT_B),
         ),
         (
             "(SUM(d.a) - COUNT(DISTINCT d.b)) * 100",
@@ -378,10 +377,9 @@ SUM_A, COUNT_B = _aggregate("measure.a", "sum"), _aggregate("measure.b", "count_
                 {"kind": "literal", "value": 100},
             ),
         ),
-        (
-            "COALESCE(SUM(d.a), 0) + COALESCE(COUNT(DISTINCT d.b), 0)",
-            _arithmetic("add", SUM_A, COUNT_B, "coalesce_zero"),
-        ),
+        ("SUM(d.a) + COUNT(DISTINCT d.b)", _arithmetic("add", SUM_A, COUNT_B)),
+        # The export never writes COALESCE: an empty group is settled by the engine, not the SQL.
+        ("COALESCE(SUM(d.a), 0) + COALESCE(COUNT(DISTINCT d.b), 0)", None),
         ("SUM(d.a) / SUM(d.b)", None),  # the export always divides by NULLIF(x, 0)
         ("COUNT(d.a)", None),
         ("MEDIAN(d.a)", None),

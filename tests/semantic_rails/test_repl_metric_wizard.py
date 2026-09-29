@@ -527,13 +527,7 @@ def _growth(measure: str, aggregation: str, unit: str, value: int = 1) -> dict[s
     now = {"kind": "aggregate", "measure": measure, "aggregation": aggregation}
     prior = {"kind": "prior_period", "input": now, "offset": {"unit": unit, "value": value}}
     left = {"kind": "binary", "op": "subtract", "left": now, "right": prior}
-    return {
-        "kind": "binary",
-        "op": "divide",
-        "null_behavior": "null_if_zero",
-        "left": left,
-        "right": prior,
-    }
+    return {"kind": "binary", "op": "divide", "left": left, "right": prior}
 
 
 def _one_filter(field: str, op: str, values: list[Any]) -> dict[str, Any]:
@@ -576,7 +570,7 @@ CREATE = [
     ),
     pytest.param(
         {}, {"Metric recipe": "Ratio", "Numerator": "revenue - "},
-        {"kind": "ratio", "numerator": REVENUE, "denominator": ORDER_COUNT, "null_behavior": "null_if_zero",
+        {"kind": "ratio", "numerator": REVENUE, "denominator": ORDER_COUNT,
          "value_type": "currency", "currency": "USD", "temporal_role": ORDERED},
         {"Denominator": ORDER_COUNT_ROW, "Result type": "Currency per unit", "Time axis for this metric": ABSENT},
         [10.0, 20.0, 30.0], id="ratio-per-count-of-the-same-model",
@@ -711,7 +705,6 @@ def _authored_metric(recipe: str, ref: str, *, count: str, status: str) -> dict[
             "kind": "ratio",
             "numerator": ref,
             "denominator": count,
-            "null_behavior": "null_if_zero",
         },
         "cumulative": {"kind": "cumulative", **named},
         "rolling": {"kind": "rolling", **named, "window": {"unit": "quarter", "value": 2}},

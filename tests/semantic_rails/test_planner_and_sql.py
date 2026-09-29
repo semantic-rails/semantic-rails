@@ -1058,10 +1058,8 @@ def _primitive_channel_config() -> PackageConfig:
                     "add",
                     MetricRecipeRefExpr("metric.email_count"),
                     MetricRecipeRefExpr("metric.sms_count"),
-                    null_behavior="coalesce_zero",
                 ),
                 MetricRecipeRefExpr("metric.push_count"),
-                null_behavior="coalesce_zero",
             ),
         ),
     ]

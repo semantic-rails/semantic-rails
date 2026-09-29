@@ -53,6 +53,7 @@ from .compiler_parts.dependencies import (
     recipe_objects,
     record_temporal_role,
 )
+from .compiler_parts.empty_groups import recording_zero_outputs
 from .compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from .compiler_parts.indexes import (
     _default_temporal_role,
@@ -1966,7 +1967,7 @@ def _predicate_ctes_and_join(
         mini_query["time"] = _public_time_spec(scope["time_spec"])
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True)
+    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True, guard_empty=False)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -2980,7 +2981,9 @@ def _conversion_predicate_set_ctes(
     with cut_owners():
         with binding_cut():
             _entity_index(config)[predicate.entity]
-        predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True)
+        predicate_sql = _compile_query_sql_ast(
+            config, mini_query, project_cut=True, guard_empty=False
+        )
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -3945,20 +3948,30 @@ def _calendar_fill_binding(
     return bind_calendar(plan, config, force=force)
 
 
-def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
+def lower_to_sql(
+    plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
+) -> SqlSelect:
     from .compiler_parts.sql_lowering import lower_to_sql as _lower_to_sql
 
-    return _lower_to_sql(plan, config)
+    return _lower_to_sql(plan, config, guard_empty=guard_empty)
 
 
 def _compile_query_sql_ast(
-    config: PackageConfig, payload: dict[str, Any], *, project_cut: bool = False
+    config: PackageConfig,
+    payload: dict[str, Any],
+    *,
+    project_cut: bool = False,
+    guard_empty: bool = True,
 ) -> SqlSelect:
+    """Compile a nested query; ``guard_empty=False`` for the per-entity values a predicate reads.
+
+    Those values are the entities that have rows, so an entity with none is absent, never 0.
+    """
     plan = plan_query(config, None, payload, collapse_window=False)
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
-        return attach_relation_ctes(config, lower_to_sql(plan, config))
+        return attach_relation_ctes(config, lower_to_sql(plan, config, guard_empty=guard_empty))
 
 
 def _record_bound_plan(
@@ -4013,6 +4026,8 @@ class BoundQuery:
     parameters: tuple[ParameterSlot, ...] = ()
     # The key gap of every event/state-clock stock the SQL reads, nested compiles included.
     stock_key_gaps: tuple[dict[str, Any], ...] = ()
+    # Every output that reads 0 or NULL for an empty group, with the measures behind it.
+    zero_outputs: tuple[dict[str, Any], ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``.
@@ -4111,6 +4126,7 @@ def _bind_query(
         plan_bindings(plan) as leaves,
         recording_rollup_scans() as rollup_scans,
         recording_stock_key_gaps() as stock_key_gaps,
+        recording_zero_outputs() as zero_outputs,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
         sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
@@ -4133,6 +4149,7 @@ def _bind_query(
         },
         frozenset(rollup_scans),
         stock_key_gaps=tuple(stock_key_gaps),
+        zero_outputs=tuple(zero_outputs),
     )
 
 
@@ -4213,4 +4230,5 @@ def compile_query(
         "performance_plan": performance_plan,
         "compile_stats": compile_stats,
         "stock_key_gaps": list(bound.stock_key_gaps),
+        "zero_outputs": list(bound.zero_outputs),
     }

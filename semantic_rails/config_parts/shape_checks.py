@@ -317,7 +317,6 @@ _METRIC_KEYS: frozenset[str] = frozenset(
         "aggregation",
         "numerator",
         "denominator",
-        "null_behavior",
         "window",
         "offset",
         "period",

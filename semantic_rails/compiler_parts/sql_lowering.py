@@ -92,6 +92,14 @@ from .dependencies import (
     record_ids,
     record_leaf_reference,
 )
+from .empty_groups import (
+    GUARDED_BASE,
+    base_reads,
+    expr_resolves_to_zero,
+    guard_empty_groups,
+    record_zero_output,
+    zero_aliases,
+)
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -464,77 +472,6 @@ def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any
 
 def _metric_filter_alias(index: int) -> str:
     return f"metric_filter__{index + 1}"
-
-
-_ADDITIVE_ZERO_AGGREGATIONS = {"sum", "count", "count_distinct"}
-
-# Measure classes whose value at "no contributing rows" is the additive
-# identity (0). Semi-additive (e.g., snapshots) and distinct_population
-# classes have different null semantics — leave them alone.
-_ZERO_ON_MISSING_MEASURE_CLASSES = {"additive", "event_count", "entity_count", ""}
-
-
-def _expr_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
-    """Return True if an expression's natural value is 0 when no rows contribute.
-
-    Used to decide whether NULL produced by a FULL OUTER JOIN combine should be
-    coerced to 0 in metric_filter projections, so that the natural translation
-    of "orders with no items" (`item_count = 0`) returns the right rows instead
-    of silently returning empty.
-    """
-    if isinstance(expr, (MeasureRefExpr, AggregateExpr)):
-        measure = _measure_index(config).get(expr.measure)
-        if measure is None:
-            return False
-        aggregation = (expr.aggregation or measure.default_aggregation or "").lower()
-        if aggregation not in _ADDITIVE_ZERO_AGGREGATIONS:
-            return False
-        return measure.measure_class in _ZERO_ON_MISSING_MEASURE_CLASSES
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            return False
-        return _expr_zero_on_missing(recipe.expression, config)
-    if isinstance(expr, ArithmeticExpr) and expr.op in {"add", "subtract"}:
-        return _expr_zero_on_missing(expr.left, config) and _expr_zero_on_missing(
-            expr.right, config
-        )
-    return False
-
-
-def _dense_fill_zero_aliases(plan: LogicalPlan, config: PackageConfig) -> set[str]:
-    """Measure aliases whose value really is 0 where a dense row has no data.
-
-    Densifying a time series invents rows for periods the data never
-    covered. `SUM` over no rows is 0, so filling is right there. `AVG`,
-    `MIN`, `MAX` and semi-additive snapshots over no rows are *undefined* —
-    filling them with 0 reports a fabricated measurement that is
-    indistinguishable from a real one: a minimum below every observed
-    value, an average dragged toward zero, an inventory snapshot claiming
-    the warehouse was empty.
-
-    Aliases absent from `plan.measure_plans` — conversion expressions —
-    are excluded by construction. Those lower to
-    `numerator / NULLIF(denominator, 0)`, so a fill would claim a 0%
-    conversion rate for a period that simply had no sessions.
-
-    Same predicate as :func:`_expr_zero_on_missing`, which has always
-    gated the metric_filter projections.
-    """
-    measures = _measure_index(config)
-    zero_filled: set[str] = set()
-    for row in plan.measure_plans:
-        bound = row.bound_measure
-        measure = measures.get(bound.measure_id)
-        if measure is None:
-            continue
-        aggregation = (bound.aggregation or measure.default_aggregation or "").lower()
-        if (
-            aggregation in _ADDITIVE_ZERO_AGGREGATIONS
-            and measure.measure_class in _ZERO_ON_MISSING_MEASURE_CLASSES
-        ):
-            zero_filled.add(bound.alias)
-    return zero_filled
 
 
 def _query_key_aliases(plan: LogicalPlan) -> list[str]:
@@ -1165,7 +1102,10 @@ def _distribution_select(
         extra_group_by=entity_key_dims,
     )
     sql_ast = _compile_query_sql_ast(
-        config, entity_value_query, project_cut=project_is_cut() or bool(expr.over.where)
+        config,
+        entity_value_query,
+        project_cut=project_is_cut() or bool(expr.over.where),
+        guard_empty=False,
     )
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
@@ -1223,7 +1163,9 @@ def _single_expression_branch_select(
     )
 
 
-def _lower_agent_dag_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
+def _lower_agent_dag_to_sql(
+    plan: LogicalPlan, config: PackageConfig, guard_empty: bool = True
+) -> SqlSelect:
     # Filling a distribution's per-entity values put every entity in every period as a 0.
     if plan.time and plan.time.get("fill"):
         raise SemanticLayerError(
@@ -1310,9 +1252,22 @@ def _lower_agent_dag_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSele
         combined_name = next_name
         available_aliases.append(output_aliases[index - 1])
 
+    # A branch that has no row for a group leaves its output NULL in the combine: settle
+    # those outputs again over the combined result, the same way each branch did.
+    guard_ctes: list[SqlCte] = []
+    if guard_empty:
+        zero = {
+            alias: "sum"
+            for alias, payload in plan.post_aggregation_exprs.items()
+            if expr_resolves_to_zero(_parse_public_expr(payload), config)
+        }
+        if zero:
+            guard_ctes.append(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
+            combined_name = GUARDED_BASE
+
     final_source = "agent_projected"
     projected = SqlSelect(
-        ctes=[*branch_ctes, *combine_ctes],
+        ctes=[*branch_ctes, *combine_ctes, *guard_ctes],
         select=[
             *[SqlField(SqlIdentifier(parts=["base", key]), key) for key in key_aliases],
             *[SqlField(SqlIdentifier(parts=["base", alias]), alias) for alias in output_aliases],
@@ -2305,7 +2260,7 @@ def _minimal_predicate_set_ctes(
 
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True)
+    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True, guard_empty=False)
     source_name = f"{_semantic_set_name(predicate, index)}_source"
     set_name = _semantic_set_name(predicate, index)
     source_cte = SqlCte(
@@ -4477,8 +4432,10 @@ def _conversion_exprs_for_plan(plan: LogicalPlan, config: PackageConfig) -> list
     return list(conversions.values())
 
 
-def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
-    select = _lower_query_to_sql(plan, config)
+def lower_to_sql(
+    plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
+) -> SqlSelect:
+    select = _lower_query_to_sql(plan, config, guard_empty)
     if not plan.time.get("window_total"):
         return select
     # One total over the window: the constant time key did the grouping, so it isn't a column.
@@ -4486,12 +4443,12 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
     return replace(select, select=[item for item in select.select if item.alias != time_alias])
 
 
-def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
+def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: bool) -> SqlSelect:
     anchored_select = _anchored_entity_set_select(plan, config)
     if anchored_select is not None:
         return _tier_internal_aliases(plan, anchored_select, measure_aliases=[])
     if _plan_requires_agent_dag_lowering(plan):
-        return _lower_agent_dag_to_sql(plan, config)
+        return _lower_agent_dag_to_sql(plan, config, guard_empty)
 
     key_aliases = _query_key_aliases(plan)
     measure_aliases: list[str] = []
@@ -4661,12 +4618,8 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         joins.append(
             SqlJoin(join_type="LEFT", table=SqlTableRef(name="leaf_base"), on=join_condition)
         )
-        zero_fill_aliases = _dense_fill_zero_aliases(plan, config)
         for alias in measure_aliases:
-            leaf_value: Any = SqlIdentifier(parts=["leaf_base", alias])
-            if alias in zero_fill_aliases:
-                leaf_value = SqlCall("COALESCE", [leaf_value, SqlLiteral(0)])
-            filled_fields.append(SqlField(leaf_value, alias))
+            filled_fields.append(SqlField(SqlIdentifier(parts=["leaf_base", alias]), alias))
         ctes.append(
             SqlCte(
                 name="series_base",
@@ -4681,23 +4634,35 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         base_name = "series_base"
         base_table = SqlTableRef(name=base_name, alias="base")
 
+    # The one place an empty group reads 0 instead of NULL: the projection below reads
+    # every such measure through this CTE, so nothing after it can change what it sees.
+    zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
+    if zero:
+        ctes.append(guard_empty_groups(base_table.name, key_aliases, measure_aliases, zero))
+        base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
+
     projected_fields: list[SqlField] = [
         SqlField(SqlIdentifier(parts=["base", alias]), alias) for alias in key_aliases
     ]
     for alias, post_expr in plan.post_aggregation_exprs.items():
         with binding_cut() if project_is_cut() else nullcontext():
-            projected_fields.append(
-                SqlField(
-                    _compile_post_expr(
-                        _parse_public_expr(post_expr),
-                        config,
-                        time_alias=time_alias,
-                        group_aliases=group_aliases,
-                        query_grain=str(plan.time.get("grain", "") if plan.time else ""),
-                        table_alias="base",
-                    ),
-                    alias,
-                )
+            compiled_output = _compile_post_expr(
+                _parse_public_expr(post_expr),
+                config,
+                time_alias=time_alias,
+                group_aliases=group_aliases,
+                query_grain=str(plan.time.get("grain", "") if plan.time else ""),
+                table_alias="base",
+            )
+        projected_fields.append(SqlField(compiled_output, alias))
+        if reads := base_reads(compiled_output) & zero.keys():
+            record_zero_output(
+                alias,
+                (
+                    row.bound_measure.measure_id
+                    for row in plan.measure_plans
+                    if row.bound_measure.alias in reads
+                ),
             )
 
     metric_filter_aliases: list[str] = []
@@ -4716,14 +4681,6 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
                 query_grain=str(plan.time.get("grain", "") if plan.time else ""),
                 table_alias="base",
             )
-        # When a metric_filter targets an additive measure that may live in a
-        # different leaf than other selected measures, the FULL OUTER JOIN
-        # combine yields NULL for groups where that measure has no rows. Without
-        # COALESCE, the natural form `op: "=" value: 0` (e.g., "orders with no
-        # items") silently returns zero rows because `NULL = 0` is FALSE. Coerce
-        # NULL to the additive identity (0) so zero-count semantics work.
-        if _expr_zero_on_missing(filter_expr, config):
-            compiled_expr = SqlCall("COALESCE", [compiled_expr, SqlLiteral(0)])
         projected_fields.append(SqlField(compiled_expr, alias))
 
     final_where: list[Any] = []

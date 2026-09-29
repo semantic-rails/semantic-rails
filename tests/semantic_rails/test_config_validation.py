@@ -2959,7 +2959,6 @@ def test_parse_report_rejects_cyclic_metric_references(package_config_factory, m
     aov["kind"] = "derived"
     aov.pop("numerator", None)
     aov.pop("denominator", None)
-    aov.pop("null_behavior", None)
     aov["expression"] = {
         "kind": "metric",
         "metric": "metric.sales.cycle_peer" if mutual else "metric.sales.aov_usd",

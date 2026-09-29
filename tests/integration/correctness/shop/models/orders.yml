@@ -16,6 +16,10 @@ model:
       accumulation: {kind: flow}, rollup: additive}
     average_order: {label: Average order, kind: aggregate, expr: amount, default_agg: avg,
       value_type: currency}
+    smallest_order: {label: Smallest order, kind: aggregate, expr: amount, default_agg: min,
+      value_type: currency}
+    largest_order: {label: Largest order, kind: aggregate, expr: amount, default_agg: max,
+      value_type: currency}
   variants:
     tx: {relation: orders, grain: {time: transaction, entities: [order]}, covers: inherit_all}
     monthly:

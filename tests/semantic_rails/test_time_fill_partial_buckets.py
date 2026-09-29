@@ -306,7 +306,8 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
             f"FROM ({sql}) AS tokyo_result"
         ).fetchall()
 
-    assert rows == [("2017-07-03 15:00:00+00", 0)]
+    # No order exists at all, so there is no data to call zero: the bucket reads NULL.
+    assert rows == [("2017-07-03 15:00:00+00", None)]
     assert "jaffle_calendar.date_day >= '2017-07-04T00:00:00+09:00'" in sql
 
 
@@ -802,7 +803,8 @@ def test_fill_date_extremes_with_representable_zone_conversion(
         ).fetchall()
 
     assert [day for day, _ in rows] == expected
-    assert all(count == 0 for _, count in rows)
+    # Orders exist, but none inside these windows: a window with no data reads NULL, not 0.
+    assert all(count is None for _, count in rows)
 
 
 def test_offset_fill_marks_source_bucket_presence_for_clickhouse():

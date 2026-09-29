@@ -687,7 +687,7 @@ def _translate_metric_direct_fields(
     Common kinds — `aggregate`, `ratio`, `cumulative`, `rolling`,
     `prior_period`, `period_to_date` — get direct named fields:
         kind: aggregate     → measure: <key>
-        kind: ratio         → numerator: <key>, denominator: <key>, null_behavior: <opt>
+        kind: ratio         → numerator: <key>, denominator: <key>
         kind: cumulative    → measure: <key>, optional window
         kind: rolling       → measure: <key>, window: { ... }
         kind: prior_period  → measure: <key>, offset/period
@@ -732,8 +732,6 @@ def _translate_metric_direct_fields(
         denominator = spec.get("denominator")
         if numerator is None or denominator is None:
             return spec
-        null_behavior = str(spec.get("null_behavior", "null_if_zero"))
-
         def _ratio_operand(ref: Any, field: str = "operand") -> dict[str, Any]:
             """Wrap a ratio numerator/denominator as a metric ref when it
             resolves to a top-level metric, or as a measure aggregate when
@@ -786,7 +784,6 @@ def _translate_metric_direct_fields(
             "op": "divide",
             "left": _ratio_operand(numerator, field="numerator"),
             "right": _ratio_operand(denominator, field="denominator"),
-            "null_behavior": null_behavior,
         }
         # Default kind: `binary` is converted by _convert_recipe_expr to `arithmetic`.
         return spec
@@ -955,18 +952,12 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
             "multiply": "multiply",
             "divide": "divide",
         }
-        out = {
+        return {
             "kind": "arithmetic",
             "op": op_map.get(str(expr["op"]).lower(), str(expr["op"]).lower()),
             "left": _convert_recipe_expr(dict(expr["left"])),
             "right": _convert_recipe_expr(dict(expr["right"])),
         }
-        # Preserve null_behavior across the binary→arithmetic rename. Without
-        # this, ratio metrics that author `null_behavior: null_if_zero` lose
-        # the safety hint when the loader translates the AST.
-        if expr.get("null_behavior") is not None:
-            out["null_behavior"] = str(expr.get("null_behavior", ""))
-        return out
     if kind == "cumulative":
         out = {"kind": "cumulative", "input": _convert_recipe_expr(dict(expr["input"]))}
         if expr.get("partition_by"):

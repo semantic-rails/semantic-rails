@@ -1044,9 +1044,10 @@ class ClickHouseDialect(SqlDialect):
 
     name: str = "clickhouse"
 
-    # No day_series override: an unmatched LEFT JOIN field is 0 here rather than NULL
-    # (without join_use_nulls), so a filled non-additive bucket would read 0. Packages
-    # on ClickHouse keep needing an authored calendar for dense fill.
+    # No day_series override: it was withheld because an unmatched LEFT JOIN field reads 0
+    # rather than NULL. Every compiled statement now sets join_use_nulls, but a generated
+    # series is untested here, so packages on ClickHouse keep needing an authored calendar
+    # for dense fill.
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # ClickHouse: toDateTime(ts, tz) reads the value in `tz`;

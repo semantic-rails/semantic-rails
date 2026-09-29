@@ -229,9 +229,6 @@ def _compile_post_expr(
             # NULLIF(right, 0) returns NULL when right=0, and x / NULL = NULL,
             # so an outer CASE WHEN right = 0 THEN NULL is dead code.
             return SqlBinary(left, "/", SqlCall("NULLIF", [right, SqlLiteral(0)]))
-        if expr.null_behavior == "coalesce_zero" and op in {"+", "-"}:
-            left = SqlCall("COALESCE", [left, SqlLiteral(0)])
-            right = SqlCall("COALESCE", [right, SqlLiteral(0)])
         return SqlBinary(left, op, right)
     if isinstance(expr, RatioExpr):
         left = _compile_post_expr(

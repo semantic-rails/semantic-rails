@@ -619,9 +619,6 @@
             "type": "object"
           }
         },
-        "null_behavior": {
-          "type": "string"
-        },
         "anchor": {
           "type": "object",
           "description": "Per-row event-anchored window: identifies the per-entity scalar temporal role around which the window is evaluated. Required alongside ``window``. SQL lowering is staged for a follow-up round; the parser + validator land in round 3.",
@@ -777,9 +774,6 @@
         },
         "right": {
           "$ref": "#/$defs/SelectExpression"
-        },
-        "null_behavior": {
-          "type": "string"
         }
       }
     },
@@ -884,9 +878,6 @@
         },
         "denominator": {
           "$ref": "#/$defs/SelectExpression"
-        },
-        "null_behavior": {
-          "type": "string"
         }
       }
     },

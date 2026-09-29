@@ -41,7 +41,6 @@ metrics:
     # (`metric.sales.revenue`, `metric.sales.orders`).
     numerator: measure.tpch.revenue
     denominator: measure.tpch.order_count
-    null_behavior: null_if_zero
     value_type: currency
     currency: USD
     temporal_role: temporal_role.tpch_order_date

@@ -694,10 +694,15 @@ leaf_1 AS (
 SELECT
   SUM(leaf_1__leaf_1_entity_rows.__entity_value) AS m1
 FROM leaf_1__leaf_1_entity_rows
+),
+guarded_base AS (
+SELECT
+  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1 AS base
 )
 SELECT
   base.m1 AS revenue
-FROM leaf_1 AS base""",
+FROM guarded_base AS base""",
     "grouped": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
@@ -713,11 +718,17 @@ SELECT
 FROM leaf_1__leaf_1_entity_rows
 GROUP BY
   leaf_1__leaf_1_entity_rows.g1
+),
+guarded_base AS (
+SELECT
+  base.g1 AS g1,
+  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1 AS base
 )
 SELECT
   base.g1 AS "dimension.hop_item_product_type",
   base.m1 AS orders
-FROM leaf_1 AS base""",
+FROM guarded_base AS base""",
     "monthly": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
@@ -735,11 +746,17 @@ SELECT
 FROM leaf_1__leaf_1_entity_rows
 GROUP BY
   leaf_1__leaf_1_entity_rows.t
+),
+guarded_base AS (
+SELECT
+  base.t AS t,
+  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1 AS base
 )
 SELECT
   base.t AS "temporal_role.hop_order_ordered_at__month",
   base.m1 AS revenue
-FROM leaf_1 AS base""",
+FROM guarded_base AS base""",
     "median": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
@@ -768,4 +785,6 @@ def test_each_dialect_renders_the_de_duplicated_leaf(
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     sql = compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})["sql"]
-    assert sql == DIALECT_SQL[shape].format(month=MONTH[warehouse], median=MEDIAN[warehouse])
+    expected = DIALECT_SQL[shape].format(month=MONTH[warehouse], median=MEDIAN[warehouse])
+    # ClickHouse reads an unmatched outer-join field as NULL only with this setting.
+    assert sql == expected + ("\nSETTINGS join_use_nulls = 1" if warehouse == "clickhouse" else "")

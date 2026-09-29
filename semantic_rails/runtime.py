@@ -1137,6 +1137,46 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     ]
 
 
+def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
+    """Say when a measure that reads 0 for empty groups had no data at all, so it read NULL.
+
+    A sum, count or distinct count is 0 in a group with no rows only while its measure has
+    data somewhere in scope; with none, every group reads NULL. A misspelled filter value
+    produces exactly that, so the answer names the outputs that came back NULL on every row
+    (or, when nothing came back and no time bounds explain it, every such output). One
+    warning covers them all, and it needs no query beyond the answer.
+    """
+    outputs = {item["output"]: item for item in list(compiled.get("zero_outputs") or [])}
+    window = compiled["logical_plan"].time
+    if getattr(rows, "truncated", False) or not outputs:
+        return []
+    if rows:
+        outputs = {
+            name: item
+            for name, item in outputs.items()
+            if all(row.get(name) is None for row in rows)
+        }
+    elif window.get("start") is not None or window.get("end") is not None:
+        return []  # a window with no rows is EMPTY_RESULT_WINDOW's to explain
+    if not outputs:
+        return []
+    return [
+        semantic_issue(
+            code="NO_DATA_IN_SCOPE",
+            message=(
+                f"No data in scope for {', '.join(outputs)}: nothing in this query's filters and "
+                f"time window holds a value, so {'it reads' if len(outputs) == 1 else 'they read'}"
+                " NULL rather than 0. A sum or count reads 0 only where its measure has data "
+                "elsewhere in scope; check the filter values."
+            ),
+            severity="warning",
+            stage="execution",
+            details={"outputs": list(outputs)},
+            object_ids=[measure for item in outputs.values() for measure in item["measures"]],
+        )
+    ]
+
+
 def _measure_validity_warnings(config, logical_plan) -> list[dict[str, Any]]:
     time_spec = dict(getattr(logical_plan, "time", {}) or {})
     start = _date_key(time_spec.get("start"))
@@ -1899,10 +1939,6 @@ class Runtime:
                             "entity_value",
                             "distribution",
                         ],
-                        "runtime_expression_options": {
-                            "arithmetic_null_behavior": ["null_propagate", "coalesce_zero"],
-                            "ratio_null_behavior": ["null_if_zero"],
-                        },
                         "aggregate_relation_candidates": [
                             asdict(row) for row in self._config.aggregate_relations
                         ],
@@ -2276,6 +2312,7 @@ class Runtime:
             "errors": [],
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
+                *_no_data_in_scope_warnings(compiled, rows),
                 *limits_warnings,
                 *self._seed_warnings,
             ],

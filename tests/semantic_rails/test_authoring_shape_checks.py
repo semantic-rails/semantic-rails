@@ -81,6 +81,20 @@ def test_grain_that_matches_no_entity_key_is_rejected(starter_package: Path) -> 
     assert any("grain" in e and "customerid" in e and "customer_id" in e for e in errors), errors
 
 
+def test_removed_null_behavior_key_is_rejected(starter_package: Path) -> None:
+    """`null_behavior:` used to pick how a ratio or a sum read an empty group; the engine
+    now settles that itself, so an author who still writes it hears so instead of being ignored."""
+    path = _mutated(
+        starter_package,
+        "denominator: order_count\n",
+        "denominator: order_count\n    null_behavior: null_if_zero\n",
+    )
+    errors = _errors(path)
+    assert any("metric 'aov_usd'" in e and "unknown key 'null_behavior'" in e for e in errors), (
+        errors
+    )
+
+
 def test_ratio_operand_typo_names_metric_and_field(starter_package: Path) -> None:
     """A bad ratio denominator surfaced as a late compiler error
     ('Unknown metric recipe') with no location; it must now fail at parse
