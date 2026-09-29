@@ -111,6 +111,7 @@ def _print_ask_report(report: dict[str, Any]) -> None:
     result = report.get("result")
     compiled = report.get("compile")
     warnings: list[Any] = list(plan.get("warnings", []) or [])
+    warnings.extend(list(plan.get("assumptions", []) or []))
     if isinstance(result, dict):
         warnings.extend(list(result.get("warnings", []) or []))
         warnings.extend(list(result.get("assumptions", []) or []))

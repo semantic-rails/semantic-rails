@@ -1276,6 +1276,22 @@ join paths.
   prefers the direct table over the multi-hop path
   (`path_preference` on `RelationshipConfig` handles this).
 
+A query that groups or filters by a dimension looked up through a many-to-one or
+one-to-one hop joins it with a left join, so the measure keeps a row whose foreign key
+is NULL or matches no row: it groups under NULL, and grouped rows add up to the
+ungrouped total, except for a dimension a rollup holds (below). A filter on such a
+dimension treats the row as it treats a NULL value in the row itself: `IS NULL` selects it, so "passengers excluding crew"
+through a crew-roster lookup is a `crew_role IS NULL` filter, while `=`, `!=`, `IN`
+and `NOT IN` never match it. Every other read of a lookup keeps its inner join, so a
+row with no match is left out, as before: a time role read through a lookup, a
+measure's own filter, a metric filter and the context entities it matches on,
+conversions (their match keys and properties), qualified sets and metric predicates,
+anchored entity-set ratios, and a dimension a rollup of the measure's model holds
+(below). That last rule covers every dimension any rollup of the model holds, even at a
+grain the rollup can never answer, so those rows are dropped for that dimension however
+the query is grouped. So do hops that fan out, and every hop on ClickHouse, where an
+unmatched outer-join column reads `''` or `0` unless it is `Nullable`, not NULL.
+
 Long chains are first-class: a measure can be grouped or filtered by a
 dimension four relationships away (`line_item → order → customer → city →
 region`), with each hop cardinality-checked. Every hop must be `N:1`/`1:1` in
@@ -1355,8 +1371,9 @@ Three guard rails back this up at query time:
   one that continues past the target, or one that starts at the target, is still
   refused. A pinned role reads its key through the pinned relationship's join,
   like any other column of the airport, so a leg whose code matches no airport
-  row is not counted; a package with a single role and no `path_preferences`
-  row for the pair reads the key from the leg's own column and keeps that leg.
+  row groups under a NULL key (a lookup read, above); a package with a single role
+  and no `path_preferences` row for the pair reads the key from the leg's own column
+  and groups that leg under its code.
   A `path_preferences` row for the pair, in either direction, sends every read of
   the key, a filter on it and a metric predicate through the pinned route, so the
   key and the airport's other columns always come from the same airport. `path_preference` is a non-negative integer
@@ -1498,10 +1515,12 @@ Routing is conservative in the MVP:
   join would have repeated fact rows in every other column.
   Another model's key read from a foreign key (such as the customer key) needs a
   `path` of the one relationship between the two models, and doesn't route when
-  two relationships link them. Build a pre-joined column with an inner join, as
-  the base path joins it: a fact row with no match is left out. So a rollup with a
-  pre-joined column answers only queries that group or filter by that column; the
-  base path doesn't join it otherwise and keeps such rows. A measure whose
+  two relationships link them. Build a pre-joined column with an inner join: the
+  base path joins a dimension a rollup of the measure's model holds with an inner
+  join too, so a fact row with no match is left out of both and routing never
+  changes an answer. So a rollup with a pre-joined column answers only queries that
+  group or filter by that column; the base path doesn't join it otherwise and keeps
+  such rows. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
   An `aggregate_relations:` entry must declare its `temporal_role`.
 - Every selected measure must have a column in the variant.

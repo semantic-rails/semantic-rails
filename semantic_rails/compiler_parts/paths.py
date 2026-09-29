@@ -398,6 +398,20 @@ def _join_on_for_relationship(
     return condition, right_table, next_entity
 
 
+def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
+    """True when the hop reaches at most one row for each current row (N:1, 1:1) and the
+    warehouse's outer join reads NULL, not a type default, for an unmatched row (not ClickHouse).
+    """
+    if not dialect_for_warehouse(config.package.warehouse).outer_lookup_joins:
+        return False
+    if ":" not in rel.cardinality:
+        return False
+    near, far = [part.strip() for part in rel.cardinality.upper().split(":", 1)]
+    if current_entity != rel.source_entity:
+        near, far = far, near
+    return far == "1" and near in ("1", "N")
+
+
 def _joins_for_paths(
     source_entity: str,
     path_selections: Iterable[PathSelection],
@@ -405,9 +419,28 @@ def _joins_for_paths(
     *,
     time_spec: dict[str, Any] | None = None,
     table_overrides: dict[str, str] | None = None,
+    lookup_selections: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[SqlJoin]:
+    """The joins for ``path_selections``, all INNER unless the path is temporal.
+
+    The one exception is the lookup left join: a selection named in ``lookup_selections``
+    (by ``(target_entity, purpose)``) joins its N:1 and 1:1 hops with LEFT, so a row whose
+    foreign key is NULL or unmatched stays, with NULL for what the hop looks up. A hop that
+    any other selection also walks stays INNER.
+    """
     entities = _entity_index(config)
     relationships = _relationship_index(config)
+    path_selections = list(path_selections)
+    inner_hops: set[tuple[str, str]] = set()
+    if lookup_selections:
+        for selection in path_selections:
+            if (selection.target_entity, selection.purpose) in lookup_selections:
+                continue
+            current = source_entity
+            for rel_id in selection.chosen_path:
+                rel = relationships[rel_id]
+                inner_hops.add((rel.id, current))
+                current = rel.target_entity if current == rel.source_entity else rel.source_entity
     joins: list[SqlJoin] = []
     overrides = dict(table_overrides or {})
     # Each physical table may appear in the FROM clause once, so it can
@@ -433,9 +466,16 @@ def _joins_for_paths(
             join_key = (rel.id, current_entity)
             existing = joined_via.get(right_table)
             if existing is None:
+                keep_rows = (
+                    (selection.target_entity, selection.purpose) in lookup_selections
+                    and join_key not in inner_hops
+                    and _is_lookup_hop(rel, current_entity, config)
+                )
                 joins.append(
                     SqlJoin(
-                        join_type="LEFT" if nullable_path or rel.temporal_validity else "INNER",
+                        join_type="LEFT"
+                        if nullable_path or rel.temporal_validity or keep_rows
+                        else "INNER",
                         table=SqlTableRef(name=right_table),
                         on=join_on,
                     )

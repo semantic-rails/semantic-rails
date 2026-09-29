@@ -203,17 +203,71 @@ negative filter for one value does not make a later excluded value safe if the
 draft includes it.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
-framing words, time phrases the planner read, and counts, come back as a
-`PLAN_UNMATCHED_TERMS` warning with up to eight of them in `details.terms`; check them
-before executing. If a
+framing words (including verbs and function words such as "dated", "placed", "only", "using"),
+time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
+window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
+`details.terms`. Other words stay warnings, as do measure nouns; check them before executing.
+A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
+`low_confidence` (below), since the draft dropped an hour, a range or a
+threshold. Two words or more that no catalog object has, the first straight after "for",
+"from", "of" or "with", make it `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`
+instead: "for tangaroo and vanilla ice" is a filter the draft dropped. Every measure a
+question lists ("item revenue and orders in Q1 2017") is in the draft's select list or the
+plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the ones it left
+out. For a measure by a dimension, a measure the question names in full outranks a shorter one
+it shares a word with ("item revenue" is Item revenue, not Revenue), but only when the name
+holds every word of the measure the question otherwise asks for: "large order revenue" is
+still revenue. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
 `plan` resolves a time window only when the question names exactly one, in a form it reads
-unambiguously: a year after "in", "for" or "during", consecutive years, a quarter or half with a
-year, a month or month range with a year, days with a year, an ISO date, or a relative window
-("last 7 days"). "and" joins a range only after "between": "between March and May 2017" is a
-range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
+unambiguously: a year after "in", "for" or "during", or after the word "year" where no word
+qualifies it ("year 2017", "the calendar year 2017"; "financial year 2017" and "model year 2017"
+are not calendar years and are reported), consecutive years, a quarter or half with a year ("the first half
+of 2017", "H2 2017"), a month or month range with a year, days with a year ("March 1 to March
+31, 2017", "Mar 1 - Mar 31 2017"), an ISO date or ISO range ("2017-03-01 to 2017-03-31"), or a
+relative window ("last 7 days"). A range's spoken end is included: the response's
+`assumptions` says so, with the exclusive `time.end` it chose. A window restated right beside
+itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
+one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are a
+conflict, and `TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. `plan`
+resolves days and coarser windows only. A window shorter than a day ("last 24 hours", "past
+hour", "last 30 minutes") returns `TIME_WINDOW_UNRESOLVED` with `why.details.sub_day_phrases` and
+no `best.query_ir`, never a query over all time. Every other hour or zone is caught by one
+rule: a draft is `ok` only if every number, number word and clock or zone word in the question
+is consumed by a construct the draft carries. The words it counts are numerals ("9", "14h30",
+"1930"), spelled-out numbers ("nine", "twelve", "twenty", "hundred", "half", and "quarter" in
+"quarter past" or "quarter to"), "o'clock", "hour", "minutes", "noon", "midnight", "morning",
+"UTC", "GMT", a zone code ("EST", "PST", "CET", "AEST", "MSK", "WIB" in any case, and "ET", "PT",
+"CT", "MT", "Z" in capitals, so an all-caps state code such as "CT" is read as a zone) and a
+name such as "Europe/Berlin". A word is consumed only where it sits inside the text of a
+construct, not because its value equals something the draft holds: the words of the date or
+window plan resolved, the count of the ranking that states the draft's limit ("top 5", "the 5
+customers who spent the most", "3 stores with the highest revenue"; a threshold that repeats
+the limit's number, as in "top 10 stores with at least 10 orders", does not consume it), the number of a threshold or
+percentile the question states ("over 12.50", "90th percentile", "1,000 or more"), a filter
+value, or the name, label or alias of an object the draft selects (not its description). A number
+counts as a percentage only when "%", "percent" or "percentile" follows it: "50 percent" states
+0.5, while "500" never states 5. So a "1930" or "2000" that is not a window's year or a
+threshold's own number is left over, and so is a "9" that a limit of 9 does not state. Otherwise
+the plan is `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, the leftover words in `details.terms`
+and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "from nine to five", "at
+14h30", "at 2000" and "in UTC" are not ready, and neither is a number range plan doesn't read
+("aged 25-34", "2 to 5 orders") or a token that is not one number ("15.03.2017", "1.2.3",
+"10.0.0.1"); a number the draft does carry ("top 10") is fine. A zone
+written as an ordinary word ("Pacific time", "London time", "local time") is not recognised by
+itself, so with no hour beside it the question reads as its day. A window you pass in
+`query.time` answers the time phrases plan could not resolve ("last 24 hours"), but not a bare
+year its bounds don't carry: "at 2000" is left over (in a question over 2,000 characters, it
+answers only a year after "in", "for", "during" or "year"). It never consumes a time of day,
+an hour or a zone, whatever hours its bounds carry: a question that states "12:00 to 13:00" or
+"noon" is refused (`PLAN_UNMATCHED_TERMS`) even against a window with those hours, so write the
+question without the hours and let the window carry them. To ask for an hour range, pass it in `query.time` yourself, as
+end-exclusive ISO timestamps in the temporal role's time zone (the role must be a timestamp),
+for example `start: "2017-03-15T12:00:00"`, `end: "2017-03-15T13:00:00"`, with the role and
+grain, and plan again. "and" joins a range only after "between": "between March and May 2017" is
+a range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
 bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
 windows at once (such as "last month and this month"), return `low_confidence` with
@@ -321,7 +375,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
