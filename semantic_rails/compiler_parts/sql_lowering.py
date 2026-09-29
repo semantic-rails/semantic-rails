@@ -1020,7 +1020,9 @@ def _aggregate_relation_time_expr(
         return None, None, ""
     raw_expr = _column_ref(aggregate.relation, aggregate.time_column)
     time = dict(plan.time)
-    time_expr = _time_bucket_expr(time, raw_expr, config)
+    time_expr = (
+        _dialect(config).date_trunc(time["grain"], raw_expr) if time.get("grain") else raw_expr
+    )
     time_alias = (
         time["temporal_role"]
         if not time.get("grain")

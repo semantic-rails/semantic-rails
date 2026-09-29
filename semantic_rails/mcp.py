@@ -51,7 +51,7 @@ from .request_payload import (
     coerce_bool as _coerce_bool,
 )
 from .runtime import Runtime
-from .runtime_parts.responses import WINDOW_TOTAL_ASSUMPTION
+from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -1343,7 +1343,7 @@ def _uses_own_clock(expression: Any) -> bool:
 def _collapsed_window(result: Mapping[str, Any]) -> bool:
     """Whether the runtime aggregated a grainless time window as one total."""
 
-    return WINDOW_TOTAL_ASSUMPTION in (result.get("assumptions") or [])
+    return result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL
 
 
 def _narrowing_advice(query: Mapping[str, Any], result: Mapping[str, Any]) -> str:

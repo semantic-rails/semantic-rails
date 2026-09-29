@@ -433,9 +433,10 @@ contract, including the object-only `range.last` relative window
 
 A window (`start` and/or `end`) with no `time.grain` is one total over the window per `group_by`
 group, with no time column, including a window inside one day. The response says so in
-`assumptions`. Setting `time.grain` returns one row per period instead. Queries that need a time
-axis, such as a rolling or prior-period expression, and a `time` block with no window are not
-collapsed.
+`assumptions` and sets `time_shape: "window_total"`. Setting `time.grain` returns one row per
+period instead. Queries that need a time axis, such as a rolling or prior-period expression, a
+metric predicate (including one in an aggregate's `filter` or a metric recipe), and a `time` block
+with no window are not collapsed.
 
 `policy_context` is optional and scopes visibility, access, and metric-constraint policies for metadata, validation, and query routes.
 
@@ -1015,6 +1016,7 @@ Response keys:
 - `warnings`
 - `recovery_hints`
 - `assumptions`
+- `time_shape` (only `"window_total"`, when the window was one total)
 - `policy_effects`
 - `provenance_summary`
 - `disabled_options`
@@ -1045,6 +1047,7 @@ Response keys:
 - `errors`
 - `recovery_hints`
 - `assumptions`
+- `time_shape` (only `"window_total"`, when the window was one total)
 - `policy_effects`
 - `provenance_summary`
 

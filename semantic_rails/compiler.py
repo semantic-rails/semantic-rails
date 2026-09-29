@@ -500,12 +500,18 @@ def _uses_time_axis(expr: Any, config: PackageConfig) -> bool:
     return False
 
 
-def _is_window_total(query: NormalizedQuery, config: PackageConfig) -> bool:
+def _is_window_total(
+    query: NormalizedQuery, config: PackageConfig, bound_measures: Iterable[BoundMeasure]
+) -> bool:
     """A time window with no grain, over plain measures: one total, not a row per timestamp."""
     time = query.time
     if time is None or not time.temporal_role or time.grain or time.fill:
         return False
     if time.start is None and time.end is None:
+        return False
+    # A predicate (in an aggregate's filter or a metric recipe) is tested per raw timestamp
+    # here, so its threshold would not mean "over the window". Keep today's behaviour.
+    if any(_bound_metric_predicates(bound) for bound in bound_measures):
         return False
     expressions = [item.expression for item in query.select] + [
         item.expression for item in query.metric_filters
@@ -3727,7 +3733,7 @@ def _plan_query(
         if item.expression is not None
     }
     plan_time = asdict(query.time) if query.time else {}
-    if collapse_window and bound_measures and _is_window_total(query, config):
+    if collapse_window and bound_measures and _is_window_total(query, config, bound_measures):
         plan_time["window_total"] = True
     return LogicalPlan(
         version=2,

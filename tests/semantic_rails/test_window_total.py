@@ -6,6 +6,7 @@ Gold values come from raw SQL against the seeded tables, not from the compiler.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -13,11 +14,14 @@ import pytest
 from semantic_rails.compiler import plan_query
 from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.mcp import (
     MCP_DEFAULT_MAX_RESULT_CHARS,
     SemanticLayerMCPAdapter,
 )
+from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import MetricConfig
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
@@ -156,6 +160,45 @@ def test_an_expression_that_needs_the_time_axis_is_not_collapsed(runtime: Runtim
     assert max(row["running"] for row in response["rows"]) == pytest.approx(gold[0]["revenue"])
     assert "UNGRAINED_TIME_PROJECTION" in _codes(response)
     assert response["assumptions"] == []
+
+
+CUSTOMER_PREDICATE = {
+    "kind": "metric_predicate",
+    "entity": "entity.jaffle_customer",
+    "input": {"kind": "aggregate", "measure": "measure.jaffle.lifetime_spend_usd"},
+    "op": ">",
+    "value": 0,
+}
+FILTERED_REVENUE = {
+    "kind": "aggregate",
+    "measure": "measure.jaffle.revenue_usd",
+    "aggregation": "sum",
+    "filter": {"all": [{"expression": CUSTOMER_PREDICATE}]},
+}
+
+
+def test_a_metric_predicate_in_an_aggregate_filter_is_not_collapsed(runtime: Runtime) -> None:
+    """The predicate is tested per raw timestamp, so a total over the window would be wrong."""
+    time = {"start": "2017-04-01", "end": "2017-04-04"}
+    payload = _query([{"as": "revenue", "expression": FILTERED_REVENUE}], time)
+    assert not plan_query(runtime._config, None, payload).time.get("window_total")
+
+    # The same aggregate inside a metric recipe is found through the recipe.
+    recipe = MetricConfig(
+        id="metric.test.filtered_revenue",
+        kind="derived",
+        expression=parse_semantic_expression(FILTERED_REVENUE, context="query"),
+    )
+    config = replace(runtime._config, metric_recipes=[*runtime._config.metric_recipes, recipe])
+    via_recipe = _query([{"as": "revenue", "expression": {"metric": recipe.id}}], time)
+    assert not plan_query(config, None, via_recipe).time.get("window_total")
+
+    response = runtime.query(payload)
+    assert response["row_count"] > 1
+    assert all(ORDER_TIME in row for row in response["rows"])
+    assert "UNGRAINED_TIME_PROJECTION" in _codes(response)
+    assert response["assumptions"] == []
+    assert "time_shape" not in response
 
 
 # Each case is a query over 2017-04-01..2017-07-01 (unless it names its own role and window)
@@ -358,10 +401,43 @@ def test_execute_reports_the_total_and_its_assumption(mcp: SemanticLayerMCPAdapt
     assert response["row_count"] == 2 and response["truncated"] is False
     # The default response is minimal, and an assumption changes what the numbers mean.
     assert "one total" in response["assumptions"][0]
+    assert response["time_shape"] == "window_total"
     assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
-    assert "assumptions" not in mcp.call_tool(
+    yearly = mcp.call_tool(
         "execute", {"query": {**query, "time": {"temporal_role": ORDER_TIME, "grain": "year"}}}
     )
+    assert "assumptions" not in yearly and "time_shape" not in yearly
+
+
+def test_a_grant_scoped_execute_reports_the_total_and_its_flag(
+    mcp: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    grant = RequestContext(
+        actor="subject",
+        roles=("analyst",),
+        audience="finance",
+        metric_allowlist=("metric.sales.aov_usd",),
+        dimension_allowlist=(STORE, ORDER_TIME),
+    )
+    aov = {"as": "aov", "expression": {"metric": "metric.sales.aov_usd"}}
+    query = _query([aov], {"start": "2017-04-01", "end": "2017-07-01"}, group_by=[STORE])
+    query["policy_context"] = grant.to_policy_context()
+    response = mcp.call_tool("execute", {"query": query})
+    assert response["ok"], response["errors"]
+    assert response["row_count"] == 2
+    assert all(set(row) == {STORE, "aov"} for row in response["rows"])  # no time column
+    assert [column["semantic_id"] for column in response["output_columns"]] == [
+        STORE,
+        "metric.sales.aov_usd",
+    ]
+    assert "one total" in response["assumptions"][0]
+    assert response["time_shape"] == "window_total"
+    assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
+    # The advice for a result that is too big must not blame the raw timestamp either.
+    monkeypatch.setenv(LIMIT_ENV, "50")
+    refused = mcp.call_tool("execute", {"query": query})
+    assert refused["errors"][0]["code"] == "RESULT_TOO_LARGE"
+    assert "raw timestamp" not in refused["errors"][0]["message"]
 
 
 def test_an_oversized_result_is_refused_with_its_row_count(

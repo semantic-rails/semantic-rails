@@ -433,9 +433,12 @@ def run_authorized_operation(
                     "warehouse",
                     "dialect",
                     "sql_profile",
+                    # Fixed engine strings that name no objects.
+                    "assumptions",
+                    "time_shape",
                 }
             }
-            from .runtime_parts.responses import WINDOW_TOTAL_ASSUMPTION, output_columns
+            from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, output_columns
 
             # Reuse the engine's descriptor builder even when minimal verbosity
             # omitted it. It uses the authorized query, not expanded recipes.
@@ -444,10 +447,7 @@ def run_authorized_operation(
                 {
                     "explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict()),
                     "logical_plan": SimpleNamespace(
-                        time={
-                            "window_total": WINDOW_TOTAL_ASSUMPTION
-                            in (result.get("assumptions") or [])
-                        }
+                        time={"window_total": result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL}
                     ),
                 },
             )

@@ -12,6 +12,9 @@ WINDOW_TOTAL_ASSUMPTION = (
     "time column. Set time.grain to get one row per period."
 )
 
+# The ``time_shape`` a response carries when the window was aggregated as one total.
+TIME_SHAPE_WINDOW_TOTAL = "window_total"
+
 _VALID_VERBOSITIES: tuple[str, ...] = ("minimal", "compact", "full")
 _VALID_SQL_PROFILES: tuple[str, ...] = ("audit", "compact", "debug", "off")
 
@@ -111,8 +114,9 @@ def apply_response_verbosity(
             allowed = _MINIMAL_KEYS_NONEXECUTE
         out = {key: value for key, value in out.items() if key in allowed}
         # An assumption changes what the numbers mean, so it survives the cheapest response.
-        if response.get("assumptions"):
-            out["assumptions"] = response["assumptions"]
+        for key in ("assumptions", "time_shape"):
+            if response.get(key):
+                out[key] = response[key]
     elif verbosity == "compact":
         for key in _COMPACT_DROP_KEYS:
             out.pop(key, None)

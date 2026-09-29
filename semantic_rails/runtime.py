@@ -93,6 +93,7 @@ from .request_context import (
     without_trusted_attributes,
 )
 from .runtime_parts.responses import (
+    TIME_SHAPE_WINDOW_TOTAL,
     WINDOW_TOTAL_ASSUMPTION,
     apply_response_verbosity,
     compile_response_metadata,
@@ -767,10 +768,11 @@ def _compiled_warnings(
     return warnings
 
 
-def _window_total_assumptions(compiled) -> list[str]:
+def _window_total_fields(compiled) -> dict[str, Any]:
+    """``assumptions`` for every response, plus ``time_shape`` when the window was collapsed."""
     if not compiled["logical_plan"].time.get("window_total"):
-        return []
-    return [WINDOW_TOTAL_ASSUMPTION]
+        return {"assumptions": []}
+    return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
 
 
 def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2054,7 +2056,7 @@ class Runtime:
             out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
-            out["assumptions"] = _window_total_assumptions(compiled)
+            out.update(_window_total_fields(compiled))
             out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
             out["freshness_by_leaf"] = freshness_rows
             out["freshness_as_of"] = _freshness_as_of(freshness_rows)
@@ -2152,7 +2154,7 @@ class Runtime:
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
-            "assumptions": _window_total_assumptions(compiled),
+            **_window_total_fields(compiled),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -2278,7 +2280,7 @@ class Runtime:
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            "assumptions": _window_total_assumptions(compiled),
+            **_window_total_fields(compiled),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
