@@ -22,7 +22,11 @@ import yaml
 from semantic_rails import config as config_module
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.expressions import OffsetWindowExpr, ScopedAggregateExpr
+from semantic_rails.expressions import (
+    OffsetWindowExpr,
+    ScopedAggregateExpr,
+    parse_semantic_expression,
+)
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
@@ -362,6 +366,17 @@ def test_a_window_value_that_is_not_a_number_fails_the_load_naming_the_metric(
     assert "metric 'probe.broken'" in str(error)
 
 
+def test_the_parser_refuses_a_rolling_window_value_that_is_not_a_number() -> None:
+    expression = {
+        "kind": "rolling",
+        "input": {"measure": "measure.probe.item_revenue_usd", "aggregation": "sum"},
+        "window": {"unit": "day", "value": "7d"},
+    }
+    with pytest.raises(SemanticLayerError) as excinfo:
+        parse_semantic_expression(expression, context="config")
+    assert excinfo.value.code == "INVALID_EXPRESSION_AST"
+
+
 # --- direct fields ------------------------------------------------------------------
 
 
@@ -413,7 +428,7 @@ PARTITIONED = [
 
 
 @pytest.mark.parametrize(("fields", "window_sql"), PARTITIONED)
-def test_direct_field_partition_by_computes_the_partitioned_value(
+def test_direct_field_partition_by_must_be_grouped_by_and_the_window_runs_per_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fields: dict[str, Any], window_sql: str
 ) -> None:
     metric = {"measure": "item_revenue_usd", "aggregation": "sum", **fields}

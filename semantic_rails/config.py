@@ -1060,11 +1060,6 @@ def _parse_metric_expression(raw: Any, *, context: str) -> Any:
         return parse_semantic_expression(raw, context="config")
     except SemanticLayerError as exc:
         raise SemanticLayerError(exc.code, f"{context}: {exc}", details=exc.details) from exc
-    except (TypeError, ValueError) as exc:
-        # A part the parser reads as a number (`window.value: "7d"`) that is not one.
-        raise SemanticLayerError(
-            "INVALID_EXPRESSION_AST", f"{context}: expression has a malformed value: {exc}"
-        ) from exc
 
 
 _EXTERNAL_PATHS_ENV = "SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS"

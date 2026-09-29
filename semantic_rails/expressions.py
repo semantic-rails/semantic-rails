@@ -1389,7 +1389,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             )
         window = dict(raw_window)
         unit = str(window.get("unit", "")).strip()
-        window_value = int(window.get("value", 0) or 0)
+        try:
+            window_value = int(window.get("value", 0) or 0)
+        except (TypeError, ValueError):
+            window_value = 0
         if not unit or window_value <= 0:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST",

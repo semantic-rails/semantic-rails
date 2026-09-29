@@ -1232,6 +1232,9 @@ def _read_recipe(kind: str, expr: Any, config: PackageConfig) -> _Saved | None:
         return replace(saved, recipe="filtered", row_filter={**clause, "field": field_id})
     if inner.filter or not isinstance(expr, OffsetWindowExpr) or expr.kind != kind:
         return None
+    if expr.partition_by or expr.window_scope:
+        # The prompts cannot write these back, so the metric stays as saved.
+        return None
     params: dict[str, dict[str, Any]] = {
         "cumulative": {},
         "rolling": {"window": {"unit": expr.unit, "value": expr.value}},

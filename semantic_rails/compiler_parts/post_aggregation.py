@@ -65,11 +65,8 @@ def _base_alias_ref(alias: str, table_alias: str = "base") -> SqlIdentifier:
     return SqlIdentifier(parts=[table_alias, alias])
 
 
-def _window_partition_exprs(
-    table_alias: str, group_aliases: list[str], explicit: list[str]
-) -> list[SqlExpr]:
-    aliases = list(dict.fromkeys([*group_aliases, *explicit]))
-    return [SqlIdentifier(parts=[table_alias, alias]) for alias in aliases]
+def _window_partition_exprs(table_alias: str, group_aliases: list[str]) -> list[SqlExpr]:
+    return [SqlIdentifier(parts=[table_alias, alias]) for alias in dict.fromkeys(group_aliases)]
 
 
 def _as_offset_window_expr(expr: SemanticExpr) -> OffsetWindowExpr | None:
@@ -138,7 +135,7 @@ def _compile_offset_window_expr(
     order_by = [SqlOrderTerm(expr=SqlIdentifier(parts=[table_alias, time_alias]), direction="ASC")]
     if expr.kind == "prior_period":
         offset_rows = _window_unit_to_rows(expr.unit, expr.value, query_grain)
-        lag_partition_by = _window_partition_exprs(table_alias, group_aliases, [])
+        lag_partition_by = _window_partition_exprs(table_alias, group_aliases)
         # Dialect hook for warehouses without a LAG window function
         # (e.g. ClickHouse 24.x, which only ships lagInFrame). Dialects
         # that define `window_lag` build their own equivalent window
@@ -163,7 +160,7 @@ def _compile_offset_window_expr(
             "group by; add it to group_by or remove it from partition_by",
             details={"partition_by_missing_from_group_by": missing},
         )
-    partition_by: list[Any] = _window_partition_exprs(table_alias, group_aliases, expr.partition_by)
+    partition_by: list[Any] = _window_partition_exprs(table_alias, group_aliases)
     frame = expr.frame
     if expr.kind == "rolling":
         rows = _window_unit_to_rows(expr.unit, expr.value, query_grain)

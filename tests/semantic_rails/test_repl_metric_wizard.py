@@ -888,6 +888,28 @@ def test_a_recipe_switch_drops_the_windows_partition_by(tmp_path: Path, recipe: 
     assert _values(project, "m")
 
 
+@pytest.mark.parametrize(
+    ("recipe", "kept"),
+    [
+        pytest.param("rolling", {"partition_by": ["dimension.shop_order_status"]}, id="rolling"),
+        pytest.param("cumulative", {"window_scope": "query_period"}, id="cumulative"),
+    ],
+)
+def test_editing_a_window_keeps_the_partition_and_scope_the_prompts_cannot_write(
+    tmp_path: Path, recipe: str, kept: dict[str, Any]
+) -> None:
+    project = _shop(tmp_path, calendar=True)
+    spec = _authored_metric(recipe, "revenue", count="", status="")
+    _write_metric(project, "m", {**spec, "temporal_role": ORDERED, **kept})
+
+    script, metric = _author(
+        project, {"Metric key": "m", "Business definition": "A new business definition."}
+    )
+
+    assert script.offered["Metric recipe"] == "Keep this expression unchanged"
+    _assert_has(metric, {**kept, "description": "A new business definition."})
+
+
 def test_an_explicit_clock_replaces_a_saved_time_alias(tmp_path: Path) -> None:
     project = _shop(tmp_path, shipped=True)
     spec = _authored_metric("aggregate", "revenue", count="", status="")
