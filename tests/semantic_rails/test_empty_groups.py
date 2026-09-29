@@ -21,6 +21,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
+from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
 from tests.semantic_rails.test_rendered_sql_snapshots import SNAPSHOT_CASES
 
@@ -37,9 +38,12 @@ def _select(**expressions: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"expression": expression, "as": alias} for alias, expression in expressions.items()]
 
 
-@pytest.fixture()
-def runtime(runtime_factory: Any) -> Iterator[Runtime]:
-    rt = runtime_factory("jaffle_shop")
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    """One runtime for the module (every query here only reads), so the data is seeded once."""
+    package_dir = copy_package_config(tmp_path_factory.mktemp("empty_groups"), "jaffle_shop")
+    package = load_package_config(str(package_dir))
+    rt = Runtime.from_config(package, source_path=str(package_dir), package_id="jaffle_shop")
     try:
         yield rt
     finally:
