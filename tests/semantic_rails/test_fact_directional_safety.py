@@ -28,7 +28,7 @@ def test_fact_measure_with_unreachable_select_dim_errors():
                         "expression": {"measure": "measure.jaffle.revenue_mtd_usd"},
                         "as": "mtd",
                     },
-                    {"dimension": customer_dim.id, "as": "cust_type"},
+                    {"dimension": customer_dim.id},
                 ],
                 "time": {
                     "temporal_role": "temporal_role.jaffle_daily_metric_day",

@@ -110,6 +110,28 @@ with `closest_matches`:
 }
 ```
 
+Four unambiguous slips are rewritten, not refused. `validate`, `compile` and `execute` (the MCP
+`execute` tool in every mode) add a `QUERY_SHORTHAND_NORMALIZED` warning naming the canonical
+form; `plan` accepts the same shapes in its `query` but returns no such warning, and its
+`best.query_ir` is the canonical form. The item must hold exactly the keys shown; a rewrite
+never drops a key. A dimension moved to `group_by` leaves `select`, so later select items are
+numbered in the rewritten `select`: an unaliased expression after it gets a default alias
+(`expr_N`) and a diagnostic path (`select[N]`) by that new position. Give it an `as`:
+
+| Sent | Treated as |
+|---|---|
+| `{ "metric": "..." }` as the select item itself, with no `expression` wrapper (plus optional `as`) | `{ "expression": {"kind": "metric", "metric": "..."}, "as": ... }` |
+| `{ "measure": "...", "aggregation": "sum" }` as the select item itself (`aggregation` optional, plus optional `as`) | `{ "expression": {"kind": "measure", ...}, "as": ... }` |
+| `{ "dimension": "..." }` as the whole select item (no `as`) | that id added to `group_by[]`, whatever it already holds |
+| `{ "expression": { "dimension": "..." } }` as the whole select item (no `as`), when `group_by` is empty or already lists it | that id on `group_by[]` |
+
+Everything else is refused with `INVALID_EXPRESSION_AST`, and the message shows the canonical
+form: an item naming more than one of `metric`, `measure` and `dimension`, a dimension item
+carrying `as` or any other key (a `group_by` entry has no alias), `expression` beside `metric`,
+`measure` or `dimension`, and any other key on a bare `metric` or `measure` item. A
+`{ "expression": { "dimension": "..." } }` item beside a `group_by` naming other dimensions is
+refused (`MOVE_DIMENSION_TO_GROUP_BY`).
+
 ## SelectExpression (discriminated union)
 
 Most shapes carry an explicit `kind`. The runtime also accepts two kindless

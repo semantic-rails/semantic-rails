@@ -318,6 +318,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
+| `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
 

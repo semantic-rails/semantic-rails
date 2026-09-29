@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from ..ast import rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ._base import _with_fiscal_calendar
@@ -629,7 +630,9 @@ def _checked_partial_query(partial_query: dict[str, Any] | None) -> dict[str, An
                 '["dimension.store_name"], not [["dimension.store_name"]].',
             )
         group_by.append(dimension)
-    return {**partial_query, "group_by": group_by} if group_by else partial_query
+    checked = {**partial_query, "group_by": group_by} if group_by else partial_query
+    # The same rewrite validate, compile and execute apply, so plan accepts what they accept.
+    return rewrite_select_shorthand(checked, partial=True)[0]
 
 
 def _invalid_partial(path: str, received: str, message: str, hint: str) -> SemanticLayerError:

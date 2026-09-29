@@ -1112,6 +1112,11 @@ The response `warnings` array can carry these non-error signals:
   the user's `as:` alias is missing from compiled output). Carries
   `details.dropped_expression` and `details.compiled_kind` so the agent
   can decide whether to retry with a different shape.
+- `QUERY_SHORTHAND_NORMALIZED` — fires on `validate`, `compile` and `execute`
+  (not `plan`) once per select item that was accepted as shorthand and
+  rewritten to its canonical form. Carries `details.path` (the item as
+  the caller numbered it), `details.received` and `details.canonical`. See
+  [Query IR schema](QUERY_IR_SCHEMA.md#selectitem).
 - `SEMANTIC_CAVEAT_APPLIED` — fires when a package-authored caveat is
   relevant to the compiled query shape and time window. Caveats are
   advisory interpretation context: they do not alter SQL, rows, access,
