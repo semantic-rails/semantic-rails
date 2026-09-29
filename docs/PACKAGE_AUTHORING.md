@@ -1078,7 +1078,6 @@ metrics:
     kind: ratio
     numerator: revenue_usd
     denominator: order_count
-    null_behavior: null_if_zero       # default
     value_type: currency
     temporal_role: temporal_role.shop_order_ordered_at
     meta: { owner_team: finance_analytics, review_priority: high, change_risk: medium }
@@ -1181,7 +1180,7 @@ metrics:
 | `kind:` | Direct named fields | Notes |
 |---|---|---|
 | `aggregate` | `measure: <key>` | publish a measure as a metric |
-| `ratio` | `numerator: <key>`, `denominator: <key>`, `null_behavior:` | default `null_if_zero` |
+| `ratio` | `numerator: <key>`, `denominator: <key>` | a zero denominator reads `NULL` |
 | `cumulative` | `measure: <key>`, optional `window:` | running total |
 | `prior_period` | `measure: <key>`, `period:` | comparison value at prior period |
 | `period_to_date` | `measure: <key>`, `period:` | MTD / QTD / YTD |

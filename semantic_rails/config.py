@@ -732,6 +732,7 @@ def _translate_metric_direct_fields(
         denominator = spec.get("denominator")
         if numerator is None or denominator is None:
             return spec
+
         def _ratio_operand(ref: Any, field: str = "operand") -> dict[str, Any]:
             """Wrap a ratio numerator/denominator as a metric ref when it
             resolves to a top-level metric, or as a measure aggregate when

@@ -95,10 +95,11 @@ from .dependencies import (
 from .empty_groups import (
     GUARDED_BASE,
     base_reads,
-    expr_resolves_to_zero,
     guard_empty_groups,
     record_zero_output,
+    refuse_unsettled,
     zero_aliases,
+    zero_outputs,
 )
 from .indexes import (
     _dimension_index,
@@ -1255,15 +1256,9 @@ def _lower_agent_dag_to_sql(
     # A branch that has no row for a group leaves its output NULL in the combine: settle
     # those outputs again over the combined result, the same way each branch did.
     guard_ctes: list[SqlCte] = []
-    if guard_empty:
-        zero = {
-            alias: "sum"
-            for alias, payload in plan.post_aggregation_exprs.items()
-            if expr_resolves_to_zero(_parse_public_expr(payload), config)
-        }
-        if zero:
-            guard_ctes.append(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
-            combined_name = GUARDED_BASE
+    if guard_empty and (zero := zero_outputs(plan, config)):
+        guard_ctes.append(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
+        combined_name = GUARDED_BASE
 
     final_source = "agent_projected"
     projected = SqlSelect(
@@ -1274,6 +1269,8 @@ def _lower_agent_dag_to_sql(
         ],
         from_table=SqlTableRef(name=combined_name, alias="base"),
     )
+    if guard_empty:
+        refuse_unsettled(projected, plan, config, combined=True)
 
     def _final_order_field(field: str) -> str:
         if field == "time":
@@ -3950,8 +3947,8 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
 
     Without this binding, the leaf groups by Gregorian DATE_TRUNC while
     the dense_time scaffold returns fiscal grain anchors — the equality
-    join misses every bucket and COALESCE fills 0.0, producing a
-    canonical fiscal-quarterly query whose every value is silently 0.
+    join misses every bucket and every value reads empty, producing a
+    canonical fiscal-quarterly query whose every value is silently NULL.
     """
     if plan.time is None:
         return None
@@ -4743,6 +4740,14 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 and item.expression.parts[-1] == time_alias
             )
         ]
+
+    if guard_empty:
+        refuse_unsettled(
+            SqlSelect(select=projected_fields, from_table=base_table),
+            plan,
+            config,
+            combined=False,
+        )
 
     if not final_where:
         # Inline the `projected` passthrough CTE directly into the final SELECT.

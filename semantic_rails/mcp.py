@@ -231,7 +231,7 @@ QUERY_SCHEMA: dict[str, Any] = {
                 "fill": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Dense calendar spine for grain buckets (0 / NULL fill). Requires grain; otherwise fails as INVALID_QUERY.",
+                    "description": "Dense calendar spine for grain buckets (an empty bucket reads 0 where the measure has data in scope, else NULL). Requires grain; otherwise fails as INVALID_QUERY.",
                 },
                 "calendar_id": {
                     "type": "string",

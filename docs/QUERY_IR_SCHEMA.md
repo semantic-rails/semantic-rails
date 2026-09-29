@@ -418,9 +418,10 @@ window where `N` is the offset expressed in grain rows. For a
 The dense-fill machinery is engaged automatically when an offset
 window appears, so rows missing in the source are filled before the
 LAG runs. Additive measures (`sum`, `count`, `count_distinct` over an
-additive, event-count or entity-count measure) fill with `0`; every
-other measure fills with `NULL`, because the value of `AVG`, `MIN`,
-`MAX` or a semi-additive snapshot over no rows is undefined, not zero.
+additive, event-count or entity-count measure) fill with `0` while they
+have data in scope (see "Empty groups" below); every other measure fills
+with `NULL`, because the value of `AVG`, `MIN`, `MAX` or a semi-additive
+snapshot over no rows is undefined, not zero.
 The shift can therefore reach into months that have no orders, and a
 gap there is reported as a gap rather than as a measurement.
 
@@ -442,6 +443,47 @@ of a future bug in the parser or compiler — the layer emits a
 position (`select`/`metric_filters`), the dropped expression
 payload, and the kind it was normalized to. Never silently turn a
 YoY projection into a duplicate of the current period.
+
+## Empty groups: NULL or 0
+
+Sometimes there is no data (NULL), and sometimes there is data of nothing (0). A group with
+no rows reads one or the other, by one rule, in every query:
+
+| Measure | An empty group reads | When nothing is in scope |
+|---|---|---|
+| `sum`, `count`, `count_distinct` over an additive, event-count or entity-count measure | `0` | `NULL` |
+| `avg`, `min`, `max`, `median`, `percentile` | `NULL` | `NULL` |
+| semi-additive measures (stocks), distinct populations, and measures with `additive: false` | `NULL` | `NULL` |
+
+A measure has data in scope when at least one group of the answer holds a value: a sum with a
+non-NULL amount, or a count above zero. The scope is the measure's own filters, the query's
+`where` filters and its time window, before the `group_by`. Where a measure has data in scope,
+a group with no rows reads `0`: a store with orders but no refunds has 0 refunds, and a
+month whose orders all have a NULL amount has a revenue of 0. Where it has none, every group
+reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds", because nothing
+says refunds were recorded. An average, minimum or maximum of nothing is undefined, and a
+stock has no value for a period nobody observed, so neither is ever made zero.
+
+- **Arithmetic** settles each operand first, then combines them, so `goods + shipping` by
+  refund type returns numbers even where one column is NULL for a type. An operand with no
+  data in scope stays `NULL` and so does the result: `revenue - refunds` is `NULL` if refunds
+  were never recorded. Division by zero is `NULL`.
+- **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
+  store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
+  filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
+- **A time window narrows it too.** A window with no rows reads `NULL` even where the measure
+  has data outside it (a `fill: true` bucket in an empty window).
+- **An empty table has no data** to call zero: a measure over it reads `NULL`.
+- A metric filter such as `item_count = 0` sees the settled value, so it keeps the orders
+  with no items.
+
+When an output that follows this rule reads `NULL` on every returned row (or nothing came
+back, with no time bounds), the response carries one `NO_DATA_IN_SCOPE` warning that names
+those outputs. It costs no extra query, and a clipped result (`truncated`) never gets it.
+
+ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
+unless the join yields NULLs, so every ClickHouse statement ends with
+`SETTINGS join_use_nulls = 1`.
 
 ## Dense fill (`time.fill`)
 
@@ -465,7 +507,7 @@ is that measure's honest value for "no rows contributed":
 
 | Measure | Filled with | Why |
 |---|---|---|
-| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0` | Zero is the additive identity — summing no rows really is 0. |
+| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0`, while the measure has data in scope; else `NULL` | Zero is the additive identity — summing no rows really is 0 — but only where the measure has data (see "Empty groups"). |
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | Undefined over no rows. A filled `0` would be a fabricated measurement — a `min` below every value actually observed. |
 | semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
 | ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |
@@ -496,8 +538,8 @@ dense rows (for example, the inline `prior_period` LAG window in the
 - Any other `calendar_id` (for example a fiscal calendar) needs that calendar
   authored. Without it the query is refused; it never falls back to Gregorian
   periods, and a `default` query never borrows another calendar's periods.
-- The implicit calendar is not available on ClickHouse (an unmatched outer-join
-  field there reads 0 rather than NULL), and on Athena a series is capped at
+- The implicit calendar is not available on ClickHouse (it has no generated day
+  series there), and on Athena a series is capped at
   10,000 days (about 27 years); past that the warehouse refuses the query.
   A query whose parts compile as separate sub-queries (for example with a
   `distribution` expression) is refused too. Author a calendar for those, for
@@ -550,8 +592,8 @@ month-grain query without dense fill skips empty months:
 ```
 
 Switch dense fill on and every month in the range appears, with
-zeros for the gaps (`end` is exclusive, so `2018-01-01` covers
-through December 2017 without touching 2018):
+zeros for the gaps in a table that has orders elsewhere in the range (`end` is
+exclusive, so `2018-01-01` covers through December 2017 without touching 2018):
 
 ```jsonc
 // fill: true — dense output, every month in [start, end) present

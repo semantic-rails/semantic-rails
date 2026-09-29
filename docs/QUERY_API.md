@@ -1117,6 +1117,11 @@ The response `warnings` array can carry these non-error signals:
   `details.recovery_hints[0]` (`SET_TIME_GRAIN`) recommends adding
   `time.grain`: a grain whose one calendar bucket covers `[start, end)`
   returns one total.
+- `NO_DATA_IN_SCOPE` — fires on `execute` when a sum, count or distinct count reads `NULL`
+  on every returned row, or nothing came back and no `start`/`end` window explains it. Such a
+  measure reads `0` in an empty group only where it has data in scope; here it has none, so it
+  is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
+  result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
 - `EXPRESSION_NORMALIZED_AWAY` — fires when an input expression `kind`
   was recognized by the parser but did not survive normalization (or
   the user's `as:` alias is missing from compiled output). Carries

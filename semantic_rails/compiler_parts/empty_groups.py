@@ -8,8 +8,9 @@ value for nothing and stay NULL, as do measures of already-aggregated values.
 
 Invariant: every such measure the projection reads comes from ``guarded_base``, and
 nothing else turns a measure NULL into 0. :func:`resolves_to_zero` is the only predicate
-and :func:`guard_empty_groups` the only place that builds the guard, so a query that skips
-the guard shows up as a measure read from anywhere else.
+and :func:`guard_empty_groups` the only place that builds the guard. Lowering checks its own
+projection with :func:`refuse_unsettled`, so a path that skips the guard is refused with a
+stable code instead of answering with a silent NULL.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from typing import Any
 
+from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
     ArithmeticExpr,
@@ -27,7 +29,7 @@ from ..expressions import (
     MetricRecipeRefExpr,
     SemanticExpr,
 )
-from ..ir import MeasurePlan
+from ..ir import LogicalPlan, MeasurePlan
 from ..schema import MeasureConfig, PackageConfig
 from ..sql_ast import (
     SqlBinary,
@@ -42,6 +44,7 @@ from ..sql_ast import (
     SqlTableRef,
     SqlWindow,
 )
+from .bind import _parse_public_expr
 from .indexes import _measure_index, _recipe_index
 
 GUARDED_BASE = "guarded_base"
@@ -90,6 +93,15 @@ def expr_resolves_to_zero(expr: SemanticExpr, config: PackageConfig) -> bool:
     return False
 
 
+def zero_outputs(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
+    """The outputs of a branch-combined plan that are 0 over no rows, each as a plain value."""
+    return {
+        alias: "sum"
+        for alias, payload in plan.post_aggregation_exprs.items()
+        if expr_resolves_to_zero(_parse_public_expr(payload), config)
+    }
+
+
 def guard_empty_groups(
     source: str, keys: Iterable[str], measures: Iterable[str], zero: Mapping[str, str]
 ) -> SqlCte:
@@ -120,6 +132,27 @@ def guard_empty_groups(
         name=GUARDED_BASE,
         query=SqlSelect(select=fields_, from_table=SqlTableRef(name=source, alias="base")),
     )
+
+
+def refuse_unsettled(
+    projection: SqlSelect, plan: LogicalPlan, config: PackageConfig, *, combined: bool
+) -> None:
+    """Refuse a projection that reads an empty-group measure from anywhere but ``guarded_base``.
+
+    What must be guarded is worked out again from the plan (``combined`` for the outputs of
+    branches joined together), never taken from lowering, so a path that never built the guard
+    or read past it is refused here instead of answering with a silent NULL.
+    """
+    expected = zero_outputs(plan, config) if combined else zero_aliases(plan.measure_plans, config)
+    unsettled = sorted(base_reads(projection.select) & expected.keys())
+    source = projection.from_table
+    if unsettled and not (isinstance(source, SqlTableRef) and source.name == GUARDED_BASE):
+        raise SemanticLayerError(
+            "EMPTY_GROUPS_UNSETTLED",
+            "The query reads a sum or count without settling its empty groups, so a group with "
+            "no rows would read NULL instead of 0. This is an engine defect, not a query error.",
+            details={"measures": unsettled},
+        )
 
 
 def sql_nodes(node: Any) -> Iterator[Any]:

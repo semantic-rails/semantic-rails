@@ -326,6 +326,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
+| `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count read `NULL` on every returned row (or nothing came back and no `start`/`end` window explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
@@ -693,6 +694,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
 | `RESULT_TOO_LARGE` | `execute` rows would exceed the response character limit; nothing is returned. `message` says what would fit; see `details.max_result_chars`. |
 | `WINDOW_TOTAL_UNSUPPORTED` | A `time` window with no `grain` would return one total, but part of the query still groups by the raw time column, so the result can't be one row per group. Nothing is returned. Set `time.grain`, or remove `time.start` and `time.end`. |
+| `EMPTY_GROUPS_UNSETTLED` | The compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`. An engine defect, not a query error; nothing is returned. `details.measures` names them. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |
 
 ### Worked Example Envelopes
