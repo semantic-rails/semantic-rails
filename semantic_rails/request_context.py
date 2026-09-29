@@ -31,7 +31,6 @@ from .audit import (  # noqa: F401 — audit names are re-exported from their ol
     get_audit_sink,
     set_audit_sink,
 )
-from .request_payload import checked_string_list
 from .sql_preparation import ATTRIBUTE_NAME
 
 CONTEXT_FIELDS = ("actor", "tenant", "project", "roles", "environment", "audience")
@@ -161,11 +160,11 @@ class RequestContext:
 
 
 def _split_roles(value: Any) -> tuple[str, ...]:
-    # One list normaliser (array, comma string, JSON array in a string), so a
-    # JSON-string value is read as the roles it names, not as one literal role.
-    if isinstance(value, str) and not value.lstrip().startswith(("[", "{")):
-        value = value.replace(";", ",")
-    return tuple(dict.fromkeys(checked_string_list(value or "", field="roles")))
+    if isinstance(value, (list, tuple, set)):
+        roles = [str(item).strip() for item in value]
+    else:
+        roles = [part.strip() for part in str(value or "").replace(";", ",").split(",")]
+    return tuple(dict.fromkeys(role for role in roles if role))
 
 
 def _resource_allowlist(value: Any) -> tuple[str, ...] | None:

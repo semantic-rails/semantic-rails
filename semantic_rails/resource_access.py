@@ -18,9 +18,9 @@ from .ast import normalize_query
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
-from .metadata import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .policies import enforce_query_policies
 from .request_context import RequestContext, context_from_policy_context
+from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
 from .schema import PackageConfig
 
 
@@ -40,6 +40,18 @@ def _public_error(exc: SemanticLayerError) -> SemanticLayerError:
         return access_denied()
     if exc.code == "QUERY_EXECUTION_ERROR":
         return query_execution_error({})
+    details = exc.details or {}
+    if (
+        exc.code == "INVALID_MCP_ARGUMENTS"
+        and details.get("field") == "kinds"
+        and details.get("unknown_kinds")
+    ):
+        # The refusal of a `kinds` value carries only the caller's own values
+        # and the static set of searchable kinds, so it names no package object.
+        return unknown_discover_kinds_error(
+            [str(kind) for kind in details["unknown_kinds"]],
+            frozenset(str(kind) for kind in details.get("valid_kinds") or ()),
+        )
     # Preserve actionable operational/validation codes; package-generated
     # messages, details, and recovery candidates may name hidden objects.
     code = exc.code if exc.code in ERROR_CODES else "INVALID_QUERY"
@@ -261,14 +273,16 @@ def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# The kinds ``visible_rows`` can produce. A grant never searches measures,
+# segments, entities or dimension values, so those are refused rather than
+# answered with an empty result.
+GRANT_DISCOVER_KINDS: frozenset[str] = frozenset({"metric", "dimension", "temporal_role"})
+
+
 def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
     # The grant path never reaches ``discover_payload``'s own body, so it
     # applies the same kinds guard: an unknown kind is refused, not emptied.
-    # It ranks object cards only and never searches dimension values, so that
-    # kind is refused too rather than answered with an empty result.
-    kinds = checked_discover_kinds(
-        kwargs.get("kinds"), DISCOVER_RANKED_KINDS - frozenset({"dimension_value"})
-    )
+    kinds = checked_discover_kinds(kwargs.get("kinds"), GRANT_DISCOVER_KINDS)
     terms = set(re.findall(r"[a-z0-9]+", str(kwargs.get("terms", "")).lower()))
     rows = []
     for row in access.visible_rows():
@@ -292,7 +306,7 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         )
     rows.sort(key=lambda row: (-row["score"], row["id"]))
     limit = max(1, int(kwargs.get("limit", 10)))
-    payload: dict[str, Any] = {
+    return {
         **{
             bucket: [row for row in rows if row["kind"] == kind][:limit]
             for kind, bucket in _BUCKETS.items()
@@ -302,18 +316,6 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         "selection_context": {},
         "query_state": {},
     }
-    if terms and not rows:
-        # The payload's own signal, as in ``discover_payload``: adapters read it
-        # instead of re-deriving emptiness.
-        payload["no_matches"] = {
-            "terms": kwargs.get("terms", ""),
-            "reason": (
-                f"no candidate of kind {sorted(set(kinds))} matched the supplied search terms"
-                if kinds
-                else "no candidate matched the supplied search terms"
-            ),
-        }
-    return payload
 
 
 def _restricted_plan(

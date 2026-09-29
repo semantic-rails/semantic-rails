@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, fields
 from typing import Any
 
@@ -95,6 +95,7 @@ from .metadata_parts.scope_gate import scope_block_payload as _scope_block_paylo
 from .metadata_parts.valid_values import valid_values_payload
 from .policies import hidden_object_ids, policy_effects_for_object
 from .request_context import context_from_policy_context
+from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
@@ -1988,34 +1989,6 @@ def _dimension_builder_score(
     return score, list(dict.fromkeys(reasons))
 
 
-DISCOVER_RANKED_KINDS: frozenset[str] = frozenset(
-    {"measure", "metric", "segment", "dimension", "entity", "dimension_value"}
-)
-
-
-def checked_discover_kinds(kinds: Sequence[str] | None, valid: frozenset[str]) -> list[str]:
-    """Return ``kinds`` unchanged, or refuse when any value is not in ``valid``.
-
-    A ``kinds`` filter that names no real kind would empty every bucket, and an
-    empty result reads as "nothing matches". Refusing keeps that text for
-    searches that really ran over the requested kinds.
-    """
-
-    requested = list(kinds or [])
-    unknown = [kind for kind in requested if kind not in valid]
-    if unknown:
-        raise SemanticLayerError(
-            "INVALID_MCP_ARGUMENTS",
-            f"Unknown kinds value(s) {unknown}; valid kinds: {sorted(valid)}.",
-            details={
-                "field": "kinds",
-                "unknown_kinds": unknown,
-                "valid_kinds": sorted(valid),
-            },
-        )
-    return requested
-
-
 @runtime_request_scope
 def discover_payload(
     runtime: Runtime,
@@ -2029,6 +2002,14 @@ def discover_payload(
     enforce_scope: bool = False,
 ) -> dict[str, Any]:
     kinds = checked_discover_kinds(kinds, DISCOVER_RANKED_KINDS)
+    if limit < 1:
+        # The buckets are cut to ``limit``, so a zero limit would empty them
+        # and read as "no match" for a search that found something.
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            "Argument 'limit' must be at least 1.",
+            details={"field": "limit", "argument_type": type(limit).__name__},
+        )
     config = runtime._config
     search_index = runtime._get_catalog_search_index()
     search_terms = SearchTerms.from_text(terms)

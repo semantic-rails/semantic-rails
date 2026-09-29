@@ -28,10 +28,8 @@ from .catalog_service import resolve_catalog
 from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
 from .errors import SemanticLayerError
 from .metadata import (
-    DISCOVER_RANKED_KINDS,
     build_options_payload,
     catalog_payload,
-    checked_discover_kinds,
     discover_payload,
     inspect_payload,
     valid_values_payload,
@@ -43,7 +41,9 @@ from .request_context import (
     request_context_payload,
 )
 from .request_payload import (
+    DISCOVER_RANKED_KINDS,
     build_query_payload,
+    checked_discover_kinds,
     parse_string_list,
     without_policy_context,
 )
@@ -2108,17 +2108,21 @@ class SemanticLayerMCPAdapter:
                 # "No semantic objects matched" is only true for a search that
                 # ran over the requested kinds; a misspelled `kind` was never
                 # applied, and a screened-out search never ran at all.
-                if filter_dropped:
+                if screened:
+                    browse_message = (
+                        f"'{terms_str}' was not searched as a catalog query (see the hint "
+                        "above). Call discover with empty terms to list every id."
+                    )
+                    if filter_dropped:
+                        browse_message += (
+                            " The 'kind' argument was also ignored (the argument is 'kinds')."
+                        )
+                elif filter_dropped:
                     browse_message = (
                         f"Nothing ranked for '{terms_str}', and the 'kind' argument was "
                         "ignored (the argument is 'kinds'), so the requested kind filter "
                         "was not applied. Retry with 'kinds', or call discover with empty "
                         "terms to list every id."
-                    )
-                elif screened:
-                    browse_message = (
-                        f"'{terms_str}' was not searched as a catalog query (see the hint "
-                        "above). Call discover with empty terms to list every id."
                     )
                 else:
                     of_kinds = f" of kind {sorted(set(requested_kinds))}" if requested_kinds else ""
