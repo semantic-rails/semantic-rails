@@ -433,11 +433,11 @@ def _bind_measure(
         )
     query_role = query.time.temporal_role if query.time else ""
     if query_role and not temporal_role and not conversion_operand:
-        if measure.meta.get("synthetic"):
+        if measure_id.startswith("measure.__aggif__."):
             # An aggregate_if has no model or measure of its own to declare a clock on.
             raise SemanticLayerError(
                 "INCOMPATIBLE_TEMPORAL_ROLE",
-                f"aggregate_if can't be bucketed by time ('{query_role}'); declare a measure "
+                f"aggregate_if can't be used with time ('{query_role}'); declare a measure "
                 "with `times:` and aggregate that instead, or drop `time` from the query.",
                 details={"requested": query_role, "compatible": [], "source": "aggregate_if"},
             )
@@ -445,7 +445,7 @@ def _bind_measure(
         # place every measure is bound, instead of failing later on a missing role.
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
-            f"'{measure_id}' has no time role, so it can't be grouped by '{query_role}'. Mark "
+            f"'{measure_id}' has no time role, so it can't be placed on '{query_role}'. Mark "
             f"a time on its model `default: true`, or list `times:` on the measure; or drop "
             f"`time` from the query.",
             details={"measure": measure_id, "requested": query_role, "compatible": []},

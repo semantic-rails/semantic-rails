@@ -441,7 +441,7 @@ def test_aggregate_if_by_time_is_refused_without_naming_a_synthetic_measure(jaff
         plan_query(jaffle_config, None, payload)
     error = raised.value
     assert error.code == "INCOMPATIBLE_TEMPORAL_ROLE"
-    assert "aggregate_if can't be bucketed by time" in str(error)
+    assert "aggregate_if can't be used with time" in str(error)
     assert "__aggif__" not in str(error) + repr(error.details)
     assert error.details["compatible"] == []
     assert recovery_hints_for_error(error.code, error.details) == []

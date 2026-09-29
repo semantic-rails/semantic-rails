@@ -21,7 +21,7 @@ import pytest
 import yaml
 
 from semantic_rails.ast import normalize_query
-from semantic_rails.compiler_parts.grain_recovery import _enrichment_unsafe
+from semantic_rails.compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
@@ -276,14 +276,80 @@ def test_the_refusal_names_the_clockless_measure_however_it_is_reached(tmp_path,
     assert report["recovery_hints"][0]["measure"] == "measure.ins.claim_amount"
 
 
-def test_the_grain_recovery_never_suggests_a_time_grain_for_a_clockless_measure(tmp_path):
+def test_an_authored_measure_flagged_synthetic_in_meta_gets_the_measure_refusal(tmp_path):
+    """Only an aggregate_if is refused as one: user-set `meta` never picks that branch."""
+    variant = {"default": "", "times": ", meta: {synthetic: true}"}
+    engine = Runtime.from_path(str(_package(tmp_path, variant)))
+    try:
+        report = engine.validate({"version": 1, "select": SELECT, "time": MONTHLY})
+    finally:
+        engine.close()
+    error = report["errors"][0]
+    assert error["code"] == "INCOMPATIBLE_TEMPORAL_ROLE"
+    assert "aggregate_if" not in error["message"]
+    assert error["details"]["measure"] == "measure.ins.claim_amount"
+    assert [hint["kind"] for hint in report["recovery_hints"]] == ["declare_measure_time_role"]
+
+
+def test_the_refusal_does_not_say_grouped_by_when_time_has_no_grain(tmp_path):
+    engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
+    try:
+        report = engine.validate(
+            {
+                "version": 1,
+                "select": SELECT,
+                "time": {"temporal_role": ROLE, "start": "2024-01-01", "end": "2024-06-30"},
+            }
+        )
+    finally:
+        engine.close()
+    error = report["errors"][0]
+    assert error["code"] == "INCOMPATIBLE_TEMPORAL_ROLE"
+    assert "grouped by" not in error["message"]
+    assert ROLE in error["message"]
+    assert [hint["kind"] for hint in report["recovery_hints"]] == ["declare_measure_time_role"]
+
+
+def _recovery_hints(config: Any, measures: list[str]) -> tuple[dict[str, Any], list[str]]:
+    """The time-axis recovery and hint kinds a mixed-grain error carries for these measures.
+
+    Uses the enrichment the real MIXED_GRAIN_INVALID error attaches, then the hints callers get.
+    """
+    query = normalize_query(
+        {
+            "version": 1,
+            "select": [
+                {"expression": {"kind": "measure", "measure": measure}, "as": f"v{index}"}
+                for index, measure in enumerate(measures)
+            ],
+            "group_by": ["dimension.ins_claim_opened_on_date"],
+        }
+    )
+    details = mixed_grain_pairing_enrichment(
+        config=config, query=query, measure_ids=measures, target_entity="entity.ins_claim"
+    )
+    hints = recovery_hints_for_error("MIXED_GRAIN_INVALID", details)
+    return details["time_axis_recovery"], [hint["kind"] for hint in hints]
+
+
+@pytest.mark.parametrize(
+    "measures",
+    [
+        ["measure.ins.claim_amount"],
+        ["measure.ins.paid_amount", "measure.ins.claim_amount"],
+        ["measure.ins.claim_amount", "measure.ins.paid_amount"],
+    ],
+    ids=["clockless", "clocked_then_clockless", "clockless_then_clocked"],
+)
+def test_the_grain_recovery_never_suggests_a_time_grain_when_any_measure_has_no_clock(
+    tmp_path, measures
+):
     """Grouping by a calendar date used to offer 'query it by month', which is now refused."""
     engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
     try:
         config = engine.config
     finally:
         engine.close()
-    date_dim = "dimension.ins_claim_opened_on_date"
     # A package-wide default query clock is what the recovery falls back to for a measure with none.
     config = replace(
         config,
@@ -291,26 +357,14 @@ def test_the_grain_recovery_never_suggests_a_time_grain_for_a_clockless_measure(
             replace(role, default_query_time_axis=True) for role in config.temporal_roles
         ],
     )
-
-    def recovery(measure: str) -> dict[str, Any]:
-        query = normalize_query(
-            {
-                "version": 1,
-                "select": [{"expression": {"kind": "measure", "measure": measure}, "as": "v"}],
-                "group_by": [date_dim],
-            }
-        )
-        enrichment = _enrichment_unsafe(
-            config=config, query=query, measure_ids=[measure], target_entity="entity.ins_claim"
-        )
-        return enrichment["time_axis_recovery"]
-
-    assert (
-        recovery("measure.ins.paid_amount")["closest_valid_query"]["time"]["temporal_role"] == ROLE
-    )
-    clockless = recovery("measure.ins.claim_amount")
-    assert clockless["calendar_dimension"] == date_dim
-    assert "closest_valid_query" not in clockless
+    recovery, kinds = _recovery_hints(config, measures)
+    assert recovery == {"calendar_dimension": "dimension.ins_claim_opened_on_date"}
+    assert "use_time_grain" not in kinds
+    # A clocked measure alone still gets the suggestion.
+    recovery, kinds = _recovery_hints(config, ["measure.ins.paid_amount"])
+    assert recovery["closest_valid_query"]["time"]["temporal_role"] == ROLE
+    assert recovery["grain"] == "day"
+    assert kinds[0] == "use_time_grain"
 
 
 def test_a_clockless_measure_still_answers_without_time_or_by_a_plain_date(tmp_path):

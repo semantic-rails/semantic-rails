@@ -462,21 +462,23 @@ def _enrichment_unsafe(
     if calendar_dims:
         calendar_dim = calendar_dims[0]
         recovery: dict[str, Any] = {"calendar_dimension": calendar_dim.id}
-        grain = _suggested_grain(calendar_dim.id)
-        if grain:
-            recovery["grain"] = grain
-        role = _suggested_temporal_role(config, query, anchor_measure)
-        if role:
-            recovery["temporal_role"] = role
-        query_template = _query_using_time_axis(
-            query,
-            calendar_dimension=calendar_dim.id,
-            temporal_role=role,
-            grain=grain,
-        )
-        # A measure with no time role is refused on any time grain: don't suggest that shape.
-        if query_template and anchor_measure.compatible_temporal_roles:
-            recovery["closest_valid_query"] = query_template
+        # A measure with no time role is refused on any time grain, so when any requested
+        # measure has none, suggest no time block at all (no grain, role or query).
+        if all(measures[mid].compatible_temporal_roles for mid in requested):
+            grain = _suggested_grain(calendar_dim.id)
+            if grain:
+                recovery["grain"] = grain
+            role = _suggested_temporal_role(config, query, anchor_measure)
+            if role:
+                recovery["temporal_role"] = role
+            query_template = _query_using_time_axis(
+                query,
+                calendar_dimension=calendar_dim.id,
+                temporal_role=role,
+                grain=grain,
+            )
+            if query_template:
+                recovery["closest_valid_query"] = query_template
         enrichment["time_axis_recovery"] = recovery
 
     return enrichment

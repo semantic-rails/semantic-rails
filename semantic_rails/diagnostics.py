@@ -650,10 +650,11 @@ def recovery_hints_for_error(
         # When the offending dimension is a calendar-date dimension the
         # primary recovery is the time block — lead with it.
         time_axis = dict(details.get("time_axis_recovery", {}) or {})
-        if time_axis:
-            grain = str(time_axis.get("grain", "") or "")
-            role = str(time_axis.get("temporal_role", "") or "")
-            example = {"temporal_role": role or "<temporal_role>", "grain": grain or "<grain>"}
+        grain = str(time_axis.get("grain", "") or "")
+        role = str(time_axis.get("temporal_role", "") or "")
+        # Without both, the recovery found no time block that would answer: say nothing.
+        if grain and role:
+            example = {"temporal_role": role, "grain": grain}
             hint = {
                 "kind": "use_time_grain",
                 "message": (
