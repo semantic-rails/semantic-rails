@@ -21,3 +21,7 @@
   measure has data outside the window, where the rule says `0`. It stays until the engine
   checks for data outside the window (tracked in
   [issue #201](https://github.com/semantic-rails/semantic-rails/issues/201)).
+- Known limitation: an ungrouped distinct-population count over no rows (a count of distinct
+  customers under a `where` that matches nothing) reads `0` with no `NO_DATA_IN_SCOPE`
+  warning, where the rule says `NULL` (tracked in
+  [issue #TBD](https://github.com/semantic-rails/semantic-rails/issues/TBD)).

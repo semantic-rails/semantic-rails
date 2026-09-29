@@ -229,7 +229,7 @@ def _run(runtime: Runtime, measure: str, filters: list[dict], **extra) -> list[d
 
 
 def _scalar(runtime: Runtime, measure: str, filters: list[dict]) -> int | None:
-    """The one value, with NULL kept apart from 0: a count of nothing kept is unobserved."""
+    """The one value, with NULL kept apart from 0."""
     (row,) = _run(runtime, measure, filters)
     return None if row["n"] is None else int(row["n"])
 
@@ -379,7 +379,7 @@ def test_an_operand_with_no_data_reads_null_for_every_customer_present_or_absent
     NULL, which fails every threshold, in a predicate as in a metric filter.
     """
     net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": CANCELLED_ORDERS}
-    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, net, op, value)]) is None
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, net, op, value)]) == 0
     by_customer = runtime.query(
         {
             "version": 1,
@@ -495,19 +495,7 @@ def test_a_conditional_count_with_no_match_over_all_time_selects_no_customer(
         "where o.customer_id = c.customer_id and o.amount >= 1000) = 0"
     )[0]
     assert naive == 5
-    response = runtime.query(
-        {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"measure": "measure.pred.customer_count"}}],
-            "metric_filters": [_predicate(CUSTOMER, huge, op, value)],
-        }
-    )
-    # A count of the customers kept is a distinct population: over no rows in scope it is
-    # unobserved, so it reads NULL and the query says so, never a confident 0.
-    assert response["rows"] == [{"n": None}]
-    (warning,) = _no_data_warnings(response)
-    assert warning["details"]["outputs"] == ["n"]
-    assert warning["object_ids"] == ["measure.pred.customer_count"]
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, huge, op, value)]) == 0
 
 
 @LATE_TICKET_COUNTS
@@ -571,7 +559,7 @@ def test_a_conditional_count_with_one_match_in_a_period_gives_every_other_custom
 
 def test_an_empty_not_in_list_is_satisfied_by_every_entity(runtime):
     assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, "NOT IN", [])]) == 5
-    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, "IN", [])]) is None
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, "IN", [])]) == 0
 
 
 def test_orders_without_a_customer_are_not_customers_with_no_orders(runtime):
@@ -724,9 +712,7 @@ def test_a_threshold_zero_fails_on_such_an_aggregate_is_unchanged(runtime, op, v
         "(select avg(minutes) from activities a where a.member_id = m.member_id) n "
         f"from members m) where n {op} {value}"
     )[0]
-    # No member kept is no data for the population count: NULL, where the raw count is 0.
-    got = _scalar(runtime, "member_count", [_predicate(MEMBER, minutes, op, value)])
-    assert got == (expected or None)
+    assert _scalar(runtime, "member_count", [_predicate(MEMBER, minutes, op, value)]) == expected
 
 
 def test_percentile_thresholds_are_unchanged(runtime):

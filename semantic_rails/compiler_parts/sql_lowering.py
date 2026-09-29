@@ -96,10 +96,10 @@ from .dependencies import (
 from .empty_groups import (
     GUARDED_BASE,
     base_reads,
+    expr_resolves_to_zero,
     guard_empty_groups,
     record_zero_output,
     refuse_unsettled,
-    settled_as,
     zero_aliases,
     zero_outputs,
 )
@@ -4698,7 +4698,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         projected_fields.append(SqlField(compiled_output, alias))
         # Only an output that follows the rule (a sum, count or difference of them): a
         # prior-period, ratio or window output is NULL for reasons other than no data.
-        if zero and settled_as(_parse_public_expr(post_expr), config):
+        if zero and expr_resolves_to_zero(_parse_public_expr(post_expr), config):
             reads = base_reads(compiled_output) & zero.keys()
             record_zero_output(
                 alias,
