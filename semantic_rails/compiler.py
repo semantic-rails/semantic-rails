@@ -1805,13 +1805,17 @@ def _predicate_ctes_and_join(
             strict=True,
         ):
             dim = _dimension_index(config)[dim_id]
+            # The set reads the key from the measure's own foreign key, so a row with an
+            # unknown or NULL context entity is in it: match it null-safely on that same
+            # column, as reading the looked-up table's key would drop the row.
+            context_key_expr = _direct_entity_key_source_expr(
+                measure_plan.source_entity, entity_id, _key_col, config
+            ) or _column_ref(_entity_index(config)[dim.entity].table, dim.column)
             join_condition = SqlBinary(
                 join_condition,
                 "AND",
-                SqlBinary(
-                    _column_ref(_entity_index(config)[dim.entity].table, dim.column),
-                    "=",
-                    SqlIdentifier(parts=[set_name, dim_id]),
+                dialect_for_warehouse(config.package.warehouse).null_safe_eq(
+                    context_key_expr, SqlIdentifier(parts=[set_name, dim_id])
                 ),
             )
     if scope["time_spec"] is not None and scope["time_alias"]:
@@ -2717,6 +2721,10 @@ def _conversion_event_cte(
         dim_expr, _ = _resolve_dimension_expr(dim_id, config)
         select_fields.append(SqlField(dim_expr, f"__property_{index + 1}"))
         selected_aliases.add(f"__property_{index + 1}")
+        if dimensions[dim_id].entity != source_entity:
+            # Properties pair with null-safe equality: two events whose lookup found nothing
+            # would both read NULL and count as having the same property.
+            where_items = [*where_items, SqlBinary(dim_expr, "IS NOT", SqlLiteral(None))]
     for dim_id in extra_dimensions:
         dim_expr, alias = _resolve_dimension_expr(dim_id, config)
         if alias not in selected_aliases:

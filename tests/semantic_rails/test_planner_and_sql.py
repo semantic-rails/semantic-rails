@@ -1713,7 +1713,7 @@ def test_contextual_metric_predicates_inherit_time_and_minimal_context_entities(
     assert '"dimension.jaffle_store_id"' in store_sql
     assert '"temporal_role.jaffle_order_time__month"' in store_sql
     assert (
-        'jaffle_store.store_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id"'
+        'jaffle_order.store_id IS NOT DISTINCT FROM leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id"'
         in store_sql
     )
 

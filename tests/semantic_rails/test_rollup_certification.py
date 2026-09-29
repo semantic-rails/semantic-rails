@@ -104,6 +104,51 @@ def test_revoked_certification_applies_to_the_next_request(tmp_path: Path, insta
     assert ungated.compile(payload)["compile_stats"]["cache_hit"]  # other packages still cache
 
 
+_INNER_REGION = {
+    **_REGION,
+    "id": "aggregate_relation.region_inner",
+    "relation": "order_region_inner_monthly",  # built with an inner join: no row for order 13
+}
+_BY_REGION = {**_rollup_query(_REVENUE, "sum", "month"), "group_by": ["dimension.region"]}
+
+
+@pytest.mark.parametrize(
+    ("rollup", "answer", "reason"),
+    [
+        # The rollup doesn't declare requires_certification: its pre-joined column needs it.
+        pytest.param(_INNER_REGION, None, "not_certified", id="inner-built-uncertified"),
+        pytest.param(_INNER_REGION, False, "not_certified", id="inner-built-refused"),
+        pytest.param(_REGION, None, "not_certified", id="left-built-uncertified"),
+        pytest.param(_REGION, True, None, id="left-built-certified"),
+    ],
+)
+def test_a_pre_joined_column_routes_only_when_certified(
+    tmp_path: Path, install, rollup, answer, reason
+):
+    provider = None if answer is None else _Provider(answer)
+    install(provider)
+
+    routing = _routed_answers(tmp_path, ({}, [rollup], {"ship_to": False}), _BY_REGION)
+
+    assert _decisions(routing) == {f"leaf_1:{rollup['id']}": reason or "selected"}
+
+
+def test_a_pre_joined_rollup_is_not_served_from_the_compile_cache(tmp_path: Path, install):
+    """Its certification can be revoked between requests, as for a declared requirement."""
+    _rollup_package(tmp_path / "p", {}, [_REGION], {"ship_to": False})
+    runtime = Runtime.from_path(str(tmp_path / "p"))
+    provider = _Provider(True)
+    install(provider)
+
+    def selected() -> list[str]:
+        compiled = runtime.compile({**_BY_REGION, "verbosity": "full"})
+        return compiled["performance_plan"]["aggregate_routing"]["selected"]
+
+    assert selected() == [_REGION["id"]]
+    provider.answer = False
+    assert selected() == []
+
+
 def _entry(**fields) -> tuple:
     return ({}, [{**_NO_ROLE, "temporal_role": "temporal_role.t", **fields}])
 

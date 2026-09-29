@@ -194,6 +194,13 @@ def _prejoined_dimensions(row: AggregateRelationConfig, config: PackageConfig) -
     return prejoined
 
 
+def relation_needs_certification(row: AggregateRelationConfig, config: PackageConfig) -> bool:
+    """Whether ``row`` routes only once certified: it says so, or it holds a pre-joined column,
+    whose join (inner or left) decides which fact rows the rollup has, and no declaration says."""
+    prejoined = _prejoined_dimensions(row, config)
+    return row.requires_certification or prejoined is None or bool(prejoined)
+
+
 def _aggregate_relation_rejection_reason(
     row: AggregateRelationConfig, leaf: _Leaf, config: PackageConfig
 ) -> str:
@@ -237,8 +244,8 @@ def _aggregate_relation_rejection_reason(
             path is None or row.dimension_paths.get(dim) != path
             for dim, path in leaf.join_paths.items()
         )
-        # How a pre-joined column's join treated fact rows with no match can't be checked, so
-        # it answers only a query that groups or filters by that column too.
+        # A pre-joined column answers only a query that groups or filters by that column too,
+        # since the base path doesn't join it otherwise and keeps the rows it finds no match for.
         or prejoined is None
         or prejoined - leaf.dimensions
     ):
@@ -260,7 +267,9 @@ def _aggregate_relation_rejection_reason(
         and not (row.measure_holds.get(measure_id) and _one_row_per_group(row, leaf, config))
     ):
         return "aggregation_not_reaggregable"
-    if not relation_certified(config, row):  # R9, once R1-R8 hold
+    if not relation_certified(  # R9, once R1-R8 hold
+        config, row, required=row.requires_certification or bool(prejoined)
+    ):
         return NOT_CERTIFIED
     return ""
 

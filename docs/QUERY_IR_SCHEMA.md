@@ -210,9 +210,9 @@ Supported `op` values (all compile end-to-end):
 - A dimension looked up through a many-to-one or one-to-one relationship is
   NULL on a row whose lookup found no match, and a filter treats the row as
   any other NULL: `IS NULL` keeps it (an anti-join, such as boardings with no
-  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. On
-  ClickHouse the looked-up column must be `Nullable` for this: an unmatched
-  outer-join field of any other type reads its default (`''`, `0`) there.
+  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. ClickHouse
+  is the exception: its lookups stay inner joins, so it drops such a row from
+  every query that reads the looked-up dimension, as a filter would.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
 

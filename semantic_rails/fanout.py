@@ -217,22 +217,31 @@ def build_hop_profile(
     }
 
 
+def hop_sides(cardinality: str, *, forward: bool) -> tuple[str, str] | None:
+    """The (near, far) sides of a hop, read in the direction it is walked.
+
+    ``far`` is what one row on the near side reaches: ``"1"`` means at most one row, so the
+    hop only looks something up. ``None`` when the cardinality isn't ``left:right``.
+    """
+    if ":" not in cardinality:
+        return None
+    left, right = [part.strip() for part in cardinality.upper().split(":", 1)]
+    return (left, right) if forward else (right, left)
+
+
 def _directional_status(
     rel: RelationshipConfig, *, current_entity: str, time_bound: bool = False
 ) -> str:
-    card = rel.cardinality.upper()
-    if ":" not in card:
+    sides = hop_sides(rel.cardinality, forward=current_entity == rel.source_entity)
+    if sides is None:
         return rel.safety
     if time_bound and rel.temporal_validity and rel.safety != "unsafe":
         return "safe"
-    left, right = [part.strip() for part in card.split(":", 1)]
-    forward = current_entity == rel.source_entity
-    if left == "1" and right == "1":
+    near, far = sides
+    if far == "1" and near in ("1", "N"):
         return "safe"
-    if left == "1" and right == "N":
-        return ("unsafe" if rel.safety == "unsafe" else "requires_rewrite") if forward else "safe"
-    if left == "N" and right == "1":
-        return "safe" if forward else ("unsafe" if rel.safety == "unsafe" else "requires_rewrite")
+    if near == "1" and far == "N":
+        return "unsafe" if rel.safety == "unsafe" else "requires_rewrite"
     return rel.safety
 
 

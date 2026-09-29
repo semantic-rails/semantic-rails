@@ -6,9 +6,11 @@ planner rejects every rollup with :data:`ROUTING_OFF` while it is off, and the c
 keys on :func:`aggregate_routing_enabled`, so a switch applies to the next request even when
 the plan is cached.
 
-A rollup that declares ``requires_certification`` routes only while the process's
-:class:`CertificationProvider` (:func:`set_certification_provider`) says it is certified; with
-none installed it never routes (:data:`NOT_CERTIFIED`).
+A rollup that declares ``requires_certification``, or holds a column pre-joined from another
+model (how its join treated a fact row with no match can't be read from the declaration),
+routes only while the process's :class:`CertificationProvider`
+(:func:`set_certification_provider`) says it is certified; with none installed it never routes
+(:data:`NOT_CERTIFIED`).
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ LOWERED_SEPARATELY = "lowered_separately"  # a distribution branch or an entity-
 MAX_CANDIDATES = 200  # report rows; the rest are counted in `candidates_omitted`
 NOT_CERTIFIED = "not_certified"
 _enabled: ContextVar[bool] = ContextVar("semantic_rails_aggregate_routing", default=True)
+_assume_certified: ContextVar[bool] = ContextVar("semantic_rails_assume_certified", default=False)
 _scans: ContextVar[set[str] | None] = ContextVar("semantic_rails_rollup_scans", default=None)
 
 
@@ -62,6 +65,16 @@ def aggregate_routing_enabled() -> bool:
     return _enabled.get()
 
 
+@contextmanager
+def assuming_certified() -> Iterator[None]:
+    """Judge rollups inside this block as if certified: what certification itself asks."""
+    token = _assume_certified.set(True)
+    try:
+        yield
+    finally:
+        _assume_certified.reset(token)
+
+
 class CertificationProvider(Protocol):
     def certified(self, config: PackageConfig, relation: AggregateRelationConfig) -> bool:
         """True only if ``relation`` answers exactly for this package as loaded now.
@@ -83,9 +96,15 @@ def set_certification_provider(provider: CertificationProvider | None) -> None:
     _provider = provider
 
 
-def relation_certified(config: PackageConfig, relation: AggregateRelationConfig) -> bool:
-    """Whether a rollup may route as far as certification goes; unknown means no."""
-    if not relation.requires_certification:
+def relation_certified(
+    config: PackageConfig, relation: AggregateRelationConfig, *, required: bool
+) -> bool:
+    """Whether a rollup may route as far as certification goes; unknown means no.
+
+    ``required`` is whether the rollup needs a certification at all (see
+    :func:`~.selection.relation_needs_certification`).
+    """
+    if not required or _assume_certified.get():
         return True
     try:
         return _provider is not None and _provider.certified(config, relation) is True

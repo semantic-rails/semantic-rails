@@ -15,7 +15,7 @@ from ..compiler import compile_query
 from ..compiler_parts.indexes import _measure_index, _temporal_role_index
 from ..errors import SemanticLayerError
 from ..schema import PackageConfig
-from .routing import LOWERED_SEPARATELY, aggregate_routing
+from .routing import LOWERED_SEPARATELY, aggregate_routing, assuming_certified
 from .selection import _aggregate_dimension_coverage, _column_holds
 
 _UTC_ZONES = frozenset({"UTC", "Etc/UTC"})
@@ -69,7 +69,8 @@ def certify_aggregate_relation(config: PackageConfig, relation_id: str) -> dict[
             "time": {"temporal_role": relation.temporal_role, "grain": relation.grain},
         }
         try:
-            routed = compile_query(alone, None, result["query"])
+            with assuming_certified():
+                routed = compile_query(alone, None, result["query"])
             with aggregate_routing(False):
                 result["base_sql"] = compile_query(config, None, result["query"])["sql"]
         except SemanticLayerError as exc:

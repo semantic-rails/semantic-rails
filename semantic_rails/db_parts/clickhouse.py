@@ -14,13 +14,7 @@ truthfully ``True``.
 The client session sets ``allow_experimental_join_condition=1``:
 conversion-window queries join on ``key <=> key AND time > base_time``
 and ClickHouse 24.x rejects the non-equi part of a JOIN ON without it
-(verified live on 24.8). It also sets ``optimize_functions_to_subcolumns=0``:
-that optimization reads ``x IS NULL`` from the ``x.null`` subcolumn, which a
-LEFT JOIN fills with "not null" for a row it found no match for, so a filter
-for the rows a lookup didn't match would find none (verified live on 24.8).
-An unmatched row reads NULL only from a ``Nullable`` column; any other column
-reads its type's default, as ``join_use_nulls`` is off (turning it on breaks
-the conversion-window joins above on 24.8).
+(verified live on 24.8).
 """
 
 from __future__ import annotations
@@ -92,13 +86,9 @@ class ClickHouseAdapter(WarehouseAdapter):
             "username": user or "default",
             "password": password,
             "secure": str(self.options.get("secure", "")).strip().lower() in _TRUTHY,
-            # Non-equi JOIN ON conditions (conversion-window joins) need the
-            # first on ClickHouse 24.x; the second keeps IS NULL right after a
-            # LEFT JOIN. See module docstring.
-            "settings": {
-                "allow_experimental_join_condition": 1,
-                "optimize_functions_to_subcolumns": 0,
-            },
+            # Non-equi JOIN ON conditions (conversion-window joins) need
+            # this on ClickHouse 24.x; see module docstring.
+            "settings": {"allow_experimental_join_condition": 1},
         }
         if self.options.get("database"):
             # Default namespace so unqualified table names (jaffle_order,

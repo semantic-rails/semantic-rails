@@ -15,6 +15,7 @@ joins), run on the same database, and are also spelled out by hand.
 from __future__ import annotations
 
 import dataclasses
+import re
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import _WAREHOUSE_CONNECTORS
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 
@@ -63,7 +65,9 @@ INSERT INTO checkins VALUES
   (3, 'P2', NULL, TIMESTAMP '2026-01-01 06:00:00'),
   (4, 'P4', 'L7', TIMESTAMP '2026-01-01 06:00:00'),
   (5, 'P3', 'L3', TIMESTAMP '2026-02-12 06:00:00'),
-  (6, 'P9', 'L3', TIMESTAMP '2026-02-12 06:00:00')
+  (6, 'P9', 'L3', TIMESTAMP '2026-02-12 06:00:00'),
+  (7, 'P5', 'L9', TIMESTAMP '2026-02-20 06:00:00'),
+  (8, 'P1', 'L2', TIMESTAMP '2026-01-20 06:00:00')
 """
 
 PACKAGE = """
@@ -137,6 +141,8 @@ MODELS = {
               accumulation: {kind: event}}
             fare: {label: Fare, kind: aggregate, expr: fare, default_agg: sum,
               accumulation: {kind: flow}}
+            boarding_population: {label: Boarding population, kind: entity_count,
+              entity_key: boarding_id, accumulation: {kind: population}}
         """,
     "checkins": """
         model:
@@ -217,8 +223,11 @@ def _ask(runtime: Runtime, measure: str, *, group_by: str = "", where=()) -> dic
     return {row.get(group_by) if group_by else None: float(row["value"]) for row in rows}
 
 
-def _conversion_rate(runtime: Runtime, **extra: Any) -> list[dict[str, Any]]:
+def _conversion_rate(
+    runtime: Runtime, properties: tuple[str, ...] = (), **extra: Any
+) -> list[dict[str, Any]]:
     expression = {
+        **({"constant_properties": list(properties)} if properties else {}),
         "kind": "conversion",
         "entity": "entity.crew_person",
         "window": {"unit": "day", "value": 1},
@@ -295,26 +304,57 @@ def test_filters_on_a_looked_up_column_follow_sql_null_rules(
 
 
 # Check-ins that lead to a boarding by the same person within a day. Check-ins 2 (no person)
-# and 6 (a person with no record) have no person to match on, so they take no part; 1 and 5
-# convert, 3 and 4 don't.
+# and 6 (a person with no record) have no person to match on, so they take no part; 1, 5, 7
+# and 8 convert, 3 and 4 don't.
 CONVERSION_SQL = """
-SELECT NULL, AVG(CASE WHEN EXISTS (
+SELECT {group}, AVG(CASE WHEN EXISTS (
   SELECT 1 FROM boardings AS b WHERE b.person_id = c.person_id
   AND b.boarded_at >= c.checked_in_at AND b.boarded_at < c.checked_in_at + INTERVAL 1 DAY
+  {same_city}
 ) THEN 1.0 ELSE 0.0 END)
 FROM checkins AS c WHERE c.person_id IN (SELECT person_id FROM people) {where}
+GROUP BY 1
 """
+SQL_CHECKIN_EMPLOYEE = "(SELECT p.is_employee FROM people AS p WHERE p.person_id = c.person_id)"
+# The airport city, read through the leg: NULL for a check-in or boarding whose leg (or the
+# leg's airport) has no record.
+SQL_CHECKIN_CITY = (
+    "(SELECT a.city FROM legs AS l, airports AS a"
+    " WHERE l.leg_id = c.leg_id AND a.airport_code = l.airport_code)"
+)
+SQL_SAME_CITY = f"AND {SQL_CITY} = {SQL_CHECKIN_CITY}"
+
+
+def _conversion_gold(gold, *, group="NULL", same_city="", where=""):
+    sql = CONVERSION_SQL.format(group=group, same_city=same_city, where=where)
+    return gold(sql)
 
 
 def test_conversion_does_not_pair_events_that_have_no_match_entity(runtime, gold):
     """Events pair on the person key with null-safe equality, so an event whose person lookup
     found no row must not pair with another such event (check-in 2 with boarding 7, 6 with 8)."""
     (row,) = _conversion_rate(runtime)
-    assert row["rate"] == pytest.approx(0.5)
-    assert row["rate"] == pytest.approx(gold(CONVERSION_SQL.format(where=""))[None])
+    assert row["rate"] == pytest.approx(4 / 6)
+    assert row["rate"] == pytest.approx(_conversion_gold(gold)[None])
 
     by_employee = _conversion_rate(runtime, group_by=[EMPLOYEE])
-    assert {row[EMPLOYEE]: row["rate"] for row in by_employee} == {False: 0.5, True: 0.5}
+    rates = {row[EMPLOYEE]: row["rate"] for row in by_employee}
+    assert rates == {False: pytest.approx(0.75), True: pytest.approx(0.5)}  # 1, 7, 8 of 1, 3, 7, 8
+    assert rates == pytest.approx(_conversion_gold(gold, group=SQL_CHECKIN_EMPLOYEE))
+
+
+def test_conversion_does_not_pair_events_on_a_property_that_has_no_match(runtime, gold):
+    """Events also pair on constant properties, here the airport city read through the leg.
+    Check-in 7 and boarding 11 (leg L9) and check-in 5 and boarding 9 (an airport with no
+    record) both have no city, so they must not pair as having "the same city": only check-ins
+    1 and 8 have one, and both convert."""
+    (row,) = _conversion_rate(runtime, (CITY,))
+
+    assert row["rate"] == pytest.approx(1.0)
+    reference = _conversion_gold(
+        gold, same_city=SQL_SAME_CITY, where=f"AND {SQL_CHECKIN_CITY} IS NOT NULL"
+    )
+    assert reference[None] == pytest.approx(1.0)
 
 
 def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, gold):
@@ -336,13 +376,32 @@ def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, 
     (row,) = _conversion_rate(runtime, metric_filters=[busy_legs])
 
     busy = "SELECT leg_id FROM boardings GROUP BY leg_id HAVING COUNT(*) >= 2"
-    reference = gold(CONVERSION_SQL.format(where=f"AND c.leg_id IN ({busy})"))[None]
-    assert row["rate"] == pytest.approx(1.0)
-    assert reference == pytest.approx(1.0)
+    reference = _conversion_gold(gold, where=f"AND c.leg_id IN ({busy})")[None]
+    assert row["rate"] == pytest.approx(1.0)  # check-ins 1, 5 and 8 qualify, and convert
+    assert reference == pytest.approx(row["rate"])
 
 
-@pytest.mark.parametrize("warehouse", ["duckdb", "postgres", "clickhouse", "ducklake"])
-def test_every_dialect_left_joins_the_lookup(package, warehouse):
+# ClickHouse reads '' or 0 (not NULL) from an unmatched outer-join column unless it is
+# Nullable, so its lookups stay inner joins and drop the rows they find no match for.
+JOIN_TYPE = {
+    "duckdb": "LEFT",
+    "motherduck": "LEFT",
+    "ducklake": "LEFT",
+    "postgres": "LEFT",
+    "snowflake": "LEFT",
+    "bigquery": "LEFT",
+    "databricks": "LEFT",
+    "athena": "LEFT",
+    "clickhouse": "INNER",
+}
+
+
+def test_every_warehouse_has_a_lookup_join_type():
+    assert set(JOIN_TYPE) == set(_WAREHOUSE_CONNECTORS)
+
+
+@pytest.mark.parametrize("warehouse", sorted(JOIN_TYPE))
+def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
     base = load_package_config(str(package))
     config = dataclasses.replace(
         base, package=dataclasses.replace(base.package, warehouse=warehouse)
@@ -356,11 +415,75 @@ def test_every_dialect_left_joins_the_lookup(package, warehouse):
 
     sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
 
-    for join in (
-        "LEFT JOIN crew_roster ON boardings.leg_id = crew_roster.leg_id"
-        " AND boardings.person_id = crew_roster.person_id",
-        "LEFT JOIN legs ON boardings.leg_id = legs.leg_id",
-        "LEFT JOIN airports ON legs.airport_code = airports.airport_code",
-    ):
-        assert join in sql
-    assert "INNER JOIN" not in sql
+    # The roster, the leg and the airport: three lookup hops.
+    assert re.findall(r"\b(\w+) JOIN\b", sql) == [JOIN_TYPE[warehouse]] * 3
+
+
+BOARDED_MONTH = "temporal_role.crew_boarding_boarded_at__month"
+BOARDED_MONTHLY = {"temporal_role": "temporal_role.crew_boarding_boarded_at", "grain": "month"}
+
+
+def _busy_leg(measure: str, boardings: int) -> dict[str, Any]:
+    return {
+        "measure": f"measure.crew.{measure}",
+        "entity": "entity.crew_leg",
+        "op": ">=",
+        "value": boardings,
+    }
+
+
+def _scoped(measure: str, *predicates: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "scoped_aggregate",
+        "measure": f"measure.crew.{measure}",
+        "aggregation": "count_distinct",
+        "predicates": list(predicates),
+    }
+
+
+def _monthly(runtime: Runtime, expression: dict[str, Any], *, group_by=()) -> list[dict[str, Any]]:
+    query = {
+        "version": 1,
+        "select": [{"as": "value", "expression": expression}],
+        "time": BOARDED_MONTHLY,
+        **({"group_by": list(group_by)} if group_by else {}),
+    }
+    return runtime.query(query)["rows"]
+
+
+def test_a_metric_filter_keeps_a_row_whose_context_entity_has_no_match(runtime, gold):
+    """Boardings whose leg has any boarding that month, grouped by the boarder's kind: the
+    person is a context entity of the filter. Boarding 7 (no person) and 8 (a person with no
+    record) qualify on their own leg and must stay, under NULL, so the grouped rows add up to
+    the ungrouped total (boardings 12 and 13 have no leg, so no filter row applies to them)."""
+    expression = _scoped("boarding_count", _busy_leg("boarding_count", 1))
+
+    total = sum(row["value"] for row in _monthly(runtime, expression))
+    grouped = _monthly(runtime, expression, group_by=[EMPLOYEE])
+
+    by_employee: dict[Any, int] = {}
+    for row in grouped:
+        by_employee[row[EMPLOYEE]] = by_employee.get(row[EMPLOYEE], 0) + row["value"]
+    assert total == 11
+    assert by_employee == {False: 4, True: 5, None: 2}
+    assert by_employee == gold(
+        f"SELECT {SQL_EMPLOYEE}, COUNT(*) FROM boardings AS b WHERE b.leg_id IS NOT NULL GROUP BY 1"
+    )
+
+
+def test_an_entity_set_ratio_does_not_qualify_rows_without_the_predicate_entity(runtime):
+    """Of each month's boardings on a leg, the share on a leg with two boardings or more that
+    month. Boardings 12 and 13 have no leg, so no set qualifies them: March has no row, where a
+    NULL key in the set would give it the share 1.0."""
+    measure = "boarding_population"  # a population count takes the anchored entity-set path
+    expression = {
+        "kind": "ratio",
+        "numerator": _scoped(measure, _busy_leg(measure, 1), _busy_leg(measure, 2)),
+        "denominator": _scoped(measure, _busy_leg(measure, 1)),
+    }
+
+    rows = _monthly(runtime, expression)
+
+    months = {row[BOARDED_MONTH].month: row["value"] for row in rows}
+    # January: legs L1 (4) and L2 (3), all qualify. February: L3 (3) qualifies, L9 (1) doesn't.
+    assert months == {1: pytest.approx(7 / 7), 2: pytest.approx(3 / 4)}

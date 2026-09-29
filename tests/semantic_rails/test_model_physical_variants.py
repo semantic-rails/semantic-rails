@@ -780,7 +780,10 @@ _SHIP_TO_KEY = {
             id="distinct-entity-grain-not-a-dimension",  # rows per order can't be grouped
         ),
         # A column pre-joined from another model routes only along the query's join path.
-        pytest.param(({}, [_REGION], {"ship_to": False}), _BY_REGION, None, id="pre-joined-path"),
+        # ... and only once certified: no provider is installed here (see test_rollup_certification).
+        pytest.param(
+            ({}, [_REGION], {"ship_to": False}), _BY_REGION, "not_certified", id="pre-joined-path"
+        ),
         pytest.param(
             ({}, [_REGION], {"ship_to": False}),
             _rollup_query(_REVENUE, "sum", "month"),
@@ -811,7 +814,7 @@ _SHIP_TO_KEY = {
                 _rollup_query(_REVENUE, "sum", "month"),
                 where=[{"field": "dimension.region", "op": "=", "value": "east"}],
             ),
-            None,
+            "not_certified",
             id="pre-joined-path-filter",
         ),
         pytest.param(

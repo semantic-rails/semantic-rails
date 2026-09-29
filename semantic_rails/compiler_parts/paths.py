@@ -29,6 +29,7 @@ from ..expressions import (
     SemanticExpr,
     expr_kind,
 )
+from ..fanout import hop_sides
 from ..ir import BoundMeasure, PathSelection
 from ..schema import PackageConfig, RelationshipConfig
 from ..sql_ast import SqlBinary, SqlIdentifier, SqlIsNull, SqlJoin, SqlLiteral, SqlTableRef
@@ -351,16 +352,18 @@ def _join_on_for_relationship(
     return condition, right_table, next_entity
 
 
-def _is_lookup_hop(rel: RelationshipConfig, current_entity: str) -> bool:
+def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
     """True when the hop reaches at most one row for each current row (N:1, 1:1).
 
     A lookup only adds attributes, so it must keep the rows it finds no match for: they
     group under NULL, and a filter on the looked-up attribute still excludes them unless
-    it asks for NULL. A hop that fans out (1:N, M:N) keeps its inner join.
+    it asks for NULL. A hop that fans out (1:N, M:N) keeps its inner join, and so does every
+    hop on a warehouse whose outer join doesn't read NULL for an unmatched row.
     """
-    cardinality = str(rel.cardinality or "").upper().replace(" ", "")
-    forward = current_entity == rel.source_entity
-    return cardinality == "1:1" or cardinality == ("N:1" if forward else "1:N")
+    if not dialect_for_warehouse(config.package.warehouse).outer_lookup_joins:
+        return False
+    sides = hop_sides(rel.cardinality, forward=current_entity == rel.source_entity)
+    return sides is not None and sides[1] == "1" and sides[0] in ("1", "N")
 
 
 def _joins_for_paths(
@@ -401,7 +404,7 @@ def _joins_for_paths(
                 left = (
                     nullable_path
                     or bool(rel.temporal_validity)
-                    or _is_lookup_hop(rel, current_entity)
+                    or _is_lookup_hop(rel, current_entity, config)
                 )
                 joins.append(
                     SqlJoin(

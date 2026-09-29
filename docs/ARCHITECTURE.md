@@ -397,9 +397,11 @@ Important planner behaviors:
   plan metadata
 - historical joins use temporal-validity conditions anchored to the effective time axis
 - many-to-one and one-to-one hops are left joins, so a row with a NULL or unmatched foreign
-  key keeps its measure value under NULL; one-to-many hops stay inner joins. Conversions
-  and qualified entity sets, which pair rows with null-safe equality, leave out rows whose
-  entity key is NULL
+  key keeps its measure value under NULL; one-to-many hops stay inner joins, and so does every
+  hop on a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join
+  columns read a type default, not NULL). Conversions and qualified entity sets, which pair
+  rows with null-safe equality, leave out rows whose entity key, or a looked-up conversion
+  property, is NULL
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
