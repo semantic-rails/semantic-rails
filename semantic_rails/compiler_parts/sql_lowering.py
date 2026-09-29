@@ -1805,6 +1805,59 @@ def _entity_in_terms_of_leaf_select(
     )
 
 
+def _fanout_dedup_leaf_select(
+    measure_plan: MeasurePlan,
+    config: PackageConfig,
+    *,
+    key_fields: list[SqlField],
+    joins: list[SqlJoin],
+    where: list[Any],
+    value_expr: Any,
+) -> SqlSelect:
+    """Aggregate one row per (measure-entity key, output grain) across one-to-many hops.
+
+    The joins repeat a measure row once per matching child row. The DISTINCT keeps one copy per
+    output group: the row's key is in it and its value depends on that row alone, so only the
+    join's copies go. Each row then counts once in every group it has a matching child in, and
+    a leaf that only filters on the child is the semi-join of the qualifying rows.
+    """
+    entities = _entity_index(config)
+    measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
+    entity = entities[measure.entity]
+    table = _measure_owned_relation(measure, entities)
+    rows_name = f"{measure_plan.cte_name}_entity_rows"
+    rows = SqlSelect(
+        select=[
+            *(
+                SqlField(_column_ref(table, column), f"__entity_key_{index + 1}")
+                for index, column in enumerate(entity.key or [entity.primary_key])
+            ),
+            *key_fields,
+            SqlField(value_expr, "__entity_value"),
+        ],
+        from_table=SqlTableRef(name=table),
+        joins=joins,
+        where=where,
+        distinct=True,
+    )
+    group: list[Any] = [SqlIdentifier(parts=[rows_name, field.alias]) for field in key_fields]
+    value = _aggregation_expr(
+        SqlIdentifier(parts=[rows_name, "__entity_value"]),
+        measure_plan.bound_measure.aggregation,
+        parameters=measure_plan.bound_measure.aggregation_params,
+        dialect=_dialect(config),
+    )
+    return SqlSelect(
+        ctes=[SqlCte(name=rows_name, query=rows)],
+        select=[
+            *(SqlField(expr, field.alias) for expr, field in zip(group, key_fields, strict=True)),
+            SqlField(value, measure_plan.bound_measure.alias),
+        ],
+        from_table=SqlTableRef(name=rows_name),
+        group_by=group,
+    )
+
+
 def _source_rollup_leaf_select(
     plan: LogicalPlan,
     measure_plan: MeasurePlan,
@@ -2061,6 +2114,18 @@ def _measure_leaf_select(
 
     leaf_alias = measure_plan.bound_measure.alias
     leaf_value_expr = _config_expr_to_sql(measure.expr, measure, config)
+    if measure_plan.rewrite_strategy == "fanout_dedup":
+        joins = _joins_for_paths(
+            measure.entity, measure_plan.path_selections, config, time_spec=plan.time
+        )
+        return _fanout_dedup_leaf_select(
+            measure_plan,
+            config,
+            key_fields=select_fields,
+            joins=[*joins, *([leaf_calendar_join] if leaf_calendar_join is not None else [])],
+            where=where_clauses,
+            value_expr=leaf_value_expr,
+        )
     entity_in_terms_of = _entity_in_terms_of_leaf_select(plan, measure_plan, config)
     if entity_in_terms_of is not None:
         return entity_in_terms_of
@@ -2710,6 +2775,8 @@ def _foldable_leaf_signature(
         return None
     if _all_metric_predicates(plan, measure_plan):
         return None
+    if any(row.analysis.get("status") != "ok" for row in measure_plan.path_selections):
+        return None  # a one-to-many hop: the leaf rewrites (entity_in_terms_of, fanout_dedup)
     if measure_plan.path_selections and not _paths_are_single_hop_safe(
         measure_plan.path_selections, config
     ):
@@ -3172,7 +3239,10 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
         first_plan = group[0]
         measure = measures[first_plan.bound_measure.measure_id]
         selected_aggregate = _selected_aggregate_relation(first_plan, config)
-        entity_terms_anchor = _entity_in_terms_of_anchor_plan(plan, first_plan, config)
+        fanout_dedup = first_plan.rewrite_strategy == "fanout_dedup"
+        entity_terms_anchor = (
+            None if fanout_dedup else _entity_in_terms_of_anchor_plan(plan, first_plan, config)
+        )
         scan_entity = (
             str(entity_terms_anchor["anchor_entity"])
             if entity_terms_anchor is not None and selected_aggregate is None
@@ -3286,7 +3356,7 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
                         "contracts": contract_payloads,
                         "rewrite_reason": "entity_in_terms_of"
                         if entity_terms_anchor is not None
-                        else "",
+                        else ("fanout_dedup" if fanout_dedup else ""),
                         "physical_anchor_entity": scan_entity
                         if entity_terms_anchor is not None
                         else "",

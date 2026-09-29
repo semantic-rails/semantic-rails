@@ -276,3 +276,38 @@ def analyze_fanout(
         "status": "rewrite_required" if rewrite_required else "ok",
         "requires_rewrite_relationships": rewrite_required,
     }
+
+
+def one_to_many_descent(analysis: dict[str, Any], entity_keys: dict[str, list[str]]) -> bool:
+    """True when a rewrite-required path only goes down one-to-many hops, then looks up.
+
+    Every hop that needs a rewrite must be a plain one-to-many (the reverse of N:1, or a
+    forward 1:N) with no temporal validity, whose one side joins on exactly its declared key
+    (``entity_keys``), and it must come before any many-to-one lookup. Then each row of the
+    start entity has its own set of target rows, so a query can keep one row per (start key,
+    output grain) and count every start row once per group. A lookup followed by a fan-out
+    (orders -> customer -> sessions), an M:N hop or a join off the key relates the two
+    entities many-to-many, and stays refused.
+    """
+    descended = looked_up = False
+    for row in analysis.get("relationships", []) or []:
+        cardinality = str(row.get("cardinality", "")).upper().replace(" ", "")
+        forward = row.get("traversal") == "forward"
+        status = row.get("directional_safety")
+        if status == "requires_rewrite":
+            side = "source" if forward else "target"
+            one = str(row.get(f"{side}_entity", ""))
+            columns = list(row.get(f"{side}_columns") or [row.get(f"{side}_column")])
+            if (
+                cardinality != ("1:N" if forward else "N:1")
+                or looked_up
+                or row.get("temporal_validity")
+                or sorted(columns) != sorted(entity_keys.get(one, []))
+            ):
+                return False
+            descended = True
+        elif status != "safe":
+            return False
+        elif cardinality != "1:1":
+            looked_up = True
+    return descended

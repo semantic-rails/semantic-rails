@@ -652,34 +652,33 @@ def recovery_hints_for_error(
             if closest_query:
                 hint["closest_valid_query"] = closest_query
             mixed_grain_hints.append(hint)
+        # A different measure or dimension answers a different question, so these two
+        # hints name the candidates without a query to run in place of the question.
         if compatible_measures and closest_measure:
             dim_label = offending_dims[0] if offending_dims else "the requested dimension"
-            hint = {
-                "kind": "replace_measure",
-                "message": (
-                    f"Measure '{closest_measure}' aggregates at a grain that can group by "
-                    f"'{dim_label}' — query it instead."
-                ),
-                "compatible_measures": compatible_measures,
-            }
-            closest_query = dict(details.get("closest_compatible_measure_query", {}) or {})
-            if closest_query:
-                hint["closest_valid_query"] = closest_query
-            mixed_grain_hints.append(hint)
+            mixed_grain_hints.append(
+                {
+                    "kind": "replace_measure",
+                    "message": (
+                        f"Measure '{closest_measure}' can use '{dim_label}', but it is a "
+                        "different measure: use it only if it is what the question asks for."
+                    ),
+                    "compatible_measures": compatible_measures,
+                }
+            )
         compatible_dimensions = list(details.get("compatible_dimensions", []) or [])
         if compatible_dimensions:
             measure_label = requested_measures[0] if requested_measures else "the requested measure"
-            hint = {
-                "kind": "replace_dimension",
-                "message": (
-                    f"Keep '{measure_label}' and group by a dimension at a compatible grain."
-                ),
-                "compatible_dimensions": compatible_dimensions,
-            }
-            closest_query = dict(details.get("closest_compatible_dimension_query", {}) or {})
-            if closest_query:
-                hint["closest_valid_query"] = closest_query
-            mixed_grain_hints.append(hint)
+            mixed_grain_hints.append(
+                {
+                    "kind": "replace_dimension",
+                    "message": (
+                        f"'{measure_label}' can use these dimensions instead, which answers a "
+                        "different question."
+                    ),
+                    "compatible_dimensions": compatible_dimensions,
+                }
+            )
         analysis = dict(details.get("analysis", {}) or {})
         if str(details.get("purpose", "") or "") == "group_by" and list(
             analysis.get("requires_rewrite_relationships", []) or []
