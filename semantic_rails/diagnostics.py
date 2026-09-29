@@ -485,6 +485,21 @@ def recovery_hints_for_error(
         ]
     if code == "INCOMPATIBLE_TEMPORAL_ROLE":
         compatible = list(details.get("compatible", []) or [])
+        if not compatible and details.get("source") == "aggregate_if":
+            return []  # The message says what to do; there is no measure to point a hint at.
+        if not compatible and details.get("measure") and details.get("requested"):
+            return [
+                {
+                    "kind": "declare_measure_time_role",
+                    "message": (
+                        f"'{details['measure']}' has no time role. Mark one of its model's "
+                        "`times:` entries `default: true`, or list `times:` on the measure, "
+                        "then query it by that role. Or drop `time` from the query."
+                    ),
+                    "measure": details["measure"],
+                    "requested_temporal_role": details["requested"],
+                }
+            ]
         return [
             {
                 "kind": "select_compatible_temporal_role",
@@ -640,10 +655,11 @@ def recovery_hints_for_error(
         # When the offending dimension is a calendar-date dimension the
         # primary recovery is the time block — lead with it.
         time_axis = dict(details.get("time_axis_recovery", {}) or {})
-        if time_axis:
-            grain = str(time_axis.get("grain", "") or "")
-            role = str(time_axis.get("temporal_role", "") or "")
-            example = {"temporal_role": role or "<temporal_role>", "grain": grain or "<grain>"}
+        grain = str(time_axis.get("grain", "") or "")
+        role = str(time_axis.get("temporal_role", "") or "")
+        # Without a role the recovery found no time block that would answer: say nothing.
+        if role:
+            example = {"temporal_role": role, "grain": grain or "<grain>"}
             hint = {
                 "kind": "use_time_grain",
                 "message": (
