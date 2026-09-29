@@ -148,10 +148,21 @@ def choose_path(
                 for path in ranked
                 if (len(path), sum(rel_index[r].path_preference for r in path)) == first_score
             ]
+            routes = "; ".join(" -> ".join(path) for path in tied)
             raise SemanticLayerError(
                 "AMBIGUOUS_PATH",
-                f"Ambiguous path from '{start}' to '{target}'",
-                details={"start": start, "target": target, "candidates": tied},
+                f"Ambiguous path from '{start}' to '{target}': {routes}",
+                details={
+                    "start": start,
+                    "target": target,
+                    "candidates": tied,
+                    "hint": (
+                        "These routes can give different answers. "
+                        "Pin the one the question means: add graph.path_preferences with "
+                        "source_entity, target_entity and relationship_path set to one of the "
+                        "routes, or give the intended relationship a lower path_preference."
+                    ),
+                },
             )
     analysis.path_cache[cache_key] = (tuple(ranked[0]), tuple(tuple(path) for path in ranked))
     return list(ranked[0]), [list(path) for path in ranked]

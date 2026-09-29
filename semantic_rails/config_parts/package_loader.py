@@ -43,6 +43,20 @@ def _apply_as_override(mapping: dict[str, Any], expected_kind: str, *, namespace
     mapping["id"] = text
 
 
+def _column_list(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        value = value.get("columns", value.get("column"))
+    if value is None:
+        return []
+    return [str(col) for col in (value if isinstance(value, list) else [value])]
+
+
+def _join_columns(join: dict[str, Any], fk_columns: list[str]) -> list[str]:
+    """The source columns a join spec resolves to; an unset ``via`` is the
+    model's foreign key to the target entity."""
+    return _column_list(join.get("via")) or fk_columns
+
+
 def _model_mapping(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
     models = raw.get("models", {}) or {}
     if isinstance(models, dict):
@@ -528,7 +542,24 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             # bidirectional rollup checks.
             if reverse_rollup:
                 edge_spec["rollup_safe_aggregations_reverse"] = reverse_rollup
-            joins[b] = edge_spec
+            # A model keeps every relationship to an entity. An entry replaces
+            # the one already there only when it joins on the same columns
+            # (the explicit form of the inferred foreign key); a different
+            # column set is another role of the same entity, kept under its
+            # own key so that no declaration order decides which one a query
+            # gets.
+            existing = joins.get(b)
+            fk_columns = _column_list(((model.get("keys") or {}).get("foreign") or {}).get(b))
+            if existing is not None and _join_columns(existing, fk_columns) != _join_columns(
+                edge_spec, fk_columns
+            ):
+                edge_spec.setdefault("via", fk_columns)
+                join_key = f"{b}__{_slug(rel_name)}"
+                while join_key in joins:
+                    join_key += "_"
+                joins[join_key] = edge_spec
+            else:
+                joins[b] = edge_spec
             model["joins"] = joins
             models[source_model] = model
 

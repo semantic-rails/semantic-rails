@@ -1250,6 +1250,8 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
+- Several relationships join one pair of entities on different columns and no
+  route is pinned (`RELATIONSHIP_ROLES_UNPINNED`).
 
 ## Path-finding behavior (entity hopping)
 
@@ -1322,7 +1324,18 @@ Three guard rails back this up at query time:
   `path_preferences` pin). Adding a shortcut relationship to a package can
   silently re-route existing queries; this warning is the tripwire.
 - **`AMBIGUOUS_PATH` error** — two routes with identical hop count and
-  preference score refuse to compile rather than pick arbitrarily.
+  preference score refuse to compile rather than pick arbitrarily. The error
+  names the tied routes and how to pin one. A `graph.relationships:` entry
+  never replaces a foreign key on other columns: the model keeps both, so an
+  origin and a destination key into one `airport` entity are two routes, and a
+  query that needs the airport's city is refused until you pin the role it
+  means (a `path_preferences` row for the pair, or a lower `path_preference`
+  on the intended relationship). An entry replaces the inferred relationship
+  only when its `via` is that foreign key's columns.
+- **`RELATIONSHIP_ROLES_UNPINNED` warning** — reported when the package is
+  parsed (`semantic-rails check`, `validate`): several relationships join the
+  same pair of entities on different columns and nothing pins one. It names the
+  relationships and repeats the fix above.
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
   through two different relationships (e.g. region pinned to the home-city
   route while city resolves via the ship-to shortcut). One table instance

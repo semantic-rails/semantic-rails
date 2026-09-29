@@ -1364,6 +1364,36 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
                 )
             )
     warnings.extend(_semantic_collision_warnings(config, source_path))
+    warnings.extend(_unpinned_role_warnings(config, source_path))
+    return warnings
+
+
+def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
+    """One warning per entity pair joined on different columns by several
+    relationships (role-playing keys) with no pinned route: a query that
+    reaches the target is refused as AMBIGUOUS_PATH until one is pinned."""
+    by_pair: dict[tuple[str, str], list[Any]] = {}
+    for rel in config.relationships:
+        by_pair.setdefault((rel.source_entity, rel.target_entity), []).append(rel)
+    pinned = {(row.source_entity, row.target_entity) for row in config.path_preferences}
+    warnings: list[dict[str, Any]] = []
+    for (source, target), rels in by_pair.items():
+        if len({tuple(rel.source_columns or [rel.source_column]) for rel in rels}) < 2:
+            continue
+        if (source, target) in pinned or len({rel.path_preference for rel in rels}) > 1:
+            continue
+        ids = [rel.id for rel in rels]
+        warnings.append(
+            _error_payload(
+                "RELATIONSHIP_ROLES_UNPINNED",
+                f"{source_path}: {source} reaches {target} through {len(ids)} relationships "
+                f"({', '.join(ids)}) on different columns. Queries that need {target} from "
+                f"{source} are refused as AMBIGUOUS_PATH until one is pinned: declare "
+                "graph.path_preferences for the pair, or give the intended relationship a "
+                "lower path_preference.",
+                details={"source_entity": source, "target_entity": target, "relationships": ids},
+            )
+        )
     return warnings
 
 
