@@ -313,6 +313,8 @@ def _select_aggregate_relation(
         return "", {}
     leaf_time_role = _leaf_time_role(bound, query, config)
     blocker = _leaf_rollup_blocker(bound, query, config, leaf_time_role)
+    if not blocker and any(item.analysis.get("status") != "ok" for item in path_selections):
+        blocker = "one_to_many_hop"  # the leaf rewrites the hop; a rollup would re-multiply it
     if blocker:
         return "", {row.id: blocker for row in rows}
     filters = [

@@ -42,6 +42,8 @@ from .request_context import (
 )
 from .request_payload import (
     build_query_payload,
+    checked_discover_kinds,
+    parse_string_list,
     without_policy_context,
 )
 from .request_payload import (
@@ -50,7 +52,9 @@ from .request_payload import (
 from .request_payload import (
     coerce_bool as _coerce_bool,
 )
+from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
+from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -108,6 +112,10 @@ MCP_DEFAULT_MAX_ROWS = 200
 MCP_ROW_COUNT_CEILING = 10_000
 # The largest max_rows an MCP caller may request.
 MCP_MAX_ROWS_LIMIT = 100_000
+# Execute refuses a result whose rows serialize to more than this many characters (about 8K
+# tokens). An operator sets another limit with this variable.
+MCP_DEFAULT_MAX_RESULT_CHARS = 32_000
+_MAX_RESULT_CHARS_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
 
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
     "semantic_rails_mcp_tool_request_context", default=None
@@ -142,7 +150,7 @@ MCP_SERVER_INSTRUCTIONS = (
     "\n"
     'Query IR: select measures or metrics, group_by dimension ids, where filters (op "in"'
     " for several values), and time {temporal_role, grain, start, end}, where end is "
-    "exclusive. A window without a grain groups by the raw timestamp. The execute tool "
+    "exclusive. A window without a grain returns one total, with no time column. The execute tool "
     "schema lists expression shapes.\n"
     "\n"
     "segment(segment_id, action) validates, explains or previews a package-authored "
@@ -1335,6 +1343,23 @@ def _uses_own_clock(expression: Any) -> bool:
     return False
 
 
+def _collapsed_window(result: Mapping[str, Any]) -> bool:
+    """Whether the runtime aggregated a grainless time window as one total."""
+
+    return result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL
+
+
+def _narrowing_advice(query: Mapping[str, Any], result: Mapping[str, Any]) -> str:
+    if _ungrained_time(query) and not _collapsed_window(result):
+        return (
+            "set time.grain (for example 'month' or 'year'); without a grain, rows group by the "
+            "raw timestamp"
+        )
+    if isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
+        return "use a coarser time.grain, filter, or group by fewer dimensions"
+    return "filter, or group by fewer dimensions"
+
+
 def _truncate_rows(
     result: dict[str, Any], *, cap: int, query: Mapping[str, Any], fence_binds: bool = False
 ) -> dict[str, Any]:
@@ -1352,15 +1377,7 @@ def _truncate_rows(
     kept = rows[:cap]
     total = None if beyond_fetch else len(rows)
     counted = f"{total:,}" if total is not None else f"more than {len(rows):,}"
-    if _ungrained_time(query):
-        advice = (
-            "set time.grain (for example 'month' or 'year'); without a grain, rows group by the "
-            "raw timestamp"
-        )
-    elif isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
-        advice = "use a coarser time.grain, filter, or group by fewer dimensions"
-    else:
-        advice = "filter, or group by fewer dimensions"
+    advice = _narrowing_advice(query, result)
     raise_hint = (
         " The query's limits.max_rows caps the rows fetched."
         if fence_binds
@@ -1383,14 +1400,19 @@ def _truncate_rows(
     }
 
 
-def _grouped_ungrained_time_warning(query: Mapping[str, Any]) -> dict[str, Any] | None:
+def _grouped_ungrained_time_warning(
+    query: Mapping[str, Any], result: Mapping[str, Any]
+) -> dict[str, Any] | None:
     """Warn about a temporal role with no grain in a grouped query.
 
     The runtime's ``UNGRAINED_TIME_PROJECTION`` covers ungrouped queries
     only. A grouped one hits the same trap, each group returning one row per
-    distinct timestamp, so MCP adds its own code with the same shape.
+    distinct timestamp, so MCP adds its own code with the same shape. A window the
+    runtime aggregated as one total per group has no such rows.
     """
 
+    if _collapsed_window(result):
+        return None
     try:
         query = rewrite_select_shorthand(dict(query))[0]
     except SemanticLayerError:
@@ -1450,6 +1472,43 @@ def _with_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> dic
     return {**result, "warnings": [*existing, warning]}
 
 
+def _max_result_chars() -> int:
+    """The result-size limit: the operator's environment setting, else the default."""
+
+    return _positive_int(os.environ.get(_MAX_RESULT_CHARS_ENV)) or MCP_DEFAULT_MAX_RESULT_CHARS
+
+
+def _refuse_oversized(
+    result: Mapping[str, Any], query: Mapping[str, Any], *, limit: int, fetched: int
+) -> None:
+    """Refuse rows too large to send, rather than truncating them mid-answer.
+
+    The row cap clips a long result and says so; this covers rows that are few but wide,
+    or capped rows that are still too large for one response.
+    """
+
+    chars = len(json.dumps(result.get("rows") or [], default=str, separators=(",", ":")))
+    if chars <= limit:
+        return
+    returned = int(result.get("row_count", 0) or 0)
+    total = result.get("total_row_count") if result.get("truncated") else returned
+    counted = f"{total:,}" if total is not None else f"more than {fetched:,}"
+    advice = _narrowing_advice(query, result)
+    raise SemanticLayerError(
+        "RESULT_TOO_LARGE",
+        f"The result has {counted} rows, about {chars:,} characters, over the {limit:,}-character "
+        f"limit for one response, so no rows were returned. To fit it, {advice}, or select "
+        "fewer columns.",
+        details={
+            "row_count": returned,
+            "total_row_count": total,
+            "result_chars": chars,
+            "max_result_chars": limit,
+            "suggestion": advice,
+        },
+    )
+
+
 def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
     out = dict(result)
     records = list(out.get("rows") or [])
@@ -1478,16 +1537,14 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+_DISCOVER_SCREENED_KEYS = ("low_relevance", "out_of_scope")
+
+
 def _coerce_kinds(value: Any) -> list[str]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, str):
-        return [part.strip() for part in value.split(",") if part.strip()]
-    if isinstance(value, (list, tuple, set)):
-        return [str(part).strip() for part in value if str(part).strip()]
-    raise _argument_error(
-        "MCP argument 'kinds' must be a string or array of strings.", field="kinds", value=value
-    )
+    try:
+        return parse_string_list(value)
+    except ValueError as exc:
+        raise _argument_error(f"MCP argument 'kinds' {exc}.", field="kinds", value=value) from exc
 
 
 def _coerce_int(value: Any, default: int, *, field: str, minimum: int | None = None) -> int:
@@ -1987,10 +2044,12 @@ class SemanticLayerMCPAdapter:
         def _build(args: dict[str, Any]) -> dict[str, Any]:
             raw_terms = args.get("terms", "")
             terms_warnings: list[dict[str, Any]] = []
+            filter_dropped = False
             # Catch the most common typo (`term` singular) so the call
             # doesn't silently behave like an empty-terms browse.
             for typo, canonical in (("term", "terms"), ("kind", "kinds")):
                 if typo in args and canonical not in args:
+                    filter_dropped = filter_dropped or canonical == "kinds"
                     terms_warnings.append(
                         {
                             "code": "DISCOVER_UNKNOWN_ARG",
@@ -2002,28 +2061,6 @@ class SemanticLayerMCPAdapter:
                             "details": {"received": typo, "expected": canonical},
                         }
                     )
-            # Warn on unknown `kinds` values rather than silently
-            # ignoring them. The catalog filter accepts these eight
-            # object kinds — anything else should surface so the agent
-            # knows the filter was effectively a no-op.
-            requested_kinds = _coerce_kinds(args.get("kinds", []))
-            unknown_kinds = [k for k in requested_kinds if k not in _CATALOG_KIND_FILTERS]
-            if unknown_kinds:
-                terms_warnings.append(
-                    {
-                        "code": "DISCOVER_UNKNOWN_KIND",
-                        "severity": "warning",
-                        "message": (
-                            f"Unknown kinds filter value(s) {unknown_kinds}; "
-                            f"valid kinds: {sorted(_CATALOG_KIND_FILTERS)}. "
-                            "Unknown values were ignored."
-                        ),
-                        "details": {
-                            "unknown_kinds": unknown_kinds,
-                            "valid_kinds": sorted(_CATALOG_KIND_FILTERS),
-                        },
-                    }
-                )
             if raw_terms is None or isinstance(raw_terms, str):
                 terms_str = str(raw_terms or "")
             elif isinstance(raw_terms, (bool, int, float)):
@@ -2045,15 +2082,28 @@ class SemanticLayerMCPAdapter:
                     field="terms",
                     value=raw_terms,
                 )
+            # A kinds filter that is malformed or names no real kind is refused,
+            # never dropped: an empty result must mean the search ran over the
+            # requested kinds and found nothing. A ranked search leaves the
+            # kind check to `discover_payload` (or the resource grant), which
+            # know which kinds this call can produce.
+            requested_kinds = _coerce_kinds(args.get("kinds", []))
             if not terms_str.strip():
                 # Empty terms list the ids instead of ranking, a page per kind.
+                policy_context = _policy_context_payload(args)
+                # A grant lists only the kinds it can produce, so a filter for
+                # any other kind is refused, never answered with an empty list.
+                granted = policy_context.get("metric_allowlist") is not None
+                requested_kinds = checked_discover_kinds(
+                    requested_kinds, GRANT_DISCOVER_KINDS if granted else _CATALOG_KIND_FILTERS
+                )
                 catalog = resolve_catalog(
                     self.runtime,
                     view="summary",
                     verbosity="summary",
-                    policy_context=_policy_context_payload(args),
+                    policy_context=policy_context,
                 )
-                kinds = set(requested_kinds) & _CATALOG_KIND_FILTERS
+                kinds = set(requested_kinds)
                 size = _coerce_int(args.get("limit"), _DISCOVER_ID_PAGE, field="limit", minimum=1)
                 start = _coerce_int(args.get("offset"), 0, field="offset", minimum=0)
                 page: dict[str, Any] = {}
@@ -2083,7 +2133,7 @@ class SemanticLayerMCPAdapter:
             payload = discover_payload(
                 self.runtime,
                 terms=terms_str,
-                kinds=_coerce_kinds(args.get("kinds", [])),
+                kinds=requested_kinds,
                 partial_query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
@@ -2095,16 +2145,19 @@ class SemanticLayerMCPAdapter:
             if terms_warnings:
                 existing = list(payload.get("warnings") or [])
                 payload["warnings"] = existing + terms_warnings
-            # When discover returns no matches across every bucket, emit
-            # a recovery hint so the agent doesn't dead-end. Mirrors the
-            # empty-terms `DISCOVER_NO_TERMS` warning.
-            bucket_keys = ("measures", "metrics", "dimensions", "entities", "segments")
-            if terms_str.strip() and all(not payload.get(key) for key in bucket_keys):
+            # Read the payload's own signal instead of re-deriving emptiness: it
+            # counts every bucket (dimension values included) and says whether the
+            # search ran (`no_matches`) or was screened out before it did
+            # (`low_relevance`, `out_of_scope`). Mirrors the empty-terms
+            # `DISCOVER_NO_TERMS` warning: give the agent a concrete next step.
+            searched_nothing = "no_matches" in payload
+            screened = any(isinstance(payload.get(key), dict) for key in _DISCOVER_SCREENED_KEYS)
+            if terms_str.strip() and (searched_nothing or screened):
                 existing_hints = list(payload.get("recovery_hints") or [])
                 # Hoist any nested low_relevance/out_of_scope recovery_hint
                 # up to the top-level recovery_hints list so callers don't
                 # have to dig for it.
-                for nested_key in ("low_relevance", "out_of_scope"):
+                for nested_key in _DISCOVER_SCREENED_KEYS:
                     nested = payload.get(nested_key)
                     if isinstance(nested, dict):
                         nested_hint = nested.get("recovery_hint")
@@ -2114,16 +2167,33 @@ class SemanticLayerMCPAdapter:
                             existing_hints.append(
                                 {"kind": f"discover_{nested_key}", "message": nested_hint}
                             )
-                # And add a browse hint so the agent has a concrete
-                # next step regardless of why nothing matched.
+                # "No semantic objects matched" is only true for a search that
+                # ran over the requested kinds; a misspelled `kind` was never
+                # applied, and a screened-out search never ran at all.
+                if screened:
+                    browse_message = (
+                        f"'{terms_str}' was not searched as a catalog query (see the hint "
+                        "above). Call discover with empty terms to list every id."
+                    )
+                    if filter_dropped:
+                        browse_message += (
+                            " The 'kind' argument was also ignored (the argument is 'kinds')."
+                        )
+                elif filter_dropped:
+                    browse_message = (
+                        f"Nothing ranked for '{terms_str}', and the 'kind' argument was "
+                        "ignored (the argument is 'kinds'), so the requested kind filter "
+                        "was not applied. Retry with 'kinds', or call discover with empty "
+                        "terms to list every id."
+                    )
+                else:
+                    of_kinds = f" of kind {sorted(set(requested_kinds))}" if requested_kinds else ""
+                    browse_message = (
+                        f"No semantic objects{of_kinds} matched '{terms_str}'. "
+                        "Call discover with empty terms to list every id."
+                    )
                 existing_hints.append(
-                    {
-                        "kind": "browse_catalog_or_capabilities",
-                        "message": (
-                            f"No semantic objects matched '{terms_str}'. "
-                            "Call discover with empty terms to list every id."
-                        ),
-                    }
+                    {"kind": "browse_catalog_or_capabilities", "message": browse_message}
                 )
                 payload["recovery_hints"] = existing_hints
             return payload
@@ -2175,18 +2245,16 @@ class SemanticLayerMCPAdapter:
     def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             query = _query_payload_with_mcp_default_verbosity(args)
-            return _with_warning(
-                self.runtime.validate(query), _grouped_ungrained_time_warning(query)
-            )
+            result = self.runtime.validate(query)
+            return _with_warning(result, _grouped_ungrained_time_warning(query, result))
 
         return self._guarded(arguments, _run)
 
     def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             query = _query_payload_with_mcp_default_verbosity(args)
-            return _with_warning(
-                self.runtime.compile(query), _grouped_ungrained_time_warning(query)
-            )
+            result = self.runtime.compile(query)
+            return _with_warning(result, _grouped_ungrained_time_warning(query, result))
 
         return self._guarded(arguments, _run)
 
@@ -2208,7 +2276,9 @@ class SemanticLayerMCPAdapter:
                 result = _truncate_rows(
                     result, cap=cap, query=query_payload, fence_binds=fence_binds
                 )
-                result = _with_warning(result, _grouped_ungrained_time_warning(query_payload))
+                result = _with_warning(
+                    result, _grouped_ungrained_time_warning(query_payload, result)
+                )
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
             # execute returns 0 rows and the user authored no filters —
             # the most common "successful but wrong" outcome from a
@@ -2244,6 +2314,8 @@ class SemanticLayerMCPAdapter:
                     result["warnings"] = existing
             if bool(result.get("ok", True)) and row_format == "columns":
                 result = _columnar_rows(result)
+            if bool(result.get("ok", True)):
+                _refuse_oversized(result, query_payload, limit=_max_result_chars(), fetched=fetch)
             return result
 
         return self._guarded(arguments, _run)

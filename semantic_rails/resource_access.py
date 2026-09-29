@@ -20,6 +20,7 @@ from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
 from .policies import enforce_query_policies
 from .request_context import RequestContext, context_from_policy_context
+from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
 from .schema import PackageConfig
 
 
@@ -39,6 +40,18 @@ def _public_error(exc: SemanticLayerError) -> SemanticLayerError:
         return access_denied()
     if exc.code == "QUERY_EXECUTION_ERROR":
         return query_execution_error({})
+    details = exc.details or {}
+    if (
+        exc.code == "INVALID_MCP_ARGUMENTS"
+        and details.get("field") == "kinds"
+        and details.get("unknown_kinds")
+    ):
+        # The refusal of a `kinds` value carries only the caller's own values
+        # and the static set of searchable kinds, so it names no package object.
+        return unknown_discover_kinds_error(
+            [str(kind) for kind in details["unknown_kinds"]],
+            frozenset(str(kind) for kind in details.get("valid_kinds") or ()),
+        )
     # Preserve actionable operational/validation codes; package-generated
     # messages, details, and recovery candidates may name hidden objects.
     code = exc.code if exc.code in ERROR_CODES else "INVALID_QUERY"
@@ -260,9 +273,17 @@ def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# The kinds ``visible_rows`` can produce. A grant never searches measures,
+# segments, entities or dimension values, so those are refused rather than
+# answered with an empty result.
+GRANT_DISCOVER_KINDS: frozenset[str] = frozenset({"metric", "dimension", "temporal_role"})
+
+
 def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
+    # The grant path never reaches ``discover_payload``'s own body, so it
+    # applies the same kinds guard: an unknown kind is refused, not emptied.
+    kinds = checked_discover_kinds(kwargs.get("kinds"), GRANT_DISCOVER_KINDS)
     terms = set(re.findall(r"[a-z0-9]+", str(kwargs.get("terms", "")).lower()))
-    kinds = kwargs.get("kinds") or ()
     rows = []
     for row in access.visible_rows():
         if kinds and row["kind"] not in kinds:
@@ -433,15 +454,23 @@ def run_authorized_operation(
                     "warehouse",
                     "dialect",
                     "sql_profile",
+                    # Fixed engine strings that name no objects.
+                    "assumptions",
+                    "time_shape",
                 }
             }
-            from .runtime_parts.responses import output_columns
+            from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, output_columns
 
             # Reuse the engine's descriptor builder even when minimal verbosity
             # omitted it. It uses the authorized query, not expanded recipes.
             columns = output_columns(
                 access.config,
-                {"explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict())},
+                {
+                    "explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict()),
+                    "logical_plan": SimpleNamespace(
+                        time={"window_total": result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL}
+                    ),
+                },
             )
             permitted = set(access.context.metric_allowlist or ()) | set(
                 access.context.dimension_allowlist or ()

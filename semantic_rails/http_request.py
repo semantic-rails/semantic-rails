@@ -33,6 +33,7 @@ from typing import Any
 from .request_context import RequestContext
 from .request_payload import (
     build_query_payload,
+    parse_string_list,
     without_policy_context,
 )
 from .request_payload import (
@@ -63,13 +64,10 @@ def coerce_int(value: Any, default: int, *, field: str, minimum: int | None = No
 
 
 def coerce_string_list(value: Any, *, field: str) -> list[str]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, str):
-        return [part.strip() for part in value.split(",") if part.strip()]
-    if isinstance(value, (list, tuple, set)):
-        return [str(part).strip() for part in value if str(part).strip()]
-    raise HTTPInputError(f"Field '{field}' must be a string or array of strings.")
+    try:
+        return parse_string_list(value)
+    except ValueError as exc:
+        raise HTTPInputError(f"Field '{field}' {exc}.") from exc
 
 
 PUBLIC_API_PREFIX = "/api/v1"
