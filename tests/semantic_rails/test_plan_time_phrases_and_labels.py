@@ -1343,7 +1343,7 @@ def test_a_list_of_names_the_draft_does_not_filter_on_is_not_ok(
 
 @pytest.mark.parametrize(
     "intent",
-    ["revenue with YoY", "revenue from top decile of customers by lifetime spend"],
+    ["revenue with YoY", "revenue with cumulative"],
 )
 def test_a_single_word_the_planner_reads_elsewhere_is_only_a_warning(
     runtime_factory: Any, intent: str
@@ -1356,5 +1356,20 @@ def test_a_single_word_the_planner_reads_elsewhere_is_only_a_warning(
         assert _measures(payload)[0] == "measure.jaffle.revenue_usd"
         (warning,) = payload["warnings"]
         assert warning["code"] == "PLAN_UNMATCHED_TERMS"
+    finally:
+        runtime.close()
+
+
+def test_a_lifetime_percentile_cohort_is_refused_not_warned(runtime_factory: Any) -> None:
+    """A percentile cohort ranked by a lifetime measure is refused as semantic drift, not ok."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime,
+            intent="revenue from top decile of customers by lifetime spend",
+            detail="query",
+        )
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
     finally:
         runtime.close()
