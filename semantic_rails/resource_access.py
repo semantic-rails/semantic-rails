@@ -433,15 +433,23 @@ def run_authorized_operation(
                     "warehouse",
                     "dialect",
                     "sql_profile",
+                    # Fixed engine strings that name no objects.
+                    "assumptions",
+                    "time_shape",
                 }
             }
-            from .runtime_parts.responses import output_columns
+            from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, output_columns
 
             # Reuse the engine's descriptor builder even when minimal verbosity
             # omitted it. It uses the authorized query, not expanded recipes.
             columns = output_columns(
                 access.config,
-                {"explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict())},
+                {
+                    "explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict()),
+                    "logical_plan": SimpleNamespace(
+                        time={"window_total": result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL}
+                    ),
+                },
             )
             permitted = set(access.context.metric_allowlist or ()) | set(
                 access.context.dimension_allowlist or ()

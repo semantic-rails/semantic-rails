@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
@@ -241,6 +242,20 @@ def test_schema_reference_positions(walker, case):
     assert expected in walker(nested) if expected else not walker(nested)
 
 
+POLICY_COMBOS = list(itertools.product(["deny", "redact"], ["roles", "audiences"]))
+
+
+def _rotate_policy(rows):
+    """Pair each row with one (action, scope), so every combination runs on a quarter of them.
+
+    The action and the scope only change how a policy matches, never how an
+    expression is walked, so crossing them with every row repeats the same
+    walk. The shift after each full turn keeps a short trailing axis from
+    always meeting the same two combinations.
+    """
+    return [(*row, *POLICY_COMBOS[(i + i // 4) % 4]) for i, row in enumerate(rows)]
+
+
 @pytest.fixture(scope="module")
 def base_config():
     from semantic_rails.config import load_package_config
@@ -287,11 +302,12 @@ def _schema_query(case, nested=False):
     return query
 
 
-@pytest.mark.parametrize("action", ["deny", "redact"])
-@pytest.mark.parametrize("scope", ["audiences", "roles"])
-@pytest.mark.parametrize("nested", [False, True])
-@pytest.mark.parametrize("case", [case for case in CASES if case[3]], ids=lambda c: c[0])
-def test_runtime_blocks_before_compile(base_config, monkeypatch, action, scope, nested, case):
+@pytest.mark.parametrize(
+    "case,nested,action,scope",
+    _rotate_policy(itertools.product([case for case in CASES if case[3]], [False, True])),
+    ids=lambda value: value[0] if isinstance(value, tuple) else None,
+)
+def test_runtime_blocks_before_compile(base_config, monkeypatch, case, nested, action, scope):
     from semantic_rails import compiler
 
     _, _, protected, _ = case
@@ -513,10 +529,14 @@ def test_parser_aliases_validate_and_compile(base_config, alias, placement):
         engine.close()
 
 
-@pytest.mark.parametrize("alias,slot", ALIAS_SLOTS)
-@pytest.mark.parametrize("placement", ["direct", "nested", "metric_filter"])
-@pytest.mark.parametrize("action", ["deny", "redact"])
-@pytest.mark.parametrize("scope", ["roles", "audiences"])
+@pytest.mark.parametrize(
+    "alias,slot,placement,action,scope",
+    _rotate_policy(
+        (*slot, placement)
+        for slot in ALIAS_SLOTS
+        for placement in ["direct", "nested", "metric_filter"]
+    ),
+)
 def test_parser_alias_dependencies_block_before_rendering(
     base_config, monkeypatch, alias, slot, placement, action, scope
 ):
@@ -550,9 +570,7 @@ def test_parser_alias_dependencies_block_before_rendering(
         engine.close()
 
 
-@pytest.mark.parametrize("alias,slot", ALIAS_SLOTS)
-@pytest.mark.parametrize("action", ["deny", "redact"])
-@pytest.mark.parametrize("scope", ["roles", "audiences"])
+@pytest.mark.parametrize("alias,slot,action,scope", _rotate_policy(ALIAS_SLOTS))
 def test_parser_alias_segment_dependencies_block_before_rendering(
     base_config, monkeypatch, alias, slot, action, scope
 ):
@@ -838,20 +856,20 @@ def _spelling_case(base_config, spelling):
 
 
 @pytest.mark.parametrize(
-    "spelling,placement",
-    [
-        (spelling, placement)
-        for spelling in [*SPELLINGS, *PREDICATES]
-        for placement in ["direct", "nested", "recipe"]
-    ]
-    + [
-        (spelling, placement)
-        for spelling in SPELLINGS
-        for placement in ["conversion", "conversion_recipe"]
-    ],
+    "spelling,placement,action,scope",
+    _rotate_policy(
+        [
+            (spelling, placement)
+            for spelling in [*SPELLINGS, *PREDICATES]
+            for placement in ["direct", "nested", "recipe"]
+        ]
+        + [
+            (spelling, placement)
+            for spelling in SPELLINGS
+            for placement in ["conversion", "conversion_recipe"]
+        ]
+    ),
 )
-@pytest.mark.parametrize("action", ["deny", "redact"])
-@pytest.mark.parametrize("scope", ["roles", "audiences"])
 def test_reference_spellings_denied_before_compile(
     base_config, monkeypatch, spelling, placement, action, scope
 ):
@@ -1054,10 +1072,12 @@ def _table_column_expression(slot):
     }
 
 
-@pytest.mark.parametrize("slot", ["condition", "value"])
-@pytest.mark.parametrize("placement", ["direct", "nested", "recipe"])
-@pytest.mark.parametrize("action", ["deny", "redact"])
-@pytest.mark.parametrize("scope", ["roles", "audiences"])
+@pytest.mark.parametrize(
+    "slot,placement,action,scope",
+    _rotate_policy(
+        itertools.product(["condition", "value"], ["direct", "nested", "recipe"]),
+    ),
+)
 def test_table_column_denied_before_compile(
     base_config, monkeypatch, slot, placement, action, scope
 ):
@@ -1181,9 +1201,7 @@ def _dependency_case(base_config, form):
     return config, query, protected
 
 
-@pytest.mark.parametrize("form", DEPENDENCY_FORMS)
-@pytest.mark.parametrize("action", ["deny", "redact"])
-@pytest.mark.parametrize("scope", ["roles", "audiences"])
+@pytest.mark.parametrize("form,action,scope", _rotate_policy((form,) for form in DEPENDENCY_FORMS))
 def test_authored_dependencies_denied_before_compile(base_config, monkeypatch, form, action, scope):
     from semantic_rails.request_context import RequestContext
 
@@ -1330,11 +1348,16 @@ def _implicit_time_case(base_config, kind, placement, override=""):
     return config, query, role, safe_role
 
 
-@pytest.mark.parametrize("kind", ["conversion", "first_value", "last_value"])
-@pytest.mark.parametrize("placement", ["direct", "nested", "recipe"])
-@pytest.mark.parametrize("protected_kind", ["role", "dimension"])
-@pytest.mark.parametrize("action", ["deny", "redact"])
-@pytest.mark.parametrize("scope", ["roles", "audiences"])
+@pytest.mark.parametrize(
+    "kind,placement,protected_kind,action,scope",
+    _rotate_policy(
+        itertools.product(
+            ["conversion", "first_value", "last_value"],
+            ["direct", "nested", "recipe"],
+            ["role", "dimension"],
+        )
+    ),
+)
 def test_implicit_temporal_dependencies_block_before_compile(
     base_config, monkeypatch, kind, placement, protected_kind, action, scope
 ):

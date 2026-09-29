@@ -21,6 +21,11 @@ warehouse — the concrete escape routes:
    calendar-date group_by. The suggested temporal role and grain are
    derived from the query and the dimension name.
 
+Only the time-axis recovery carries a ready query: it asks the same question.
+A compatible measure or dimension asks a different one (order revenue is not
+item revenue), so those are listed for the caller to judge, never offered as
+a ``closest_valid_query`` an agent would run in place of the question.
+
 The computation is bounded: candidate scans are capped and each
 pairing check is a cached path lookup plus a fan-out analysis, so
 enrichment stays cheap even for large registries. Failures inside the
@@ -206,97 +211,6 @@ def _compact_query_payload(query: NormalizedQuery) -> dict[str, Any]:
     return payload
 
 
-def _replace_measure_refs(
-    value: Any,
-    *,
-    requested: set[str],
-    replacement: str,
-    replacement_aggregation: str,
-) -> tuple[Any, bool]:
-    if isinstance(value, list):
-        replaced = False
-        list_out = []
-        for item in value:
-            new_item, item_replaced = _replace_measure_refs(
-                item,
-                requested=requested,
-                replacement=replacement,
-                replacement_aggregation=replacement_aggregation,
-            )
-            list_out.append(new_item)
-            replaced = replaced or item_replaced
-        return list_out, replaced
-    if not isinstance(value, dict):
-        return deepcopy(value), False
-    dict_out: dict[str, Any] = {}
-    replaced = False
-    replace_current = value.get("measure") in requested
-    for key, item in value.items():
-        if key == "measure" and replace_current:
-            dict_out[key] = replacement
-            replaced = True
-            continue
-        if key == "aggregation" and replace_current and replacement_aggregation:
-            dict_out[key] = replacement_aggregation
-            continue
-        new_item, item_replaced = _replace_measure_refs(
-            item,
-            requested=requested,
-            replacement=replacement,
-            replacement_aggregation=replacement_aggregation,
-        )
-        dict_out[key] = new_item
-        replaced = replaced or item_replaced
-    return dict_out, replaced
-
-
-def _query_replacing_measure(
-    query: NormalizedQuery,
-    *,
-    requested: list[str],
-    replacement: str,
-    replacement_aggregation: str,
-) -> dict[str, Any]:
-    requested_set = set(requested)
-    if not requested_set or not replacement:
-        return {}
-    payload = _compact_query_payload(query)
-    replaced = False
-    select: list[dict[str, Any]] = []
-    for item in payload.get("select", []) or []:
-        row = dict(item)
-        expression, item_replaced = _replace_measure_refs(
-            row.get("expression", {}),
-            requested=requested_set,
-            replacement=replacement,
-            replacement_aggregation=replacement_aggregation,
-        )
-        row["expression"] = expression
-        select.append(row)
-        replaced = replaced or item_replaced
-    if not replaced:
-        return {}
-    payload["select"] = select
-    return payload
-
-
-def _query_replacing_dimension(
-    query: NormalizedQuery, *, offending_dim_ids: list[str], replacement: str
-) -> dict[str, Any]:
-    offending = set(offending_dim_ids)
-    if not offending or not replacement:
-        return {}
-    payload = _compact_query_payload(query)
-    group_by = [
-        replacement if dim_id in offending else dim_id
-        for dim_id in list(payload.get("group_by", []) or [])
-    ]
-    if group_by == list(payload.get("group_by", []) or []):
-        return {}
-    payload["group_by"] = list(dict.fromkeys(group_by))
-    return payload
-
-
 def _query_using_time_axis(
     query: NormalizedQuery, *, calendar_dimension: str, temporal_role: str, grain: str
 ) -> dict[str, Any]:
@@ -433,14 +347,6 @@ def _enrichment_unsafe(
         if compatible_measures:
             enrichment["compatible_measures"] = compatible_measures
             enrichment["closest_compatible_measure"] = compatible_measures[0]
-            query_template = _query_replacing_measure(
-                query,
-                requested=requested,
-                replacement=compatible_measures[0],
-                replacement_aggregation=measures[compatible_measures[0]].default_aggregation,
-            )
-            if query_template:
-                enrichment["closest_compatible_measure_query"] = query_template
 
     compatible_dimensions = _compatible_dimensions(
         config,
@@ -452,11 +358,6 @@ def _enrichment_unsafe(
     )
     if compatible_dimensions:
         enrichment["compatible_dimensions"] = compatible_dimensions
-        query_template = _query_replacing_dimension(
-            query, offending_dim_ids=offending_dim_ids, replacement=compatible_dimensions[0]
-        )
-        if query_template:
-            enrichment["closest_compatible_dimension_query"] = query_template
 
     calendar_dims = [dim for dim in offending_dims if _is_calendar_dimension(config, dim)]
     if calendar_dims:

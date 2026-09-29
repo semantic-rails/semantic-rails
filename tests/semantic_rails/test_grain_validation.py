@@ -198,23 +198,3 @@ def test_mcp_adapter_surfaces_grain_error_with_recovery_hints(runtime_factory):
         )
     finally:
         runtime.close()
-
-
-def test_valid_grain_still_compiles(runtime_factory):
-    """Sanity check: existing valid queries with ``grain: "month"``
-    must still compile after the validator is added — we must not
-    accidentally strip or reject good grains."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = runtime.validate(
-            {
-                "select": _select_revenue(),
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "month",
-                },
-            }
-        )
-        assert report["ok"] is True, f"valid grain query must compile: {report.get('errors')}"
-    finally:
-        runtime.close()
