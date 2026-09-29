@@ -64,6 +64,7 @@ CREATE TABLE sessions AS SELECT * FROM (VALUES
   (1, 10, 'web'), (2, 10, 'app'), (3, 11, 'web')
 ) AS t(session_id, customer_id, channel);
 CREATE TABLE coupons AS SELECT * FROM (VALUES (1, 'A', 5.0), (2, 'B', 7.0)) AS t(coupon_id, code, face_value);
+CREATE TABLE payments AS SELECT * FROM (VALUES (1, 1, 5.0), (2, 1, 5.0)) AS t(payment_id, order_id, amount);
 """
 
 PACKAGE = """
@@ -92,7 +93,7 @@ model:
 model:
   id: order_items
   relation: order_items
-  entities: {item: {}, order: {}, product: {expr: sku}}
+  entities: {item: {}, order: {}, product: {expr: sku}, receipt: {expr: order_id}}
   dimensions:
     product_type: {label: Item product type, kind: categorical}
     is_hot: {label: Hot item, kind: boolean}
@@ -129,6 +130,16 @@ model:
   dimensions:
     channel: {label: Channel, kind: categorical}
 """,
+    "payments": """
+model:
+  id: payments
+  relation: payments
+  grain: [payment_id]
+  entities: {receipt: {}}
+  measures:
+    paid: {label: Paid, kind: aggregate, expr: amount, accumulation: {kind: flow},
+      value_type: currency}
+""",
     "coupons": """
 model:
   id: coupons
@@ -146,6 +157,8 @@ ENTITIES = {
     "customer": ["customer_id", "customers"],
     "session": ["session_id", "sessions"],
     "coupon": ["coupon_id", "coupons"],
+    # Receipts are keyed by their order, but each payment is a row.
+    "receipt": ["order_id", "payments"],
 }
 # Orders reach a coupon by its code, not its key.
 RELATIONSHIPS = {
@@ -362,6 +375,17 @@ def _where(op: str, value: Any, field: str = TYPE) -> dict[str, Any]:
     return {"select": [_measure("revenue")], "where": [{"field": field, "op": op, "value": value}]}
 
 
+def _bound_filter(clause: dict[str, Any]) -> dict[str, Any]:
+    """Revenue with a measure-bound filter (the metric_filter path)."""
+    expression = {
+        "kind": "aggregate",
+        "measure": "measure.hop.revenue",
+        "aggregation": "sum",
+        "filter": {"all": [clause]},
+    }
+    return {"select": [{"expression": expression, "as": "revenue"}]}
+
+
 NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
 
 
@@ -383,26 +407,31 @@ NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
         (_where("=", False, HOT), NEGATED),
         (_where("=", "false", HOT), NEGATED),
         (_where("in", [False], HOT), NEGATED),
+        (_bound_filter({"field": TYPE, "op": "!=", "value": "beverage"}), NEGATED),
+        # Two conditions on one child: the same item, or any items each?
         (
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "aggregate",
-                            "measure": "measure.hop.revenue",
-                            "aggregation": "sum",
-                            "filter": {"all": [{"field": TYPE, "op": "!=", "value": "beverage"}]},
-                        },
-                        "as": "revenue",
-                    }
-                ]
-            },
-            NEGATED,
+            {"select": [_measure("revenue")], "where": [BEVERAGE, {**BEVERAGE, "value": "jaffle"}]},
+            "same one-to-many hop",
         ),
+        (
+            {**GROUPED_COUNT, "where": [{"field": HOT, "op": "=", "value": True}]},
+            "same one-to-many hop",
+        ),
+        (
+            {**GROUPED_COUNT, "where": [{"field": CATEGORY, "op": "=", "value": "hot"}]},
+            "same one-to-many hop",
+        ),
+        # On a boolean only "= true" reads one way.
+        (_where("<", True, HOT), NEGATED),
+        (_where("<=", False, HOT), NEGATED),
+        (_bound_filter({"field": HOT, "op": "<", "value": True}), NEGATED),
+        (_bound_filter({"field": HOT, "op": "=", "value": 0}), NEGATED),
         # orders -> customer -> sessions: many-to-many through the customer.
         ({"select": [_measure("order_count")], "group_by": [CHANNEL]}, "many-to-many"),
         # Coupons join orders on a code, not their key: two coupons could share it.
         ({"select": [_measure("face_value")], "where": [BEVERAGE]}, "join off the declared key"),
+        # Two payments of one receipt with equal amounts would merge into one row.
+        ({"select": [_measure("paid")], "where": [BEVERAGE]}, "rows are finer than its entity"),
         # A pre-aggregated value has no one row per key to count.
         ({"select": [_measure("score", "avg")], "where": [BEVERAGE]}, "not defined over one row"),
         (
@@ -437,8 +466,16 @@ NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
         "boolean_false_text",
         "boolean_in_false",
         "measure_filter",
+        "two_filters_one_child",
+        "group_and_filter_one_child",
+        "group_and_filter_through_a_lookup",
+        "boolean_less_than_true",
+        "boolean_at_most_false",
+        "measure_filter_boolean_less_than_true",
+        "measure_filter_boolean_zero",
         "many_to_many",
         "off_key_join",
+        "finer_row_grain",
         "non_additive",
         "cumulative",
     ],
@@ -489,36 +526,78 @@ def test_a_refusal_never_offers_a_different_measure(package: Path) -> None:
         ), query
 
 
-def test_rollup_safe_package_discloses_the_de_duplication(runtime_factory) -> None:
-    """A grouped distinct count plus a filter across the hop used to take entity_in_terms_of;
-    the filter moves it to the de-duplicated leaf, which reports its own step."""
+# jaffle_shop's item -> order relationship is rollup_safe, so a grouped order count takes the
+# entity_in_terms_of rewrite. The values its tests/advanced.yml pins come from this SQL on the
+# seeded data/jaffle_shop.duckdb:
+#   orders_with_a_beverage_by_store_snapshot (Brooklyn 20117, Philadelphia 35857) and
+#   revenue_of_orders_with_a_beverage_by_store_snapshot (238963.11, 452138.42):
+#     SELECT s.store_name, COUNT(*), ROUND(SUM(o.order_total_cents) / 100.0, 2)
+#     FROM jaffle_order o JOIN jaffle_store s ON s.store_id = o.store_id
+#     WHERE EXISTS (SELECT 1 FROM jaffle_item i
+#                   WHERE i.order_id = o.order_id AND i.product_type = 'beverage')
+#     GROUP BY 1
+#   ordering_customers_by_item_product_type_snapshot (beverage 939, jaffle 678):
+#     SELECT i.product_type, COUNT(DISTINCT o.customer_id)
+#     FROM jaffle_item i JOIN jaffle_order o ON o.order_id = i.order_id GROUP BY 1
+def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> None:
+    """With two measures, the order count's entity_in_terms_of rewrite is still disclosed."""
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
             "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-            "group_by": ["dimension.jaffle_item_product_type"],
-            "where": [
-                {"field": "dimension.jaffle_item_product_name", "op": "=", "value": "tangaroo"}
+            "select": [
+                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                {"expression": {"measure": "measure.jaffle.item_revenue_usd"}, "as": "revenue"},
             ],
+            "group_by": ["dimension.jaffle_item_product_type"],
         }
         result = runtime.query(query)
         steps = [step["kind"] for step in runtime.validate(query)["logical_plan"]["rewrite_steps"]]
         db_path = runtime.db_path
     finally:
         runtime.close()
-    assert steps == ["fanout_dedup"]
+    assert steps == ["entity_in_terms_of"]
+    assert [w["code"] for w in result["warnings"]].count("REWRITE_APPLIED") == 1
     assert result["provenance_summary"]["rewrite_status"] == "rewritten"
     with duckdb.connect(db_path, read_only=True) as conn:
         expected = conn.execute(
-            "SELECT product_type, COUNT(DISTINCT order_id) FROM jaffle_item"
-            " WHERE product_name = 'tangaroo' GROUP BY 1"
+            "SELECT product_type, COUNT(DISTINCT order_id), SUM(item_revenue_cents) / 100.0"
+            " FROM jaffle_item GROUP BY 1"
         ).fetchall()
-    assert sorted(tuple(row.values()) for row in result["rows"]) == sorted(expected)
+    assert _normal(tuple(row.values()) for row in result["rows"]) == _normal(expected)
 
 
 # The de-duplicated leaf on every locally testable warehouse: a CTE, SELECT DISTINCT and an
-# aggregate over its columns, with each dialect's quoting.
+# aggregate over its columns. Only the time bucket and the median differ by dialect.
+WAREHOUSES = ("duckdb", "postgres", "clickhouse", "ducklake")
+_TRUNC = "DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))"
+MONTH = {
+    "duckdb": _TRUNC,
+    "postgres": _TRUNC,
+    "clickhouse": f"CAST({_TRUNC} AS TIMESTAMP)",
+    "ducklake": _TRUNC,
+}
+_VALUE = "leaf_1__leaf_1_entity_rows.__entity_value"
+MEDIAN = {
+    "duckdb": f"MEDIAN({_VALUE})",
+    "postgres": f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {_VALUE} ASC)",
+    "clickhouse": f"quantileExactInclusive(0.5)({_VALUE})",
+    "ducklake": f"MEDIAN({_VALUE})",
+}
+SHAPES = {
+    "filtered": FILTERED_SUM,
+    "grouped": GROUPED_COUNT,
+    "monthly": {**FILTERED_SUM, "time": {"temporal_role": ROLE, "grain": "month"}},
+    "median": {
+        "select": [
+            {
+                "expression": {"measure": "measure.hop.revenue", "aggregation": "median"},
+                "as": "median_revenue",
+            }
+        ],
+        "where": [BEVERAGE],
+    },
+}
 DIALECT_SQL = {
     "filtered": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
@@ -557,16 +636,54 @@ SELECT
   base.g1 AS "dimension.hop_item_product_type",
   base.m1 AS orders
 FROM leaf_1 AS base""",
+    "monthly": """WITH leaf_1__leaf_1_entity_rows AS (
+SELECT DISTINCT
+  orders.order_id AS __entity_key_1,
+  {month} AS t,
+  orders.total AS __entity_value
+FROM orders
+INNER JOIN order_items ON orders.order_id = order_items.order_id
+WHERE
+  order_items.product_type = 'beverage'
+),
+leaf_1 AS (
+SELECT
+  leaf_1__leaf_1_entity_rows.t AS t,
+  SUM(leaf_1__leaf_1_entity_rows.__entity_value) AS m1
+FROM leaf_1__leaf_1_entity_rows
+GROUP BY
+  leaf_1__leaf_1_entity_rows.t
+)
+SELECT
+  base.t AS "temporal_role.hop_order_ordered_at__month",
+  base.m1 AS revenue
+FROM leaf_1 AS base""",
+    "median": """WITH leaf_1__leaf_1_entity_rows AS (
+SELECT DISTINCT
+  orders.order_id AS __entity_key_1,
+  orders.total AS __entity_value
+FROM orders
+INNER JOIN order_items ON orders.order_id = order_items.order_id
+WHERE
+  order_items.product_type = 'beverage'
+),
+leaf_1 AS (
+SELECT
+  {median} AS m1
+FROM leaf_1__leaf_1_entity_rows
+)
+SELECT
+  base.m1 AS median_revenue
+FROM leaf_1 AS base""",
 }
 
 
-@pytest.mark.parametrize("warehouse", ["duckdb", "postgres", "clickhouse", "ducklake"])
-@pytest.mark.parametrize("shape", ["filtered", "grouped"])
+@pytest.mark.parametrize("warehouse", WAREHOUSES)
+@pytest.mark.parametrize("shape", SHAPES)
 def test_each_dialect_renders_the_de_duplicated_leaf(
     package: Path, warehouse: str, shape: str
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    query = {"filtered": FILTERED_SUM, "grouped": GROUPED_COUNT}[shape]
-    sql = compile_query(config, Registry(config), {"version": 1, **query})["sql"]
-    assert sql == DIALECT_SQL[shape]
+    sql = compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})["sql"]
+    assert sql == DIALECT_SQL[shape].format(month=MONTH[warehouse], median=MEDIAN[warehouse])

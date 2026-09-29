@@ -761,15 +761,26 @@ _NEGATED_FILTER_OPS = frozenset(
 
 def _negated_filter(item: dict[str, Any], dim: Any) -> bool:
     """A filter whose EXISTS reading ("has a row that is not X") differs from "has no row that
-    is X": a negated operator, a null test, or ``false`` on a boolean dimension."""
+    is X": a negated operator, a null test, or on a boolean dimension anything but ``= true``."""
     op = _compact_token(str(item.get("op") or "=")).upper()
     value = item.get("value")
+    values = value if isinstance(value, (list, tuple)) else [value]
+    if dim.data_type == "boolean":
+        return op not in {"=", "==", "IS", "IN"} or not all(
+            value is True or str(value).lower() == "true" for value in values
+        )
     if op == "IS NOT NULL" or (value is None and op in {"!=", "<>", "IS NOT"}):
         return False  # "has a row with a value" reads one way
-    if op in _NEGATED_FILTER_OPS or op == "IS NULL" or value is None:
-        return True
-    values = value if isinstance(value, (list, tuple)) else [value]
-    return dim.data_type == "boolean" and any(str(v).lower() == "false" for v in values)
+    return op in _NEGATED_FILTER_OPS or op == "IS NULL" or value is None
+
+
+def _hop_branch(row: PathSelection) -> tuple[str, ...]:
+    """The path up to its last one-to-many hop: conditions on one branch meet on one child row."""
+    hops = list(row.analysis.get("relationships", []) or [])
+    last = max(
+        i for i, hop in enumerate(hops) if hop.get("directional_safety") == "requires_rewrite"
+    )
+    return tuple(row.chosen_path[: last + 1])
 
 
 def _fanout_dedup_refusal(
@@ -826,11 +837,13 @@ def _fanout_dedup_refusal(
         and not measure.source_relation
         and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
+        and sorted(measure.row_grain or entity.key or [entity.primary_key])
+        == sorted(entity.key or [entity.primary_key])
     ):
         return (
             f"'{aggregation}' of measure '{measure.id}' is not defined over one row per "
             f"'{measure.entity}' key (a non-additive value, a stock, an ordered aggregation, "
-            "or a measure without its entity's row key).",
+            "or a measure whose rows are finer than its entity's key).",
             (grouped or selections)[0],
         )
     roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
@@ -850,41 +863,77 @@ def _fanout_dedup_refusal(
             "is not supported across a one-to-many hop.",
             (grouped or selections)[0],
         )
-    filtered = {row.target_entity: row for row in selections if row.purpose != "group_by"}
+    crossing = {(row.target_entity, row.purpose): row for row in selections}
     dimensions = _dimension_index(config)
-    for item in [*(asdict(row) for row in query.where), *_bound_filter_clauses(bound, config)]:
+    branches = [_hop_branch(row) for row in grouped]
+    filters = [(asdict(row), "where") for row in query.where]
+    filters += [(clause, "metric_filter") for clause in _bound_filter_clauses(bound, config)]
+    for item, purpose in filters:
         dim = dimensions.get(str(item.get("field", "")))
-        if dim is not None and dim.entity in filtered and _negated_filter(item, dim):
+        hop = crossing.get((dim.entity, purpose)) if dim is not None else None
+        if dim is None or hop is None:
+            continue
+        if _negated_filter(item, dim):
             return (
                 f"A negated or null test on '{dim.id}' across a one-to-many hop is ambiguous: "
                 "'has a row that is not X' and 'has no row that is X' differ. Filter on the "
                 "values to keep instead.",
-                filtered[dim.entity],
+                hop,
             )
+        branch = _hop_branch(hop)
+        if any(
+            branch[: len(other)] == other or other[: len(branch)] == branch for other in branches
+        ):
+            return (
+                f"'{dim.id}' and another filter or group across the same one-to-many hop are "
+                "ambiguous: one child row may have to meet both, or any rows each. Ask for one "
+                "condition on that hop per query, or combine its values with IN.",
+                hop,
+            )
+        branches.append(branch)
     return None
 
 
-def _fanout_dedup_step(
-    bound: BoundMeasure, path_selections: list[PathSelection], config: PackageConfig
-) -> RewriteStep:
-    """Disclose a de-duplicated leaf: what a group and a filter across the hop mean."""
+def _hop_steps(
+    crossing: str, bound: BoundMeasure, path_selections: list[PathSelection], config: PackageConfig
+) -> list[RewriteStep]:
+    """Disclose how a leaf crosses its one-to-many hops, so REWRITE_APPLIED reports it."""
     entity = _measure_index(config)[bound.measure_id].entity
     crossed = {
         row.target_entity: list(row.chosen_path)
         for row in path_selections
         if row.analysis.get("status") != "ok"
     }
-    return RewriteStep(
-        kind="fanout_dedup",
-        status="applied",
-        measure_id=bound.measure_id,
-        reason=(
-            f"Each '{entity}' counts once per group across the one-to-many hop to "
-            f"{', '.join(repr(target) for target in sorted(crossed))}; a filter there means it "
-            "has at least one matching row."
-        ),
-        details={"paths": crossed},
-    )
+    if crossing == "entity_in_terms_of":
+        return [
+            RewriteStep(
+                kind="entity_in_terms_of",
+                status="applied",
+                measure_id=bound.measure_id,
+                reason="Count-distinct parent entity is computed from the qualifying child relation and rolled up by the requested child dimension.",
+                details={
+                    "target_entity": target,
+                    "path": path,
+                    "omits_semantic_root_entity": entity,
+                },
+            )
+            for target, path in crossed.items()
+        ]
+    if crossing != "fanout_dedup":
+        return []
+    return [
+        RewriteStep(
+            kind="fanout_dedup",
+            status="applied",
+            measure_id=bound.measure_id,
+            reason=(
+                f"Each '{entity}' counts once per group across the one-to-many hop to "
+                f"{', '.join(repr(target) for target in sorted(crossed))}; a filter there means "
+                "it has at least one matching row."
+            ),
+            details={"paths": crossed},
+        )
+    ]
 
 
 def _date_key(value: Any) -> str:
@@ -1979,8 +2028,9 @@ def _predicate_ctes_and_join(
 
 def _leaf_path_selections(
     bound: BoundMeasure, config: PackageConfig, query: NormalizedQuery
-) -> tuple[list[PathSelection], list[str], bool]:
-    """The leaf's paths, the entities it reads, and whether it de-duplicates one-to-many hops."""
+) -> tuple[list[PathSelection], list[str], str]:
+    """The leaf's paths, the entities it reads, and how it crosses one-to-many hops: "",
+    "entity_in_terms_of" or "fanout_dedup"."""
     measures = _measure_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
@@ -2107,12 +2157,12 @@ def _leaf_path_selections(
             )
             for row in unsupported
         ):
-            return selections, sorted(required_entities), False
+            return selections, sorted(required_entities), "entity_in_terms_of"
         refusal = _fanout_dedup_refusal(
             measure=measure, bound=bound, selections=unsupported, config=config, query=query
         )
         if refusal is None:
-            return selections, sorted(required_entities), True
+            return selections, sorted(required_entities), "fanout_dedup"
         why_invalid, row = refusal
         raise _mixed_grain_error(
             target_entity=row.target_entity,
@@ -2124,7 +2174,7 @@ def _leaf_path_selections(
             bound_measures=[bound],
             why_invalid=why_invalid,
         )
-    return selections, sorted(required_entities), False
+    return selections, sorted(required_entities), ""
 
 
 def _mixed_grain_error(
@@ -2277,41 +2327,8 @@ def _root_path_summary(
                     details={"path": list(chosen), "analysis": analysis},
                 )
             )
-        elif (
-            analysis.get("status") == "rewrite_required"
-            and purpose == "group_by"
-            and len(bound_measures) == 1
-        ):
-            measure_cfg = measures[bound_measures[0].measure_id]
-            selection = PathSelection(
-                target_entity=target_entity,
-                purpose=purpose,
-                chosen_path=list(chosen),
-                candidate_paths=[list(path) for path in candidates],
-                analysis=analysis,
-            )
-            if _entity_in_terms_of_rewrite_supported(
-                measure=measure_cfg,
-                bound=bound_measures[0],
-                selection=selection,
-                config=config,
-                query=query,
-            ):
-                rewrite_steps.append(
-                    RewriteStep(
-                        kind="entity_in_terms_of",
-                        status="applied",
-                        measure_id=bound_measures[0].measure_id,
-                        reason="Count-distinct parent entity is computed from the qualifying child relation and rolled up by the requested child dimension.",
-                        details={
-                            "target_entity": target_entity,
-                            "path": list(chosen),
-                            "omits_semantic_root_entity": measure_cfg.entity,
-                        },
-                    )
-                )
-        # Any other group_by or where path that needs a rewrite is left to each measure leaf:
-        # a de-duplicated leaf or a refusal (see _leaf_path_selections).
+        # A group_by or where path that needs a rewrite is left to each measure leaf, which
+        # crosses it (and says so in a rewrite step) or refuses (see _leaf_path_selections).
     return selected_paths, candidate_paths, rewrite_steps, analyses
 
 
@@ -3728,7 +3745,7 @@ def _plan_query(
                     )
 
         for index, bound in enumerate(bound_measures):
-            path_selections, required_entities, fanout_dedup = _leaf_path_selections(
+            path_selections, required_entities, crossing = _leaf_path_selections(
                 bound, config, query
             )
             grain_keys = [*query.group_by]
@@ -3743,16 +3760,10 @@ def _plan_query(
                 if any(step.measure_id == bound.measure_id for step in rewrite_steps)
                 else "direct"
             )
-            if fanout_dedup:
+            if crossing == "fanout_dedup":
                 rewrite_strategy = "fanout_dedup"
-                rewrite_steps = [
-                    step
-                    for step in rewrite_steps
-                    if not (
-                        step.kind == "entity_in_terms_of" and step.measure_id == bound.measure_id
-                    )
-                ]
-                rewrite_steps.append(_fanout_dedup_step(bound, path_selections, config))
+            # Every leaf that crosses a one-to-many hop says how.
+            rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config))
             aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(
                 bound=bound,
                 query=query,
