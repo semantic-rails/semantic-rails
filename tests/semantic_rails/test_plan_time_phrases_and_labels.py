@@ -25,7 +25,7 @@ from semantic_rails.planner._base import (
 from semantic_rails.planner.faithfulness import unmatched_intent_terms
 
 MARCH_15 = "2017-03-15"
-HOUR = {"start": f"{MARCH_15}T12:00:00Z", "end": f"{MARCH_15}T13:00:00Z"}
+HOUR = {"start": f"{MARCH_15}T12:00:00", "end": f"{MARCH_15}T13:00:00"}
 Q1_2017 = {"start": "2017-01-01", "end": "2017-04-01"}
 YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -49,10 +49,11 @@ def _measures(payload: dict[str, Any]) -> list[str]:
 @pytest.mark.parametrize(
     ("text", "bounds"),
     [
-        ("revenue from 12:00 to 13:00 UTC on 15 March 2017", HOUR),
-        ("revenue between 12:00 and 13:00 UTC on March 15, 2017", HOUR),
-        ("revenue on 2017-03-15 from 12:00 until 13:00 utc", HOUR),
-        ("revenue on March 15, 2017 from 12:00 UTC to 13:00 UTC", HOUR),
+        ("revenue from 12:00 to 13:00 on 15 March 2017", HOUR),
+        ("revenue between 12:00 and 13:00 on March 15, 2017", HOUR),
+        ("revenue on 2017-03-15 from 12:00 until 13:00", HOUR),
+        # A day stated twice, with the range beside it, is still one day.
+        ("revenue from 12:00 to 13:00 on 15 March 2017 (2017-03-15)", HOUR),
         (
             "revenue on March 15, 2017 from 9:30 am to 5 pm",
             {"start": f"{MARCH_15}T09:30:00", "end": f"{MARCH_15}T17:00:00"},
@@ -81,10 +82,27 @@ def test_a_time_range_on_a_day_resolves_to_timestamps(text: str, bounds: dict[st
         ("revenue at 12:00 on 15 March 2017", "12:00"),
         ("revenue on 15 March 2017 at noon", "noon"),
         ("revenue after 3pm on 15 March 2017", "3pm"),
-        # A zone the planner can't read, and a range that ends before it starts.
+        # A bound carries no zone, so any zone named is reported, UTC too: the role's zone
+        # may be another, and a literal "Z" is dropped when it meets a timestamp without one.
+        ("revenue from 12:00 to 13:00 UTC on 15 March 2017", "13:00 utc"),
+        ("revenue on March 15, 2017 from 12:00 UTC to 13:00 UTC", "12:00 utc"),
         ("revenue from 12:00 to 13:00 EST on 15 March 2017", "13:00 est"),
         ("revenue from 12:00 to 13:00 +02:00 on 15 March 2017", "+02:00"),
         ("revenue from 12:00 UTC to 13:00 EST on 15 March 2017", "13:00 est"),
+        # A zone written any other way is never read as the role's zone.
+        ("revenue from 12:00 to 13:00 UTC +2 on 15 March 2017", "13:00"),
+        ("revenue from 12:00 to 13:00 (UTC+2) on 15 March 2017", "13:00"),
+        ("revenue from 12:00 to 13:00 (UTC) on 15 March 2017", "13:00"),
+        ("revenue from 12:00 to 13:00 on 15 March 2017 in UTC", "13:00"),
+        ("revenue from 12:00 to 13:00 Pacific time on 15 March 2017", "13:00"),
+        ("revenue from 12:00 to 13:00 London time on 15 March 2017", "13:00"),
+        ("revenue from 12:00 to 13:00 AEST on 15 March 2017", "13:00"),
+        ("revenue from 12:00 to 13:00 HST on 15 March 2017", "13:00"),
+        ("revenue from 12:00 to 13:00 Europe/Berlin on 15 March 2017", "13:00"),
+        ("revenue from 12:00 to 13:00 on 15 March 2017 in EST", "13:00"),
+        ("revenue in the Pacific time zone from 12:00 to 13:00 on 15 March 2017", "13:00"),
+        # Other words between the range and its day, and a range that ends before it starts.
+        ("revenue from 12:00 to 13:00 for stores on 15 March 2017", "13:00"),
         ("revenue from 22:00 to 02:00 on 15 March 2017", "02:00"),
         ("revenue from 13:00 to 13:00 on 15 March 2017", "13:00"),
         ("revenue from 25:00 to 26:00 on 15 March 2017", "25:00"),
@@ -103,22 +121,22 @@ def test_a_time_of_day_it_cannot_resolve_is_reported(text: str, phrase: str) -> 
 
 
 def test_a_time_range_states_its_reading() -> None:
-    utc = _time_window("revenue from 12:00 to 13:00 UTC on 15 March 2017").assumptions
-    assert len(utc) == 1 and "excludes 13:00" in utc[0] and "time.end is exclusive" in utc[0]
-    local = _time_window("revenue on 15 March 2017 from 12:00 to 13:00").assumptions
-    assert "temporal role time zone" in local[-1]
+    window, zone = _time_window("revenue on 15 March 2017 from 12:00 to 13:00").assumptions
+    assert "excludes 13:00" in window and "time.end is exclusive" in window
+    assert "No time zone was named" in zone and "temporal role time zone" in zone
 
 
 def test_plan_keeps_the_hour_it_was_asked_for(runtime_factory: Any) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         hour = plan_payload(
-            runtime, intent="orders from 12:00 to 13:00 UTC on 15 March 2017", detail="best"
+            runtime, intent="orders from 12:00 to 13:00 on 15 March 2017", detail="best"
         )
         assert hour["status"] == "ok"
         assert not hour.get("warnings")
         assert {key: _query(hour)["time"][key] for key in ("start", "end")} == HOUR
         assert "time.end is exclusive" in hour["assumptions"][0]
+        assert "No time zone was named" in hour["assumptions"][1]
         day = plan_payload(runtime, intent="orders on 15 March 2017", detail="best")
         assert day["status"] == "ok" and "assumptions" not in day
         assert {key: _query(day)["time"][key] for key in ("start", "end")} == {
@@ -138,6 +156,9 @@ def test_plan_keeps_the_hour_it_was_asked_for(runtime_factory: Any) -> None:
     "intent",
     [
         "orders at 12:00 on 15 March 2017",
+        "orders from 12:00 to 13:00 UTC on 15 March 2017",
+        "orders from 12:00 to 13:00 (UTC) on 15 March 2017",
+        "orders from 12:00 to 13:00 Pacific time on 15 March 2017",
         "orders from 12:00 to 13:00 EST on 15 March 2017",
         "orders from 12:00 to 13:00 in March 2017",
     ],
@@ -180,6 +201,23 @@ def test_a_window_stated_twice_the_same_way_is_one_window(
     window = _time_window(text)
     assert window.bounds == bounds
     assert window.unresolved == () and window.conflicts == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Equal bounds, but a second condition: not a restatement.
+        "revenue in 2017 from customers who signed up in 2017",
+        "orders in Q1 2017 by stores opened in Q1 2017",
+        "revenue in 2017 for products launched in 2017",
+        "revenue in Q1 2017 and orders in Q1 2017",
+        "revenue in 2017 (excluding stores opened in 2017)",
+    ],
+)
+def test_the_same_window_beside_another_condition_is_not_a_restatement(text: str) -> None:
+    window = _time_window(text)
+    assert window.bounds == {}
+    assert len(window.conflicts) >= 1 and window.unresolved != ()
 
 
 @pytest.mark.parametrize(
@@ -270,6 +308,13 @@ def test_more_window_forms_resolve(text: str, bounds: dict[str, str]) -> None:
         "revenue at the end of year 2017",
         "revenue in fiscal year 2017",
         "revenue for last year 2017",
+        # A different kind of year is not the calendar year.
+        "revenue for the financial year 2017",
+        "revenue in tax year 2017",
+        "units sold for model year 2017",
+        "enrolments for school year 2017",
+        "revenue for academic year 2017",
+        "units sold in model-year 2017",
     ],
 )
 def test_a_year_after_the_word_year_is_not_always_a_window(text: str) -> None:
@@ -318,6 +363,9 @@ def test_a_window_with_no_open_end_states_no_assumption(text: str) -> None:
         # The words are not a name when they are not adjacent, or name another thing.
         ("revenue by item in 2017", "measure.jaffle.revenue_usd"),
         ("food revenue in 2017", "measure.jaffle.food_revenue_usd"),
+        # A name inside other words is not the ask: this is revenue, not the count of large orders.
+        ("large order revenue by month", "measure.jaffle.revenue_usd"),
+        ("large orders by month", "measure.jaffle.large_order_count"),
     ],
 )
 def test_an_exact_multi_word_label_outranks_a_partial_one(
@@ -342,6 +390,19 @@ def test_a_name_is_the_longest_exact_one(runtime_factory: Any) -> None:
         assert (
             _named_measure(config, "gross profit in 2017").id == "measure.jaffle.gross_profit_usd"
         )
+        # A name replaces the ordinary target only when it holds every word of that target.
+        revenue = next(row for row in config.measures if row.id == "measure.jaffle.revenue_usd")
+        large = next(row for row in config.measures if row.id == "measure.jaffle.large_order_count")
+        assert (
+            _named_measure(config, "item revenue by month", revenue).id
+            == "measure.jaffle.item_revenue_usd"
+        )
+        assert _named_measure(config, "large order revenue by month", revenue) is None
+        assert _named_measure(config, "large orders by month", large).id == large.id
+        assert _named_measure(config, "large orders by month", revenue) is None
+        # Another measure noun right after the name leaves the question to the ordinary ranking.
+        assert _named_measure(config, "item revenue orders") is None
+        assert _named_measure(config, "item revenue by orders") is not None
         # One word is no multi-word name, and words out of order are none either.
         assert _named_measure(config, "revenue by month") is None
         assert _named_measure(config, "revenue item") is None
@@ -358,7 +419,8 @@ def test_a_name_is_the_longest_exact_one(runtime_factory: Any) -> None:
     [
         ("item revenue and orders in Q1 2017", "orders"),
         ("revenue and item revenue in 2017", "revenue"),
-        ("gross profit and revenue for the first half of 2017", "revenue"),
+        ("gross profit and revenue for the first half of 2017", ("gross profit", "revenue")),
+        ("revenue and orders by store", "orders"),
         ("orders and revenue in March 2017", ("orders", "revenue")),
         (
             "revenue, orders and gross profit from March 1 to March 31, 2017",
@@ -385,21 +447,15 @@ def test_a_second_measure_is_never_dropped_silently(
 
 @pytest.mark.parametrize(
     "intent",
-    [
-        "revenue in Q1 2017",
-        "revenue by store for the first half of 2017",
-        # One measure whose own name has "and" in it, and a measure with a grouping.
-        "revenue and orders by store",
-    ],
+    ["revenue in Q1 2017", "revenue by store for the first half of 2017"],
 )
-def test_a_single_or_covered_measure_still_plans(runtime_factory: Any, intent: str) -> None:
+def test_a_single_measure_still_plans(runtime_factory: Any, intent: str) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
-        gaps = (payload.get("why") or {}).get("details", {}).get("gaps", [])
-        assert not [gap for gap in gaps if gap["kind"] == "multiple_subjects_unrealized"] or (
-            "and" in intent
-        )
+        assert payload["status"] == "ok", payload.get("why")
+        assert _measures(payload) == ["measure.jaffle.revenue_usd"]
+        assert "why" not in payload
     finally:
         runtime.close()
 
@@ -517,6 +573,10 @@ def test_a_single_word_the_planner_reads_elsewhere_is_only_a_warning(
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
-        assert (payload.get("why") or {}).get("code") != "PLAN_UNMATCHED_TERMS"
+        assert payload["status"] == "ok", payload.get("why")
+        assert "why" not in payload
+        assert _measures(payload)[0] == "measure.jaffle.revenue_usd"
+        (warning,) = payload["warnings"]
+        assert warning["code"] == "PLAN_UNMATCHED_TERMS"
     finally:
         runtime.close()

@@ -114,10 +114,6 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # canonical concept words (revenue / order / arr / etc.) we just
     # use the raw term set against the catalog.
     target = named[0] if named is not None else None
-    if target is None:
-        # A measure the question names in full ("item revenue") is not the shorter one it
-        # shares a word with ("revenue").
-        target = _named_measure(config, target_focus or text)
     if target is None and target_terms:
         if metric_first:
             target = _preferred_metric(config, target_terms, target_focus_terms)
@@ -138,6 +134,11 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
                 target = _preferred_metric(config, terms)
     if target is None:
         return None
+    if named is None and not metric_first:
+        # A measure the question names in full ("item revenue") is not the shorter one it
+        # shares a word with ("revenue"), but a name that only sits inside other words
+        # ("large order revenue") leaves the ordinary target alone.
+        target = _named_measure(config, target_focus or text, target) or target
 
     # Build the time spec from the target's default temporal role (if
     # any). Without a temporal role we still emit a query without a

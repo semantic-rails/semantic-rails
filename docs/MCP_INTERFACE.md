@@ -213,25 +213,30 @@ executing. Two words or more that no catalog object has, the first straight afte
 instead: "for tangaroo and vanilla ice" is a filter the draft dropped. Every measure a
 question lists ("item revenue and orders in Q1 2017") is in the draft's select list or the
 plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the ones it left
-out. A measure the question names in full outranks a shorter one it shares a word with:
-"item revenue" is Item revenue, not Revenue. If a
+out. For a measure by a dimension, a measure the question names in full outranks a shorter one
+it shares a word with ("item revenue" is Item revenue, not Revenue), but only when the name
+holds every word of the measure the question otherwise asks for: "large order revenue" is
+still revenue. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
 `plan` resolves a time window only when the question names exactly one, in a form it reads
-unambiguously: a year after "in", "for" or "during" or after the word "year" ("year 2017",
-"the calendar year 2017"), consecutive years, a quarter or half with a year ("the first half
+unambiguously: a year after "in", "for" or "during", or after the word "year" where no word
+qualifies it ("year 2017", "the calendar year 2017"; "financial year 2017" and "model year 2017"
+are not calendar years and are reported), consecutive years, a quarter or half with a year ("the first half
 of 2017", "H2 2017"), a month or month range with a year, days with a year ("March 1 to March
 31, 2017", "Mar 1 - Mar 31 2017"), an ISO date or ISO range ("2017-03-01 to 2017-03-31"), or a
 relative window ("last 7 days"). A range's spoken end is included: the response's
-`assumptions` says so, with the exclusive `time.end` it chose. The same window stated twice
-("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ are a conflict, and
-`TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. A time of day
-resolves only as a range on one day ("from 12:00 to 13:00 UTC on 15 March 2017"): the bounds
-are timestamps, the end is exclusive, "utc" is read, and with no zone named the times are in
-the temporal role's time zone, which `assumptions` says. A lone time, a range across
-midnight, another zone ("EST", "+02:00") or a range without one day is unresolved, never
-widened to its day. "and" joins a range only after "between": "between March and May 2017" is
+`assumptions` says so, with the exclusive `time.end` it chose. A window restated right beside
+itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
+one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are a
+conflict, and `TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. A time
+of day resolves only as a range on one day, with no time zone ("from 12:00 to 13:00 on 15
+March 2017"): the bounds are timestamps, the end is exclusive, and the times are in the
+temporal role's time zone, which `assumptions` says. A lone time, a range across midnight,
+any zone named ("UTC", "EST", "+02:00", "(UTC)", "Pacific time", "Europe/Berlin"), other words
+between the range and its day, or a range without one day is unresolved, never widened to
+its day and never read in a zone the question didn't ask for. "and" joins a range only after "between": "between March and May 2017" is
 a range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
 bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
