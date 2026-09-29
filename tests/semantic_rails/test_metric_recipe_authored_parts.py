@@ -37,6 +37,8 @@ ORDER_TIME = "temporal_role.jaffle_order_time"
 LARGE_ORDER = "dimension.jaffle_order_is_large_order"
 PRODUCT_TYPE = "dimension.jaffle_item_product_type"
 WEEK = {"unit": "day", "value": 7}
+AGGREGATE = {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"}
+SCOPED = {"kind": "scoped_aggregate", "measure": REVENUE, "aggregation": "sum"}
 
 FIRST_90_DAYS = {
     "kind": "scoped_aggregate",
@@ -275,6 +277,25 @@ def test_scoped_aggregate_recipe_resolves_short_measure_and_dimension_keys(
             },
             ["Prior-period (IR shape) expressions require offset as an object"],
             id="scalar-offset",
+        ),
+        pytest.param(
+            {
+                **SCOPED,
+                "anchor": "temporal_role.jaffle_customer_first_order_at",
+                "window": {"unit": "day", "value": 90},
+            },
+            ["scoped_aggregate.anchor must be a non-empty object"],
+            id="scoped-aggregate-string-anchor",
+        ),
+        pytest.param(
+            {**SCOPED, "anchor": {"temporal_role": "x"}, "window": 90},
+            ["scoped_aggregate.window must be a non-empty object"],
+            id="scoped-aggregate-scalar-window",
+        ),
+        pytest.param(
+            {**SCOPED, "anchor": {}, "window": {}},
+            ["scoped_aggregate.anchor must be a non-empty object"],
+            id="scoped-aggregate-empty-anchor-and-window",
         ),
     ],
 )
@@ -563,6 +584,53 @@ def test_direct_field_scalar_shapes_get_the_parsers_error(
     assert error.code == "INVALID_EXPRESSION_AST"
     assert "metric 'probe.broken'" in str(error)
     assert expected in str(error)
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        pytest.param(
+            {"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum", "window": 7},
+            id="aggregate-window-int",
+        ),
+        pytest.param(
+            {
+                "kind": "aggregate",
+                "measure": "item_revenue_usd",
+                "aggregation": "sum",
+                "window": "7d",
+            },
+            id="aggregate-window-string",
+        ),
+        pytest.param(
+            {
+                "kind": "aggregate",
+                "measure": "item_revenue_usd",
+                "aggregation": "sum",
+                "window": True,
+            },
+            id="aggregate-window-bool",
+        ),
+        pytest.param(
+            {"kind": "semi_additive", "measure": "item_revenue_usd", "window": 7},
+            id="semi_additive-window-int",
+        ),
+        pytest.param(
+            {"kind": "derived", "expression": {**AGGREGATE, "parameters": 5}},
+            id="expression-parameters",
+        ),
+        pytest.param(
+            {"kind": "derived", "expression": {**SCOPED, "where": ["x"]}},
+            id="expression-scoped-where",
+        ),
+    ],
+)
+def test_malformed_scalar_parts_fail_the_load_naming_the_metric(
+    tmp_path: Path, metric: dict[str, Any]
+) -> None:
+    error = _load_error(tmp_path, {"broken": metric})
+    assert error.code == "INVALID_EXPRESSION_AST"
+    assert "metric 'probe.broken'" in str(error)
 
 
 def test_direct_aggregate_window_is_refused_when_queried_never_dropped(
