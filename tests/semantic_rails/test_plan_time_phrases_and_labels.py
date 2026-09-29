@@ -10,6 +10,8 @@ not keep.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -29,6 +31,10 @@ HOUR = {"start": f"{MARCH_15}T12:00:00", "end": f"{MARCH_15}T13:00:00"}
 Q1_2017 = {"start": "2017-01-01", "end": "2017-04-01"}
 YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
 ORDER_TIME = "temporal_role.jaffle_order_time"
+# A draft's window, as the planner sets it for a question that names a date or a range. Its
+# presence is what counts here; the question's own spans are what it consumes.
+WINDOW = {"grain": "day", **YEAR_2017}
+LAST_7_DAYS = {"grain": "day", "range": {"last": {"unit": "day", "value": 7}}}
 
 
 def _query(payload: dict[str, Any]) -> dict[str, Any]:
@@ -180,7 +186,7 @@ def test_every_unconsumed_number_and_clock_word_is_named(
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        assert unconsumed_terms(runtime, text, _draft()) == terms
+        assert unconsumed_terms(runtime, text, _draft(time=WINDOW)) == terms
     finally:
         runtime.close()
 
@@ -192,11 +198,11 @@ def test_every_unconsumed_number_and_clock_word_is_named(
         ("stores with revenue over 12.50", _draft(having=[{"op": ">", "value": 12.5}])),
         ("stores with 1,000 or more orders", _draft(having=[{"op": ">=", "value": 1000}])),
         ("stores in the 90th percentile", _draft(having=[{"op": ">", "value": 90}])),
-        ("revenue on 15 March 2017", _draft()),
-        ("revenue in Q1 2017 by month", _draft()),
-        ("revenue for the last 7 days", _draft()),
+        ("revenue on 15 March 2017", _draft(time=WINDOW)),
+        ("revenue in Q1 2017 by month", _draft(time=WINDOW)),
+        ("revenue for the last 7 days", _draft(time=LAST_7_DAYS)),
         ("average delivery time by month", _draft()),
-        ("revenue by order time in 2017", _draft()),
+        ("revenue by order time in 2017", _draft(time=WINDOW)),
         # A caller's stated hours account for the question's.
         ("revenue from 12:00 to 13:00 on 15 March 2017", _draft(time={"grain": "day", **HOUR})),
     ],
@@ -238,7 +244,7 @@ def test_plan_accepts_a_window_shorter_than_a_day_the_caller_states(runtime_fact
 
 
 @pytest.mark.parametrize("text", NOT_AN_HOUR_QUESTIONS)
-def test_a_number_or_time_word_that_is_not_an_hour_is_never_refused_as_one(
+def test_a_number_or_time_word_that_is_not_an_hour_is_never_read_as_one(
     runtime_factory: Any, text: str
 ) -> None:
     window = _time_window(text)
@@ -287,6 +293,290 @@ def test_no_detail_level_or_caller_block_gets_past_the_invariant(
         assert payload["why"]["details"]["terms"] == ["9", "17"]
     finally:
         runtime.close()
+
+
+# Consumption is by span: a number, number word or time-unit token is consumed only where a
+# construct the draft carries reads it, never because its value equals something in the draft.
+# Each question below was once `ok`.
+SPAN_QUESTIONS = [
+    # A 24-hour time from 1900 to 2099 is not a year.
+    "revenue on 15 March 2017 at 2000",
+    "revenue on 15 March 2017 at 1930",
+    "revenue on 15 March 2017 from 1900 to 2000 hours",
+    "revenue on 15 March 2017 from 1900 to 2100",
+    # A threshold that looks like a year, when the draft doesn't carry it.
+    "customers with 1999 or more orders in 2017",
+    # Spelled-out hours and "o'clock".
+    "revenue on 15 March 2017 from nine to five",
+    "revenue on 15 March 2017 at nine o'clock",
+    "revenue on 15 March 2017 between two and four",
+    "revenue on 15 March 2017 at twelve",
+    "revenue on 15 March 2017 at eleven",
+    "revenue on 15 March 2017 at half past two",
+    "revenue on 15 March 2017 at quarter to five",
+    "revenue on 15 March 2017 at twenty past three",
+    "revenue on 15 March 2017 at o'clock",
+    # Short zone codes and zones written in another case.
+    "orders on 15 March 2017 in ET",
+    "orders on 15 March 2017 in PT",
+    "orders on 15 March 2017 in CT",
+    "orders on 15 March 2017 in MT",
+    "orders on 15 March 2017 in est",
+    "orders on 15 March 2017 in pst",
+    "ORDERS ON 15 MARCH 2017 IN EST",
+    "orders on 15 March 2017 in MSK",
+    "orders on 15 March 2017 in WIB",
+    "orders on 15 March 2017 in AEDT",
+]
+
+
+@pytest.mark.parametrize("text", SPAN_QUESTIONS)
+def test_a_number_word_or_zone_no_construct_reads_is_never_ok(
+    runtime_factory: Any, text: str
+) -> None:
+    payload = _plan(runtime_factory, text)
+    assert payload["status"] == "low_confidence", payload
+    assert "ready_for" not in payload["next"]
+    assert payload["why"]["code"] in {"PLAN_UNMATCHED_TERMS", "TIME_WINDOW_UNRESOLVED"}
+
+
+@pytest.mark.parametrize(
+    ("text", "query", "terms"),
+    [
+        # A year is consumed only by a window's own span.
+        ("revenue on 15 March 2017 at 1930", _draft(time=WINDOW), ["1930"]),
+        ("revenue at 2000", _draft(), ["2000"]),
+        ("revenue in 2017 at 2000", _draft(), ["2017", "2000"]),
+        # A threshold that looks like a year is consumed only by its own threshold span.
+        ("stores with more than 2000 orders in 2017", _draft(time=WINDOW), ["2000"]),
+        (
+            "stores with more than 2000 orders in 2017",
+            _draft(time=WINDOW, having=[{"op": ">", "value": 2000}]),
+            [],
+        ),
+        (
+            "customers with 1999 or more orders in 2017",
+            _draft(time=WINDOW, having=[{"op": ">=", "value": 1999}]),
+            [],
+        ),
+        # The same number elsewhere is not consumed by it.
+        ("revenue at 9 for the top 9 stores", _draft(limit=9), ["9"]),
+        ("revenue on 15 March 2017 at 100", _draft(time=WINDOW, limit=100), ["100"]),
+        ("top 100 stores by revenue in 2017", _draft(time=WINDOW, limit=100), []),
+        # Number words: a limit reads its own; nothing else does.
+        ("top five stores by revenue in 2017", _draft(time=WINDOW, limit=5), []),
+        ("top ten stores by revenue in 2017", _draft(time=WINDOW, limit=5), ["ten"]),
+        ("revenue at five on 15 March 2017", _draft(time=WINDOW, limit=5), ["five"]),
+        ("revenue on 15 March 2017 from nine to five", _draft(time=WINDOW), ["nine", "five"]),
+        ("revenue on 15 March 2017 at nine o'clock", _draft(time=WINDOW), ["nine", "clock"]),
+        ("revenue on 15 March 2017 at half past two", _draft(time=WINDOW), ["half", "two"]),
+        ("revenue on 15 March 2017 at quarter to five", _draft(time=WINDOW), ["quarter", "five"]),
+        ("revenue on 15 March 2017 at twelve", _draft(time=WINDOW), ["twelve"]),
+        ("revenue in the last quarter of 2017", _draft(time=WINDOW), []),
+        # Zones.
+        ("orders on 15 March 2017 in ET", _draft(time=WINDOW), ["et"]),
+        ("orders on 15 March 2017 in est", _draft(time=WINDOW), ["est"]),
+        ("ORDERS ON 15 MARCH 2017 IN EST", _draft(time=WINDOW), ["est"]),
+        ("orders on 15 March 2017 in MSK", _draft(time=WINDOW), ["msk"]),
+        ("orders on 15 March 2017 at 12:00 Z", _draft(time=WINDOW), ["12", "00", "z"]),
+        # A caller's stated hours consume only their own: 9 and 17 are not 12 and 13.
+        (
+            "revenue from 9 to 17 on 15 March 2017",
+            _draft(time={"grain": "day", **HOUR}),
+            ["9", "17"],
+        ),
+        # A caller's window is not a zone.
+        ("orders from 12:00 to 13:00 UTC", _draft(time={"grain": "day", **HOUR}), ["utc"]),
+    ],
+)
+def test_a_term_is_consumed_only_by_the_span_of_the_construct_that_reads_it(
+    runtime_factory: Any, text: str, query: dict[str, Any], terms: list[str]
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unconsumed_terms(runtime, text, query) == terms
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "min order value by store",
+        "max and min revenue per store",
+        "NET revenue in 2017",
+        "EBIT margin in 2017",
+        "revenue in the WEST region",
+        "revenue by FIRST order",
+        "COUNT of orders EVENT",
+        "orders in the cat category",
+        "revenue by day",
+    ],
+)
+def test_ordinary_analytics_words_are_not_clock_or_zone_words(
+    runtime_factory: Any, text: str
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unconsumed_terms(runtime, text, _draft(time=WINDOW)) == []
+    finally:
+        runtime.close()
+
+
+@dataclass
+class _Row:
+    id: str
+    name: str = ""
+    label: str = ""
+    description: str = ""
+    aliases: list[str] = field(default_factory=list)
+    topics: list[str] = field(default_factory=list)
+    calendar_id: str = ""
+
+
+def _runtime_with(*rows: _Row) -> Any:
+    config = SimpleNamespace(
+        measures=list(rows),
+        metric_recipes=[],
+        dimensions=[],
+        entities=[],
+        segments=[],
+        temporal_roles=[],
+        value_domains=[],
+    )
+    return SimpleNamespace(_config=config)
+
+
+@pytest.mark.parametrize(
+    ("text", "row", "terms"),
+    [
+        # An object's description consumes nothing: only its own names do.
+        (
+            "revenue per hour on 15 March 2017",
+            _Row(
+                "measure.x.revenue", "revenue", "Revenue", "Revenue per hour over the last 30 days"
+            ),
+            ["hour"],
+        ),
+        (
+            "revenue at 30 on 15 March 2017",
+            _Row("measure.x.revenue", "revenue", "Revenue", "Revenue over 30 days"),
+            ["30"],
+        ),
+        # Its name, label or alias does, where the question spells it.
+        (
+            "orders per hour on 15 March 2017",
+            _Row("measure.x.orders_per_hour", "orders_per_hour", "Orders per hour"),
+            [],
+        ),
+        (
+            "30 day retention on 15 March 2017",
+            _Row("measure.x.retention", "retention", "Retention", aliases=["30 day retention"]),
+            [],
+        ),
+        (
+            "p95 latency on 15 March 2017",
+            _Row("measure.x.p95_latency", "p95_latency", "P95 latency"),
+            [],
+        ),
+    ],
+)
+def test_an_object_consumes_the_words_of_its_own_names_only(
+    text: str, row: _Row, terms: list[str]
+) -> None:
+    query = _draft(row.id, time=WINDOW)
+    assert unconsumed_terms(_runtime_with(row), text, query) == terms
+
+
+def test_a_question_past_the_scan_cap_is_still_held_to_the_rule(runtime_factory: Any) -> None:
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    filler = " ".join(a + b for a in letters for b in letters if a + b != "tz")[:1800]
+    text = f"revenue on 15 March 2017 {filler} at 14h30"
+    assert len(text) < 2000
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert unconsumed_terms(runtime, text, _draft(time=WINDOW)) == ["14h30"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("huge", [10**400, -(10**400)])
+def test_a_number_too_large_to_read_is_not_a_crash(runtime_factory: Any, huge: int) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        query = _draft(limit=huge, having=[{"op": ">", "value": huge}], time=WINDOW)
+        assert unconsumed_terms(runtime, f"top 5 stores over {'9' * 400}", query) == [
+            "5",
+            "9" * 400,
+        ]
+        assert unmatched_intent_terms(runtime, "revenue over 5", query) == ["5"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "revenue from customers aged 25-34 in 2017",
+        "customers with 2 to 5 orders in 2017",
+        "orders with 10 to 20 items in March 2017",
+    ],
+)
+def test_a_number_range_the_draft_does_not_carry_is_low_confidence(
+    runtime_factory: Any, text: str
+) -> None:
+    payload = _plan(runtime_factory, text)
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert all(term.replace(".", "").isdigit() for term in payload["why"]["details"]["terms"])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "revenue on 15 March 2017",
+        "revenue in March 2017 by day",
+        "revenue for Q1 2017",
+        "revenue for the last 30 days",
+        "top 5 stores by revenue in 2017",
+        "top 10 customers by revenue in Q1 2017",
+        "orders on 15 March 2017 by store",
+        "revenue by month in 2017",
+    ],
+)
+def test_a_question_with_a_day_or_coarser_window_is_still_ok(
+    runtime_factory: Any, text: str
+) -> None:
+    payload = _plan(runtime_factory, text)
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+
+
+def test_a_caller_window_stands_in_for_the_time_phrases_the_question_states(
+    runtime_factory: Any,
+) -> None:
+    # The choice: a window the caller states in query.time is the answer to every time phrase
+    # of the question, whether or not plan could read it ("last 24 hours", a year-like "at 2000").
+    for text in ("revenue for the last 24 hours", "revenue in 2017 at 2000"):
+        payload = _plan(
+            runtime_factory,
+            text,
+            partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+        )
+        assert payload["status"] == "ok", (text, payload.get("why"))
+
+
+def test_a_caller_window_that_contradicts_the_questions_hours_is_refused(
+    runtime_factory: Any,
+) -> None:
+    # The caller's stated hours consume the question's own; hours it doesn't state are left over.
+    payload = _plan(
+        runtime_factory,
+        "revenue from 9 to 17 on 15 March 2017",
+        partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
+    )
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["details"]["terms"] == ["9", "17"]
 
 
 def test_a_day_is_still_resolved_as_a_day() -> None:

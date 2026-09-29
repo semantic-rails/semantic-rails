@@ -235,16 +235,27 @@ conflict, and `TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_ph
 resolves days and coarser windows only. A window shorter than a day ("last 24 hours", "past
 hour", "last 30 minutes") returns `TIME_WINDOW_UNRESOLVED` with `why.details.sub_day_phrases` and
 no `best.query_ir`, never a query over all time. Every other hour or zone is caught by one
-rule: a draft is `ok` only if every number and every clock or zone word in the question ("hour",
-"minutes", "noon", "midnight", "morning", "UTC", "GMT", an all-caps zone code such as "EST", a
-name such as "Europe/Berlin") is used by something the draft carries: a date or window, a
-filter value, a limit, a percentile, or the name of an object it selects. Otherwise the plan is
+rule: a draft is `ok` only if every number, number word and clock or zone word in the question
+is consumed by a construct the draft carries. The words it counts are numerals ("9", "14h30",
+"1930"), spelled-out numbers ("nine", "twelve", "twenty", "hundred", "half", and "quarter" in
+"quarter past" or "quarter to"), "o'clock", "hour", "minutes", "noon", "midnight", "morning",
+"UTC", "GMT", a zone code ("EST", "PST", "CET", "AEST", "MSK", "WIB" in any case, and "ET", "PT",
+"CT", "MT", "Z" in capitals, so an all-caps state code such as "CT" is read as a zone) and a
+name such as "Europe/Berlin". A word is consumed only where it sits inside the text of a
+construct, not because its value equals something the draft holds: the words of the date or
+window plan resolved, the number of a limit, threshold or percentile the question states ("top
+5", "over 12.50", "90th percentile", "1,000 or more"), a filter value, or the name, label or
+alias of an object the draft selects (not its description). So a "1930" or "2000" that is not a
+window's year or a threshold's own number is left over, and so is a "9" that a limit of 9 does
+not state. Otherwise the plan is
 `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, the leftover words in `details.terms`
-and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "at 14h30" and "in UTC" are not
-ready, and neither is a number range plan doesn't read ("aged 25-34", "2 to 5 orders"); a
-number the draft does carry ("top 10") is fine. A zone written as an ordinary word ("Pacific
-time", "London time", "local time") is not recognised by itself, so with no hour beside it the
-question reads as its day; an all-caps state code such as "CT" is read as a zone. To ask for an hour range, pass it in `query.time` yourself, as
+and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "from nine to five", "at
+14h30", "at 2000" and "in UTC" are not ready, and neither is a number range plan doesn't read
+("aged 25-34", "2 to 5 orders"); a number the draft does carry ("top 10") is fine. A zone
+written as an ordinary word ("Pacific time", "London time", "local time") is not recognised by
+itself, so with no hour beside it the question reads as its day. A window you pass in
+`query.time` stands in for every time phrase of the question, and its hours for the question's
+own. To ask for an hour range, pass it in `query.time` yourself, as
 end-exclusive ISO timestamps in the temporal role's time zone (the role must be a timestamp),
 for example `start: "2017-03-15T12:00:00"`, `end: "2017-03-15T13:00:00"`, with the role and
 grain, and plan again. "and" joins a range only after "between": "between March and May 2017" is

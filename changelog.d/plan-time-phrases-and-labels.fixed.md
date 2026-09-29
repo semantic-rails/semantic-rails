@@ -1,11 +1,14 @@
 - `plan` no longer changes what a question asks when it reads a time or a name. "Revenue from
   12:00 to 13:00 on 15 March 2017" drafted the whole day and reported `ok`. `plan` resolves days
-  and coarser windows only, under one rule: a draft is `ok` only if every number and every
-  clock or zone word in the question ("hour", "minutes", "noon", "UTC", "EST",
-  "Europe/Berlin") is used by something the draft carries (a date or window, a filter value, a
-  limit, a percentile, an object's name). Otherwise the plan is `low_confidence` with
+  and coarser windows only, under one rule: a draft is `ok` only if every number, spelled-out
+  number and clock or zone word in the question ("9", "nine", "o'clock", "hour", "noon", "UTC",
+  "EST", "ET", "Europe/Berlin") sits inside the text of a construct the draft carries (the date
+  or window, a limit, threshold or percentile the question states, a filter value, an object's
+  name), never because its value equals one: "at 1930" is not a year. Otherwise the plan is
+  `low_confidence` with
   `PLAN_UNMATCHED_TERMS`, the leftover words in `why.details.terms` and no `next.ready_for`, so
-  "between 9 and 17", "at 14h30" and "in UTC" beside a date are not ready. A number range the
+  "between 9 and 17", "from nine to five", "at 14h30" and "in UTC" beside a date are not ready.
+  Ordinary words such as "min", "net" and "EBIT" are not clock or zone words. A number range the
   draft doesn't carry ("aged 25-34", "2 to 5 orders") is named the same way; it is never read
   as an hour. A window shorter than a day ("last 24 hours", "past hour", "last 30 minutes") is
   `TIME_WINDOW_UNRESOLVED` with no query, not a query over all time. A zone written as an
