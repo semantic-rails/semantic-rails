@@ -8,3 +8,7 @@
   `scoped_aggregate` recipe resolve like other package-relative references, and the
   `prior_period` shorthand the parser accepts now loads. The `INVALID_ANCHOR_ROLE` hint
   no longer points authors at a metric recipe and suggests an offset column instead.
+  A metric that has both an `expression:` block and a direct field (`window`,
+  `partition_by`, `offset` and so on) is refused at load instead of ignoring one of them,
+  and a `partition_by` entry that is not a dimension of the package is refused at load
+  instead of failing every query; short dimension keys resolve like other references.

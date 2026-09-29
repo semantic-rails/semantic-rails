@@ -706,6 +706,7 @@ def _translate_metric_direct_fields(
     resolve,
     resolve_metric=None,
     resolve_dimension=None,
+    known_dimensions: frozenset[str] | set[str] = frozenset(),
     classify_ref=None,
     context: str = "",
     suggest=None,
@@ -733,12 +734,51 @@ def _translate_metric_direct_fields(
     callable (metric index, with measure fallback for auto-published metrics).
     Falls back to measure-only resolution when `resolve_metric` is None.
     """
-    if resolve_metric is None:
-        resolve_metric = resolve
     if not isinstance(spec, dict):
         return spec
+    translated = _translate_direct_fields_to_expression(
+        spec,
+        resolve=resolve,
+        resolve_metric=resolve_metric or resolve,
+        resolve_dimension=resolve_dimension,
+        classify_ref=classify_ref,
+        context=context,
+        suggest=suggest,
+    )
+    # The one place the loaded expression is checked, whichever way it was written.
+    if translated.get("expression"):
+        _resolve_partition_by(
+            translated["expression"],
+            resolve_dimension=resolve_dimension,
+            known_dimensions=known_dimensions,
+            context=context,
+        )
+    return translated
+
+
+def _translate_direct_fields_to_expression(
+    spec: dict[str, Any],
+    *,
+    resolve,
+    resolve_metric,
+    resolve_dimension,
+    classify_ref,
+    context: str,
+    suggest,
+) -> dict[str, Any]:
     spec = dict(spec)
     if "expression" in spec and spec["expression"]:
+        # An `expression:` block is the whole definition. A direct field beside it
+        # would be dropped or would contradict it, so the metric is refused.
+        stray = sorted(_authored_direct_fields(spec, consumed=set()))
+        if stray:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{context}: has an expression: block and also the direct field(s) "
+                f"{', '.join(stray)}; write these inside expression:, or drop expression: "
+                "and use direct fields only",
+                details={"conflicting_fields": stray},
+            )
         # Author wrote the AST directly. Pass through, but resolve any
         # package-relative refs inside (best-effort).
         spec["expression"] = _resolve_refs_in_ast(
@@ -933,6 +973,74 @@ def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric=None, resolve_dim
         if isinstance(value, (dict, list)):
             out[key] = recurse(value)
     return out
+
+
+_PARTITIONED_KINDS = frozenset({"cumulative", "rolling", "period_to_date"})
+
+
+def _input_measure(node: dict[str, Any]) -> str:
+    """The measure a windowed node reads, when its input is (or wraps) one measure."""
+    inner = node.get("input")
+    while isinstance(inner, dict):
+        if isinstance(inner.get("measure"), str):
+            return str(inner["measure"])
+        inner = inner.get("input")
+    return ""
+
+
+def _resolve_partition_by(
+    node: Any, *, resolve_dimension, known_dimensions: frozenset[str] | set[str], context: str
+) -> None:
+    """Rewrite every `partition_by` entry to a known dimension id, or refuse.
+
+    A window partitions by a dimension the query groups by. An entry that names no
+    dimension of the package would only surface as a SQL error at query time, so it is
+    refused here. A short key resolves against the model of the measure the window
+    reads; when that is not one measure, only a full dimension id resolves.
+    """
+    if isinstance(node, list):
+        for item in node:
+            _resolve_partition_by(
+                item,
+                resolve_dimension=resolve_dimension,
+                known_dimensions=known_dimensions,
+                context=context,
+            )
+        return
+    if not isinstance(node, dict):
+        return
+    if str(node.get("kind", "")).strip().lower() in _PARTITIONED_KINDS and node.get("partition_by"):
+        entries = node["partition_by"]
+        measure_id = _input_measure(node)
+        resolved: list[str] = []
+        unknown: list[str] = []
+        if not isinstance(entries, list):
+            # Never read a bare string as a list of characters.
+            unknown.append(str(entries))
+        for entry in entries if isinstance(entries, list) else []:
+            text = entry.strip() if isinstance(entry, str) else ""
+            dimension_id = (
+                resolve_dimension(measure_id, text) if resolve_dimension is not None else text
+            )
+            if dimension_id in known_dimensions:
+                resolved.append(dimension_id)
+            else:
+                unknown.append(str(entry))
+        if unknown:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{context}: partition_by must be a list of dimensions of this package; "
+                f"unknown: {', '.join(unknown)}",
+                details={"unknown_partition_by": unknown},
+            )
+        node["partition_by"] = resolved
+    for value in node.values():
+        _resolve_partition_by(
+            value,
+            resolve_dimension=resolve_dimension,
+            known_dimensions=known_dimensions,
+            context=context,
+        )
 
 
 def _parse_metric_expression(raw: Any, *, context: str) -> Any:
@@ -2388,6 +2496,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             return measure_hit_id.replace("measure.", "metric.", 1)
         return text  # leave as-is for downstream validation
 
+    known_dimension_ids = frozenset(dimension_lookup.values())
     for metric_key, metric_spec_raw in metrics_rows.items():
         spec = dict(metric_spec_raw or {})
         if "primitive" in spec:
@@ -2428,6 +2537,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             resolve=_resolve_measure_ref,
             resolve_metric=_resolve_metric_ref_full,
             resolve_dimension=_resolve_measure_dimension_ref,
+            known_dimensions=known_dimension_ids,
             classify_ref=_classify_ref,
             context=f"{path}: metric '{metric_key}'",
             suggest=_suggest_refs,

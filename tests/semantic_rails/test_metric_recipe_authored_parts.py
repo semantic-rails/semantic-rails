@@ -507,3 +507,206 @@ def test_direct_aggregate_window_is_refused_when_queried_never_dropped(
         runtime.close()
     assert excinfo.value.code == "INVALID_EXPRESSION_AST"
     assert excinfo.value.details["window"] == WEEK
+
+
+# --- an expression: block and direct fields never mix -------------------------------
+
+ROLLING_EXPRESSION = {
+    "kind": "rolling",
+    "input": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"},
+    "window": WEEK,
+}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("measure", "item_revenue_usd", id="measure"),
+        pytest.param("aggregation", "sum", id="aggregation"),
+        pytest.param("numerator", "order_count", id="numerator"),
+        pytest.param("denominator", "order_count", id="denominator"),
+        pytest.param("null_behavior", "null_if_zero", id="null_behavior"),
+        pytest.param("window", WEEK, id="window"),
+        pytest.param("window_scope", "query_period", id="window_scope"),
+        pytest.param("offset", WEEK, id="offset"),
+        pytest.param("period", "month", id="period"),
+        pytest.param("partition_by", [PRODUCT_TYPE], id="partition_by"),
+        pytest.param("order_by", "day", id="order_by"),
+    ],
+)
+def test_expression_block_beside_a_direct_field_refuses_naming_metric_and_field(
+    tmp_path: Path, field: str, value: Any
+) -> None:
+    error = _load_error(
+        tmp_path,
+        {"mixed": {"kind": "rolling", "expression": ROLLING_EXPRESSION, field: value}},
+    )
+    assert error.code == "INVALID_CONFIG"
+    assert "metric 'probe.mixed'" in str(error)
+    assert field in str(error)
+    assert error.details["conflicting_fields"] == [field]
+
+
+def test_expression_block_beside_several_direct_fields_names_them_all(tmp_path: Path) -> None:
+    error = _load_error(
+        tmp_path,
+        {
+            "mixed": {
+                "kind": "derived",
+                "expression": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"},
+                "window": WEEK,
+                "partition_by": [PRODUCT_TYPE],
+            }
+        },
+    )
+    assert error.code == "INVALID_CONFIG"
+    assert error.details["conflicting_fields"] == ["partition_by", "window"]
+
+
+def test_expression_block_with_only_a_kind_beside_it_still_loads(tmp_path: Path) -> None:
+    expression = _probe(tmp_path, "rolling", {"kind": "rolling", "expression": ROLLING_EXPRESSION})
+    assert isinstance(expression, OffsetWindowExpr)
+    assert (expression.unit, expression.value) == ("day", 7)
+
+
+def test_the_central_translation_refuses_the_mix_whoever_calls_it() -> None:
+    with pytest.raises(SemanticLayerError) as excinfo:
+        config_module._translate_metric_direct_fields(
+            {"expression": ROLLING_EXPRESSION, "window": WEEK},
+            resolve=lambda ref: ref,
+            context="pkg: metric 'mixed'",
+        )
+    assert excinfo.value.code == "INVALID_CONFIG"
+    assert excinfo.value.details["conflicting_fields"] == ["window"]
+
+
+# --- partition_by names dimensions of the package -----------------------------------
+
+MEASURE_INPUT = {"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum"}
+NOT_A_DIMENSION = "dimension.jaffle_item_not_a_column"
+INPUT_NOT_ONE_MEASURE = {
+    "kind": "binary",
+    "op": "divide",
+    "left": {"kind": "metric", "metric": "metric.jaffle.revenue_usd"},
+    "right": {"kind": "metric", "metric": "metric.jaffle.order_count"},
+}
+
+
+def _authored_window(kind: str, partition_by: Any, **extra: Any) -> dict[str, Any]:
+    expression = {"kind": kind, "input": MEASURE_INPUT, "partition_by": partition_by, **extra}
+    return {"kind": "derived", "expression": expression}
+
+
+def test_partition_by_short_key_resolves_to_the_dimension_id(tmp_path: Path) -> None:
+    direct = _probe(
+        tmp_path,
+        "direct",
+        {
+            "kind": "rolling",
+            "measure": "item_revenue_usd",
+            "window": WEEK,
+            "partition_by": ["product_type"],
+        },
+    )
+    authored = _probe(
+        tmp_path, "authored", _authored_window("rolling", ["product_type"], window=WEEK)
+    )
+    assert direct.partition_by == [PRODUCT_TYPE]  # type: ignore[union-attr]
+    assert authored.partition_by == [PRODUCT_TYPE]  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("metric", "unknown"),
+    [
+        pytest.param(
+            {
+                "kind": "rolling",
+                "measure": "item_revenue_usd",
+                "window": WEEK,
+                "partition_by": ["prodcut_type"],
+            },
+            "prodcut_type",
+            id="direct-typo",
+        ),
+        pytest.param(
+            {
+                "kind": "cumulative",
+                "measure": "item_revenue_usd",
+                "partition_by": [NOT_A_DIMENSION],
+            },
+            NOT_A_DIMENSION,
+            id="direct-unknown-full-id",
+        ),
+        pytest.param(
+            {"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": ["order_count"]},
+            "order_count",
+            id="direct-measure-is-not-a-dimension",
+        ),
+        pytest.param(
+            {
+                "kind": "period_to_date",
+                "measure": "item_revenue_usd",
+                "period": "month",
+                "partition_by": ["is_large_order"],
+            },
+            "is_large_order",
+            id="direct-key-of-another-model",
+        ),
+        pytest.param(
+            {"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": "product_type"},
+            "product_type",
+            id="direct-bare-string",
+        ),
+        pytest.param(
+            _authored_window("rolling", ["prodcut_type"], window=WEEK),
+            "prodcut_type",
+            id="authored-typo",
+        ),
+        pytest.param(
+            {
+                "kind": "derived",
+                "expression": {
+                    "kind": "cumulative",
+                    "input": INPUT_NOT_ONE_MEASURE,
+                    "partition_by": ["product_type"],
+                },
+            },
+            "product_type",
+            id="authored-short-key-without-one-measure",
+        ),
+        pytest.param(
+            {
+                "kind": "derived",
+                "expression": {
+                    "kind": "binary",
+                    "op": "add",
+                    "left": {"kind": "metric", "metric": "metric.jaffle.order_count"},
+                    "right": _authored_window("period_to_date", [NOT_A_DIMENSION], period="month")[
+                        "expression"
+                    ],
+                },
+            },
+            NOT_A_DIMENSION,
+            id="authored-nested-in-another-node",
+        ),
+    ],
+)
+def test_partition_by_entry_that_is_not_a_dimension_refuses_at_load(
+    tmp_path: Path, metric: dict[str, Any], unknown: str
+) -> None:
+    error = _load_error(tmp_path, {"partitioned": metric})
+    assert error.code == "INVALID_CONFIG"
+    assert "metric 'probe.partitioned'" in str(error)
+    assert "partition_by" in str(error)
+    assert error.details["unknown_partition_by"] == [unknown]
+
+
+def test_the_central_translation_refuses_partition_by_when_no_dimension_is_known() -> None:
+    # A caller that supplies no dimensions gets a refusal, not a pass-through.
+    with pytest.raises(SemanticLayerError) as excinfo:
+        config_module._translate_metric_direct_fields(
+            {"kind": "cumulative", "measure": "revenue_usd", "partition_by": [PRODUCT_TYPE]},
+            resolve=lambda ref: ref,
+            context="pkg: metric 'partitioned'",
+        )
+    assert excinfo.value.details["unknown_partition_by"] == [PRODUCT_TYPE]
