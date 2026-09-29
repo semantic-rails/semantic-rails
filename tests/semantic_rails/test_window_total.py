@@ -11,6 +11,8 @@ from typing import Any
 import pytest
 
 from semantic_rails.compiler import plan_query
+from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import (
     MCP_DEFAULT_MAX_RESULT_CHARS,
     SemanticLayerMCPAdapter,
@@ -140,6 +142,204 @@ def test_an_expression_that_needs_the_time_axis_is_not_collapsed(runtime: Runtim
     rolling = {"expression": {"metric": "metric.sales.rolling_7d_revenue_direct"}, "as": "r"}
     assert collapses(REVENUE)
     assert not collapses(rolling)
+
+    # A cumulative runs: it keeps its time column and the warning, and says nothing about a total.
+    cumulative = {"expression": {"metric": "metric.sales.cumulative_revenue"}, "as": "running"}
+    response = runtime.query(_query([cumulative], {"end": "2017-04-04"}))
+    gold = _gold(
+        runtime,
+        "SELECT SUM(order_total_cents) / 100.0 AS revenue FROM jaffle_order "
+        "WHERE ordered_at < TIMESTAMP '2017-04-04'",
+    )
+    assert response["row_count"] > 1
+    assert all(set(row) == {ORDER_TIME, "running"} for row in response["rows"])
+    assert max(row["running"] for row in response["rows"]) == pytest.approx(gold[0]["revenue"])
+    assert "UNGRAINED_TIME_PROJECTION" in _codes(response)
+    assert response["assumptions"] == []
+
+
+# Each case is a query over 2017-04-01..2017-07-01 (unless it names its own role and window)
+# and raw SQL for the same answer. The gold columns are named like the response keys.
+ORDER_WINDOW = "o.ordered_at >= TIMESTAMP '2017-04-01' AND o.ordered_at < TIMESTAMP '2017-07-01'"
+STORE_JOIN = "JOIN jaffle_store s ON o.store_id = s.store_id"
+INVENTORY_TIME = "temporal_role.jaffle_inventory_day"
+INVENTORY = {"expression": {"metric": "metric.sales.inventory_on_hand_eop"}, "as": "inventory"}
+INVENTORY_SPAN = {"temporal_role": INVENTORY_TIME, "start": "2016-09-01", "end": "2017-04-02"}
+INVENTORY_WINDOW = "i.date_day >= DATE '2016-09-01' AND i.date_day < DATE '2017-04-02'"
+LAST_SNAPSHOT = (
+    "SELECT store_id, inventory_on_hand FROM (SELECT i.store_id, i.inventory_on_hand, "
+    "ROW_NUMBER() OVER (PARTITION BY i.store_id ORDER BY i.date_day DESC) AS n "
+    f"FROM jaffle_store_inventory_snapshot i WHERE {INVENTORY_WINDOW}) WHERE n = 1"
+)
+
+
+def _measure(measure: str, alias: str, aggregation: str = "") -> dict[str, Any]:
+    expression = {"measure": f"measure.jaffle.{measure}"}
+    if aggregation:
+        expression["aggregation"] = aggregation
+    return {"as": alias, "expression": expression}
+
+
+BIG_STORE_FILTER = {
+    "expression": {
+        "kind": "comparison",
+        "op": ">",
+        "left": {"measure": "measure.jaffle.revenue_usd"},
+        "right": {"kind": "literal", "value": 130000},
+    },
+    "op": "=",
+    "value": True,
+}
+
+# id -> (query, group_by dimension ids, output aliases, gold SQL)
+GOLD_CASES: dict[str, tuple[dict[str, Any], list[str], list[str], str]] = {
+    "count_distinct direct": (
+        _query(
+            [_measure("order_count", "orders", "count_distinct")],
+            {"start": "2017-04-01", "end": "2017-07-01"},
+            group_by=[STORE],
+        ),
+        [STORE],
+        ["orders"],
+        f'SELECT s.store_name AS "{STORE}", COUNT(DISTINCT o.order_id) AS orders '
+        f"FROM jaffle_order o {STORE_JOIN} WHERE {ORDER_WINDOW} GROUP BY 1",
+    ),
+    "count_distinct through the entity-in-terms-of rewrite": (
+        _query(
+            [_measure("order_count", "orders", "count_distinct")],
+            {"start": "2017-04-01", "end": "2017-07-01"},
+            group_by=["dimension.jaffle_product_type"],
+        ),
+        ["dimension.jaffle_product_type"],
+        ["orders"],
+        'SELECT p.product_type AS "dimension.jaffle_product_type", '
+        "COUNT(DISTINCT o.order_id) AS orders FROM jaffle_item i "
+        "JOIN jaffle_order o ON i.order_id = o.order_id JOIN jaffle_product p ON i.sku = p.sku "
+        f"WHERE {ORDER_WINDOW} GROUP BY 1",
+    ),
+    "avg": (
+        _query(
+            [_measure("revenue_usd", "average_order", "avg")],
+            {"start": "2017-04-01", "end": "2017-07-01"},
+        ),
+        [],
+        ["average_order"],
+        f"SELECT AVG(o.order_total_cents) / 100.0 AS average_order FROM jaffle_order o "
+        f"WHERE {ORDER_WINDOW}",
+    ),
+    "median": (
+        _query(
+            [_measure("revenue_usd", "median_order", "median")],
+            {"start": "2017-04-01", "end": "2017-07-01"},
+        ),
+        [],
+        ["median_order"],
+        f"SELECT MEDIAN(o.order_total_cents) / 100.0 AS median_order FROM jaffle_order o "
+        f"WHERE {ORDER_WINDOW}",
+    ),
+    "ratio recipe": (
+        _query(
+            [{"as": "aov", "expression": {"metric": "metric.sales.aov_usd"}}],
+            {"start": "2017-04-01", "end": "2017-07-01"},
+        ),
+        [],
+        ["aov"],
+        "SELECT SUM(o.order_total_cents) / 100.0 / COUNT(*) AS aov FROM jaffle_order o "
+        f"WHERE {ORDER_WINDOW}",
+    ),
+    "metric_filters threshold on the window total": (
+        _query(
+            [REVENUE],
+            {"start": "2017-04-01", "end": "2017-07-01"},
+            group_by=[STORE],
+            metric_filters=[BIG_STORE_FILTER],
+        ),
+        [STORE],
+        ["revenue"],
+        f'SELECT s.store_name AS "{STORE}", SUM(o.order_total_cents) / 100.0 AS revenue '
+        f"FROM jaffle_order o {STORE_JOIN} WHERE {ORDER_WINDOW} GROUP BY 1 "
+        "HAVING SUM(o.order_total_cents) / 100.0 > 130000",
+    ),
+    "semi-additive balance, all series": (
+        _query([INVENTORY], INVENTORY_SPAN),
+        [],
+        ["inventory"],
+        f"SELECT SUM(inventory_on_hand) AS inventory FROM ({LAST_SNAPSHOT})",
+    ),
+    "semi-additive balance per store": (
+        _query(
+            [INVENTORY],
+            INVENTORY_SPAN,
+            group_by=[STORE],
+        ),
+        [STORE],
+        ["inventory"],
+        f'SELECT s.store_name AS "{STORE}", l.inventory_on_hand AS inventory '
+        f"FROM ({LAST_SNAPSHOT}) l JOIN jaffle_store s ON l.store_id = s.store_id",
+    ),
+    "two facts joined on the time key, per store": (
+        _query(
+            [REVENUE, _measure("item_revenue_usd", "item_revenue")],
+            {"start": "2017-04-01", "end": "2017-07-01"},
+            group_by=[STORE],
+        ),
+        [STORE],
+        ["revenue", "item_revenue"],
+        f'SELECT s.store_name AS "{STORE}", '
+        "SUM(o.order_total_cents) / 100.0 AS revenue, "
+        "SUM(i.item_revenue_cents) / 100.0 AS item_revenue "
+        f"FROM (SELECT o.store_id, o.order_id, o.order_total_cents FROM jaffle_order o "
+        f"WHERE {ORDER_WINDOW}) o "
+        "JOIN (SELECT order_id, SUM(item_revenue_cents) AS item_revenue_cents "
+        "FROM jaffle_item GROUP BY 1) i ON i.order_id = o.order_id "
+        "JOIN jaffle_store s ON o.store_id = s.store_id GROUP BY 1",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(GOLD_CASES))
+def test_every_kind_of_measure_returns_the_window_total(runtime: Runtime, case: str) -> None:
+    query, groups, values, sql = GOLD_CASES[case]
+    response = runtime.query(query)
+    gold = _gold(runtime, sql)
+
+    assert gold, "the gold query must return rows"
+    assert all(set(row) == {*groups, *values} for row in response["rows"])  # no time column
+    got = {
+        tuple(row[key] for key in groups): [row[key] for key in values] for row in response["rows"]
+    }
+    want = {tuple(row[key] for key in groups): [row[key] for key in values] for row in gold}
+    assert got.keys() == want.keys()
+    for key, row_values in want.items():
+        assert got[key] == pytest.approx(row_values), key
+    assert response["row_count"] == len(gold)  # one row per group, never one per timestamp
+    assert len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]
+    assert not {"UNGRAINED_TIME_PROJECTION", "UNGRAINED_GROUPED_TIME_PROJECTION"} & set(
+        _codes(response)
+    )
+
+
+def test_a_balance_is_the_last_snapshot_in_the_window_not_a_sum(runtime: Runtime) -> None:
+    balance = runtime.query(_query([INVENTORY], INVENTORY_SPAN))["rows"][0]["inventory"]
+    summed = _gold(
+        runtime,
+        "SELECT SUM(inventory_on_hand) AS inventory FROM jaffle_store_inventory_snapshot i "
+        f"WHERE {INVENTORY_WINDOW}",
+    )[0]["inventory"]
+    assert balance == 1085 + 860  # each store's last snapshot in the window
+    assert balance != summed
+
+
+@pytest.mark.parametrize("case", ["count_distinct through the entity-in-terms-of rewrite", "avg"])
+def test_a_leaf_that_still_groups_by_the_raw_time_is_refused(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A leaf that misses the constant time key must not be passed off as one total."""
+    monkeypatch.setattr(sql_lowering, "_time_bucket_expr", lambda time, raw_expr, config: raw_expr)
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(GOLD_CASES[case][0])
+    assert raised.value.code == "WINDOW_TOTAL_UNSUPPORTED"
+    assert raised.value.details["time_keys"] == [ORDER_TIME]
 
 
 def test_the_default_cap_is_32k_characters() -> None:

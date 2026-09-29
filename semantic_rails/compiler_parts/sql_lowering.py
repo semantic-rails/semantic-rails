@@ -65,6 +65,7 @@ from ..sql_ast import (
     SqlOrder,
     SqlOrderTerm,
     SqlSelect,
+    SqlSetQuery,
     SqlTableRef,
     SqlWindow,
     build_filter_condition,
@@ -392,6 +393,58 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
             whens=[SqlCaseWhen(SqlIsNull(raw_expr), SqlLiteral(0))], else_expr=SqlLiteral(0)
         )
     return raw_expr
+
+
+def _is_window_total_key(expr: Any, time_alias: str) -> bool:
+    """Whether ``expr`` can only ever hold the window-total constant.
+
+    That is the constant itself, or a reference to a column a lower select already
+    named ``time_alias`` (the combine step passes the key up, possibly through
+    ``COALESCE``). A raw column under that alias still varies row to row.
+    """
+    if isinstance(expr, SqlCase):
+        return (
+            len(expr.whens) == 1
+            and isinstance(expr.whens[0].condition, SqlIsNull)
+            and expr.whens[0].result == SqlLiteral(0)
+            and expr.else_expr == SqlLiteral(0)
+        )
+    if isinstance(expr, SqlIdentifier):
+        return bool(expr.parts) and expr.parts[-1] == time_alias
+    if isinstance(expr, SqlCall):
+        return bool(expr.args) and all(_is_window_total_key(arg, time_alias) for arg in expr.args)
+    return False
+
+
+def _varying_time_keys(query: Any, time_alias: str) -> list[str]:
+    """Time keys in ``query`` and its CTEs that are not the window-total constant."""
+    if isinstance(query, SqlSetQuery):
+        return [key for branch in query.queries for key in _varying_time_keys(branch, time_alias)]
+    found = [
+        item.alias
+        for item in query.select
+        if item.alias == time_alias and not _is_window_total_key(item.expression, time_alias)
+    ]
+    for cte in query.ctes:
+        found.extend(f"{cte.name}.{key}" for key in _varying_time_keys(cte.query, time_alias))
+    return found
+
+
+def _refuse_varying_time_key(plan: LogicalPlan, leaf: Any) -> None:
+    """Refuse a window total whose leaf still groups by the raw time column.
+
+    The final SELECT drops the time column of a window total. Dropping one that
+    still varies would return several rows per group as if they were one total.
+    """
+    if not plan.time.get("window_total"):
+        return
+    if varying := _varying_time_keys(leaf, _time_alias_for_plan(plan)):
+        raise SemanticLayerError(
+            "WINDOW_TOTAL_UNSUPPORTED",
+            "This query can't be returned as one total over the window: part of it still "
+            "groups by the raw time column. Set time.grain, or remove time.start and time.end.",
+            details={"temporal_role": plan.time.get("temporal_role"), "time_keys": varying},
+        )
 
 
 def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:
@@ -967,9 +1020,7 @@ def _aggregate_relation_time_expr(
         return None, None, ""
     raw_expr = _column_ref(aggregate.relation, aggregate.time_column)
     time = dict(plan.time)
-    time_expr = (
-        _dialect(config).date_trunc(time["grain"], raw_expr) if time.get("grain") else raw_expr
-    )
+    time_expr = _time_bucket_expr(time, raw_expr, config)
     time_alias = (
         time["temporal_role"]
         if not time.get("grain")
@@ -1775,9 +1826,7 @@ def _entity_in_terms_of_leaf_select(
             else _column_ref(entities[dim.entity].table, dim.column)
         )
         raw_expr = _apply_role_timezone(raw_expr, role, config)
-        time_expr = (
-            _dialect(config).date_trunc(time["grain"], raw_expr) if time.get("grain") else raw_expr
-        )
+        time_expr = _time_bucket_expr(time, raw_expr, config)
         time_alias = (
             time["temporal_role"]
             if not time.get("grain")
@@ -4383,6 +4432,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
             # A folded group shares one scan, so its filters cut every leaf in it.
             with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                 leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+            _refuse_varying_time_key(plan, leaf_select)
             leaf_ctes.append(
                 SqlCte(name=cte_name, query=_namespace_sql_select(leaf_select, f"{cte_name}__"))
             )
@@ -4391,6 +4441,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         for index, expr in enumerate(conversion_exprs):
             with cut_owners(_expression_alias(expr, config)):
                 conversion_cte = _conversion_leaf_cte(expr, index=index, plan=plan, config=config)
+            _refuse_varying_time_key(plan, conversion_cte.query)
             leaf_ctes.append(
                 SqlCte(
                     name=conversion_cte.name,
