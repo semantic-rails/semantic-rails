@@ -485,6 +485,19 @@ def recovery_hints_for_error(
         ]
     if code == "INCOMPATIBLE_TEMPORAL_ROLE":
         compatible = list(details.get("compatible", []) or [])
+        if not compatible and details.get("measure") and details.get("requested"):
+            return [
+                {
+                    "kind": "declare_measure_time_role",
+                    "message": (
+                        f"'{details['measure']}' has no time role. Mark one of its model's "
+                        "`times:` entries `default: true`, or list `times:` on the measure, "
+                        "then query it by that role. Or drop `time` from the query."
+                    ),
+                    "measure": details["measure"],
+                    "requested_temporal_role": details["requested"],
+                }
+            ]
         return [
             {
                 "kind": "select_compatible_temporal_role",

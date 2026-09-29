@@ -294,6 +294,10 @@ Core query rules:
   `INCOMPATIBLE_TEMPORAL_ROLE` unless its aggregate's `temporal_role` or
   `temporal_role_overrides` names one (a declared `default_temporal_role` doesn't; conversion
   operands keep their own clock rules)
+- a measure with no clock at all (no `times:` of its own and no model `default` time) can't be
+  bucketed: any query with `time` that binds it fails with `INCOMPATIBLE_TEMPORAL_ROLE`
+  (`details.compatible: []`, hint `declare_measure_time_role`); it still answers without `time`
+  or grouped by a plain date dimension
 
 ## Expression Surface
 

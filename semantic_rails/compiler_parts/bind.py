@@ -425,6 +425,16 @@ def _bind_measure(
             details={"measure": measure_id, "compatible": list(measure.compatible_temporal_roles)},
         )
     query_role = query.time.temporal_role if query.time else ""
+    if query_role and not temporal_role and not conversion_operand:
+        # No clock to bucket by: the plan has no role to read, so refuse here, in the one
+        # place every measure is bound, instead of failing later on a missing role.
+        raise SemanticLayerError(
+            "INCOMPATIBLE_TEMPORAL_ROLE",
+            f"'{measure_id}' has no time role, so it can't be grouped by '{query_role}'. Mark "
+            f"a time on its model `default: true`, or list `times:` on the measure; or drop "
+            f"`time` from the query.",
+            details={"measure": measure_id, "requested": query_role, "compatible": []},
+        )
     compatible = list(measure.compatible_temporal_roles)
     # Conversion operands keep their own rules (_validate_conversion_temporal_bindings).
     named = (

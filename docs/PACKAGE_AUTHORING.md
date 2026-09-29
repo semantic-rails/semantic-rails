@@ -885,6 +885,12 @@ times:
 `class:`, `supported_grains:`, and `default_query_axis:` are load-bearing — the
 planner uses them to decide alignment and pick implicit time axes.
 
+A measure is timed by the roles in its own `times:` list, or, when it lists none, by its
+model's `default: true` time. A measure with neither has no clock: it answers without `time`
+or grouped by a plain date dimension, but a query that puts it on a time grain (for example
+`time: {temporal_role: ..., grain: month}`) is refused with `INCOMPATIBLE_TEMPORAL_ROLE`. Mark
+the role `default: true` or list it under the measure's `times:`.
+
 `timezone:` (default `UTC`) is the zone the role answers in. Every grain's
 buckets, and a query's `start`/`end` bounds, are in that zone:
 
