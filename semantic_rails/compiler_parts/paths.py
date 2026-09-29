@@ -41,6 +41,7 @@ from .indexes import (
     _recipe_index,
     _relationship_index,
     _temporal_role_index,
+    get_package_analysis,
 )
 from .temporal import _allows_coarse_snapshot_alignment
 
@@ -146,6 +147,14 @@ def _direct_entity_key_source_expr(
     if len(routes) != 1:
         return None
     rel, source_col = routes[0]
+    # A pin on this pair, in either direction, is decided by path selection (it may pick a
+    # multi-hop route that reads a different row than the source table's own column), so the
+    # shortcut only stands when the pin names exactly the one direct relationship found.
+    preferences = get_package_analysis(config).path_preferences
+    for pair in ((source_entity, target_entity), (target_entity, source_entity)):
+        pinned = preferences.get(pair)
+        if pinned is not None and pinned != [rel.id]:
+            return None
     record_bound_object(rel, config)
     return _column_ref(source_table, source_col)
 

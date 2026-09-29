@@ -45,6 +45,15 @@ INSERT INTO legs VALUES
   (4, 'JFK', 'LAX', 4, 'LHR');
 """
 
+# A second route from a leg to an airport: the airport its gate is in. It differs from the
+# leg's origin on every leg, so a read of the origin's key instead of the gate's is visible.
+GATE_SEED_SQL = """
+CREATE TABLE gates (gate_id INTEGER, airport_code VARCHAR);
+INSERT INTO gates VALUES (1, 'LAX'), (2, 'ORD'), (3, 'JFK'), (4, 'LHR');
+ALTER TABLE legs ADD COLUMN gate_id INTEGER;
+UPDATE legs SET gate_id = leg_id;
+"""
+
 ORIGIN = "relationship.legs_origin_airport"
 DESTINATION = "relationship.legs_destination_airport"
 CITY = "dimension.air_airport_city"
@@ -180,6 +189,7 @@ def _write_package(
     reverse: tuple[str, ...] = (),
     extra_seed: str = "",
     destination_target: str = "airport_code",
+    gate_hop: bool = False,
 ) -> Path:
     """Legs and airports. ``explicit`` lists the roles authored in
     ``graph.relationships`` in declaration order; ``inferred_origin`` instead
@@ -187,8 +197,11 @@ def _write_package(
     ``preferences`` sets a role's relationship ``path_preference``; ``reverse`` lists roles
     declared from the airport's side (``[airport, leg]``); ``extra_seed`` is more seed SQL;
     ``destination_target`` is the airport column the destination role joins to (a column
-    other than the key gives a role the key-column filter alone would not see)."""
+    other than the key gives a role the key-column filter alone would not see);
+    ``gate_hop`` adds a second route from a leg to an airport, through the leg's gate."""
     preferences = preferences or {}
+    if gate_hop:
+        extra_seed += GATE_SEED_SQL
     pkg = root / "air"
     (pkg / "data").mkdir(parents=True, exist_ok=True)
     (pkg / "models").mkdir(exist_ok=True)
@@ -251,6 +264,22 @@ def _write_package(
             airport: {label: Airport, key: [airport_code], model: airports}
         """
     )
+    if gate_hop:
+        graph += "    gate: {label: Gate, key: [gate_id], model: gates}\n"
+        relationship_lines += [
+            "    legs_gate:",
+            "      id: relationship.legs_gate",
+            "      entities: [leg, gate]",
+            "      cardinality: many_to_one",
+            "      via: [gate_id]",
+            "      target: [gate_id]",
+            "    gates_airport:",
+            "      id: relationship.gates_airport",
+            "      entities: [gate, airport]",
+            "      cardinality: many_to_one",
+            "      via: [airport_code]",
+            "      target: [airport_code]",
+        ]
     if relationship_lines:
         graph += "  relationships:\n" + "\n".join(relationship_lines) + "\n"
     graph += path_preferences
@@ -270,6 +299,10 @@ def _write_package(
         "      accumulation: {kind: flow}\n"
         "      value_type: count\n"
     )
+    if gate_hop:
+        (pkg / "models" / "gates.yml").write_text(
+            "model:\n  id: gates\n  relation: gates\n  entities:\n    gate: {}\n"
+        )
     (pkg / "models" / "airports.yml").write_text(
         textwrap.dedent(
             """
@@ -546,6 +579,99 @@ def test_the_shortcut_still_reads_a_single_role_from_the_source_table(tmp_path):
     )
     assert expr is not None
     assert expr.parts[-1] == "destination_code"
+
+
+GATE_PIN = (
+    "  path_preferences:\n"
+    "    - source_entity: leg\n"
+    "      target_entity: airport\n"
+    "      relationship_path: [relationship.legs_gate, relationship.gates_airport]\n"
+)
+
+
+def _gold_through_gate(select: str, where: str) -> list[tuple]:
+    con = duckdb.connect(":memory:")
+    con.execute(SEED_SQL + GATE_SEED_SQL)
+    group = f"GROUP BY {select}" if select else ""
+    rows = con.execute(
+        f"SELECT {select + ', ' if select else ''}SUM(l.seats) FROM legs l "
+        f"JOIN gates g ON g.gate_id = l.gate_id "
+        f"JOIN airports a ON a.airport_code = g.airport_code WHERE {where} {group}"
+    ).fetchall()
+    return sorted((*row[:-1], int(row[-1])) for row in rows)
+
+
+@pytest.mark.parametrize(
+    "query_name", ["group_by_city_and_key", "group_by_key", "where_on_key", "where_on_city"]
+)
+def test_a_pin_to_a_multi_hop_route_decides_the_key_too(tmp_path, query_name):
+    """One direct foreign key and a pinned route through the gate: the key dimension is read
+    from the pinned airport, so a row never pairs the gate airport's city with the origin's code."""
+    query, columns, select, where = ROLE_QUERIES[query_name]
+    _write_package(tmp_path, explicit=("origin",), gate_hop=True, path_preferences=GATE_PIN)
+    runtime = Runtime.from_path(str(tmp_path / "air"))
+    gold = _gold_through_gate(select, where)
+    assert gold
+    assert gold != _gold_rows(select, where, "origin_code")
+    assert _rows(runtime, query, columns) == gold
+
+
+def test_the_key_shortcut_declines_when_a_pin_names_another_route(tmp_path):
+    leg, airport = "entity.air_leg", "entity.air_airport"
+    pinned = load_package_config(
+        str(
+            _write_package(
+                tmp_path / "pinned", explicit=("origin",), gate_hop=True, path_preferences=GATE_PIN
+            )
+        )
+    )
+    assert [c for _rel, c in _pair_key_routes(leg, airport, "airport_code", pinned)] == [
+        "origin_code"
+    ]
+    assert _direct_entity_key_source_expr(leg, airport, "airport_code", pinned) is None
+    assert _direct_dimension_source_expr(leg, CODE, pinned) is None
+    # No pin: path selection prefers the direct relationship, so the shortcut stands.
+    unpinned = load_package_config(
+        str(_write_package(tmp_path / "unpinned", explicit=("origin",), gate_hop=True))
+    )
+    expr = _direct_entity_key_source_expr(leg, airport, "airport_code", unpinned)
+    assert expr is not None
+    assert expr.parts[-1] == "origin_code"
+
+
+def test_the_key_shortcut_stands_when_the_pin_names_only_the_direct_relationship(tmp_path):
+    pin = (
+        "  path_preferences:\n"
+        "    - source_entity: leg\n"
+        "      target_entity: airport\n"
+        f"      relationship_path: [{DESTINATION}]\n"
+    )
+    config = load_package_config(
+        str(_write_package(tmp_path, explicit=("destination",), path_preferences=pin))
+    )
+    expr = _direct_entity_key_source_expr(
+        "entity.air_leg", "entity.air_airport", "airport_code", config
+    )
+    assert expr is not None
+    assert expr.parts[-1] == "destination_code"
+
+
+def test_the_key_shortcut_declines_for_a_pin_written_from_the_target_side(tmp_path):
+    pin = (
+        "  path_preferences:\n"
+        "    - source_entity: airport\n"
+        "      target_entity: leg\n"
+        "      relationship_path: [relationship.gates_airport, relationship.legs_gate]\n"
+    )
+    config = load_package_config(
+        str(_write_package(tmp_path, explicit=("origin",), gate_hop=True, path_preferences=pin))
+    )
+    assert (
+        _direct_entity_key_source_expr(
+            "entity.air_leg", "entity.air_airport", "airport_code", config
+        )
+        is None
+    )
 
 
 def _normalized_joins(relationships: dict, inferred: list[str] | None = None) -> dict[str, dict]:
