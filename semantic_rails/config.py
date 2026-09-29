@@ -224,6 +224,21 @@ def _ensure_list(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _path_preference(value: Any, where: str) -> int:
+    """A relationship's ``path_preference``: lower wins a route, 0 included. Unset is 100."""
+    if value is None or value == "":
+        return 100
+    try:
+        preference = int(value)
+    except (TypeError, ValueError):
+        preference = -1
+    if isinstance(value, bool) or preference < 0:
+        raise SemanticLayerError(
+            "INVALID_CONFIG", f"{where} path_preference must be a non-negative integer"
+        )
+    return preference
+
+
 def _ensure_dict_list(value: Any) -> list[dict[str, Any]]:
     rows = value if isinstance(value, list) else ([] if value is None else [value])
     return [dict(row or {}) for row in rows if isinstance(row, dict)]
@@ -2321,7 +2336,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     name=str(join_spec.get("name", f"{entity_cfg.name}_TO_{target_cfg.name}")),
                     label=str(join_spec.get("label", f"{entity_cfg.label} to {target_cfg.label}")),
                     description=str(join_spec.get("description", join_spec.get("label", ""))),
-                    path_preference=int(join_spec.get("path_preference", 100) or 100),
+                    path_preference=_path_preference(
+                        join_spec.get("path_preference"), f"{path}: join '{model_id}.{edge_key}'"
+                    ),
                     allowed_directions=list(
                         join_spec.get("traversal", ["forward", "reverse"]) or ["forward", "reverse"]
                     ),

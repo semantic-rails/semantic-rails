@@ -574,7 +574,10 @@ def recovery_hints_for_error(
         return [
             {
                 "kind": "narrow_query",
-                "message": "Choose a more specific grouping, filter, or root entity to break the path ambiguity.",
+                "message": str(
+                    details.get("hint")
+                    or "Choose a more specific grouping, filter, or root entity to break the path ambiguity."
+                ),
                 "candidates": list(details.get("candidates", []) or []),
             }
         ]

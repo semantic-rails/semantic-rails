@@ -759,6 +759,8 @@ configurable.
 Each `relationships:` entry is an unordered pair of entities. Cardinality is
 declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe` specifies which aggregations roll up safely in each direction.
+When several relationships join one pair (roles), an aggregation must be listed
+by every one that lists any.
 
 Most relationships are **inferred** from FK references in `model.entities:`
 blocks. Author an explicit `graph.relationships:` entry only when you need a
@@ -1250,6 +1252,9 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
+- Several relationships join one pair of entities on different columns and no
+  one of them has the lowest `path_preference` (`RELATIONSHIP_ROLES_UNPINNED`), whichever
+  side each is declared from.
 
 ## Path-finding behavior (entity hopping)
 
@@ -1327,7 +1332,37 @@ Three guard rails back this up at query time:
   `path_preferences` pin). Adding a shortcut relationship to a package can
   silently re-route existing queries; this warning is the tripwire.
 - **`AMBIGUOUS_PATH` error** — two routes with identical hop count and
-  preference score refuse to compile rather than pick arbitrarily.
+  preference score refuse to compile rather than pick arbitrarily. The error
+  names the tied routes and how to pin one. A `graph.relationships:` entry
+  never replaces a foreign key on other columns: the model keeps both, so an
+  origin and a destination key into one `airport` entity are two routes. Any
+  query that reaches the airport is refused until you pin the role it means:
+  its city, its key (`airport_code`, even though the leg's table holds the
+  foreign key), a filter on either, or a metric predicate on the airport. An
+  entry that restates the inferred foreign key (the same `via` columns, or none)
+  replaces it. Two authored entries on the same `via` columns are refused at
+  load (`INVALID_CONFIG`, naming both): keep one, or give each its own `via`
+  if they are different roles.
+  Pin the role with a lower `path_preference` on the intended relationship,
+  which applies to every query through the pair. A `path_preferences` row
+  for the pair pins only queries that start at its `source_entity` and end at
+  its `target_entity`; a query from another entity that passes through the pair,
+  one that continues past the target, or one that starts at the target, is still
+  refused. A pinned role reads its key through the pinned relationship's join,
+  like any other column of the airport, so a leg whose code matches no airport
+  row is not counted; a package with a single role and no `path_preferences`
+  row for the pair reads the key from the leg's own column and keeps that leg.
+  A `path_preferences` row for the pair, in either direction, sends every read of
+  the key, a filter on it and a metric predicate through the pinned route, so the
+  key and the airport's other columns always come from the same airport. `path_preference` is a non-negative integer
+  (unset is 100), so `0` is the lowest and pins a role.
+- **`RELATIONSHIP_ROLES_UNPINNED` warning** — reported when the package is
+  parsed (`semantic-rails check`, `validate`): several relationships join the
+  same pair of entities on different columns and no single one has the lowest
+  `path_preference` (two tied at the lowest still refuse every query). It names
+  the relationships, says whether a `path_preferences` row covers the pair, and
+  repeats the fix above. It stays quiet only when exactly one relationship has
+  the lowest `path_preference`.
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
   through two different relationships (e.g. region pinned to the home-city
   route while city resolves via the ship-to shortcut). One table instance

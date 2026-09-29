@@ -432,23 +432,24 @@ def _can_project_entity_key_from_source(
 def _validate_rollup_safety(bound_measures: Iterable[BoundMeasure], config: PackageConfig) -> None:
     measures = _measure_index(config)
     unsafe_aggregations = {"avg", "median", "percentile", "count_distinct"}
-    rollup_hints_by_pair: dict[tuple[str, str], list[str]] = {}
+    # Relationships between one pair (role-playing keys) may each list rollup-safe
+    # aggregations; only what every one of them allows is allowed, whatever the order.
+    rollup_hints_by_pair: dict[tuple[str, str], set[str]] = {}
     for rel in config.relationships:
         if not rel.rollup_safe_aggregations:
             continue
-        rollup_hints_by_pair[(rel.source_entity, rel.target_entity)] = list(
-            rel.rollup_safe_aggregations
-        )
+        hints = {str(item).lower() for item in rel.rollup_safe_aggregations}
+        pair = (rel.source_entity, rel.target_entity)
+        rollup_hints_by_pair[pair] = rollup_hints_by_pair.get(pair, hints) & hints
     for bound in bound_measures:
         measure = measures[bound.measure_id]
         if not measure.aggregation_entity or measure.aggregation_entity == measure.entity:
             continue
         aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-        allowed_raw = rollup_hints_by_pair.get((measure.entity, measure.aggregation_entity))
-        allowed = {str(item).lower() for item in (allowed_raw or [])}
+        allowed = rollup_hints_by_pair.get((measure.entity, measure.aggregation_entity))
         sketch_safe = bool(measure.meta.get("rollup_sketch") or measure.meta.get("sketch"))
         if (aggregation in unsafe_aggregations and not sketch_safe) or (
-            allowed and aggregation not in allowed and not sketch_safe
+            allowed is not None and aggregation not in allowed and not sketch_safe
         ):
             raise SemanticLayerError(
                 "ROLLUP_UNSAFE",

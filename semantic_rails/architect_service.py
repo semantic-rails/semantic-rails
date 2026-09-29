@@ -1429,15 +1429,28 @@ class ArchitectProject:
             self._store_model(model_doc, wrapper, model_row.key, model)
             graph = dict(documents[graph_path].get("graph", {}) or {})
             relationships = dict(graph.get("relationships", {}) or {})
-            existing = next(
-                (
-                    str(name)
-                    for name, entry in relationships.items()
-                    if isinstance(entry, dict)
-                    and _as_list(entry.get("entities")) == [source, target]
-                ),
-                "",
+            pair_entries = {
+                str(name): _as_list(entry.get("entities"))
+                for name, entry in relationships.items()
+                if isinstance(entry, dict)
+                and _as_list(entry.get("entities")) in ([source, target], [target, source])
+            }
+            same_side = [name for name, pair in pair_entries.items() if pair == [source, target]]
+            # One foreign-key write can change only one role. Refuse a pair that has (or may
+            # have) another: several entries, an entry declared from the other side, or an
+            # entry with its own `via` beside the model's `entities` foreign key (two routes
+            # on different columns, which stripping that `via` would merge into one).
+            own_columns = any(
+                "via" in dict(relationships[name]) for name in same_side if target in entities
             )
+            if len(pair_entries) > 1 or len(same_side) != len(pair_entries) or own_columns:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{source} and {target} already have several relationships or roles "
+                    f"({', '.join(pair_entries)}); edit them in graph.yml instead",
+                    details={"relationships": list(pair_entries)},
+                )
+            existing = same_side[0] if same_side else ""
             name = existing or f"{model_row.key}_{target}"
             if kind == "one_to_one" or existing:
                 if not existing and name in relationships:
