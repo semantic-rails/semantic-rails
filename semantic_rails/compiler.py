@@ -774,15 +774,6 @@ def _negated_filter(item: dict[str, Any], dim: Any) -> bool:
     return op in _NEGATED_FILTER_OPS or op == "IS NULL" or value is None
 
 
-def _hop_branch(row: PathSelection) -> tuple[str, ...]:
-    """The path up to its last one-to-many hop: conditions on one branch meet on one child row."""
-    hops = list(row.analysis.get("relationships", []) or [])
-    last = max(
-        i for i, hop in enumerate(hops) if hop.get("directional_safety") == "requires_rewrite"
-    )
-    return tuple(row.chosen_path[: last + 1])
-
-
 def _fanout_dedup_refusal(
     *,
     measure: MeasureConfig,
@@ -863,35 +854,59 @@ def _fanout_dedup_refusal(
             "is not supported across a one-to-many hop.",
             (grouped or selections)[0],
         )
-    crossing = {(row.target_entity, row.purpose): row for row in selections}
-    dimensions = _dimension_index(config)
-    branches = [_hop_branch(row) for row in grouped]
-    filters = [(asdict(row), "where") for row in query.where]
-    filters += [(clause, "metric_filter") for clause in _bound_filter_clauses(bound, config)]
-    for item, purpose in filters:
-        dim = dimensions.get(str(item.get("field", "")))
-        hop = crossing.get((dim.entity, purpose)) if dim is not None else None
-        if dim is None or hop is None:
-            continue
-        if _negated_filter(item, dim):
+    conditions = _hop_conditions(bound, selections, config, query)
+    if len(conditions) > 1:
+        return _two_hop_conditions(conditions)
+    for dim, item, hop in conditions:
+        if item and _negated_filter(item, dim):
             return (
                 f"A negated or null test on '{dim.id}' across a one-to-many hop is ambiguous: "
                 "'has a row that is not X' and 'has no row that is X' differ. Filter on the "
                 "values to keep instead.",
                 hop,
             )
-        branch = _hop_branch(hop)
-        if any(
-            branch[: len(other)] == other or other[: len(branch)] == branch for other in branches
-        ):
-            return (
-                f"'{dim.id}' and another filter or group across the same one-to-many hop are "
-                "ambiguous: one child row may have to meet both, or any rows each. Ask for one "
-                "condition on that hop per query, or combine its values with IN.",
-                hop,
-            )
-        branches.append(branch)
     return None
+
+
+def _hop_conditions(
+    bound: BoundMeasure,
+    selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> list[tuple[Any, dict[str, Any], PathSelection]]:
+    """Each group or filter of the leaf whose path crosses a one-to-many hop: its dimension,
+    the filter clause (empty for a group) and the path."""
+    crossing = {(row.target_entity, row.purpose): row for row in selections}
+    dimensions = _dimension_index(config)
+    conditions: list[tuple[Any, dict[str, Any], PathSelection]] = []
+    candidates: list[tuple[str, dict[str, Any], str]] = [
+        (dim_id, {}, "group_by") for dim_id in query.group_by
+    ]
+    candidates += [(row.field, asdict(row), "where") for row in query.where]
+    candidates += [
+        (str(clause.get("field", "")), clause, "metric_filter")
+        for clause in _bound_filter_clauses(bound, config)
+    ]
+    for dim_id, item, purpose in candidates:
+        dim = dimensions.get(dim_id)
+        hop = crossing.get((dim.entity, purpose)) if dim is not None else None
+        if hop is not None:
+            conditions.append((dim, item, hop))
+    return conditions
+
+
+def _two_hop_conditions(
+    conditions: list[tuple[Any, dict[str, Any], PathSelection]],
+) -> tuple[str, PathSelection]:
+    """At most one group or filter may cross a one-to-many hop: with two, one child row may have
+    to meet both, or any rows each, and which depends on where their paths part."""
+    (first, _, _), (second, _, hop) = conditions[:2]
+    return (
+        f"'{first.id}' and '{second.id}' both cross a one-to-many hop, so they may have to "
+        "match one row or any rows each. Ask one such condition per query, or combine its "
+        "values with IN on one dimension.",
+        hop,
+    )
 
 
 def _hop_steps(
@@ -2157,7 +2172,20 @@ def _leaf_path_selections(
             )
             for row in unsupported
         ):
-            return selections, sorted(required_entities), "entity_in_terms_of"
+            conditions = _hop_conditions(bound, unsupported, config, query)
+            if len(conditions) <= 1:
+                return selections, sorted(required_entities), "entity_in_terms_of"
+            why_invalid, row = _two_hop_conditions(conditions)
+            raise _mixed_grain_error(
+                target_entity=row.target_entity,
+                purpose=row.purpose,
+                chosen=list(row.chosen_path),
+                analysis=row.analysis,
+                config=config,
+                query=query,
+                bound_measures=[bound],
+                why_invalid=why_invalid,
+            )
         refusal = _fanout_dedup_refusal(
             measure=measure, bound=bound, selections=unsupported, config=config, query=query
         )

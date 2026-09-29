@@ -65,6 +65,7 @@ CREATE TABLE sessions AS SELECT * FROM (VALUES
 ) AS t(session_id, customer_id, channel);
 CREATE TABLE coupons AS SELECT * FROM (VALUES (1, 'A', 5.0), (2, 'B', 7.0)) AS t(coupon_id, code, face_value);
 CREATE TABLE payments AS SELECT * FROM (VALUES (1, 1, 5.0), (2, 1, 5.0)) AS t(payment_id, order_id, amount);
+CREATE TABLE order_payments AS SELECT * FROM (VALUES (1, 1, 'card'), (2, 2, 'cash')) AS t(payment_id, order_id, method);
 """
 
 PACKAGE = """
@@ -140,6 +141,14 @@ model:
     paid: {label: Paid, kind: aggregate, expr: amount, accumulation: {kind: flow},
       value_type: currency}
 """,
+    "order_payments": """
+model:
+  id: order_payments
+  relation: order_payments
+  entities: {payment: {}, order: {}}
+  dimensions:
+    method: {label: Payment method, kind: categorical}
+""",
     "coupons": """
 model:
   id: coupons
@@ -157,6 +166,7 @@ ENTITIES = {
     "customer": ["customer_id", "customers"],
     "session": ["session_id", "sessions"],
     "coupon": ["coupon_id", "coupons"],
+    "payment": ["payment_id", "order_payments"],
     # Receipts are keyed by their order, but each payment is a row.
     "receipt": ["order_id", "payments"],
 }
@@ -174,6 +184,7 @@ TYPE = "dimension.hop_item_product_type"
 HOT = "dimension.hop_item_is_hot"
 CATEGORY = "dimension.hop_product_category"
 CHANNEL = "dimension.hop_session_channel"
+METHOD = "dimension.hop_payment_method"
 Q4_2016 = {"temporal_role": ROLE, "grain": "quarter", "start": "2016-10-01", "end": "2017-01-01"}
 IN_Q4 = "o.ordered_at >= TIMESTAMP '2016-10-01' AND o.ordered_at < TIMESTAMP '2017-01-01'"
 BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
@@ -329,6 +340,12 @@ def test_two_distinct_counts_grouped_across_the_hop(package: Path) -> None:
         FROM order_items i JOIN orders o ON o.order_id = i.order_id GROUP BY 1
     """
     assert _rows(package, query) == _reference(package, reference)
+    # Each de-duplicated leaf discloses itself.
+    disclosed = _disclosed(_run(package, query))
+    assert sorted(w["object_ids"][0] for w in disclosed) == [
+        "measure.hop.buyer_count",
+        "measure.hop.order_count",
+    ]
 
 
 def test_a_lookup_after_the_hop_and_a_second_hop_down(package: Path) -> None:
@@ -387,6 +404,7 @@ def _bound_filter(clause: dict[str, Any]) -> dict[str, Any]:
 
 
 NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
+TWO_CONDITIONS = "both cross a one-to-many hop"
 
 
 @pytest.mark.parametrize(
@@ -408,19 +426,36 @@ NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
         (_where("=", "false", HOT), NEGATED),
         (_where("in", [False], HOT), NEGATED),
         (_bound_filter({"field": TYPE, "op": "!=", "value": "beverage"}), NEGATED),
-        # Two conditions on one child: the same item, or any items each?
+        # At most one condition may cross a one-to-many hop: with two, one row may have to meet
+        # both, or any rows each. On one child, on siblings under a shared hop, or both groups.
         (
             {"select": [_measure("revenue")], "where": [BEVERAGE, {**BEVERAGE, "value": "jaffle"}]},
-            "same one-to-many hop",
+            TWO_CONDITIONS,
         ),
-        (
-            {**GROUPED_COUNT, "where": [{"field": HOT, "op": "=", "value": True}]},
-            "same one-to-many hop",
-        ),
+        ({**GROUPED_COUNT, "where": [{"field": HOT, "op": "=", "value": True}]}, TWO_CONDITIONS),
         (
             {**GROUPED_COUNT, "where": [{"field": CATEGORY, "op": "=", "value": "hot"}]},
-            "same one-to-many hop",
+            TWO_CONDITIONS,
         ),
+        (
+            {
+                "select": [_measure("credit")],
+                "where": [
+                    {"field": TYPE, "op": "=", "value": "jaffle"},
+                    {"field": METHOD, "op": "=", "value": "card"},
+                ],
+            },
+            TWO_CONDITIONS,
+        ),
+        (
+            {
+                "select": [_measure("customer_count")],
+                "group_by": [TYPE],
+                "where": [{"field": METHOD, "op": "=", "value": "card"}],
+            },
+            TWO_CONDITIONS,
+        ),
+        ({"select": [_measure("customer_count")], "group_by": [TYPE, METHOD]}, TWO_CONDITIONS),
         # On a boolean only "= true" reads one way.
         (_where("<", True, HOT), NEGATED),
         (_where("<=", False, HOT), NEGATED),
@@ -469,6 +504,9 @@ NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
         "two_filters_one_child",
         "group_and_filter_one_child",
         "group_and_filter_through_a_lookup",
+        "sibling_filters",
+        "group_and_sibling_filter",
+        "sibling_groups",
         "boolean_less_than_true",
         "boolean_at_most_false",
         "measure_filter_boolean_less_than_true",
