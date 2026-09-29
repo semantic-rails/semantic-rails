@@ -1378,7 +1378,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             )
         window = dict(raw_window)
         unit = str(window.get("unit", "")).strip()
-        window_value = int(window.get("value", 0) or 0)
+        try:
+            window_value = int(window.get("value", 0) or 0)
+        except (TypeError, ValueError):
+            window_value = 0
         if not unit or window_value <= 0:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST",
@@ -1705,6 +1708,20 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         # rejecting at parse-time avoids a confusing downstream error.
         raw_anchor = expr.get("anchor")
         raw_window = expr.get("window")
+        for part_name, raw_part in (("anchor", raw_anchor), ("window", raw_window)):
+            # A present part that is not an object (`anchor: role_id`, `window: 90`,
+            # `{}`) would leave the metric unwindowed and answer a lifetime value.
+            if raw_part is not None and not (isinstance(raw_part, dict) and raw_part):
+                raise SemanticLayerError(
+                    "INVALID_EXPRESSION_AST",
+                    f"scoped_aggregate.{part_name} must be a non-empty object",
+                    details={
+                        "expression_kind": "scoped_aggregate",
+                        "expression_position": context,
+                        "invalid_key": part_name,
+                        "received_type": type(raw_part).__name__,
+                    },
+                )
         has_anchor = isinstance(raw_anchor, dict) and bool(raw_anchor)
         has_window = isinstance(raw_window, dict) and bool(raw_window)
         if has_anchor != has_window:

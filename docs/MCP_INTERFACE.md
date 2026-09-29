@@ -649,7 +649,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | Code | One-line description |
 |------|----------------------|
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
-| `AMBIGUOUS_PATH` | Path between root entity and target is ambiguous; narrow the query. |
+| `AMBIGUOUS_PATH` | Path between root entity and target is ambiguous; `details.candidates` lists the tied routes and `details.hint` says how to pin one. |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |

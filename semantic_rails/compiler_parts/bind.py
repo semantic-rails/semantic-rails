@@ -558,10 +558,11 @@ def _bind_scoped_aggregate(
                 "parsed and validated, but SQL lowering ships in the "
                 "next round. The IR contract is stable; the compiler "
                 "stub blocks execution to avoid silently aggregating "
-                "events outside the requested window. Until the "
-                "lowering lands, pre-author the windowed measure in the "
-                "package (kind: scoped_aggregate inside a metric "
-                "recipe) or run a two-step pipeline."
+                "events outside the requested window. A metric recipe "
+                "that authors the same anchor and window is refused the "
+                "same way. Until the lowering lands, expose the offset "
+                "from the anchor as a column (for example days since "
+                "the first order) and filter a measure on it."
             ),
             details={
                 "anchor": dict(expr.anchor or {}),

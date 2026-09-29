@@ -759,6 +759,8 @@ configurable.
 Each `relationships:` entry is an unordered pair of entities. Cardinality is
 declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe` specifies which aggregations roll up safely in each direction.
+When several relationships join one pair (roles), an aggregation must be listed
+by every one that lists any.
 
 Most relationships are **inferred** from FK references in `model.entities:`
 blocks. Author an explicit `graph.relationships:` entry only when you need a
@@ -1249,6 +1251,9 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
+- Several relationships join one pair of entities on different columns and no
+  one of them has the lowest `path_preference` (`RELATIONSHIP_ROLES_UNPINNED`), whichever
+  side each is declared from.
 
 ## Path-finding behavior (entity hopping)
 
@@ -1326,7 +1331,37 @@ Three guard rails back this up at query time:
   `path_preferences` pin). Adding a shortcut relationship to a package can
   silently re-route existing queries; this warning is the tripwire.
 - **`AMBIGUOUS_PATH` error** — two routes with identical hop count and
-  preference score refuse to compile rather than pick arbitrarily.
+  preference score refuse to compile rather than pick arbitrarily. The error
+  names the tied routes and how to pin one. A `graph.relationships:` entry
+  never replaces a foreign key on other columns: the model keeps both, so an
+  origin and a destination key into one `airport` entity are two routes. Any
+  query that reaches the airport is refused until you pin the role it means:
+  its city, its key (`airport_code`, even though the leg's table holds the
+  foreign key), a filter on either, or a metric predicate on the airport. An
+  entry that restates the inferred foreign key (the same `via` columns, or none)
+  replaces it. Two authored entries on the same `via` columns are refused at
+  load (`INVALID_CONFIG`, naming both): keep one, or give each its own `via`
+  if they are different roles.
+  Pin the role with a lower `path_preference` on the intended relationship,
+  which applies to every query through the pair. A `path_preferences` row
+  for the pair pins only queries that start at its `source_entity` and end at
+  its `target_entity`; a query from another entity that passes through the pair,
+  one that continues past the target, or one that starts at the target, is still
+  refused. A pinned role reads its key through the pinned relationship's join,
+  like any other column of the airport, so a leg whose code matches no airport
+  row is not counted; a package with a single role and no `path_preferences`
+  row for the pair reads the key from the leg's own column and keeps that leg.
+  A `path_preferences` row for the pair, in either direction, sends every read of
+  the key, a filter on it and a metric predicate through the pinned route, so the
+  key and the airport's other columns always come from the same airport. `path_preference` is a non-negative integer
+  (unset is 100), so `0` is the lowest and pins a role.
+- **`RELATIONSHIP_ROLES_UNPINNED` warning** — reported when the package is
+  parsed (`semantic-rails check`, `validate`): several relationships join the
+  same pair of entities on different columns and no single one has the lowest
+  `path_preference` (two tied at the lowest still refuse every query). It names
+  the relationships, says whether a `path_preferences` row covers the pair, and
+  repeats the fix above. It stays quiet only when exactly one relationship has
+  the lowest `path_preference`.
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
   through two different relationships (e.g. region pinned to the home-city
   route while city resolves via the ship-to shortcut). One table instance
@@ -1685,6 +1720,39 @@ would ignore such a key, so the package would behave differently from what it sa
 
 Every metric also gets the kind checks: a metric with an unknown `kind:`, or
 without a field its kind requires, such as a ratio's `denominator`, is rejected.
+
+The loader hands a metric's `expression:` to the expression parser as written, and
+carries every direct field a metric kind takes into the expression it builds, so a part
+is kept or rejected and never dropped to make the metric load:
+
+- An unknown expression `kind:`, or a field its kind does not support (a `where` on a
+  `metric` reference, an `anchor` on a plain measure), is rejected with the metric named.
+- Direct fields follow the same table. `partition_by` on a `rolling`, `period_to_date`
+  or `cumulative` metric, `window` on a `rolling` metric, and `window_scope` on a
+  `cumulative` metric reach the compiled metric. A field the kind does not take, such as
+  `window` on a `cumulative`, `partition_by` on a `prior_period` or a `ratio`, or
+  `order_by` anywhere, is rejected. `partition_by` declares a grouping the query must
+  include: the window already runs separately within each group the query groups by, so
+  the field changes no value, and a query that does not group by the dimension is refused
+  with `INVALID_QUERY`, naming the
+  metric and listing the dimension under `partition_by_missing_from_group_by`, instead of
+  returning an unpartitioned value. A `partition_by` that is not a list is rejected at load.
+- A metric is written either with an `expression:` block or with direct fields, never
+  both. A metric that has an `expression:` and also any direct field (`measure`,
+  `aggregation`, `numerator`, `denominator`, `window`, `window_scope`,
+  `offset`, `period`, `partition_by`, `order_by`) is rejected at load, naming the metric
+  and the fields; move them inside `expression:`. A `kind:` beside `expression:` is fine.
+- Every `partition_by` entry must be a dimension of the package, or the metric is rejected
+  at load. A short key resolves against the model of the measure the window reads (a
+  `rolling` over a metric reference or a formula takes only full `dimension.` ids), and is
+  stored as the full id.
+- A `window` on a plain `aggregate` loads but is refused when the metric is queried,
+  because a plain aggregate has no window. Use a `rolling` metric.
+- `scoped_aggregate` keeps its `anchor`, `window`, `where` and `predicates`. A short
+  `measure` key, and a short `where` field key on the measure's own model, resolve as they
+  do elsewhere in the package. An `anchor` with a `window` is refused when the metric is
+  queried, until anchored windows compile (see `docs/CAPABILITIES.md`); it is never
+  computed as a lifetime value.
 
 ### Filter values
 
