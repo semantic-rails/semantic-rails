@@ -499,7 +499,7 @@ stock has no value for a period nobody observed, so neither is ever made zero.
   known limitation: a count of distinct customers under a `where` that matches no rows returns
   `0`, not `NULL` with `NO_DATA_IN_SCOPE` as the rule says. An empty group of a grouped answer
   does read `NULL`
-  ([issue #TBD](https://github.com/semantic-rails/semantic-rails/issues/TBD)).
+  ([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
 - **An empty table has no data** to call zero: a measure over it reads `NULL`.
 - A metric filter such as `item_count = 0` sees the settled value, so it keeps the orders
   with no items.
