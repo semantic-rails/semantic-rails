@@ -41,7 +41,6 @@ from .request_context import (
     request_context_payload,
 )
 from .request_payload import (
-    DISCOVER_RANKED_KINDS,
     build_query_payload,
     checked_discover_kinds,
     parse_string_list,
@@ -2028,12 +2027,12 @@ class SemanticLayerMCPAdapter:
                 )
             # A kinds filter that is malformed or names no real kind is refused,
             # never dropped: an empty result must mean the search ran over the
-            # requested kinds and found nothing.
-            requested_kinds = checked_discover_kinds(
-                _coerce_kinds(args.get("kinds", [])),
-                DISCOVER_RANKED_KINDS if terms_str.strip() else _CATALOG_KIND_FILTERS,
-            )
+            # requested kinds and found nothing. A ranked search leaves the
+            # kind check to `discover_payload` (or the resource grant), which
+            # know which kinds this call can produce.
+            requested_kinds = _coerce_kinds(args.get("kinds", []))
             if not terms_str.strip():
+                requested_kinds = checked_discover_kinds(requested_kinds, _CATALOG_KIND_FILTERS)
                 # Empty terms list the ids instead of ranking, a page per kind.
                 catalog = resolve_catalog(
                     self.runtime,

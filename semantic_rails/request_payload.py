@@ -49,7 +49,7 @@ def parse_string_list(value: Any) -> list[str]:
         if text.startswith(("[", "{")):
             try:
                 decoded = json.loads(text)
-            except ValueError as exc:
+            except (ValueError, RecursionError) as exc:
                 raise ValueError("looks like JSON but does not parse") from exc
             if not isinstance(decoded, list):
                 raise ValueError("must be an array of strings")
@@ -64,7 +64,7 @@ def parse_string_list(value: Any) -> list[str]:
 
 
 def checked_string_list(value: Any, *, field: str) -> list[str]:
-    """:func:`parse_string_list` for callers outside HTTP and MCP (CLI, request context).
+    """:func:`parse_string_list` for callers outside HTTP and MCP (the CLI).
 
     A value that does not parse is refused with ``INVALID_MCP_ARGUMENTS`` naming
     ``field``, never read as a literal item.

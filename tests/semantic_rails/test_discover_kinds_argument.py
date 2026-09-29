@@ -77,7 +77,17 @@ def test_parse_string_list_reads_every_encoding(value: Any, expected: list[str])
 
 @pytest.mark.parametrize(
     "value",
-    ['["metric"', '{"a": 1}', "[1, 2]", '[["metric"]]', ["metric", 3], {"oops": True}, 7, True],
+    [
+        '["metric"',
+        '{"a": 1}',
+        "[1, 2]",
+        '[["metric"]]',
+        ["metric", 3],
+        {"oops": True},
+        7,
+        True,
+        "[" * 100_000,
+    ],
 )
 def test_parse_string_list_refuses_malformed_values(value: Any) -> None:
     with pytest.raises(ValueError):
@@ -246,11 +256,12 @@ def test_http_discover_reads_string_encoded_kinds_and_refuses_bad_ones(runtime: 
     assert all(card["kind"] == "metric" for card in encoded["metrics"])
     assert not encoded["measures"]
 
-    for bad in ('["metric"', ["metirc"]):
+    for bad, code in (('["metric"', "INVALID_REQUEST"), (["metirc"], "INVALID_MCP_ARGUMENTS")):
         with pytest.raises((HTTPInputError, SemanticLayerError)) as raised:
             service.handle("POST", "/discover", {"terms": "revenue", "kinds": bad})
         out, status = service.exception_payload(raised.value, stage="http")
         assert status == 400 and out["ok"] is False
+        assert out["error"]["code"] == code
         assert not _ids(out)
 
 
@@ -292,18 +303,65 @@ def test_resource_grant_mode_refuses_a_kind_it_cannot_produce_and_says_which(
     assert not _ids(out)
 
 
+@pytest.mark.parametrize("kinds", [["metirc"], ["measure"], ["dimension_value"]])
 def test_resource_grant_mode_mcp_refusal_keeps_its_recovery_hint(
-    runtime: Any, adapter: SemanticLayerMCPAdapter
+    runtime: Any, adapter: SemanticLayerMCPAdapter, kinds: list[str]
 ) -> None:
-    # `dimension_value` passes the adapter's own check; the grant then refuses it.
     out = adapter.call_tool(
-        "discover",
-        {"terms": "revenue", "kinds": ["dimension_value"], "policy_context": _granted(runtime)},
+        "discover", {"terms": "revenue", "kinds": kinds, "policy_context": _granted(runtime)}
     )
     assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
     (hint,) = [h for h in out["recovery_hints"] if h["kind"] == "use_valid_kind"]
     assert hint["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
     assert NO_MATCH not in str(out)
+    # Following the hint must work on the same transport: no hint names a refused kind.
+    for kind in hint["details"]["valid_kinds"]:
+        followed = adapter.call_tool(
+            "discover", {"terms": "revenue", "kinds": [kind], "policy_context": _granted(runtime)}
+        )
+        assert followed["ok"] is True, kind
+
+
+def _grant_discover(
+    runtime: Any, adapter: SemanticLayerMCPAdapter, transport: str, kinds: list[str]
+) -> dict[str, Any]:
+    body = {"terms": "revenue", "kinds": kinds, "policy_context": _granted(runtime)}
+    if transport == "mcp":
+        return adapter.call_tool("discover", body)
+    service = SemanticHTTPService(runtime)
+    try:
+        out, status = service.handle("POST", "/discover", body)
+    except SemanticLayerError as exc:
+        out, status = service.exception_payload(exc, stage="http")
+        assert status == 400
+    return out
+
+
+@pytest.mark.parametrize("transport", ["mcp", "http"])
+def test_resource_grant_mode_searches_a_kind_the_grant_produces_on_every_transport(
+    runtime: Any, adapter: SemanticLayerMCPAdapter, transport: str
+) -> None:
+    out = _grant_discover(runtime, adapter, transport, ["temporal_role"])
+    assert out["ok"] is True
+    assert "temporal_roles" in out and "no_matches" not in out
+    assert NO_MATCH not in _hints_text(out)
+
+
+@pytest.mark.parametrize("transport", ["mcp", "http"])
+def test_resource_grant_mode_refuses_a_ranked_kind_the_grant_cannot_produce(
+    runtime: Any, adapter: SemanticLayerMCPAdapter, transport: str
+) -> None:
+    out = _grant_discover(runtime, adapter, transport, ["measure"])
+    assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
+    assert out["error"]["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
+
+
+def test_resource_grant_mode_listing_omits_the_kinds_it_cannot_produce(
+    runtime: Any, adapter: SemanticLayerMCPAdapter
+) -> None:
+    out = adapter.call_tool("discover", {"terms": "", "policy_context": _granted(runtime)})
+    listed = {key.removesuffix("_ids") for key in out["catalog"] if key.endswith("_ids")}
+    assert listed and listed <= GRANT_DISCOVER_KINDS
 
 
 def test_resource_grant_mode_still_searches_the_kinds_it_produces(runtime: Any) -> None:

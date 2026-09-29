@@ -258,8 +258,11 @@ def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         if (not kind or row["kind"] == kind)
         and (not search or search in " ".join(str(row[k]) for k in ("id", "name", "label")).lower())
     ]
+    # Buckets a grant cannot produce are left out, not listed as empty.
     grouped = {
-        bucket: [row for row in rows if row["kind"] == kind] for kind, bucket in _BUCKETS.items()
+        bucket: [row for row in rows if row["kind"] == kind]
+        for kind, bucket in _BUCKETS.items()
+        if kind in GRANT_DISCOVER_KINDS
     }
     capabilities = _capabilities(access)
     return format_catalog_payload(
