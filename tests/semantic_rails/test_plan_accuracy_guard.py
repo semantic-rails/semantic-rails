@@ -304,12 +304,19 @@ def test_a_prior_period_comparison_is_not_a_window(adapter: SemanticLayerMCPAdap
     assert _gap_kinds(adapter, text, last_month) == ["prior_period_comparison_unrealized"]
 
 
-def test_a_callers_window_settles_the_question(adapter: SemanticLayerMCPAdapter) -> None:
-    caller = {"time": {"start": "2017-03-01", "end": "2017-06-01"}}
-    draft = _query(time={"temporal_role": ORDER_TIME, "grain": "month", **caller["time"]})
+def test_a_callers_window_settles_the_question_only_when_it_is_the_questions(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
     text = "orders in March 2017"
-    assert _gap_kinds(adapter, text, draft) == ["time_window_unrealized"]
-    assert _gap_kinds(adapter, text, draft, partial_query=caller) == []
+    for bounds, gaps in (
+        ({"start": "2017-03-01", "end": "2017-06-01"}, ["time_window_unrealized"]),
+        ({"start": "2017-03-01", "end": "2017-04-01"}, []),
+    ):
+        caller = {"time": bounds}
+        draft = _query(time={"temporal_role": ORDER_TIME, "grain": "month", **bounds})
+        # The gap the planner's own reading raises is the same one a caller's window is held to.
+        assert _gap_kinds(adapter, text, draft) == gaps
+        assert _gap_kinds(adapter, text, draft, partial_query=caller) == gaps
 
 
 # --- filter values ------------------------------------------------------------

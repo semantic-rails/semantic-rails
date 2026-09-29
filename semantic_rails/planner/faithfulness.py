@@ -16,10 +16,13 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
+from ..ast import _relative_range_bounds
+from ..errors import SemanticLayerError
 from ._base import (
+    _BOUNDARY_BEFORE_RE,
     _FISCAL_BUCKET_RE,
     _FISCAL_RE,
     _MAX_TIME_TEXT,
@@ -494,10 +497,11 @@ def intent_faithfulness_why(
             )
 
     caller_time = (partial_query or {}).get("time")
-    if not (
-        isinstance(caller_time, dict)
-        and any(caller_time.get(key) for key in ("start", "end", "range"))
+    if isinstance(caller_time, dict) and any(
+        caller_time.get(key) for key in ("start", "end", "range")
     ):
+        gaps.extend(_caller_window_gaps(text, query))
+    else:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
@@ -2390,41 +2394,141 @@ def _number_spans(
 
 # A year a date phrase states: after "in", "for" or "during", or the word "year".
 _YEAR_CUE_RE = re.compile(r"\b(?:in|for|during|year)\s+((?:19|20)\d{2})\b")
+# The rest of a bound after its date, when it is midnight.
+_MIDNIGHT_RE = re.compile(r"(?:[t ]00:00(?::00(?:\.0+)?)?(?:z|[+-]00:?00)?)?")
 
 
-def _bound_years(time: dict[str, Any]) -> set[str]:
-    """The years a caller's start and end carry."""
+def _question_time(
+    lowered: str,
+) -> tuple[list[tuple[tuple[int, int], dict[str, Any]]], list[tuple[int, int]]]:
+    """The windows plan reads from the question, and the other spans it reads as time.
 
-    return {
-        match.group(1)
-        for bound in (time.get("start"), time.get("end"))
-        if (match := re.match(r"\s*(\d{4})-", str(bound or "")))
-    }
+    The other spans are time phrases plan cannot resolve ("last 24 hours", "before 2017"). A
+    bare year is one only with the bound word plan reports it by ("before 2017"); on its own it
+    may be an hour ("at 2000"), so it is never returned. In a question too long to read, the only windows are the calendar years its date phrases state
+    ("in 2017", "for 2017"; never "at 1930").
+    """
+
+    if len(lowered) > _MAX_TIME_TEXT:
+        years = [(match.span(1), int(match.group(1))) for match in _YEAR_CUE_RE.finditer(lowered)]
+        return [
+            (span, {"start": f"{year:04d}-01-01", "end": f"{year + 1:04d}-01-01"})
+            for span, year in years
+        ], []
+    read = _time_window(lowered)
+    windows = list(read.windows)
+    others: list[tuple[int, int]] = []
+    for low, high in read.spans:
+        if any(start <= low and high <= end for (start, end), _bounds in windows):
+            continue
+        if _YEAR_WORD_RE.fullmatch(lowered[low:high].strip()):
+            # A bare year is a date only as the phrase plan reports it: after a bound word
+            # ("before 2017", "of 2017"), the span starting at that word. "at 2000" is not one.
+            bound = _BOUNDARY_BEFORE_RE.search(lowered[:low])
+            if bound is None:
+                continue
+            low = bound.start()
+        others.append((low, high))
+    return windows, others
+
+
+def _window_days(bounds: dict[str, Any]) -> tuple[date | None, date | None] | None:
+    """The first day a window covers and the first day after it, or None where unreadable.
+
+    A bound with a time of day is floored (a start) or rounded up (an end) to the day, the
+    grain of every window plan reads; a missing bound comes back None.
+    """
+
+    if bounds.get("range"):
+        try:
+            bounds = _relative_range_bounds(bounds["range"], policy_context=None)
+        except SemanticLayerError:
+            return None
+    days: list[date | None] = []
+    for key in ("start", "end"):
+        text = str(bounds.get(key) or "").strip().lower()
+        if not text:
+            days.append(None)
+            continue
+        try:
+            day = date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+        days.append(
+            day + timedelta(days=1)
+            if key == "end" and not _MIDNIGHT_RE.fullmatch(text[10:])
+            else day
+        )
+    return days[0], days[1]
+
+
+def _window_agrees(
+    windows: list[tuple[tuple[int, int], dict[str, Any]]], time: dict[str, Any]
+) -> bool:
+    """Whether the draft's window is the one the question's date phrases state.
+
+    The one rule for a window in the draft: every bound it carries, read at the day (the grain
+    of every window plan reads), is the earliest start or the latest end among the windows the
+    question states, and it carries at least one. A draft that cannot be read does not agree. A
+    question that states no window agrees with any draft.
+    """
+
+    if not windows:
+        return True
+    carried = _window_days(time)
+    starts: list[date] = []
+    ends: list[date] = []
+    for _span, bounds in windows:
+        asked = _window_days(bounds)
+        if asked is None or asked[0] is None or asked[1] is None:
+            return False
+        starts.append(asked[0])
+        ends.append(asked[1])
+    if carried is None or carried == (None, None):
+        return False
+    return carried[0] in (None, min(starts)) and carried[1] in (None, max(ends))
 
 
 def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
-    """The spans of the question a caller's window in ``query.time`` consumes.
+    """The spans of the question a window in the draft's ``query.time`` consumes.
 
-    The time phrases plan read (a date, a year, "last 24 hours": a caller's window answers the
-    phrases plan cannot resolve itself), except a bare year the caller's bounds don't carry: an
-    "at 2000" is an hour, not the year 2000. In a question too long to read, only the years a
-    date phrase states ("in 2017", "for 2017"; never "at 1930"). A time of day, an hour, a
-    bare number or a zone is never consumed here, whatever hours the caller's bounds carry, so a
-    question that states one is refused rather than matched to the window by value.
+    One rule: the draft's window consumes the date phrases plan resolved only if it agrees with
+    them (``_window_agrees``); otherwise it consumes none. It also answers a phrase plan cannot
+    resolve ("last 24 hours"). It never consumes a bare year, a time of day, an hour, a bare
+    number or a zone, whatever the window's bounds say, so a question that states one is
+    refused rather than matched to the window by value.
     """
 
-    years = _bound_years(time)
-    spans = [
-        span
-        for span in _time_window(lowered).spans
-        if not _YEAR_WORD_RE.fullmatch(lowered[span[0] : span[1]].strip())
-        or lowered[span[0] : span[1]].strip() in years
+    windows, others = _question_time(lowered)
+    if not _window_agrees(windows, time):
+        return []
+    return [span for span, _bounds in windows] + others
+
+
+def _caller_window_gaps(text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """The window a caller passed is not the one the question's date phrases state."""
+
+    lowered = text.lower()
+    windows, _others = _question_time(lowered)
+    time = _time_block(query)
+    if _window_agrees(windows, time):
+        return []
+    return [
+        CoverageGap(
+            kind="time_window_unrealized",
+            clause=", ".join(lowered[low:high].strip() for (low, high), _bounds in windows),
+            message="The question names a time window, but the draft's window is a different one.",
+            expected={"time": [bounds for _span, bounds in windows]},
+            actual={"time": time or None},
+            recovery_hint={
+                "kind": "provide_time_window",
+                "message": (
+                    "Pass the window the question states in Query IR time (start inclusive, end "
+                    "exclusive), or ask about the window you passed."
+                ),
+            },
+        )
     ]
-    if len(lowered) > _MAX_TIME_TEXT:
-        # Too long for plan to read a window from: the caller's window settles the years the
-        # question's date phrases state; an hour, a number or a zone still has to be consumed.
-        spans.extend(match.span(1) for match in _YEAR_CUE_RE.finditer(lowered))
-    return spans
 
 
 def _draft_numbers(query: dict[str, Any]) -> tuple[set[str], set[str]]:

@@ -1079,6 +1079,9 @@ class _TimeWindow:
     assumptions: tuple[str, ...] = ()
     # The windows shorter than a day named, which plan does not resolve.
     sub_day: tuple[str, ...] = ()
+    # Every window the question states that plan resolved, as (span, bounds), whether or not
+    # another phrase left the question unresolved.
+    windows: tuple[tuple[tuple[int, int], dict[str, Any]], ...] = ()
 
 
 def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
@@ -1281,6 +1284,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             spans=time_spans,
             conflicts=conflicts,
             sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
+            windows=tuple((row[0], dict(row[1])) for row in windows),
         )
     if not windows:
         return _TimeWindow()
@@ -1297,6 +1301,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         relative_unit=unit,
         spans=time_spans,
         assumptions=tuple(dict.fromkeys(assumptions)),
+        windows=((_span, dict(bounds)),),
     )
 
 
