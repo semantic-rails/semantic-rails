@@ -151,6 +151,18 @@ def _entity_key_dimension_ids(entity_id: str, config: PackageConfig) -> list[str
     return key_dims
 
 
+def _entity_key_present(entity_id: str, config: PackageConfig) -> list[Any]:
+    """``IS NOT NULL`` on a qualified set's entity key columns.
+
+    The set joins with null-safe equality, and rows whose lookup found no such entity carry
+    a NULL key: a NULL key in the set would qualify every one of them.
+    """
+    return [
+        SqlBinary(SqlIdentifier(parts=["predicate_source", dim_id]), "IS NOT", SqlLiteral(None))
+        for dim_id in _entity_key_dimension_ids(entity_id, config)
+    ]
+
+
 def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
     if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         measure = _measure_index(config).get(expr.measure)
@@ -339,6 +351,18 @@ def _join_on_for_relationship(
     return condition, right_table, next_entity
 
 
+def _is_lookup_hop(rel: RelationshipConfig, current_entity: str) -> bool:
+    """True when the hop reaches at most one row for each current row (N:1, 1:1).
+
+    A lookup only adds attributes, so it must keep the rows it finds no match for: they
+    group under NULL, and a filter on the looked-up attribute still excludes them unless
+    it asks for NULL. A hop that fans out (1:N, M:N) keeps its inner join.
+    """
+    cardinality = str(rel.cardinality or "").upper().replace(" ", "")
+    forward = current_entity == rel.source_entity
+    return cardinality == "1:1" or cardinality == ("N:1" if forward else "1:N")
+
+
 def _joins_for_paths(
     source_entity: str,
     path_selections: Iterable[PathSelection],
@@ -374,9 +398,14 @@ def _joins_for_paths(
             join_key = (rel.id, current_entity)
             existing = joined_via.get(right_table)
             if existing is None:
+                left = (
+                    nullable_path
+                    or bool(rel.temporal_validity)
+                    or _is_lookup_hop(rel, current_entity)
+                )
                 joins.append(
                     SqlJoin(
-                        join_type="LEFT" if nullable_path or rel.temporal_validity else "INNER",
+                        join_type="LEFT" if left else "INNER",
                         table=SqlTableRef(name=right_table),
                         on=join_on,
                     )

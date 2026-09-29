@@ -1266,6 +1266,15 @@ join paths.
   prefers the direct table over the multi-hop path
   (`path_preference` on `RelationshipConfig` handles this).
 
+A hop that looks up the one side of a relationship (`N:1`, or `1:1` either way)
+is a left join, so it never drops a row. A row whose foreign key is NULL, or
+matches no row, keeps its measure value and groups under NULL for the dimensions
+it looks up; grouped rows add up to the ungrouped total. A filter on such a
+dimension treats the row as it treats a NULL value in the row itself: `IS NULL`
+selects it, so "passengers excluding crew" through a crew-roster lookup is a
+`crew_role IS NULL` filter, while `=`, `!=`, `IN` and `NOT IN` never match it.
+Hops that fan out keep their inner joins.
+
 Long chains are first-class: a measure can be grouped or filtered by a
 dimension four relationships away (`line_item → order → customer → city →
 region`), with each hop cardinality-checked. Every hop must be `N:1`/`1:1` in
@@ -1453,10 +1462,10 @@ Routing is conservative in the MVP:
   join would have repeated fact rows in every other column.
   Another model's key read from a foreign key (such as the customer key) needs a
   `path` of the one relationship between the two models, and doesn't route when
-  two relationships link them. Build a pre-joined column with an inner join, as
-  the base path joins it: a fact row with no match is left out. So a rollup with a
-  pre-joined column answers only queries that group or filter by that column; the
-  base path doesn't join it otherwise and keeps such rows. A measure whose
+  two relationships link them. Build a pre-joined column with a left join, as the
+  base path joins it: a fact row with no match stays, under NULL. A rollup with a
+  pre-joined column still answers only queries that group or filter by that
+  column, since how its join treated such rows can't be checked. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
   An `aggregate_relations:` entry must declare its `temporal_role`.
 - Every selected measure must have a column in the variant.

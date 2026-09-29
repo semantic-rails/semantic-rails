@@ -237,8 +237,8 @@ def _aggregate_relation_rejection_reason(
             path is None or row.dimension_paths.get(dim) != path
             for dim, path in leaf.join_paths.items()
         )
-        # A pre-joined column holds only the fact rows its inner join matched, as the base path
-        # has them only when the query groups or filters by that column too.
+        # How a pre-joined column's join treated fact rows with no match can't be checked, so
+        # it answers only a query that groups or filters by that column too.
         or prejoined is None
         or prejoined - leaf.dimensions
     ):

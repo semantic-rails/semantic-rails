@@ -266,7 +266,10 @@ def test_adapter_queries_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
     assert kwargs["password"] == "pw"
     assert kwargs["database"] == "sr_jaffle"
     assert kwargs["secure"] is False
-    assert kwargs["settings"] == {"allow_experimental_join_condition": 1}
+    assert kwargs["settings"] == {
+        "allow_experimental_join_condition": 1,
+        "optimize_functions_to_subcolumns": 0,
+    }
     assert captured["settings"] is None  # no limits -> no per-query settings
     assert captured["closed"] is True
 

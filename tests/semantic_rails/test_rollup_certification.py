@@ -310,17 +310,17 @@ def test_certify_pairs_answer_alike(tmp_path: Path, rollups: tuple, relation_id:
         assert bool(item["error"]) == (item["reason"] == "query_not_compiled")
         if not item["reason"]:  # the pair a host compares before certifying
             assert re.search(rf"\b{table}\b", item["rollup_sql"])
-            rollup = sorted(connection.execute(item["rollup_sql"]).fetchall())
-            assert rollup == sorted(connection.execute(item["base_sql"]).fetchall())
+            rollup = sorted(connection.execute(item["rollup_sql"]).fetchall(), key=str)
+            assert rollup == sorted(connection.execute(item["base_sql"]).fetchall(), key=str)
 
 
 def test_certify_pair_tells_a_mis_built_rollup_apart(tmp_path: Path):
-    """A region rollup built with an outer join keeps order 13 (no such customer) under a null
-    region; the base path's inner join leaves it out. The rules pass; the rows don't."""
-    left = {**_REGION, "id": "aggregate_relation.region_left"}
-    left["relation"] = "order_region_left_monthly"
-    _rollup_package(tmp_path / "p", {}, [left], {"ship_to": False})
-    verdict = certify_aggregate_relation(load_package_config(str(tmp_path / "p")), left["id"])
+    """A region rollup built with an inner join leaves out order 13 (no such customer); the base
+    path's lookup keeps it under a null region. The rules pass; the rows don't."""
+    inner = {**_REGION, "id": "aggregate_relation.region_inner"}
+    inner["relation"] = "order_region_inner_monthly"
+    _rollup_package(tmp_path / "p", {}, [inner], {"ship_to": False})
+    verdict = certify_aggregate_relation(load_package_config(str(tmp_path / "p")), inner["id"])
     (item,) = verdict["measures"]
     connection = duckdb.connect()
     connection.execute(_ROLLUP_SEED)

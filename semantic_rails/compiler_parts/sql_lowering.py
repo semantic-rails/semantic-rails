@@ -104,6 +104,7 @@ from .paths import (
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
     _entity_key_dimension_ids,
+    _entity_key_present,
     _expression_root_entity,
     _join_condition,
     _joins_for_paths,
@@ -2218,7 +2219,7 @@ def _minimal_predicate_set_ctes(
             select=select_fields,
             from_table=SqlTableRef(name=source_name, alias="predicate_source"),
             joins=extra_joins,
-            where=[where_condition],
+            where=[where_condition, *_entity_key_present(predicate.entity, config)],
             distinct=True,
         ),
     )

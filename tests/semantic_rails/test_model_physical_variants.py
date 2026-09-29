@@ -255,10 +255,10 @@ CREATE TABLE customers AS SELECT * FROM (VALUES ('c1', 'east', 1), ('c2', 'west'
 ALTER TABLE order_fact ADD COLUMN ship_to_id VARCHAR;
 UPDATE order_fact SET ship_to_id = CASE customer_id WHEN 'c1' THEN 'c2' ELSE 'c1' END;
 CREATE TABLE order_region_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
- region, sum(amount) AS revenue FROM order_fact JOIN customers USING (customer_id) GROUP BY 1, 2;
-CREATE TABLE order_region_left_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  region, sum(amount) AS revenue FROM order_fact LEFT JOIN customers USING (customer_id)
  GROUP BY 1, 2;
+CREATE TABLE order_region_inner_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
+ region, sum(amount) AS revenue FROM order_fact JOIN customers USING (customer_id) GROUP BY 1, 2;
 CREATE TABLE order_ship_to_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
  ship_to_id AS customer_key, sum(amount) AS revenue FROM order_fact GROUP BY 1, 2;
 CREATE TABLE order_buyer_monthly AS SELECT date_trunc('month', ordered_at) AS month_start,
@@ -785,7 +785,7 @@ _SHIP_TO_KEY = {
             ({}, [_REGION], {"ship_to": False}),
             _rollup_query(_REVENUE, "sum", "month"),
             "join_path_mismatch",
-            id="pre-joined-column-unused",  # its inner join left out order 13 (no such customer)
+            id="pre-joined-column-unused",  # how its join treated order 13 (no customer) is unknown
         ),
         pytest.param(
             ({}, [_NO_ROLE], {"ship_to": False}),
@@ -1047,7 +1047,10 @@ def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
         compiled[name] = compile_query(config, Registry(config), query)
     with aggregate_routing(False):
         compiled["off"] = compile_query(config, Registry(config), query)
-    rows = {name: sorted(connection.execute(c["sql"]).fetchall()) for name, c in compiled.items()}
+    rows = {
+        name: sorted(connection.execute(c["sql"]).fetchall(), key=str)
+        for name, c in compiled.items()
+    }
 
     assert rows["rollup"] == rows["base"] == rows["off"]
     tables = {row.id: row.relation for row in config.aggregate_relations}

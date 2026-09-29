@@ -69,6 +69,7 @@ from .compiler_parts.paths import (
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
     _entity_key_dimension_ids,
+    _entity_key_present,
     _expression_root_entity,
     _join_condition,
     _joins_for_paths,
@@ -2708,6 +2709,10 @@ def _conversion_event_cte(
         if alias not in selected_aliases:
             select_fields.append(SqlField(expr, alias))
             selected_aliases.add(alias)
+        if match_entity != source_entity:
+            # The lookup keeps an event with no match entity, but events pair on this key
+            # with null-safe equality: it would pair with every other event that has none.
+            where_items = [*where_items, SqlBinary(expr, "IS NOT", SqlLiteral(None))]
     for index, dim_id in enumerate(property_dimensions):
         dim_expr, _ = _resolve_dimension_expr(dim_id, config)
         select_fields.append(SqlField(dim_expr, f"__property_{index + 1}"))
@@ -2790,7 +2795,10 @@ def _conversion_predicate_set_ctes(
         query=SqlSelect(
             select=select_fields,
             from_table=SqlTableRef(name=source_name, alias="predicate_source"),
-            where=[_predicate_where_condition(predicate.op, predicate.value)],
+            where=[
+                _predicate_where_condition(predicate.op, predicate.value),
+                *_entity_key_present(predicate.entity, config),
+            ],
             distinct=True,
         ),
     )
