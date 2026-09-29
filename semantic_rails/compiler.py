@@ -2723,8 +2723,18 @@ def _conversion_event_cte(
         selected_aliases.add(f"__property_{index + 1}")
         if dimensions[dim_id].entity != source_entity:
             # Properties pair with null-safe equality: two events whose lookup found nothing
-            # would both read NULL and count as having the same property.
-            where_items = [*where_items, SqlBinary(dim_expr, "IS NOT", SqlLiteral(None))]
+            # would both read NULL and count as having the same property. Test that the lookup
+            # matched (its entity's key is set), not the value: a match with a NULL property
+            # still pairs.
+            where_items = [
+                *where_items,
+                *[
+                    SqlBinary(key_expr, "IS NOT", SqlLiteral(None))
+                    for _, key_expr in _conversion_entity_key_fields(
+                        dimensions[dim_id].entity, config
+                    )
+                ],
+            ]
     for dim_id in extra_dimensions:
         dim_expr, alias = _resolve_dimension_expr(dim_id, config)
         if alias not in selected_aliases:

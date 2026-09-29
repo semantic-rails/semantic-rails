@@ -6,7 +6,9 @@
   excludes them. Totals change only where such rows exist. ClickHouse is unchanged: its
   lookups still drop those rows, because an unmatched outer-join column reads `''` or `0`
   there, not NULL. Conversions still leave out events with no match entity, and now events
-  whose looked-up property has no match.
+  whose lookup for a constant property found no row: they would otherwise pair with each
+  other on NULL. A matched row whose property is NULL still pairs, as before. On ClickHouse
+  the inner joins already drop those events, so conversions there are unchanged.
 - A rollup with a column pre-joined from another model now routes only once certified, as if
   it declared `requires_certification`, and a runtime does not cache compiles for its package.
   A rollup built with an inner join, as the authoring guide used to say, would otherwise

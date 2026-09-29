@@ -10,6 +10,7 @@ import pytest
 
 from semantic_rails.acceleration.certification import certify_aggregate_relation
 from semantic_rails.acceleration.routing import aggregate_routing, set_certification_provider
+from semantic_rails.acceleration.selection import relation_needs_certification
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
@@ -147,6 +148,22 @@ def test_a_pre_joined_rollup_is_not_served_from_the_compile_cache(tmp_path: Path
     assert selected() == [_REGION["id"]]
     provider.answer = False
     assert selected() == []
+
+
+def test_a_rollup_that_can_never_route_needs_no_certification(tmp_path: Path, install):
+    """Its pre-joined column has no declared path, so the query is refused for the join path
+    before certification is asked, and the runtime keeps caching the package's compiles."""
+    _rollup_package(tmp_path / "p", {}, [_NO_PATH], {"ship_to": False})
+    runtime = Runtime.from_path(str(tmp_path / "p"))
+    provider = _Provider(True)
+    install(provider)
+    payload = {**_BY_REGION, "verbosity": "full"}
+
+    (row,) = runtime._config.aggregate_relations
+    assert not relation_needs_certification(row, runtime._config)
+    assert runtime.compile(payload)["performance_plan"]["aggregate_routing"]["selected"] == []
+    assert runtime.compile(payload)["compile_stats"]["cache_hit"]
+    assert provider.asked == []
 
 
 def _entry(**fields) -> tuple:

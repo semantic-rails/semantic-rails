@@ -175,11 +175,11 @@ SQL_CITY = (
 )
 
 
-def _write_package(root: Path) -> Path:
+def _write_package(root: Path, extra_seed: str = "") -> Path:
     pkg = root / "crew"
     (pkg / "data").mkdir(parents=True)
     (pkg / "models").mkdir()
-    (pkg / "data" / "seed.sql").write_text(SEED_SQL)
+    (pkg / "data" / "seed.sql").write_text(SEED_SQL + extra_seed)
     (pkg / "package.yml").write_text(PACKAGE)
     (pkg / "graph.yml").write_text(GRAPH)
     for name, body in MODELS.items():
@@ -195,6 +195,30 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="module")
 def runtime(package: Path):
     runtime = Runtime.from_path(str(package))
+    yield runtime
+    runtime.close()
+
+
+# A leg whose airport has a record but no city, with check-ins 9 (P6) and 10 (P7): boarding 14
+# is on the same leg as check-in 9, and boarding 15 on Chicago's leg L2.
+NULL_CITY_SEED = """;
+INSERT INTO airports VALUES ('DEN', NULL);
+INSERT INTO legs VALUES ('L4', 'DEN', DATE '2026-03-05');
+INSERT INTO people VALUES ('P6', 'Flo', FALSE), ('P7', 'Gus', FALSE);
+INSERT INTO checkins VALUES
+  (9, 'P6', 'L4', TIMESTAMP '2026-03-05 06:00:00'),
+  (10, 'P7', 'L4', TIMESTAMP '2026-03-05 06:00:00');
+INSERT INTO boardings VALUES
+  (14, 'L4', 'P6', TIMESTAMP '2026-03-05 07:00:00', 30),
+  (15, 'L2', 'P7', TIMESTAMP '2026-03-05 07:00:00', 30)
+"""
+
+
+@pytest.fixture(scope="module")
+def null_city_runtime(tmp_path_factory: pytest.TempPathFactory):
+    runtime = Runtime.from_path(
+        str(_write_package(tmp_path_factory.mktemp("null_city"), NULL_CITY_SEED))
+    )
     yield runtime
     runtime.close()
 
@@ -355,6 +379,33 @@ def test_conversion_does_not_pair_events_on_a_property_that_has_no_match(runtime
         gold, same_city=SQL_SAME_CITY, where=f"AND {SQL_CHECKIN_CITY} IS NOT NULL"
     )
     assert reference[None] == pytest.approx(1.0)
+
+
+def test_conversion_pairs_on_a_matched_lookup_whose_property_is_null(null_city_runtime):
+    """The lookup matched but the property is NULL, as it is on the event's own entity: check-in
+    9 pairs with boarding 14 (both at an airport with no city) and not with boarding 15 (Chicago).
+    Check-ins 5 and 7, whose lookups found nothing, still take no part."""
+    connection = duckdb.connect()
+    connection.execute(SEED_SQL + NULL_CITY_SEED)
+    # A leg whose airport row exists: its city, NULL or not, is a match.
+    matched = "SELECT l.leg_id FROM legs AS l JOIN airports AS a ON a.airport_code = l.airport_code"
+    reference = connection.execute(
+        f"""
+        SELECT AVG(CASE WHEN EXISTS (
+          SELECT 1 FROM boardings AS b WHERE b.person_id = c.person_id
+          AND b.boarded_at >= c.checked_in_at AND b.boarded_at < c.checked_in_at + INTERVAL 1 DAY
+          AND b.leg_id IN ({matched}) AND {SQL_CITY} IS NOT DISTINCT FROM {SQL_CHECKIN_CITY}
+        ) THEN 1.0 ELSE 0.0 END)
+        FROM checkins AS c WHERE c.leg_id IN ({matched})
+          AND c.person_id IN (SELECT person_id FROM people)
+        """
+    ).fetchone()
+    connection.close()
+
+    (row,) = _conversion_rate(null_city_runtime, (CITY,))
+
+    assert row["rate"] == pytest.approx(0.75)  # check-ins 1, 8 and 9 convert, 10 doesn't
+    assert reference is not None and reference[0] == pytest.approx(row["rate"])
 
 
 def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, gold):

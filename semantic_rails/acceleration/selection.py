@@ -196,9 +196,9 @@ def _prejoined_dimensions(row: AggregateRelationConfig, config: PackageConfig) -
 
 def relation_needs_certification(row: AggregateRelationConfig, config: PackageConfig) -> bool:
     """Whether ``row`` routes only once certified: it says so, or it holds a pre-joined column,
-    whose join (inner or left) decides which fact rows the rollup has, and no declaration says."""
-    prejoined = _prejoined_dimensions(row, config)
-    return row.requires_certification or prejoined is None or bool(prejoined)
+    whose join (inner or left) decides which fact rows the rollup has, and no declaration says.
+    A rollup whose pre-joined columns can't be told (``None``) never routes, so needs none."""
+    return row.requires_certification or bool(_prejoined_dimensions(row, config))
 
 
 def _aggregate_relation_rejection_reason(
@@ -268,7 +268,7 @@ def _aggregate_relation_rejection_reason(
     ):
         return "aggregation_not_reaggregable"
     if not relation_certified(  # R9, once R1-R8 hold
-        config, row, required=row.requires_certification or bool(prejoined)
+        config, row, required=relation_needs_certification(row, config)
     ):
         return NOT_CERTIFIED
     return ""
