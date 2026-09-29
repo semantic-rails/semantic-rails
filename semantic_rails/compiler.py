@@ -2142,9 +2142,8 @@ def _predicate_ctes_and_join(
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
     if without_rows:
         # The set holds the entities that fail the threshold. Never coalesce the value: the
-        # source is settled like any query, so an entity it lists already reads 0 or NULL by
-        # the guard, and NULL fails no threshold here because the gate below drops every row
-        # when the whole source is NULL.
+        # source is settled like any query, so its values are non-NULL on every row or NULL on
+        # every row. In the second case no entity qualifies, and the gate below drops every row.
         where_condition = build_filter_condition(
             SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
             _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
