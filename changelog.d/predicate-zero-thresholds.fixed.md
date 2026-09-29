@@ -2,7 +2,7 @@
   entities that have no rows, as 0, when its input is a count or a sum (or an add/subtract of
   them with `null_behavior: coalesce_zero`). "Customers with no orders"
   and "members with zero activity" used to return 0 because those entities never reached the
-  aggregate. For an average, minimum, maximum, median or ratio, or a sum or difference without
-  `coalesce_zero`, there is no value over no rows,
-  so such a threshold is refused with `INVALID_METRIC_PREDICATE` and the ways to ask it; it is
-  also refused, for now, inside conversion metrics and anchored `scoped_aggregate` ratios.
+  aggregate. An average, minimum, maximum, median or ratio over no rows is NULL, so an entity
+  with no rows never satisfies a threshold on one ("average order value under 20" keeps only
+  customers with orders). Conversion metrics and anchored `scoped_aggregate` ratios refuse, for now,
+  a count or sum threshold that zero satisfies.

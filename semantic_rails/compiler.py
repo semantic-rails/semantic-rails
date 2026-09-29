@@ -1289,40 +1289,13 @@ def _predicate_includes_entities_without_rows(
 
     An entity with no rows never reaches the predicate's aggregate, so a
     threshold that zero passes (``count = 0``, ``< 3``, ``<= 0``) would
-    otherwise match nothing. Where "no rows" has a value (a count or sum is 0)
-    the entity qualifies; where it has none (an average, minimum, ratio) the
-    answer depends on a choice the query has not made, so it is refused.
+    otherwise match nothing. Only where "no rows" is 0 (a count or sum) does the
+    entity qualify. An average, minimum, maximum or ratio over no rows is NULL,
+    which no threshold satisfies, so those entities stay out.
     """
-    if not _zero_satisfies_threshold(predicate.op, predicate.value):
-        return False
-    if _predicate_input_zero_on_missing(predicate.input, config):
-        return True
-    raise SemanticLayerError(
-        "INVALID_METRIC_PREDICATE",
-        (
-            f"metric_predicate threshold '{predicate.op} {predicate.value}' is satisfied by an "
-            f"entity with no rows, but the input {_predicate_metric_label(predicate)!r} has no "
-            "value when there are no rows (only a count or sum, or add/subtract of them with "
-            "null_behavior 'coalesce_zero', is 0). Counting or skipping "
-            f"the {predicate.entity!r} entities with no rows would each be a guess, so the "
-            "query is refused."
-        ),
-        details={
-            "entity": predicate.entity,
-            "predicate": expr_to_dict(predicate),
-            "recovery_hints": [
-                {
-                    "code": "USE_ROW_COUNT_OR_NONZERO_THRESHOLD",
-                    "message": (
-                        "Use a count or sum as the predicate input (for a sum or difference "
-                        "of them, set null_behavior 'coalesce_zero'), or a threshold that zero "
-                        "does not satisfy. To keep only entities that have rows, add a second "
-                        "metric_predicate on the entity's row count with op '>' and value 0."
-                    ),
-                }
-            ],
-        },
-    )
+    return _zero_satisfies_threshold(
+        predicate.op, predicate.value
+    ) and _predicate_input_zero_on_missing(predicate.input, config)
 
 
 def _inline_threshold_cte_and_where(

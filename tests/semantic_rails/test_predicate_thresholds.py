@@ -238,6 +238,7 @@ def test_seed_has_entities_without_rows():
     [
         ("=", 0, "n = 0"),
         ("<", 2, "n < 2"),
+        ("<", 3, "n < 3"),
         ("<=", 1, "n <= 1"),
         ("<=", 0, "n <= 0"),
         ("!=", 1, "n <> 1"),
@@ -316,16 +317,29 @@ def test_a_difference_over_two_leaves_counts_each_side_as_zero_when_asked(runtim
     assert _scalar(runtime, "customer_count", filters) == expected
 
 
+CUSTOMER_ORDER_AND_RETURN_COUNTS = (
+    "(select c.customer_id, "
+    "(select count(*) from orders o where o.customer_id = c.customer_id) o_n, "
+    "(select count(*) from orders o where o.customer_id = c.customer_id "
+    "and o.status = 'returned') r_n from customers c)"
+)
+
+
 @pytest.mark.parametrize("null_behavior", [None, "", "propagate"])
-def test_a_difference_over_two_leaves_without_coalesce_zero_is_refused(runtime, null_behavior):
-    filters = [_predicate(CUSTOMER, _net_orders(null_behavior), "<", 1)]
-    with pytest.raises(SemanticLayerError) as raised:
-        _scalar(runtime, "customer_count", filters)
-    assert raised.value.code == "INVALID_METRIC_PREDICATE"
-    assert "coalesce_zero" in raised.value.details["recovery_hints"][0]["message"]
+@pytest.mark.parametrize(("op", "value"), [("<", 1), ("=", 0), ("<=", 1)])
+def test_a_difference_over_two_leaves_without_coalesce_zero_keeps_customers_with_both_sides(
+    runtime, null_behavior, op, value
+):
+    # The difference is NULL when either side has no rows, and NULL satisfies no threshold.
+    (expected,) = _gold(
+        f"select count(*) from {CUSTOMER_ORDER_AND_RETURN_COUNTS} "
+        f"where o_n > 0 and r_n > 0 and o_n - r_n {op} {value}"
+    )[0]
+    filters = [_predicate(CUSTOMER, _net_orders(null_behavior), op, value)]
+    assert _scalar(runtime, "customer_count", filters) == expected
 
 
-def test_a_nested_difference_is_refused_unless_every_level_coalesces(runtime):
+def test_a_nested_difference_stays_null_unless_every_level_coalesces(runtime):
     outer = {
         "kind": "arithmetic",
         "op": "add",
@@ -333,9 +347,11 @@ def test_a_nested_difference_is_refused_unless_every_level_coalesces(runtime):
         "right": ORDERS,
         "null_behavior": "coalesce_zero",
     }
-    with pytest.raises(SemanticLayerError) as raised:
-        _scalar(runtime, "customer_count", [_predicate(CUSTOMER, outer, "<", 1)])
-    assert raised.value.code == "INVALID_METRIC_PREDICATE"
+    (expected,) = _gold(
+        f"select count(*) from {CUSTOMER_ORDER_AND_RETURN_COUNTS} "
+        "where o_n > 0 and r_n > 0 and (o_n - r_n) + o_n < 1"
+    )[0]
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, outer, "<", 1)]) == expected
 
 
 def test_an_empty_not_in_list_is_satisfied_by_every_entity(runtime):
@@ -446,15 +462,43 @@ def test_explain_marks_the_predicate_set_as_an_anti_join(runtime):
 
 
 @pytest.mark.parametrize("aggregation", ["avg", "min", "max", "median"])
-def test_a_threshold_zero_satisfies_on_an_aggregate_without_an_empty_value_is_refused(
-    runtime, aggregation
+@pytest.mark.parametrize(("op", "value"), [("<", 10), ("<=", 12), ("!=", 5), ("<", 100)])
+def test_a_threshold_zero_satisfies_on_an_aggregate_without_an_empty_value_keeps_rows_only(
+    runtime, aggregation, op, value
 ):
+    # A member with no activity has a NULL average, minimum, maximum or median, and NULL
+    # satisfies no threshold: the answer is the SQL HAVING answer over members with rows.
     minutes = {"measure": "measure.pred.minutes", "aggregation": aggregation}
-    with pytest.raises(SemanticLayerError) as raised:
-        _run(runtime, "member_count", [_predicate(MEMBER, minutes, "<", 10)])
-    assert raised.value.code == "INVALID_METRIC_PREDICATE"
-    assert "no rows" in str(raised.value)
-    assert raised.value.details["recovery_hints"]
+    sql_op = "<>" if op == "!=" else op
+    (expected,) = _gold(
+        f"select count(*) from (select {aggregation}(minutes) n from activities "
+        f"group by member_id) where n {sql_op} {value}"
+    )[0]
+    assert _scalar(runtime, "member_count", [_predicate(MEMBER, minutes, op, value)]) == expected
+
+
+def test_customers_with_an_average_order_value_under_a_limit_are_only_those_with_orders(runtime):
+    average_order_value = {"measure": "measure.pred.revenue", "aggregation": "avg"}
+    (expected,) = _gold(
+        "select count(*) from (select avg(amount) n from orders "
+        "where customer_id is not null group by customer_id) where n < 60"
+    )[0]
+    filters = [_predicate(CUSTOMER, average_order_value, "<", 60)]
+    assert _scalar(runtime, "customer_count", filters) == expected == 1
+
+
+def test_a_ratio_threshold_excludes_entities_whose_denominator_has_no_rows(runtime):
+    # Orders per returned order: only customer 2 has a returned order, so only it has a ratio.
+    ratio = {"kind": "ratio", "numerator": ORDERS, "denominator": RETURNED_ORDERS}
+    (expected,) = _gold(
+        "select count(*) from (select "
+        "(select count(*) from orders o where o.customer_id = c.customer_id) * 1.0 "
+        "/ nullif((select count(*) from orders o where o.customer_id = c.customer_id "
+        "and o.status = 'returned'), 0) n from customers c) where n < 5"
+    )[0]
+    assert (
+        _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ratio, "<", 5)]) == expected == 1
+    )
 
 
 @pytest.mark.parametrize(("op", "value"), [(">", 10), (">=", 5), ("=", 12)])
