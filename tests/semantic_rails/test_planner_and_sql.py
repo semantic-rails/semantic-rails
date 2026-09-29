@@ -1269,6 +1269,7 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_fac
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
@@ -1321,6 +1322,7 @@ def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(pack
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
@@ -1372,6 +1374,7 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
@@ -2253,3 +2256,43 @@ def test_out_of_scope_question_with_enforce_scope_raises_out_of_scope(runtime_fa
         assert "OUT_OF_SCOPE" in codes, codes
     finally:
         runtime.close()
+
+
+def test_anchored_ratio_refuses_a_threshold_that_zero_satisfies(package_config_factory):
+    config, _ = package_config_factory("jaffle_shop")
+    aggregate = {
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.inventory_on_hand_eop",
+        "aggregation": "sum",
+    }
+    query = {
+        "version": 2,
+        "select": [
+            {
+                "as": "inventory_from_idle_stores_share",
+                "expression": {
+                    "kind": "ratio",
+                    "numerator": {
+                        **aggregate,
+                        "predicates": [
+                            {
+                                "measure": "measure.jaffle.order_count",
+                                "entity": "entity.jaffle_store",
+                                "op": "=",
+                                "value": 0,
+                                "time_alignment": "same_query_period",
+                            }
+                        ],
+                    },
+                    "denominator": aggregate,
+                },
+            }
+        ],
+        "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
+    }
+
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), query)
+
+    assert raised.value.code == "INVALID_METRIC_PREDICATE"
+    assert "anchored entity-set ratio" in str(raised.value)

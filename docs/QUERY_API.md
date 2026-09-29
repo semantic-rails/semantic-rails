@@ -612,8 +612,10 @@ Supported in metric definitions and in `metric_filters.expression`. Predicate ex
 - contextual predicates inherit the outer time bucket and compatible grouped context entities
 - outer `where` filters are inherited when they are compatible, but they do not widen the scoped join key
 - optional `time_grain` is only valid for contextual predicates and must be a coarser deterministic ancestor of the outer query grain on the same calendar
-- contextual predicates should omit `time_alignment`; they inherit the query period by default
-- public `time_alignment` values are `query_window` and `rolling_window_in_period`, and only for `entity_only` bounded-window predicates
+- contextual predicates inherit the query period by default; omit `time_alignment` unless the input is measured on another clock (next bullet). Plan drafts never set it
+- a contextual predicate whose input is measured on another clock than `time.temporal_role` is refused with `INVALID_TEMPORAL_BINDING`: matching the two clocks' calendar buckets is a different question. Query on the input's clock, use `scope_mode: "entity_only"` for all time, or set `time_alignment: "same_query_period"` (pinning one clock with the input's `temporal_role` if it has several) to compare the calendar periods on purpose
+- `time_alignment` values are `same_query_period` (contextual only), `query_window` and `rolling_window_in_period` (both only for `entity_only` bounded-window predicates)
+- a threshold that zero satisfies (`= 0`, `< 3`, `<= 0`, `!= 1`) counts entities with no rows as 0 when the input is a count or a sum, so "customers with no orders" works. An average, minimum, maximum, median or ratio over no rows is NULL, not 0 (an average of nothing is undefined), and a sum or difference of two measures is NULL when either side has no rows; no threshold is satisfied by NULL. So `average_order_value < 20` keeps only customers that have orders, as SQL `HAVING AVG(x) < 20` does, and a ratio whose denominator has no rows is excluded the same way. Conversion metrics and anchored `scoped_aggregate` ratios refuse a count or sum threshold that zero satisfies for now
 
 Monthly contextual example:
 

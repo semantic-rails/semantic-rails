@@ -15,7 +15,7 @@ stable code instead of answering with a silent NULL.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
@@ -53,15 +53,23 @@ _ZERO_AGGREGATIONS = {"sum", "count", "count_distinct"}
 # A count never reads NULL, so a group's count is observed once it is above zero.
 _COUNTING = {"count", "count_distinct"}
 # Semi-additive stocks and distinct populations have no value for nothing.
-_ZERO_MEASURE_CLASSES = {"additive", "event_count", "entity_count"}
+ZERO_MEASURE_CLASSES = frozenset({"additive", "event_count", "entity_count"})
 
 
-def resolves_to_zero(aggregation: str, measure: MeasureConfig | None) -> bool:
-    """Whether ``aggregation`` of ``measure`` over no rows is 0 rather than undefined."""
+def resolves_to_zero(
+    aggregation: str,
+    measure: MeasureConfig | None,
+    classes: Collection[str] = ZERO_MEASURE_CLASSES,
+) -> bool:
+    """Whether ``aggregation`` of ``measure`` over no rows is 0 rather than undefined.
+
+    ``classes`` are the measure classes that count: a threshold on a population also counts a
+    distinct population, whose count of no entities is 0.
+    """
     return (
         measure is not None
         and measure.additive
-        and measure.measure_class in _ZERO_MEASURE_CLASSES
+        and measure.measure_class in classes
         and (aggregation or measure.default_aggregation or "").lower() in _ZERO_AGGREGATIONS
     )
 
@@ -78,17 +86,19 @@ def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str
     return zero
 
 
-def expr_resolves_to_zero(expr: SemanticExpr, config: PackageConfig) -> bool:
+def expr_resolves_to_zero(
+    expr: SemanticExpr, config: PackageConfig, classes: Collection[str] = ZERO_MEASURE_CLASSES
+) -> bool:
     """Whether a whole expression is 0 over no rows: sums and differences of such measures."""
     if isinstance(expr, MeasureRefExpr | AggregateExpr):
         measure = _measure_index(config).get(expr.measure)
-        return resolves_to_zero(expr.aggregation, measure)
+        return resolves_to_zero(expr.aggregation, measure, classes)
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
-        return recipe is not None and expr_resolves_to_zero(recipe.expression, config)
+        return recipe is not None and expr_resolves_to_zero(recipe.expression, config, classes)
     if isinstance(expr, ArithmeticExpr) and expr.op in {"add", "subtract"}:
-        return expr_resolves_to_zero(expr.left, config) and expr_resolves_to_zero(
-            expr.right, config
+        return expr_resolves_to_zero(expr.left, config, classes) and expr_resolves_to_zero(
+            expr.right, config, classes
         )
     return False
 

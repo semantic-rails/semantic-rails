@@ -216,6 +216,8 @@ Current guardrails:
 - query-time predicates default to contextual scope
 - package-authored predicates must declare `scope_mode`
 - contextual predicates inherit the outer time bucket and compatible grouped context entities
+- a contextual predicate measured on another clock than the query's is refused (`INVALID_TEMPORAL_BINDING`) unless it sets `time_alignment: same_query_period` and names one clock
+- a threshold that zero satisfies counts entities with no rows as 0 for counts and sums; an average, minimum, maximum or ratio over no rows is NULL, so those entities never satisfy a threshold
 - outer compatible filters are inherited into the predicate subquery without widening the scoped join key
 - finer-grain or non-deterministic time mixes fail with semantic errors rather than smearing values
 
