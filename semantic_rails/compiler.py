@@ -13,6 +13,7 @@ layer.
 
 from __future__ import annotations
 
+import operator
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
@@ -82,7 +83,9 @@ from .compiler_parts.post_aggregation import (
     _namespace_sql_select,
 )
 from .compiler_parts.sql_lowering import (
+    _ZERO_ON_MISSING_MEASURE_CLASSES,
     _count_key_expr,
+    _expr_zero_on_missing,
     _last_token,
     _preferred_path,
     _slug,
@@ -1447,6 +1450,104 @@ def _predicate_where_condition(op: str, value: Any) -> Any:
     return build_filter_condition(alias_ref, op, value, path="metric_predicate")
 
 
+_ZERO_COMPARISONS: dict[str, Any] = {
+    "=": operator.eq,
+    "!=": operator.ne,
+    "<>": operator.ne,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
+_INVERSE_THRESHOLD_OPS = {
+    "=": "!=",
+    "!=": "=",
+    "<>": "=",
+    "<": ">=",
+    "<=": ">",
+    ">": "<=",
+    ">=": "<",
+    "IN": "NOT IN",
+    "NOT IN": "IN",
+}
+
+
+# A distinct count of a population is 0 over no rows too; it stays out of the metric_filter
+# and dense-fill uses of the shared set, whose null semantics differ.
+_ZERO_ON_MISSING_PREDICATE_CLASSES = {*_ZERO_ON_MISSING_MEASURE_CLASSES, "distinct_population"}
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _zero_satisfies_threshold(op: str, value: Any) -> bool:
+    """Whether a value of 0 passes the ``op value`` threshold of a metric_predicate."""
+    token = " ".join(str(op or "").upper().split())
+    if token in {"IN", "NOT IN"}:
+        values = list(value) if isinstance(value, (list, tuple)) else [value]
+        if not values:
+            return token == "NOT IN"  # NOT IN () is always true, IN () never
+        if not all(_is_number(item) for item in values):
+            return False
+        return (0 in values) == (token == "IN")
+    compare = _ZERO_COMPARISONS.get(token)
+    return compare is not None and _is_number(value) and bool(compare(0, value))
+
+
+def _require_predicate_over_rows(
+    predicate: MetricPredicateExpr, config: PackageConfig, *, shape: str
+) -> None:
+    """Refuse, in a shape that only keeps entities with rows, a threshold that zero passes."""
+    if _predicate_includes_entities_without_rows(predicate, config):
+        raise SemanticLayerError(
+            "INVALID_METRIC_PREDICATE",
+            (
+                f"metric_predicate threshold '{predicate.op} {predicate.value}' is satisfied by "
+                f"an entity with no rows, which {shape} cannot count yet, so the query is "
+                "refused rather than answered from the entities that have rows."
+            ),
+            details={"entity": predicate.entity, "predicate": expr_to_dict(predicate)},
+        )
+
+
+def _predicate_input_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
+    """Whether the predicate input is 0, not NULL, for an entity with no rows.
+
+    A count or sum is. Arithmetic over several sources is NULL when any source
+    has no rows for the entity, unless every add/subtract node coalesces each
+    side to 0 (``null_behavior: coalesce_zero``); otherwise treating it as 0
+    would let entities with rows on one side pass a threshold they fail.
+    """
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return recipe is not None and _predicate_input_zero_on_missing(recipe.expression, config)
+    if isinstance(expr, ArithmeticExpr):
+        return (
+            expr.op in {"add", "subtract"}
+            and expr.null_behavior == "coalesce_zero"
+            and _predicate_input_zero_on_missing(expr.left, config)
+            and _predicate_input_zero_on_missing(expr.right, config)
+        )
+    return _expr_zero_on_missing(expr, config, _ZERO_ON_MISSING_PREDICATE_CLASSES)
+
+
+def _predicate_includes_entities_without_rows(
+    predicate: MetricPredicateExpr, config: PackageConfig
+) -> bool:
+    """Whether entities with no input rows must qualify for this predicate.
+
+    An entity with no rows never reaches the predicate's aggregate, so a
+    threshold that zero passes (``count = 0``, ``< 3``, ``<= 0``) would
+    otherwise match nothing. Only where "no rows" is 0 (a count or sum) does the
+    entity qualify. An average, minimum, maximum or ratio over no rows is NULL,
+    which no threshold satisfies, so those entities stay out.
+    """
+    return _zero_satisfies_threshold(
+        predicate.op, predicate.value
+    ) and _predicate_input_zero_on_missing(predicate.input, config)
+
+
 def _inline_threshold_cte_and_where(
     *,
     predicate: Any,
@@ -1645,6 +1746,37 @@ def _path_has_temporal_validity(path: list[str], config: PackageConfig) -> bool:
     )
 
 
+def _cross_clock_predicate_error(
+    predicate: MetricPredicateExpr, query: NormalizedQuery, compatible_roles: set[str]
+) -> SemanticLayerError:
+    assert query.time is not None
+    clocks = sorted(compatible_roles)
+    return SemanticLayerError(
+        "INVALID_TEMPORAL_BINDING",
+        (
+            f"The contextual metric_predicate measures {_predicate_metric_label(predicate)!r} "
+            f"on {', '.join(clocks)}, but the query's time is {query.time.temporal_role}. "
+            "Matching the two by calendar bucket would compare different clocks, so the "
+            "query is refused."
+        ),
+        details={
+            "requested": query.time.temporal_role,
+            "compatible": clocks,
+            "predicate": expr_to_dict(predicate),
+            "recovery_hints": [
+                {
+                    "code": "CHOOSE_PREDICATE_CLOCK",
+                    "message": (
+                        f"To apply the threshold per period on {clocks[0]}, set "
+                        "query.time.temporal_role to it. To apply it over all time, set "
+                        "scope_mode to 'entity_only'."
+                    ),
+                }
+            ],
+        },
+    )
+
+
 def _predicate_time_spec(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> dict[str, Any] | None:
@@ -1697,8 +1829,7 @@ def _predicate_time_spec(
     compatible_roles = _expr_compatible_temporal_roles(predicate.input, config, query)
     predicate_temporal_role = query.time.temporal_role
     if query.time.temporal_role not in compatible_roles:
-        predicate_temporal_role = next(iter(sorted(compatible_roles)), "")
-        if not predicate_temporal_role:
+        if not compatible_roles:
             raise SemanticLayerError(
                 "PREDICATE_GRAIN_UNSAFE",
                 "Metric predicate input does not expose a compatible temporal role",
@@ -1707,6 +1838,11 @@ def _predicate_time_spec(
                     "predicate": expr_to_dict(predicate),
                 },
             )
+        # Matching another clock's calendar buckets to the query's is only sound when the
+        # predicate asks for it and names exactly one clock; it is never a silent default.
+        if predicate.time_alignment != "same_query_period" or len(compatible_roles) != 1:
+            raise _cross_clock_predicate_error(predicate, query, compatible_roles)
+        predicate_temporal_role = next(iter(compatible_roles))
     outer_grain = str(query.time.grain or "").lower()
     predicate_grain = str(predicate.time_grain or outer_grain or "").lower()
     if predicate.time_grain:
@@ -1931,7 +2067,13 @@ def _predicate_ctes_and_join(
     plan: LogicalPlan,
     measure_plan: MeasurePlan,
     config: PackageConfig,
-) -> tuple[list[SqlCte], SqlJoin]:
+) -> tuple[list[SqlCte], SqlJoin, list[Any]]:
+    """Return the predicate's CTEs, the join to the outer leaf, and extra WHERE conditions.
+
+    Usually the set holds the qualifying entities and the join is INNER. When entities
+    with no rows must qualify, the set holds the entities that fail the threshold, and
+    the leaf keeps a row only if that LEFT JOIN finds no failing entity for it.
+    """
     entity_cfg = _entity_index(config).get(predicate.entity)
     if entity_cfg is None:
         raise SemanticLayerError(
@@ -1996,6 +2138,17 @@ def _predicate_ctes_and_join(
         source_name=source_name,
         config=config,
     )
+    without_rows = _predicate_includes_entities_without_rows(predicate, config)
+    if without_rows:
+        where_condition = build_filter_condition(
+            SqlCall(
+                "COALESCE",
+                [SqlIdentifier(parts=["predicate_source", "__predicate_value"]), SqlLiteral(0)],
+            ),
+            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
+            predicate.value,
+            path="metric_predicate",
+        )
     set_query = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=source_name, alias="predicate_source"),
@@ -2030,6 +2183,7 @@ def _predicate_ctes_and_join(
         else _column_ref(predicate_table, entity_cfg.key[0])
     )
     assert outer_key_expr is not None  # can_join_predicate_directly guarantees non-None
+    outer_keys = [outer_key_expr]
     join_condition: Any = SqlBinary(
         outer_key_expr,
         "=",
@@ -2042,6 +2196,7 @@ def _predicate_ctes_and_join(
             else _column_ref(predicate_table, key_col)
         )
         assert outer_key_expr is not None  # can_join_predicate_directly guarantees non-None
+        outer_keys.append(outer_key_expr)
         join_condition = SqlBinary(
             join_condition,
             "AND",
@@ -2054,34 +2209,43 @@ def _predicate_ctes_and_join(
             strict=True,
         ):
             dim = _dimension_index(config)[dim_id]
+            context_key_expr = _column_ref(_entity_index(config)[dim.entity].table, dim.column)
+            outer_keys.append(context_key_expr)
             join_condition = SqlBinary(
                 join_condition,
                 "AND",
-                SqlBinary(
-                    _column_ref(_entity_index(config)[dim.entity].table, dim.column),
-                    "=",
-                    SqlIdentifier(parts=[set_name, dim_id]),
-                ),
+                SqlBinary(context_key_expr, "=", SqlIdentifier(parts=[set_name, dim_id])),
             )
     if scope["time_spec"] is not None and scope["time_alias"]:
         query = normalize_query(plan.query)
         outer_temporal_role = _leaf_time_role(measure_plan.bound_measure, query, config)
+        outer_time_expr = _predicate_time_join_expr(
+            source_entity=measure_plan.source_entity,
+            role_id=outer_temporal_role,
+            grain=str(scope["time_spec"]["grain"]),
+            config=config,
+        )
+        outer_keys.append(outer_time_expr)
         join_condition = SqlBinary(
             join_condition,
             "AND",
-            SqlBinary(
-                _predicate_time_join_expr(
-                    source_entity=measure_plan.source_entity,
-                    role_id=outer_temporal_role,
-                    grain=str(scope["time_spec"]["grain"]),
-                    config=config,
-                ),
-                "=",
-                SqlIdentifier(parts=[set_name, scope["time_alias"]]),
-            ),
+            SqlBinary(outer_time_expr, "=", SqlIdentifier(parts=[set_name, scope["time_alias"]])),
         )
-    return [source_cte, *threshold_ctes, set_cte], SqlJoin(
-        join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition
+    if not without_rows:
+        return (
+            [source_cte, *threshold_ctes, set_cte],
+            SqlJoin(join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition),
+            [],
+        )
+    # A leaf row with no entity, context or period key is not an entity with no rows.
+    keep_rows: list[Any] = [
+        SqlIsNull(SqlIdentifier(parts=[set_name, key_dim_map[0][1]])),
+        *(SqlBinary(key_expr, "IS NOT", SqlLiteral(None)) for key_expr in outer_keys),
+    ]
+    return (
+        [source_cte, *threshold_ctes, set_cte],
+        SqlJoin(join_type="LEFT", table=SqlTableRef(name=set_name), on=join_condition),
+        keep_rows,
     )
 
 
@@ -2977,6 +3141,7 @@ def _conversion_predicate_set_ctes(
     if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
         mini_query["time"] = _public_time_spec(scope["time_spec"])
 
+    _require_predicate_over_rows(predicate, config, shape="a conversion metric")
     # Conversion leaves apply only query metric_filters predicates: whole-query cuts.
     with cut_owners():
         with binding_cut():

@@ -474,13 +474,18 @@ _ADDITIVE_ZERO_AGGREGATIONS = {"sum", "count", "count_distinct"}
 _ZERO_ON_MISSING_MEASURE_CLASSES = {"additive", "event_count", "entity_count", ""}
 
 
-def _expr_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
+def _expr_zero_on_missing(
+    expr: SemanticExpr,
+    config: PackageConfig,
+    measure_classes: set[str] = _ZERO_ON_MISSING_MEASURE_CLASSES,
+) -> bool:
     """Return True if an expression's natural value is 0 when no rows contribute.
 
     Used to decide whether NULL produced by a FULL OUTER JOIN combine should be
     coerced to 0 in metric_filter projections, so that the natural translation
     of "orders with no items" (`item_count = 0`) returns the right rows instead
-    of silently returning empty.
+    of silently returning empty. ``measure_classes`` are the measure classes whose
+    additive aggregations count as 0.
     """
     if isinstance(expr, (MeasureRefExpr, AggregateExpr)):
         measure = _measure_index(config).get(expr.measure)
@@ -489,15 +494,15 @@ def _expr_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
         aggregation = (expr.aggregation or measure.default_aggregation or "").lower()
         if aggregation not in _ADDITIVE_ZERO_AGGREGATIONS:
             return False
-        return measure.measure_class in _ZERO_ON_MISSING_MEASURE_CLASSES
+        return measure.measure_class in measure_classes
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         if recipe is None:
             return False
-        return _expr_zero_on_missing(recipe.expression, config)
+        return _expr_zero_on_missing(recipe.expression, config, measure_classes)
     if isinstance(expr, ArithmeticExpr) and expr.op in {"add", "subtract"}:
-        return _expr_zero_on_missing(expr.left, config) and _expr_zero_on_missing(
-            expr.right, config
+        return _expr_zero_on_missing(expr.left, config, measure_classes) and (
+            _expr_zero_on_missing(expr.right, config, measure_classes)
         )
     return False
 
@@ -765,6 +770,8 @@ def _predicate_physical_nodes(
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> tuple[list[PhysicalPlanNode], list[str]]:
+    from ..compiler import _predicate_includes_entities_without_rows
+
     nodes: list[PhysicalPlanNode] = []
     predicate_set_ids: list[str] = []
     query = normalize_query(plan.query)
@@ -823,6 +830,11 @@ def _predicate_physical_nodes(
                     "value": predicate.value,
                     "scope_mode": predicate.scope_mode,
                     "source_scan_count": len(scan_specs),
+                    **(
+                        {"anti_join": True}
+                        if _predicate_includes_entities_without_rows(predicate, config)
+                        else {}
+                    ),
                 },
             )
         )
@@ -2062,6 +2074,7 @@ def _measure_leaf_select(
 
     predicate_ctes: list[SqlCte] = []
     predicate_joins: list[SqlJoin] = []
+    predicate_row_conditions: list[Any] = []
     owned_predicates = _bound_metric_predicates(measure_plan.bound_measure)
     query_predicates = _query_metric_predicates(plan)
     for index, predicate in enumerate(_all_metric_predicates(plan, measure_plan)):
@@ -2072,11 +2085,12 @@ def _measure_leaf_select(
             # Query metric_filters predicates filter every leaf: whole-query cuts.
             cut_owners() if predicate in query_predicates else nullcontext(),
         ):
-            ctes, join = _predicate_ctes_and_join(
+            ctes, join, row_conditions = _predicate_ctes_and_join(
                 predicate, index=index, plan=plan, measure_plan=measure_plan, config=config
             )
         predicate_ctes.extend(ctes)
         predicate_joins.append(join)
+        predicate_row_conditions.extend(row_conditions)
 
     select_fields: list[SqlField] = []
     group_fields: list[Any] = []
@@ -2163,6 +2177,7 @@ def _measure_leaf_select(
             where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
         if time.get("end") is not None:
             where_clauses.append(SqlBinary(raw_expr, "<", SqlLiteral(time["end"])))
+    where_clauses.extend(predicate_row_conditions)
 
     order_expr = None
     if measure_plan.bound_measure.temporal_role:
@@ -2276,10 +2291,11 @@ def _minimal_predicate_set_ctes(
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> PredicateSetSql:
-    from ..compiler import _compile_query_sql_ast
+    from ..compiler import _compile_query_sql_ast, _require_predicate_over_rows
 
     query = normalize_query(plan.query)
     predicate = _predicate_expr_from_payload(predicate_payload)
+    _require_predicate_over_rows(predicate, config, shape="an anchored entity-set ratio")
     group_by_dims = _predicate_key_aliases(predicate, config)
     time_spec = _predicate_time_spec(predicate, query, config)
     mini_query: dict[str, Any] = {
