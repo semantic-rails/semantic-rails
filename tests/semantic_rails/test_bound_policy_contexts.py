@@ -622,9 +622,13 @@ def test_contextual_predicate_records_actual_clock_entity(config, monkeypatch, a
                 "expression": {
                     "kind": "metric_predicate",
                     "entity": ENTITY,
-                    "input": {"measure": "measure.jaffle.order_count"},
+                    "input": {
+                        "measure": "measure.jaffle.order_count",
+                        "temporal_role": customer_role,
+                    },
                     "op": ">",
                     "value": 1,
+                    "time_alignment": "same_query_period",
                 },
                 "op": "=",
                 "value": True,
@@ -1069,7 +1073,13 @@ def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, co
     numerator = {
         **aggregate,
         "predicates": [
-            {"measure": "measure.jaffle.order_count", "entity": STORE, "op": ">", "value": 0}
+            {
+                "measure": "measure.jaffle.order_count",
+                "entity": STORE,
+                "op": ">",
+                "value": 0,
+                "time_alignment": "same_query_period",
+            }
         ],
     }
     query = {
@@ -1194,7 +1204,13 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
     if shape == "anchored":
         expression["aggregation"] = "sum"
         expression["predicates"] = [
-            {"measure": "measure.jaffle.order_count", "entity": STORE, "op": ">", "value": 0}
+            {
+                "measure": "measure.jaffle.order_count",
+                "entity": STORE,
+                "op": ">",
+                "value": 0,
+                "time_alignment": "same_query_period",
+            }
         ]
     recipe = MetricConfig(
         id="operand_recipe",
@@ -1275,7 +1291,13 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
     numerator = {
         **aggregate,
         "predicates": [
-            {"measure": "measure.jaffle.order_count", "entity": STORE, "op": ">", "value": 0}
+            {
+                "measure": "measure.jaffle.order_count",
+                "entity": STORE,
+                "op": ">",
+                "value": 0,
+                "time_alignment": "same_query_period",
+            }
         ],
     }
     recipe = MetricConfig(
@@ -1300,6 +1322,7 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
                     "input": expression,
                     "op": ">",
                     "value": 0,
+                    "time_alignment": "same_query_period",
                 },
                 "op": "=",
                 "value": True,
@@ -1454,6 +1477,7 @@ def test_distribution_projection_inherits_parent_cut(config, monkeypatch, allowe
                     "input": expression,
                     "op": ">",
                     "value": 0,
+                    "time_alignment": "same_query_period",
                 },
                 "op": "=",
                 "value": True,
@@ -1512,6 +1536,7 @@ def _recipe_with_predicate(config, role, *, nested=False, aggregate=False):
         },
         "op": ">",
         "value": 0,
+        "time_alignment": "same_query_period",
     }
     expression = (
         {"kind": "aggregate", "measure": MEASURE, "filter": {"all": [{"expression": predicate}]}}

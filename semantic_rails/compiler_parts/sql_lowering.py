@@ -695,6 +695,8 @@ def _predicate_physical_nodes(
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> tuple[list[PhysicalPlanNode], list[str]]:
+    from ..compiler import _predicate_includes_entities_without_rows
+
     nodes: list[PhysicalPlanNode] = []
     predicate_set_ids: list[str] = []
     query = normalize_query(plan.query)
@@ -753,6 +755,11 @@ def _predicate_physical_nodes(
                     "value": predicate.value,
                     "scope_mode": predicate.scope_mode,
                     "source_scan_count": len(scan_specs),
+                    **(
+                        {"anti_join": True}
+                        if _predicate_includes_entities_without_rows(predicate, config)
+                        else {}
+                    ),
                 },
             )
         )
@@ -1945,6 +1952,7 @@ def _measure_leaf_select(
 
     predicate_ctes: list[SqlCte] = []
     predicate_joins: list[SqlJoin] = []
+    predicate_row_conditions: list[Any] = []
     owned_predicates = _bound_metric_predicates(measure_plan.bound_measure)
     query_predicates = _query_metric_predicates(plan)
     for index, predicate in enumerate(_all_metric_predicates(plan, measure_plan)):
@@ -1955,11 +1963,12 @@ def _measure_leaf_select(
             # Query metric_filters predicates filter every leaf: whole-query cuts.
             cut_owners() if predicate in query_predicates else nullcontext(),
         ):
-            ctes, join = _predicate_ctes_and_join(
+            ctes, join, row_conditions = _predicate_ctes_and_join(
                 predicate, index=index, plan=plan, measure_plan=measure_plan, config=config
             )
         predicate_ctes.extend(ctes)
         predicate_joins.append(join)
+        predicate_row_conditions.extend(row_conditions)
 
     select_fields: list[SqlField] = []
     group_fields: list[Any] = []
@@ -2050,6 +2059,7 @@ def _measure_leaf_select(
             where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
         if time.get("end") is not None:
             where_clauses.append(SqlBinary(raw_expr, "<", SqlLiteral(time["end"])))
+    where_clauses.extend(predicate_row_conditions)
 
     order_expr = None
     if measure_plan.bound_measure.temporal_role:
@@ -2151,10 +2161,11 @@ def _minimal_predicate_set_ctes(
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> PredicateSetSql:
-    from ..compiler import _compile_query_sql_ast
+    from ..compiler import _compile_query_sql_ast, _require_predicate_over_rows
 
     query = normalize_query(plan.query)
     predicate = _predicate_expr_from_payload(predicate_payload)
+    _require_predicate_over_rows(predicate, config, shape="an anchored entity-set ratio")
     group_by_dims = _predicate_key_aliases(predicate, config)
     time_spec = _predicate_time_spec(predicate, query, config)
     mini_query: dict[str, Any] = {

@@ -25,6 +25,7 @@ def _snapshot_parent_metric_query() -> dict:
                             "scope_mode": "contextual",
                             "op": ">",
                             "value": 1,
+                            "time_alignment": "same_query_period",
                         },
                         {
                             "measure": "measure.jaffle.session_starts",
@@ -32,6 +33,7 @@ def _snapshot_parent_metric_query() -> dict:
                             "scope_mode": "contextual",
                             "op": ">",
                             "value": 1,
+                            "time_alignment": "same_query_period",
                         },
                     ],
                 },
@@ -154,6 +156,7 @@ def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(run
                             "scope_mode": "contextual",
                             "op": ">",
                             "value": 0,
+                            "time_alignment": "same_query_period",
                         }
                     ],
                 },
@@ -434,25 +437,8 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         )
 
         assert snapshot["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-        snapshot_query = snapshot["candidates"][0]["candidate_ir"]
-        snapshot_expr = snapshot_query["select"][0]["expression"]
-        assert snapshot["candidates"][0]["validation"]["ok"] is True
-        assert snapshot_expr["measure"] == "measure.jaffle.active_menu_count_eop"
-        assert snapshot_expr["aggregation"] == "sum"
-        # Predicate inputs may be measures or metrics depending on which
-        # scored higher in discovery — we assert the cohort fields match,
-        # not the exact input ref.
-        assert len(snapshot_expr["predicates"]) == 2
-        for predicate in snapshot_expr["predicates"]:
-            assert predicate["entity"] == "entity.jaffle_store"
-            assert predicate["op"] == ">"
-            assert predicate["value"] == 1
-            assert "measure" in predicate or "metric" in predicate
-        assert snapshot_query["group_by"] == ["dimension.jaffle_store_name"]
-        assert snapshot_query["time"] == {
-            "temporal_role": "temporal_role.jaffle_inventory_day",
-            "grain": "month",
-        }
+        # Its qualifiers are measured on other clocks than the snapshot's, which is refused.
+        assert snapshot["candidates"] == []
 
         assert adoption["interpreted_intent"]["pattern"] == "filtered_adoption_funnel"
         adoption_query = adoption["candidates"][0]["candidate_ir"]

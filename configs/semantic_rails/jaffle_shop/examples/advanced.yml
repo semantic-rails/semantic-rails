@@ -19,6 +19,7 @@ examples:
                   entity: entity.jaffle_customer
                   op: ">"
                   value: 0
+                  time_alignment: same_query_period
             denominator:
               kind: scoped_aggregate
               measure: measure.jaffle.revenue_usd
@@ -108,6 +109,7 @@ examples:
                   entity: entity.jaffle_customer
                   op: ">"
                   value: 0
+                  time_alignment: same_query_period
             denominator:
               kind: scoped_aggregate
               measure: measure.jaffle.order_count
@@ -145,11 +147,13 @@ examples:
                 scope_mode: contextual
                 op: ">"
                 value: 1
+                time_alignment: same_query_period
               - input: {measure: measure.jaffle.session_starts}
                 entity: entity.jaffle_store
                 scope_mode: contextual
                 op: ">"
                 value: 1
+                time_alignment: same_query_period
       group_by: [dimension.jaffle_store_name]
       time:
         temporal_role: temporal_role.jaffle_inventory_day
@@ -335,6 +339,7 @@ examples:
               metric: metric.sales.session_to_order_conversion_rate_7d_same_store
             op: ">"
             value: 0.9
+            time_alignment: same_query_period
           op: "="
           value: true
       time:
@@ -514,6 +519,7 @@ examples:
                 scope_mode: contextual
                 op: ">"
                 value: 0
+                time_alignment: same_query_period
       group_by: [dimension.jaffle_store_name]
       time:
         temporal_role: temporal_role.jaffle_inventory_day

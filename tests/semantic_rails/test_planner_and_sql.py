@@ -1271,6 +1271,7 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_fac
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
@@ -1323,6 +1324,7 @@ def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(pack
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
@@ -1374,6 +1376,7 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
