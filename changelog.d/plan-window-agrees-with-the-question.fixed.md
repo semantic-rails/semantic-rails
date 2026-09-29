@@ -7,5 +7,7 @@
   window's bounds hold it, its exclusive end year included: "revenue 2018" against a 2017 window
   and "at 2000" are left over in `why.details.terms`. A year counts as part of a phrase plan could
   not resolve only after a bound or qualifier word ("before 2017", "the end of 2017"). In a
-  question over 2,000 characters, only the years after "in", "for", "during" or "year" are
-  checked, as calendar years.
+  question over 2,000 characters, only a single 20xx year after "in", "for", "during" or "year"
+  is checked, as a calendar year; two different years, or a count such as "in 2000 or more",
+  state no window and are left over. A window you pass is never held to a lone "previous month"
+  when the draft carries a `prior_period` expression.

@@ -29,6 +29,7 @@ from ._base import (
     _MONTH_NUMBERS,
     _NUMBER_WORDS,
     _ORDINALS,
+    _QUANTITY_AFTER_RE,
     _TERM_SYNONYMS,
     _TIME_UNITS,
     _TO_DATE_OR_ROLLING_RE,
@@ -500,7 +501,7 @@ def intent_faithfulness_why(
     if isinstance(caller_time, dict) and any(
         caller_time.get(key) for key in ("start", "end", "range")
     ):
-        gaps.extend(_caller_window_gaps(text, query))
+        gaps.extend(_caller_window_gaps(runtime, text, query))
     else:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
@@ -590,20 +591,32 @@ def _time_block(query: dict[str, Any]) -> dict[str, Any]:
     return time if isinstance(time, dict) else {}
 
 
+def _is_prior_period_offset(
+    runtime: Any, query: dict[str, Any], windows: list[dict[str, Any]]
+) -> bool:
+    """Whether the question's one window is the offset of a prior-period comparison.
+
+    "alongside the previous month's revenue" names the comparison's offset, not a window, when
+    the draft carries one. Both window checks (the window plan reads, and the caller's) share it.
+    """
+
+    if len(windows) != 1:
+        return False
+    last = (windows[0].get("range") or {}).get("last") or {}
+    return (
+        set(windows[0]) == {"range"}
+        and last.get("value") == 1
+        and _query_contains_prior_period(runtime, query)
+    )
+
+
 def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
     """The draft doesn't carry the window the question names, or carries another one."""
 
     expected = _time_bounds_from_text(text)
     if not expected:
         return []
-    last = (expected.get("range") or {}).get("last") or {}
-    # "alongside the previous month's revenue" names a prior-period
-    # comparison's offset, not a window, when the draft carries one.
-    if (
-        set(expected) == {"range"}
-        and last.get("value") == 1
-        and _query_contains_prior_period(runtime, query)
-    ):
+    if _is_prior_period_offset(runtime, query, [expected]):
         return []
     time = _time_block(query)
     carried = {key: time[key] for key in ("start", "end", "range") if time.get(key)}
@@ -2393,8 +2406,9 @@ def _number_spans(
     return spans
 
 
-# A year a date phrase states: after "in", "for" or "during", or the word "year".
-_YEAR_CUE_RE = re.compile(r"\b(?:in|for|during|year)\s+((?:19|20)\d{2})\b")
+# A year a date phrase states: after "in", "for" or "during", or the word "year". Only the 2000s,
+# as when plan reads a short question ("1930" is never a date there).
+_YEAR_CUE_RE = re.compile(r"\b(?:in|for|during|year)\s+(20\d{2})\b")
 # The rest of a bound after its date, when it is midnight.
 _MIDNIGHT_RE = re.compile(r"(?:[t ]00:00(?::00(?:\.0+)?)?(?:z|[+-]00:?00)?)?")
 
@@ -2406,12 +2420,22 @@ def _question_time(
 
     The other spans are time phrases plan cannot resolve ("last 24 hours", "before 2017"). A
     bare year is one only with the bound word plan reports it by ("before 2017"); on its own it
-    may be an hour ("at 2000"), so it is never returned. In a question too long to read, the only windows are the calendar years its date phrases state
-    ("in 2017", "for 2017"; never "at 1930").
+    may be an hour ("at 2000"), so it is never returned.
+
+    A question too long to read has a window only when its date phrases state one calendar year
+    ("in 2017", "for 2017"; never "at 2000" or "in 2000+"). Two different years cannot be told
+    from a quantity ("in 2017 ... for 2000 customers") without the resolver, so such a question
+    states no window and each year in it is left unconsumed.
     """
 
     if len(lowered) > _MAX_TIME_TEXT:
-        years = [(match.span(1), int(match.group(1))) for match in _YEAR_CUE_RE.finditer(lowered)]
+        years = [
+            (match.span(1), int(match.group(1)))
+            for match in _YEAR_CUE_RE.finditer(lowered)
+            if _QUANTITY_AFTER_RE.match(lowered[match.end(1) :]) is None
+        ]
+        if len({year for _span, year in years}) > 1:
+            return [], []
         return [
             (span, {"start": f"{year:04d}-01-01", "end": f"{year + 1:04d}-01-01"})
             for span, year in years
@@ -2506,13 +2530,15 @@ def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
     return [span for span, _bounds in windows] + others
 
 
-def _caller_window_gaps(text: str, query: dict[str, Any]) -> list[CoverageGap]:
+def _caller_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
     """The window a caller passed is not the one the question's date phrases state."""
 
     lowered = text.lower()
     windows, _others = _question_time(lowered)
     time = _time_block(query)
-    if _window_agrees(windows, time):
+    if _window_agrees(windows, time) or _is_prior_period_offset(
+        runtime, query, [bounds for _span, bounds in windows]
+    ):
         return []
     return [
         CoverageGap(

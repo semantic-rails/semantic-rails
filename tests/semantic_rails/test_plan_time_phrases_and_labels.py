@@ -1440,9 +1440,9 @@ def test_a_window_agrees_with_the_date_phrases_only_at_the_phrases_start_and_end
     runtime_factory: Any, text: str, time: dict[str, str], agrees: bool
 ) -> None:
     query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
-    assert (_caller_window_gaps(text, query) == []) is agrees
     runtime = runtime_factory("jaffle_shop")
     try:
+        assert (_caller_window_gaps(runtime, text, query) == []) is agrees
         left = unconsumed_terms(runtime, text, query)
     finally:
         runtime.close()
@@ -1464,17 +1464,73 @@ def test_plan_is_not_ready_when_the_drafts_window_is_not_the_questions(
     assert "ready_for" not in payload["next"]
 
 
-def test_a_window_over_two_phrases_must_span_them_and_no_more() -> None:
+def test_a_window_over_two_phrases_must_span_them_and_no_more(runtime_factory: Any) -> None:
     text = "revenue in Q1 2017 and in Q3 2017"
     both = {"start": "2017-01-01", "end": "2017-10-01"}
-    for time, agrees in ((both, True), (Q1_2017, False), ({**both, "end": "2018-01-01"}, False)):
-        query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
-        assert (_caller_window_gaps(text, query) == []) is agrees, time
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        for time, agrees in (
+            (both, True),
+            (Q1_2017, False),
+            ({**both, "end": "2018-01-01"}, False),
+        ):
+            query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
+            assert (_caller_window_gaps(runtime, text, query) == []) is agrees, time
+    finally:
+        runtime.close()
 
 
-def test_a_question_too_long_to_read_is_held_to_the_years_its_date_phrases_state() -> None:
-    filler = " ".join(f"word{index}" for index in range(400))
-    assert len(filler) > 2000
-    for year, agrees in ((2017, True), (2018, False)):
-        query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
-        assert (_caller_window_gaps(f"revenue in {year} {filler}", query) == []) is agrees
+LONG_FILLER = " ".join(f"word{index}" for index in range(400))
+
+
+def test_a_question_too_long_to_read_is_held_to_the_years_its_date_phrases_state(
+    runtime_factory: Any,
+) -> None:
+    assert len(LONG_FILLER) > 2000
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        for year, agrees in ((2017, True), (2018, False)):
+            query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
+            gaps = _caller_window_gaps(runtime, f"revenue in {year} {LONG_FILLER}", query)
+            assert (gaps == []) is agrees
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A quantity after "for" is not a second window, and no year is told from it here.
+        f"revenue in 2017 for 2000 customers {LONG_FILLER}",
+        f"revenue for 2000 customers in 2017 {LONG_FILLER}",
+    ],
+    ids=["quantity-after-year", "quantity-before-year"],
+)
+def test_a_question_too_long_to_read_never_reads_a_quantity_as_a_window(
+    runtime_factory: Any, text: str
+) -> None:
+    query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        # No window is stated, so none is invented for the caller's to disagree with ...
+        assert _caller_window_gaps(runtime, text, query) == []
+        # ... and the years are left unconsumed, so the plan is not ready.
+        assert "2017" in unconsumed_terms(runtime, text, query)
+    finally:
+        runtime.close()
+
+
+def test_a_question_too_long_to_read_skips_a_year_that_states_a_count(
+    runtime_factory: Any,
+) -> None:
+    text = f"revenue in 2017 {LONG_FILLER} in 2000 or more orders"
+    query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert _caller_window_gaps(runtime, text, query) == []
+        # "2017" is the stated window; the count is a number no construct reads.
+        left = unconsumed_terms(runtime, text, query)
+        assert "2000" in left
+        assert "2017" not in left
+    finally:
+        runtime.close()

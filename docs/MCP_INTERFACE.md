@@ -262,13 +262,17 @@ agrees with them: each bound it carries, read at the day, is the earliest start 
 of the windows the question states ("15 March 2017" against 12:00 to 13:00 on that day agrees;
 against 1 June 2018, or against the whole of 2017, does not). If it disagrees, the draft is
 `low_confidence` (`PLAN_INTENT_COVERAGE_GAP`, gap `time_window_unrealized`) and the phrase's
-numbers are left over. The window also
+numbers are left over. A window you pass in `query.time` is not held to a lone "previous
+month" when the draft carries a `prior_period` expression: that phrase is the comparison's offset,
+not a window. The window also
 answers a phrase plan could not resolve ("last 24 hours", "before 2017"). A bare year is never
 consumed because a window's bounds hold it, its exclusive end year included: "revenue 2018" or
 "at 2000" is left over whatever the window says, and a year is part of a phrase plan could not
 resolve only when it follows a bound or qualifier word ("before", "until", "of"). In a question over 2,000
-characters plan reads no window, so only the years after "in", "for", "during" or "year" are
-checked, as calendar years. It never consumes a time of day,
+characters plan reads no window, so only the 20xx years after "in", "for", "during" or "year" are
+checked, as calendar years, and only when they name one year: a count ("in 2000 or more") is not
+one, and two different years ("in 2017 ... for 2000 customers") cannot be told from a count, so
+no window is read and both years are left over. It never consumes a time of day,
 an hour or a zone, whatever hours its bounds carry: a question that states "12:00 to 13:00" or
 "noon" is refused (`PLAN_UNMATCHED_TERMS`) even against a window with those hours, so write the
 question without the hours and let the window carry them. To ask for an hour range, pass it in `query.time` yourself, as
