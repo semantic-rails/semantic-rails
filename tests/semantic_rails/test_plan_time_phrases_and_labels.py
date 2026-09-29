@@ -11,6 +11,7 @@ not keep.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,17 +25,26 @@ from semantic_rails.planner._base import (
     _time_window,
     _unresolved_time_phrases,
 )
-from semantic_rails.planner.faithfulness import unconsumed_terms, unmatched_intent_terms
+from semantic_rails.planner.faithfulness import _caller_window_gaps, unmatched_intent_terms
+from semantic_rails.planner.faithfulness import unconsumed_terms as _unconsumed_terms
 
 MARCH_15 = "2017-03-15"
 HOUR = {"start": f"{MARCH_15}T12:00:00", "end": f"{MARCH_15}T13:00:00"}
 Q1_2017 = {"start": "2017-01-01", "end": "2017-04-01"}
 YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
 ORDER_TIME = "temporal_role.jaffle_order_time"
-# A draft's window, as the planner sets it for a question that names a date or a range. Its
-# presence is what counts here; the question's own spans are what it consumes.
+# A draft's window, as the planner sets it for a question that names a date or a range: below,
+# `unconsumed_terms` reads it as the window the question states. Its presence is what counts
+# here; the question's own spans are what it consumes.
 WINDOW = {"grain": "day", **YEAR_2017}
 LAST_7_DAYS = {"grain": "day", "range": {"last": {"unit": "day", "value": 7}}}
+
+
+def unconsumed_terms(runtime: Any, text: str, query: dict[str, Any]) -> list[str]:
+    bounds = _time_window(text.lower()).bounds if query.get("time") is WINDOW else {}
+    if bounds:
+        query = {**query, "time": {"grain": "day", **bounds}}
+    return _unconsumed_terms(runtime, text, query)
 
 
 def _query(payload: dict[str, Any]) -> dict[str, Any]:
@@ -752,20 +762,26 @@ def test_a_caller_window_answers_the_time_phrases_plan_could_not_resolve(
 
 
 @pytest.mark.parametrize(
-    ("text", "terms"),
+    ("text", "time", "terms"),
     [
-        # A year-shaped clock time is never the year of the caller's bounds.
-        ("revenue in 2017 at 2000", ["2000"]),
-        ("revenue in 2017 at 1930", ["1930"]),
-        ("revenue on 15 March 2017 from 1900 to 2000 hours", ["1900", "2000", "hours"]),
+        # A year-shaped clock time is never the year of the caller's bounds, nor an exclusive
+        # end year the bounds carry.
+        ("revenue in 2017 at 2000", YEAR_2017, ["2000"]),
+        ("revenue in 2017 at 1930", YEAR_2017, ["1930"]),
+        ("revenue in 2017 at 2017", YEAR_2017, ["2017"]),
+        ("revenue in 2017 at 2018", YEAR_2017, ["2018"]),
+        # A bare year that no date phrase states is left over, not matched to the bounds.
+        ("revenue 2018", YEAR_2017, ["2018"]),
+        ("revenue 2017", YEAR_2017, ["2017"]),
+        ("revenue on 15 March 2017 from 1900 to 2000 hours", HOUR, ["1900", "2000", "hours"]),
         # Neither is a clock time the bounds do not state.
-        ("revenue from 9:30 to 17:00 on 15 March 2017", ["9", "30", "17", "00"]),
+        ("revenue from 9:30 to 17:00 on 15 March 2017", HOUR, ["9", "30", "17", "00"]),
     ],
 )
 def test_a_caller_window_never_consumes_a_year_shaped_or_other_clock_time_by_value(
-    runtime_factory: Any, text: str, terms: list[str]
+    runtime_factory: Any, text: str, time: dict[str, str], terms: list[str]
 ) -> None:
-    query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **HOUR})
+    query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
     runtime = runtime_factory("jaffle_shop")
     try:
         assert unconsumed_terms(runtime, text, query) == terms
@@ -863,7 +879,7 @@ def test_a_question_too_long_to_read_consumes_only_the_years_its_date_phrases_st
     assert len(text) > 2000
     runtime = runtime_factory("jaffle_shop")
     try:
-        query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **HOUR})
+        query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
         assert unconsumed_terms(runtime, text, query) == ["1930", "14h30", "2000"]
         # Without a caller window nothing consumes the year either.
         assert unconsumed_terms(runtime, text, _draft()) == ["2017", "1930", "14h30", "2000"]
@@ -1371,5 +1387,150 @@ def test_a_lifetime_percentile_cohort_is_refused_not_warned(runtime_factory: Any
         )
         assert payload["status"] == "low_confidence"
         assert payload["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+    finally:
+        runtime.close()
+
+
+# --- a window in the draft must agree with the question's date phrases -------------------
+
+MARCH_2017 = {"start": "2017-03-01", "end": "2017-04-01"}
+SOMEONE_ELSES_DAY = {"start": "2018-06-01", "end": "2018-06-02"}
+
+
+def _last_days(days: int) -> dict[str, str]:
+    end = datetime.now(UTC).date()
+    return {"start": (end - timedelta(days=days)).isoformat(), "end": end.isoformat()}
+
+
+@pytest.mark.parametrize(
+    ("text", "time", "agrees"),
+    [
+        # The same day, read at the day: a whole day, or hours within it.
+        ("revenue on 15 March 2017", {"start": MARCH_15, "end": "2017-03-16"}, True),
+        ("revenue on 15 March 2017", {"start": f"{MARCH_15}T00:00:00", "end": "2017-03-16"}, True),
+        ("revenue on 15 March 2017", HOUR, True),
+        ("revenue in March 2017", MARCH_2017, True),
+        ("revenue in Q1 2017", Q1_2017, True),
+        ("revenue in 2017", YEAR_2017, True),
+        ("revenue for the last 7 days", {"range": {"last": {"unit": "day", "value": 7}}}, True),
+        ("revenue for the last 7 days", _last_days(7), True),
+        # One bound is checked as the two are: a lookback metric loses its start.
+        ("revenue in 2017", {"end": "2018-01-01"}, True),
+        ("revenue in 2017", {"start": "2017-01-01"}, True),
+        ("revenue in 2017", {"start": "2018-01-01"}, False),
+        ("revenue on 15 March 2017", {"end": "2017-03-16T13:00:00"}, False),
+        # Another day, or the same start with another end.
+        ("revenue on 15 March 2017", SOMEONE_ELSES_DAY, False),
+        ("revenue on 15 March 2017", {"start": MARCH_15, "end": "2017-03-17"}, False),
+        # Finer than the phrase's grain, or coarser.
+        ("revenue in March 2017", {"start": MARCH_15, "end": "2017-03-16"}, False),
+        ("revenue in Q1 2017", YEAR_2017, False),
+        ("revenue in 2017", MARCH_2017, False),
+        # A year the window's bounds carry is not the year the question states.
+        ("revenue in 2018", YEAR_2017, False),
+        ("revenue for the last 7 days", {"range": {"last": {"unit": "day", "value": 30}}}, False),
+        ("revenue for the last 7 days", _last_days(30), False),
+        # Bounds that are not dates never agree.
+        ("revenue on 15 March 2017", {"start": "soon", "end": "later"}, False),
+        # A question that states no window agrees with any.
+        ("revenue by store", SOMEONE_ELSES_DAY, True),
+    ],
+)
+def test_a_window_agrees_with_the_date_phrases_only_at_the_phrases_start_and_end(
+    runtime_factory: Any, text: str, time: dict[str, str], agrees: bool
+) -> None:
+    query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert (_caller_window_gaps(runtime, text, query) == []) is agrees
+        left = unconsumed_terms(runtime, text, query)
+    finally:
+        runtime.close()
+    # What disagrees consumes none of the phrase, so its numbers are left over.
+    assert (left == []) is (agrees or not any(char.isdigit() for char in text))
+
+
+@pytest.mark.parametrize(
+    "text", ["revenue on 15 March 2017", "revenue in March 2017", "revenue in 2017"]
+)
+def test_plan_is_not_ready_when_the_drafts_window_is_not_the_questions(
+    runtime_factory: Any, text: str
+) -> None:
+    other = {"temporal_role": ORDER_TIME, "grain": "day", **SOMEONE_ELSES_DAY}
+    ok = _plan(runtime_factory, text)
+    assert ok["status"] == "ok", ok.get("why")
+    payload = _plan(runtime_factory, text, partial_query={"time": other})
+    assert payload["status"] == "low_confidence", payload
+    assert "ready_for" not in payload["next"]
+
+
+def test_a_window_over_two_phrases_must_span_them_and_no_more(runtime_factory: Any) -> None:
+    text = "revenue in Q1 2017 and in Q3 2017"
+    both = {"start": "2017-01-01", "end": "2017-10-01"}
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        for time, agrees in (
+            (both, True),
+            (Q1_2017, False),
+            ({**both, "end": "2018-01-01"}, False),
+        ):
+            query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
+            assert (_caller_window_gaps(runtime, text, query) == []) is agrees, time
+    finally:
+        runtime.close()
+
+
+LONG_FILLER = " ".join(f"word{index}" for index in range(400))
+
+
+def test_a_question_too_long_to_read_is_held_to_the_years_its_date_phrases_state(
+    runtime_factory: Any,
+) -> None:
+    assert len(LONG_FILLER) > 2000
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        for year, agrees in ((2017, True), (2018, False)):
+            query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
+            gaps = _caller_window_gaps(runtime, f"revenue in {year} {LONG_FILLER}", query)
+            assert (gaps == []) is agrees
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A quantity after "for" is not a second window, and no year is told from it here.
+        f"revenue in 2017 for 2000 customers {LONG_FILLER}",
+        f"revenue for 2000 customers in 2017 {LONG_FILLER}",
+    ],
+    ids=["quantity-after-year", "quantity-before-year"],
+)
+def test_a_question_too_long_to_read_never_reads_a_quantity_as_a_window(
+    runtime_factory: Any, text: str
+) -> None:
+    query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        # No window is stated, so none is invented for the caller's to disagree with ...
+        assert _caller_window_gaps(runtime, text, query) == []
+        # ... and the years are left unconsumed, so the plan is not ready.
+        assert "2017" in unconsumed_terms(runtime, text, query)
+    finally:
+        runtime.close()
+
+
+def test_a_question_too_long_to_read_skips_a_year_that_states_a_count(
+    runtime_factory: Any,
+) -> None:
+    text = f"revenue in 2017 {LONG_FILLER} in 2000 or more orders"
+    query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        assert _caller_window_gaps(runtime, text, query) == []
+        # "2017" is the stated window; the count is a number no construct reads.
+        left = unconsumed_terms(runtime, text, query)
+        assert "2000" in left
+        assert "2017" not in left
     finally:
         runtime.close()

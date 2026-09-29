@@ -449,9 +449,16 @@ def test_one_endpoint_does_not_settle_a_long_question(
 
 
 @pytest.mark.parametrize("detail", ["query", "best", "full"])
-@pytest.mark.parametrize("bounds", [YEAR_2017, {"range": {"last": {"unit": "year", "value": 1}}}])
+@pytest.mark.parametrize(
+    ("bounds", "suffix"),
+    [
+        (YEAR_2017, "in 2017"),
+        # A question that states no year has none to disagree with a relative window.
+        ({"range": {"last": {"unit": "year", "value": 1}}}, "for the last year"),
+    ],
+)
 def test_public_query_argument_settles_complete_long_question_bounds(
-    runtime_factory: Any, detail: str, bounds: dict[str, Any]
+    runtime_factory: Any, detail: str, bounds: dict[str, Any], suffix: str
 ) -> None:
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
@@ -460,7 +467,7 @@ def test_public_query_argument_settles_complete_long_question_bounds(
         payload = SemanticLayerMCPAdapter(runtime).call_tool(
             "plan",
             {
-                "intent": "revenue " + "please " * 300 + "in 2017",
+                "intent": "revenue " + "please " * 300 + suffix,
                 "detail": detail,
                 "query": {
                     "time": {

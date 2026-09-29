@@ -249,18 +249,30 @@ the limit's number, as in "top 10 stores with at least 10 orders", does not cons
 percentile the question states ("over 12.50", "90th percentile", "1,000 or more"), a filter
 value, or the name, label or alias of an object the draft selects (not its description). A number
 counts as a percentage only when "%", "percent" or "percentile" follows it: "50 percent" states
-0.5, while "500" never states 5. So a "1930" or "2000" that is not a window's year or a
-threshold's own number is left over, and so is a "9" that a limit of 9 does not state. Otherwise
-the plan is `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, the leftover words in `details.terms`
+0.5, while "500" never states 5. So a "1930" or "2000" that no such text holds is left over, and so is a "9"
+that a limit of 9 does not state. Otherwise the plan is `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, the leftover words in `details.terms`
 and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "from nine to five", "at
 14h30", "at 2000" and "in UTC" are not ready, and neither is a number range plan doesn't read
 ("aged 25-34", "2 to 5 orders") or a token that is not one number ("15.03.2017", "1.2.3",
 "10.0.0.1"); a number the draft does carry ("top 10") is fine. A zone
 written as an ordinary word ("Pacific time", "London time", "local time") is not recognised by
-itself, so with no hour beside it the question reads as its day. A window you pass in
-`query.time` answers the time phrases plan could not resolve ("last 24 hours"), but not a bare
-year its bounds don't carry: "at 2000" is left over (in a question over 2,000 characters, it
-answers only a year after "in", "for", "during" or "year"). It never consumes a time of day,
+itself, so with no hour beside it the question reads as its day. A window in the draft
+(one you pass in `query.time`, or plan's own) consumes the date phrases plan resolved only if it
+agrees with them: each bound it carries, read at the day, is the earliest start or the latest end
+of the windows the question states ("15 March 2017" against 12:00 to 13:00 on that day agrees;
+against 1 June 2018, or against the whole of 2017, does not). If it disagrees, the draft is
+`low_confidence` (`PLAN_INTENT_COVERAGE_GAP`, gap `time_window_unrealized`) and the phrase's
+numbers are left over. A window you pass in `query.time` is not held to a lone "previous
+month" when the draft carries a `prior_period` expression: that phrase is the comparison's offset,
+not a window. The window also
+answers a phrase plan could not resolve ("last 24 hours", "before 2017"). A bare year is never
+consumed because a window's bounds hold it, its exclusive end year included: "revenue 2018" or
+"at 2000" is left over whatever the window says, and a year is part of a phrase plan could not
+resolve only when it follows a bound or qualifier word ("before", "until", "of"). In a question over 2,000
+characters plan reads no window, so only the 20xx years after "in", "for", "during" or "year" are
+checked, as calendar years, and only when they name one year: a count ("in 2000 or more") is not
+one, and two different years ("in 2017 ... for 2000 customers") cannot be told from a count, so
+no window is read and both years are left over. It never consumes a time of day,
 an hour or a zone, whatever hours its bounds carry: a question that states "12:00 to 13:00" or
 "noon" is refused (`PLAN_UNMATCHED_TERMS`) even against a window with those hours, so write the
 question without the hours and let the window carry them. To ask for an hour range, pass it in `query.time` yourself, as
