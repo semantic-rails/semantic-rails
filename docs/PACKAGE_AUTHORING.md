@@ -1372,8 +1372,9 @@ Three guard rails back this up at query time:
   one that continues past the target, or one that starts at the target, is still
   refused. A pinned role reads its key through the pinned relationship's join,
   like any other column of the airport, so a leg whose code matches no airport
-  row is not counted; a package with a single role and no `path_preferences`
-  row for the pair reads the key from the leg's own column and keeps that leg.
+  row groups under a NULL key (a lookup read, above); a package with a single role
+  and no `path_preferences` row for the pair reads the key from the leg's own column
+  and groups that leg under its code.
   A `path_preferences` row for the pair, in either direction, sends every read of
   the key, a filter on it and a metric predicate through the pinned route, so the
   key and the airport's other columns always come from the same airport. `path_preference` is a non-negative integer
