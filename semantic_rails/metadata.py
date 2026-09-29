@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, fields
 from typing import Any
 
@@ -1988,6 +1988,35 @@ def _dimension_builder_score(
     return score, list(dict.fromkeys(reasons))
 
 
+DISCOVER_RANKED_KINDS: frozenset[str] = frozenset(
+    {"measure", "metric", "segment", "dimension", "entity", "dimension_value"}
+)
+
+
+def checked_discover_kinds(kinds: Sequence[str] | None, valid: frozenset[str]) -> list[str]:
+    """Return ``kinds`` unchanged, or refuse when any value is not in ``valid``.
+
+    A ``kinds`` filter that names no real kind would empty every bucket, and an
+    empty result reads as "nothing matches". Refusing keeps that text for
+    searches that really ran over the requested kinds.
+    """
+
+    requested = list(kinds or [])
+    unknown = [kind for kind in requested if kind not in valid]
+    if unknown:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            f"Unknown kinds value(s) {unknown}; valid kinds: {sorted(valid)}.",
+            details={
+                "field": "kinds",
+                "argument_type": "list",
+                "unknown_kinds": unknown,
+                "valid_kinds": sorted(valid),
+            },
+        )
+    return requested
+
+
 @runtime_request_scope
 def discover_payload(
     runtime: Runtime,
@@ -2000,6 +2029,7 @@ def discover_payload(
     limit: int = 10,
     enforce_scope: bool = False,
 ) -> dict[str, Any]:
+    kinds = checked_discover_kinds(kinds, DISCOVER_RANKED_KINDS)
     config = runtime._config
     search_index = runtime._get_catalog_search_index()
     search_terms = SearchTerms.from_text(terms)
@@ -2066,7 +2096,6 @@ def discover_payload(
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
     stage = _infer_stage(partial_query, stage, terms)
-    kinds = list(kinds or [])
     maps = _config_maps(config)
     records: list[dict[str, Any]] = []
 
@@ -2553,7 +2582,11 @@ def discover_payload(
     if no_matches:
         payload["no_matches"] = {
             "terms": terms,
-            "reason": "no candidate matched the supplied search terms",
+            "reason": (
+                f"no candidate of kind {sorted(set(kinds))} matched the supplied search terms"
+                if kinds
+                else "no candidate matched the supplied search terms"
+            ),
             "recovery_hint": "Try simpler or more specific terms, or browse the catalog of available objects.",
         }
     # Empty-`terms` warning. The blind-agent benchmark caught a probe

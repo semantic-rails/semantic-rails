@@ -28,8 +28,10 @@ from .catalog_service import resolve_catalog
 from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
 from .errors import SemanticLayerError
 from .metadata import (
+    DISCOVER_RANKED_KINDS,
     build_options_payload,
     catalog_payload,
+    checked_discover_kinds,
     discover_payload,
     inspect_payload,
     valid_values_payload,
@@ -42,6 +44,7 @@ from .request_context import (
 )
 from .request_payload import (
     build_query_payload,
+    parse_string_list,
     without_policy_context,
 )
 from .request_payload import (
@@ -1479,15 +1482,10 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _coerce_kinds(value: Any) -> list[str]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, str):
-        return [part.strip() for part in value.split(",") if part.strip()]
-    if isinstance(value, (list, tuple, set)):
-        return [str(part).strip() for part in value if str(part).strip()]
-    raise _argument_error(
-        "MCP argument 'kinds' must be a string or array of strings.", field="kinds", value=value
-    )
+    try:
+        return parse_string_list(value)
+    except ValueError as exc:
+        raise _argument_error(f"MCP argument 'kinds' {exc}.", field="kinds", value=value) from exc
 
 
 def _coerce_int(value: Any, default: int, *, field: str, minimum: int | None = None) -> int:
@@ -1987,10 +1985,12 @@ class SemanticLayerMCPAdapter:
         def _build(args: dict[str, Any]) -> dict[str, Any]:
             raw_terms = args.get("terms", "")
             terms_warnings: list[dict[str, Any]] = []
+            filter_dropped = False
             # Catch the most common typo (`term` singular) so the call
             # doesn't silently behave like an empty-terms browse.
             for typo, canonical in (("term", "terms"), ("kind", "kinds")):
                 if typo in args and canonical not in args:
+                    filter_dropped = filter_dropped or canonical == "kinds"
                     terms_warnings.append(
                         {
                             "code": "DISCOVER_UNKNOWN_ARG",
@@ -2002,28 +2002,6 @@ class SemanticLayerMCPAdapter:
                             "details": {"received": typo, "expected": canonical},
                         }
                     )
-            # Warn on unknown `kinds` values rather than silently
-            # ignoring them. The catalog filter accepts these eight
-            # object kinds — anything else should surface so the agent
-            # knows the filter was effectively a no-op.
-            requested_kinds = _coerce_kinds(args.get("kinds", []))
-            unknown_kinds = [k for k in requested_kinds if k not in _CATALOG_KIND_FILTERS]
-            if unknown_kinds:
-                terms_warnings.append(
-                    {
-                        "code": "DISCOVER_UNKNOWN_KIND",
-                        "severity": "warning",
-                        "message": (
-                            f"Unknown kinds filter value(s) {unknown_kinds}; "
-                            f"valid kinds: {sorted(_CATALOG_KIND_FILTERS)}. "
-                            "Unknown values were ignored."
-                        ),
-                        "details": {
-                            "unknown_kinds": unknown_kinds,
-                            "valid_kinds": sorted(_CATALOG_KIND_FILTERS),
-                        },
-                    }
-                )
             if raw_terms is None or isinstance(raw_terms, str):
                 terms_str = str(raw_terms or "")
             elif isinstance(raw_terms, (bool, int, float)):
@@ -2045,6 +2023,13 @@ class SemanticLayerMCPAdapter:
                     field="terms",
                     value=raw_terms,
                 )
+            # A kinds filter that is malformed or names no real kind is refused,
+            # never dropped: an empty result must mean the search ran over the
+            # requested kinds and found nothing.
+            requested_kinds = checked_discover_kinds(
+                _coerce_kinds(args.get("kinds", [])),
+                DISCOVER_RANKED_KINDS if terms_str.strip() else _CATALOG_KIND_FILTERS,
+            )
             if not terms_str.strip():
                 # Empty terms list the ids instead of ranking, a page per kind.
                 catalog = resolve_catalog(
@@ -2053,7 +2038,7 @@ class SemanticLayerMCPAdapter:
                     verbosity="summary",
                     policy_context=_policy_context_payload(args),
                 )
-                kinds = set(requested_kinds) & _CATALOG_KIND_FILTERS
+                kinds = set(requested_kinds)
                 size = _coerce_int(args.get("limit"), _DISCOVER_ID_PAGE, field="limit", minimum=1)
                 start = _coerce_int(args.get("offset"), 0, field="offset", minimum=0)
                 page: dict[str, Any] = {}
@@ -2083,7 +2068,7 @@ class SemanticLayerMCPAdapter:
             payload = discover_payload(
                 self.runtime,
                 terms=terms_str,
-                kinds=_coerce_kinds(args.get("kinds", [])),
+                kinds=requested_kinds,
                 partial_query=_partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
@@ -2114,16 +2099,24 @@ class SemanticLayerMCPAdapter:
                             existing_hints.append(
                                 {"kind": f"discover_{nested_key}", "message": nested_hint}
                             )
-                # And add a browse hint so the agent has a concrete
-                # next step regardless of why nothing matched.
+                # And add a browse hint so the agent has a concrete next step.
+                # "No semantic objects matched" is only true for a search that
+                # ran as requested; a misspelled `kind` was never applied.
+                if filter_dropped:
+                    browse_message = (
+                        f"Nothing ranked for '{terms_str}', and the 'kind' argument was "
+                        "ignored (the argument is 'kinds'), so the requested kind filter "
+                        "was not applied. Retry with 'kinds', or call discover with empty "
+                        "terms to list every id."
+                    )
+                else:
+                    of_kinds = f" of kind {sorted(set(requested_kinds))}" if requested_kinds else ""
+                    browse_message = (
+                        f"No semantic objects{of_kinds} matched '{terms_str}'. "
+                        "Call discover with empty terms to list every id."
+                    )
                 existing_hints.append(
-                    {
-                        "kind": "browse_catalog_or_capabilities",
-                        "message": (
-                            f"No semantic objects matched '{terms_str}'. "
-                            "Call discover with empty terms to list every id."
-                        ),
-                    }
+                    {"kind": "browse_catalog_or_capabilities", "message": browse_message}
                 )
                 payload["recovery_hints"] = existing_hints
             return payload

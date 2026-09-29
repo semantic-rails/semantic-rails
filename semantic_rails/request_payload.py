@@ -7,6 +7,7 @@ new transport cannot accidentally preserve a nested caller claim.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -29,6 +30,35 @@ def coerce_bool(value: Any, default: bool = False) -> bool:
         if lowered in {"0", "false", "no", "off"}:
             return False
     return bool(value)
+
+
+def parse_string_list(value: Any) -> list[str]:
+    """Read a list-of-strings argument however a client encoded it.
+
+    Accepts an array, a comma-separated string, or a JSON-encoded array in a
+    string (some agents send ``'["metric"]'``). Anything else raises
+    ``ValueError`` so no transport turns a malformed list into an empty filter.
+    """
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("[", "{")):
+            try:
+                decoded = json.loads(text)
+            except ValueError as exc:
+                raise ValueError("looks like JSON but does not parse") from exc
+            if not isinstance(decoded, list):
+                raise ValueError("must be an array of strings")
+            value = decoded
+        else:
+            return [part.strip() for part in text.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        if not all(isinstance(part, str) for part in value):
+            raise ValueError("must contain only strings")
+        return [part.strip() for part in value if part.strip()]
+    raise ValueError("must be a string or array of strings")
 
 
 def without_policy_context(payload: Mapping[str, Any]) -> dict[str, Any]:
