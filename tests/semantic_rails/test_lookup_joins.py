@@ -67,7 +67,8 @@ INSERT INTO checkins VALUES
   (5, 'P3', 'L3', TIMESTAMP '2026-02-12 06:00:00'),
   (6, 'P9', 'L3', TIMESTAMP '2026-02-12 06:00:00'),
   (7, 'P5', 'L9', TIMESTAMP '2026-02-20 06:00:00'),
-  (8, 'P1', 'L2', TIMESTAMP '2026-01-20 06:00:00')
+  (8, 'P1', 'L2', TIMESTAMP '2026-01-20 06:00:00');
+CREATE TABLE meals (meal_id INTEGER, boarding_id INTEGER, served_at TIMESTAMP)
 """
 
 PACKAGE = """
@@ -91,6 +92,7 @@ graph:
     crew_assignment: {label: Crew assignment, key: [leg_id, person_id], model: crew_roster}
     boarding: {label: Boarding, key: [boarding_id], model: boardings}
     checkin: {label: Check-in, key: [checkin_id], model: checkins}
+    meal: {label: Meal, key: [meal_id], model: meals}
 """
 
 MODELS = {
@@ -156,6 +158,18 @@ MODELS = {
             checkin_count: {label: Check-ins, kind: entity_count, entity_key: checkin_id,
               accumulation: {kind: event}}
         """,
+    "meals": """
+        model:
+          id: meals
+          relation: meals
+          entities: {meal: {}, boarding: {}}
+          times:
+            served_at: {label: Served at, column: served_at, kind: timestamp,
+              class: event_time, supported_grains: [day, month], default: true}
+          measures:
+            meal_count: {label: Meals, kind: entity_count, entity_key: meal_id,
+              accumulation: {kind: event}}
+        """,
 }
 
 ROLE = "dimension.crew_crew_assignment_crew_role"
@@ -218,6 +232,32 @@ INSERT INTO boardings VALUES
 def null_city_runtime(tmp_path_factory: pytest.TempPathFactory):
     runtime = Runtime.from_path(
         str(_write_package(tmp_path_factory.mktemp("null_city"), NULL_CITY_SEED))
+    )
+    yield runtime
+    runtime.close()
+
+
+# Person P8 has two boardings with no leg and one on a leg with no record (L8). A meal on the
+# last is two hops from the leg, so it reads NULL for its leg, yet the set of people with two
+# boardings holds P8 under NULL (two boardings) and under L8 (one). P10 has two boardings on
+# L1, with a meal on one.
+ORPHAN_LEG_SEED = """;
+INSERT INTO people VALUES ('P8', 'Hal', FALSE), ('P10', 'Ivy', FALSE);
+INSERT INTO boardings VALUES
+  (20, NULL, 'P8', TIMESTAMP '2026-01-05 08:00:00', 10),
+  (21, NULL, 'P8', TIMESTAMP '2026-01-05 08:10:00', 10),
+  (22, 'L8', 'P8', TIMESTAMP '2026-01-05 08:20:00', 10),
+  (30, 'L1', 'P10', TIMESTAMP '2026-01-06 08:00:00', 10),
+  (31, 'L1', 'P10', TIMESTAMP '2026-01-06 08:10:00', 10);
+INSERT INTO meals VALUES (1, 22, TIMESTAMP '2026-01-05 09:00:00'),
+  (2, 30, TIMESTAMP '2026-01-06 09:00:00')
+"""
+
+
+@pytest.fixture(scope="module")
+def orphan_leg_runtime(tmp_path_factory: pytest.TempPathFactory):
+    runtime = Runtime.from_path(
+        str(_write_package(tmp_path_factory.mktemp("orphan_leg"), ORPHAN_LEG_SEED))
     )
     yield runtime
     runtime.close()
@@ -538,3 +578,35 @@ def test_an_entity_set_ratio_does_not_qualify_rows_without_the_predicate_entity(
     months = {row[BOARDED_MONTH].month: row["value"] for row in rows}
     # January: legs L1 (4) and L2 (3), all qualify. February: L3 (3) qualifies, L9 (1) doesn't.
     assert months == {1: pytest.approx(7 / 7), 2: pytest.approx(3 / 4)}
+
+
+def test_a_metric_filter_context_read_through_a_lookup_does_not_pair_with_a_null_group(
+    orphan_leg_runtime,
+):
+    """Meals per leg, for people with exactly two boardings on that leg. The meal is two hops
+    from the leg, so its leg is read through the leg table. Meal 1 is on boarding 22 (leg L8, no
+    record): it reads NULL there, and must not pair with P8's two boardings with no leg, which
+    the filter's set holds under NULL. Only P10's meal on L1 qualifies."""
+    query = {
+        "version": 1,
+        "select": [{"as": "value", "expression": {"measure": "measure.crew.meal_count"}}],
+        "group_by": [LEG],
+        "metric_filters": [
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": "entity.crew_person",
+                    "scope_mode": "contextual",
+                    "input": {"measure": "measure.crew.boarding_count"},
+                    "op": "=",
+                    "value": 2,
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    }
+
+    rows = orphan_leg_runtime.query(query)["rows"]
+
+    assert {row[LEG]: row["value"] for row in rows} == {"L1": 1}

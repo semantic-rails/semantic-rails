@@ -1805,19 +1805,25 @@ def _predicate_ctes_and_join(
             strict=True,
         ):
             dim = _dimension_index(config)[dim_id]
-            # The set reads the key from the measure's own foreign key, so a row with an
-            # unknown or NULL context entity is in it: match it null-safely on that same
-            # column, as reading the looked-up table's key would drop the row.
-            context_key_expr = _direct_entity_key_source_expr(
+            set_key = SqlIdentifier(parts=[set_name, dim_id])
+            direct_key_expr = _direct_entity_key_source_expr(
                 measure_plan.source_entity, entity_id, _key_col, config
-            ) or _column_ref(_entity_index(config)[dim.entity].table, dim.column)
-            join_condition = SqlBinary(
-                join_condition,
-                "AND",
-                dialect_for_warehouse(config.package.warehouse).null_safe_eq(
-                    context_key_expr, SqlIdentifier(parts=[set_name, dim_id])
-                ),
             )
+            if direct_key_expr is not None:
+                # The set reads the key from the measure's own foreign key, so a row with an
+                # unknown or NULL context entity is in it: match it null-safely on that same
+                # column, as reading the looked-up table's key would drop the row.
+                condition = dialect_for_warehouse(config.package.warehouse).null_safe_eq(
+                    direct_key_expr, set_key
+                )
+            else:
+                # Read through the looked-up table, an unmatched row's key is NULL, but the set
+                # holds that row under its own foreign key: NULL must not pair with the set's
+                # NULL group, so the row stays out, as with an inner join.
+                condition = SqlBinary(
+                    _column_ref(_entity_index(config)[dim.entity].table, dim.column), "=", set_key
+                )
+            join_condition = SqlBinary(join_condition, "AND", condition)
     if scope["time_spec"] is not None and scope["time_alias"]:
         query = normalize_query(plan.query)
         outer_temporal_role = _leaf_time_role(measure_plan.bound_measure, query, config)

@@ -401,7 +401,9 @@ Important planner behaviors:
   hop on a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join
   columns read a type default, not NULL). Conversions and qualified entity sets, which pair
   rows with null-safe equality, leave out rows whose entity key, or a looked-up conversion
-  property, is NULL
+  property, is NULL. A metric filter's context entity that the outer measure reaches only
+  through a lookup is matched with plain equality, so a row whose lookup found nothing is
+  left out of a metric-filtered result, not paired with the filter's NULL group
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
