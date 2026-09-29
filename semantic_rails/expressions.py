@@ -961,12 +961,6 @@ def _aggregate_filter(raw: Any) -> dict[str, Any]:
     )
 
 
-def expression_valid_keys(kind: str) -> frozenset[str] | None:
-    """Fields the parser accepts on an expression of ``kind``; ``None`` for an unknown kind."""
-    valid = _VALID_KEYS_BY_KIND.get(kind)
-    return None if valid is None else frozenset(valid)
-
-
 def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context: str) -> None:
     """Raise ``INVALID_EXPRESSION_KEY`` when an expression dict carries a
     top-level key that the kind's dispatch arm does not recognise. This

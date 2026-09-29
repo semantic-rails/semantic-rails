@@ -1,13 +1,17 @@
-"""A metric recipe keeps every part its author wrote, or refuses to load.
+"""A metric keeps every part its author wrote, or refuses to load.
 
 The loader used to rebuild an authored expression from the fields it knew and drop
 the rest, so a first-week metric loaded as a bare measure and returned a lifetime
-value. These tests pin the two halves: parts survive into the loaded expression,
-and a part the loader cannot keep is a load error that names the metric and the part.
+value, and a rolling metric written with ``partition_by`` lost it. Now the authored
+expression goes to the expression parser unchanged, and the direct fields a metric
+kind takes are all carried into it. These tests pin both halves: parts survive into
+the loaded metric (and compute what they say), and a part the metric cannot keep is
+a load error that names the metric and the part.
 """
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,16 +20,19 @@ import pytest
 import yaml
 
 from semantic_rails import config as config_module
-from semantic_rails.config import _convert_recipe_expr, load_package_config
+from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.expressions import ScopedAggregateExpr
+from semantic_rails.expressions import OffsetWindowExpr, ScopedAggregateExpr
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
 REVENUE = "measure.jaffle.revenue_usd"
 ORDERS = "measure.jaffle.order_count"
 FIRST_ORDER_AT = "temporal_role.jaffle_customer_first_order_at"
+ORDER_TIME = "temporal_role.jaffle_order_time"
 LARGE_ORDER = "dimension.jaffle_order_is_large_order"
+PRODUCT_TYPE = "dimension.jaffle_item_product_type"
+WEEK = {"unit": "day", "value": 7}
 
 FIRST_90_DAYS = {
     "kind": "scoped_aggregate",
@@ -40,25 +47,43 @@ LARGE_ORDERS = {
     "aggregation": "count_distinct",
     "where": [{"field": LARGE_ORDER, "op": "=", "value": True}],
 }
+# The package-relative spelling every packaged metric uses: a short measure key and a
+# short dimension key on the measure's own model.
+LARGE_ORDERS_SHORT_KEYS = {
+    "kind": "scoped_aggregate",
+    "measure": "order_count",
+    "aggregation": "count_distinct",
+    "where": [{"field": "is_large_order", "op": "=", "value": True}],
+}
 
 
-def _package_with_metrics(tmp_path: Path, expressions: dict[str, dict[str, Any]]) -> Path:
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
-    metrics = {
+def _package_with_metrics(
+    tmp_path: Path, metrics: dict[str, dict[str, Any]], *, preseed_db: bool = False
+) -> Path:
+    """A jaffle_shop copy with one probe metric per entry (its authored fields)."""
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=preseed_db)
+    probes = {
         f"probe.{key}": {
             "as": f"metric.probe.{key}",
             "label": key,
             "description": key,
-            "kind": "derived",
-            "value_type": "count",
-            "temporal_role": "temporal_role.jaffle_order_time",
-            "expression": expression,
+            "value_type": "number",
+            "temporal_role": ORDER_TIME,
+            **fields,
         }
-        for key, expression in expressions.items()
+        for key, fields in metrics.items()
     }
     path = package_dir / "metrics" / "extensions" / "probe_metrics.yml"
-    path.write_text(yaml.safe_dump({"metrics": metrics}), encoding="utf-8")
+    path.write_text(yaml.safe_dump({"metrics": probes}), encoding="utf-8")
     return package_dir
+
+
+def _recipe_package(tmp_path: Path, expressions: dict[str, dict[str, Any]]) -> Path:
+    return _package_with_metrics(
+        tmp_path,
+        {key: {"kind": "derived", "expression": expr} for key, expr in expressions.items()},
+        preseed_db=True,
+    )
 
 
 def _runtime(monkeypatch: pytest.MonkeyPatch, package_dir: Path) -> Runtime:
@@ -68,15 +93,42 @@ def _runtime(monkeypatch: pytest.MonkeyPatch, package_dir: Path) -> Runtime:
     return Runtime("jaffle_shop")
 
 
-def _metric_query(key: str) -> dict[str, Any]:
-    return {
+def _metric_query(key: str, *, by_product_type: bool = False) -> dict[str, Any]:
+    query: dict[str, Any] = {
         "version": 1,
         "select": [{"as": "value", "expression": {"metric": f"metric.probe.{key}"}}],
     }
+    if by_product_type:
+        query["time"] = {"temporal_role": ORDER_TIME, "grain": "day"}
+        query["group_by"] = [PRODUCT_TYPE]
+    return query
+
+
+def _gold(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
+    connection = duckdb.connect(runtime.db_path, read_only=True)
+    try:
+        return connection.execute(sql).fetchall()
+    finally:
+        connection.close()
+
+
+def _load_error(tmp_path: Path, metrics: dict[str, dict[str, Any]]) -> SemanticLayerError:
+    with pytest.raises(SemanticLayerError) as excinfo:
+        load_package_config(str(_package_with_metrics(tmp_path, metrics)))
+    return excinfo.value
+
+
+def _probe(tmp_path: Path, key: str, fields: dict[str, Any]) -> Any:
+    package = _package_with_metrics(tmp_path, {key: fields})
+    recipes = {m.id: m.expression for m in load_package_config(str(package)).metric_recipes}
+    return recipes[f"metric.probe.{key}"]
+
+
+# --- expression: blocks -------------------------------------------------------------
 
 
 def test_scoped_aggregate_recipe_keeps_anchor_window_and_where(tmp_path: Path) -> None:
-    package_dir = _package_with_metrics(
+    package_dir = _recipe_package(
         tmp_path, {"first_90_days": FIRST_90_DAYS, "large_orders": LARGE_ORDERS}
     )
     recipes = {m.id: m.expression for m in load_package_config(str(package_dir)).metric_recipes}
@@ -93,34 +145,60 @@ def test_scoped_aggregate_recipe_keeps_anchor_window_and_where(tmp_path: Path) -
 def test_anchored_window_metric_refuses_instead_of_computing_lifetime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime = _runtime(
-        monkeypatch, _package_with_metrics(tmp_path, {"first_90_days": FIRST_90_DAYS})
-    )
+    runtime = _runtime(monkeypatch, _recipe_package(tmp_path, {"first_90_days": FIRST_90_DAYS}))
     try:
         with pytest.raises(SemanticLayerError) as excinfo:
             runtime.query(_metric_query("first_90_days"))
+        envelope = runtime.validate(_metric_query("first_90_days"))
     finally:
         runtime.close()
+    # The lowering refusal itself, not an undefined anchor role.
     assert excinfo.value.code == "INVALID_ANCHOR_ROLE"
+    assert excinfo.value.details["feature_status"] == "ir_contract_only"
+    error = envelope["errors"][0]
+    assert error["details"]["feature_status"] == "ir_contract_only"
+    hints = {hint["kind"]: hint for hint in error["recovery_hints"]}
+    assert "use_authored_windowed_measure" not in hints
+    assert "column" in hints["use_anchor_offset_column"]["message"]
+    assert "not a workaround" in hints["use_anchor_offset_column"]["message"]
 
 
 def test_filtered_scoped_aggregate_metric_matches_independent_sql(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime = _runtime(monkeypatch, _package_with_metrics(tmp_path, {"large_orders": LARGE_ORDERS}))
+    runtime = _runtime(monkeypatch, _recipe_package(tmp_path, {"large_orders": LARGE_ORDERS}))
     try:
         result = runtime.query(_metric_query("large_orders"))
-        connection = duckdb.connect(runtime.db_path, read_only=True)
-        try:
-            gold = connection.execute(
-                "SELECT COUNT(DISTINCT order_id) FROM jaffle_order WHERE is_large_order"
-            ).fetchone()
-        finally:
-            connection.close()
+        [(large,)] = _gold(
+            runtime, "SELECT COUNT(DISTINCT order_id) FROM jaffle_order WHERE is_large_order"
+        )
+        [(everything,)] = _gold(runtime, "SELECT COUNT(DISTINCT order_id) FROM jaffle_order")
     finally:
         runtime.close()
-    assert gold is not None and gold[0] > 0
-    assert result["rows"] == [{"value": gold[0]}]
+    assert 0 < large < everything
+    assert result["rows"] == [{"value": large}]
+
+
+def test_scoped_aggregate_recipe_resolves_short_measure_and_dimension_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_dir = _recipe_package(tmp_path, {"large_orders": LARGE_ORDERS_SHORT_KEYS})
+    recipe = {m.id: m.expression for m in load_package_config(str(package_dir)).metric_recipes}[
+        "metric.probe.large_orders"
+    ]
+    assert isinstance(recipe, ScopedAggregateExpr)
+    assert recipe.measure == ORDERS
+    assert recipe.where == [{"field": LARGE_ORDER, "op": "=", "value": True}]
+
+    runtime = _runtime(monkeypatch, package_dir)
+    try:
+        result = runtime.query(_metric_query("large_orders"))
+        [(large,)] = _gold(
+            runtime, "SELECT COUNT(DISTINCT order_id) FROM jaffle_order WHERE is_large_order"
+        )
+    finally:
+        runtime.close()
+    assert result["rows"] == [{"value": large}]
 
 
 @pytest.mark.parametrize(
@@ -128,37 +206,37 @@ def test_filtered_scoped_aggregate_metric_matches_independent_sql(
     [
         pytest.param(
             {"kind": "windowed_total", "measure": REVENUE},
-            ["expression", "unknown expression kind 'windowed_total'"],
+            ["Unsupported expression kind"],
             id="unknown-kind",
         ),
         pytest.param(
             {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum", "where": []},
-            ["expression", "['where']", "'aggregate'"],
+            ["kind='aggregate'", "['where']"],
             id="aggregate-with-where",
         ),
         pytest.param(
             {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum", "anchor": {}},
-            ["['anchor']"],
+            ["kind='aggregate'", "['anchor']"],
             id="aggregate-with-anchor",
         ),
         pytest.param(
             {"measure": REVENUE, "aggregation": "sum", "anchor": {"temporal_role": "x"}},
-            ["['anchor']", "'shorthand'"],
+            ["kind='measure'", "['anchor']"],
             id="bare-measure-with-anchor",
         ),
         pytest.param(
             {"kind": "metric", "metric": "metric.jaffle.x", "window": {"unit": "day"}},
-            ["['window']", "'metric'"],
+            ["kind='metric'", "['window']"],
             id="metric-ref-with-window",
         ),
         pytest.param(
             {"kind": "scoped_aggregate", "measure": REVENUE, "wehre": []},
-            ["['wehre']", "'scoped_aggregate'"],
+            ["kind='scoped_aggregate'", "['wehre']"],
             id="scoped-aggregate-typo",
         ),
         pytest.param(
             {"kind": "scoped_aggregate", "aggregation": "sum"},
-            ["requires 'measure'"],
+            ["scoped_aggregate expressions require 'measure'"],
             id="scoped-aggregate-without-measure",
         ),
         pytest.param(
@@ -168,43 +246,264 @@ def test_filtered_scoped_aggregate_metric_matches_independent_sql(
                 "left": {"kind": "metric", "metric": "metric.jaffle.x"},
                 "right": {"kind": "sliding_total", "measure": REVENUE},
             },
-            ["expression.right", "unknown expression kind 'sliding_total'"],
+            ["Unsupported expression kind"],
             id="nested-unknown-kind",
         ),
         pytest.param(
             {"kind": "binary", "op": "divide", "left": {"kind": "metric", "metric": "m"}},
-            ["expression", "requires 'right'"],
+            ["expression must be an object"],
             id="missing-operand",
+        ),
+        pytest.param(
+            {
+                "kind": "rolling",
+                "input": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"},
+                "window": 7,
+            },
+            ["Rolling expressions require window as an object"],
+            id="scalar-window",
+        ),
+        pytest.param(
+            {
+                "kind": "prior_period",
+                "input": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"},
+                "offset": -1,
+            },
+            ["Prior-period (IR shape) expressions require offset as an object"],
+            id="scalar-offset",
         ),
     ],
 )
 def test_unsupported_expression_parts_fail_the_load_naming_metric_and_part(
     tmp_path: Path, expression: dict[str, Any], expected: list[str]
 ) -> None:
-    package_dir = _package_with_metrics(tmp_path, {"broken": expression})
-    with pytest.raises(SemanticLayerError) as excinfo:
-        load_package_config(str(package_dir))
-    assert excinfo.value.code == "INVALID_CONFIG"
-    message = str(excinfo.value)
+    error = _load_error(tmp_path, {"broken": {"kind": "derived", "expression": expression}})
+    assert error.code.startswith("INVALID_EXPRESSION"), error.code
+    message = str(error)
     assert "metric 'probe.broken'" in message
     for fragment in expected:
         assert fragment in message, message
 
 
-def test_conversion_keeps_fields_the_parser_accepts() -> None:
-    cumulative = _convert_recipe_expr(
+def test_prior_period_shorthand_loads_as_the_parser_reads_it(tmp_path: Path) -> None:
+    expression = _probe(
+        tmp_path,
+        "last_month",
         {
-            "kind": "cumulative",
-            "input": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"},
-            "window_scope": "query",
-        }
+            "kind": "derived",
+            "expression": {
+                "kind": "prior_period",
+                "measure": REVENUE,
+                "offset": -1,
+                "grain": "month",
+            },
+        },
     )
-    assert cumulative["window_scope"] == "query"
-    measure = _convert_recipe_expr(
-        {
-            "measure": REVENUE,
-            "aggregation": "sum",
-            "temporal_role": "temporal_role.jaffle_order_time",
-        }
+    assert isinstance(expression, OffsetWindowExpr)
+    assert (expression.kind, expression.unit, expression.value) == ("prior_period", "month", 1)
+
+
+# --- direct fields ------------------------------------------------------------------
+
+
+def _by_product_type_gold(runtime: Runtime, window_sql: str) -> dict[tuple[str, date], float]:
+    """Independent SQL: revenue per product type and day, then the window over it."""
+    rows = _gold(
+        runtime,
+        f"""
+        WITH daily AS (
+            SELECT i.product_type AS product_type,
+                   CAST(o.ordered_at AS DATE) AS day,
+                   SUM(i.item_revenue_cents) / 100.0 AS revenue
+            FROM jaffle_item i JOIN jaffle_order o ON o.order_id = i.order_id
+            GROUP BY 1, 2
+        )
+        SELECT product_type, day, {window_sql} FROM daily
+        """,
     )
-    assert measure["temporal_role"] == "temporal_role.jaffle_order_time"
+    return {(product_type, day): float(value) for product_type, day, value in rows}
+
+
+def _by_product_type_result(runtime: Runtime, key: str) -> dict[tuple[str, date], float]:
+    out: dict[tuple[str, date], float] = {}
+    for row in runtime.query(_metric_query(key, by_product_type=True))["rows"]:
+        day = row[f"{ORDER_TIME}__day"]
+        day = day.date() if isinstance(day, datetime) else day
+        out[(row[PRODUCT_TYPE], day)] = float(row["value"])
+    return out
+
+
+PARTITIONED = [
+    pytest.param(
+        {"kind": "rolling", "window": WEEK, "partition_by": [PRODUCT_TYPE]},
+        "SUM(revenue) OVER (PARTITION BY product_type ORDER BY day "
+        "ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)",
+        id="rolling-partition_by",
+    ),
+    pytest.param(
+        {"kind": "period_to_date", "period": "month", "partition_by": [PRODUCT_TYPE]},
+        "SUM(revenue) OVER (PARTITION BY product_type, DATE_TRUNC('month', day) ORDER BY day)",
+        id="period_to_date-partition_by",
+    ),
+    pytest.param(
+        {"kind": "cumulative", "partition_by": [PRODUCT_TYPE]},
+        "SUM(revenue) OVER (PARTITION BY product_type ORDER BY day)",
+        id="cumulative-partition_by",
+    ),
+]
+
+
+@pytest.mark.parametrize(("fields", "window_sql"), PARTITIONED)
+def test_direct_field_partition_by_computes_the_partitioned_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fields: dict[str, Any], window_sql: str
+) -> None:
+    metric = {"measure": "item_revenue_usd", "aggregation": "sum", **fields}
+    runtime = _runtime(
+        monkeypatch, _package_with_metrics(tmp_path, {"windowed": metric}, preseed_db=True)
+    )
+    try:
+        gold = _by_product_type_gold(runtime, window_sql)
+        result = _by_product_type_result(runtime, "windowed")
+        with pytest.raises(SemanticLayerError):
+            # A partition the query does not group by is refused, never answered globally.
+            runtime.query(
+                {**_metric_query("windowed"), "time": {"temporal_role": ORDER_TIME, "grain": "day"}}
+            )
+    finally:
+        runtime.close()
+    assert len(gold) > 100
+    assert result.keys() == gold.keys()
+    assert all(result[key] == pytest.approx(gold[key]) for key in gold)
+
+
+@pytest.mark.parametrize(
+    ("fields", "loaded"),
+    [
+        pytest.param(
+            {"kind": "cumulative", "window_scope": "query_period"},
+            {"kind": "cumulative", "window_scope": "query_period"},
+            id="cumulative-window_scope",
+        ),
+        pytest.param(
+            {"kind": "rolling", "window": WEEK, "partition_by": [PRODUCT_TYPE]},
+            {"kind": "rolling", "partition_by": [PRODUCT_TYPE], "unit": "day", "value": 7},
+            id="rolling-partition_by",
+        ),
+        pytest.param(
+            {"kind": "period_to_date", "period": "month", "partition_by": [PRODUCT_TYPE]},
+            {"kind": "period_to_date", "partition_by": [PRODUCT_TYPE], "period": "month"},
+            id="period_to_date-partition_by",
+        ),
+        pytest.param(
+            {"kind": "cumulative", "partition_by": [PRODUCT_TYPE]},
+            {"kind": "cumulative", "partition_by": [PRODUCT_TYPE]},
+            id="cumulative-partition_by",
+        ),
+        pytest.param(
+            {"kind": "prior_period", "offset": {"unit": "day", "value": 7}},
+            {"kind": "prior_period", "unit": "day", "value": 7},
+            id="prior_period-offset",
+        ),
+    ],
+)
+def test_direct_fields_reach_the_loaded_expression(
+    tmp_path: Path, fields: dict[str, Any], loaded: dict[str, Any]
+) -> None:
+    expression = _probe(
+        tmp_path, "windowed", {"measure": "item_revenue_usd", "aggregation": "sum", **fields}
+    )
+    assert isinstance(expression, OffsetWindowExpr)
+    assert {name: getattr(expression, name) for name in loaded} == loaded
+
+
+@pytest.mark.parametrize(
+    ("fields", "field"),
+    [
+        pytest.param({"kind": "cumulative", "window": WEEK}, "window", id="cumulative-window"),
+        pytest.param({"kind": "cumulative", "order_by": "x"}, "order_by", id="cumulative-order_by"),
+        pytest.param(
+            {"kind": "prior_period", "offset": WEEK, "partition_by": [PRODUCT_TYPE]},
+            "partition_by",
+            id="prior_period-partition_by",
+        ),
+        pytest.param(
+            {"kind": "period_to_date", "period": "month", "window": WEEK},
+            "window",
+            id="period_to_date-window",
+        ),
+        pytest.param(
+            {"kind": "rolling", "window": WEEK, "period": "month"}, "period", id="rolling-period"
+        ),
+        pytest.param(
+            {"kind": "aggregate", "partition_by": [PRODUCT_TYPE]},
+            "partition_by",
+            id="aggregate-partition_by",
+        ),
+        pytest.param(
+            {"kind": "semi_additive", "offset": WEEK}, "offset", id="semi_additive-offset"
+        ),
+        pytest.param(
+            {
+                "kind": "ratio",
+                "numerator": "order_count",
+                "denominator": "order_count",
+                "window": WEEK,
+            },
+            "window",
+            id="ratio-window",
+        ),
+    ],
+)
+def test_direct_field_its_kind_cannot_keep_fails_the_load_naming_metric_and_field(
+    tmp_path: Path, fields: dict[str, Any], field: str
+) -> None:
+    # A ratio takes numerator/denominator; every other kind here reads one measure.
+    measure = (
+        {} if fields["kind"] == "ratio" else {"measure": "item_revenue_usd", "aggregation": "sum"}
+    )
+    error = _load_error(tmp_path, {"broken": {**measure, **fields}})
+    assert error.code == "INVALID_EXPRESSION_KEY"
+    assert "metric 'probe.broken'" in str(error)
+    assert f"['{field}']" in str(error)
+    assert error.details["unknown_keys"] == [field]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        pytest.param({"kind": "rolling", "window": 7}, "window as an object", id="rolling-window"),
+        pytest.param(
+            {"kind": "prior_period", "offset": -1}, "offset as an object", id="prior_period-offset"
+        ),
+    ],
+)
+def test_direct_field_scalar_shapes_get_the_parsers_error(
+    tmp_path: Path, fields: dict[str, Any], expected: str
+) -> None:
+    error = _load_error(
+        tmp_path, {"broken": {"measure": "item_revenue_usd", "aggregation": "sum", **fields}}
+    )
+    assert error.code == "INVALID_EXPRESSION_AST"
+    assert "metric 'probe.broken'" in str(error)
+    assert expected in str(error)
+
+
+def test_direct_aggregate_window_is_refused_when_queried_never_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metric = {"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum"}
+    package_dir = _package_with_metrics(
+        tmp_path, {"windowed": {**metric, "window": WEEK}}, preseed_db=True
+    )
+    expression = {m.id: m.expression for m in load_package_config(str(package_dir)).metric_recipes}[
+        "metric.probe.windowed"
+    ]
+    assert expression.window == WEEK  # type: ignore[union-attr]
+    runtime = _runtime(monkeypatch, package_dir)
+    try:
+        with pytest.raises(SemanticLayerError) as excinfo:
+            runtime.query(_metric_query("windowed"))
+    finally:
+        runtime.close()
+    assert excinfo.value.code == "INVALID_EXPRESSION_AST"
+    assert excinfo.value.details["window"] == WEEK

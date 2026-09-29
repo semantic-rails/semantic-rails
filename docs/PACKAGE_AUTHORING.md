@@ -1682,14 +1682,26 @@ would ignore such a key, so the package would behave differently from what it sa
 Every metric also gets the kind checks: a metric with an unknown `kind:`, or
 without a field its kind requires, such as a ratio's `denominator`, is rejected.
 
-A metric's `expression:` is held to the same rule. An unknown expression `kind:`, or a
-field its kind does not support (a `where` on a `metric` reference, an `anchor` on a
-plain measure), is rejected with the metric and the part named. The loader never drops
-a part of an expression to make it load, so a metric cannot compute a broader value than
-the one it says. `scoped_aggregate` keeps its `anchor`, `window`, `where` and
-`predicates`. An `anchor` with a `window` is refused when the metric is queried, until
-anchored windows compile (see `docs/CAPABILITIES.md`); it is never computed as a
-lifetime value.
+The loader hands a metric's `expression:` to the expression parser as written, and
+carries every direct field a metric kind takes into the expression it builds, so a part
+is kept or rejected and never dropped to make the metric load:
+
+- An unknown expression `kind:`, or a field its kind does not support (a `where` on a
+  `metric` reference, an `anchor` on a plain measure), is rejected with the metric named.
+- Direct fields follow the same table. `partition_by` on a `rolling`, `period_to_date`
+  or `cumulative` metric, `window` on a `rolling` metric, and `window_scope` on a
+  `cumulative` metric reach the compiled metric. A field the kind does not take, such as
+  `window` on a `cumulative`, `partition_by` on a `prior_period` or a `ratio`, or
+  `order_by` anywhere, is rejected. A `partition_by` dimension must also be one the query
+  groups by; a query that does not group by it fails instead of returning an unpartitioned
+  value.
+- A `window` on a plain `aggregate` loads but is refused when the metric is queried,
+  because a plain aggregate has no window. Use a `rolling` metric.
+- `scoped_aggregate` keeps its `anchor`, `window`, `where` and `predicates`. A short
+  `measure` key, and a short `where` field key on the measure's own model, resolve as they
+  do elsewhere in the package. An `anchor` with a `window` is refused when the metric is
+  queried, until anchored windows compile (see `docs/CAPABILITIES.md`); it is never
+  computed as a lifetime value.
 
 ### Filter values
 

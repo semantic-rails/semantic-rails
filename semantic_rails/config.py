@@ -26,11 +26,7 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
-from .expressions import (
-    expression_valid_keys,
-    parse_config_expression,
-    parse_semantic_expression,
-)
+from .expressions import parse_config_expression, parse_semantic_expression
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,
@@ -676,11 +672,40 @@ def _load_package_source(path: str, *, captured: CapturedSource | None = None) -
     return _load_yaml_file(path)
 
 
+# Direct metric fields that shape the expression. Every one an author writes reaches the
+# expression, where the parser keeps it (it names a field the kind supports) or rejects it
+# (it does not), so no field is dropped between the YAML and the compiled metric.
+_DIRECT_EXPRESSION_FIELDS = (
+    "measure",
+    "aggregation",
+    "numerator",
+    "denominator",
+    "null_behavior",
+    "window",
+    "window_scope",
+    "offset",
+    "period",
+    "partition_by",
+    "order_by",
+)
+_WINDOWED_DIRECT_KINDS = frozenset({"cumulative", "rolling", "prior_period", "period_to_date"})
+
+
+def _authored_direct_fields(spec: dict[str, Any], *, consumed: set[str]) -> dict[str, Any]:
+    """The direct fields the author wrote that the translator did not already place."""
+    return {
+        field: spec[field]
+        for field in _DIRECT_EXPRESSION_FIELDS
+        if field not in consumed and spec.get(field) is not None
+    }
+
+
 def _translate_metric_direct_fields(
     spec: dict[str, Any],
     *,
     resolve,
     resolve_metric=None,
+    resolve_dimension=None,
     classify_ref=None,
     context: str = "",
     suggest=None,
@@ -692,10 +717,14 @@ def _translate_metric_direct_fields(
     `prior_period`, `period_to_date` — get direct named fields:
         kind: aggregate     → measure: <key>
         kind: ratio         → numerator: <key>, denominator: <key>, null_behavior: <opt>
-        kind: cumulative    → measure: <key>, optional window
-        kind: rolling       → measure: <key>, window: { ... }
-        kind: prior_period  → measure: <key>, offset/period
-        kind: period_to_date→ measure: <key>, period: <str>
+        kind: cumulative    → measure: <key>, optional partition_by
+        kind: rolling       → measure: <key>, window: { ... }, optional partition_by
+        kind: prior_period  → measure: <key>, offset: { ... }
+        kind: period_to_date→ measure: <key>, period: <str>, optional partition_by
+
+    Any other direct field written on a metric (a `window` on a cumulative, a
+    `partition_by` on a ratio) is carried into the expression as well; the
+    expression parser rejects a field its kind does not support.
 
     Long-tail kinds (`derived`, `conversion`, anything using metric_predicate)
     keep authoring the AST directly under `expression:`. References to other
@@ -716,6 +745,7 @@ def _translate_metric_direct_fields(
             spec["expression"],
             resolve=resolve,
             resolve_metric=resolve_metric,
+            resolve_dimension=resolve_dimension,
         )
         return spec
     kind = str(spec.get("kind", "")).strip().lower()
@@ -728,6 +758,7 @@ def _translate_metric_direct_fields(
             "kind": kind,
             "measure": resolve(measure_ref),
             "aggregation": str(spec.get("aggregation", "")),
+            **_authored_direct_fields(spec, consumed={"measure", "aggregation"}),
         }
         return spec
 
@@ -791,73 +822,25 @@ def _translate_metric_direct_fields(
             "left": _ratio_operand(numerator, field="numerator"),
             "right": _ratio_operand(denominator, field="denominator"),
             "null_behavior": null_behavior,
+            **_authored_direct_fields(spec, consumed={"numerator", "denominator", "null_behavior"}),
         }
-        # Default kind: `binary` is converted by _convert_recipe_expr to `arithmetic`.
         return spec
 
-    if kind == "cumulative":
+    if kind in _WINDOWED_DIRECT_KINDS:
         measure_ref = spec.get("measure")
         if measure_ref is None:
             return spec
-        # cumulative wraps an aggregate input over the measure.
-        inner: dict[str, Any] = {
-            "kind": "aggregate",
-            "measure": resolve(measure_ref),
-            "aggregation": str(spec.get("aggregation", "")),
-        }
-        out: dict[str, Any] = {"kind": "cumulative", "input": inner}
-        if spec.get("partition_by"):
-            out["partition_by"] = list(spec.get("partition_by", []) or [])
-        if spec.get("order_by"):
-            out["order_by"] = str(spec.get("order_by", ""))
-        spec["expression"] = out
-        return spec
-
-    if kind == "rolling":
-        measure_ref = spec.get("measure")
-        if measure_ref is None:
-            return spec
-        inner = {
-            "kind": "aggregate",
-            "measure": resolve(measure_ref),
-            "aggregation": str(spec.get("aggregation", "")),
-        }
+        # The windowed kind wraps an aggregate over the measure; every other direct
+        # field the author wrote goes on the wrapper for the expression parser to
+        # keep or reject.
         spec["expression"] = {
-            "kind": "rolling",
-            "input": inner,
-            "window": dict(spec.get("window", {}) or {}),
-        }
-        return spec
-
-    if kind == "prior_period":
-        measure_ref = spec.get("measure")
-        if measure_ref is None:
-            return spec
-        inner = {
-            "kind": "aggregate",
-            "measure": resolve(measure_ref),
-            "aggregation": str(spec.get("aggregation", "")),
-        }
-        spec["expression"] = {
-            "kind": "prior_period",
-            "input": inner,
-            "offset": dict(spec.get("offset", {}) or {}),
-        }
-        return spec
-
-    if kind == "period_to_date":
-        measure_ref = spec.get("measure")
-        if measure_ref is None:
-            return spec
-        inner = {
-            "kind": "aggregate",
-            "measure": resolve(measure_ref),
-            "aggregation": str(spec.get("aggregation", "")),
-        }
-        spec["expression"] = {
-            "kind": "period_to_date",
-            "input": inner,
-            "period": str(spec.get("period", "")),
+            "kind": kind,
+            "input": {
+                "kind": "aggregate",
+                "measure": resolve(measure_ref),
+                "aggregation": str(spec.get("aggregation", "")),
+            },
+            **_authored_direct_fields(spec, consumed={"measure", "aggregation"}),
         }
         return spec
 
@@ -892,34 +875,55 @@ def _resolve_metric_ref(value: Any, *, resolve) -> str:
     return text
 
 
-def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric=None) -> Any:
+_MEASURE_REF_KINDS = frozenset(
+    {"aggregate", "semi_additive", "scoped_aggregate", "measure", "measure_ref"}
+)
+
+
+def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric=None, resolve_dimension=None) -> Any:
     """Best-effort recursive resolution of package-relative refs inside
-    an authored expression AST. Walks `kind: metric` and `kind: aggregate`
-    nodes and rewrites the `metric:` / `measure:` field via the
-    appropriate resolver.
+    an authored expression AST. Walks `kind: metric` nodes and the nodes that
+    name a measure (`aggregate`, `scoped_aggregate`, ...) and rewrites the
+    `metric:` / `measure:` field via the appropriate resolver.
 
     `resolve` resolves measure refs (returns measure.<ns>.<key>).
     `resolve_metric` resolves metric refs — falls back to measure-only
-    behavior when None for back-compat.
+    behavior when None for back-compat. `resolve_dimension(measure_id, key)`
+    resolves a short `scoped_aggregate` `where[].field` key against the
+    measure's model; a field it does not know is left for query-time lookup.
     """
     if resolve_metric is None:
 
         def resolve_metric(value):
             return _resolve_metric_ref(value, resolve=resolve)
 
+    def recurse(child: Any) -> Any:
+        return _resolve_refs_in_ast(
+            child,
+            resolve=resolve,
+            resolve_metric=resolve_metric,
+            resolve_dimension=resolve_dimension,
+        )
+
     if isinstance(node, list):
-        return [
-            _resolve_refs_in_ast(item, resolve=resolve, resolve_metric=resolve_metric)
-            for item in node
-        ]
+        return [recurse(item) for item in node]
     if not isinstance(node, dict):
         return node
     out = dict(node)
     kind = str(out.get("kind", "")).strip().lower()
     if kind == "metric" and "metric" in out:
         out["metric"] = resolve_metric(out["metric"])
-    if kind in {"aggregate", "semi_additive"} and "measure" in out:
+    if kind in _MEASURE_REF_KINDS and "measure" in out:
         out["measure"] = resolve(out["measure"])
+    if kind == "scoped_aggregate" and resolve_dimension is not None:
+        where = out.get("where")
+        if isinstance(where, list):
+            out["where"] = [
+                {**item, "field": resolve_dimension(str(out.get("measure", "")), item["field"])}
+                if isinstance(item, dict) and isinstance(item.get("field"), str)
+                else item
+                for item in where
+            ]
     # A bare measure ref (no kind, just {measure: <key>}) appears in
     # metric_predicate inputs and conversion base/converted shorthands.
     # Resolve the key here so package-relative refs survive into runtime.
@@ -927,186 +931,20 @@ def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric=None) -> Any:
         out["measure"] = resolve(out["measure"])
     for key, value in list(out.items()):
         if isinstance(value, (dict, list)):
-            out[key] = _resolve_refs_in_ast(value, resolve=resolve, resolve_metric=resolve_metric)
+            out[key] = recurse(value)
     return out
 
 
-def _recipe_part_error(context: str, part: str, detail: str) -> SemanticLayerError:
-    where = f"{context}: {part}" if context else part
-    return SemanticLayerError("INVALID_CONFIG", f"{where} {detail}")
+def _parse_metric_expression(raw: Any, *, context: str) -> Any:
+    """Parse an authored metric expression, naming the metric on any refusal.
 
-
-def _check_recipe_expr_parts(expr: dict[str, Any], kind: str, *, context: str, part: str) -> None:
-    """Refuse an authored expression part the loader would otherwise drop.
-
-    The conversion below rebuilds each kind from the fields it knows; anything
-    else would vanish and the metric would silently compute something the
-    author did not write. Naming the metric and the part beats guessing.
+    The parser owns which kinds and fields an expression supports; this only adds
+    where the author wrote it, keeping the parser's error code and details.
     """
-    valid = expression_valid_keys(kind) if kind else None
-    if kind and valid is None:
-        raise _recipe_part_error(context, part, f"has unknown expression kind '{kind}'")
-    if not kind:
-        # Kindless shorthand: {measure: ...} / {metric: ...}.
-        shorthand = "measure" if "measure" in expr else "metric" if "metric" in expr else ""
-        valid = expression_valid_keys(shorthand) if shorthand else None
-    if valid is None:
-        return
-    unknown = sorted(str(key) for key in set(expr) - valid)
-    if unknown:
-        raise _recipe_part_error(
-            context,
-            part,
-            f"has field(s) {unknown} that a '{kind or 'shorthand'}' expression does not "
-            f"support; supported fields: {sorted(valid)}",
-        )
-
-
-def _recipe_field(expr: dict[str, Any], key: str, *, context: str, part: str) -> Any:
-    value = expr.get(key)
-    if value is None or value == "" or value == {}:
-        raise _recipe_part_error(context, part, f"requires '{key}'")
-    return value
-
-
-def _convert_recipe_expr(
-    expr: dict[str, Any], *, context: str = "", part: str = "expression"
-) -> dict[str, Any]:
-    kind = str(expr.get("kind", "")).strip()
-    _check_recipe_expr_parts(expr, kind, context=context, part=part)
-
-    def child(key: str) -> dict[str, Any]:
-        raw = _recipe_field(expr, key, context=context, part=part)
-        if not isinstance(raw, dict):
-            raise _recipe_part_error(context, f"{part}.{key}", "must be an expression mapping")
-        return _convert_recipe_expr(dict(raw), context=context, part=f"{part}.{key}")
-
-    def required(key: str) -> Any:
-        return _recipe_field(expr, key, context=context, part=part)
-
-    if kind in {"aggregate", "semi_additive"}:
-        out: dict[str, Any] = {
-            "kind": kind,
-            "measure": str(required("measure")),
-            "aggregation": str(expr.get("aggregation", "")),
-        }
-        if expr.get("temporal_role"):
-            out["temporal_role"] = str(expr.get("temporal_role", ""))
-        if expr.get("parameters"):
-            out["parameters"] = dict(expr.get("parameters", {}) or {})
-        if "filter" in expr:
-            out["filter"] = expr["filter"]
-        if expr.get("window"):
-            out["window"] = dict(expr.get("window", {}) or {})
-        return out
-    if kind == "scoped_aggregate":
-        # Every field (anchor, window, where, predicates, ...) is meaning the
-        # author wrote; the parser validates them and the compiler either
-        # applies or refuses them.
-        required("measure")
-        return dict(expr)
-    if kind == "metric":
-        return {"kind": "metric", "metric": str(required("metric"))}
-    if kind == "binary":
-        op_map = {
-            "plus": "add",
-            "add": "add",
-            "minus": "subtract",
-            "subtract": "subtract",
-            "multiply": "multiply",
-            "divide": "divide",
-        }
-        op = str(required("op")).lower()
-        out = {
-            "kind": "arithmetic",
-            "op": op_map.get(op, op),
-            "left": child("left"),
-            "right": child("right"),
-        }
-        # Preserve null_behavior across the binary→arithmetic rename. Without
-        # this, ratio metrics that author `null_behavior: null_if_zero` lose
-        # the safety hint when the loader translates the AST.
-        if expr.get("null_behavior") is not None:
-            out["null_behavior"] = str(expr.get("null_behavior", ""))
-        return out
-    if kind == "cumulative":
-        out = {"kind": "cumulative", "input": child("input")}
-        if expr.get("partition_by"):
-            out["partition_by"] = list(expr.get("partition_by", []) or [])
-        if expr.get("order_by"):
-            out["order_by"] = str(expr.get("order_by", ""))
-        if expr.get("window_scope"):
-            out["window_scope"] = str(expr.get("window_scope", ""))
-        return out
-    if kind == "rolling":
-        out = {
-            "kind": "rolling",
-            "input": child("input"),
-            "window": dict(expr.get("window", {}) or {}),
-        }
-        if expr.get("partition_by"):
-            out["partition_by"] = list(expr.get("partition_by", []) or [])
-        return out
-    if kind == "prior_period":
-        return {
-            "kind": "prior_period",
-            "input": child("input"),
-            "offset": dict(expr.get("offset", {}) or {}),
-        }
-    if kind == "period_to_date":
-        out = {
-            "kind": "period_to_date",
-            "input": child("input"),
-            "period": str(expr.get("period", "")),
-        }
-        if expr.get("partition_by"):
-            out["partition_by"] = list(expr.get("partition_by", []) or [])
-        return out
-    if kind == "metric_predicate":
-        out = {
-            "kind": "metric_predicate",
-            "input": child("input"),
-            "entity": str(expr.get("entity", "")),
-            "op": str(expr.get("op", "")),
-            "value": expr.get("value"),
-        }
-        if expr.get("scope_mode") is not None:
-            out["scope_mode"] = str(expr.get("scope_mode", ""))
-        if expr.get("time_grain") is not None:
-            out["time_grain"] = str(expr.get("time_grain", ""))
-        if expr.get("time_alignment") is not None:
-            out["time_alignment"] = str(expr.get("time_alignment", ""))
-        if expr.get("window") is not None:
-            out["window"] = dict(expr.get("window", {}) or {})
-        return out
-    if kind == "conversion":
-        out = {
-            "kind": "conversion",
-            "base": child("base"),
-            "converted": child("converted"),
-            "entity": str(expr.get("entity", "")),
-            "window": dict(expr.get("window", {}) or {}),
-            "matching_mode": str(expr.get("matching_mode", expr.get("matching", ""))),
-            "constant_properties": list(expr.get("constant_properties", []) or []),
-        }
-        if expr.get("dimension_bindings"):
-            out["dimension_bindings"] = {
-                str(dim_id): dict(binding or {})
-                for dim_id, binding in dict(expr.get("dimension_bindings", {}) or {}).items()
-            }
-        return out
-    if "measure" in expr and kind in {"", "measure", "measure_ref"}:
-        out = {
-            "kind": "measure",
-            "measure": str(expr["measure"]),
-            "aggregation": str(expr.get("aggregation", "")),
-        }
-        if expr.get("temporal_role"):
-            out["temporal_role"] = str(expr.get("temporal_role", ""))
-        if expr.get("parameters"):
-            out["parameters"] = dict(expr.get("parameters", {}) or {})
-        return out
-    return dict(expr)
+    try:
+        return parse_semantic_expression(raw, context="config")
+    except SemanticLayerError as exc:
+        raise SemanticLayerError(exc.code, f"{context}: {exc}", details=exc.details) from exc
 
 
 _EXTERNAL_PATHS_ENV = "SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS"
@@ -2476,6 +2314,12 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             return measure_key_index[text]
         return text  # leave as-is for downstream validation
 
+    measure_model = {measure_id: model for (model, _key), measure_id in measure_lookup.items()}
+
+    def _resolve_measure_dimension_ref(measure_id: str, field: str) -> str:
+        """A short dimension key on the measure's own model; anything else is left as written."""
+        return dimension_lookup.get((measure_model.get(measure_id, ""), field), field)
+
     # Build a metric key/name → metric_id index so metric authoring can refer
     # to top-level metrics (not just measures) via package-relative keys.
     # Sources: metrics_rows (with id auto-derived by the package loader) and
@@ -2583,14 +2427,12 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             spec,
             resolve=_resolve_measure_ref,
             resolve_metric=_resolve_metric_ref_full,
+            resolve_dimension=_resolve_measure_dimension_ref,
             classify_ref=_classify_ref,
             context=f"{path}: metric '{metric_key}'",
             suggest=_suggest_refs,
         )
-        expression = _convert_recipe_expr(
-            dict(spec.get("expression", {}) or {}),
-            context=f"{path}: metric '{metric_key}'",
-        )
+        expression = spec.get("expression") or {}
         if not expression:
             metric_kind = str(spec.get("kind", "") or "").strip().lower()
             requirement_by_kind = {
@@ -2628,11 +2470,13 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         metric = MetricConfig(
             id=metric_id,
             kind=str(spec.get("kind", "derived")),
-            expression=parse_semantic_expression(expression, context="config"),
+            expression=_parse_metric_expression(
+                expression, context=f"{path}: metric '{metric_key}'"
+            ),
             temporal_role=temporal_role,
             compatible_temporal_roles=metric_compatible_temporal_roles,
-            filter_spec=dict(spec.get("expression", {}) or {}).get("filter", {}) or {},
-            window_spec=dict(spec.get("expression", {}) or {}).get("window", {}) or {},
+            filter_spec=expression.get("filter", {}) or {},
+            window_spec=expression.get("window", {}) or {},
             name=str(spec.get("name", metric_key)),
             label=str(spec.get("label", _titleize(metric_key))),
             description=str(spec.get("description", spec.get("label", ""))),
