@@ -105,7 +105,8 @@ package test and a `.gitignore` for build outputs.
    one_to_one` also records it in `graph.relationships`. Relate one-to-many from the many
    side, and many-to-many through a bridge model related to each side. A model that already
    relates `to_entity` in a legacy `joins:` or `keys.foreign:` block is refused, since that
-   block would override the columns.
+   block would override the columns, and so is a pair that `graph.relationships` already
+   joins through several relationships (role-playing keys): edit those in `graph.yml`.
 6. Run `validate_project` with `mode=parse` after structural edits and `mode=runtime` before
    trusting queries.
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use

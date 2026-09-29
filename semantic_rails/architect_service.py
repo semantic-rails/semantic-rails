@@ -1429,15 +1429,20 @@ class ArchitectProject:
             self._store_model(model_doc, wrapper, model_row.key, model)
             graph = dict(documents[graph_path].get("graph", {}) or {})
             relationships = dict(graph.get("relationships", {}) or {})
-            existing = next(
-                (
-                    str(name)
-                    for name, entry in relationships.items()
-                    if isinstance(entry, dict)
-                    and _as_list(entry.get("entities")) == [source, target]
-                ),
-                "",
-            )
+            pair_entries = [
+                str(name)
+                for name, entry in relationships.items()
+                if isinstance(entry, dict) and _as_list(entry.get("entities")) == [source, target]
+            ]
+            if len(pair_entries) > 1:
+                # Role-playing keys: one foreign-key entry cannot say which role to rewrite.
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{source} already reaches {target} through several relationships "
+                    f"({', '.join(pair_entries)}); edit them in graph.yml instead",
+                    details={"relationships": pair_entries},
+                )
+            existing = pair_entries[0] if pair_entries else ""
             name = existing or f"{model_row.key}_{target}"
             if kind == "one_to_one" or existing:
                 if not existing and name in relationships:

@@ -1370,8 +1370,11 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
 
 def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
     """One warning per entity pair joined on different columns by several
-    relationships (role-playing keys) with no pinned route: a query that
-    reaches the target is refused as AMBIGUOUS_PATH until one is pinned."""
+    relationships (role-playing keys) unless exactly one of them has the lowest
+    ``path_preference``: that one wins every route through the pair. A
+    ``path_preferences`` row pins only queries that start at the source entity
+    and end at the target, so a pair pinned that way is still reported, and the
+    message says what the pin covers."""
     by_pair: dict[tuple[str, str], list[Any]] = {}
     for rel in config.relationships:
         by_pair.setdefault((rel.source_entity, rel.target_entity), []).append(rel)
@@ -1380,18 +1383,30 @@ def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
     for (source, target), rels in by_pair.items():
         if len({tuple(rel.source_columns or [rel.source_column]) for rel in rels}) < 2:
             continue
-        if (source, target) in pinned or len({rel.path_preference for rel in rels}) > 1:
+        lowest = min(rel.path_preference for rel in rels)
+        if sum(rel.path_preference == lowest for rel in rels) == 1:
             continue
         ids = [rel.id for rel in rels]
+        covered = (
+            f"graph.path_preferences pins only queries that start at {source} and end at "
+            f"{target}; queries from another entity, or that continue past {target}, are still "
+            "refused as AMBIGUOUS_PATH"
+            if (source, target) in pinned
+            else f"queries that need {target} from {source} are refused as AMBIGUOUS_PATH"
+        )
         warnings.append(
             _error_payload(
                 "RELATIONSHIP_ROLES_UNPINNED",
                 f"{source_path}: {source} reaches {target} through {len(ids)} relationships "
-                f"({', '.join(ids)}) on different columns. Queries that need {target} from "
-                f"{source} are refused as AMBIGUOUS_PATH until one is pinned: declare "
-                "graph.path_preferences for the pair, or give the intended relationship a "
-                "lower path_preference.",
-                details={"source_entity": source, "target_entity": target, "relationships": ids},
+                f"({', '.join(ids)}) on different columns and none has a unique lowest "
+                f"path_preference: {covered}. Give the intended relationship a lower "
+                "path_preference to pin it for every query.",
+                details={
+                    "source_entity": source,
+                    "target_entity": target,
+                    "relationships": ids,
+                    "pair_pinned": (source, target) in pinned,
+                },
             )
         )
     return warnings

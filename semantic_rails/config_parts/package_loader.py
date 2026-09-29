@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..errors import SemanticLayerError
+
 
 def _slug(value: str) -> str:
     raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
@@ -51,10 +53,16 @@ def _column_list(value: Any) -> list[str]:
     return [str(col) for col in (value if isinstance(value, list) else [value])]
 
 
-def _join_columns(join: dict[str, Any], fk_columns: list[str]) -> list[str]:
-    """The source columns a join spec resolves to; an unset ``via`` is the
-    model's foreign key to the target entity."""
-    return _column_list(join.get("via")) or fk_columns
+def _same_route(a: dict[str, Any], b: dict[str, Any], fk_columns: list[str]) -> bool:
+    """Whether two join specs to one entity are the same route: they join on the
+    same source columns (an unset ``via`` is the model's foreign key to the
+    entity) and, when both name ``target`` columns, the same target columns. A
+    join that leaves ``target`` unset takes the entity key, which the other's
+    narrower ``target`` (e.g. a temporal join) refines rather than contradicts."""
+    if (_column_list(a.get("via")) or fk_columns) != (_column_list(b.get("via")) or fk_columns):
+        return False
+    target_a, target_b = _column_list(a.get("target")), _column_list(b.get("target"))
+    return not (target_a and target_b) or target_a == target_b
 
 
 def _model_mapping(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -543,23 +551,41 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             if reverse_rollup:
                 edge_spec["rollup_safe_aggregations_reverse"] = reverse_rollup
             # A model keeps every relationship to an entity. An entry replaces
-            # the one already there only when it joins on the same columns
-            # (the explicit form of the inferred foreign key); a different
-            # column set is another role of the same entity, kept under its
-            # own key so that no declaration order decides which one a query
-            # gets.
-            existing = joins.get(b)
+            # a join already there only when it is the same route (the explicit
+            # form of the inferred foreign key, or a duplicate); another column
+            # set is another role of the same entity, kept under its own key.
+            # Comparing against every join to the entity, and letting the lowest
+            # id win a duplicate, means no declaration order decides which
+            # relationship a query gets.
             fk_columns = _column_list(((model.get("keys") or {}).get("foreign") or {}).get(b))
-            if existing is not None and _join_columns(existing, fk_columns) != _join_columns(
-                edge_spec, fk_columns
-            ):
-                edge_spec.setdefault("via", fk_columns)
+            same_route = next(
+                (
+                    key
+                    for key, join in joins.items()
+                    if (key == b or join.get("to") == b)
+                    and _same_route(join, edge_spec, fk_columns)
+                ),
+                None,
+            )
+            if same_route is not None:
+                known = joins[same_route].get("id")
+                if known is None or str(edge_spec["id"]) <= str(known):
+                    joins[same_route] = edge_spec
+            elif b not in joins:
+                joins[b] = edge_spec
+            else:
+                source_columns = _column_list(edge_spec.get("via")) or fk_columns
+                if not source_columns:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"relationship '{edge_spec['id']}' joins {a} to {b}, which the model "
+                        "already reaches another way, but names no source columns: set `via:`.",
+                    )
+                edge_spec["via"] = source_columns
                 join_key = f"{b}__{_slug(rel_name)}"
                 while join_key in joins:
                     join_key += "_"
                 joins[join_key] = edge_spec
-            else:
-                joins[b] = edge_spec
             model["joins"] = joins
             models[source_model] = model
 

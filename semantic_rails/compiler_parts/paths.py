@@ -67,6 +67,61 @@ def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[SqlIden
     return _column_ref(table, dim.column), dim.id
 
 
+def _pair_key_routes(
+    source_entity: str,
+    target_entity: str,
+    target_key_col: str,
+    config: PackageConfig,
+) -> list[tuple[RelationshipConfig, str]]:
+    """Every way the source entity's table reads ``target_key_col`` of the target entity:
+    one ``(relationship, source column)`` per distinct source column, in either direction.
+    Relationships that agree on the column collapse to the lowest relationship id, so the
+    answer never depends on declaration order."""
+    by_column: dict[str, RelationshipConfig] = {}
+    for rel in config.relationships:
+        forward = (
+            list(rel.source_columns or [rel.source_column]),
+            list(rel.target_columns or [rel.target_column]),
+        )
+        orientations = []
+        if rel.source_entity == source_entity and rel.target_entity == target_entity:
+            orientations.append(forward)
+        if rel.target_entity == source_entity and rel.source_entity == target_entity:
+            orientations.append((forward[1], forward[0]))
+        for source_columns, target_columns in orientations:
+            for source_col, target_col in zip(source_columns, target_columns, strict=True):
+                if target_col == target_key_col:
+                    known = by_column.get(source_col)
+                    if known is None or rel.id < known.id:
+                        by_column[source_col] = rel
+    return [(rel, column) for column, rel in sorted(by_column.items())]
+
+
+def _single_key_route(
+    routes: list[tuple[RelationshipConfig, str]],
+    chosen_path: Iterable[str] = (),
+) -> tuple[RelationshipConfig, str] | None:
+    """The one route to read a key through, or ``None`` when there is none.
+
+    The only place an entity pair is resolved to a relationship. Several routes on
+    different columns (role-playing keys, e.g. an origin and a destination airport) are
+    resolved only by a chosen path that names exactly one of them; without one this raises
+    AMBIGUOUS_PATH, and never picks by declaration order.
+    """
+    if len(routes) <= 1:
+        return routes[0] if routes else None
+    chosen = set(chosen_path)
+    named = [route for route in routes if route[0].id in chosen]
+    if len(named) == 1:
+        return named[0]
+    raise SemanticLayerError(
+        "AMBIGUOUS_PATH",
+        "Several relationships join these entities on different columns: "
+        + ", ".join(rel.id for rel, _ in routes),
+        details={"candidates": [[rel.id] for rel, _ in routes]},
+    )
+
+
 def _direct_entity_key_source_expr(
     source_entity: str,
     target_entity: str,
@@ -82,22 +137,19 @@ def _direct_entity_key_source_expr(
     source_table = source_relation_override or source.table
     if source_entity == target_entity and target_key_col in set(source.key or [source.primary_key]):
         return _column_ref(source_table, target_key_col)
-    for rel in config.relationships:
-        if rel.source_entity == source_entity and rel.target_entity == target_entity:
-            source_columns = list(rel.source_columns or [rel.source_column])
-            target_columns = list(rel.target_columns or [rel.target_column])
-            for source_col, target_col in zip(source_columns, target_columns, strict=True):
-                if target_col == target_key_col:
-                    record_bound_object(rel, config)
-                    return _column_ref(source_table, source_col)
-        if rel.target_entity == source_entity and rel.source_entity == target_entity:
-            source_columns = list(rel.target_columns or [rel.target_column])
-            target_columns = list(rel.source_columns or [rel.source_column])
-            for source_col, target_col in zip(source_columns, target_columns, strict=True):
-                if target_col == target_key_col:
-                    record_bound_object(rel, config)
-                    return _column_ref(source_table, source_col)
-    return None
+    try:
+        route = _single_key_route(
+            _pair_key_routes(source_entity, target_entity, target_key_col, config)
+        )
+    except SemanticLayerError:
+        # Role-playing keys: the key is not readable from the source table alone, so the
+        # caller falls through to path selection, which follows the pin or refuses.
+        return None
+    if route is None:
+        return None
+    rel, source_col = route
+    record_bound_object(rel, config)
+    return _column_ref(source_table, source_col)
 
 
 def _direct_dimension_source_expr(

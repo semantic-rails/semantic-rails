@@ -140,6 +140,25 @@ def test_refusals_write_nothing(project, arguments, code):
     assert project.revision() == revision
 
 
+def test_a_pair_with_several_relationships_is_refused_not_rewritten(project):
+    """Role-playing keys: the tool cannot tell which role to rewrite, so it deletes none."""
+    graph = _file(project, "graph.yml")
+    graph["graph"]["relationships"] = {
+        "event_buyer": {"entities": ["event", "customer"], "via": ["buyer_id"]},
+        "event_seller": {"entities": ["event", "customer"], "via": ["seller_id"]},
+    }
+    project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph, sort_keys=False))
+    revision = project.revision()
+
+    with pytest.raises(SemanticLayerError) as raised:
+        _relate(project, ["seller_id"])
+
+    assert raised.value.code == "INVALID_CONFIG"
+    assert raised.value.details["relationships"] == ["event_buyer", "event_seller"]
+    assert project.revision() == revision
+    assert _file(project, "graph.yml") == graph
+
+
 def test_checks_run_after_the_revision_check_and_retries_replay(project):
     stale = project.revision()
     _relate(project, ["customer_id"], expected_revision=stale, idempotency_key="relate-1")

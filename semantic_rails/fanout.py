@@ -158,9 +158,11 @@ def choose_path(
                     "candidates": tied,
                     "hint": (
                         "These routes can give different answers. "
-                        "Pin the one the question means: add graph.path_preferences with "
-                        "source_entity, target_entity and relationship_path set to one of the "
-                        "routes, or give the intended relationship a lower path_preference."
+                        "Pin the one the question means: give the intended relationship a lower "
+                        "path_preference (it applies to every query), or add "
+                        "graph.path_preferences with source_entity, target_entity and "
+                        "relationship_path set to one of the routes (it applies only to "
+                        "queries from that source entity to that target entity)."
                     ),
                 },
             )
