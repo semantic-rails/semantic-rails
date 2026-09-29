@@ -516,13 +516,15 @@ def recovery_hints_for_error(
             )
             hints.append(
                 {
-                    "kind": "use_authored_windowed_measure",
+                    "kind": "use_anchor_offset_column",
                     "message": (
-                        "If you need the result today, author the "
-                        "windowed measure inside a metric recipe "
-                        "(kind: scoped_aggregate) so the per-row "
-                        "window is fixed at package time — query-time "
-                        "anchor + window awaits the next round."
+                        "If you need the result today, expose the "
+                        "offset from the anchor as a column on the "
+                        "measure's model (for example days since the "
+                        "first order) and filter the measure on it. A "
+                        "metric recipe with the same anchor + window "
+                        "is refused the same way, so it is not a "
+                        "workaround."
                     ),
                 }
             )

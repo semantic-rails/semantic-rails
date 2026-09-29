@@ -1537,9 +1537,9 @@ def test_metric_kind_ratio_value_type_overrides_input_types(tmp_path: Path) -> N
 
 def test_metric_kind_ratio_preserves_null_behavior_through_loader(tmp_path: Path) -> None:
     """Regression: `null_behavior: null_if_zero` authored on a ratio metric
-    must survive the loader's binary→arithmetic conversion. Previously
-    `_convert_recipe_expr` dropped the field at the conversion site, causing
-    ratio metrics to lose their safety semantics silently."""
+    must survive the loader's binary→arithmetic conversion. Previously the
+    loader dropped the field at the conversion site, causing ratio metrics to
+    lose their safety semantics silently."""
     pkg_dir = tmp_path / "pkg_ratio_null_behavior"
     _write_synthetic_package(
         pkg_dir,
@@ -1562,8 +1562,7 @@ def test_metric_kind_ratio_preserves_null_behavior_through_loader(tmp_path: Path
     expr = metric.expression
     # The runtime ArithmeticExpr should carry null_behavior end-to-end.
     assert getattr(expr, "null_behavior", "") == "null_if_zero", (
-        f"null_behavior should propagate through the binary→arithmetic "
-        f"conversion in _convert_recipe_expr, got {expr!r}"
+        f"null_behavior should propagate through the binary→arithmetic conversion, got {expr!r}"
     )
 
 
