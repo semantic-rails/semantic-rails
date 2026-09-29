@@ -54,6 +54,7 @@ INSERT INTO tickets VALUES (1, 1, TIMESTAMP '2025-01-03 00:00:00');
 """
 
 CUSTOMER = "entity.pred_customer"
+CUSTOMER_ID = "dimension.pred_customer_id"
 MEMBER = "entity.pred_member"
 
 
@@ -294,32 +295,52 @@ def _net_orders() -> dict:
     return {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": RETURNED_ORDERS}
 
 
-CUSTOMER_ORDER_AND_RETURN_COUNTS = (
-    "(select c.customer_id, "
-    "(select count(*) from orders o where o.customer_id = c.customer_id) o_n, "
-    "(select count(*) from orders o where o.customer_id = c.customer_id "
-    "and o.status = 'returned') r_n from customers c)"
+NET_ORDERS_GOLD = (
+    "select count(*) from (select c.customer_id, "
+    "(select count(*) from orders o where o.customer_id = c.customer_id) "
+    "- (select count(*) from orders o where o.customer_id = c.customer_id "
+    "and o.status = 'returned') n from customers c) where n {op} {value}"
 )
 
 
-@pytest.mark.parametrize(("op", "value"), [("<", 1), ("=", 0), ("<=", 1)])
-def test_a_difference_over_two_leaves_keeps_customers_with_both_sides(runtime, op, value):
-    # The difference is NULL when either side has no rows, and NULL satisfies no threshold.
-    (expected,) = _gold(
-        f"select count(*) from {CUSTOMER_ORDER_AND_RETURN_COUNTS} "
-        f"where o_n > 0 and r_n > 0 and o_n - r_n {op} {value}"
-    )[0]
+@pytest.mark.parametrize(("op", "value"), [("<", 1), ("=", 0), ("<=", 1), ("!=", 2), (">", 1)])
+def test_a_difference_over_two_leaves_counts_each_side_as_zero(runtime, op, value):
+    # Customer 1 has orders and none returned: its net is 2, not NULL, as in any projection.
+    sql_op = "<>" if op == "!=" else op
+    (expected,) = _gold(NET_ORDERS_GOLD.format(op=sql_op, value=value))[0]
     filters = [_predicate(CUSTOMER, _net_orders(), op, value)]
     assert _scalar(runtime, "customer_count", filters) == expected
 
 
-def test_a_nested_difference_stays_null_when_any_source_has_no_rows(runtime):
+def test_a_nested_difference_settles_every_operand(runtime):
     outer = {"kind": "arithmetic", "op": "add", "left": _net_orders(), "right": ORDERS}
     (expected,) = _gold(
-        f"select count(*) from {CUSTOMER_ORDER_AND_RETURN_COUNTS} "
-        "where o_n > 0 and r_n > 0 and (o_n - r_n) + o_n < 1"
+        "select count(*) from (select c.customer_id, "
+        "(select count(*) from orders o where o.customer_id = c.customer_id) o_n, "
+        "(select count(*) from orders o where o.customer_id = c.customer_id "
+        "and o.status = 'returned') r_n from customers c) where (o_n - r_n) + o_n > 2"
     )[0]
-    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, outer, "<", 1)]) == expected
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, outer, ">", 2)]) == expected
+
+
+@pytest.mark.parametrize(("op", "value"), [(">", 1), ("<", 1)])
+def test_a_predicate_and_a_projection_of_the_same_difference_agree(runtime, op, value):
+    """One rule: the entities a predicate keeps are the ones a metric filter keeps."""
+    net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": RETURNED_ORDERS}
+    by_customer = runtime.query(
+        {
+            "version": 1,
+            "select": [{"as": "net", "expression": net}],
+            "group_by": [CUSTOMER_ID],
+            "metric_filters": [{"expression": net, "op": op, "value": value}],
+        }
+    )["rows"]
+    kept = {row[CUSTOMER_ID] for row in by_customer}
+    (row,) = _run(runtime, "customer_count", [_predicate(CUSTOMER, net, op, value)])
+    # A projection lists only customers with orders; the predicate also counts those with none.
+    with_none = 2 if op == "<" else 0
+    assert int(row["n"]) == len(kept) + with_none
+    assert all(row["net"] is not None for row in by_customer)
 
 
 def test_an_empty_not_in_list_is_satisfied_by_every_entity(runtime):

@@ -1124,8 +1124,9 @@ The response `warnings` array can carry these non-error signals:
   `details.recovery_hints[0]` (`SET_TIME_GRAIN`) recommends adding
   `time.grain`: a grain whose one calendar bucket covers `[start, end)`
   returns one total.
-- `NO_DATA_IN_SCOPE` — fires on `execute` when a sum, count or distinct count reads `NULL`
-  on every returned row, or nothing came back and no `start`/`end` window explains it. Such a
+- `NO_DATA_IN_SCOPE` — fires on `execute` when a sum, count or distinct count (or a sum or
+  difference of them) reads `NULL` on every returned row, or nothing came back and neither a
+  `start`/`end` window nor a metric filter explains it. Such a
   measure reads `0` in an empty group only where it has data in scope; here it has none, so it
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).

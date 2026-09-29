@@ -135,6 +135,17 @@ def test_a_limit_and_a_metric_filter_cannot_change_what_the_guard_sees(runtime: 
     response = runtime.query(query)
     assert response["row_count"] == 5
     assert not _warnings(response)
+    # The settled value, not a NULL turned into 0 after the filter: the same orders with no
+    # limit are the gold orders that have no items, each with an order count of 1.
+    unlimited = runtime.query({**query, "limit": None})
+    gold = _gold(
+        runtime,
+        "SELECT o.order_id AS id FROM jaffle_order o "
+        "WHERE NOT EXISTS (SELECT 1 FROM jaffle_item i WHERE i.order_id = o.order_id)",
+    )
+    assert {row[ORDER_ID] for row in unlimited["rows"]} == {row["id"] for row in gold}
+    assert all(row["orders"] == 1 for row in unlimited["rows"] + response["rows"])
+    assert {row[ORDER_ID] for row in response["rows"]} <= {row["id"] for row in gold}
 
 
 def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) -> None:
@@ -199,6 +210,36 @@ def test_no_rows_and_no_time_window_says_nothing_matched(runtime: Runtime) -> No
     # A window with no rows is the window warning's to explain.
     assert not _warnings(windowed)
     assert _warnings(windowed, "EMPTY_RESULT_WINDOW")
+
+
+def test_an_output_with_a_reason_of_its_own_to_be_null_never_gets_the_warning(
+    runtime: Runtime,
+) -> None:
+    """A prior-period output is NULL on every row of a short series, however much data there is."""
+    prior = {"kind": "prior_period", "input": ORDERS, "offset": {"unit": "year", "value": 1}}
+    response = runtime.query(
+        {
+            "version": 2,
+            "select": _select(orders=ORDERS, prior_year=prior),
+            "time": {"temporal_role": ORDER_TIME, "grain": "month", "end": "2017-06-01"},
+        }
+    )
+    assert 1 < response["row_count"] <= 12
+    assert all(row["orders"] > 0 and row["prior_year"] is None for row in response["rows"])
+    assert not _warnings(response)
+
+
+def test_a_metric_filter_that_removes_every_group_is_not_missing_data(runtime: Runtime) -> None:
+    response = runtime.query(
+        {
+            "version": 2,
+            "select": _select(revenue=REVENUE),
+            "group_by": [STORE],
+            "metric_filters": [{"expression": ORDERS, "op": ">", "value": 100000}],
+        }
+    )
+    assert response["rows"] == []
+    assert not _warnings(response)
 
 
 def test_the_query_mcp_carries_the_warning_at_its_default_verbosity(runtime: Runtime) -> None:

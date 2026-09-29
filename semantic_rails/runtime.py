@@ -1158,6 +1158,8 @@ def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
         }
     elif window.get("start") is not None or window.get("end") is not None:
         return []  # a window with no rows is EMPTY_RESULT_WINDOW's to explain
+    elif compiled["logical_plan"].query.get("metric_filters"):
+        return []  # a metric filter may have removed every group that holds data
     if not outputs:
         return []
     return [

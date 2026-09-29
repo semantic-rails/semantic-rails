@@ -803,7 +803,9 @@ def test_fill_date_extremes_with_representable_zone_conversion(
         ).fetchall()
 
     assert [day for day, _ in rows] == expected
-    # Orders exist, but none inside these windows: a window with no data reads NULL, not 0.
+    # Orders exist, but none inside these windows. Known limitation: a bucket in a window with no
+    # rows reads NULL until the engine checks for data outside the window, then it reads 0. The
+    # correctness corpus holds the 0 as a strict xfail; this test is about which days come back.
     assert all(count is None for _, count in rows)
 
 

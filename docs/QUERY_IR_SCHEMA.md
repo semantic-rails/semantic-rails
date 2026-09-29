@@ -467,19 +467,24 @@ stock has no value for a period nobody observed, so neither is ever made zero.
 - **Arithmetic** settles each operand first, then combines them, so `goods + shipping` by
   refund type returns numbers even where one column is NULL for a type. An operand with no
   data in scope stays `NULL` and so does the result: `revenue - refunds` is `NULL` if refunds
-  were never recorded. Division by zero is `NULL`.
+  were never recorded. Division by zero is `NULL`. A `metric_predicate` settles its input the
+  same way, so `orders - returned_orders > 1` keeps a customer with 2 orders and no returns,
+  as a `metric_filter` on the same expression does.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
-- **A time window narrows it too.** A window with no rows reads `NULL` even where the measure
-  has data outside it (a `fill: true` bucket in an empty window).
+- **A time window narrows it too, for now.** A `fill: true` bucket in a window with no rows
+  reads `NULL` even where the measure has data outside the window. That is a known limitation
+  (it should read `0`) until the engine checks for data outside the window.
 - **An empty table has no data** to call zero: a measure over it reads `NULL`.
 - A metric filter such as `item_count = 0` sees the settled value, so it keeps the orders
   with no items.
 
-When an output that follows this rule reads `NULL` on every returned row (or nothing came
-back, with no time bounds), the response carries one `NO_DATA_IN_SCOPE` warning that names
-those outputs. It costs no extra query, and a clipped result (`truncated`) never gets it.
+When an output that is a sum, count or distinct count (or a sum or difference of them) reads
+`NULL` on every returned row, or nothing came back with no time bounds and no metric filter,
+the response carries one `NO_DATA_IN_SCOPE` warning that names those outputs. A `prior_period`,
+ratio or rolling output never gets it: it can be `NULL` while its measure has data. It costs
+no extra query, and a clipped result (`truncated`) never gets it.
 
 ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
 unless the join yields NULLs, so every ClickHouse statement ends with

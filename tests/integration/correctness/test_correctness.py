@@ -61,8 +61,8 @@ STEP = {"day": "1 day", "week": "7 day", "month": "1 month", "quarter": "3 month
 
 # Known wrong answers.
 EMPTY_WINDOW_NULL = (
-    "empty window reads NULL: a measure with data outside the query's time window reads NULL,"
-    " not 0, inside a window that holds none, until the engine looks outside the window"
+    "time.fill buckets in a window with no rows read NULL until the engine checks for data"
+    " outside the window (public issue of that title); the reference is the 0 the rule gives"
 )
 
 

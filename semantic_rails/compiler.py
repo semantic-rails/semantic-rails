@@ -1517,15 +1517,15 @@ def _require_predicate_over_rows(
 def _predicate_input_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
     """Whether the predicate input is 0, not NULL, for an entity with no rows.
 
-    A count or sum is. Arithmetic over several sources is NULL when any source
-    has no rows for the entity; treating it as 0 would let entities with rows on
-    one side pass a threshold they fail.
+    A count or sum is, and so is an add or subtract of them: the source query settles each
+    operand the way any query does (see ``empty_groups``), so this is the same rule, never a
+    second one. Only a bare measure may also be a distinct population.
     """
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         return recipe is not None and _predicate_input_zero_on_missing(recipe.expression, config)
     if isinstance(expr, ArithmeticExpr):
-        return False
+        return expr_resolves_to_zero(expr, config)
     return expr_resolves_to_zero(expr, config, _ZERO_ON_MISSING_PREDICATE_CLASSES)
 
 
@@ -2106,7 +2106,7 @@ def _predicate_ctes_and_join(
         mini_query["time"] = _public_time_spec(scope["time_spec"])
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True, guard_empty=False)
+    predicate_sql = _compile_predicate_source_ast(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -3143,9 +3143,7 @@ def _conversion_predicate_set_ctes(
     with cut_owners():
         with binding_cut():
             _entity_index(config)[predicate.entity]
-        predicate_sql = _compile_query_sql_ast(
-            config, mini_query, project_cut=True, guard_empty=False
-        )
+        predicate_sql = _compile_predicate_source_ast(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -4125,15 +4123,24 @@ def _compile_query_sql_ast(
     project_cut: bool = False,
     guard_empty: bool = True,
 ) -> SqlSelect:
-    """Compile a nested query; ``guard_empty=False`` for the per-entity values a predicate reads.
-
-    Those values are the entities that have rows, so an entity with none is absent, never 0.
-    """
+    """Compile a nested query; ``guard_empty=False`` for a distribution's per-entity values."""
     plan = plan_query(config, None, payload, collapse_window=False)
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
         return attach_relation_ctes(config, lower_to_sql(plan, config, guard_empty=guard_empty))
+
+
+def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
+    """The per-entity values a metric predicate reads, settled like any query's.
+
+    An add or subtract settles each operand the way the guard does (0 where the measure has
+    data in the predicate's scope), so a predicate and a projection of the same expression
+    agree. An entity with no rows at all is absent, and the threshold path counts it as 0. The
+    value is internal, so it never becomes a ``NO_DATA_IN_SCOPE`` output.
+    """
+    with recording_zero_outputs():
+        return _compile_query_sql_ast(config, payload, project_cut=True)
 
 
 def _record_bound_plan(

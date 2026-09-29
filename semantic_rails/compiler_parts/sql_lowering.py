@@ -95,6 +95,7 @@ from .dependencies import (
 from .empty_groups import (
     GUARDED_BASE,
     base_reads,
+    expr_resolves_to_zero,
     guard_empty_groups,
     record_zero_output,
     refuse_unsettled,
@@ -2238,7 +2239,7 @@ def _minimal_predicate_set_ctes(
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> PredicateSetSql:
-    from ..compiler import _compile_query_sql_ast, _require_predicate_over_rows
+    from ..compiler import _compile_predicate_source_ast, _require_predicate_over_rows
 
     query = normalize_query(plan.query)
     predicate = _predicate_expr_from_payload(predicate_payload)
@@ -2268,7 +2269,7 @@ def _minimal_predicate_set_ctes(
 
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True, guard_empty=False)
+    predicate_sql = _compile_predicate_source_ast(config, mini_query)
     source_name = f"{_semantic_set_name(predicate, index)}_source"
     set_name = _semantic_set_name(predicate, index)
     source_cte = SqlCte(
@@ -4663,7 +4664,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 table_alias="base",
             )
         projected_fields.append(SqlField(compiled_output, alias))
-        if reads := base_reads(compiled_output) & zero.keys():
+        # Only an output that follows the rule (a sum, count or difference of them): a
+        # prior-period, ratio or window output is NULL for reasons other than no data.
+        if zero and expr_resolves_to_zero(_parse_public_expr(post_expr), config):
+            reads = base_reads(compiled_output) & zero.keys()
             record_zero_output(
                 alias,
                 (
