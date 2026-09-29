@@ -6,5 +6,10 @@
   predicate on the airport. A lower `path_preference` on the intended relationship pins it for
   every query; a `graph.path_preferences` row pins only queries from its source entity to its
   target entity. Parsing the package warns with `RELATIONSHIP_ROLES_UNPINNED` unless exactly
-  one relationship has the lowest `path_preference`. `upsert_relationship` refuses a pair that
-  already has several relationships instead of rewriting one of them.
+  one relationship has the lowest `path_preference`, whichever side each is declared from. A pinned
+  role reads the airport's key through the pinned relationship's join, so a leg whose code matches
+  no airport is not counted. Two authored `graph.relationships` entries on the same `via` columns
+  are refused at load instead of one silently replacing the other. `path_preference: 0` now counts
+  as the lowest preference (it was read as 100), and a negative value is refused. When several
+  relationships join one pair, a rollup aggregation must be allowed by every one that lists any.
+  `upsert_relationship` refuses a pair that may have several roles instead of rewriting one of them.

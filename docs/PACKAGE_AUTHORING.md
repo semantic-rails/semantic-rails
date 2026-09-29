@@ -759,6 +759,8 @@ configurable.
 Each `relationships:` entry is an unordered pair of entities. Cardinality is
 declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe` specifies which aggregations roll up safely in each direction.
+When several relationships join one pair (roles), an aggregation must be listed
+by every one that lists any.
 
 Most relationships are **inferred** from FK references in `model.entities:`
 blocks. Author an explicit `graph.relationships:` entry only when you need a
@@ -1251,7 +1253,8 @@ Warnings (advisory only):
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
 - Several relationships join one pair of entities on different columns and no
-  one of them has the lowest `path_preference` (`RELATIONSHIP_ROLES_UNPINNED`).
+  one of them has the lowest `path_preference` (`RELATIONSHIP_ROLES_UNPINNED`), whichever
+  side each is declared from.
 
 ## Path-finding behavior (entity hopping)
 
@@ -1331,15 +1334,20 @@ Three guard rails back this up at query time:
   query that reaches the airport is refused until you pin the role it means:
   its city, its key (`airport_code`, even though the leg's table holds the
   foreign key), a filter on either, or a metric predicate on the airport. An
-  entry replaces an existing relationship only when its `via` and `target`
-  columns are that relationship's (the inferred foreign key, or a duplicate;
-  the lowest id keeps a duplicate).
+  entry that restates the inferred foreign key (the same `via` columns, or none)
+  replaces it. Two authored entries on the same `via` columns are refused at
+  load (`INVALID_CONFIG`, naming both): keep one, or give each its own `via`
+  if they are different roles.
   Pin the role with a lower `path_preference` on the intended relationship,
   which applies to every query through the pair. A `path_preferences` row
   for the pair pins only queries that start at its `source_entity` and end at
   its `target_entity`; a query from another entity that passes through the pair,
   one that continues past the target, or one that starts at the target, is still
-  refused.
+  refused. A pinned role reads its key through the pinned relationship's join,
+  like any other column of the airport, so a leg whose code matches no airport
+  row is not counted; a package with a single role reads the key from the leg's
+  own column and keeps that leg. `path_preference` is a non-negative integer
+  (unset is 100), so `0` is the lowest and pins a role.
 - **`RELATIONSHIP_ROLES_UNPINNED` warning** — reported when the package is
   parsed (`semantic-rails check`, `validate`): several relationships join the
   same pair of entities on different columns and no single one has the lowest

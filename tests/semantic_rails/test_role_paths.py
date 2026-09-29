@@ -14,16 +14,18 @@ from __future__ import annotations
 
 import itertools
 import textwrap
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
 
+from semantic_rails.compiler import _validate_rollup_safety
 from semantic_rails.compiler_parts.paths import (
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
     _pair_key_routes,
-    _single_key_route,
 )
 from semantic_rails.config import load_package_config, normalize_package
 from semantic_rails.config_validation import _compiled_package_warnings
@@ -174,16 +176,19 @@ def _write_package(
     inferred_origin: bool = False,
     preferences: dict[str, int] | None = None,
     path_preferences: str = "",
+    reverse: tuple[str, ...] = (),
+    extra_seed: str = "",
 ) -> Path:
     """Legs and airports. ``explicit`` lists the roles authored in
     ``graph.relationships`` in declaration order; ``inferred_origin`` instead
     lets the origin come from the leg model's ``entities:`` block.
-    ``preferences`` sets a role's relationship ``path_preference``."""
+    ``preferences`` sets a role's relationship ``path_preference``; ``reverse`` lists roles
+    declared from the airport's side (``[airport, leg]``); ``extra_seed`` is more seed SQL."""
     preferences = preferences or {}
     pkg = root / "air"
     (pkg / "data").mkdir(parents=True, exist_ok=True)
     (pkg / "models").mkdir(exist_ok=True)
-    (pkg / "data" / "seed.sql").write_text(SEED_SQL)
+    (pkg / "data" / "seed.sql").write_text(SEED_SQL + extra_seed)
     (pkg / "package.yml").write_text(
         textwrap.dedent(
             f"""
@@ -223,6 +228,16 @@ def _write_package(
         ]
         if role in preferences:
             relationship_lines.append(f"      path_preference: {preferences[role]}")
+    for role in reverse:
+        name, _ = _RELATIONSHIPS[role]
+        relationship_lines += [
+            f"    {name}_reverse:",
+            f"      id: relationship.{name}_reverse",
+            "      entities: [airport, leg]",
+            "      cardinality: one_to_many",
+            "      via: [airport_code]",
+            f"      target: [{role}_code]",
+        ]
     graph = textwrap.dedent(
         """\
         graph:
@@ -490,25 +505,13 @@ def test_load_warning_for_a_pair_pin_says_what_the_pin_covers(tmp_path):
     assert "are pinned" not in message
 
 
-def test_the_guard_refuses_to_pick_a_role_without_a_chosen_path(tmp_path):
-    """Every entity-pair resolution goes through ``_single_key_route``: several routes on
-    different columns raise unless a chosen path names exactly one."""
+def test_the_key_shortcut_declines_a_pair_with_several_routes(tmp_path):
+    """The direct read of a key never picks a role: a pair with several routes returns None,
+    so the caller goes through path selection, which follows a pin or refuses."""
     config = load_package_config(str(_write_package(tmp_path)))
     leg, airport = "entity.air_leg", "entity.air_airport"
     routes = _pair_key_routes(leg, airport, "airport_code", config)
     assert sorted(column for _rel, column in routes) == ["destination_code", "origin_code"]
-
-    with pytest.raises(SemanticLayerError) as exc_info:
-        _single_key_route(routes)
-    assert exc_info.value.code == "AMBIGUOUS_PATH"
-    assert _single_key_route(routes, [DESTINATION])[1] == "destination_code"
-    assert _single_key_route(routes, [ORIGIN])[1] == "origin_code"
-    with pytest.raises(SemanticLayerError):
-        _single_key_route(routes, [ORIGIN, DESTINATION])
-    with pytest.raises(SemanticLayerError):
-        _single_key_route(routes, ["relationship.unrelated"])
-
-    # The direct-read shortcut hands the decision to path selection instead of picking.
     assert _direct_entity_key_source_expr(leg, airport, "airport_code", config) is None
     assert _direct_dimension_source_expr(leg, CODE, config) is None
 
@@ -522,8 +525,12 @@ def test_the_shortcut_still_reads_a_single_role_from_the_source_table(tmp_path):
     assert expr.parts[-1] == "destination_code"
 
 
-def _normalized_joins(relationships: dict) -> dict[str, dict]:
-    """The leg model's joins after the loader translates ``graph.relationships``."""
+def _normalized_joins(relationships: dict, inferred: list[str] | None = None) -> dict[str, dict]:
+    """The leg model's joins after the loader translates ``graph.relationships``;
+    ``inferred`` gives the leg model an ``entities:`` foreign key to the airport."""
+    leg_entities: dict = {"leg": {}}
+    if inferred:
+        leg_entities["airport"] = {"expr": inferred[0] if len(inferred) == 1 else inferred}
     raw = {
         "package": {"namespace": "air"},
         "graph": {
@@ -534,7 +541,7 @@ def _normalized_joins(relationships: dict) -> dict[str, dict]:
             "relationships": relationships,
         },
         "models": {
-            "legs": {"id": "legs", "relation": "legs", "entities": {"leg": {}}},
+            "legs": {"id": "legs", "relation": "legs", "entities": leg_entities},
             "airports": {"id": "airports", "relation": "airports", "entities": {"airport": {}}},
         },
     }
@@ -550,35 +557,59 @@ def _entry(name: str, via: list[str] | None = None, target: list[str] | None = N
     return name, spec
 
 
-def test_duplicate_same_column_entries_resolve_alike_in_every_order():
-    """A duplicate of a role never leaves two identical routes, whichever entry is declared
-    first or however the other role is interleaved."""
-    entries = [
-        _entry("a", ["origin_code"]),
-        _entry("b", ["destination_code"]),
-        _entry("c", ["origin_code"]),
-    ]
-    survivors = set()
+def _all_orders_are_refused(entries: list[tuple[str, dict]], inferred: list[str] | None = None):
     for order in itertools.permutations(entries):
-        joins = _normalized_joins(dict(order))
-        survivors.add(frozenset((join["id"], tuple(join["via"])) for join in joins.values()))
-    assert survivors == {
-        frozenset({("relationship.a", ("origin_code",)), ("relationship.b", ("destination_code",))})
-    }
+        with pytest.raises(SemanticLayerError) as exc_info:
+            _normalized_joins(dict(order), inferred)
+        assert exc_info.value.code == "INVALID_CONFIG", order
+        assert "keep one" in str(exc_info.value), order
 
 
-def test_entries_on_the_same_column_but_different_target_columns_are_both_kept():
-    joins = _normalized_joins(
-        dict(
-            [
-                _entry("by_code", ["origin_code"], ["airport_code"]),
-                _entry("by_other", ["origin_code"], ["other_code"]),
-            ]
-        )
+def test_two_authored_entries_on_the_same_columns_are_refused_in_every_order():
+    """Never merged by id or declaration order, so no authored attribute (a pin, a
+    traversal) is dropped without notice."""
+    _all_orders_are_refused(
+        [
+            _entry("a", ["origin_code"]),
+            _entry("b", ["destination_code"]),
+            _entry("c", ["origin_code"]),
+        ]
     )
-    assert sorted((join["id"], tuple(join["target"])) for join in joins.values()) == [
-        ("relationship.by_code", ("airport_code",)),
-        ("relationship.by_other", ("other_code",)),
+
+
+def test_entries_on_the_same_columns_are_refused_whatever_their_target_columns():
+    """An unset ``target`` is the entity key, not a wildcard: entries that name different
+    targets, or none, on one column still refuse in every order."""
+    _all_orders_are_refused(
+        [
+            _entry("by_code", ["origin_code"], ["airport_code"]),
+            _entry("by_other", ["origin_code"], ["other_code"]),
+            _entry("a_default", ["origin_code"]),
+        ]
+    )
+
+
+def test_two_entries_that_resolve_to_the_inferred_foreign_key_are_refused():
+    """One restates the inferred foreign key with `via`, the other by leaving it unset."""
+    _all_orders_are_refused(
+        [_entry("first", ["origin_code"]), _entry("second")], inferred=["origin_code"]
+    )
+
+
+@pytest.mark.parametrize("via", [None, ["origin_code"]])
+def test_an_explicit_entry_replaces_the_inferred_foreign_key_it_restates(via):
+    joins = _normalized_joins(dict([_entry("origin", via)]), inferred=["origin_code"])
+    assert [join["id"] for join in joins.values()] == ["relationship.origin"]
+
+
+def test_an_entry_on_other_columns_is_kept_beside_the_inferred_foreign_key():
+    joins = _normalized_joins(
+        dict([_entry("destination", ["destination_code"])]), inferred=["origin_code"]
+    )
+    assert len(joins) == 2
+    assert sorted(join.get("via", ["<inferred>"])[0] for join in joins.values()) == [
+        "<inferred>",
+        "destination_code",
     ]
 
 
@@ -587,3 +618,114 @@ def test_second_entry_without_source_columns_is_refused_by_name():
         _normalized_joins(dict([_entry("a", ["origin_code"]), _entry("no_columns")]))
     assert exc_info.value.code == "INVALID_CONFIG"
     assert "relationship.no_columns" in str(exc_info.value)
+
+
+def test_load_warns_for_roles_declared_from_opposite_sides(tmp_path):
+    """A role written as ``[airport, leg]`` is still a second route between the pair."""
+    warnings = _role_warnings(tmp_path, explicit=("destination",), reverse=("origin",))
+    assert len(warnings) == 1
+    assert sorted(warnings[0]["details"]["relationships"]) == [
+        DESTINATION,
+        "relationship.legs_origin_airport_reverse",
+    ]
+
+
+def test_a_relationship_declared_from_the_other_side_on_the_same_columns_is_one_role(tmp_path):
+    assert _role_warnings(tmp_path, explicit=("destination",), reverse=("destination",)) == []
+
+
+def test_path_preference_zero_pins_a_role(tmp_path):
+    """Zero is the lowest preference, not "unset": following the hint with 0 must work."""
+    assert _role_warnings(tmp_path, preferences={"origin": 0}) == []
+    _write_package(tmp_path, preferences={"origin": 0})
+    assert _seats_by_city(Runtime.from_path(str(tmp_path / "air"))) == GOLD_BY_ORIGIN
+
+
+def test_a_negative_path_preference_is_refused(tmp_path):
+    pkg = _write_package(tmp_path, preferences={"origin": -1})
+    with pytest.raises(SemanticLayerError) as exc_info:
+        load_package_config(str(pkg))
+    assert exc_info.value.code == "INVALID_CONFIG"
+    assert "path_preference" in str(exc_info.value)
+
+
+ORPHAN_LEG = "INSERT INTO legs VALUES (5, 'ORD', 'SFO', 7, 'LAX');\n"
+
+
+def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airport_is_left_out(
+    tmp_path,
+):
+    """Documented behaviour: with several roles the key comes from the pinned relationship's
+    join, like any other airport column, so a leg whose code matches no airport row is not
+    counted. A single role reads the key from the leg's own column and keeps it."""
+    query = _seats_query(group_by=[CODE])
+    con = duckdb.connect(":memory:")
+    con.execute(SEED_SQL + ORPHAN_LEG)
+    joined = sorted(
+        (code, int(total))
+        for code, total in con.execute(
+            "SELECT a.airport_code, SUM(l.seats) FROM legs l JOIN airports a "
+            "ON a.airport_code = l.destination_code GROUP BY 1"
+        ).fetchall()
+    )
+    own_column = sorted(
+        (code, int(total))
+        for code, total in con.execute(
+            "SELECT destination_code, SUM(seats) FROM legs GROUP BY 1"
+        ).fetchall()
+    )
+    assert ("SFO", 7) in own_column
+    assert ("SFO", 7) not in joined
+
+    _write_package(
+        tmp_path / "two", extra_seed=ORPHAN_LEG, **_pin("destination", "relationship", "")
+    )
+    two_roles = Runtime.from_path(str(tmp_path / "two" / "air"))
+    assert _rows(two_roles, query, [CODE]) == joined
+
+    _write_package(tmp_path / "one", explicit=("destination",), extra_seed=ORPHAN_LEG)
+    one_role = Runtime.from_path(str(tmp_path / "one" / "air"))
+    assert _rows(one_role, query, [CODE]) == own_column
+
+
+def _config_with_rollup_hints(tmp_path, hints: dict[str, list[str]], *, reverse_order=False):
+    """The role package with each relationship's ``rollup_safe_aggregations`` set, and the
+    seats measure rolled up to the airport."""
+    config = load_package_config(str(_write_package(tmp_path)))
+    relationships = [
+        replace(rel, rollup_safe_aggregations=hints.get(rel.id, [])) for rel in config.relationships
+    ]
+    if reverse_order:
+        relationships.reverse()
+    measure = replace(
+        next(m for m in config.measures if m.id == SEATS), aggregation_entity="entity.air_airport"
+    )
+    measures = [measure, *(m for m in config.measures if m.id != SEATS)]
+    return replace(config, relationships=relationships, measures=measures)
+
+
+def _rollup_is_refused(config, aggregation: str) -> bool:
+    bound = [SimpleNamespace(measure_id=SEATS, aggregation=aggregation)]
+    try:
+        _validate_rollup_safety(bound, config)
+    except SemanticLayerError as exc:
+        assert exc.code == "ROLLUP_UNSAFE"
+        return True
+    return False
+
+
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_rollup_hints_of_a_role_pair_are_intersected_whatever_the_order(tmp_path, reverse_order):
+    """Origin allows sum, destination allows sum and max: only sum is allowed by both."""
+    config = _config_with_rollup_hints(
+        tmp_path, {ORIGIN: ["sum"], DESTINATION: ["sum", "max"]}, reverse_order=reverse_order
+    )
+    assert not _rollup_is_refused(config, "sum")
+    assert _rollup_is_refused(config, "max")
+
+
+def test_rollup_hints_with_nothing_in_common_allow_no_aggregation(tmp_path):
+    """An empty intersection restricts everything; it must not read as "no restriction"."""
+    config = _config_with_rollup_hints(tmp_path, {ORIGIN: ["sum"], DESTINATION: ["max"]})
+    assert _rollup_is_refused(config, "sum")
+    assert _rollup_is_refused(config, "max")

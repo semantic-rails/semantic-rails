@@ -85,10 +85,11 @@ def _relation_pipeline(config):
             lambda c: {"aggregate_relations": [AggregateRelationConfig("agg.daily", "t", "e")]},
             ["aggregate_relations agg.daily"],
         ),
-        # The loader keeps one join per entity pair, so the first of two is lost.
+        # Two relationships on the same columns: the loader refuses that package, so it
+        # doesn't load back.
         (
             lambda c: {"relationships": [*c.relationships, replace(c.relationships[0], id="r.2")]},
-            [f"relationships {STARTER.config.relationships[0].id}"],
+            ["package"],
         ),
         (_relation_pipeline, ["entities entity.shop_customer", "relations relation.customers"]),
         # An entity id the loader can't derive from a graph key is written with `as:`, but the

@@ -1375,13 +1375,33 @@ def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
     ``path_preferences`` row pins only queries that start at the source entity
     and end at the target, so a pair pinned that way is still reported, and the
     message says what the pin covers."""
-    by_pair: dict[tuple[str, str], list[Any]] = {}
-    for rel in config.relationships:
-        by_pair.setdefault((rel.source_entity, rel.target_entity), []).append(rel)
-    pinned = {(row.source_entity, row.target_entity) for row in config.path_preferences}
+    # Either direction of a pair is one pair, and a route is its column pairing, so two
+    # relationships that differ only in target columns, or that are declared from opposite
+    # sides, still count as different roles. The first id (sorted) sets the orientation.
+    by_pair: dict[frozenset[str], list[Any]] = {}
+    for rel in sorted(config.relationships, key=lambda rel: rel.id):
+        by_pair.setdefault(frozenset((rel.source_entity, rel.target_entity)), []).append(rel)
+    pinned = {frozenset((row.source_entity, row.target_entity)) for row in config.path_preferences}
     warnings: list[dict[str, Any]] = []
-    for (source, target), rels in by_pair.items():
-        if len({tuple(rel.source_columns or [rel.source_column]) for rel in rels}) < 2:
+    for pair, rels in by_pair.items():
+        source, target = rels[0].source_entity, rels[0].target_entity
+        routes = {
+            frozenset(
+                zip(
+                    rel.source_columns or [rel.source_column],
+                    rel.target_columns or [rel.target_column],
+                    strict=True,
+                )
+                if (rel.source_entity, rel.target_entity) == (source, target)
+                else zip(
+                    rel.target_columns or [rel.target_column],
+                    rel.source_columns or [rel.source_column],
+                    strict=True,
+                )
+            )
+            for rel in rels
+        }
+        if len(routes) < 2:
             continue
         lowest = min(rel.path_preference for rel in rels)
         if sum(rel.path_preference == lowest for rel in rels) == 1:
@@ -1391,7 +1411,7 @@ def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
             f"graph.path_preferences pins only queries that start at {source} and end at "
             f"{target}; queries from another entity, or that continue past {target}, are still "
             "refused as AMBIGUOUS_PATH"
-            if (source, target) in pinned
+            if pair in pinned
             else f"queries that need {target} from {source} are refused as AMBIGUOUS_PATH"
         )
         warnings.append(
@@ -1405,7 +1425,7 @@ def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
                     "source_entity": source,
                     "target_entity": target,
                     "relationships": ids,
-                    "pair_pinned": (source, target) in pinned,
+                    "pair_pinned": pair in pinned,
                 },
             )
         )

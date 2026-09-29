@@ -140,23 +140,60 @@ def test_refusals_write_nothing(project, arguments, code):
     assert project.revision() == revision
 
 
-def test_a_pair_with_several_relationships_is_refused_not_rewritten(project):
-    """Role-playing keys: the tool cannot tell which role to rewrite, so it deletes none."""
+def _write_graph_relationships(project: ArchitectProject, relationships: dict) -> dict:
     graph = _file(project, "graph.yml")
-    graph["graph"]["relationships"] = {
-        "event_buyer": {"entities": ["event", "customer"], "via": ["buyer_id"]},
-        "event_seller": {"entities": ["event", "customer"], "via": ["seller_id"]},
-    }
+    graph["graph"]["relationships"] = relationships
     project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph, sort_keys=False))
+    return graph
+
+
+ROLE_LAYOUTS = {
+    "two_entries": (
+        False,
+        {
+            "event_buyer": {"entities": ["event", "customer"], "via": ["buyer_id"]},
+            "event_seller": {"entities": ["event", "customer"], "via": ["seller_id"]},
+        },
+    ),
+    # The model's `entities` foreign key is one role and the entry's `via` another.
+    "inferred_key_and_entry_with_via": (
+        True,
+        {"event_seller": {"entities": ["event", "customer"], "via": ["seller_id"]}},
+    ),
+    "entry_from_the_other_side": (
+        False,
+        {"customer_events": {"entities": ["customer", "event"], "via": ["customer_id"]}},
+    ),
+    "entries_from_both_sides": (
+        False,
+        {
+            "event_buyer": {"entities": ["event", "customer"], "via": ["buyer_id"]},
+            "customer_events": {"entities": ["customer", "event"], "via": ["customer_id"]},
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("layout", ROLE_LAYOUTS)
+def test_a_pair_that_may_have_several_roles_is_refused_not_rewritten(project, layout):
+    """One foreign-key write can change one role, so a pair with another role (a second entry,
+    an entry from the other side, or an entry whose `via` differs from the model's foreign key)
+    is refused with nothing written, rather than rewriting or merging a role away."""
+    with_foreign_key, relationships = ROLE_LAYOUTS[layout]
+    if with_foreign_key:
+        _relate(project, ["buyer_id"])
+    graph = _write_graph_relationships(project, relationships)
+    model = (project.project_path / "models/core/events.yml").read_bytes()
     revision = project.revision()
 
     with pytest.raises(SemanticLayerError) as raised:
-        _relate(project, ["seller_id"])
+        _relate(project, ["buyer_id"])
 
     assert raised.value.code == "INVALID_CONFIG"
-    assert raised.value.details["relationships"] == ["event_buyer", "event_seller"]
+    assert sorted(raised.value.details["relationships"]) == sorted(relationships)
     assert project.revision() == revision
     assert _file(project, "graph.yml") == graph
+    assert (project.project_path / "models/core/events.yml").read_bytes() == model
 
 
 def test_checks_run_after_the_revision_check_and_retries_replay(project):
