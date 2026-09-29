@@ -41,8 +41,10 @@ from typing import Any
 
 from ..ast import NormalizedQuery
 from ..errors import SemanticLayerError
+from ..expressions import MetricPredicateExpr
 from ..fanout import analyze_fanout, choose_path, package_hop_limit
 from ..schema import DimensionConfig, MeasureConfig, PackageConfig
+from .bind import _collect_measure_refs
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -196,6 +198,20 @@ def _suggested_temporal_role(
         if role.default_query_time_axis:
             return role.id
     return ""
+
+
+def _query_measure_ids(config: PackageConfig, query: NormalizedQuery) -> list[str]:
+    """Every measure the query reads, in select order (not only the one that failed to pair)."""
+    bound: list[Any] = []
+    for select_item in query.select:
+        if select_item.expression is not None:
+            _collect_measure_refs(select_item.expression, config, query, bound)
+    for filter_item in query.metric_filters:
+        if filter_item.expression is not None and not isinstance(
+            filter_item.expression, MetricPredicateExpr
+        ):
+            _collect_measure_refs(filter_item.expression, config, query, bound)
+    return list(dict.fromkeys(row.measure_id for row in bound))
 
 
 def _compact_query_payload(query: NormalizedQuery) -> dict[str, Any]:
@@ -363,9 +379,11 @@ def _enrichment_unsafe(
     if calendar_dims:
         calendar_dim = calendar_dims[0]
         recovery: dict[str, Any] = {"calendar_dimension": calendar_dim.id}
-        # A measure with no time role is refused on any time grain, so when any requested
-        # measure has none, suggest no time block at all (no grain, role or query).
-        if all(measures[mid].compatible_temporal_roles for mid in requested):
+        # A measure with no time role is refused on any time grain, so when any measure the
+        # query reads has none, suggest no time block at all (no grain, role or query). The
+        # pairing check fails one measure at a time, so look at the whole query, not `requested`.
+        read = list(dict.fromkeys([*requested, *_query_measure_ids(config, query)]))
+        if all(measures[mid].compatible_temporal_roles for mid in read if mid in measures):
             grain = _suggested_grain(calendar_dim.id)
             if grain:
                 recovery["grain"] = grain
