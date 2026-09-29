@@ -479,7 +479,7 @@ stock has no value for a period nobody observed, so neither is ever made zero.
 - **A time window narrows it too, for now.** A `fill: true` bucket in a window with no rows
   reads `NULL` even where the measure has data outside the window. That is a known limitation
   (it should read `0`) until the engine checks for data outside the window
-  ([issue #TBD](https://github.com/semantic-rails/semantic-rails/issues/TBD)).
+  ([issue #201](https://github.com/semantic-rails/semantic-rails/issues/201)).
 - **An empty table has no data** to call zero: a measure over it reads `NULL`.
 - A metric filter such as `item_count = 0` sees the settled value, so it keeps the orders
   with no items.

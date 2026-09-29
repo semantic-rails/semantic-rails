@@ -18,4 +18,4 @@
 - Known limitation: a `time.fill` bucket in a window with no rows reads `NULL` even when the
   measure has data outside the window, where the rule says `0`. It stays until the engine
   checks for data outside the window (tracked in
-  [issue #TBD](https://github.com/semantic-rails/semantic-rails/issues/TBD)).
+  [issue #201](https://github.com/semantic-rails/semantic-rails/issues/201)).
