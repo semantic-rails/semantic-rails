@@ -300,6 +300,30 @@ SHAPES = {
         "select": _select(revenue=REVENUE),
         "time": {"temporal_role": ORDER_TIME, "grain": "month", "fill": True},
     },
+    # A threshold that 0 passes takes the anti-join, which must not coalesce the value.
+    "predicate_zero_passes": {
+        "select": _select(revenue=REVENUE),
+        "group_by": [STORE],
+        "metric_filters": [
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": "entity.jaffle_customer",
+                    "scope_mode": "entity_only",
+                    "input": {
+                        "kind": "arithmetic",
+                        "op": "subtract",
+                        "left": ORDERS,
+                        "right": {**ORDERS, "kind": "aggregate", "filter": {"all": NO_SUCH_STORE}},
+                    },
+                    "op": "<",
+                    "value": 1,
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    },
 }
 
 

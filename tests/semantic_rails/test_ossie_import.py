@@ -57,13 +57,7 @@ def _export(package: Path, directory: Path) -> Path:
 
 
 def _errors(path: Path) -> list[str]:
-    # The comparison package's frozen model still authors the removed `null_behavior:`, which an
-    # import drops, so that one message is not part of what must round-trip.
-    return [
-        error.replace(str(path), "<pkg>")
-        for error in validate_runtime_package(path)
-        if "unknown key 'null_behavior'" not in error
-    ]
+    return [error.replace(str(path), "<pkg>") for error in validate_runtime_package(path)]
 
 
 @pytest.mark.parametrize("package_id", PACKAGES)
@@ -75,6 +69,8 @@ def test_export_import_export_is_exact(package_id, tmp_path) -> None:
     assert load_package_snapshot(imported).semantic == load_package_snapshot(package).semantic
     # The comparison package's one existing error (a date dimension without a time role) stays.
     assert _errors(imported) == _errors(package)
+    # No import writes the removed `null_behavior:` back.
+    assert not any("null_behavior" in p.read_text() for p in imported.rglob("*.yml"))
 
 
 @pytest.mark.parametrize("package_id", PACKAGES)

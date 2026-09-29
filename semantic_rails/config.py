@@ -26,7 +26,7 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
-from .expressions import parse_config_expression, parse_semantic_expression
+from .expressions import NULL_BEHAVIOR_REMOVED, parse_config_expression, parse_semantic_expression
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,
@@ -2530,6 +2530,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"{path}: metric '{metric_key}' uses 'primitive:' shorthand which has been removed; expand to explicit 'kind' / 'comparison_mode' fields",
+            )
+
+        if "null_behavior" in spec:
+            raise SemanticLayerError(
+                "INVALID_CONFIG", f"{path}: metric '{metric_key}': {NULL_BEHAVIOR_REMOVED}"
             )
 
         # Translate direct named fields per metric kind into the runtime

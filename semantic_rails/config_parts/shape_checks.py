@@ -407,6 +407,11 @@ def _unknown_key_errors(
         str(key) for key in spec if str(key) not in allowed and not str(key).startswith("_")
     )
     for key in unknown:
+        if key == "null_behavior":
+            from ..expressions import NULL_BEHAVIOR_REMOVED
+
+            add_error(errors, f"{label}: {NULL_BEHAVIOR_REMOVED}")
+            continue
         hints = get_close_matches(key, sorted(allowed), n=2, cutoff=0.6)
         if fuzzy_only and not hints:
             continue

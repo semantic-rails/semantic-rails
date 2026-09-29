@@ -343,6 +343,56 @@ def test_a_predicate_and_a_projection_of_the_same_difference_agree(runtime, op, 
     assert all(row["net"] is not None for row in by_customer)
 
 
+CANCELLED_ORDERS = {
+    "kind": "aggregate",
+    "measure": "measure.pred.order_count",
+    "filter": {"all": [{"field": "dimension.pred_status", "op": "=", "value": "cancelled"}]},
+}
+
+
+@pytest.mark.parametrize(("op", "value"), [("<", 1), ("=", 0), ("<=", 0), ("!=", 2), ("!=", 1)])
+def test_an_operand_with_no_data_leaves_the_entities_that_have_rows_out(runtime, op, value):
+    """No order is ever cancelled, so the difference is NULL for a customer with orders.
+
+    A NULL fails every threshold, in a predicate as in a metric filter. Only customers with
+    no rows at all (4 and 5) count as 0.
+    """
+    net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": CANCELLED_ORDERS}
+    (without_orders,) = _gold(
+        "select count(*) from customers c where not exists "
+        "(select 1 from orders o where o.customer_id = c.customer_id)"
+    )[0]
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, net, op, value)]) == (
+        without_orders
+    )
+    by_customer = runtime.query(
+        {
+            "version": 1,
+            "select": [{"as": "net", "expression": net}],
+            "group_by": [CUSTOMER_ID],
+            "metric_filters": [{"expression": net, "op": op, "value": value}],
+        }
+    )["rows"]
+    assert by_customer == []
+
+
+@pytest.mark.parametrize(("op", "value"), [("=", 0), ("<", 1), ("!=", 2)])
+def test_a_window_in_which_an_operand_has_no_data_leaves_the_customers_with_orders_out(
+    runtime, op, value
+):
+    """The only return is in January, so in February the difference is NULL for customers 1 and 3."""
+    net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": RETURNED_ORDERS}
+    february = {
+        "temporal_role": "temporal_role.pred_ordered_at",
+        "start": "2025-02-01",
+        "end": "2025-03-01",
+    }
+    filters = [_predicate(CUSTOMER, net, op, value, scope_mode="contextual")]
+    # Orders 2 and 4 are the February orders of customers 1 and 3; order 5 has no customer.
+    rows = _run(runtime, "order_count", filters, time=february)
+    assert [row["n"] for row in rows] in ([], [None], [0])
+
+
 def test_an_empty_not_in_list_is_satisfied_by_every_entity(runtime):
     assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, "NOT IN", [])]) == 5
     assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, "IN", [])]) == 0

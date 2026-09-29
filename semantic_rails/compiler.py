@@ -2137,14 +2137,19 @@ def _predicate_ctes_and_join(
     )
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
     if without_rows:
-        where_condition = build_filter_condition(
-            SqlCall(
-                "COALESCE",
-                [SqlIdentifier(parts=["predicate_source", "__predicate_value"]), SqlLiteral(0)],
+        # Never coalesce the value: an entity present in the source whose value is NULL (an
+        # operand with no data in the predicate's scope) fails every threshold, as it does in a
+        # metric_filter. Only entities absent from the source count as 0.
+        value_ref = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
+        where_condition = SqlBinary(
+            SqlIsNull(value_ref),
+            "OR",
+            build_filter_condition(
+                value_ref,
+                _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
+                predicate.value,
+                path="metric_predicate",
             ),
-            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
-            predicate.value,
-            path="metric_predicate",
         )
     set_query = SqlSelect(
         select=select_fields,

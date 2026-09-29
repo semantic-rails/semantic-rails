@@ -951,6 +951,13 @@ def _aggregate_filter(raw: Any) -> dict[str, Any]:
     )
 
 
+NULL_BEHAVIOR_REMOVED = (
+    "`null_behavior` was removed; delete the line. Empty groups now follow "
+    "https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_IR_SCHEMA.md"
+    "#empty-groups-null-or-0"
+)
+
+
 def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context: str) -> None:
     """Raise ``INVALID_EXPRESSION_KEY`` when an expression dict carries a
     top-level key that the kind's dispatch arm does not recognise. This
@@ -964,6 +971,12 @@ def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context:
     unknown = sorted(set(expr.keys()) - valid)
     if not unknown:
         return
+    if "null_behavior" in unknown:
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_KEY",
+            f"{context} expression with kind={kind!r}: {NULL_BEHAVIOR_REMOVED}",
+            details={"expression_kind": kind, "expression_position": context},
+        )
     # Pick the first unknown key for closest_matches — agents typically
     # mistype one field per retry, and listing every match for every
     # unknown key bloats the envelope.

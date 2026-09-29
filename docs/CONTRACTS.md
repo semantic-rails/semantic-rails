@@ -116,8 +116,7 @@ Within a stable major:
 - Existing field, tool, route, enum, default, and issue-code meanings do not
   change silently.
 - Removing a field/tool/route, narrowing an enum, adding a required field, or
-  changing semantics requires a new contract major. Before 1.0, a removed field can ship
-  in place when no released client uses it.
+  changing semantics requires a new contract major.
 - Readers ignore unknown optional fields. Writers emit only fields declared by
   the selected contract major.
 - Deprecation starts with an additive release. Consumers gain dual-read support
