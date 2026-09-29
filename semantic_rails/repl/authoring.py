@@ -18,7 +18,7 @@ from ..architect_service import ArchitectMutation, ArchitectProject
 from ..cli.common import _quote, _ref_label, _runtime_from_ref, _slug, _title
 from ..cli.output import _authoring_error_messages, _authoring_warning_messages
 from ..cli.reports import project_validation_report
-from ..config import _derive_measure_semantics, load_package_config
+from ..config import _DIRECT_EXPRESSION_FIELDS, _derive_measure_semantics, load_package_config
 from ..config_validation import PackageReference
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -1129,19 +1129,7 @@ _RECIPE_KINDS = {"filtered": "aggregate", "growth": "derived"}
 _EXPRESSION_RECIPES = frozenset({"filtered", "growth"})
 _PRESERVE = "preserve"
 # Fields that belong to one recipe; switching recipes drops the others.
-_KIND_FIELDS = frozenset(
-    {
-        "measure",
-        "aggregation",
-        "numerator",
-        "denominator",
-        "null_behavior",
-        "expression",
-        "window",
-        "offset",
-        "period",
-    }
-)
+_KIND_FIELDS = frozenset({*_DIRECT_EXPRESSION_FIELDS, "expression"})
 _UNITS = [
     ("day", "Days"),
     ("week", "Weeks"),

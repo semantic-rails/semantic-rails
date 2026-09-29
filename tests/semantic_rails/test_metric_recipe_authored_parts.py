@@ -303,6 +303,65 @@ def test_prior_period_shorthand_loads_as_the_parser_reads_it(tmp_path: Path) -> 
     assert (expression.kind, expression.unit, expression.value) == ("prior_period", "month", 1)
 
 
+def test_prior_period_shorthand_resolves_a_short_measure_key_and_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metric = {
+        "kind": "derived",
+        "expression": {
+            "kind": "prior_period",
+            "measure": "revenue_usd",
+            "offset": -1,
+            "grain": "month",
+        },
+    }
+    this_month = {"kind": "aggregate", "measure": "revenue_usd", "aggregation": "sum"}
+    package_dir = _package_with_metrics(
+        tmp_path, {"last_month": metric, "this_month": this_month}, preseed_db=True
+    )
+    recipes = {m.id: m.expression for m in load_package_config(str(package_dir)).metric_recipes}
+    assert recipes["metric.probe.last_month"].input.measure == REVENUE  # type: ignore[union-attr]
+
+    runtime = _runtime(monkeypatch, package_dir)
+    try:
+        query = {
+            "version": 1,
+            "select": [
+                {"as": "prior", "expression": {"metric": "metric.probe.last_month"}},
+                {"as": "current", "expression": {"metric": "metric.probe.this_month"}},
+            ],
+            "time": {"temporal_role": ORDER_TIME, "grain": "month"},
+        }
+        rows = sorted(
+            runtime.query(query)["rows"], key=lambda row: str(row[f"{ORDER_TIME}__month"])
+        )
+    finally:
+        runtime.close()
+    assert len(rows) > 2
+    assert rows[0]["prior"] is None
+    assert [row["prior"] for row in rows[1:]] == pytest.approx(
+        [row["current"] for row in rows[:-1]]
+    )
+
+
+def test_a_window_value_that_is_not_a_number_fails_the_load_naming_the_metric(
+    tmp_path: Path,
+) -> None:
+    error = _load_error(
+        tmp_path,
+        {
+            "broken": {
+                "kind": "rolling",
+                "measure": "item_revenue_usd",
+                "aggregation": "sum",
+                "window": {"unit": "day", "value": "7d"},
+            }
+        },
+    )
+    assert error.code == "INVALID_EXPRESSION_AST"
+    assert "metric 'probe.broken'" in str(error)
+
+
 # --- direct fields ------------------------------------------------------------------
 
 
@@ -364,13 +423,16 @@ def test_direct_field_partition_by_computes_the_partitioned_value(
     try:
         gold = _by_product_type_gold(runtime, window_sql)
         result = _by_product_type_result(runtime, "windowed")
-        with pytest.raises(SemanticLayerError):
+        with pytest.raises(SemanticLayerError) as excinfo:
             # A partition the query does not group by is refused, never answered globally.
             runtime.query(
                 {**_metric_query("windowed"), "time": {"temporal_role": ORDER_TIME, "grain": "day"}}
             )
     finally:
         runtime.close()
+    assert excinfo.value.code == "INVALID_QUERY"
+    assert excinfo.value.details == {"partition_by_missing_from_group_by": [PRODUCT_TYPE]}
+    assert "metric.probe.windowed" in str(excinfo.value)
     assert len(gold) > 100
     assert result.keys() == gold.keys()
     assert all(result[key] == pytest.approx(gold[key]) for key in gold)
@@ -657,6 +719,17 @@ def test_partition_by_short_key_resolves_to_the_dimension_id(tmp_path: Path) -> 
             "product_type",
             id="direct-bare-string",
         ),
+        pytest.param(
+            {"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": 0},
+            "0",
+            id="direct-zero",
+        ),
+        pytest.param(
+            {"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": False},
+            "False",
+            id="direct-false",
+        ),
+        pytest.param(_authored_window("rolling", 0, window=WEEK), "0", id="authored-zero"),
         pytest.param(
             _authored_window("rolling", ["prodcut_type"], window=WEEK),
             "prodcut_type",

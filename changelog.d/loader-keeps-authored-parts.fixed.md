@@ -12,3 +12,8 @@
   `partition_by`, `offset` and so on) is refused at load instead of ignoring one of them,
   and a `partition_by` entry that is not a dimension of the package is refused at load
   instead of failing every query; short dimension keys resolve like other references.
+  A `partition_by` the query does not group by is refused with `INVALID_QUERY`, naming the
+  metric and the missing dimension, instead of failing in the warehouse; a `partition_by`
+  that is not a list, and a window value that is not a number, are refused at load with the
+  metric named. The `prior_period` shorthand resolves a short `measure` key, and the REPL
+  drops a window's `partition_by` when a metric switches recipe.

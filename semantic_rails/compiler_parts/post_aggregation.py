@@ -44,7 +44,7 @@ from ..sql_ast import (
     SqlWindow,
 )
 from .bind import _expression_alias
-from .dependencies import recipe_objects, record_leaf_reference
+from .dependencies import _recipes, recipe_objects, record_leaf_reference
 from .indexes import _recipe_index
 from .namespacing import _namespace_sql_select
 from .temporal import _period_to_date_period, _window_unit_to_rows
@@ -150,6 +150,18 @@ def _compile_offset_window_expr(
             function=SqlCall("LAG", [base, SqlLiteral(offset_rows)]),
             partition_by=lag_partition_by,
             order_by=order_by,
+        )
+    # The one place every window compiles: a partition the query does not group by has no
+    # column to partition on, so it is refused rather than left to fail in the warehouse.
+    missing = [alias for alias in expr.partition_by if alias not in group_aliases]
+    if missing:
+        recipes = _recipes.get()
+        owner = f" of metric '{recipes[-1]}'" if recipes else ""
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"partition_by{owner} names {', '.join(missing)}, which the query does not "
+            "group by; add it to group_by or remove it from partition_by",
+            details={"partition_by_missing_from_group_by": missing},
         )
     partition_by: list[Any] = _window_partition_exprs(table_alias, group_aliases, expr.partition_by)
     frame = expr.frame

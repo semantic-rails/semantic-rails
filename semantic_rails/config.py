@@ -955,6 +955,9 @@ def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric=None, resolve_dim
         out["metric"] = resolve_metric(out["metric"])
     if kind in _MEASURE_REF_KINDS and "measure" in out:
         out["measure"] = resolve(out["measure"])
+    # The prior_period shorthand names its measure directly, like an aggregate does.
+    if kind == "prior_period" and isinstance(out.get("measure"), str):
+        out["measure"] = resolve(out["measure"])
     if kind == "scoped_aggregate" and resolve_dimension is not None:
         where = out.get("where")
         if isinstance(where, list):
@@ -1009,7 +1012,11 @@ def _resolve_partition_by(
         return
     if not isinstance(node, dict):
         return
-    if str(node.get("kind", "")).strip().lower() in _PARTITIONED_KINDS and node.get("partition_by"):
+    if (
+        str(node.get("kind", "")).strip().lower() in _PARTITIONED_KINDS
+        and "partition_by" in node
+        and node["partition_by"] not in (None, [])
+    ):
         entries = node["partition_by"]
         measure_id = _input_measure(node)
         resolved: list[str] = []
@@ -1053,6 +1060,11 @@ def _parse_metric_expression(raw: Any, *, context: str) -> Any:
         return parse_semantic_expression(raw, context="config")
     except SemanticLayerError as exc:
         raise SemanticLayerError(exc.code, f"{context}: {exc}", details=exc.details) from exc
+    except (TypeError, ValueError) as exc:
+        # A part the parser reads as a number (`window.value: "7d"`) that is not one.
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST", f"{context}: expression has a malformed value: {exc}"
+        ) from exc
 
 
 _EXTERNAL_PATHS_ENV = "SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS"

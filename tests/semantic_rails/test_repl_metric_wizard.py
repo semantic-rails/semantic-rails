@@ -870,6 +870,24 @@ def test_a_changed_input_refreshes_its_defaults_and_undoes(
     assert _path(project, "m").read_bytes() == created and _values(project, "m") == before
 
 
+@pytest.mark.parametrize("recipe", ["Aggregate", "Prior period"])
+def test_a_recipe_switch_drops_the_windows_partition_by(tmp_path: Path, recipe: str) -> None:
+    project = _shop(tmp_path, calendar=True)
+    spec = _authored_metric("rolling", "revenue", count="", status="")
+    _write_metric(
+        project,
+        "m",
+        {**spec, "temporal_role": ORDERED, "partition_by": ["dimension.shop_order_status"]},
+    )
+    answers = {"Metric recipe": recipe, "Measure": "revenue - ", "Measure to publish": "revenue - "}
+
+    _, metric = _author(project, {"Metric key": "m", **answers})
+
+    # A kept partition_by would make the saved package unloadable for these recipes.
+    assert "partition_by" not in metric and "window" not in metric
+    assert _values(project, "m")
+
+
 def test_an_explicit_clock_replaces_a_saved_time_alias(tmp_path: Path) -> None:
     project = _shop(tmp_path, shipped=True)
     spec = _authored_metric("aggregate", "revenue", count="", status="")

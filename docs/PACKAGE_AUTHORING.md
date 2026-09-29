@@ -1693,8 +1693,9 @@ is kept or rejected and never dropped to make the metric load:
   `cumulative` metric reach the compiled metric. A field the kind does not take, such as
   `window` on a `cumulative`, `partition_by` on a `prior_period` or a `ratio`, or
   `order_by` anywhere, is rejected. A `partition_by` dimension must also be one the query
-  groups by; a query that does not group by it fails instead of returning an unpartitioned
-  value.
+  groups by; a query that does not group by it is refused with `INVALID_QUERY`, naming the
+  metric and listing the dimension under `partition_by_missing_from_group_by`, instead of
+  returning an unpartitioned value. A `partition_by` that is not a list is rejected at load.
 - A metric is written either with an `expression:` block or with direct fields, never
   both. A metric that has an `expression:` and also any direct field (`measure`,
   `aggregation`, `numerator`, `denominator`, `null_behavior`, `window`, `window_scope`,
