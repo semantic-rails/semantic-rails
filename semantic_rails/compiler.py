@@ -479,6 +479,49 @@ _SUMMING_WRAPPERS = (
 )
 
 
+# Constructs whose result depends on a time axis, so a window without a grain can't collapse.
+_TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, PriorPeriodExpr, ConversionExpr)
+
+
+def _uses_time_axis(expr: Any, config: PackageConfig) -> bool:
+    if isinstance(expr, _TIME_AXIS_EXPRS):
+        return True
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return recipe is not None and _uses_time_axis(recipe.expression, config)
+    if not is_dataclass(expr):
+        return False
+    for item in fields(expr):
+        value = getattr(expr, item.name)
+        if any(
+            _uses_time_axis(child, config)
+            for child in (value if isinstance(value, list) else [value])
+        ):
+            return True
+    return False
+
+
+def _is_window_total(
+    query: NormalizedQuery, config: PackageConfig, bound_measures: Iterable[BoundMeasure]
+) -> bool:
+    """A time window with no grain, over plain measures: one total, not a row per timestamp."""
+    time = query.time
+    if time is None or not time.temporal_role or time.grain or time.fill:
+        return False
+    if time.start is None and time.end is None:
+        return False
+    # A predicate (in an aggregate's filter or a metric recipe) is tested per raw timestamp
+    # here, so its threshold would not mean "over the window". Keep today's behaviour.
+    if any(_bound_metric_predicates(bound) for bound in bound_measures):
+        return False
+    expressions = [item.expression for item in query.select] + [
+        item.expression for item in query.metric_filters
+    ]
+    return bool(query.select) and not any(
+        expr is not None and _uses_time_axis(expr, config) for expr in expressions
+    )
+
+
 def _measures_under_summing_wrappers(
     expr: Any, config: PackageConfig, wrapper: str = ""
 ) -> Iterable[tuple[str, str]]:
@@ -3680,14 +3723,22 @@ def resolve_compile_config(plan: LogicalPlan, config: PackageConfig) -> PackageC
 
 
 def plan_query(
-    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    *,
+    collapse_window: bool = True,
 ) -> LogicalPlan:
     with candidate_planning():
-        return _plan_query(config, registry, payload)
+        return _plan_query(config, registry, payload, collapse_window=collapse_window)
 
 
 def _plan_query(
-    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    *,
+    collapse_window: bool,
 ) -> LogicalPlan:
     raw_query = normalize_query(payload)
 
@@ -3863,6 +3914,9 @@ def _plan_query(
         for item in query.select
         if item.expression is not None
     }
+    plan_time = asdict(query.time) if query.time else {}
+    if collapse_window and bound_measures and _is_window_total(query, config, bound_measures):
+        plan_time["window_total"] = True
     return LogicalPlan(
         version=2,
         query=query.to_dict(),
@@ -3871,7 +3925,7 @@ def _plan_query(
         selected_paths=selected_paths,
         candidate_paths=candidate_paths,
         group_by=list(query.group_by),
-        time=asdict(query.time) if query.time else {},
+        time=plan_time,
         bound_measures=bound_measures,
         measure_plans=measure_plans,
         post_aggregation_exprs=post_exprs,
@@ -3900,7 +3954,7 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
 def _compile_query_sql_ast(
     config: PackageConfig, payload: dict[str, Any], *, project_cut: bool = False
 ) -> SqlSelect:
-    plan = plan_query(config, None, payload)
+    plan = plan_query(config, None, payload, collapse_window=False)
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
