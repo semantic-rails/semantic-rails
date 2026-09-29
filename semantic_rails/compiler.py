@@ -1236,7 +1236,9 @@ def _zero_satisfies_threshold(op: str, value: Any) -> bool:
     token = " ".join(str(op or "").upper().split())
     if token in {"IN", "NOT IN"}:
         values = list(value) if isinstance(value, (list, tuple)) else [value]
-        if not values or not all(_is_number(item) for item in values):
+        if not values:
+            return token == "NOT IN"  # NOT IN () is always true, IN () never
+        if not all(_is_number(item) for item in values):
             return False
         return (0 in values) == (token == "IN")
     compare = _ZERO_COMPARISONS.get(token)
@@ -1259,6 +1261,27 @@ def _require_predicate_over_rows(
         )
 
 
+def _predicate_input_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
+    """Whether the predicate input is 0, not NULL, for an entity with no rows.
+
+    A count or sum is. Arithmetic over several sources is NULL when any source
+    has no rows for the entity, unless every add/subtract node coalesces each
+    side to 0 (``null_behavior: coalesce_zero``); otherwise treating it as 0
+    would let entities with rows on one side pass a threshold they fail.
+    """
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return recipe is not None and _predicate_input_zero_on_missing(recipe.expression, config)
+    if isinstance(expr, ArithmeticExpr):
+        return (
+            expr.op in {"add", "subtract"}
+            and expr.null_behavior == "coalesce_zero"
+            and _predicate_input_zero_on_missing(expr.left, config)
+            and _predicate_input_zero_on_missing(expr.right, config)
+        )
+    return _expr_zero_on_missing(expr, config, _ZERO_ON_MISSING_PREDICATE_CLASSES)
+
+
 def _predicate_includes_entities_without_rows(
     predicate: MetricPredicateExpr, config: PackageConfig
 ) -> bool:
@@ -1272,14 +1295,15 @@ def _predicate_includes_entities_without_rows(
     """
     if not _zero_satisfies_threshold(predicate.op, predicate.value):
         return False
-    if _expr_zero_on_missing(predicate.input, config, _ZERO_ON_MISSING_PREDICATE_CLASSES):
+    if _predicate_input_zero_on_missing(predicate.input, config):
         return True
     raise SemanticLayerError(
         "INVALID_METRIC_PREDICATE",
         (
             f"metric_predicate threshold '{predicate.op} {predicate.value}' is satisfied by an "
             f"entity with no rows, but the input {_predicate_metric_label(predicate)!r} has no "
-            "value when there are no rows (only counts and sums are 0). Counting or skipping "
+            "value when there are no rows (only a count or sum, or add/subtract of them with "
+            "null_behavior 'coalesce_zero', is 0). Counting or skipping "
             f"the {predicate.entity!r} entities with no rows would each be a guess, so the "
             "query is refused."
         ),
@@ -1290,7 +1314,8 @@ def _predicate_includes_entities_without_rows(
                 {
                     "code": "USE_ROW_COUNT_OR_NONZERO_THRESHOLD",
                     "message": (
-                        "Use a count or sum as the predicate input, or a threshold that zero "
+                        "Use a count or sum as the predicate input (for a sum or difference "
+                        "of them, set null_behavior 'coalesce_zero'), or a threshold that zero "
                         "does not satisfy. To keep only entities that have rows, add a second "
                         "metric_predicate on the entity's row count with op '>' and value 0."
                     ),
@@ -1521,9 +1546,7 @@ def _cross_clock_predicate_error(
                     "message": (
                         f"To apply the threshold per period on {clocks[0]}, set "
                         "query.time.temporal_role to it. To apply it over all time, set "
-                        "scope_mode to 'entity_only'. To compare calendar periods across the "
-                        "two clocks on purpose, set time_alignment to 'same_query_period' "
-                        "and pin the input to one clock with its temporal_role."
+                        "scope_mode to 'entity_only'."
                     ),
                 }
             ],
@@ -1963,31 +1986,27 @@ def _predicate_ctes_and_join(
             strict=True,
         ):
             dim = _dimension_index(config)[dim_id]
+            context_key_expr = _column_ref(_entity_index(config)[dim.entity].table, dim.column)
+            outer_keys.append(context_key_expr)
             join_condition = SqlBinary(
                 join_condition,
                 "AND",
-                SqlBinary(
-                    _column_ref(_entity_index(config)[dim.entity].table, dim.column),
-                    "=",
-                    SqlIdentifier(parts=[set_name, dim_id]),
-                ),
+                SqlBinary(context_key_expr, "=", SqlIdentifier(parts=[set_name, dim_id])),
             )
     if scope["time_spec"] is not None and scope["time_alias"]:
         query = normalize_query(plan.query)
         outer_temporal_role = _leaf_time_role(measure_plan.bound_measure, query, config)
+        outer_time_expr = _predicate_time_join_expr(
+            source_entity=measure_plan.source_entity,
+            role_id=outer_temporal_role,
+            grain=str(scope["time_spec"]["grain"]),
+            config=config,
+        )
+        outer_keys.append(outer_time_expr)
         join_condition = SqlBinary(
             join_condition,
             "AND",
-            SqlBinary(
-                _predicate_time_join_expr(
-                    source_entity=measure_plan.source_entity,
-                    role_id=outer_temporal_role,
-                    grain=str(scope["time_spec"]["grain"]),
-                    config=config,
-                ),
-                "=",
-                SqlIdentifier(parts=[set_name, scope["time_alias"]]),
-            ),
+            SqlBinary(outer_time_expr, "=", SqlIdentifier(parts=[set_name, scope["time_alias"]])),
         )
     if not without_rows:
         return (
@@ -1995,7 +2014,7 @@ def _predicate_ctes_and_join(
             SqlJoin(join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition),
             [],
         )
-    # A leaf row with no entity key is not an entity with no rows.
+    # A leaf row with no entity, context or period key is not an entity with no rows.
     keep_rows: list[Any] = [
         SqlIsNull(SqlIdentifier(parts=[set_name, key_dim_map[0][1]])),
         *(SqlBinary(key_expr, "IS NOT", SqlLiteral(None)) for key_expr in outer_keys),

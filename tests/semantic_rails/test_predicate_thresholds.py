@@ -36,7 +36,11 @@ INSERT INTO customers VALUES
   (5, TIMESTAMP '2025-03-01 00:00:00');
 INSERT INTO orders VALUES
   (1, 1, 100, TIMESTAMP '2025-01-10 00:00:00'), (2, 1, 50, TIMESTAMP '2025-02-12 00:00:00'),
-  (3, 2, 70, TIMESTAMP '2025-01-15 00:00:00'), (4, 3, 30, TIMESTAMP '2025-02-20 00:00:00');
+  (3, 2, 70, TIMESTAMP '2025-01-15 00:00:00'), (4, 3, 30, TIMESTAMP '2025-02-20 00:00:00'),
+  (5, NULL, 40, TIMESTAMP '2025-02-21 00:00:00');
+ALTER TABLE orders ADD COLUMN status VARCHAR DEFAULT 'placed';
+UPDATE orders SET status = 'returned' WHERE order_id = 3;
+UPDATE orders SET status = NULL WHERE order_id = 2;
 INSERT INTO members VALUES
   (1, TIMESTAMP '2025-01-01 00:00:00'), (2, TIMESTAMP '2025-01-05 00:00:00'),
   (3, TIMESTAMP '2025-02-01 00:00:00'), (4, TIMESTAMP '2025-02-15 00:00:00'),
@@ -95,14 +99,21 @@ def runtime(tmp_path_factory):
         runtime.close()
 
 
-def _model(model_id: str, entities: list[str], time: tuple[str, str], measures: str) -> str:
+def _model(
+    model_id: str,
+    entities: list[str],
+    time: tuple[str, str],
+    measures: str,
+    dimensions: str = "",
+) -> str:
     column, role = time
     entity_lines = "\n".join(f"    {name}: {{}}" for name in entities)
     return (
         f"model:\n  id: {model_id}\n  relation: {model_id}\n  entities:\n{entity_lines}\n"
         f"  times:\n    {column}:\n      label: {column}\n      column: {column}\n"
         f"      kind: timestamp\n      class: event_time\n      as: temporal_role.pred_{role}\n"
-        f"      default: true\n      default_query_axis: true\n  measures:\n{measures}"
+        f"      default: true\n      default_query_axis: true\n{dimensions}"
+        f"  measures:\n{measures}"
     )
 
 
@@ -134,6 +145,8 @@ def _write_models(models: Path) -> None:
             ["order", "customer"],
             ("ordered_at", "ordered_at"),
             _count("order_count", "order_id") + amount,
+            "  dimensions:\n    status:\n      as: dimension.pred_status\n"
+            "      label: Status\n      kind: categorical\n",
         ),
         "members": _model(
             "members",
@@ -204,6 +217,11 @@ def _scalar(runtime: Runtime, measure: str, filters: list[dict]) -> int:
 ORDERS = {"measure": "measure.pred.order_count"}
 REVENUE = {"measure": "measure.pred.revenue"}
 ACTIVITIES = {"measure": "measure.pred.activity_count"}
+RETURNED_ORDERS = {
+    "kind": "aggregate",
+    "measure": "measure.pred.order_count",
+    "filter": {"all": [{"field": "dimension.pred_status", "op": "=", "value": "returned"}]},
+}
 
 
 def test_seed_has_entities_without_rows():
@@ -269,6 +287,71 @@ def test_members_with_zero_activity(runtime):
         "from members m) where n < 2"
     )[0]
     assert _scalar(runtime, "member_count", [_predicate(MEMBER, ACTIVITIES, "<", 2)]) == expected
+
+
+def _net_orders(null_behavior: str | None) -> dict:
+    return {
+        "kind": "arithmetic",
+        "op": "subtract",
+        "left": ORDERS,
+        "right": RETURNED_ORDERS,
+        **({"null_behavior": null_behavior} if null_behavior else {}),
+    }
+
+
+NET_ORDERS_GOLD = (
+    "select count(*) from (select c.customer_id, "
+    "(select count(*) from orders o where o.customer_id = c.customer_id) "
+    "- (select count(*) from orders o where o.customer_id = c.customer_id "
+    "and o.status = 'returned') n from customers c) where n {op} {value}"
+)
+
+
+@pytest.mark.parametrize(("op", "value"), [("<", 1), ("=", 0), ("<=", 1), ("!=", 2), (">", 1)])
+def test_a_difference_over_two_leaves_counts_each_side_as_zero_when_asked(runtime, op, value):
+    # Customer 1 has orders and none returned: its net is 2, not NULL.
+    sql_op = "<>" if op == "!=" else op
+    (expected,) = _gold(NET_ORDERS_GOLD.format(op=sql_op, value=value))[0]
+    filters = [_predicate(CUSTOMER, _net_orders("coalesce_zero"), op, value)]
+    assert _scalar(runtime, "customer_count", filters) == expected
+
+
+@pytest.mark.parametrize("null_behavior", [None, "", "propagate"])
+def test_a_difference_over_two_leaves_without_coalesce_zero_is_refused(runtime, null_behavior):
+    filters = [_predicate(CUSTOMER, _net_orders(null_behavior), "<", 1)]
+    with pytest.raises(SemanticLayerError) as raised:
+        _scalar(runtime, "customer_count", filters)
+    assert raised.value.code == "INVALID_METRIC_PREDICATE"
+    assert "coalesce_zero" in raised.value.details["recovery_hints"][0]["message"]
+
+
+def test_a_nested_difference_is_refused_unless_every_level_coalesces(runtime):
+    outer = {
+        "kind": "arithmetic",
+        "op": "add",
+        "left": _net_orders(None),
+        "right": ORDERS,
+        "null_behavior": "coalesce_zero",
+    }
+    with pytest.raises(SemanticLayerError) as raised:
+        _scalar(runtime, "customer_count", [_predicate(CUSTOMER, outer, "<", 1)])
+    assert raised.value.code == "INVALID_METRIC_PREDICATE"
+
+
+def test_an_empty_not_in_list_is_satisfied_by_every_entity(runtime):
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, "NOT IN", [])]) == 5
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, "IN", [])]) == 0
+
+
+def test_orders_without_a_customer_are_not_customers_with_no_orders(runtime):
+    # Order 5 has no customer: it belongs to nobody, whatever the threshold.
+    (expected,) = _gold(
+        "select count(*) from orders o where o.customer_id in (select c.customer_id "
+        "from customers c where coalesce((select sum(amount) from orders x "
+        "where x.customer_id = c.customer_id), 0) < 60)"
+    )[0]
+    filters = [_predicate(CUSTOMER, REVENUE, "<", 60)]
+    assert _scalar(runtime, "order_count", filters) == expected == 1
 
 
 def test_a_fact_measure_restricted_to_entities_with_no_related_rows(runtime):
@@ -459,3 +542,41 @@ def test_entity_only_scope_is_the_lifetime_alternative(runtime):
     rows = _by_enrolment_month(runtime, {**CROSS_CLOCK, "scope_mode": "entity_only"})
     got = {str(row["temporal_role.pred_enrolled_at__month"])[:7]: int(row["n"]) for row in rows}
     assert got == {"2025-01": 2, "2025-02": 2}
+
+
+def test_a_same_clock_contextual_anti_join_by_a_grouped_dimension_keeps_only_real_keys(runtime):
+    # Orders per status and month from customers whose revenue that month is under 60. Order 5
+    # has no customer and order 2 no status: neither is a customer "with no orders that month".
+    expected = {
+        (status, month): count
+        for status, month, count in _gold(
+            "select o.status, strftime(date_trunc('month', o.ordered_at), '%Y-%m'), count(*) "
+            "from orders o where o.customer_id is not null and (select sum(x.amount) from orders x "
+            "where x.customer_id = o.customer_id "
+            "and date_trunc('month', x.ordered_at) = date_trunc('month', o.ordered_at)) < 60 "
+            "group by 1, 2"
+        )
+    }
+    query = {
+        "version": 1,
+        "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
+        "metric_filters": [_predicate(CUSTOMER, REVENUE, "<", 60, scope_mode="contextual")],
+        "group_by": ["dimension.pred_status"],
+        "time": {"temporal_role": "temporal_role.pred_ordered_at", "grain": "month"},
+    }
+    rows = runtime.query(query)["rows"]
+    got = {
+        (row["dimension.pred_status"], str(row["temporal_role.pred_ordered_at__month"])[:7]): int(
+            row["n"]
+        )
+        for row in rows
+    }
+    assert got == expected == {(None, "2025-02"): 1, ("placed", "2025-02"): 1}
+    # Every key the anti-join matches on, context and period included, must be present.
+    sql = " ".join(runtime.compile(query)["rendered_sql"].split())
+    for key in (
+        "orders.customer_id",
+        "orders.order_id",
+        "DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))",
+    ):
+        assert f"AND {key} IS NOT NULL" in sql
