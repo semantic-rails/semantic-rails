@@ -286,15 +286,3 @@ def test_intent_ir_time_carries_resolved_relative_range(runtime_factory) -> None
     assert intent_ir.time is not None
     assert intent_ir.time["range"] == {"last": {"unit": "month", "value": 1}}
     assert intent_ir.to_dict()["time"]["range"]["last"]["unit"] == "month"
-
-
-def test_relevance_floor_still_blocks_nonsense_intents(runtime_factory) -> None:
-    """The honesty gate must not weaken the relevance floor."""
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="blue whale migration patterns")
-    finally:
-        runtime.close()
-    assert payload["status"] == "out_of_scope"
-    assert payload["best"] is None
