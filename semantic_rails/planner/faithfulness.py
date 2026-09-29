@@ -2184,7 +2184,7 @@ def unconsumed_terms(runtime: Any, question: str, query: dict[str, Any]) -> list
     "Europe/Berlin") in the question sits inside the character span of a construct the draft
     carries: a date or window, the limit, threshold or percentile it states, a filter value, or
     the name of an object it selects. Consumption is by span, never by value alone: a "1930"
-    that is not a window's year or a threshold's own number is left over, and so is any number
+    that no window phrase or threshold's own number holds is left over, and so is any number
     no construct reads. One left over is an hour, a range or a threshold the draft silently
     dropped.
     """
@@ -2235,8 +2235,9 @@ def _consumed_spans(
 ) -> list[tuple[int, int]]:
     """The character spans of the question the draft's constructs consume.
 
-    A window consumes the spans the planner read it from, only when the draft carries one (a
-    start, an end or a range); never a clock time. A limit
+    A window consumes the date phrases the planner resolved when the draft carries one (a
+    start, an end or a range) that agrees with them (``_window_agrees``), and the phrases it could
+    not resolve; never a clock time or a bare year. A limit
     consumes the count of the ranking that states it ("top 5", "the 5 customers who spent the
     most"); a threshold, percentile or numeric filter value consumes its own number token, found
     where the question states it ("over 12.50", "90th percentile", "1,000 or more", "size 12").
