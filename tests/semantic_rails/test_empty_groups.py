@@ -18,6 +18,7 @@ from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.compiler_parts.empty_groups import resolves_to_zero
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
@@ -194,6 +195,13 @@ def test_no_rows_and_no_time_window_says_nothing_matched(runtime: Runtime) -> No
     # A window with no rows is the window warning's to explain.
     assert not _warnings(windowed)
     assert _warnings(windowed, "EMPTY_RESULT_WINDOW")
+
+
+def test_the_query_mcp_carries_the_warning_at_its_default_verbosity(runtime: Runtime) -> None:
+    query = {"version": 2, "select": _select(revenue=REVENUE), "where": NO_SUCH_STORE}
+    response = SemanticLayerMCPAdapter(runtime).call_tool("execute", {"query": query})
+    assert response["ok"], response["errors"]
+    assert [item["code"] for item in _warnings(response)] == ["NO_DATA_IN_SCOPE"]
 
 
 @pytest.mark.parametrize("truncated", [False, True])

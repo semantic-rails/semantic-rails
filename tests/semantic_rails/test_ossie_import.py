@@ -57,7 +57,13 @@ def _export(package: Path, directory: Path) -> Path:
 
 
 def _errors(path: Path) -> list[str]:
-    return [error.replace(str(path), "<pkg>") for error in validate_runtime_package(path)]
+    # The comparison package's frozen model still authors the removed `null_behavior:`, which an
+    # import drops, so that one message is not part of what must round-trip.
+    return [
+        error.replace(str(path), "<pkg>")
+        for error in validate_runtime_package(path)
+        if "unknown key 'null_behavior'" not in error
+    ]
 
 
 @pytest.mark.parametrize("package_id", PACKAGES)
