@@ -164,7 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover.add_argument(
         "--kinds",
         default="",
-        help="Comma-separated kinds to include (entity, dimension, measure, metric, segment).",
+        help=(
+            "Kinds to include: comma-separated or a JSON array (entity, dimension, "
+            "measure, metric, segment, dimension_value). An unknown kind is refused."
+        ),
     )
     p_discover.add_argument(
         "--query-json",

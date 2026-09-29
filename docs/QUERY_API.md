@@ -769,6 +769,11 @@ Supported request controls:
 
 - `stage`
 - `verbosity`
+- `kinds` — an array, a comma-separated string, or a JSON array in a string. Ranked kinds are
+  `measure`, `metric`, `segment`, `dimension`, `entity` and `dimension_value`; a value that
+  does not parse or names another kind is refused with `400` instead of returning empty buckets.
+  In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced, and the
+  refusal lists them in `details.valid_kinds`. A `limit` below 1 is refused.
 
 ### `POST /api/v1/inspect`
 

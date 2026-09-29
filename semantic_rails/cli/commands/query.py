@@ -16,6 +16,7 @@ from ...metadata import (
     valid_values_payload,
 )
 from ...planner import plan_payload
+from ...request_payload import checked_string_list
 from ..common import (
     _package_ref_from_args,
     _parse_json,
@@ -61,7 +62,7 @@ def cmd_discover(args: argparse.Namespace) -> None:
             discover_payload(
                 runtime,
                 terms=args.terms,
-                kinds=[part for part in args.kinds.split(",") if part],
+                kinds=checked_string_list(args.kinds, field="kinds"),
                 partial_query=query,
                 stage=args.stage,
                 verbosity=args.verbosity,
