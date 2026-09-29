@@ -410,10 +410,12 @@ lands in one place rather than scattering across the codebase.
   `feature_pending_sql_lowering` recovery hint when the SQL
   lowering would be invoked. Authors can build queries against
   the locked IR shape today; SQL emission ships in the next
-  round. Supported shapes meanwhile: a pre-authored windowed
-  measure inside a metric recipe, or a query-time
-  rolling/prior-period/period-to-date primitive over a *uniform*
-  clock.
+  round. A metric recipe that authors the same anchor and window
+  is refused the same way, so it is not a workaround. Supported
+  shapes meanwhile: a column that carries the offset from the
+  anchor (for example days since the first order) with a measure
+  filtered on it, or a query-time rolling/prior-period/period-to-date
+  primitive over a *uniform* clock.
 - **Cross-clock filters without an authored conversion metric.**
   Free-form "filter on clock A, aggregate on clock B" queries are
   rejected with `INVALID_TEMPORAL_BINDING` (see "Cross-clock queries"

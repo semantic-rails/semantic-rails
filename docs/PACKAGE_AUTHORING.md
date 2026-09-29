@@ -1682,6 +1682,15 @@ would ignore such a key, so the package would behave differently from what it sa
 Every metric also gets the kind checks: a metric with an unknown `kind:`, or
 without a field its kind requires, such as a ratio's `denominator`, is rejected.
 
+A metric's `expression:` is held to the same rule. An unknown expression `kind:`, or a
+field its kind does not support (a `where` on a `metric` reference, an `anchor` on a
+plain measure), is rejected with the metric and the part named. The loader never drops
+a part of an expression to make it load, so a metric cannot compute a broader value than
+the one it says. `scoped_aggregate` keeps its `anchor`, `window`, `where` and
+`predicates`. An `anchor` with a `window` is refused when the metric is queried, until
+anchored windows compile (see `docs/CAPABILITIES.md`); it is never computed as a
+lifetime value.
+
 ### Filter values
 
 Validation that reads the data (`validate-config`, `check`, and the `runtime`

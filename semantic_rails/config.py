@@ -26,7 +26,11 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
-from .expressions import parse_config_expression, parse_semantic_expression
+from .expressions import (
+    expression_valid_keys,
+    parse_config_expression,
+    parse_semantic_expression,
+)
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,
@@ -927,12 +931,63 @@ def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric=None) -> Any:
     return out
 
 
-def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
+def _recipe_part_error(context: str, part: str, detail: str) -> SemanticLayerError:
+    where = f"{context}: {part}" if context else part
+    return SemanticLayerError("INVALID_CONFIG", f"{where} {detail}")
+
+
+def _check_recipe_expr_parts(expr: dict[str, Any], kind: str, *, context: str, part: str) -> None:
+    """Refuse an authored expression part the loader would otherwise drop.
+
+    The conversion below rebuilds each kind from the fields it knows; anything
+    else would vanish and the metric would silently compute something the
+    author did not write. Naming the metric and the part beats guessing.
+    """
+    valid = expression_valid_keys(kind) if kind else None
+    if kind and valid is None:
+        raise _recipe_part_error(context, part, f"has unknown expression kind '{kind}'")
+    if not kind:
+        # Kindless shorthand: {measure: ...} / {metric: ...}.
+        shorthand = "measure" if "measure" in expr else "metric" if "metric" in expr else ""
+        valid = expression_valid_keys(shorthand) if shorthand else None
+    if valid is None:
+        return
+    unknown = sorted(str(key) for key in set(expr) - valid)
+    if unknown:
+        raise _recipe_part_error(
+            context,
+            part,
+            f"has field(s) {unknown} that a '{kind or 'shorthand'}' expression does not "
+            f"support; supported fields: {sorted(valid)}",
+        )
+
+
+def _recipe_field(expr: dict[str, Any], key: str, *, context: str, part: str) -> Any:
+    value = expr.get(key)
+    if value is None or value == "" or value == {}:
+        raise _recipe_part_error(context, part, f"requires '{key}'")
+    return value
+
+
+def _convert_recipe_expr(
+    expr: dict[str, Any], *, context: str = "", part: str = "expression"
+) -> dict[str, Any]:
     kind = str(expr.get("kind", "")).strip()
+    _check_recipe_expr_parts(expr, kind, context=context, part=part)
+
+    def child(key: str) -> dict[str, Any]:
+        raw = _recipe_field(expr, key, context=context, part=part)
+        if not isinstance(raw, dict):
+            raise _recipe_part_error(context, f"{part}.{key}", "must be an expression mapping")
+        return _convert_recipe_expr(dict(raw), context=context, part=f"{part}.{key}")
+
+    def required(key: str) -> Any:
+        return _recipe_field(expr, key, context=context, part=part)
+
     if kind in {"aggregate", "semi_additive"}:
         out: dict[str, Any] = {
             "kind": kind,
-            "measure": str(expr["measure"]),
+            "measure": str(required("measure")),
             "aggregation": str(expr.get("aggregation", "")),
         }
         if expr.get("temporal_role"):
@@ -944,8 +999,14 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
         if expr.get("window"):
             out["window"] = dict(expr.get("window", {}) or {})
         return out
+    if kind == "scoped_aggregate":
+        # Every field (anchor, window, where, predicates, ...) is meaning the
+        # author wrote; the parser validates them and the compiler either
+        # applies or refuses them.
+        required("measure")
+        return dict(expr)
     if kind == "metric":
-        return {"kind": "metric", "metric": str(expr["metric"])}
+        return {"kind": "metric", "metric": str(required("metric"))}
     if kind == "binary":
         op_map = {
             "plus": "add",
@@ -955,11 +1016,12 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
             "multiply": "multiply",
             "divide": "divide",
         }
+        op = str(required("op")).lower()
         out = {
             "kind": "arithmetic",
-            "op": op_map.get(str(expr["op"]).lower(), str(expr["op"]).lower()),
-            "left": _convert_recipe_expr(dict(expr["left"])),
-            "right": _convert_recipe_expr(dict(expr["right"])),
+            "op": op_map.get(op, op),
+            "left": child("left"),
+            "right": child("right"),
         }
         # Preserve null_behavior across the binary→arithmetic rename. Without
         # this, ratio metrics that author `null_behavior: null_if_zero` lose
@@ -968,16 +1030,18 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
             out["null_behavior"] = str(expr.get("null_behavior", ""))
         return out
     if kind == "cumulative":
-        out = {"kind": "cumulative", "input": _convert_recipe_expr(dict(expr["input"]))}
+        out = {"kind": "cumulative", "input": child("input")}
         if expr.get("partition_by"):
             out["partition_by"] = list(expr.get("partition_by", []) or [])
         if expr.get("order_by"):
             out["order_by"] = str(expr.get("order_by", ""))
+        if expr.get("window_scope"):
+            out["window_scope"] = str(expr.get("window_scope", ""))
         return out
     if kind == "rolling":
         out = {
             "kind": "rolling",
-            "input": _convert_recipe_expr(dict(expr["input"])),
+            "input": child("input"),
             "window": dict(expr.get("window", {}) or {}),
         }
         if expr.get("partition_by"):
@@ -986,13 +1050,13 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
     if kind == "prior_period":
         return {
             "kind": "prior_period",
-            "input": _convert_recipe_expr(dict(expr["input"])),
+            "input": child("input"),
             "offset": dict(expr.get("offset", {}) or {}),
         }
     if kind == "period_to_date":
         out = {
             "kind": "period_to_date",
-            "input": _convert_recipe_expr(dict(expr["input"])),
+            "input": child("input"),
             "period": str(expr.get("period", "")),
         }
         if expr.get("partition_by"):
@@ -1001,7 +1065,7 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
     if kind == "metric_predicate":
         out = {
             "kind": "metric_predicate",
-            "input": _convert_recipe_expr(dict(expr["input"])),
+            "input": child("input"),
             "entity": str(expr.get("entity", "")),
             "op": str(expr.get("op", "")),
             "value": expr.get("value"),
@@ -1018,8 +1082,8 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
     if kind == "conversion":
         out = {
             "kind": "conversion",
-            "base": _convert_recipe_expr(dict(expr["base"])),
-            "converted": _convert_recipe_expr(dict(expr["converted"])),
+            "base": child("base"),
+            "converted": child("converted"),
             "entity": str(expr.get("entity", "")),
             "window": dict(expr.get("window", {}) or {}),
             "matching_mode": str(expr.get("matching_mode", expr.get("matching", ""))),
@@ -1031,12 +1095,14 @@ def _convert_recipe_expr(expr: dict[str, Any]) -> dict[str, Any]:
                 for dim_id, binding in dict(expr.get("dimension_bindings", {}) or {}).items()
             }
         return out
-    if "measure" in expr:
+    if "measure" in expr and kind in {"", "measure", "measure_ref"}:
         out = {
             "kind": "measure",
             "measure": str(expr["measure"]),
             "aggregation": str(expr.get("aggregation", "")),
         }
+        if expr.get("temporal_role"):
+            out["temporal_role"] = str(expr.get("temporal_role", ""))
         if expr.get("parameters"):
             out["parameters"] = dict(expr.get("parameters", {}) or {})
         return out
@@ -2521,7 +2587,10 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             context=f"{path}: metric '{metric_key}'",
             suggest=_suggest_refs,
         )
-        expression = _convert_recipe_expr(dict(spec.get("expression", {}) or {}))
+        expression = _convert_recipe_expr(
+            dict(spec.get("expression", {}) or {}),
+            context=f"{path}: metric '{metric_key}'",
+        )
         if not expression:
             metric_kind = str(spec.get("kind", "") or "").strip().lower()
             requirement_by_kind = {
