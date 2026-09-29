@@ -171,6 +171,15 @@ class SqlDialect:
         return SqlBinary(left, "IS NOT DISTINCT FROM", right)
 
     @property
+    def outer_lookup_joins(self) -> bool:
+        """Whether a many-to-one lookup may be a LEFT JOIN, keeping rows it finds no match for.
+
+        It needs an unmatched row to read NULL from the looked-up columns. A dialect whose
+        outer join fills them with a type default instead says False, and lookups stay inner.
+        """
+        return True
+
+    @property
     def has_implicit_calendar(self) -> bool:
         return type(self).day_series is not SqlDialect.day_series
 
@@ -1047,6 +1056,12 @@ class ClickHouseDialect(SqlDialect):
     # No day_series override: an unmatched LEFT JOIN field is 0 here rather than NULL
     # (without join_use_nulls), so a filled non-additive bucket would read 0. Packages
     # on ClickHouse keep needing an authored calendar for dense fill.
+
+    @property
+    def outer_lookup_joins(self) -> bool:
+        # The same default fill: an unmatched key or dimension reads '' or 0 unless its column
+        # is Nullable, so a kept row would pair, group and filter as if it had a real value.
+        return False
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # ClickHouse: toDateTime(ts, tz) reads the value in `tz`;

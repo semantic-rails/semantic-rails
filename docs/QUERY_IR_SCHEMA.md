@@ -207,6 +207,16 @@ Supported `op` values (all compile end-to-end):
   (`<`, `<=`, `>`, `>=`) and LIKE ops against `null` are rejected with a
   structured `INVALID_QUERY` and a recovery hint, since they would be
   always-UNKNOWN in SQL three-valued logic.
+- A dimension looked up through a many-to-one or one-to-one relationship is
+  NULL on a row whose lookup found no match, and a filter treats the row as
+  any other NULL: `IS NULL` keeps it (an anti-join, such as boardings with no
+  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds for
+  a `group_by` or `where` dimension of the measure. Other reads of a lookup
+  (a time role, a metric filter and its context, a conversion, a qualified
+  set) leave such a row out, as before, and so does a dimension any rollup of the
+  measure's model holds, even at a grain that rollup can never answer. ClickHouse is the exception: its
+  lookups stay inner joins, so it drops such a row from every query that reads
+  the looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
 

@@ -27,6 +27,7 @@ from .conftest import Backend
 ROLE = "temporal_role.shop_order_ordered_at"
 SIGNUP_ROLE = "temporal_role.shop_customer_signed_up_at"
 STORE = "dimension.shop_order_store_id"
+CHANNEL = "dimension.shop_customer_channel"  # looked up from the order's customer
 REVENUE = {"measure": "measure.shop.revenue"}
 ORDERS = {"measure": "measure.shop.order_count"}
 AVERAGE = {"measure": "measure.shop.average_order"}
@@ -226,6 +227,8 @@ P80 = "percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount)"
 MEDIAN = "percentile_cont(0.5) WITHIN GROUP (ORDER BY o.amount)"
 PRIOR_MONTH, TRAILING_3 = _at("1 month"), _trailing("3 month")
 MONTH_P80, MONTH_MEDIAN = _per_order(P80), _per_order(MEDIAN)
+# The order's customer's channel: NULL when the signup has none or there is no signup.
+ORDER_CHANNEL = "(SELECT s.channel FROM signups AS s WHERE s.customer_id = o.customer_id)"
 REPEAT_CUSTOMER_SQL = (
     "o.customer_id IN (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(*) >= 2)"
 )
@@ -361,6 +364,27 @@ def _cases() -> Iterator[Case]:
     ):
         yield _plain(
             name, "utc_authored", grain, aliases, sql_where=where, metric_filters=[predicate]
+        )
+    # A lookup keeps orders it finds no customer for (order 11): they group under NULL with
+    # signup 105's, and a filter on the looked-up column drops them unless it asks for NULL.
+    orders = _item(ORDERS, "orders")
+    lookup = f"SELECT {ORDER_CHANNEL}, SUM(o.amount), COUNT(*) FROM orders AS o"
+    yield Case(
+        "lookup_by_channel",
+        "utc_authored",
+        {"select": [revenue, orders], "group_by": [CHANNEL]},
+        f"{lookup} GROUP BY 1",
+    )
+    for name, op, value, where in (
+        ("lookup_channel_is_null", "IS NULL", None, "IS NULL"),
+        ("lookup_channel_not_web", "!=", "web", "<> 'web'"),
+    ):
+        filter_ = {"field": CHANNEL, "op": op, **({"value": value} if value else {})}
+        yield Case(
+            name,
+            "utc_authored",
+            {"select": [revenue, orders], "group_by": [CHANNEL], "where": [filter_]},
+            f"{lookup} WHERE {ORDER_CHANNEL} {where} GROUP BY 1",
         )
     store_a = {"all": [{"field": STORE, "op": "=", "value": "a"}]}
     only_a = _item({"kind": "aggregate", "measure": REVENUE["measure"], "filter": store_a}, "a")

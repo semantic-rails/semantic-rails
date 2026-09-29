@@ -437,9 +437,12 @@ def _pin(role: str, method: str, layout: str) -> dict:
     return {"preferences": {"destination": 10 if role == "destination" else 200}}
 
 
-def _rows(runtime: Runtime, query: dict, columns: list[str]) -> list[tuple]:
+def _rows(runtime: Runtime, query: dict, columns: list[str], *, key=None) -> list[tuple]:
+    """The seats rows as sorted tuples; pass ``key=str`` when a group can be NULL."""
     rows = runtime.query(query)["rows"]
-    return sorted((*(row[column] for column in columns), int(row["seats"])) for row in rows)
+    return sorted(
+        ((*(row[column] for column in columns), int(row["seats"])) for row in rows), key=key
+    )
 
 
 @pytest.mark.parametrize("query_name", ROLE_QUERIES)
@@ -801,28 +804,36 @@ def test_a_negative_path_preference_is_refused(tmp_path):
 ORPHAN_LEG = "INSERT INTO legs VALUES (5, 'ORD', 'SFO', 7, 'LAX');\n"
 
 
-def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airport_is_left_out(
+def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airport_groups_under_null(
     tmp_path,
 ):
-    """Documented behaviour: with several roles the key comes from the pinned relationship's
-    join, like any other airport column, so a leg whose code matches no airport row is not
-    counted. A single role reads the key from the leg's own column and keeps it."""
+    """With several roles the key comes from the pinned relationship's join, like any other
+    airport column. That is a lookup read grouped through one many-to-one hop, so a leg whose
+    code matches no airport row is kept under a NULL key. A single role reads the key from the
+    leg's own column and groups the leg under its code."""
     query = _seats_query(group_by=[CODE])
     con = duckdb.connect(":memory:")
     con.execute(SEED_SQL + ORPHAN_LEG)
     joined = sorted(
-        (code, int(total))
-        for code, total in con.execute(
-            "SELECT a.airport_code, SUM(l.seats) FROM legs l JOIN airports a "
-            "ON a.airport_code = l.destination_code GROUP BY 1"
-        ).fetchall()
+        (
+            (code, int(total))
+            for code, total in con.execute(
+                "SELECT a.airport_code, SUM(l.seats) FROM legs l LEFT JOIN airports a "
+                "ON a.airport_code = l.destination_code GROUP BY 1"
+            ).fetchall()
+        ),
+        key=str,
     )
     own_column = sorted(
-        (code, int(total))
-        for code, total in con.execute(
-            "SELECT destination_code, SUM(seats) FROM legs GROUP BY 1"
-        ).fetchall()
+        (
+            (code, int(total))
+            for code, total in con.execute(
+                "SELECT destination_code, SUM(seats) FROM legs GROUP BY 1"
+            ).fetchall()
+        ),
+        key=str,
     )
+    assert (None, 7) in joined
     assert ("SFO", 7) in own_column
     assert ("SFO", 7) not in joined
 
@@ -830,11 +841,11 @@ def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airpor
         tmp_path / "two", extra_seed=ORPHAN_LEG, **_pin("destination", "relationship", "")
     )
     two_roles = Runtime.from_path(str(tmp_path / "two" / "air"))
-    assert _rows(two_roles, query, [CODE]) == joined
+    assert _rows(two_roles, query, [CODE], key=str) == joined
 
     _write_package(tmp_path / "one", explicit=("destination",), extra_seed=ORPHAN_LEG)
     one_role = Runtime.from_path(str(tmp_path / "one" / "air"))
-    assert _rows(one_role, query, [CODE]) == own_column
+    assert _rows(one_role, query, [CODE], key=str) == own_column
 
 
 def _config_with_rollup_hints(tmp_path, hints: dict[str, list[str]], *, reverse_order=False):

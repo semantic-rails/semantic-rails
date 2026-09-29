@@ -3,7 +3,7 @@
 -- Edge cases: no orders in February 2024 (UTC), store b has none from December 2023 to
 -- February 2024, order 7 has a NULL amount and order 8 a NULL store, and orders 3, 5 and
 -- 10 fall in the previous day, month or quarter in New York, and order 11 in the previous
--- fiscal quarter.
+-- fiscal quarter. Order 11's customer (108) never signed up, and signup 105 has no channel.
 CREATE TABLE orders (
   order_id INTEGER, customer_id INTEGER, store_id VARCHAR(8),
   ordered_at TIMESTAMP, order_date DATE, amount DECIMAL(10, 2)
@@ -28,15 +28,15 @@ UPDATE orders SET ordered_at_tz = ordered_at AT TIME ZONE 'UTC';
 -- 7 days, as the window is half-open), 103 converts (one second inside), 104 does not (its
 -- order came first), 105 converts (the same instant), 106 converts in the next month and
 -- quarter, and 107 never orders.
-CREATE TABLE signups (customer_id INTEGER, signed_up_at TIMESTAMP);
+CREATE TABLE signups (customer_id INTEGER, signed_up_at TIMESTAMP, channel VARCHAR(8));
 INSERT INTO signups VALUES
-  (101, TIMESTAMP '2023-10-30 10:00:00'),
-  (102, TIMESTAMP '2023-11-13 23:30:00'),
-  (103, TIMESTAMP '2024-01-08 12:00:01'),
-  (104, TIMESTAMP '2024-03-02 00:00:00'),
-  (105, TIMESTAMP '2024-05-06 09:00:00'),
-  (106, TIMESTAMP '2024-06-25 03:30:00'),
-  (107, TIMESTAMP '2024-06-10 08:00:00');
+  (101, TIMESTAMP '2023-10-30 10:00:00', 'web'),
+  (102, TIMESTAMP '2023-11-13 23:30:00', 'store'),
+  (103, TIMESTAMP '2024-01-08 12:00:01', 'web'),
+  (104, TIMESTAMP '2024-03-02 00:00:00', 'store'),
+  (105, TIMESTAMP '2024-05-06 09:00:00', NULL),
+  (106, TIMESTAMP '2024-06-25 03:30:00', 'web'),
+  (107, TIMESTAMP '2024-06-10 08:00:00', 'store');
 
 -- A monthly rollup of orders by store, keyed by a DATE (the base table's key is a TIMESTAMP).
 CREATE TABLE orders_monthly AS

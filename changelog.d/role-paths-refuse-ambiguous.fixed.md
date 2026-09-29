@@ -8,7 +8,7 @@
   target entity. Parsing the package warns with `RELATIONSHIP_ROLES_UNPINNED` unless exactly
   one relationship has the lowest `path_preference`, whichever side each is declared from. A pinned
   role reads the airport's key through the pinned relationship's join, so a leg whose code matches
-  no airport is not counted. When a `graph.path_preferences` row exists for the pair (even one
+  no airport groups under a NULL key. When a `graph.path_preferences` row exists for the pair (even one
   that names a route through another entity), the key is read through path selection too, so a
   row never pairs one airport's city with another airport's code. Two authored `graph.relationships` entries on the same `via` columns
   are refused at load instead of one silently replacing the other. `path_preference: 0` now counts
