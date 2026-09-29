@@ -110,18 +110,23 @@ with `closest_matches`:
 }
 ```
 
-Two unambiguous slips are rewritten, not refused, and the response carries a
-`QUERY_SHORTHAND_NORMALIZED` warning naming the canonical form:
+Four unambiguous slips are rewritten, not refused, and the response carries a
+`QUERY_SHORTHAND_NORMALIZED` warning naming the canonical form. The item must hold exactly the
+keys shown; a rewrite never drops a key:
 
 | Sent | Treated as |
 |---|---|
-| `{ "metric": "..." }` or `{ "measure": "...", "aggregation": "sum" }` as the select item itself, with no `expression` wrapper (plus optional `as`) | `{ "expression": {"kind": "metric" \| "measure", ...}, "as": ... }` |
-| `{ "dimension": "..." }` as a select item, or as `expression`, when `group_by` is empty or already lists it | that id on `group_by[]` |
+| `{ "metric": "..." }` as the select item itself, with no `expression` wrapper (plus optional `as`) | `{ "expression": {"kind": "metric", "metric": "..."}, "as": ... }` |
+| `{ "measure": "...", "aggregation": "sum" }` as the select item itself (`aggregation` optional, plus optional `as`) | `{ "expression": {"kind": "measure", ...}, "as": ... }` |
+| `{ "dimension": "..." }` as the whole select item (no `as`) | that id added to `group_by[]`, whatever it already holds |
+| `{ "expression": { "dimension": "..." } }` as the whole select item (no `as`), when `group_by` is empty or already lists it | that id on `group_by[]` |
 
-Anything else without an `expression` (both `metric` and `measure`, `aggregation` on a metric,
-unknown keys) is refused with `INVALID_EXPRESSION_AST`, and the message shows the canonical
-form. A dimension in `select[].expression` beside a `group_by` naming other dimensions is
-refused too (`MOVE_DIMENSION_TO_GROUP_BY`).
+Everything else is refused with `INVALID_EXPRESSION_AST`, and the message shows the canonical
+form: an item naming more than one of `metric`, `measure` and `dimension`, a dimension item
+carrying `as` or any other key (a `group_by` entry has no alias), `expression` beside `metric`,
+`measure` or `dimension`, and any other key on a bare `metric` or `measure` item. A
+`{ "expression": { "dimension": "..." } }` item beside a `group_by` naming other dimensions is
+refused (`MOVE_DIMENSION_TO_GROUP_BY`).
 
 ## SelectExpression (discriminated union)
 

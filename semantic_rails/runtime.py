@@ -34,7 +34,7 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .ast import normalize_query, query_shorthand_normalizations
+from .ast import normalize_query, rewrite_select_shorthand
 from .cache import (
     CachedCompilation,
     CompiledSqlCache,
@@ -756,14 +756,16 @@ def _compiled_warnings(
         *_time_zone_warnings(config, compiled),
     ]
     if payload is not None:
-        warnings.extend(caveat_warnings(config, compiled, payload))
-        warnings.extend(_expression_normalized_away_warnings(payload, compiled))
-        warnings.extend(_ungrained_time_projection_warnings(payload))
-        warnings.extend(_shorthand_normalized_warnings(payload))
+        # Every check reads the canonical query the compiler saw, not the caller's shorthand.
+        canonical, notes = rewrite_select_shorthand(payload)
+        warnings.extend(caveat_warnings(config, compiled, canonical))
+        warnings.extend(_expression_normalized_away_warnings(canonical, compiled))
+        warnings.extend(_ungrained_time_projection_warnings(canonical))
+        warnings.extend(_shorthand_normalized_warnings(notes))
     return warnings
 
 
-def _shorthand_normalized_warnings(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Tell the caller which select shorthands were rewritten, with the canonical form."""
     return [
         semantic_issue(
@@ -777,7 +779,7 @@ def _shorthand_normalized_warnings(payload: dict[str, Any]) -> list[dict[str, An
             path=note["path"],
             details=note,
         )
-        for note in query_shorthand_normalizations(payload)
+        for note in notes
     ]
 
 

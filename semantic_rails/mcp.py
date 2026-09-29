@@ -22,7 +22,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from .ast import QUERY_INPUT_KEYS
+from .ast import QUERY_INPUT_KEYS, rewrite_select_shorthand
 from .audit import emit_audit_event
 from .catalog_service import resolve_catalog
 from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
@@ -1391,6 +1391,10 @@ def _grouped_ungrained_time_warning(query: Mapping[str, Any]) -> dict[str, Any] 
     distinct timestamp, so MCP adds its own code with the same shape.
     """
 
+    try:
+        query = rewrite_select_shorthand(dict(query))[0]
+    except SemanticLayerError:
+        return None
     if not query.get("group_by") or not _ungrained_time(query):
         return None
     if any(
