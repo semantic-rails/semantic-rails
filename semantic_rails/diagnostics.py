@@ -652,9 +652,9 @@ def recovery_hints_for_error(
         time_axis = dict(details.get("time_axis_recovery", {}) or {})
         grain = str(time_axis.get("grain", "") or "")
         role = str(time_axis.get("temporal_role", "") or "")
-        # Without both, the recovery found no time block that would answer: say nothing.
-        if grain and role:
-            example = {"temporal_role": role, "grain": grain}
+        # Without a role the recovery found no time block that would answer: say nothing.
+        if role:
+            example = {"temporal_role": role, "grain": grain or "<grain>"}
             hint = {
                 "kind": "use_time_grain",
                 "message": (

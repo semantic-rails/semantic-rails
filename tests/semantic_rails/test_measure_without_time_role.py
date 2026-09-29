@@ -10,7 +10,6 @@ answer is checked against independent SQL over the same table.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -20,8 +19,6 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.ast import normalize_query
-from semantic_rails.compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
@@ -35,6 +32,11 @@ CREATE TABLE claims AS SELECT * FROM (VALUES
   (4, DATE '2024-04-02', 30.0),
   (5, DATE '2024-08-15', 20.0)
 ) AS t(claim_id, opened_on, claim_amount);
+CREATE TABLE payments AS SELECT * FROM (VALUES
+  (1, 1, TIMESTAMP '2024-01-07 10:00:00'),
+  (2, 1, TIMESTAMP '2024-02-07 10:00:00'),
+  (3, 3, TIMESTAMP '2024-02-11 10:00:00')
+) AS t(payment_id, claim_id, paid_at);
 """
 PACKAGE = """
 schema_version: 1
@@ -67,8 +69,22 @@ metrics:
     value_type: currency
     expression: {kind: aggregate, measure: measure.ins.claim_amount}
 """
+PAYMENTS = """
+model:
+  id: payments
+  label: Payments
+  relation: payments
+  entities: {payment: {}, claim: {}}
+  dimensions:
+    paid_at: {label: Paid at, kind: timestamp, column: paid_at}
+"""
 GRAPH = {
-    "graph": {"entities": {"claim": {"label": "Claim", "key": ["claim_id"], "model": "claims"}}}
+    "graph": {
+        "entities": {
+            "claim": {"label": "Claim", "key": ["claim_id"], "model": "claims"},
+            "payment": {"label": "Payment", "key": ["payment_id"], "model": "payments"},
+        }
+    }
 }
 
 ROLE = "temporal_role.ins_claim_opened_on"
@@ -79,6 +95,8 @@ SELECT = [{"expression": AMOUNT, "as": "amount"}]
 NO_CLOCK = {"default": "", "times": ""}
 DEFAULT_TIME = {"default": ", default: true", "times": ""}
 MEASURE_TIME = {"default": "", "times": ", times: [opened_on]"}
+# A package-wide default query clock without `default: true`: the measure still has no time role.
+QUERY_AXIS = {"default": ", default_query_axis: true", "times": ""}
 
 
 def _package(root: Path, variant: dict[str, str]) -> Path:
@@ -87,6 +105,7 @@ def _package(root: Path, variant: dict[str, str]) -> Path:
         "data/seed.sql": SEED,
         "package.yml": PACKAGE,
         "models/claims.yml": CLAIMS % variant,
+        "models/payments.yml": PAYMENTS,
         "metrics/claims.yml": METRICS,
         "graph.yml": yaml.safe_dump(GRAPH),
     }
@@ -310,28 +329,31 @@ def test_the_refusal_does_not_say_grouped_by_when_time_has_no_grain(tmp_path):
     assert [hint["kind"] for hint in report["recovery_hints"]] == ["declare_measure_time_role"]
 
 
-def _recovery_hints(config: Any, measures: list[str]) -> tuple[dict[str, Any], list[str]]:
-    """The time-axis recovery and hint kinds a mixed-grain error carries for these measures.
+def _mixed_grain_error(package: Path, measures: list[str]) -> dict[str, Any]:
+    """The MIXED_GRAIN_INVALID a real validate raises for these measures grouped by a payment time."""
+    engine = Runtime.from_path(str(package))
+    try:
+        report = engine.validate(
+            {
+                "version": 1,
+                "select": [
+                    {"expression": {"kind": "measure", "measure": measure}, "as": f"v{index}"}
+                    for index, measure in enumerate(measures)
+                ],
+                "group_by": ["dimension.ins_payment_paid_at"],
+            }
+        )
+    finally:
+        engine.close()
+    error = report["errors"][0]
+    assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert error["details"]["offending_dimensions"] == ["dimension.ins_payment_paid_at"]
+    return error
 
-    Uses the enrichment the real MIXED_GRAIN_INVALID error attaches, then the hints callers get.
-    """
-    query = normalize_query(
-        {
-            "version": 1,
-            "select": [
-                {"expression": {"kind": "measure", "measure": measure}, "as": f"v{index}"}
-                for index, measure in enumerate(measures)
-            ],
-            "group_by": ["dimension.ins_claim_opened_on_date"],
-        }
-    )
-    details = mixed_grain_pairing_enrichment(
-        config=config, query=query, measure_ids=measures, target_entity="entity.ins_claim"
-    )
-    hints = recovery_hints_for_error("MIXED_GRAIN_INVALID", details)
-    return details["time_axis_recovery"], [hint["kind"] for hint in hints]
 
-
+@pytest.mark.parametrize(
+    "variant", [NO_CLOCK, QUERY_AXIS], ids=["no_default_axis", "package_query_axis"]
+)
 @pytest.mark.parametrize(
     "measures",
     [
@@ -342,29 +364,22 @@ def _recovery_hints(config: Any, measures: list[str]) -> tuple[dict[str, Any], l
     ids=["clockless", "clocked_then_clockless", "clockless_then_clocked"],
 )
 def test_the_grain_recovery_never_suggests_a_time_grain_when_any_measure_has_no_clock(
-    tmp_path, measures
+    tmp_path, variant, measures
 ):
-    """Grouping by a calendar date used to offer 'query it by month', which is now refused."""
-    engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
-    try:
-        config = engine.config
-    finally:
-        engine.close()
-    # A package-wide default query clock is what the recovery falls back to for a measure with none.
-    config = replace(
-        config,
-        temporal_roles=[
-            replace(role, default_query_time_axis=True) for role in config.temporal_roles
-        ],
-    )
-    recovery, kinds = _recovery_hints(config, measures)
-    assert recovery == {"calendar_dimension": "dimension.ins_claim_opened_on_date"}
-    assert "use_time_grain" not in kinds
-    # A clocked measure alone still gets the suggestion.
-    recovery, kinds = _recovery_hints(config, ["measure.ins.paid_amount"])
-    assert recovery["closest_valid_query"]["time"]["temporal_role"] == ROLE
-    assert recovery["grain"] == "day"
-    assert kinds[0] == "use_time_grain"
+    """Grouping by a fanned-out time used to offer 'query it by a time grain', which is refused."""
+    error = _mixed_grain_error(_package(tmp_path, variant), measures)
+    assert error["details"]["time_axis_recovery"] == {
+        "calendar_dimension": "dimension.ins_payment_paid_at"
+    }
+    assert "use_time_grain" not in [hint["kind"] for hint in error["recovery_hints"]]
+
+
+def test_a_clocked_measure_still_gets_the_time_grain_hint_when_the_grain_is_unknown(tmp_path):
+    """The dimension id names no grain (`paid_at`), so the hint keeps its `<grain>` placeholder."""
+    error = _mixed_grain_error(_package(tmp_path, NO_CLOCK), ["measure.ins.paid_amount"])
+    hints = error["recovery_hints"]
+    assert hints[0]["kind"] == "use_time_grain"
+    assert hints[0]["time"] == {"temporal_role": ROLE, "grain": "<grain>"}
 
 
 def test_a_clockless_measure_still_answers_without_time_or_by_a_plain_date(tmp_path):
