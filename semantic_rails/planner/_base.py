@@ -10,7 +10,7 @@ import copy
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -393,6 +393,33 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
     return metric, f"{text[:first]}{metric.id}{text[last:]}"
 
 
+def _named_measure(config: Any, text: str) -> Any | None:
+    """The measure the question names by a label or alias of two words or more.
+
+    An exact multi-word name outranks a partial one: "item revenue" names Item revenue,
+    not Revenue, which only shares a word with it. The longest name wins; a tie between
+    different measures names none, so the ordinary ranking decides. The question's words
+    stay in order, so "revenue by item" names neither.
+    """
+
+    said = _tokens(text)
+    best_size = 0
+    best: list[Any] = []
+    for row in config.measures:
+        names = [row.label, re.sub(r"\s*\(.*?\)", "", str(row.label or "")), *(row.aliases or [])]
+        for name in names:
+            parts = _tokens(name)
+            size = len(parts)
+            if size < 2 or size < best_size:
+                continue
+            if any(said[start : start + size] == parts for start in range(len(said) - size + 1)):
+                if size > best_size:
+                    best_size, best = size, []
+                if row not in best:
+                    best.append(row)
+    return best[0] if len(best) == 1 else None
+
+
 def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
     allowed = set(getattr(measure, "allowed_aggregations", []) or [])
     if ("sum" in terms or "total" in terms) and "sum" in allowed:
@@ -468,6 +495,18 @@ def _explicit_grain(text: str, clock: str = "") -> str:
 def _single_bucket_grain(bounds: dict[str, Any]) -> str:
     """The finest calendar grain that holds the whole window in one bucket, or ``""``."""
 
+    if any("T" in str(bounds.get(key, "")) for key in ("start", "end")):
+        # A window within one day is one day bucket: a temporal role may not offer finer ones.
+        try:
+            first, stop = (
+                datetime.fromisoformat(str(bounds[key]).replace("Z", "+00:00"))
+                for key in ("start", "end")
+            )
+        except (KeyError, ValueError):
+            return ""
+        if stop <= first or first.date() != stop.date():
+            return ""
+        return "day"
     try:
         start = date.fromisoformat(str(bounds["start"])[:10])
         last = date.fromisoformat(str(bounds["end"])[:10]) - timedelta(days=1)
@@ -699,12 +738,12 @@ _YEAR_SPAN_RE = re.compile(
     rf"(and|through|thru|until|till|to|[-–—])\s*{_YEAR}\b"
 )
 # A single calendar year resolves only after a preposition that scopes a
-# window: "in 2017", "for 2017", "during 2017", "the year 2017". Anything
-# else ("2017 revenue", "early 2017", "end of 2017", "2000 customers") is
-# reported, never guessed.
+# window ("in 2017", "for 2017", "during 2017") or after the word "year"
+# ("year 2017", "the calendar year 2017"). Anything else ("2017 revenue",
+# "early 2017", "end of 2017", "2000 customers") is reported, never guessed.
 _YEAR_IN_RE = re.compile(
     rf"\b(?:(?:in|for|during|throughout|within)\s+(?:the\s+)?(?:(?:calendar\s+)?year\s+)?"
-    rf"|the\s+(?:calendar\s+)?year\s+){_YEAR}\b"
+    rf"|(?:the\s+)?(?:calendar\s+)?year\s+){_YEAR}\b"
 )
 
 # A calendar phrase directly after one of these is a bound or a comparison,
@@ -714,7 +753,8 @@ _YEAR_IN_RE = re.compile(
 _BOUNDARY_BEFORE_RE = re.compile(
     r"(?:\b(?:before|after|since|until|till|through|thru|by|from|ending|starting|beginning|"
     r"prior\s+to|up\s+to|as\s+of|earlier\s+than|later\s+than|pre|post|vs\.?|versus|"
-    r"compared\s+(?:to|with)|relative\s+to|against|over|than|of)[\s-]+(?:the\s+)?)$"
+    r"compared\s+(?:to|with)|relative\s+to|against|over|than|of|"
+    r"last|prior|previous|past|next|this|current|each|every|per)[\s-]+(?:the\s+)?)$"
 )
 # The tail or head of a range the resolver couldn't parse: "1-7 April 2017",
 # "from Jan 1 2017 to Mar 2017".
@@ -972,6 +1012,121 @@ _CALENDAR_FORMS: tuple[tuple[re.Pattern[str], Any], ...] = (
 )
 
 
+# Range forms whose spoken end is inclusive, with the unit that end names. The Query IR
+# end is exclusive, so plan states the reading it took.
+_RANGE_END_UNITS: dict[re.Pattern[str], str] = {
+    _ISO_RANGE_RE: "day",
+    _DAY_RANGE_RE: "day",
+    _MONTH_YEAR_RANGE_RE: "month",
+    _MONTH_RANGE_SHARED_YEAR_RE: "month",
+    _YEAR_SPAN_RE: "year",
+}
+
+# A time of day: "12:00", "9:30:15", "9:30 pm", "3pm", "noon", "midnight". The day forms
+# above read "12:00 to 13:00 on 15 March 2017" as the whole day, so a time of day is
+# resolved with its day or reported, never dropped. A zone after it is kept: "utc" is
+# read, any other ("est", "+02:00") is reported.
+_CLOCK_RE = re.compile(
+    r"\b(?:(?P<h>\d{1,2}):(?P<m>\d{2})(?::(?P<s>\d{2}))?(?:\s*(?P<ap>[ap])\.?m\b\.?)?"
+    r"|(?P<h12>\d{1,2})\s*(?P<ap12>[ap])\.?m\b\.?"
+    r"|(?P<word>noon|midnight)\b)"
+    r"(?:\s*(?:(?P<utc>utc|gmt|z)\b(?![+\-]\d)"
+    r"|(?P<zone>(?:utc|gmt)?\s*[+\-]\d{1,2}(?::?\d{2})?\b"
+    r"|(?:[aecmp][sd]t|cet|cest|bst|ist|jst|ct|et|pt|mt)\b)))?"
+)
+_CLOCK_JOIN_RE = re.compile(r"^\s*(?:to|until|till|through|thru|and|[-–—])\s*$")
+
+
+@dataclass(frozen=True)
+class _Clock:
+    span: tuple[int, int]
+    seconds: int
+    zone: str  # "", "utc" or "other"
+
+    @property
+    def text(self) -> str:
+        return f"{self.seconds // 3600:02d}:{self.seconds % 3600 // 60:02d}:{self.seconds % 60:02d}"
+
+    @property
+    def short(self) -> str:
+        return self.text[:5] if self.seconds % 60 == 0 else self.text
+
+
+def _clocks(lowered: str) -> list[_Clock]:
+    """Every time of day in the text; one that isn't a valid time reads as zone ``other``."""
+
+    out: list[_Clock] = []
+    for match in _CLOCK_RE.finditer(lowered):
+        hour = int(match["h"] or match["h12"] or 0)
+        minute, second = int(match["m"] or 0), int(match["s"] or 0)
+        meridiem = match["ap"] or match["ap12"]
+        zone = "utc" if match["utc"] else "other" if match["zone"] else ""
+        if match["word"]:
+            hour = 12 if match["word"] == "noon" else 0
+        elif meridiem:
+            valid = 1 <= hour <= 12
+            hour = hour % 12 + (12 if meridiem == "p" else 0)
+            zone = zone if valid else "other"
+        valid_time = hour < 24 and minute < 60 and second < 60
+        out.append(
+            _Clock(
+                span=match.span(),
+                seconds=hour * 3600 + minute * 60 + second,
+                zone=zone if valid_time else "other",
+            )
+        )
+    return out
+
+
+def _clock_range(
+    lowered: str, clocks: list[_Clock], windows: list[tuple[tuple[int, int], dict[str, Any], str]]
+) -> tuple[dict[str, str], list[str]] | None:
+    """The window ``from 12:00 to 13:00 [utc] on 15 March 2017`` names, with its assumptions.
+
+    Only two times of day joined as a range, one zone or none, and one calendar day. The end
+    is exclusive. Anything else (a lone time, a range across midnight, a zone other than
+    UTC, no single day) is ``None``, and the caller reports it.
+    """
+
+    if len(clocks) != 2 or len(windows) != 1:
+        return None
+    first, second = clocks
+    day = windows[0][1]
+    join = lowered[first.span[1] : second.span[0]]
+    if (
+        not _CLOCK_JOIN_RE.match(join)
+        # "and" makes a range only after "between", as it does for dates.
+        or (join.strip() == "and" and not lowered[: first.span[0]].rstrip().endswith("between"))
+        or "other" in (first.zone, second.zone)
+        or (first.zone and second.zone and first.zone != second.zone)
+        or first.seconds >= second.seconds
+        or set(day) != {"start", "end"}
+    ):
+        return None
+    try:
+        start = date.fromisoformat(day["start"])
+        end = date.fromisoformat(day["end"])
+    except ValueError:
+        return None
+    if end - start != timedelta(days=1):
+        return None
+    utc = "utc" in (first.zone, second.zone)
+    suffix = "Z" if utc else ""
+    bounds = {
+        "start": f"{start.isoformat()}T{first.text}{suffix}",
+        "end": f"{start.isoformat()}T{second.text}{suffix}",
+    }
+    notes = [
+        f"{first.short} to {second.short} on {start.isoformat()} is read as a window that "
+        f"includes {first.short} and excludes {second.short} (time.end is exclusive)."
+    ]
+    if not utc:
+        notes.append(
+            "No time zone was named, so the times are read in the query's temporal role time zone."
+        )
+    return bounds, notes
+
+
 @dataclass(frozen=True)
 class _TimeWindow:
     """What a question says about time: its window, or what couldn't be resolved."""
@@ -981,6 +1136,10 @@ class _TimeWindow:
     unresolved: tuple[str, ...] = ()
     # Every span of the lowercased text read as time, resolved or not.
     spans: tuple[tuple[int, int], ...] = ()
+    # Windows the question states that differ from one another.
+    conflicts: tuple[str, ...] = ()
+    # The reading taken where the question leaves an end or a zone open.
+    assumptions: tuple[str, ...] = ()
 
 
 def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
@@ -989,10 +1148,10 @@ def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
 
 def _calendar_windows(
     lowered: str,
-) -> tuple[list[tuple[tuple[int, int], dict[str, str]]], list[tuple[int, int]]]:
-    """Resolved calendar spans with their bounds, and calendar spans rejected as bounds."""
+) -> tuple[list[tuple[tuple[int, int], dict[str, str], re.Pattern[str]]], list[tuple[int, int]]]:
+    """Resolved calendar spans with their bounds and form, and calendar spans rejected as bounds."""
 
-    accepted: list[tuple[tuple[int, int], dict[str, str]]] = []
+    accepted: list[tuple[tuple[int, int], dict[str, str], re.Pattern[str]]] = []
     rejected: list[tuple[int, int]] = []
     fiscal = _FISCAL_RE.search(lowered) is not None
     for pattern, to_bounds in _CALENDAR_FORMS:
@@ -1022,7 +1181,7 @@ def _calendar_windows(
             ):
                 rejected.append(span)
                 continue
-            accepted.append((span, bounds))
+            accepted.append((span, bounds, pattern))
     return accepted, rejected
 
 
@@ -1111,13 +1270,27 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         rejected += [row[0] for row in relative if row[2] != "day"]
         relative = [row for row in relative if row[2] == "day"]
     windows: list[tuple[tuple[int, int], dict[str, Any], str]] = [
-        (span, bounds, "") for span, bounds in accepted
+        (span, bounds, "") for span, bounds, _pattern in accepted
     ]
     for row in relative:
         if not _overlaps(row[0], [item[0] for item in windows]):
             windows.append(row)
     covered = [row[0] for row in windows]
     unresolved_spans = [span for span in rejected if not _overlaps(span, covered)]
+    assumptions: list[str] = []
+    clocks = [clock for clock in _clocks(lowered) if not _overlaps(clock.span, covered)]
+    if clocks:
+        # A time of day narrows its day; the day forms alone would widen it to the whole day.
+        resolved = _clock_range(lowered, clocks, windows)
+        if resolved is None:
+            unresolved_spans += [clock.span for clock in clocks]
+        else:
+            bounds, assumptions = resolved
+            windows = [(windows[0][0], bounds, "")]
+            covered += [clock.span for clock in clocks]
+    # The same window stated twice ("Q1 2017 (January 1 to March 31, 2017)") is one window.
+    if len(windows) > 1 and all(row[1] == windows[0][1] for row in windows):
+        windows = [(windows[0][0], windows[0][1], next((row[2] for row in windows if row[2]), ""))]
     # Two years compared ("2017 over 2016") are reported, whatever resolved.
     unresolved_spans += [match.span() for match in _YEAR_COMPARISON_RE.finditer(lowered)]
     # Longest cues first, so a year inside "4/3/2017" isn't reported twice.
@@ -1130,11 +1303,28 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         # ambiguous question would answer a different one.
         spans = sorted(unresolved_spans + (covered if len(windows) > 1 else []))
         phrases = list(dict.fromkeys(_phrase(lowered, span) for span in spans))
-        return _TimeWindow(unresolved=tuple(phrases), spans=time_spans)
+        conflicts = (
+            tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(covered)))
+            if len(windows) > 1
+            else ()
+        )
+        return _TimeWindow(unresolved=tuple(phrases), spans=time_spans, conflicts=conflicts)
     if not windows:
         return _TimeWindow()
     _span, bounds, unit = windows[0]
-    return _TimeWindow(bounds=dict(bounds), relative_unit=unit, spans=time_spans)
+    for span, _bounds, pattern in accepted:
+        end_unit = _RANGE_END_UNITS.get(pattern)
+        if end_unit and not clocks and bounds == _bounds:
+            assumptions.append(
+                f"'{lowered[span[0] : span[1]].strip()}' includes its last {end_unit}, so "
+                f"time.end is {bounds['end']} (exclusive)."
+            )
+    return _TimeWindow(
+        bounds=dict(bounds),
+        relative_unit=unit,
+        spans=time_spans,
+        assumptions=tuple(dict.fromkeys(assumptions)),
+    )
 
 
 def _time_bounds_from_text(text: str) -> dict[str, Any]:

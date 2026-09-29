@@ -203,17 +203,36 @@ negative filter for one value does not make a later excluded value safe if the
 draft includes it.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
-framing words, time phrases the planner read, and counts, come back as a
-`PLAN_UNMATCHED_TERMS` warning with up to eight of them in `details.terms`; check them
-before executing. If a
+framing words (including verbs and function words such as "dated", "placed", "only", "using"),
+time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
+window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
+`details.terms`. A number the draft doesn't carry stays in the list, with the comparative
+beside it ("2", "more" for "2 or more orders"), as do measure nouns; check them before
+executing. Two words or more that no catalog object has, the first straight after "for",
+"from", "of" or "with", make it `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`
+instead: "for tangaroo and vanilla ice" is a filter the draft dropped. Every measure a
+question lists ("item revenue and orders in Q1 2017") is in the draft's select list or the
+plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the ones it left
+out. A measure the question names in full outranks a shorter one it shares a word with:
+"item revenue" is Item revenue, not Revenue. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
 `plan` resolves a time window only when the question names exactly one, in a form it reads
-unambiguously: a year after "in", "for" or "during", consecutive years, a quarter or half with a
-year, a month or month range with a year, days with a year, an ISO date, or a relative window
-("last 7 days"). "and" joins a range only after "between": "between March and May 2017" is a
-range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
+unambiguously: a year after "in", "for" or "during" or after the word "year" ("year 2017",
+"the calendar year 2017"), consecutive years, a quarter or half with a year ("the first half
+of 2017", "H2 2017"), a month or month range with a year, days with a year ("March 1 to March
+31, 2017", "Mar 1 - Mar 31 2017"), an ISO date or ISO range ("2017-03-01 to 2017-03-31"), or a
+relative window ("last 7 days"). A range's spoken end is included: the response's
+`assumptions` says so, with the exclusive `time.end` it chose. The same window stated twice
+("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ are a conflict, and
+`TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. A time of day
+resolves only as a range on one day ("from 12:00 to 13:00 UTC on 15 March 2017"): the bounds
+are timestamps, the end is exclusive, "utc" is read, and with no zone named the times are in
+the temporal role's time zone, which `assumptions` says. A lone time, a range across
+midnight, another zone ("EST", "+02:00") or a range without one day is unresolved, never
+widened to its day. "and" joins a range only after "between": "between March and May 2017" is
+a range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
 bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
 windows at once (such as "last month and this month"), return `low_confidence` with
@@ -314,7 +333,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`) when two or more of them are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |

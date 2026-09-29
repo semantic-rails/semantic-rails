@@ -234,7 +234,13 @@ _NOT_RANKED = frozenset(
         "your",
     }
 )
-_SUBJECT_CONJUNCTION_RE = re.compile(r"\s+(?:and|plus)\s+|\s*,\s*", re.IGNORECASE)
+_SUBJECT_CONJUNCTION_RE = re.compile(
+    r"\s+(?:and|plus|as\s+well\s+as|along\s+with|together\s+with)\s+|\s*,\s*", re.IGNORECASE
+)
+# The preposition that opens a time clause, cut off with the clause.
+_TIME_LEAD_RE = re.compile(
+    r"\s+(?:in|for|during|from|between|on|over|of)(?:\s+the)?\s*$", re.IGNORECASE
+)
 _SUBJECT_BOUNDARY_RE = re.compile(
     r"\s+(?:by|where|during|over\s+time|for\s+(?:customers?|stores?|accounts?|users?)|"
     r"with\s+(?:at\s+least|more\s+than|over|under))\b",
@@ -1759,6 +1765,9 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
     """
 
     target_text = _SUBJECT_BOUNDARY_RE.split(str(text or ""), maxsplit=1)[0]
+    # The time clause is no part of the last subject: "revenue and orders in Q1 2017".
+    for start, end in sorted(_time_window(target_text).spans, reverse=True):
+        target_text = _TIME_LEAD_RE.sub("", target_text[:start]) + target_text[end:]
     pieces = [
         piece.strip() for piece in _SUBJECT_CONJUNCTION_RE.split(target_text) if piece.strip()
     ]
@@ -1788,11 +1797,14 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
 def _matches_exact_subject_field(row: Any, piece_tokens: tuple[str, ...]) -> bool:
     object_id = str(getattr(row, "id", "") or "")
     id_suffix = object_id.rsplit(".", 1)[-1]
+    label = str(getattr(row, "label", "") or "")
     fields = (
         object_id,
         id_suffix,
         str(getattr(row, "name", "") or ""),
-        str(getattr(row, "label", "") or ""),
+        label,
+        # "item revenue" names "Item revenue (USD)".
+        re.sub(r"\s*\(.*?\)", "", label),
         *[str(value) for value in list(getattr(row, "aliases", []) or [])],
     )
     # Filler goes on both sides: "order count" names the "Order count" measure.
@@ -1883,6 +1895,17 @@ _FRAMING_WORDS = frozenset(
             "sells",
             "sold",
             "spent",
+            # Verbs and function words that restate the request ("orders dated in March",
+            # "customers who placed", "counted using").
+            "anchored",
+            "came",
+            "counted",
+            "dated",
+            "only",
+            "placed",
+            "such",
+            "using",
+            "while",
             # Comparison and combination words; the select list carries them.
             "across",
             "against",
@@ -2000,6 +2023,13 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
     skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
     text = str(question or "")
     time_spans = _time_window(text).spans
+    numbers = _query_numbers(query)
+    has_window = bool(_time_block(query))
+
+    def dated(word: str) -> bool:
+        # A year the draft's window carries, also where the window came from the caller.
+        return has_window and re.fullmatch(r"(?:19|20)\d{2}", word) is not None
+
     seen: set[str] = set()
     out: list[str] = []
     for match in re.finditer(r"[^\W_]+", text.lower()):
@@ -2012,8 +2042,9 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
         token = _TERM_SYNONYMS.get(word, word)
         start, end = match.span()
         if (
-            len(word) < 2
-            or word.isdigit()
+            (len(word) < 2 and not word.isdigit())
+            # A number counts, so the draft must carry it: a "2 or more" it dropped is named.
+            or (word.isdigit() and (word in numbers or token in vocabulary or dated(word)))
             or _ORDINAL_RE.fullmatch(word)
             or word in skipped
             or token in skipped
@@ -2024,6 +2055,38 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
         ):
             continue
         out.append(word)
+    return out
+
+
+def _query_numbers(query: dict[str, Any]) -> set[str]:
+    """Every number the draft carries (a limit, a threshold, a filter value), as digits.
+
+    A fraction also counts as its percentage: 0.5 accounts for "50".
+    """
+
+    out: set[str] = set()
+
+    def add(value: float) -> None:
+        if float(value).is_integer():
+            out.add(str(int(value)))
+        if 0 < value <= 1 and float(value * 100).is_integer():
+            out.add(str(int(value * 100)))
+
+    def walk(value: Any) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, (int, float)):
+            add(value)
+        elif isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value.strip()):
+            add(float(value))
+        elif isinstance(value, dict):
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk({key: value for key, value in query.items() if key != "version"})
     return out
 
 

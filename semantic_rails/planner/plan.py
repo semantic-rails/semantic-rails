@@ -20,6 +20,7 @@ to the IR consumed internally by patterns.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -268,7 +269,15 @@ def plan_payload(
         if best_ok and not (faithfulness_why or time_why or conversion_why)
         else None
     )
-    ready = best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
+    unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
+    value_why = (
+        _dropped_value_why(intent_str, unmatched, catalog_tokens, set(intent_ir.unresolved))
+        if not (faithfulness_why or time_why or conversion_why or subject_why)
+        else None
+    )
+    ready = best_ok and not (
+        faithfulness_why or time_why or conversion_why or subject_why or value_why
+    )
     payload = {
         "plan_version": _VERSION,
         "intent": intent,
@@ -294,13 +303,17 @@ def plan_payload(
         payload["why"] = conversion_why
     elif subject_why is not None:
         payload["why"] = subject_why
+    elif value_why is not None:
+        payload["why"] = value_why
     elif not best_ok:
         errors = list(best_validation.get("errors") or [])
         payload["why"] = _trim_why_errors(errors)
         payload["tie_break_hints"] = _slim_recovery_hints(
             list(best_validation.get("recovery_hints") or [])
         )
-    unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
+    assumptions = _time_assumptions(intent_str, best_draft.query) if best_ok else []
+    if assumptions:
+        payload["assumptions"] = assumptions
     if unmatched:
         payload["warnings"] = [
             {
@@ -531,6 +544,81 @@ def _with_time_gap(why: dict[str, Any], time_why: dict[str, Any] | None) -> dict
         "details": {**dict(why.get("details") or {}), "gap_count": len(gaps), "gaps": gaps},
         "recovery_hints": hints,
     }
+
+
+def _unknown_terms_why(terms: list[str]) -> dict[str, Any]:
+    """Explain a draft that leaves out words the catalog has no object for."""
+
+    return {
+        "code": "PLAN_UNMATCHED_TERMS",
+        "message": (
+            f"The question uses words that match nothing in the catalog: {', '.join(terms)}. "
+            "The draft doesn't use them, so it may have dropped a value or a condition."
+        ),
+        "details": {"terms": terms},
+        "recovery_hints": [
+            {
+                "kind": "add_missing_condition",
+                "message": (
+                    "Add the missing filter or condition to best.query_ir, or ask again "
+                    "without those words, then validate."
+                ),
+            }
+        ],
+    }
+
+
+def _dropped_value_why(
+    question: str, unmatched: list[str], catalog_tokens: frozenset[str], unresolved: set[str]
+) -> dict[str, Any] | None:
+    """A ``why`` when the question restricts to names the catalog doesn't know and the draft
+    doesn't filter on: "for tangaroo and vanilla ice", "from doctor stew and mel-bun".
+
+    Two words or more, the first straight after for/from/of/with, each one the draft accounts
+    for nowhere, no catalog object has and the intent parse couldn't place. A single word
+    ("YoY", "decile"), one the catalog has or one further into a clause stays a
+    ``PLAN_UNMATCHED_TERMS`` warning.
+    """
+
+    unknown = [term for term in unmatched if term not in catalog_tokens and term in unresolved]
+    lowered = question.lower()
+    if len(unknown) < 2 or not any(
+        re.search(rf"\b(?:for|from|of|with)\s+(?:the\s+)?{re.escape(term)}\b", lowered)
+        for term in unknown
+    ):
+        return None
+    return {
+        "code": "PLAN_UNMATCHED_TERMS",
+        "message": (
+            f"The question restricts to words that match nothing in the catalog "
+            f"({', '.join(unknown)}), and the draft doesn't filter on them, so it answers a "
+            "wider question."
+        ),
+        "details": {"terms": unknown},
+        "recovery_hints": [
+            {
+                "kind": "add_missing_condition",
+                "message": (
+                    "Find the values with valid_values, add the filter to best.query_ir, "
+                    "then validate."
+                ),
+            }
+        ],
+    }
+
+
+def _time_assumptions(intent: str, query: dict[str, Any]) -> list[str]:
+    """The reading plan took of an open end or zone in the window the draft carries."""
+
+    from ._base import _time_window  # noqa: WPS433
+
+    window = _time_window(intent)
+    time = query.get("time")
+    if not window.assumptions or not isinstance(time, dict):
+        return []
+    if any(time.get(key) != window.bounds.get(key) for key in ("start", "end")):
+        return []
+    return list(window.assumptions)
 
 
 def _start_dropped_why(start: Any) -> dict[str, Any] | None:
@@ -777,6 +865,7 @@ def _query_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "status",
         "why",
         "tie_break_hints",
+        "assumptions",
         "warnings",
         "compose_hints",
     ):
@@ -1246,10 +1335,11 @@ def _unresolved_time_why(
         _FISCAL_RE,
         _MAX_TIME_TEXT,
         _SUPPORTED_WINDOW_FORMS,
-        _unresolved_time_phrases,
+        _time_window,
     )
 
-    phrases = _unresolved_time_phrases(intent)
+    window = _time_window(intent)
+    phrases = list(window.unresolved)
     too_long = len(intent) > _MAX_TIME_TEXT
     if not phrases and not too_long:
         return None
@@ -1266,6 +1356,10 @@ def _unresolved_time_why(
             f"The question exceeds the {_MAX_TIME_TEXT}-character time-resolution limit; "
             "its complete time scope could not be checked."
             if too_long
+            else "The question states windows that differ from one another "
+            f"({'; '.join(window.conflicts)}), so plan returns no query: picking one would "
+            "answer a different question."
+            if window.conflicts
             else "The intent names a time window the planner could not resolve, so "
             "plan returns no query: one without that window would answer a "
             "different question."
@@ -1273,6 +1367,7 @@ def _unresolved_time_why(
         "details": {
             "path": "time",
             "unresolved_phrases": list(phrases),
+            **({"conflicting_phrases": list(window.conflicts)} if window.conflicts else {}),
             **({"max_intent_chars": _MAX_TIME_TEXT} if too_long else {}),
         },
         "recovery_hints": [

@@ -28,6 +28,7 @@ from .._base import (
     _explicit_grain,
     _implied_window_grain,
     _maybe_group_by,
+    _named_measure,
     _named_metric,
     _object_by_id,
     _preferred_measure,
@@ -113,6 +114,10 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # canonical concept words (revenue / order / arr / etc.) we just
     # use the raw term set against the catalog.
     target = named[0] if named is not None else None
+    if target is None:
+        # A measure the question names in full ("item revenue") is not the shorter one it
+        # shares a word with ("revenue").
+        target = _named_measure(config, target_focus or text)
     if target is None and target_terms:
         if metric_first:
             target = _preferred_metric(config, target_terms, target_focus_terms)

@@ -167,8 +167,9 @@ Statuses are:
   plan again),
   or a validating fallback would drift from the requested target, grouping, qualification,
   filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
-  `why.details.unresolved_phrases` names one window twice, as in "Q2 2017 (April 1 to June 30
-  2017)", keep one form and plan again.
+  `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
+  June 29, 2017)", keep the one you mean and plan again. (One window stated twice the same way
+  resolves.)
 - `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 
