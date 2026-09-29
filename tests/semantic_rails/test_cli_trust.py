@@ -461,6 +461,33 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     assert "  Treated a blank grain as month.\n" in output
 
 
+def test_ask_prints_the_readings_the_plan_took_of_the_window(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reading = "'2017-03-01 to 2017-03-31' includes its last day, so time.end is 2017-04-01."
+    plan = {
+        "ok": True,
+        "best": {
+            "query_ir": {"select": [{"expression": {"measure": "measure.orders"}}]},
+            "resolved": [{"id": "measure.orders", "label": "Orders"}],
+        },
+        "assumptions": [reading],
+    }
+    monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: _StubRuntime())
+    monkeypatch.setattr(reports, "plan_payload", lambda *_a, **_k: plan)
+    monkeypatch.setattr(interpretation, "resolve_catalog", lambda *_a, **_k: {})
+
+    report = reports.ask_report(
+        PackageReference(source_path="/nowhere"), question="orders", execute=True, limit=5
+    )
+    cli_output._print_ask_report(report)
+
+    assert report["plan"]["assumptions"] == [reading]
+    output = capsys.readouterr().out
+    assert f"Warnings:\n  {reading}\n" in output
+    assert output.index("Warnings:") < output.index("Rows: 1")
+
+
 def test_ask_prints_a_warning_repeated_for_each_measure_once(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -5,7 +5,8 @@
   `TIME_WINDOW_UNRESOLVED` with no query. A window stated twice the same way ("Q1 2017 (January
   1 to March 31, 2017)") is one window, two that differ are named in
   `why.details.conflicting_phrases`, and "year 2017" and "calendar year 2017" resolve. A
-  range's spoken last day is stated as included in `assumptions`.
+  range's spoken last day is stated as included in `assumptions`, which `ask` prints with its
+  warnings.
 - `plan` reads a measure the question names in full ahead of a shorter one that shares a word
   with it: "item revenue" is Item revenue, not Revenue. A question that lists several
   measures ("item revenue and orders in Q1 2017", "revenue, orders and gross profit") is
