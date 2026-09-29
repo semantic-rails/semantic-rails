@@ -22,6 +22,7 @@ from semantic_rails.compiler_parts.bind import (
     lift_conditional_aggregates,
 )
 from semantic_rails.config import load_package_config, resolve_repo_path
+from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.dialects import SnowflakeDialect, SqlDialect
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
@@ -427,3 +428,20 @@ def test_lift_conditional_aggregates_replaces_node_with_aggregate_expr(jaffle_co
     synthetic_id = next(iter(synthetics))
     assert isinstance(rewritten.select[0].expression, AggregateExpr)
     assert rewritten.select[0].expression.measure == synthetic_id
+
+
+def test_aggregate_if_by_time_is_refused_without_naming_a_synthetic_measure(jaffle_config):
+    """An aggregate_if has no clock and no measure to declare one on: its refusal says so
+    in its own words and carries no hint that points at an internal measure id."""
+    payload = {
+        **COUNT_IF_PAYLOAD,
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+    }
+    with pytest.raises(SemanticLayerError) as raised:
+        plan_query(jaffle_config, None, payload)
+    error = raised.value
+    assert error.code == "INCOMPATIBLE_TEMPORAL_ROLE"
+    assert "aggregate_if can't be bucketed by time" in str(error)
+    assert "__aggif__" not in str(error) + repr(error.details)
+    assert error.details["compatible"] == []
+    assert recovery_hints_for_error(error.code, error.details) == []

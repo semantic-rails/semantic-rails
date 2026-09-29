@@ -10,6 +10,7 @@ answer is checked against independent SQL over the same table.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -19,6 +20,9 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.ast import normalize_query
+from semantic_rails.compiler_parts.grain_recovery import _enrichment_unsafe
+from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.runtime import Runtime
@@ -51,6 +55,17 @@ model:
   measures:
     claim_amount: {label: Claim amount, kind: aggregate, expr: claim_amount,
       accumulation: {kind: flow}, value_type: currency%(times)s}
+    paid_amount: {label: Paid amount, kind: aggregate, expr: claim_amount,
+      accumulation: {kind: flow}, value_type: currency, times: [opened_on]}
+"""
+METRICS = """
+metrics:
+  claim_total:
+    as: metric.ins.claim_total
+    label: Claim total
+    kind: derived
+    value_type: currency
+    expression: {kind: aggregate, measure: measure.ins.claim_amount}
 """
 GRAPH = {
     "graph": {"entities": {"claim": {"label": "Claim", "key": ["claim_id"], "model": "claims"}}}
@@ -72,6 +87,7 @@ def _package(root: Path, variant: dict[str, str]) -> Path:
         "data/seed.sql": SEED,
         "package.yml": PACKAGE,
         "models/claims.yml": CLAIMS % variant,
+        "metrics/claims.yml": METRICS,
         "graph.yml": yaml.safe_dump(GRAPH),
     }
     for name, text in files.items():
@@ -132,16 +148,43 @@ def test_the_refusal_carries_a_recovery_hint_on_every_dry_run(tmp_path, operatio
             with pytest.raises(SemanticLayerError) as raised:
                 engine.compile(query)
             assert raised.value.code == "INCOMPATIBLE_TEMPORAL_ROLE"
-            return
-        report = engine.validate(query)
+            hints = recovery_hints_for_error(raised.value.code, raised.value.details)
+        else:
+            report = engine.validate(query)
+            assert report["ok"] is False
+            assert [item["code"] for item in report["errors"]] == ["INCOMPATIBLE_TEMPORAL_ROLE"]
+            hints = report["recovery_hints"]
     finally:
         engine.close()
-    assert report["ok"] is False
-    assert [item["code"] for item in report["errors"]] == ["INCOMPATIBLE_TEMPORAL_ROLE"]
-    hints = report["recovery_hints"]
     assert [item["kind"] for item in hints] == ["declare_measure_time_role"]
     assert hints[0]["measure"] == "measure.ins.claim_amount"
     assert hints[0]["requested_temporal_role"] == ROLE
+
+
+def test_a_role_override_on_a_clockless_measure_gets_the_same_hint(tmp_path):
+    """The natural first fix, an override or an explicit role, must not dead-end."""
+    engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
+    time = {"temporal_role": ROLE, "grain": "month"}
+    explicit = {"kind": "aggregate", "measure": "measure.ins.claim_amount", "temporal_role": ROLE}
+    queries = [
+        {
+            "version": 1,
+            "select": SELECT,
+            "time": time,
+            "temporal_role_overrides": {"measure.ins.claim_amount": ROLE},
+        },
+        {"version": 1, "select": [{"expression": explicit, "as": "amount"}]},
+    ]
+    try:
+        reports = [engine.validate(query) for query in queries]
+    finally:
+        engine.close()
+    for report in reports:
+        assert [item["code"] for item in report["errors"]] == ["INCOMPATIBLE_TEMPORAL_ROLE"]
+        assert report["errors"][0]["details"]["compatible"] == []
+        assert [hint["kind"] for hint in report["recovery_hints"]] == ["declare_measure_time_role"]
+        assert report["recovery_hints"][0]["measure"] == "measure.ins.claim_amount"
+        assert report["recovery_hints"][0]["requested_temporal_role"] == ROLE
 
 
 def test_over_http_the_refusal_is_a_client_error_never_internal_error(tmp_path):
@@ -193,6 +236,81 @@ def test_every_expression_over_a_clockless_measure_goes_through_the_same_refusal
     finally:
         engine.close()
     assert [item["code"] for item in report["errors"]] == ["INCOMPATIBLE_TEMPORAL_ROLE"]
+    assert report["errors"][0]["details"]["compatible"] == []
+    assert [hint["kind"] for hint in report["recovery_hints"]] == ["declare_measure_time_role"]
+
+
+CLOCKED: dict[str, Any] = {"kind": "measure", "measure": "measure.ins.paid_amount"}
+MONTHLY = {"temporal_role": ROLE, "grain": "month"}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {
+            "select": [
+                {
+                    "expression": {"kind": "metric", "metric": "metric.ins.claim_total"},
+                    "as": "value",
+                }
+            ]
+        },
+        {"select": [{"expression": CLOCKED, "as": "paid"}, {"expression": AMOUNT, "as": "amount"}]},
+        {
+            "select": [{"expression": CLOCKED, "as": "paid"}],
+            "metric_filters": [{"expression": AMOUNT, "op": ">", "value": 0}],
+        },
+    ],
+    ids=["metric_ref", "mixed_select", "metric_filters"],
+)
+def test_the_refusal_names_the_clockless_measure_however_it_is_reached(tmp_path, query):
+    engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
+    try:
+        report = engine.validate({"version": 1, **query, "time": MONTHLY})
+    finally:
+        engine.close()
+    assert [item["code"] for item in report["errors"]] == ["INCOMPATIBLE_TEMPORAL_ROLE"]
+    assert report["errors"][0]["details"]["measure"] == "measure.ins.claim_amount"
+    assert report["errors"][0]["details"]["compatible"] == []
+    assert [hint["kind"] for hint in report["recovery_hints"]] == ["declare_measure_time_role"]
+    assert report["recovery_hints"][0]["measure"] == "measure.ins.claim_amount"
+
+
+def test_the_grain_recovery_never_suggests_a_time_grain_for_a_clockless_measure(tmp_path):
+    """Grouping by a calendar date used to offer 'query it by month', which is now refused."""
+    engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
+    try:
+        config = engine.config
+    finally:
+        engine.close()
+    date_dim = "dimension.ins_claim_opened_on_date"
+    # A package-wide default query clock is what the recovery falls back to for a measure with none.
+    config = replace(
+        config,
+        temporal_roles=[
+            replace(role, default_query_time_axis=True) for role in config.temporal_roles
+        ],
+    )
+
+    def recovery(measure: str) -> dict[str, Any]:
+        query = normalize_query(
+            {
+                "version": 1,
+                "select": [{"expression": {"kind": "measure", "measure": measure}, "as": "v"}],
+                "group_by": [date_dim],
+            }
+        )
+        enrichment = _enrichment_unsafe(
+            config=config, query=query, measure_ids=[measure], target_entity="entity.ins_claim"
+        )
+        return enrichment["time_axis_recovery"]
+
+    assert (
+        recovery("measure.ins.paid_amount")["closest_valid_query"]["time"]["temporal_role"] == ROLE
+    )
+    clockless = recovery("measure.ins.claim_amount")
+    assert clockless["calendar_dimension"] == date_dim
+    assert "closest_valid_query" not in clockless
 
 
 def test_a_clockless_measure_still_answers_without_time_or_by_a_plain_date(tmp_path):

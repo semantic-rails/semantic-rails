@@ -297,7 +297,8 @@ Core query rules:
 - a measure with no clock at all (no `times:` of its own and no model `default` time) can't be
   bucketed: any query with `time` that binds it fails with `INCOMPATIBLE_TEMPORAL_ROLE`
   (`details.compatible: []`, hint `declare_measure_time_role`); it still answers without `time`
-  or grouped by a plain date dimension
+  or grouped by a plain date dimension; an `aggregate_if` has no clock, so `time` refuses it
+  with its own message and no hint (declare a measure with `times:` and aggregate that)
 
 ## Expression Surface
 

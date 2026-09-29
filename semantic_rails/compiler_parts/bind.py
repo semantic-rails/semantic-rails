@@ -419,13 +419,28 @@ def _bind_measure(
         query.time.temporal_role if query.time else "",
     )
     if temporal_role and temporal_role not in measure.compatible_temporal_roles:
+        details: dict[str, Any] = {
+            "measure": measure_id,
+            "compatible": list(measure.compatible_temporal_roles),
+        }
+        if not measure.compatible_temporal_roles:
+            # No clock at all: name the role asked for, so the hint says to declare one.
+            details["requested"] = temporal_role
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
             f"Temporal role '{temporal_role}' is not compatible with '{measure_id}'",
-            details={"measure": measure_id, "compatible": list(measure.compatible_temporal_roles)},
+            details=details,
         )
     query_role = query.time.temporal_role if query.time else ""
     if query_role and not temporal_role and not conversion_operand:
+        if measure.meta.get("synthetic"):
+            # An aggregate_if has no model or measure of its own to declare a clock on.
+            raise SemanticLayerError(
+                "INCOMPATIBLE_TEMPORAL_ROLE",
+                f"aggregate_if can't be bucketed by time ('{query_role}'); declare a measure "
+                "with `times:` and aggregate that instead, or drop `time` from the query.",
+                details={"requested": query_role, "compatible": [], "source": "aggregate_if"},
+            )
         # No clock to bucket by: the plan has no role to read, so refuse here, in the one
         # place every measure is bound, instead of failing later on a missing role.
         raise SemanticLayerError(

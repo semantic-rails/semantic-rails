@@ -485,6 +485,8 @@ def recovery_hints_for_error(
         ]
     if code == "INCOMPATIBLE_TEMPORAL_ROLE":
         compatible = list(details.get("compatible", []) or [])
+        if not compatible and details.get("source") == "aggregate_if":
+            return []  # The message says what to do; there is no measure to point a hint at.
         if not compatible and details.get("measure") and details.get("requested"):
             return [
                 {

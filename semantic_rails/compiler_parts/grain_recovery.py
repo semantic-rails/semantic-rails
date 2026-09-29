@@ -474,7 +474,8 @@ def _enrichment_unsafe(
             temporal_role=role,
             grain=grain,
         )
-        if query_template:
+        # A measure with no time role is refused on any time grain: don't suggest that shape.
+        if query_template and anchor_measure.compatible_temporal_roles:
             recovery["closest_valid_query"] = query_template
         enrichment["time_axis_recovery"] = recovery
 
