@@ -354,6 +354,116 @@ def test_excluding_crew_through_the_roster_lookup(runtime, gold):
     assert _ask(runtime, "boarding_count", where=not_crew) == {None: 9}
 
 
+def test_measures_folded_into_one_leaf_keep_the_rows_too(runtime, package, gold):
+    """Two measures of one entity share a leaf, which reads the lookup with its own code path:
+    it must keep the rows with no match (boardings 7 and 8, under NULL) as a single measure
+    does."""
+    query = {
+        "version": 1,
+        "select": [
+            {"as": "boardings", "expression": {"measure": "measure.crew.boarding_count"}},
+            {"as": "fare", "expression": {"measure": "measure.crew.fare"}},
+        ],
+        "group_by": [EMPLOYEE],
+    }
+
+    rows = runtime.query(query)["rows"]
+
+    assert {row[EMPLOYEE]: (row["boardings"], row["fare"]) for row in rows} == {
+        False: (6, 370),
+        True: (5, 130),
+        None: (2, 130),
+    }
+    assert sum(row["boardings"] for row in rows) == _ask(runtime, "boarding_count")[None] == 13
+    assert {row[EMPLOYEE]: row["fare"] for row in rows} == gold(
+        f"SELECT {SQL_EMPLOYEE}, SUM(b.fare) FROM boardings AS b GROUP BY 1"
+    )
+    assert _lookup_left_joins(load_package_config(str(package)), query) == ["people"]
+
+
+STOCK_SEED = """
+CREATE TABLE regions (region_id VARCHAR, region_name VARCHAR);
+INSERT INTO regions VALUES ('R1', 'North'), ('R2', 'South');
+CREATE TABLE stock_levels (stock_id VARCHAR, region_id VARCHAR, snapshot_date DATE, level INTEGER);
+INSERT INTO stock_levels VALUES
+  ('s1', 'R1', DATE '2026-01-01', 10), ('s1', 'R1', DATE '2026-01-02', 12),
+  ('s2', 'R2', DATE '2026-01-01', 5), ('s2', 'R2', DATE '2026-01-02', 7),
+  ('s3', NULL, DATE '2026-01-01', 3), ('s3', NULL, DATE '2026-01-02', 4),
+  ('s4', 'R9', DATE '2026-01-02', 1)
+"""
+
+STOCK_FILES = {
+    "package.yml": """
+        schema_version: 1
+        package:
+          id: stk
+          namespace: stk
+          warehouse: duckdb
+          default_db: data/stk.duckdb
+          seed: {kind: sql_script, source: data/seed.sql}
+        defaults:
+          dimension: {groupable: true, filterable: true}
+        """,
+    "graph.yml": """
+        graph:
+          entities:
+            region: {label: Region, key: [region_id], model: regions}
+            stock_level: {label: Stock level, key: [stock_id, snapshot_date],
+              model: stock_levels, allowed_as_root: true}
+        """,
+    "models/regions.yml": """
+        model:
+          id: regions
+          relation: regions
+          entities: {region: {}}
+          dimensions:
+            region_name: {label: Region name, kind: categorical}
+        """,
+    "models/stock_levels.yml": """
+        model:
+          id: stock_levels
+          relation: stock_levels
+          entities: {stock_level: {}, region: {}}
+          times:
+            snapshot_date: {label: Snapshot date, column: snapshot_date, kind: date,
+              class: as_of_time, supported_grains: [day, month], default: true}
+          measures:
+            level: {label: Level, kind: aggregate, expr: level, default_agg: sum,
+              accumulation: {kind: stock, snapshot: end_of_period}}
+        """,
+}
+
+
+def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
+    """A stock measure takes each stock's last snapshot of the month within a group, so a NULL
+    group has snapshots of its own to pick from: stock s3 (no region) and s4 (a region with no
+    record) are read at their last day and group under NULL."""
+    root = tmp_path / "stk"
+    (root / "data").mkdir(parents=True)
+    (root / "models").mkdir()
+    (root / "data" / "seed.sql").write_text(STOCK_SEED)
+    for name, body in STOCK_FILES.items():
+        (root / name).write_text(textwrap.dedent(body))
+    query = {
+        "version": 1,
+        "select": [{"as": "value", "expression": {"measure": "measure.stk.level"}}],
+        "group_by": ["dimension.stk_region_region_name"],
+        "time": {"temporal_role": "temporal_role.stk_stock_level_snapshot_date", "grain": "month"},
+    }
+    runtime = Runtime.from_path(str(root))
+    try:
+        rows = runtime.query(query)["rows"]
+    finally:
+        runtime.close()
+
+    by_region = {row["dimension.stk_region_region_name"]: row["value"] for row in rows}
+    assert by_region == {"North": 12, "South": 7, None: 5}  # s3 at 4, s4 at 1
+    assert sum(by_region.values()) == 24  # each stock at its last snapshot
+    config = load_package_config(str(root))
+    sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
+    assert re.findall(r"LEFT JOIN (regions)\b", sql) == ["regions"]
+
+
 @pytest.mark.parametrize(
     ("op", "value", "sql", "expected"),
     [

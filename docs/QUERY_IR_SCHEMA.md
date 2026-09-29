@@ -213,7 +213,8 @@ Supported `op` values (all compile end-to-end):
   crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds for
   a `group_by` or `where` dimension of the measure. Other reads of a lookup
   (a time role, a metric filter and its context, a conversion, a qualified
-  set) leave such a row out, as before. ClickHouse is the exception: its
+  set) leave such a row out, as before, and so does a dimension any rollup of the
+  measure's model holds, even at a grain that rollup can never answer. ClickHouse is the exception: its
   lookups stay inner joins, so it drops such a row from every query that reads
   the looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in

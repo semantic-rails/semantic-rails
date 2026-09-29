@@ -401,7 +401,8 @@ Important planner behaviors:
   foreign key keeps its measure value under NULL. Every other read of a lookup stays an inner
   join: a time role, a measure or metric filter and its context entities, conversions, qualified
   sets and metric predicates (including the queries nested in them), anchored entity-set
-  ratios, a dimension a rollup of the measure's model holds, hops that fan out, and every hop
+  ratios, a dimension any rollup of the measure's model holds (even at a grain that rollup can
+  never answer), hops that fan out, and every hop
   on a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns
   read a type default, not NULL). `_lookup_selections` (`compiler_parts/sql_lowering.py`) is the
   one place that decides which path selections are left joins

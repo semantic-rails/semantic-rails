@@ -1269,16 +1269,18 @@ join paths.
 A query that groups or filters by a dimension looked up through a many-to-one or
 one-to-one hop joins it with a left join, so the measure keeps a row whose foreign key
 is NULL or matches no row: it groups under NULL, and grouped rows add up to the
-ungrouped total. A filter on such a dimension treats the row as it treats a NULL
-value in the row itself: `IS NULL` selects it, so "passengers excluding crew"
+ungrouped total, except for a dimension a rollup holds (below). A filter on such a
+dimension treats the row as it treats a NULL value in the row itself: `IS NULL` selects it, so "passengers excluding crew"
 through a crew-roster lookup is a `crew_role IS NULL` filter, while `=`, `!=`, `IN`
 and `NOT IN` never match it. Every other read of a lookup keeps its inner join, so a
 row with no match is left out, as before: a time role read through a lookup, a
 measure's own filter, a metric filter and the context entities it matches on,
 conversions (their match keys and properties), qualified sets and metric predicates,
 anchored entity-set ratios, and a dimension a rollup of the measure's model holds
-(below). So do hops that fan out, and every hop on ClickHouse, where an unmatched
-outer-join column reads `''` or `0` unless it is `Nullable`, not NULL.
+(below). That last rule covers every dimension any rollup of the model holds, even at a
+grain the rollup can never answer, so those rows are dropped for that dimension however
+the query is grouped. So do hops that fan out, and every hop on ClickHouse, where an
+unmatched outer-join column reads `''` or `0` unless it is `Nullable`, not NULL.
 
 Long chains are first-class: a measure can be grouped or filtered by a
 dimension four relationships away (`line_item → order → customer → city →
