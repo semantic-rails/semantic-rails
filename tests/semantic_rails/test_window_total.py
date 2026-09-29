@@ -162,19 +162,31 @@ def test_an_expression_that_needs_the_time_axis_is_not_collapsed(runtime: Runtim
     assert response["assumptions"] == []
 
 
+# The predicate measures orders on the query's own clock (order time).
 CUSTOMER_PREDICATE = {
     "kind": "metric_predicate",
     "entity": "entity.jaffle_customer",
-    "input": {"kind": "aggregate", "measure": "measure.jaffle.lifetime_spend_usd"},
+    "input": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
     "op": ">",
     "value": 0,
 }
-FILTERED_REVENUE = {
-    "kind": "aggregate",
-    "measure": "measure.jaffle.revenue_usd",
-    "aggregation": "sum",
-    "filter": {"all": [{"expression": CUSTOMER_PREDICATE}]},
+# The same shape, but its measure sits on the customer's first-order clock, not the query's.
+CROSS_CLOCK_PREDICATE = {
+    **CUSTOMER_PREDICATE,
+    "input": {"kind": "aggregate", "measure": "measure.jaffle.lifetime_spend_usd"},
 }
+
+
+def _filtered_revenue(predicate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "aggregate",
+        "measure": "measure.jaffle.revenue_usd",
+        "aggregation": "sum",
+        "filter": {"all": [{"expression": predicate}]},
+    }
+
+
+FILTERED_REVENUE = _filtered_revenue(CUSTOMER_PREDICATE)
 
 
 def test_a_metric_predicate_in_an_aggregate_filter_is_not_collapsed(runtime: Runtime) -> None:
@@ -199,6 +211,17 @@ def test_a_metric_predicate_in_an_aggregate_filter_is_not_collapsed(runtime: Run
     assert "UNGRAINED_TIME_PROJECTION" in _codes(response)
     assert response["assumptions"] == []
     assert "time_shape" not in response
+
+
+def test_a_cross_clock_predicate_in_an_aggregate_filter_is_refused(runtime: Runtime) -> None:
+    """The window-total path must not turn a refused predicate into an answer."""
+    time = {"start": "2017-04-01", "end": "2017-04-04"}
+    select = [{"as": "revenue", "expression": _filtered_revenue(CROSS_CLOCK_PREDICATE)}]
+    payload = _query(select, time)
+    assert not plan_query(runtime._config, None, payload).time.get("window_total")
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(payload)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
 
 
 # Each case is a query over 2017-04-01..2017-07-01 (unless it names its own role and window)
