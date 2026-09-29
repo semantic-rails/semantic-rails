@@ -67,6 +67,24 @@ def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[SqlIden
     return _column_ref(table, dim.column), dim.id
 
 
+def _pair_orientations(
+    source_entity: str, target_entity: str, config: PackageConfig
+) -> list[tuple[RelationshipConfig, list[str], list[str]]]:
+    """Every relationship between the two entities, in either direction, as
+    ``(relationship, source columns, target columns)`` seen from ``source_entity``."""
+    found = []
+    for rel in config.relationships:
+        forward = (
+            list(rel.source_columns or [rel.source_column]),
+            list(rel.target_columns or [rel.target_column]),
+        )
+        if rel.source_entity == source_entity and rel.target_entity == target_entity:
+            found.append((rel, *forward))
+        if rel.target_entity == source_entity and rel.source_entity == target_entity:
+            found.append((rel, forward[1], forward[0]))
+    return found
+
+
 def _pair_key_routes(
     source_entity: str,
     target_entity: str,
@@ -78,23 +96,29 @@ def _pair_key_routes(
     Relationships that agree on the column collapse to the lowest relationship id, so the
     answer never depends on declaration order."""
     by_column: dict[str, RelationshipConfig] = {}
-    for rel in config.relationships:
-        forward = (
-            list(rel.source_columns or [rel.source_column]),
-            list(rel.target_columns or [rel.target_column]),
-        )
-        orientations = []
-        if rel.source_entity == source_entity and rel.target_entity == target_entity:
-            orientations.append(forward)
-        if rel.target_entity == source_entity and rel.source_entity == target_entity:
-            orientations.append((forward[1], forward[0]))
-        for source_columns, target_columns in orientations:
-            for source_col, target_col in zip(source_columns, target_columns, strict=True):
-                if target_col == target_key_col:
-                    known = by_column.get(source_col)
-                    if known is None or rel.id < known.id:
-                        by_column[source_col] = rel
+    for rel, source_columns, target_columns in _pair_orientations(
+        source_entity, target_entity, config
+    ):
+        for source_col, target_col in zip(source_columns, target_columns, strict=True):
+            if target_col == target_key_col:
+                known = by_column.get(source_col)
+                if known is None or rel.id < known.id:
+                    by_column[source_col] = rel
     return [(rel, column) for column, rel in sorted(by_column.items())]
+
+
+def _pair_has_several_pairings(
+    source_entity: str, target_entity: str, config: PackageConfig
+) -> bool:
+    """True when the entities are joined on more than one distinct column pairing, whatever
+    the target columns are. Relationships that restate one pairing (from either side) count once."""
+    pairings = {
+        frozenset(zip(source_columns, target_columns, strict=True))
+        for _rel, source_columns, target_columns in _pair_orientations(
+            source_entity, target_entity, config
+        )
+    }
+    return len(pairings) > 1
 
 
 def _direct_entity_key_source_expr(
@@ -112,11 +136,14 @@ def _direct_entity_key_source_expr(
     source_table = source_relation_override or source.table
     if source_entity == target_entity and target_key_col in set(source.key or [source.primary_key]):
         return _column_ref(source_table, target_key_col)
+    # None: not readable here. Several pairings between the entities (role-playing keys, e.g.
+    # an origin and a destination airport, even when one role targets a non-key column) mean
+    # the source table alone cannot say which role is meant, so callers fall through to path
+    # selection, which follows the pin or refuses.
+    if _pair_has_several_pairings(source_entity, target_entity, config):
+        return None
     routes = _pair_key_routes(source_entity, target_entity, target_key_col, config)
     if len(routes) != 1:
-        # None: not readable here. Several routes (role-playing keys, e.g. an origin and a
-        # destination airport) mean the source table alone cannot say which role is meant,
-        # so callers fall through to path selection, which follows the pin or refuses.
         return None
     rel, source_col = routes[0]
     record_bound_object(rel, config)

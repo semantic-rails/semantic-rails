@@ -33,10 +33,11 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 
 SEED_SQL = """
-CREATE TABLE airports (airport_code VARCHAR, city VARCHAR, slots INTEGER);
+CREATE TABLE airports (airport_code VARCHAR, city VARCHAR, slots INTEGER, iata VARCHAR);
 CREATE TABLE legs (leg_id INTEGER, origin_code VARCHAR, destination_code VARCHAR, seats INTEGER, alternate_code VARCHAR);
 INSERT INTO airports VALUES
-  ('JFK', 'New York', 10), ('LHR', 'London', 8), ('LAX', 'Los Angeles', 3), ('ORD', 'Chicago', 2);
+  ('JFK', 'New York', 10, 'JFK'), ('LHR', 'London', 8, 'LHR'),
+  ('LAX', 'Los Angeles', 3, 'LAX'), ('ORD', 'Chicago', 2, 'ORD');
 INSERT INTO legs VALUES
   (1, 'ORD', 'JFK', 4, 'LAX'),
   (2, 'JFK', 'LHR', 6, 'ORD'),
@@ -178,12 +179,15 @@ def _write_package(
     path_preferences: str = "",
     reverse: tuple[str, ...] = (),
     extra_seed: str = "",
+    destination_target: str = "airport_code",
 ) -> Path:
     """Legs and airports. ``explicit`` lists the roles authored in
     ``graph.relationships`` in declaration order; ``inferred_origin`` instead
     lets the origin come from the leg model's ``entities:`` block.
     ``preferences`` sets a role's relationship ``path_preference``; ``reverse`` lists roles
-    declared from the airport's side (``[airport, leg]``); ``extra_seed`` is more seed SQL."""
+    declared from the airport's side (``[airport, leg]``); ``extra_seed`` is more seed SQL;
+    ``destination_target`` is the airport column the destination role joins to (a column
+    other than the key gives a role the key-column filter alone would not see)."""
     preferences = preferences or {}
     pkg = root / "air"
     (pkg / "data").mkdir(parents=True, exist_ok=True)
@@ -218,13 +222,14 @@ def _write_package(
     relationship_lines: list[str] = []
     for role in explicit:
         name, extra = _RELATIONSHIPS[role]
+        target = destination_target if role == "destination" else "airport_code"
         relationship_lines += [
             f"    {name}:",
             f"      id: relationship.{name}",
             "      entities: [leg, airport]",
             "      cardinality: many_to_one",
             *extra,
-            "      target: [airport_code]",
+            f"      target: [{target}]",
         ]
         if role in preferences:
             relationship_lines.append(f"      path_preference: {preferences[role]}")
@@ -324,6 +329,10 @@ AUTHORED_LAYOUTS = {
     "inferred_origin_explicit_destination": {
         "explicit": ("destination",),
         "inferred_origin": True,
+    },
+    "destination_targets_a_non_key_column": {
+        "explicit": ("origin", "destination"),
+        "destination_target": "iata",
     },
 }
 
@@ -512,6 +521,20 @@ def test_the_key_shortcut_declines_a_pair_with_several_routes(tmp_path):
     leg, airport = "entity.air_leg", "entity.air_airport"
     routes = _pair_key_routes(leg, airport, "airport_code", config)
     assert sorted(column for _rel, column in routes) == ["destination_code", "origin_code"]
+    assert _direct_entity_key_source_expr(leg, airport, "airport_code", config) is None
+    assert _direct_dimension_source_expr(leg, CODE, config) is None
+
+
+def test_the_key_shortcut_declines_when_another_role_targets_a_non_key_column(tmp_path):
+    """Only the origin role reads the key column, so counting key routes alone finds one
+    route; the pair still has two pairings, so the shortcut must decline."""
+    config = load_package_config(
+        str(_write_package(tmp_path, **AUTHORED_LAYOUTS["destination_targets_a_non_key_column"]))
+    )
+    leg, airport = "entity.air_leg", "entity.air_airport"
+    assert [column for _rel, column in _pair_key_routes(leg, airport, "airport_code", config)] == [
+        "origin_code"
+    ]
     assert _direct_entity_key_source_expr(leg, airport, "airport_code", config) is None
     assert _direct_dimension_source_expr(leg, CODE, config) is None
 
