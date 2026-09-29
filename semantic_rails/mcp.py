@@ -51,6 +51,7 @@ from .request_payload import (
     coerce_bool as _coerce_bool,
 )
 from .runtime import Runtime
+from .runtime_parts.responses import WINDOW_TOTAL_ASSUMPTION
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -108,6 +109,10 @@ MCP_DEFAULT_MAX_ROWS = 200
 MCP_ROW_COUNT_CEILING = 10_000
 # The largest max_rows an MCP caller may request.
 MCP_MAX_ROWS_LIMIT = 100_000
+# Execute refuses a result whose rows serialize to more than this many characters (about 8K
+# tokens). An operator sets another limit with this variable.
+MCP_DEFAULT_MAX_RESULT_CHARS = 32_000
+_MAX_RESULT_CHARS_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
 
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
     "semantic_rails_mcp_tool_request_context", default=None
@@ -142,7 +147,7 @@ MCP_SERVER_INSTRUCTIONS = (
     "\n"
     'Query IR: select measures or metrics, group_by dimension ids, where filters (op "in"'
     " for several values), and time {temporal_role, grain, start, end}, where end is "
-    "exclusive. A window without a grain groups by the raw timestamp. The execute tool "
+    "exclusive. A window without a grain returns one total, with no time column. The execute tool "
     "schema lists expression shapes.\n"
     "\n"
     "segment(segment_id, action) validates, explains or previews a package-authored "
@@ -1335,6 +1340,23 @@ def _uses_own_clock(expression: Any) -> bool:
     return False
 
 
+def _collapsed_window(result: Mapping[str, Any]) -> bool:
+    """Whether the runtime aggregated a grainless time window as one total."""
+
+    return WINDOW_TOTAL_ASSUMPTION in (result.get("assumptions") or [])
+
+
+def _narrowing_advice(query: Mapping[str, Any], result: Mapping[str, Any]) -> str:
+    if _ungrained_time(query) and not _collapsed_window(result):
+        return (
+            "set time.grain (for example 'month' or 'year'); without a grain, rows group by the "
+            "raw timestamp"
+        )
+    if isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
+        return "use a coarser time.grain, filter, or group by fewer dimensions"
+    return "filter, or group by fewer dimensions"
+
+
 def _truncate_rows(
     result: dict[str, Any], *, cap: int, query: Mapping[str, Any], fence_binds: bool = False
 ) -> dict[str, Any]:
@@ -1352,15 +1374,7 @@ def _truncate_rows(
     kept = rows[:cap]
     total = None if beyond_fetch else len(rows)
     counted = f"{total:,}" if total is not None else f"more than {len(rows):,}"
-    if _ungrained_time(query):
-        advice = (
-            "set time.grain (for example 'month' or 'year'); without a grain, rows group by the "
-            "raw timestamp"
-        )
-    elif isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
-        advice = "use a coarser time.grain, filter, or group by fewer dimensions"
-    else:
-        advice = "filter, or group by fewer dimensions"
+    advice = _narrowing_advice(query, result)
     raise_hint = (
         " The query's limits.max_rows caps the rows fetched."
         if fence_binds
@@ -1383,14 +1397,19 @@ def _truncate_rows(
     }
 
 
-def _grouped_ungrained_time_warning(query: Mapping[str, Any]) -> dict[str, Any] | None:
+def _grouped_ungrained_time_warning(
+    query: Mapping[str, Any], result: Mapping[str, Any]
+) -> dict[str, Any] | None:
     """Warn about a temporal role with no grain in a grouped query.
 
     The runtime's ``UNGRAINED_TIME_PROJECTION`` covers ungrouped queries
     only. A grouped one hits the same trap, each group returning one row per
-    distinct timestamp, so MCP adds its own code with the same shape.
+    distinct timestamp, so MCP adds its own code with the same shape. A window the
+    runtime aggregated as one total per group has no such rows.
     """
 
+    if _collapsed_window(result):
+        return None
     try:
         query = rewrite_select_shorthand(dict(query))[0]
     except SemanticLayerError:
@@ -1448,6 +1467,43 @@ def _with_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> dic
     if any(isinstance(item, Mapping) and item.get("code") == warning["code"] for item in existing):
         return result
     return {**result, "warnings": [*existing, warning]}
+
+
+def _max_result_chars() -> int:
+    """The result-size limit: the operator's environment setting, else the default."""
+
+    return _positive_int(os.environ.get(_MAX_RESULT_CHARS_ENV)) or MCP_DEFAULT_MAX_RESULT_CHARS
+
+
+def _refuse_oversized(
+    result: Mapping[str, Any], query: Mapping[str, Any], *, limit: int, fetched: int
+) -> None:
+    """Refuse rows too large to send, rather than truncating them mid-answer.
+
+    The row cap clips a long result and says so; this covers rows that are few but wide,
+    or capped rows that are still too large for one response.
+    """
+
+    chars = len(json.dumps(result.get("rows") or [], default=str, separators=(",", ":")))
+    if chars <= limit:
+        return
+    returned = int(result.get("row_count", 0) or 0)
+    total = result.get("total_row_count") if result.get("truncated") else returned
+    counted = f"{total:,}" if total is not None else f"more than {fetched:,}"
+    advice = _narrowing_advice(query, result)
+    raise SemanticLayerError(
+        "RESULT_TOO_LARGE",
+        f"The result has {counted} rows, about {chars:,} characters, over the {limit:,}-character "
+        f"limit for one response, so no rows were returned. To fit it, {advice}, or select "
+        "fewer columns.",
+        details={
+            "row_count": returned,
+            "total_row_count": total,
+            "result_chars": chars,
+            "max_result_chars": limit,
+            "suggestion": advice,
+        },
+    )
 
 
 def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -2175,18 +2231,16 @@ class SemanticLayerMCPAdapter:
     def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             query = _query_payload_with_mcp_default_verbosity(args)
-            return _with_warning(
-                self.runtime.validate(query), _grouped_ungrained_time_warning(query)
-            )
+            result = self.runtime.validate(query)
+            return _with_warning(result, _grouped_ungrained_time_warning(query, result))
 
         return self._guarded(arguments, _run)
 
     def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             query = _query_payload_with_mcp_default_verbosity(args)
-            return _with_warning(
-                self.runtime.compile(query), _grouped_ungrained_time_warning(query)
-            )
+            result = self.runtime.compile(query)
+            return _with_warning(result, _grouped_ungrained_time_warning(query, result))
 
         return self._guarded(arguments, _run)
 
@@ -2208,7 +2262,9 @@ class SemanticLayerMCPAdapter:
                 result = _truncate_rows(
                     result, cap=cap, query=query_payload, fence_binds=fence_binds
                 )
-                result = _with_warning(result, _grouped_ungrained_time_warning(query_payload))
+                result = _with_warning(
+                    result, _grouped_ungrained_time_warning(query_payload, result)
+                )
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
             # execute returns 0 rows and the user authored no filters —
             # the most common "successful but wrong" outcome from a
@@ -2244,6 +2300,8 @@ class SemanticLayerMCPAdapter:
                     result["warnings"] = existing
             if bool(result.get("ok", True)) and row_format == "columns":
                 result = _columnar_rows(result)
+            if bool(result.get("ok", True)):
+                _refuse_oversized(result, query_payload, limit=_max_result_chars(), fetched=fetch)
             return result
 
         return self._guarded(arguments, _run)

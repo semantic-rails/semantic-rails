@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
@@ -59,6 +59,7 @@ from ..sql_ast import (
     SqlExpr,
     SqlField,
     SqlIdentifier,
+    SqlIsNull,
     SqlJoin,
     SqlLiteral,
     SqlOrder,
@@ -375,6 +376,22 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
     if gaps is not None and (gap := _stock_clock_key_gap(measure, temporal_role_id, config)):
         gaps.append(gap)
     return [column for column in key if column != order_column]
+
+
+def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig) -> Any:
+    """The expression a leaf groups its time axis by.
+
+    A window total has no time axis of its own: every row in the window falls in
+    one bucket, so the key is a constant that still names a column. A bare literal
+    would not do, since some warehouses refuse to group by one.
+    """
+    if time.get("grain"):
+        return _dialect(config).date_trunc(time["grain"], raw_expr)
+    if time.get("window_total"):
+        return SqlCase(
+            whens=[SqlCaseWhen(SqlIsNull(raw_expr), SqlLiteral(0))], else_expr=SqlLiteral(0)
+        )
+    return raw_expr
 
 
 def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:
@@ -822,11 +839,7 @@ def _measure_time_components(
         else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
     )
     raw_expr = _apply_role_timezone(raw_expr, role, config)
-    time_expr = (
-        _dialect(config).date_trunc(plan.time["grain"], raw_expr)
-        if plan.time.get("grain")
-        else raw_expr
-    )
+    time_expr = _time_bucket_expr(plan.time, raw_expr, config)
     return raw_expr, time_expr, _time_alias_for_plan(plan), time_source_local
 
 
@@ -2000,11 +2013,7 @@ def _measure_leaf_select(
             time_expr = _column_ref(cal_table, cal_grain_column)
             leaf_calendar_join = _calendar_join_for_leaf(raw_expr, cal_table, cal_join_column)
         else:
-            time_expr = (
-                _dialect(config).date_trunc(time["grain"], raw_expr)
-                if time.get("grain")
-                else raw_expr
-            )
+            time_expr = _time_bucket_expr(time, raw_expr, config)
         time_alias = (
             time["temporal_role"]
             if not time.get("grain")
@@ -3736,11 +3745,7 @@ def _measure_group_leaf_select(
             time_expr = _column_ref(cal_table, cal_grain_column)
             leaf_calendar_join = _calendar_join_for_leaf(raw_expr, cal_table, cal_join_column)
         else:
-            time_expr = (
-                _dialect(config).date_trunc(time["grain"], raw_expr)
-                if time.get("grain")
-                else raw_expr
-            )
+            time_expr = _time_bucket_expr(time, raw_expr, config)
         time_alias = (
             time["temporal_role"]
             if not time.get("grain")
@@ -4352,6 +4357,15 @@ def _conversion_exprs_for_plan(plan: LogicalPlan, config: PackageConfig) -> list
 
 
 def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
+    select = _lower_query_to_sql(plan, config)
+    if not plan.time.get("window_total"):
+        return select
+    # One total over the window: the constant time key did the grouping, so it isn't a column.
+    time_alias = _time_alias_for_plan(plan)
+    return replace(select, select=[item for item in select.select if item.alias != time_alias])
+
+
+def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
     anchored_select = _anchored_entity_set_select(plan, config)
     if anchored_select is not None:
         return _tier_internal_aliases(plan, anchored_select, measure_aliases=[])
@@ -4639,6 +4653,16 @@ def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
         )
         for item in list(plan.query.get("order_by", []) or [])
     ]
+    if plan.time.get("window_total"):
+        # A single row per group has no time order.
+        order_by = [
+            item
+            for item in order_by
+            if not (
+                isinstance(item.expression, SqlIdentifier)
+                and item.expression.parts[-1] == time_alias
+            )
+        ]
 
     if not final_where:
         # Inline the `projected` passthrough CTE directly into the final SELECT.

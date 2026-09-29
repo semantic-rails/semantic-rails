@@ -435,13 +435,21 @@ def run_authorized_operation(
                     "sql_profile",
                 }
             }
-            from .runtime_parts.responses import output_columns
+            from .runtime_parts.responses import WINDOW_TOTAL_ASSUMPTION, output_columns
 
             # Reuse the engine's descriptor builder even when minimal verbosity
             # omitted it. It uses the authorized query, not expanded recipes.
             columns = output_columns(
                 access.config,
-                {"explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict())},
+                {
+                    "explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict()),
+                    "logical_plan": SimpleNamespace(
+                        time={
+                            "window_total": WINDOW_TOTAL_ASSUMPTION
+                            in (result.get("assumptions") or [])
+                        }
+                    ),
+                },
             )
             permitted = set(access.context.metric_allowlist or ()) | set(
                 access.context.dimension_allowlist or ()

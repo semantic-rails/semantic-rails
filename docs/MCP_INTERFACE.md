@@ -283,6 +283,14 @@ response, not the warehouse work.
 
 A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower the `max_rows`
 cap (and then `total_row_count` is `null` once it is reached), but it never raises it.
+
+Separately, `execute` refuses a result whose rows serialize to more than 32,000 characters (about
+8,000 tokens), so few-but-wide rows and capped rows that are still large never reach the model. The
+refusal is the error `RESULT_TOO_LARGE`: no rows come back, `message` names the row count and says
+what would fit (a coarser or set `time.grain`, a filter, fewer `group_by` dimensions or columns), and
+`details` carries `row_count`, `total_row_count`, `result_chars` and `max_result_chars`. An operator
+changes the limit with the `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS` environment variable, read on
+every call; a missing or non-positive value means the default.
 The `query` that execute echoes back carries the caller's own `limits`; a transport-level
 `max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.
@@ -316,7 +324,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
-| `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
+| `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
@@ -683,6 +691,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `UNKNOWN_MCP_RESOURCE` | Resource URI isn't in the catalog; see `details.available_resources`. |
 | `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`, and `details.replacement` for a removed v1 tool. |
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
+| `RESULT_TOO_LARGE` | `execute` rows would exceed the response character limit; nothing is returned. `message` says what would fit; see `details.max_result_chars`. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |
 
 ### Worked Example Envelopes

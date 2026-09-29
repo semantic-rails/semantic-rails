@@ -431,6 +431,12 @@ overlap. See [QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#timeblock) for the full `Ti
 contract, including the object-only `range.last` relative window
 (`unit` ∈ `day | week | month | quarter | year`).
 
+A window (`start` and/or `end`) with no `time.grain` is one total over the window per `group_by`
+group, with no time column, including a window inside one day. The response says so in
+`assumptions`. Setting `time.grain` returns one row per period instead. Queries that need a time
+axis, such as a rolling or prior-period expression, and a `time` block with no window are not
+collapsed.
+
 `policy_context` is optional and scopes visibility, access, and metric-constraint policies for metadata, validation, and query routes.
 
 ### Request `limits` block (optional)
@@ -1100,7 +1106,7 @@ Canonical public error codes:
 The response `warnings` array can carry these non-error signals:
 
 - `UNGRAINED_TIME_PROJECTION` — fires when `time.temporal_role` is set
-  without `time.grain` AND the query has no `group_by` AND no inline
+  without `time.grain` or a `start`/`end` window (a window returns one total instead) AND the query has no `group_by` AND no inline
   window expression (prior_period / rolling / cumulative /
   period_to_date) carries its own grain. The planner will group by the
   raw timestamp column and return one row per distinct value;
