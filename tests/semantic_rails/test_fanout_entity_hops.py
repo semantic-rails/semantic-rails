@@ -605,6 +605,31 @@ def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> No
     assert _normal(tuple(row.values()) for row in result["rows"]) == _normal(expected)
 
 
+def test_rollup_safe_package_refuses_two_groups_across_one_hop(runtime_factory) -> None:
+    """Grouping a distinct count by two dimensions across one hop was answered before; a query
+    may now group or filter across a one-to-many hop once."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        report = runtime.validate(
+            {
+                "version": 1,
+                "select": [
+                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
+                ],
+                "group_by": [
+                    "dimension.jaffle_item_product_type",
+                    "dimension.jaffle_item_product_name",
+                ],
+            }
+        )
+    finally:
+        runtime.close()
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert "both cross a one-to-many hop" in error["why_invalid"]
+
+
 # The de-duplicated leaf on every locally testable warehouse: a CTE, SELECT DISTINCT and an
 # aggregate over its columns. Only the time bucket and the median differ by dialect.
 WAREHOUSES = ("duckdb", "postgres", "clickhouse", "ducklake")
