@@ -605,29 +605,48 @@ def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> No
     assert _normal(tuple(row.values()) for row in result["rows"]) == _normal(expected)
 
 
-def test_rollup_safe_package_refuses_two_groups_across_one_hop(runtime_factory) -> None:
-    """Grouping a distinct count by two dimensions across one hop was answered before; a query
-    may now group or filter across a one-to-many hop once."""
+@pytest.mark.parametrize(
+    ("measure", "groups"),
+    [
+        # Two groups on the same child: items.
+        (
+            "measure.jaffle.order_count",
+            ["dimension.jaffle_item_product_type", "dimension.jaffle_item_product_name"],
+        ),
+        # Two groups on different children of a customer: its orders' items and its sessions.
+        (
+            "measure.jaffle.customer_count",
+            ["dimension.jaffle_item_product_type", "dimension.jaffle_storefront_session_store_id"],
+        ),
+    ],
+    ids=["same_child", "different_children"],
+)
+def test_rollup_safe_package_refuses_two_groups_across_a_hop(
+    runtime_factory, measure: str, groups: list[str]
+) -> None:
+    """Grouping a distinct count by two dimensions across one-to-many hops was answered before;
+    a query may now group or filter across a one-to-many hop once. Both refusal sites raise the
+    same error, so the entity_in_terms_of branch is told apart by each group alone planning
+    through it."""
     runtime = runtime_factory("jaffle_shop")
+
+    def ask(group_by: list[str]) -> dict[str, Any]:
+        select = [{"expression": {"measure": measure}, "as": "value"}]
+        return runtime.validate({"version": 1, "select": select, "group_by": group_by})
+
     try:
-        report = runtime.validate(
-            {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
-                "group_by": [
-                    "dimension.jaffle_item_product_type",
-                    "dimension.jaffle_item_product_name",
-                ],
-            }
-        )
+        report = ask(groups)
+        alone = [ask([group]) for group in groups]
     finally:
         runtime.close()
     assert report["ok"] is False
     error = report["errors"][0]
     assert error["code"] == "MIXED_GRAIN_INVALID"
     assert "both cross a one-to-many hop" in error["why_invalid"]
+    for single in alone:
+        assert [step["kind"] for step in single["logical_plan"]["rewrite_steps"]] == [
+            "entity_in_terms_of"
+        ]
 
 
 # The de-duplicated leaf on every locally testable warehouse: a CTE, SELECT DISTINCT and an
