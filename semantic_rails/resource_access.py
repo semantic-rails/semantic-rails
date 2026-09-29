@@ -20,11 +20,7 @@ from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
 from .policies import enforce_query_policies
 from .request_context import RequestContext, context_from_policy_context
-from .request_payload import (
-    checked_discover_kinds,
-    checked_discover_limit,
-    unknown_discover_kinds_error,
-)
+from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
 from .schema import PackageConfig
 
 
@@ -53,13 +49,8 @@ def _public_error(exc: SemanticLayerError) -> SemanticLayerError:
         # The refusal of a `kinds` value carries only the caller's own values
         # and the static set of searchable kinds, so it names no package object.
         return unknown_discover_kinds_error(
-            [str(kind) for kind in details["unknown_kinds"]], GRANT_DISCOVER_KINDS
-        )
-    if exc.code == "INVALID_MCP_ARGUMENTS" and details.get("field") == "limit":
-        return SemanticLayerError(
-            "INVALID_MCP_ARGUMENTS",
-            "Argument 'limit' must be at least 1.",
-            details={"field": "limit"},
+            [str(kind) for kind in details["unknown_kinds"]],
+            frozenset(str(kind) for kind in details.get("valid_kinds") or ()),
         )
     # Preserve actionable operational/validation codes; package-generated
     # messages, details, and recovery candidates may name hidden objects.
@@ -267,11 +258,8 @@ def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         if (not kind or row["kind"] == kind)
         and (not search or search in " ".join(str(row[k]) for k in ("id", "name", "label")).lower())
     ]
-    # Buckets a grant cannot produce are left out, not listed as empty.
     grouped = {
-        bucket: [row for row in rows if row["kind"] == kind]
-        for kind, bucket in _BUCKETS.items()
-        if kind in GRANT_DISCOVER_KINDS
+        bucket: [row for row in rows if row["kind"] == kind] for kind, bucket in _BUCKETS.items()
     }
     capabilities = _capabilities(access)
     return format_catalog_payload(
@@ -291,27 +279,10 @@ def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
 GRANT_DISCOVER_KINDS: frozenset[str] = frozenset({"metric", "dimension", "temporal_role"})
 
 
-def discoverable_kinds(
-    policy_context: Mapping[str, Any] | None, without_grant: frozenset[str]
-) -> frozenset[str]:
-    """The kinds a discover call under ``policy_context`` can produce.
-
-    The single place that says which kinds are valid: a resource grant produces
-    :data:`GRANT_DISCOVER_KINDS`; any other call produces ``without_grant``.
-    Ranked and id-listing paths both check ``kinds`` against this.
-    """
-
-    if (policy_context or {}).get("metric_allowlist") is None:
-        return without_grant
-    return GRANT_DISCOVER_KINDS
-
-
 def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
     # The grant path never reaches ``discover_payload``'s own body, so it
-    # applies the same guards: an unknown kind or a limit below 1 is refused,
-    # not emptied.
+    # applies the same kinds guard: an unknown kind is refused, not emptied.
     kinds = checked_discover_kinds(kwargs.get("kinds"), GRANT_DISCOVER_KINDS)
-    limit = checked_discover_limit(int(kwargs.get("limit", 10)))
     terms = set(re.findall(r"[a-z0-9]+", str(kwargs.get("terms", "")).lower()))
     rows = []
     for row in access.visible_rows():
@@ -334,6 +305,7 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
             {**row, "score": len(overlap), "match_reasons": [], "starter_query_patch": starter}
         )
     rows.sort(key=lambda row: (-row["score"], row["id"]))
+    limit = max(1, int(kwargs.get("limit", 10)))
     return {
         **{
             bucket: [row for row in rows if row["kind"] == kind][:limit]

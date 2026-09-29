@@ -52,7 +52,7 @@ from .request_payload import (
 from .request_payload import (
     coerce_bool as _coerce_bool,
 )
-from .resource_access import discoverable_kinds
+from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
 
 __all__ = [
@@ -2035,8 +2035,11 @@ class SemanticLayerMCPAdapter:
             if not terms_str.strip():
                 # Empty terms list the ids instead of ranking, a page per kind.
                 policy_context = _policy_context_payload(args)
+                # A grant lists only the kinds it can produce, so a filter for
+                # any other kind is refused, never answered with an empty list.
+                granted = policy_context.get("metric_allowlist") is not None
                 requested_kinds = checked_discover_kinds(
-                    requested_kinds, discoverable_kinds(policy_context, _CATALOG_KIND_FILTERS)
+                    requested_kinds, GRANT_DISCOVER_KINDS if granted else _CATALOG_KIND_FILTERS
                 )
                 catalog = resolve_catalog(
                     self.runtime,

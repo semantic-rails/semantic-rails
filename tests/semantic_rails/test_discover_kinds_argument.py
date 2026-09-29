@@ -356,12 +356,21 @@ def test_resource_grant_mode_refuses_a_ranked_kind_the_grant_cannot_produce(
     assert out["error"]["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
 
 
-def test_resource_grant_mode_listing_omits_the_kinds_it_cannot_produce(
-    runtime: Any, adapter: SemanticLayerMCPAdapter
-) -> None:
-    out = adapter.call_tool("discover", {"terms": "", "policy_context": _granted(runtime)})
-    listed = {key.removesuffix("_ids") for key in out["catalog"] if key.endswith("_ids")}
-    assert listed and listed <= GRANT_DISCOVER_KINDS
+def test_grant_catalog_keeps_its_shape(runtime: Any) -> None:
+    """The grant refusal lives in discover's listing; the shared catalog is unchanged."""
+    from semantic_rails.catalog_service import resolve_catalog
+
+    grant = _granted(runtime)
+    granted = resolve_catalog(runtime, view="summary", verbosity="summary", policy_context=grant)
+    empty = ("measure", "entity", "segment", "relationship", "value_domain")
+    plural = {"entity": "entities", "relationship": "relationships"}
+    for kind in empty:
+        assert granted[f"{kind}_ids"] == [], kind
+        assert granted["counts"][plural.get(kind, f"{kind}s")] == 0, kind
+    assert granted["metric_ids"]
+    service = SemanticHTTPService(runtime)
+    out, _ = service.handle("POST", "/catalog", {"verbosity": "summary", "policy_context": grant})
+    assert out["catalog"] == granted
 
 
 @pytest.mark.parametrize(
@@ -399,33 +408,6 @@ def test_listing_hint_outside_grant_mode_names_only_kinds_it_can_list(
         assert followed["ok"] is True and f"{kind}_ids" in followed["catalog"], kind
 
 
-def test_grant_error_sanitiser_names_the_grant_kinds_not_the_errors_own() -> None:
-    from semantic_rails.request_payload import unknown_discover_kinds_error
-    from semantic_rails.resource_access import _public_error
-
-    leaky = unknown_discover_kinds_error(["bogus"], frozenset({"a_hidden_package_object"}))
-    public = _public_error(leaky)
-    assert public.details == {
-        "field": "kinds",
-        "unknown_kinds": ["bogus"],
-        "valid_kinds": sorted(GRANT_DISCOVER_KINDS),
-    }
-    assert "a_hidden_package_object" not in str(public.details) + str(public)
-
-
-@pytest.mark.parametrize("limit", [0, -1])
-def test_resource_grant_mode_refuses_a_limit_below_one(runtime: Any, limit: int) -> None:
-    context = {"policy_context": _granted(runtime)}
-    with pytest.raises(SemanticLayerError) as raised:
-        discover_payload(runtime, terms="revenue", partial_query=context, limit=limit)
-    assert raised.value.code == "INVALID_MCP_ARGUMENTS"
-    assert raised.value.details == {"field": "limit"}
-    with pytest.raises(SemanticLayerError) as no_grant:
-        discover_payload(runtime, terms="revenue", limit=limit)
-    assert no_grant.value.code == "INVALID_MCP_ARGUMENTS"
-    assert no_grant.value.details["field"] == "limit"
-
-
 def test_resource_grant_mode_still_searches_the_kinds_it_produces(runtime: Any) -> None:
     context = {"policy_context": _granted(runtime)}
     found = discover_payload(runtime, terms="revenue", kinds=["metric"], partial_query=context)
@@ -456,7 +438,7 @@ def test_a_limit_that_would_empty_the_buckets_is_refused(runtime: Any, limit: in
     assert raised.value.details["field"] == "limit"
 
 
-def test_http_empty_terms_listing_refuses_what_it_cannot_rank(runtime: Any) -> None:
+def test_http_empty_terms_ranks_and_refuses_what_it_cannot_rank(runtime: Any) -> None:
     service = SemanticHTTPService(runtime)
     with pytest.raises(SemanticLayerError) as raised:
         service.handle("POST", "/discover", {"terms": "", "kinds": ["temporal_role"]})

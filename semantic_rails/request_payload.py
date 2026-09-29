@@ -111,22 +111,6 @@ def checked_discover_kinds(kinds: Sequence[str] | None, valid: frozenset[str]) -
     return requested
 
 
-def checked_discover_limit(limit: int) -> int:
-    """Return ``limit``, or refuse a value below 1.
-
-    The buckets are cut to ``limit``, so a zero limit would empty them and read
-    as "no match" for a search that found something.
-    """
-
-    if limit < 1:
-        raise SemanticLayerError(
-            "INVALID_MCP_ARGUMENTS",
-            "Argument 'limit' must be at least 1.",
-            details={"field": "limit", "argument_type": type(limit).__name__},
-        )
-    return limit
-
-
 def without_policy_context(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Copy a request and remove every supported caller policy-context location."""
 
