@@ -651,6 +651,54 @@ def test_contextual_predicate_records_actual_clock_entity(config, monkeypatch, a
         engine.close()
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_contextual_predicate_alignment_needs_exactly_one_clock(config, pinned):
+    store_role = "temporal_role.jaffle_store_opened_at"
+    customer_role = "temporal_role.jaffle_customer_first_order_at"
+    config = replace(
+        config,
+        measures=[
+            replace(
+                m,
+                compatible_temporal_roles=[store_role, customer_role],
+                default_temporal_role=store_role,
+            )
+            if m.id == "measure.jaffle.order_count"
+            else m
+            for m in config.measures
+        ],
+    )
+    predicate_input = {"measure": "measure.jaffle.order_count"}
+    if pinned:
+        predicate_input["temporal_role"] = customer_role
+    query = {
+        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+        "metric_filters": [
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": ENTITY,
+                    "input": predicate_input,
+                    "op": ">",
+                    "value": 1,
+                    "time_alignment": "same_query_period",
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    }
+    if pinned:
+        assert compiler.compile_query(config, None, query)["sql"]
+        return
+    # Two clocks are compatible and none is named, so asking for calendar alignment is
+    # still ambiguous: the compiler must not pick one.
+    with pytest.raises(SemanticLayerError) as raised:
+        compiler.compile_query(config, None, query)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+
+
 @pytest.mark.parametrize("allowed", [False, True])
 @pytest.mark.parametrize("nested", [False, True])
 def test_cut_metric_allowlists_count_direct_and_nested_recipes(

@@ -919,15 +919,26 @@ def _query_qualification(query: dict[str, Any]) -> list[str]:
                 _add(object_id)
     for select in list((query or {}).get("select") or []):
         expr = select.get("expression") if isinstance(select, dict) else None
-        if not isinstance(expr, dict):
-            continue
-        predicates = list(expr.get("predicates") or [])
-        if predicates:
+        for predicate in _scoped_predicates(expr):
             _add("scoped_aggregate_predicates")
-        for predicate in predicates:
             for object_id in _object_ids_in_node(predicate):
                 _add(object_id)
     return out
+
+
+def _scoped_predicates(node: Any) -> list[Any]:
+    """Return every scoped-aggregate predicate in an expression, including inside a ratio."""
+
+    found: list[Any] = []
+    if isinstance(node, dict):
+        found.extend(list(node.get("predicates") or []))
+        for key, child in node.items():
+            if key != "predicates":
+                found.extend(_scoped_predicates(child))
+    elif isinstance(node, list):
+        for child in node:
+            found.extend(_scoped_predicates(child))
+    return found
 
 
 def _time_scope(query: dict[str, Any]) -> dict[str, Any]:

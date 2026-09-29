@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import _metric_predicate
 from semantic_rails.runtime import Runtime
-from tests.plan_candidate_envelope import plan_candidate_envelope
 
 SEED_SQL = """
 CREATE TABLE accounts (account_id INTEGER, snapshot_at TIMESTAMP, arr INTEGER);
@@ -98,17 +98,19 @@ def test_a_drafted_metric_predicate_never_asks_for_calendar_alignment():
 
 
 def test_a_share_drafted_across_clocks_is_not_offered_as_ready(runtime):
-    result = plan_candidate_envelope(
-        runtime, intent="share of arr from sms and push senders by month", limit=3
+    payload = plan_payload(
+        runtime, intent="share of arr from sms and push senders by month", detail="full", limit=3
     )
-    assert "same_query_period" not in json.dumps(result)
-    ratios = [
-        candidate
-        for candidate in result["candidates"]
-        if "predicates" in json.dumps(candidate["candidate_ir"])
-    ]
-    assert ratios, "the share draft should still be shown, just not as ready"
-    assert all(candidate["validation"]["ok"] is False for candidate in ratios)
-    assert {
-        error["code"] for candidate in ratios for error in candidate["validation"]["errors"]
-    } == {"INVALID_TEMPORAL_BINDING"}
+    assert "same_query_period" not in json.dumps(payload)
+    # The share draft is refused; the plan must not fall back to a draft that drops the
+    # question's qualifier (the plain metric) and offer that as ready instead.
+    assert payload["status"] == "low_confidence"
+    assert "ready_for" not in payload["next"]
+    assert payload["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+    assert "qualification_dropped" in {
+        reason["kind"] for reason in payload["why"]["details"]["reasons"]
+    }
+    best = payload["best"]
+    assert best["pattern"] == "scoped_predicate_ratio"
+    assert best["validation_ok"] is False
+    assert "predicates" in json.dumps(best["query_ir"])

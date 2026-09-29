@@ -4,6 +4,7 @@ import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.planner import plan_payload
 from semantic_rails.registry import Registry
 from tests.plan_candidate_envelope import plan_candidate_envelope
 
@@ -422,12 +423,13 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
 def test_plan_composes_exact_complex_question_shapes(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        snapshot = plan_candidate_envelope(
+        snapshot = plan_payload(
             runtime,
             intent=(
                 "Give me the sum of active menu snapshot at the store dimension for stores "
                 "that have done more than one order and more than one session grouped by month"
             ),
+            detail="full",
             limit=1,
         )
         adoption = plan_candidate_envelope(
@@ -436,9 +438,33 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
             limit=1,
         )
 
-        assert snapshot["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-        # Its qualifiers are measured on other clocks than the snapshot's, which is refused.
-        assert snapshot["candidates"] == []
+        assert snapshot["best"]["pattern"] == "qualified_metric_rollup"
+        # Its qualifiers are measured on other clocks than the snapshot's, so the engine refuses
+        # the draft and the plan does not offer it as ready; the drafted shape is unchanged.
+        assert snapshot["status"] == "low_confidence"
+        assert "ready_for" not in snapshot["next"]
+        snapshot_query = snapshot["best"]["query_ir"]
+        snapshot_expr = snapshot_query["select"][0]["expression"]
+        assert snapshot["best"]["validation_ok"] is False
+        assert [error["code"] for error in runtime.validate(snapshot_query)["errors"]] == [
+            "INVALID_TEMPORAL_BINDING"
+        ]
+        assert snapshot_expr["measure"] == "measure.jaffle.active_menu_count_eop"
+        assert snapshot_expr["aggregation"] == "sum"
+        # Predicate inputs may be measures or metrics depending on which
+        # scored higher in discovery — we assert the cohort fields match,
+        # not the exact input ref.
+        assert len(snapshot_expr["predicates"]) == 2
+        for predicate in snapshot_expr["predicates"]:
+            assert predicate["entity"] == "entity.jaffle_store"
+            assert predicate["op"] == ">"
+            assert predicate["value"] == 1
+            assert "measure" in predicate or "metric" in predicate
+        assert snapshot_query["group_by"] == ["dimension.jaffle_store_name"]
+        assert snapshot_query["time"] == {
+            "temporal_role": "temporal_role.jaffle_inventory_day",
+            "grain": "month",
+        }
 
         assert adoption["interpreted_intent"]["pattern"] == "filtered_adoption_funnel"
         adoption_query = adoption["candidates"][0]["candidate_ir"]
