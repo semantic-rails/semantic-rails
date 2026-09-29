@@ -1053,9 +1053,10 @@ class ClickHouseDialect(SqlDialect):
 
     name: str = "clickhouse"
 
-    # No day_series override: an unmatched LEFT JOIN field is 0 here rather than NULL
-    # (without join_use_nulls), so a filled non-additive bucket would read 0. Packages
-    # on ClickHouse keep needing an authored calendar for dense fill.
+    # No day_series override: it was withheld because an unmatched LEFT JOIN field reads 0
+    # rather than NULL. Every compiled statement now sets join_use_nulls, but a generated
+    # series is untested here, so packages on ClickHouse keep needing an authored calendar
+    # for dense fill.
 
     @property
     def outer_lookup_joins(self) -> bool:

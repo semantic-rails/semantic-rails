@@ -26,7 +26,7 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
-from .expressions import parse_config_expression, parse_semantic_expression
+from .expressions import NULL_BEHAVIOR_REMOVED, parse_config_expression, parse_semantic_expression
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,
@@ -695,7 +695,6 @@ _DIRECT_EXPRESSION_FIELDS = (
     "aggregation",
     "numerator",
     "denominator",
-    "null_behavior",
     "window",
     "window_scope",
     "offset",
@@ -732,7 +731,7 @@ def _translate_metric_direct_fields(
     Common kinds — `aggregate`, `ratio`, `cumulative`, `rolling`,
     `prior_period`, `period_to_date` — get direct named fields:
         kind: aggregate     → measure: <key>
-        kind: ratio         → numerator: <key>, denominator: <key>, null_behavior: <opt>
+        kind: ratio         → numerator: <key>, denominator: <key>
         kind: cumulative    → measure: <key>, optional partition_by
         kind: rolling       → measure: <key>, window: { ... }, optional partition_by
         kind: prior_period  → measure: <key>, offset: { ... }
@@ -822,7 +821,6 @@ def _translate_direct_fields_to_expression(
         denominator = spec.get("denominator")
         if numerator is None or denominator is None:
             return spec
-        null_behavior = str(spec.get("null_behavior", "null_if_zero"))
 
         def _ratio_operand(ref: Any, field: str = "operand") -> dict[str, Any]:
             """Wrap a ratio numerator/denominator as a metric ref when it
@@ -876,8 +874,7 @@ def _translate_direct_fields_to_expression(
             "op": "divide",
             "left": _ratio_operand(numerator, field="numerator"),
             "right": _ratio_operand(denominator, field="denominator"),
-            "null_behavior": null_behavior,
-            **_authored_direct_fields(spec, consumed={"numerator", "denominator", "null_behavior"}),
+            **_authored_direct_fields(spec, consumed={"numerator", "denominator"}),
         }
         return spec
 
@@ -2533,6 +2530,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"{path}: metric '{metric_key}' uses 'primitive:' shorthand which has been removed; expand to explicit 'kind' / 'comparison_mode' fields",
+            )
+
+        if "null_behavior" in spec:
+            raise SemanticLayerError(
+                "INVALID_CONFIG", f"{path}: metric '{metric_key}': {NULL_BEHAVIOR_REMOVED}"
             )
 
         # Translate direct named fields per metric kind into the runtime

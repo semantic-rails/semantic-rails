@@ -44,6 +44,8 @@ def test_written_package_loads_back_identical_and_validates_alike(package, tmp_p
     original = [e.replace(str(package), "<pkg>") for e in validate_runtime_package(package)]
     written = [e.replace(str(directory), "<pkg>") for e in validate_runtime_package(directory)]
     assert written == original
+    # A rewrite never writes the removed `null_behavior:`.
+    assert not any("null_behavior" in p.read_text() for p in directory.rglob("*.yml"))
 
 
 def test_contracts_path_policy_and_authored_values_are_written(tmp_path) -> None:

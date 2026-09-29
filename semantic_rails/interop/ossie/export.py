@@ -375,9 +375,6 @@ class _Exporter:
             left, right = self.metric_node(expr.left), self.metric_node(expr.right)
             if expr.op == "divide":
                 return _divide(left, right)
-            if expr.null_behavior == "coalesce_zero" and expr.op in {"add", "subtract"}:
-                left = SqlCall("COALESCE", [left, SqlLiteral(0)])
-                right = SqlCall("COALESCE", [right, SqlLiteral(0)])
             return SqlBinary(left, _OPERATORS[expr.op], right)
         raise _Unsupported(f"metrics using {expr_kind(expr)}")
 

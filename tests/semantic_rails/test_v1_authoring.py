@@ -614,7 +614,6 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
                 "kind": "ratio",
                 "numerator": "premium_count",
                 "denominator": "widget_count",
-                "null_behavior": "null_if_zero",
                 "value_type": "percent",
                 "topics": ["p"],
             },
@@ -1075,7 +1074,6 @@ def test_metric_ratio_numerator_resolves_top_level_metric(tmp_path: Path) -> Non
                 "kind": "ratio",
                 "numerator": "premium_metric",  # → top-level metric
                 "denominator": "widget_count",  # → measure
-                "null_behavior": "null_if_zero",
                 "value_type": "percent",
                 "topics": ["p"],
             },
@@ -1223,7 +1221,6 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
                 "kind": "ratio",
                 "numerator": "shared_key",
                 "denominator": "denom",
-                "null_behavior": "null_if_zero",
                 "value_type": "percent",
                 "topics": ["a"],
             },
@@ -1394,11 +1391,10 @@ def test_times_block_consolidates_temporal_role_and_dimension(tmp_path: Path) ->
 
 
 def test_metric_kind_ratio_compiles_to_arithmetic_divide(tmp_path: Path) -> None:
-    """`kind: ratio` with direct `numerator:`/`denominator:` fields and no
-    explicit `null_behavior:` compiles to an `ArithmeticExpr(op='divide')`
-    with both sides resolved to fully qualified metric ids — verifying the
-    loader produces the canonical AST shape from the v1 direct-fields
-    sugar regardless of whether the optional `null_behavior` is authored.
+    """`kind: ratio` with direct `numerator:`/`denominator:` fields compiles to an
+    `ArithmeticExpr(op='divide')` with both sides resolved to fully qualified
+    metric ids — verifying the loader produces the canonical AST shape from the
+    v1 direct-fields sugar.
     """
     pkg_dir = tmp_path / "pkg_ratio_arithmetic_compile"
     _write_synthetic_package(
@@ -1407,12 +1403,10 @@ def test_metric_kind_ratio_compiles_to_arithmetic_divide(tmp_path: Path) -> None
         metrics={
             "premium_share_default": {
                 "label": "Premium share",
-                "description": "No explicit null_behavior — uses loader default.",
+                "description": "Premium share of widgets.",
                 "kind": "ratio",
                 "numerator": "premium_count",
                 "denominator": "widget_count",
-                # null_behavior intentionally omitted — defaults inside the
-                # loader's ratio-normalization step (see config.py:360).
                 "value_type": "percent",
                 "topics": ["p"],
             },
@@ -1521,7 +1515,6 @@ def test_metric_kind_ratio_value_type_overrides_input_types(tmp_path: Path) -> N
                 "kind": "ratio",
                 "numerator": "premium_count",  # count
                 "denominator": "widget_count",  # count
-                "null_behavior": "null_if_zero",
                 "value_type": "percent",  # explicit override
                 "topics": ["p"],
             },
@@ -1532,37 +1525,6 @@ def test_metric_kind_ratio_value_type_overrides_input_types(tmp_path: Path) -> N
     assert metric.value_type == "percent", (
         f"ratio metric value_type should be 'percent' even when inputs are "
         f"count-typed, got {metric.value_type!r}"
-    )
-
-
-def test_metric_kind_ratio_preserves_null_behavior_through_loader(tmp_path: Path) -> None:
-    """Regression: `null_behavior: null_if_zero` authored on a ratio metric
-    must survive the loader's binary→arithmetic conversion. Previously the
-    loader dropped the field at the conversion site, causing ratio metrics to
-    lose their safety semantics silently."""
-    pkg_dir = tmp_path / "pkg_ratio_null_behavior"
-    _write_synthetic_package(
-        pkg_dir,
-        models=_widget_model_with_two_count_measures(),
-        metrics={
-            "premium_share_safe": {
-                "label": "Premium share (safe)",
-                "description": "Premium share with explicit null-if-zero handling.",
-                "kind": "ratio",
-                "numerator": "premium_count",
-                "denominator": "widget_count",
-                "null_behavior": "null_if_zero",
-                "value_type": "percent",
-                "topics": ["p"],
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "premium_share_safe" in m.id)
-    expr = metric.expression
-    # The runtime ArithmeticExpr should carry null_behavior end-to-end.
-    assert getattr(expr, "null_behavior", "") == "null_if_zero", (
-        f"null_behavior should propagate through the binary→arithmetic conversion, got {expr!r}"
     )
 
 

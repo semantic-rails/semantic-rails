@@ -284,7 +284,9 @@ def gold():
     connection.close()
 
 
-def _ask(runtime: Runtime, measure: str, *, group_by: str = "", where=()) -> dict[Any, float]:
+def _ask(
+    runtime: Runtime, measure: str, *, group_by: str = "", where=()
+) -> dict[Any, float | None]:
     query: dict[str, Any] = {
         "version": 1,
         "select": [{"as": "value", "expression": {"measure": f"measure.crew.{measure}"}}],
@@ -293,7 +295,12 @@ def _ask(runtime: Runtime, measure: str, *, group_by: str = "", where=()) -> dic
     if group_by:
         query["group_by"] = [group_by]
     rows = runtime.query(query)["rows"]
-    return {row.get(group_by) if group_by else None: float(row["value"]) for row in rows}
+    return {
+        row.get(group_by) if group_by else None: None
+        if row["value"] is None
+        else float(row["value"])
+        for row in rows
+    }
 
 
 def _conversion_query(properties: tuple[str, ...] = (), **extra: Any) -> dict[str, Any]:
@@ -472,8 +479,13 @@ def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
         pytest.param("=", "operating", "= 'operating'", 3, id="equals"),
         # A row with no roster match has no role: like a NULL role, it isn't "not operating".
         pytest.param("!=", "operating", "<> 'operating'", 1, id="not-equals"),
+        # No row matches, so there is nothing to count: NULL, where raw SQL counts 0.
         pytest.param(
-            "NOT IN", ["operating", "deadhead"], "NOT IN ('operating', 'deadhead')", 0, id="not-in"
+            "NOT IN",
+            ["operating", "deadhead"],
+            "NOT IN ('operating', 'deadhead')",
+            None,
+            id="not-in",
         ),
     ],
 )
@@ -482,11 +494,11 @@ def test_filters_on_a_looked_up_column_follow_sql_null_rules(
 ):
     where = [{"field": ROLE, "op": op, **({"value": value} if value is not None else {})}]
 
-    got = _ask(runtime, "boarding_count", where=where).get(None, 0.0)
+    got = _ask(runtime, "boarding_count", where=where)[None]
 
     assert got == expected
     reference = gold(f"SELECT NULL, COUNT(*) FROM boardings AS b WHERE {SQL_ROLE} {sql}")
-    assert got == reference.get(None, 0.0)
+    assert got == (reference[None] or None)
 
 
 # Check-ins that lead to a boarding by the same person within a day. Check-ins 2 (no person)

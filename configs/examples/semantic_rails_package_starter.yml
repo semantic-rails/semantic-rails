@@ -200,7 +200,6 @@ metrics:
     kind: ratio
     numerator: revenue_usd
     denominator: order_count
-    null_behavior: null_if_zero
     value_type: currency
     currency: USD
     meta:

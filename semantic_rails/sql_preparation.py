@@ -96,6 +96,10 @@ def prepare_query(sql: str, warehouse: str) -> PreparedQuery:
         sql = _athena_compat_sql(sql)
     elif warehouse == "snowflake":
         sql = float_nullif_divisions(sql)
+    elif warehouse == "clickhouse":
+        # An unmatched outer-join field reads its type's default (0 or '') unless the join
+        # yields NULLs, and a group a leaf has no row for must read NULL, not a made-up 0.
+        sql = f"{sql}\nSETTINGS join_use_nulls = 1"
     return PreparedQuery(sql, tuple(alias_map.items()))
 
 

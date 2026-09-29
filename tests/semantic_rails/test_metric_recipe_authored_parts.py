@@ -670,7 +670,6 @@ ROLLING_EXPRESSION = {
         pytest.param("aggregation", "sum", id="aggregation"),
         pytest.param("numerator", "order_count", id="numerator"),
         pytest.param("denominator", "order_count", id="denominator"),
-        pytest.param("null_behavior", "null_if_zero", id="null_behavior"),
         pytest.param("window", WEEK, id="window"),
         pytest.param("window_scope", "query_period", id="window_scope"),
         pytest.param("offset", WEEK, id="offset"),

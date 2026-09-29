@@ -1017,7 +1017,6 @@ def _rewrite_conditional_aggregates(
             op=expr.op,
             left=_rewrite_conditional_aggregates(expr.left, config, synthetic),
             right=_rewrite_conditional_aggregates(expr.right, config, synthetic),
-            null_behavior=expr.null_behavior,
         )
     if isinstance(expr, ComparisonExpr):
         return ComparisonExpr(
@@ -1040,7 +1039,6 @@ def _rewrite_conditional_aggregates(
         return RatioExpr(
             numerator=_rewrite_conditional_aggregates(expr.numerator, config, synthetic),
             denominator=_rewrite_conditional_aggregates(expr.denominator, config, synthetic),
-            null_behavior=expr.null_behavior,
         )
     if isinstance(expr, CaseExpr):
         return CaseExpr(

@@ -54,6 +54,13 @@ from .compiler_parts.dependencies import (
     recipe_objects,
     record_temporal_role,
 )
+from .compiler_parts.empty_groups import (
+    ZERO_MEASURE_CLASSES,
+    absent_entities_gate,
+    expr_resolves_to_zero,
+    recording_zero_outputs,
+    require_settled_source,
+)
 from .compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from .compiler_parts.indexes import (
     _default_temporal_role,
@@ -83,9 +90,7 @@ from .compiler_parts.post_aggregation import (
     _namespace_sql_select,
 )
 from .compiler_parts.sql_lowering import (
-    _ZERO_ON_MISSING_MEASURE_CLASSES,
     _count_key_expr,
-    _expr_zero_on_missing,
     _last_token,
     _preferred_path,
     _slug,
@@ -1472,9 +1477,9 @@ _INVERSE_THRESHOLD_OPS = {
 }
 
 
-# A distinct count of a population is 0 over no rows too; it stays out of the metric_filter
-# and dense-fill uses of the shared set, whose null semantics differ.
-_ZERO_ON_MISSING_PREDICATE_CLASSES = {*_ZERO_ON_MISSING_MEASURE_CLASSES, "distinct_population"}
+# A distinct count of a population is 0 over no rows too; it stays out of the empty-group
+# settling of a query's groups, whose null semantics differ.
+_ZERO_ON_MISSING_PREDICATE_CLASSES = {*ZERO_MEASURE_CLASSES, "distinct_population"}
 
 
 def _is_number(value: Any) -> bool:
@@ -1514,22 +1519,16 @@ def _require_predicate_over_rows(
 def _predicate_input_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
     """Whether the predicate input is 0, not NULL, for an entity with no rows.
 
-    A count or sum is. Arithmetic over several sources is NULL when any source
-    has no rows for the entity, unless every add/subtract node coalesces each
-    side to 0 (``null_behavior: coalesce_zero``); otherwise treating it as 0
-    would let entities with rows on one side pass a threshold they fail.
+    A count or sum is, and so is an add or subtract of them: the source query settles each
+    operand the way any query does (see ``empty_groups``), so this is the same rule, never a
+    second one. Only a bare measure may also be a distinct population.
     """
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         return recipe is not None and _predicate_input_zero_on_missing(recipe.expression, config)
     if isinstance(expr, ArithmeticExpr):
-        return (
-            expr.op in {"add", "subtract"}
-            and expr.null_behavior == "coalesce_zero"
-            and _predicate_input_zero_on_missing(expr.left, config)
-            and _predicate_input_zero_on_missing(expr.right, config)
-        )
-    return _expr_zero_on_missing(expr, config, _ZERO_ON_MISSING_PREDICATE_CLASSES)
+        return expr_resolves_to_zero(expr, config)
+    return expr_resolves_to_zero(expr, config, _ZERO_ON_MISSING_PREDICATE_CLASSES)
 
 
 def _predicate_includes_entities_without_rows(
@@ -1540,8 +1539,9 @@ def _predicate_includes_entities_without_rows(
     An entity with no rows never reaches the predicate's aggregate, so a
     threshold that zero passes (``count = 0``, ``< 3``, ``<= 0``) would
     otherwise match nothing. Only where "no rows" is 0 (a count or sum) does the
-    entity qualify. An average, minimum, maximum or ratio over no rows is NULL,
-    which no threshold satisfies, so those entities stay out.
+    entity qualify, and, as for every entity the source lists, only while the measure has
+    data somewhere in the predicate's scope. An average, minimum, maximum or ratio over no
+    rows is NULL, which no threshold satisfies, so those entities stay out.
     """
     return _zero_satisfies_threshold(
         predicate.op, predicate.value
@@ -2067,12 +2067,13 @@ def _predicate_ctes_and_join(
     plan: LogicalPlan,
     measure_plan: MeasurePlan,
     config: PackageConfig,
-) -> tuple[list[SqlCte], SqlJoin, list[Any]]:
-    """Return the predicate's CTEs, the join to the outer leaf, and extra WHERE conditions.
+) -> tuple[list[SqlCte], list[SqlJoin], list[Any]]:
+    """Return the predicate's CTEs, the joins to the outer leaf, and extra WHERE conditions.
 
     Usually the set holds the qualifying entities and the join is INNER. When entities
     with no rows must qualify, the set holds the entities that fail the threshold, and
-    the leaf keeps a row only if that LEFT JOIN finds no failing entity for it.
+    the leaf keeps a row only if that LEFT JOIN finds no failing entity for it, and, for a
+    count or sum, only while the source holds a settled value (see ``empty_groups``).
     """
     entity_cfg = _entity_index(config).get(predicate.entity)
     if entity_cfg is None:
@@ -2109,7 +2110,7 @@ def _predicate_ctes_and_join(
         mini_query["time"] = _public_time_spec(scope["time_spec"])
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True)
+    predicate_sql = _compile_predicate_source_ast(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -2140,11 +2141,11 @@ def _predicate_ctes_and_join(
     )
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
     if without_rows:
+        # The set holds the entities that fail the threshold. Never coalesce the value: the
+        # source is settled like any query, so its values are non-NULL on every row or NULL on
+        # every row. In the second case no entity qualifies, and the gate below drops every row.
         where_condition = build_filter_condition(
-            SqlCall(
-                "COALESCE",
-                [SqlIdentifier(parts=["predicate_source", "__predicate_value"]), SqlLiteral(0)],
-            ),
+            SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
             _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
             predicate.value,
             path="metric_predicate",
@@ -2231,10 +2232,11 @@ def _predicate_ctes_and_join(
             "AND",
             SqlBinary(outer_time_expr, "=", SqlIdentifier(parts=[set_name, scope["time_alias"]])),
         )
+    ctes = [source_cte, *threshold_ctes, set_cte]
     if not without_rows:
         return (
-            [source_cte, *threshold_ctes, set_cte],
-            SqlJoin(join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition),
+            ctes,
+            [SqlJoin(join_type="INNER", table=SqlTableRef(name=set_name), on=join_condition)],
             [],
         )
     # A leaf row with no entity, context or period key is not an entity with no rows.
@@ -2242,11 +2244,18 @@ def _predicate_ctes_and_join(
         SqlIsNull(SqlIdentifier(parts=[set_name, key_dim_map[0][1]])),
         *(SqlBinary(key_expr, "IS NOT", SqlLiteral(None)) for key_expr in outer_keys),
     ]
-    return (
-        [source_cte, *threshold_ctes, set_cte],
-        SqlJoin(join_type="LEFT", table=SqlTableRef(name=set_name), on=join_condition),
-        keep_rows,
-    )
+    joins = [SqlJoin(join_type="LEFT", table=SqlTableRef(name=set_name), on=join_condition)]
+    if expr_resolves_to_zero(predicate.input, config):
+        # An entity absent from the source reads 0 only where the measures have data in scope,
+        # the test the guard applied to the entities it lists; a distinct population has none.
+        require_settled_source(predicate_sql, {"predicate": expr_to_dict(predicate)})
+        gate_cte, gate_join, gate_condition = absent_entities_gate(
+            f"{set_name}_gate", source_name, "__predicate_value"
+        )
+        ctes.append(gate_cte)
+        joins.append(gate_join)
+        keep_rows.append(gate_condition)
+    return ctes, joins, keep_rows
 
 
 def _leaf_path_selections(
@@ -3146,7 +3155,7 @@ def _conversion_predicate_set_ctes(
     with cut_owners():
         with binding_cut():
             _entity_index(config)[predicate.entity]
-        predicate_sql = _compile_query_sql_ast(config, mini_query, project_cut=True)
+        predicate_sql = _compile_predicate_source_ast(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -4111,20 +4120,40 @@ def _calendar_fill_binding(
     return bind_calendar(plan, config, force=force)
 
 
-def lower_to_sql(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
+def lower_to_sql(
+    plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
+) -> SqlSelect:
     from .compiler_parts.sql_lowering import lower_to_sql as _lower_to_sql
 
-    return _lower_to_sql(plan, config)
+    return _lower_to_sql(plan, config, guard_empty=guard_empty)
 
 
 def _compile_query_sql_ast(
-    config: PackageConfig, payload: dict[str, Any], *, project_cut: bool = False
+    config: PackageConfig,
+    payload: dict[str, Any],
+    *,
+    project_cut: bool = False,
+    guard_empty: bool = True,
 ) -> SqlSelect:
+    """Compile a nested query; ``guard_empty=False`` for a distribution's per-entity values."""
     plan = plan_query(config, None, payload, collapse_window=False)
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
-        return attach_relation_ctes(config, lower_to_sql(plan, config))
+        return attach_relation_ctes(config, lower_to_sql(plan, config, guard_empty=guard_empty))
+
+
+def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
+    """The per-entity values a metric predicate reads, settled like any query's.
+
+    An add or subtract settles each operand the way the guard does (0 where the measure has
+    data in the predicate's scope), so a predicate and a projection of the same expression
+    agree. An entity with no rows at all is absent from the source, and the anti-join reads it
+    like the entities the source lists (``absent_entities_gate``). The value is internal, so it
+    never becomes a ``NO_DATA_IN_SCOPE`` output.
+    """
+    with recording_zero_outputs():
+        return _compile_query_sql_ast(config, payload, project_cut=True)
 
 
 def _record_bound_plan(
@@ -4179,6 +4208,8 @@ class BoundQuery:
     parameters: tuple[ParameterSlot, ...] = ()
     # The key gap of every event/state-clock stock the SQL reads, nested compiles included.
     stock_key_gaps: tuple[dict[str, Any], ...] = ()
+    # Every output that reads 0 or NULL for an empty group, with the measures behind it.
+    zero_outputs: tuple[dict[str, Any], ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``.
@@ -4277,6 +4308,7 @@ def _bind_query(
         plan_bindings(plan) as leaves,
         recording_rollup_scans() as rollup_scans,
         recording_stock_key_gaps() as stock_key_gaps,
+        recording_zero_outputs() as zero_outputs,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
         sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
@@ -4299,6 +4331,7 @@ def _bind_query(
         },
         frozenset(rollup_scans),
         stock_key_gaps=tuple(stock_key_gaps),
+        zero_outputs=tuple(zero_outputs),
     )
 
 
@@ -4379,4 +4412,5 @@ def compile_query(
         "performance_plan": performance_plan,
         "compile_stats": compile_stats,
         "stock_key_gaps": list(bound.stock_key_gaps),
+        "zero_outputs": list(bound.zero_outputs),
     }

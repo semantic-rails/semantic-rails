@@ -30,7 +30,6 @@ metrics:
     expression:
       kind: binary
       op: divide
-      null_behavior: null_if_zero
       left:
         kind: binary
         op: subtract

@@ -1025,7 +1025,6 @@ def _metric_change(
         fields: dict[str, Any] = {
             "numerator": ids[0],
             "denominator": ids[1],
-            "null_behavior": (retain and saved.null_behavior) or "null_if_zero",
         }
         example = f"How does {name} trend by month?"
     elif recipe == "filtered":
@@ -1167,7 +1166,6 @@ class _Saved:
     aggregation: str = ""
     row_filter: dict[str, Any] | None = None
     params: dict[str, Any] = field(default_factory=dict)
-    null_behavior: str = ""
     clock: str = ""
 
 
@@ -1200,7 +1198,7 @@ def _read_recipe(kind: str, expr: Any, config: PackageConfig) -> _Saved | None:
 
     if kind == "ratio" and isinstance(expr, ArithmeticExpr) and expr.op == "divide":
         ids = tuple(_operand_id(side) for side in (expr.left, expr.right))
-        return _Saved("ratio", ids, null_behavior=expr.null_behavior) if all(ids) else None
+        return _Saved("ratio", ids) if all(ids) else None
     if kind == "derived" and isinstance(expr, ArithmeticExpr):
         # Growth: (now - prior) / prior, exactly as `_time_recipe` writes it.
         now = plain(expr.left.left) if isinstance(expr.left, ArithmeticExpr) else None
@@ -1210,10 +1208,7 @@ def _read_recipe(kind: str, expr: Any, config: PackageConfig) -> _Saved | None:
             and isinstance(prior, OffsetWindowExpr)
             and prior.kind == "prior_period"
             and prior.input == now
-            and expr
-            == ArithmeticExpr(
-                "divide", ArithmeticExpr("subtract", now, prior), prior, "null_if_zero"
-            )
+            and expr == ArithmeticExpr("divide", ArithmeticExpr("subtract", now, prior), prior)
         ):
             offset = {"unit": prior.unit, "value": prior.value}
             return _Saved("growth", (now.measure,), now.aggregation, params={"offset": offset})
@@ -1314,7 +1309,6 @@ def _time_recipe(
     growth = {
         "kind": "binary",
         "op": "divide",
-        "null_behavior": "null_if_zero",
         "left": {"kind": "binary", "op": "subtract", "left": now, "right": then},
         "right": dict(then),
     }
