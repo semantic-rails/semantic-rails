@@ -132,7 +132,7 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, choose_path
+from .fanout import analyze_fanout, choose_path, one_to_many_descent
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -743,6 +743,99 @@ def _entity_in_terms_of_rewrite_supported(
         path=path,
         config=config,
     )
+
+
+# Query roles a de-duplicated leaf serves across a one-to-many hop, and the aggregations it
+# answers: any one-value-per-row aggregation under a filter, and only a distinct count when the
+# child dimension splits the output ("orders that included it").
+_FANOUT_DEDUP_PURPOSES = frozenset({"group_by", "where", "metric_filter"})
+_FANOUT_DEDUP_AGGREGATIONS = frozenset(
+    {"sum", "count", "count_distinct", "avg", "min", "max", "median", "percentile"}
+)
+_FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
+_NEGATED_FILTER_OPS = frozenset({"!=", "<>", "IS NOT", "IS DISTINCT FROM", "NOT IN", "NOT LIKE"})
+
+
+def _fanout_dedup_blocker(
+    *,
+    measure: MeasureConfig,
+    bound: BoundMeasure,
+    selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> str:
+    """Why this leaf can't count each measure row once across its one-to-many hops, or "".
+
+    ``selections`` are the leaf's rewrite-required group_by/where paths. The de-duplicated leaf
+    (``sql_lowering._fanout_dedup_leaf_select``) keeps one row per (measure-entity key, output
+    grain) before it aggregates, so a row counts once at all under a filter (a semi-join), and
+    once per group it has a matching child row in.
+
+    Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
+    item dimension reads as the item-level split ("revenue by product type") as often as the
+    orders-that-included-it total, and the two differ, so that shape stays refused.
+    """
+    if not all(one_to_many_descent(row.analysis) for row in selections):
+        return (
+            "The path relates the two entities many-to-many (through a shared parent, an M:N "
+            "relationship or a time-bounded hop), so no single child set belongs to each row."
+        )
+    aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
+    grouped = sorted({row.target_entity for row in selections if row.purpose == "group_by"})
+    if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
+        return (
+            f"'{aggregation}' of '{measure.id}' grouped by a dimension of "
+            f"{', '.join(repr(item) for item in grouped)} is ambiguous across a one-to-many hop: "
+            "the amount split over the child rows and the full amount of every row that has one "
+            "differ. Use a measure at the child's grain, group by a dimension of the measure's "
+            "own grain, or filter on the child dimension (each row then counts once)."
+        )
+    entity = _entity_index(config)[measure.entity]
+    if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
+        measure.additive
+        and measure.measure_class not in {"semi_additive", "snapshot"}
+        and not measure.source_relation
+        and measure.aggregation_entity in {"", measure.entity}
+        and (entity.key or entity.primary_key)
+    ):
+        return (
+            f"'{aggregation}' of measure '{measure.id}' is not defined over one row per "
+            f"'{measure.entity}' key (a non-additive value, a stock, an ordered aggregation, "
+            "or a measure without its entity's row key)."
+        )
+    roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
+    roots += [item.expression for item in query.metric_filters if item.expression is not None]
+    if (
+        bound.window_spec
+        or _bound_metric_predicates(bound)
+        or any(isinstance(root, MetricPredicateExpr) for root in roots)
+        or any(
+            measure_id == bound.measure_id
+            for root in roots
+            for measure_id, _ in _measures_under_summing_wrappers(root, config)
+        )
+    ):
+        return (
+            "A window, per-entity rollup, distribution or metric predicate over this measure "
+            "is not supported across a one-to-many hop."
+        )
+    filtered = {row.target_entity for row in selections if row.purpose != "group_by"}
+    dimensions = _dimension_index(config)
+    for item in [*(asdict(row) for row in query.where), *_bound_filter_clauses(bound, config)]:
+        dim = dimensions.get(str(item.get("field", "")))
+        op = " ".join(str(item.get("op") or "=").replace("_", " ").split()).upper()
+        null_test = item.get("value") is None and op in {"!=", "<>", "IS NOT"}
+        if (
+            dim is not None
+            and dim.entity in filtered
+            and op in _NEGATED_FILTER_OPS
+            and not null_test
+        ):
+            return (
+                f"'{dim.id}' {op} filters across a one-to-many hop, where 'has a row that is "
+                "not X' and 'has no row that is X' differ. Filter on the values to keep instead."
+            )
+    return ""
 
 
 def _date_key(value: Any) -> str:
@@ -1837,7 +1930,8 @@ def _predicate_ctes_and_join(
 
 def _leaf_path_selections(
     bound: BoundMeasure, config: PackageConfig, query: NormalizedQuery
-) -> tuple[list[PathSelection], list[str]]:
+) -> tuple[list[PathSelection], list[str], bool]:
+    """The leaf's paths, the entities it reads, and whether it de-duplicates one-to-many hops."""
     measures = _measure_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
@@ -1964,8 +2058,24 @@ def _leaf_path_selections(
             )
             for row in unsupported
         ):
-            return selections, sorted(required_entities)
+            return selections, sorted(required_entities), False
         row = unsupported[0]
+        if all(item.purpose in _FANOUT_DEDUP_PURPOSES for item in unsupported):
+            blocker = _fanout_dedup_blocker(
+                measure=measure, bound=bound, selections=unsupported, config=config, query=query
+            )
+            if not blocker:
+                return selections, sorted(required_entities), True
+            raise _mixed_grain_error(
+                target_entity=row.target_entity,
+                purpose=row.purpose,
+                chosen=list(row.chosen_path),
+                analysis=row.analysis,
+                config=config,
+                query=query,
+                bound_measures=[bound],
+                why_invalid=blocker,
+            )
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
             f"Measure '{bound.measure_id}' requires unsupported leaf rewrite toward '{row.target_entity}'",
@@ -1977,7 +2087,7 @@ def _leaf_path_selections(
                 "analysis": row.analysis,
             },
         )
-    return selections, sorted(required_entities)
+    return selections, sorted(required_entities), False
 
 
 def _mixed_grain_error(
@@ -1989,14 +2099,14 @@ def _mixed_grain_error(
     config: PackageConfig,
     query: NormalizedQuery,
     bound_measures: list[BoundMeasure],
+    why_invalid: str = "",
 ) -> SemanticLayerError:
     """MIXED_GRAIN_INVALID with recovery enrichment for the failed pairing.
 
-    Beyond the path/analysis evidence, the details carry
+    Beyond the path/analysis evidence and ``why_invalid``, the details carry
     ``compatible_measures`` / ``compatible_dimensions`` /
-    ``time_axis_recovery`` so agents can pivot to a working query in
-    one step instead of brute-forcing the registry (see
-    ``compiler_parts.grain_recovery``).
+    ``time_axis_recovery`` so agents see the workable neighbours instead of
+    brute-forcing the registry (see ``compiler_parts.grain_recovery``).
     """
     details: dict[str, Any] = {
         "target_entity": target_entity,
@@ -2004,6 +2114,8 @@ def _mixed_grain_error(
         "path": list(chosen),
         "analysis": analysis,
     }
+    if why_invalid:
+        details["why_invalid"] = why_invalid
     details.update(
         mixed_grain_pairing_enrichment(
             config=config,
@@ -2128,11 +2240,7 @@ def _root_path_summary(
                     details={"path": list(chosen), "analysis": analysis},
                 )
             )
-        elif (
-            analysis.get("status") == "rewrite_required"
-            and purpose == "group_by"
-            and len(bound_measures) == 1
-        ):
+        elif analysis.get("status") == "rewrite_required":
             measure_cfg = measures[bound_measures[0].measure_id]
             selection = PathSelection(
                 target_entity=target_entity,
@@ -2141,12 +2249,16 @@ def _root_path_summary(
                 candidate_paths=[list(path) for path in candidates],
                 analysis=analysis,
             )
-            if _entity_in_terms_of_rewrite_supported(
-                measure=measure_cfg,
-                bound=bound_measures[0],
-                selection=selection,
-                config=config,
-                query=query,
+            if (
+                purpose == "group_by"
+                and len(bound_measures) == 1
+                and _entity_in_terms_of_rewrite_supported(
+                    measure=measure_cfg,
+                    bound=bound_measures[0],
+                    selection=selection,
+                    config=config,
+                    query=query,
+                )
             ):
                 rewrite_steps.append(
                     RewriteStep(
@@ -2161,7 +2273,7 @@ def _root_path_summary(
                         },
                     )
                 )
-            else:
+            elif purpose not in {"group_by", "where"} or not one_to_many_descent(analysis):
                 raise _mixed_grain_error(
                     target_entity=target_entity,
                     purpose=purpose,
@@ -2170,17 +2282,16 @@ def _root_path_summary(
                     config=config,
                     query=query,
                     bound_measures=bound_measures,
+                    why_invalid=_fanout_dedup_blocker(
+                        measure=measure_cfg,
+                        bound=bound_measures[0],
+                        selections=[selection],
+                        config=config,
+                        query=query,
+                    ),
                 )
-        elif analysis.get("status") == "rewrite_required":
-            raise _mixed_grain_error(
-                target_entity=target_entity,
-                purpose=purpose,
-                chosen=list(chosen),
-                analysis=analysis,
-                config=config,
-                query=query,
-                bound_measures=bound_measures,
-            )
+            # Otherwise each measure leaf decides: the cheaper entity_in_terms_of rewrite, a
+            # de-duplicated leaf, or a refusal (see _leaf_path_selections).
     return selected_paths, candidate_paths, rewrite_steps, analyses
 
 
@@ -3597,7 +3708,9 @@ def _plan_query(
                     )
 
         for index, bound in enumerate(bound_measures):
-            path_selections, required_entities = _leaf_path_selections(bound, config, query)
+            path_selections, required_entities, fanout_dedup = _leaf_path_selections(
+                bound, config, query
+            )
             grain_keys = [*query.group_by]
             if query.time is not None:
                 grain_keys.append(
@@ -3610,6 +3723,15 @@ def _plan_query(
                 if any(step.measure_id == bound.measure_id for step in rewrite_steps)
                 else "direct"
             )
+            if fanout_dedup:
+                rewrite_strategy = "fanout_dedup"
+                rewrite_steps = [
+                    step
+                    for step in rewrite_steps
+                    if not (
+                        step.kind == "entity_in_terms_of" and step.measure_id == bound.measure_id
+                    )
+                ]
             aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(
                 bound=bound,
                 query=query,

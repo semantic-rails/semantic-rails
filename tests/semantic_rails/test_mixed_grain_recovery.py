@@ -14,7 +14,8 @@ These tests pin the enrichment contract added in
    ``compatible_dimensions`` lists (registry metadata only) and a
    ``closest_compatible_measure``.
 2. A ``replace_measure`` recovery hint names the closest compatible
-   measure.
+   measure, but never as a query to run: a different measure answers a
+   different question (D2's d032 got item revenue for order revenue).
 3. Calendar-date dimensions additionally carry a ``use_time_grain``
    hint pointing at the ``time`` block, listed first.
 """
@@ -75,16 +76,14 @@ def test_revenue_by_product_name_suggests_item_revenue(runtime_factory) -> None:
         replace_measure = [h for h in hints if h.get("kind") == "replace_measure"]
         assert replace_measure, "replace_measure recovery hint must be present"
         assert "measure.jaffle.item_revenue_usd" in replace_measure[0]["message"]
+        assert "different measure" in replace_measure[0]["message"]
         assert "measure.jaffle.item_revenue_usd" in list(
             replace_measure[0].get("compatible_measures") or []
         )
-        closest_query = dict(replace_measure[0].get("closest_valid_query") or {})
-        assert err["closest_valid_query"] == closest_query
-        assert closest_query["select"][0]["expression"]["measure"] == (
-            "measure.jaffle.item_revenue_usd"
-        )
-        assert closest_query["group_by"] == ["dimension.jaffle_product_name"]
-        assert runtime.validate(closest_query)["ok"] is True
+        # No hint hands back a query that swaps the measure or the dimension.
+        assert not err["closest_valid_query"]
+        assert not any(hint.get("closest_valid_query") for hint in hints)
+        assert "closest_compatible_measure_query" not in details
 
         allocation = [h for h in hints if h.get("kind") == "requires_allocation_policy"]
         assert allocation, "fan-out attribution must explicitly call out allocation semantics"

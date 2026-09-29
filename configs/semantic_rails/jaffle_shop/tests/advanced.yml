@@ -347,3 +347,50 @@ tests:
       limit: 10
     min_rows: 1
     max_rows: 10
+
+  orders_with_a_beverage_by_store_snapshot:
+    # An order-grain measure filtered by an item dimension is a semi-join: each
+    # order counts once, however many beverages it holds.
+    kind: query_matches_snapshot
+    query:
+      version: 2
+      select:
+        - expression: {measure: measure.jaffle.order_count}
+          as: orders
+      where:
+        - {field: dimension.jaffle_item_product_type, op: "=", value: beverage}
+      group_by: [dimension.jaffle_store_name]
+    expected_rows:
+      - dimension.jaffle_store_name: Brooklyn
+        orders: 20117
+      - dimension.jaffle_store_name: Philadelphia
+        orders: 35857
+
+  revenue_of_orders_with_a_beverage_by_store_executes:
+    kind: query_row_count_bounds
+    query:
+      version: 2
+      select:
+        - expression: {measure: measure.jaffle.revenue_usd}
+          as: revenue_usd
+      where:
+        - {field: dimension.jaffle_item_product_type, op: "=", value: beverage}
+      group_by: [dimension.jaffle_store_name]
+    min_rows: 2
+    max_rows: 2
+
+  ordering_customers_by_item_product_type_snapshot:
+    # Grouped by an item dimension, a distinct count counts each order (here,
+    # each customer) once in every product type it bought.
+    kind: query_matches_snapshot
+    query:
+      version: 2
+      select:
+        - expression: {measure: measure.jaffle.ordering_customer_count}
+          as: customers
+      group_by: [dimension.jaffle_item_product_type]
+    expected_rows:
+      - dimension.jaffle_item_product_type: beverage
+        customers: 939
+      - dimension.jaffle_item_product_type: jaffle
+        customers: 678

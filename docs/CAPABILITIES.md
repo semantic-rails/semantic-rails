@@ -147,7 +147,15 @@ In practice:
 
 - safe direct paths compile normally
 - some mixed-grain measure combinations compile via leaf pre-aggregation rewrite
-- unsupported grain-expanding shapes still fail fast rather than silently miscomputing
+- a measure filtered by a dimension across a one-to-many hop (order revenue where an
+  item is a beverage) counts each of its rows once: the leaf keeps one row per
+  (entity key, output grain) before it aggregates, a semi-join
+- a distinct count grouped by such a dimension counts each row once in every group it
+  has a matching child in ("orders that included each product type")
+- unsupported grain-expanding shapes still fail fast rather than silently miscomputing:
+  other aggregations grouped across the hop (order revenue by item product type reads
+  as either an item split or each containing order's total), negated filters across
+  it, and many-to-many paths
 
 Relevant statuses and codes:
 

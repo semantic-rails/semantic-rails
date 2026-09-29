@@ -276,3 +276,30 @@ def analyze_fanout(
         "status": "rewrite_required" if rewrite_required else "ok",
         "requires_rewrite_relationships": rewrite_required,
     }
+
+
+def one_to_many_descent(analysis: dict[str, Any]) -> bool:
+    """True when a rewrite-required path only goes down one-to-many hops, then looks up.
+
+    Every hop that needs a rewrite must be a plain one-to-many (the reverse of N:1, or a
+    forward 1:N) with no temporal validity, and must come before any many-to-one lookup.
+    Such a path gives each row of the start entity a set of target rows, so a query can keep
+    one row per (start key, output grain) and count every start row once per group. A
+    lookup followed by a fan-out (orders -> customer -> sessions) or an M:N hop relates the
+    two entities many-to-many through a third, and stays refused.
+    """
+    descended = looked_up = False
+    for row in analysis.get("relationships", []) or []:
+        cardinality = str(row.get("cardinality", "")).upper().replace(" ", "")
+        forward = row.get("traversal") == "forward"
+        status = row.get("directional_safety")
+        if status == "requires_rewrite":
+            one_to_many = cardinality == ("1:N" if forward else "N:1")
+            if not one_to_many or looked_up or row.get("temporal_validity"):
+                return False
+            descended = True
+        elif status != "safe":
+            return False
+        elif cardinality != "1:1":
+            looked_up = True
+    return descended
