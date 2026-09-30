@@ -716,6 +716,9 @@ def _params(check: str, backends: tuple[str, ...]) -> list[Any]:
 
 
 def _value(value: Any) -> Any:
+    # Runtime rows now carry ISO strings; reference SQL still uses driver types.
+    if isinstance(value, str) and len(value) >= 10 and value[4] == "-" and value[7] == "-":
+        value = datetime.fromisoformat(value)
     if isinstance(value, datetime):
         if value.tzinfo is not None:
             value = value.astimezone(UTC).replace(tzinfo=None)

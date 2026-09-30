@@ -136,6 +136,8 @@ def _sorted(rows: Any) -> list[tuple[Any, ...]]:
 
 def _normal(row: tuple[Any, ...]) -> tuple[Any, ...]:
     def one(value: Any) -> Any:
+        if isinstance(value, str) and len(value) >= 19 and value[10] == "T":
+            value = datetime.fromisoformat(value)
         if isinstance(value, datetime):
             return value.date()
         if isinstance(value, (Decimal, float)):

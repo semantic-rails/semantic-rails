@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 
 from semantic_rails.expressions import AggregateExpr, RollingExpr
 from semantic_rails.metadata import _expr_summary, catalog_payload, valid_values_payload
@@ -319,7 +319,7 @@ def test_time_fill_returns_dense_daily_series(runtime_factory):
         result = runtime.query(query)
 
         assert result["row_count"] == 9
-        assert result["rows"][0]["temporal_role.jaffle_order_time__day"] == date(2016, 8, 25)
+        assert result["rows"][0]["temporal_role.jaffle_order_time__day"] == "2016-08-25T00:00:00"
         assert result["rows"][0]["orders"] == 0
         assert any(row["orders"] == 0 for row in result["rows"])
         assert any(row["orders"] > 0 for row in result["rows"])
@@ -380,10 +380,10 @@ def test_time_fill_supports_grouped_series(runtime_factory):
             if row["dimension.jaffle_store_name"] == "Brooklyn"
         }
         assert brooklyn_days == {
-            date(2017, 8, 30),
-            date(2017, 8, 31),
-            date(2017, 9, 1),
-            date(2017, 9, 2),
+            "2017-08-30T00:00:00",
+            "2017-08-31T00:00:00",
+            "2017-09-01T00:00:00",
+            "2017-09-02T00:00:00",
         }
         assert any(
             row["dimension.jaffle_store_name"] == "Brooklyn" and row["orders"] == 0
@@ -701,7 +701,7 @@ def test_prior_period_and_period_to_date_semantics_execute(runtime_factory):
         previous_quarter = None
         previous_orders = None
         for row in result["rows"]:
-            month = row["temporal_role.jaffle_order_time__month"]
+            month = datetime.fromisoformat(row["temporal_role.jaffle_order_time__month"])
             quarter_key = (month.year, (month.month - 1) // 3)
             if quarter_key != previous_quarter:
                 expected_qtd = row["orders"]
@@ -939,7 +939,7 @@ def test_fiscal_calendar_buckets_leaf_by_calendar_columns(runtime_factory):
         # Quarter starts must be fiscal anchors (Feb / May / Aug / Nov),
         # NOT Gregorian (Jan / Apr / Jul / Oct).
         quarter_starts = {row["temporal_role.jaffle_order_time__quarter"] for row in result["rows"]}
-        assert any(getattr(qs, "month", None) in {2, 5, 8, 11} for qs in quarter_starts)
+        assert any(datetime.fromisoformat(qs).month in {2, 5, 8, 11} for qs in quarter_starts)
     finally:
         runtime.close()
 

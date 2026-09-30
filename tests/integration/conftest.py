@@ -88,20 +88,23 @@ def target_runtime(target: IntegrationTarget, jaffle_fixture: JaffleFixture):
 
 
 @pytest.fixture(scope="session")
-def reference_results(jaffle_fixture: JaffleFixture) -> dict[str, list[dict[str, Any]]]:
+def reference_results(jaffle_fixture: JaffleFixture) -> dict[str, dict[str, Any]]:
     """The full battery executed once on the DuckDB reference target."""
     from .harness import normalize_rows
 
     reference = discover_targets()["duckdb"]
     runtime = build_runtime(reference, jaffle_fixture)
     try:
-        results: dict[str, list[dict[str, Any]]] = {}
+        results: dict[str, dict[str, Any]] = {}
         for case in load_battery():
             payload = runtime.query(case.payload)
             assert payload.get("ok", True), (
                 f"reference (duckdb) failed battery case {case.name}: {payload}"
             )
-            results[case.name] = normalize_rows(payload.get("rows") or [])
+            results[case.name] = {
+                "rows": normalize_rows(payload.get("rows") or []),
+                "column_types": payload["column_types"],
+            }
         return results
     finally:
         runtime.close()

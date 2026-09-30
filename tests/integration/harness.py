@@ -3,9 +3,9 @@
 Defines :class:`IntegrationTarget` (one per warehouse, discovered from
 ``targets/``), the query battery (every committed worked example plus
 every executable query in the jaffle_shop package's own test suites),
-runtime construction per target, and result normalization so rows from
-different drivers (Decimal vs float, tz-aware vs naive, upper- vs
-lower-cased column keys) compare cleanly.
+runtime construction per target, and row ordering for comparisons. Public
+result types must agree; only column casing and finite-number tolerances
+are normalized.
 """
 
 from __future__ import annotations
@@ -17,8 +17,6 @@ import os
 import pkgutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -133,51 +131,44 @@ def load_battery() -> tuple[BatteryCase, ...]:
 
 
 # ---------------------------------------------------------------------------
-# Result normalization — make rows from different drivers comparable.
+# Row ordering — preserve the public result types from every driver.
 # ---------------------------------------------------------------------------
 
 _FLOAT_SORT_DIGITS = 6
 
 
-def normalize_value(value: Any) -> Any:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, datetime):
-        if value.tzinfo is not None:
-            value = value.astimezone(UTC).replace(tzinfo=None)
-        return value.isoformat(sep=" ")
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
-
-
 def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized = [
-        {str(key).lower(): normalize_value(val) for key, val in row.items()} for row in rows
-    ]
+    normalized = [{str(key).lower(): val for key, val in row.items()} for row in rows]
 
     def sort_key(row: dict[str, Any]) -> str:
         rounded = {
             key: (round(val, _FLOAT_SORT_DIGITS) if isinstance(val, float) else val)
             for key, val in row.items()
         }
-        return json.dumps(rounded, sort_keys=True, default=str)
+        return json.dumps(rounded, sort_keys=True, allow_nan=False)
 
     return sorted(normalized, key=sort_key)
 
 
 def _values_match(expected: Any, actual: Any) -> bool:
-    if isinstance(expected, float) or isinstance(actual, float):
-        if expected is None or actual is None:
-            return expected is actual
-        try:
-            return math.isclose(float(expected), float(actual), rel_tol=1e-6, abs_tol=1e-9)
-        except (TypeError, ValueError):
-            return False
+    # JSON has one number type, but booleans and numeric-looking strings
+    # are distinct. Never coerce text or erase timestamp awareness.
+    expected_number = type(expected) in (int, float)
+    actual_number = type(actual) in (int, float)
+    if expected_number and actual_number:
+        if type(expected) is int and type(actual) is int:
+            return expected == actual
+        return math.isclose(expected, actual, rel_tol=1e-6, abs_tol=1e-9)
+    if type(expected) is not type(actual):
+        return False
+    if isinstance(expected, dict):
+        return expected.keys() == actual.keys() and all(
+            _values_match(value, actual[key]) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(expected) == len(actual) and all(
+            _values_match(left, right) for left, right in zip(expected, actual, strict=True)
+        )
     return expected == actual
 
 
@@ -200,6 +191,15 @@ def assert_rows_match(
                 f"reference={ref_row[key]!r} actual={act_row[key]!r}\n"
                 f"reference row={ref_row}\nactual row={act_row}"
             )
+
+
+def assert_column_types_match(
+    reference: dict[str, Any], actual: dict[str, Any], *, context: str
+) -> None:
+    """Column metadata distinguishes equal strings with different logical types."""
+    assert {key.lower(): value for key, value in reference["column_types"].items()} == {
+        key.lower(): value for key, value in actual["column_types"].items()
+    }, f"{context}: result column types differ"
 
 
 def run_battery_case(runtime: Runtime, case: BatteryCase) -> list[dict[str, Any]]:

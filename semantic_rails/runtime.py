@@ -92,11 +92,13 @@ from .request_context import (
     request_context_payload,
     without_trusted_attributes,
 )
+from .result_values import result_rows
 from .runtime_parts.responses import (
     TIME_SHAPE_WINDOW_TOTAL,
     WINDOW_TOTAL_ASSUMPTION,
     apply_response_verbosity,
     compile_response_metadata,
+    output_columns,
     resolve_sql_profile,
     resolve_verbosity,
 )
@@ -2303,7 +2305,7 @@ class Runtime:
             ) from exc
         out: dict[str, Any] = {
             "ok": True,
-            "rows": rows,
+            **result_rows(rows, output_columns=output_columns(self._config, compiled)),
             "row_count": len(rows),
             "truncated": bool(getattr(rows, "truncated", False)),
             "rendered_sql": compiled["sql"],
@@ -2668,7 +2670,9 @@ class Runtime:
             "normalized_segment": normalized.to_dict(),
             "member_key_dimensions": list(normalized.member_key_dimensions),
             "preview_dimensions": list(normalized.preview_dimensions),
-            "rows": visible_rows,
+            **result_rows(
+                visible_rows, output_columns=output_columns(self._config, preview_compiled)
+            ),
             "preview_row_count": len(visible_rows),
             "member_count": member_count,
             "policy_effects": [*segment_policy_effects, *query_policy_effects],

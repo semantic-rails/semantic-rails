@@ -685,3 +685,53 @@ for e in errors:
 
 The repo's regression suite runs the same loop over every committed
 IR; see `tests/semantic_rails/test_query_ir_schema.py`.
+
+## Result values
+
+HTTP query responses, MCP `execute`, the Python `Runtime.query` SDK, and CLI JSON
+output share one result-value policy. Segment previews use the same policy.
+Python callers receive JSON-ready values, including strings for dates and times.
+`column_types` maps each result field to its observed logical type and survives
+all verbosity levels and MCP record/column row formats. It is separate from
+`output_columns`, which describes semantic lineage and authored types.
+
+| Source value | JSON value | `column_types` metadata |
+|---|---|---|
+| Decimal, integer, finite float | Number if a binary64 float can round-trip its shortest JSON decimal representation to the original decimal value; otherwise a canonical decimal string, without redundant fractional zeros | `{"type":"decimal"}` |
+| Aware timestamp | ISO 8601 string, normalized to UTC with `+00:00` | `{"type":"timestamp","timezone":"aware"}` |
+| Naive timestamp | ISO 8601 string with `T` and no offset; no zone is inferred | `{"type":"timestamp","timezone":"naive"}` |
+| Date | `YYYY-MM-DD` | `{"type":"date"}` |
+| Time | ISO 8601 string; aware times normalized to UTC with offset, naive times without offset | `{"type":"time","timezone":"aware"}` or `"naive"` |
+| Interval (`timedelta`) | Signed ISO 8601 duration, e.g. `P1DT0H0M2.000003S`; exact microseconds, days/hours/minutes/seconds | `{"type":"interval"}` |
+| SQL NULL | `null` | Does not replace a column's non-null type |
+| Text / boolean | String / boolean, unchanged | `{"type":"string"}` / `{"type":"boolean"}` |
+| Binary | Base64 string | `{"type":"binary","encoding":"base64"}` |
+| UUID | Lowercase, hyphenated string | `{"type":"uuid"}` |
+| JSON array / object | JSON-native structure | `{"type":"array"}` / `{"type":"object"}` |
+
+For example, `Decimal("0.10")` becomes `0.1`, `Decimal("42.0")` becomes `42`,
+and `Decimal("9007199254740993")` becomes `"9007199254740993"` with type
+`decimal`. The text `"0.1"` remains text with type `string`. The precision rule
+compares decimal values, not binary expansions: `0.1` qualifies because parsing
+its shortest JSON float representation recovers the original decimal. Exact
+integral numbers use integer JSON notation; negative zero becomes `0`.
+
+Temporal-role outputs and authored timestamp columns are timestamps even when a
+driver returns a date for a midnight bucket: that date becomes a naive midnight
+timestamp. Date dimensions retain their date type. Aware values preserve the
+instant, with UTC providing a deterministic offset across driver session zones.
+Intervals represent the duration provided by the driver; calendar months/years
+are not inferred from a `timedelta`.
+
+For JSON-only adapters, explicit semantic numeric and temporal column types
+restore typed values before encoding; text is never inferred from its contents.
+Invalid typed text refuses with the same error.
+
+Metadata is inferred from returned values, not the warehouse catalog: an
+all-null column has type `null`, and an empty result has `column_types: {}`.
+Nulls do not erase observed types. Unsupported values, non-finite numbers,
+conflicting non-null column types (including mixed timestamp awareness), and
+nested values requiring typed string metadata inside arrays/objects refuse with
+`RESULT_VALUE_UNSUPPORTED`; raw values never appear in the error. This guard
+also applies to injected adapters, preventing transport stringification from
+silently changing a result's meaning.

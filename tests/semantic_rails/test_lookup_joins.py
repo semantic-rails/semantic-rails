@@ -22,6 +22,7 @@ from __future__ import annotations
 import dataclasses
 import re
 import textwrap
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -720,7 +721,9 @@ def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, package
     role = "temporal_role.crew_leg_departure_date__month"
     assert all(row[role] is not None for row in rows)
     assert sum(row["value"] for row in rows) == 10  # boardings 1-10
-    assert {(row[EMPLOYEE], row[role].month): row["value"] for row in rows} == {
+    assert {
+        (row[EMPLOYEE], datetime.fromisoformat(row[role]).month): row["value"] for row in rows
+    } == {
         (False, 1): 3,
         (True, 1): 3,
         (None, 1): 1,  # boarding 7
@@ -775,7 +778,7 @@ def test_an_entity_set_ratio_keeps_the_inner_join(runtime):
     the inner joins have always answered, and never the 1.0 a NULL key in the set would give."""
     rows = runtime.query(_monthly_query(_ratio_of_busy_legs()))["rows"]
 
-    months = {row[BOARDED_MONTH].month: row["value"] for row in rows}
+    months = {datetime.fromisoformat(row[BOARDED_MONTH]).month: row["value"] for row in rows}
     # January: legs L1 (4) and L2 (3), all qualify. February: L3 (3) qualifies, L9 (1) doesn't.
     assert months == {1: pytest.approx(7 / 7), 2: pytest.approx(3 / 4), 3: 0.0}
 
