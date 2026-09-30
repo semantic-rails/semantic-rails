@@ -154,6 +154,69 @@ shorthands for the most common cases:
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
+## Scalar `call` expressions
+
+`{"kind":"call","name":"ROUND","args":[<expression>,{"kind":"literal","value":1}]}`
+applies a scalar function. Names are case-insensitive. Each warehouse accepts
+the common names below plus its additions; aggregate, window and table
+functions must use their semantic expression forms instead of `call`.
+`distinct` is not supported on scalar calls. An unsupported name returns
+`INVALID_EXPRESSION_AST` with `details.allowed` equal to the warehouse's
+accepted set, including `CAST`.
+
+Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
+`FLOOR`, `LENGTH`, `LN`, `LOG`, `LOWER`, `NULLIF`, `POWER`, `REPLACE`, `ROUND`,
+`SQRT`, `SUBSTR`, `SUBSTRING`, `TRIM`, `UPPER`.
+
+| Warehouse | Additions or exceptions |
+| --- | --- |
+| DuckDB, MotherDuck, DuckLake | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `JSON_EXTRACT`, `JSON_EXTRACT_STRING`, `SPLIT`, `STRING_SPLIT`, `STR_SPLIT` |
+| Postgres | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT` |
+| Snowflake | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `SPLIT` |
+| BigQuery | `LEFT`, `RIGHT`, `JSON_EXTRACT`, `SPLIT` |
+| Databricks | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `SPLIT` |
+| Athena | `DATE_TRUNC`, `JSON_EXTRACT`, `SPLIT` |
+| ClickHouse | No additions; `TRIM` is excluded because its plain uppercase spelling is unavailable |
+
+Use each warehouse's scalar argument signatures. For example, Athena `LOG`
+takes a base and a value. Engine-generated SQL has a separate function list;
+it does not advertise functions that a client can call.
+
+Numeric conversion uses exactly two args:
+
+```json
+{"kind":"call","name":"CAST","args":[
+  {"kind":"column","column":"amount_text","entity":"entity.order"},
+  {"kind":"literal","value":"DOUBLE"}
+]}
+```
+
+The type must be a string literal naming `DOUBLE`, `DECIMAL(p,s)`, `INTEGER`,
+`BIGINT` or `VARCHAR` (case-insensitive). Decimal precision is 1–38 and scale
+is 0–precision. `INTEGER` and `BIGINT` both select a signed 64-bit type.
+Postgres maps `DOUBLE` to `FLOAT8`; BigQuery maps these types to `FLOAT64`,
+`NUMERIC`, `INT64` and `STRING` (BigQuery uses its native NUMERIC precision
+and scale, rather than the supplied decimal parameters). ClickHouse emits
+nullable targets so NULL inputs remain NULL. Other warehouses use the SQL
+type names. Invalid conversions fail execution; CAST does not silently return
+NULL. `DATE`, `TIMESTAMP`, other target types, non-literal targets and
+`TRY_CAST` are refused. The same AST works in package expressions,
+conditional aggregates and post-aggregation expressions.
+
+Known argument mismatches fail before SQL lowering with `CALL_ARGUMENT_TYPE`
+and `details: {function, argument_index, expected, received}`. Indices are
+zero-based and the type families are `number`, `text`, `date`, `boolean`
+and `array`. Declared dimension types, literals, casts and known nested-call
+return types are checked; unknown types pass to the warehouse. A numeric
+function receiving text includes a recovery hint to wrap that argument in
+CAST. Package `check`, query validation, planning and execution share this
+check. Warehouse execution errors remain redacted.
+
+A select containing only literals, literal arithmetic or casts of literals,
+with no grouping, where, time or metric filter, returns `INVALID_QUERY` with
+`details.reason: "literal_only_select"` and the message “A select of literals
+only reads no data; add a measure, a group_by dimension or time”.
+
 ## MetricFilter expressions
 
 Different shape from `select`. The most common pattern is `kind: metric_predicate`:

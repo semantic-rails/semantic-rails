@@ -26,7 +26,12 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
-from .expressions import NULL_BEHAVIOR_REMOVED, parse_config_expression, parse_semantic_expression
+from .expressions import (
+    NULL_BEHAVIOR_REMOVED,
+    parse_config_expression,
+    parse_semantic_expression,
+    validate_expression_calls,
+)
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,
@@ -1062,14 +1067,14 @@ def _resolve_partition_by(
         )
 
 
-def _parse_metric_expression(raw: Any, *, context: str) -> Any:
+def _parse_metric_expression(raw: Any, *, context: str, warehouse: str = "duckdb") -> Any:
     """Parse an authored metric expression, naming the metric on any refusal.
 
     The parser owns which kinds and fields an expression supports; this only adds
     where the author wrote it, keeping the parser's error code and details.
     """
     try:
-        return parse_semantic_expression(raw, context="config")
+        return parse_semantic_expression(raw, context="config", warehouse=warehouse)
     except SemanticLayerError as exc:
         raise SemanticLayerError(exc.code, f"{context}: {exc}", details=exc.details) from exc
     except (TypeError, ValueError) as exc:
@@ -2238,7 +2243,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 ),
                 row_grain=list(row_grain),
                 source_relation=fact_source_relation,
-                expr=parse_config_expression(expr_raw),
+                expr=parse_config_expression(
+                    expr_raw, warehouse=str(package_raw.get("warehouse", "duckdb"))
+                ),
                 default_aggregation=default_aggregation,
                 allowed_aggregations=allowed_aggregations,
                 invalid_aggregations=invalid_aggregations,
@@ -2613,7 +2620,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             id=metric_id,
             kind=str(spec.get("kind", "derived")),
             expression=_parse_metric_expression(
-                expression, context=f"{path}: metric '{metric_key}'"
+                expression,
+                context=f"{path}: metric '{metric_key}'",
+                warehouse=str(package_raw.get("warehouse", "duckdb")),
             ),
             temporal_role=temporal_role,
             compatible_temporal_roles=metric_compatible_temporal_roles,
@@ -3130,6 +3139,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     _ensure_unique_object_ids(config, path=path)
     _validate_caveat_refs(config, path=path)
     validate_row_filters(config)
+    validate_expression_calls(config, config)
     return config
 
 

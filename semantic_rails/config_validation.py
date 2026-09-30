@@ -220,6 +220,8 @@ def _validate_runtime_package_file(source_path: Path) -> list[str]:
     try:
         config = load_package_config(str(source_path))
     except Exception as exc:
+        if isinstance(exc, SemanticLayerError) and exc.code == "CALL_ARGUMENT_TYPE":
+            raise
         add_error(errors, f"{source_path}: failed to load package config: {exc}")
         return errors
     errors.extend(_compiled_package_errors(config, source_path))
@@ -268,6 +270,8 @@ def _validate_runtime_package_dir(path: Path) -> list[str]:
     try:
         config = load_package_config(str(path))
     except Exception as exc:
+        if isinstance(exc, SemanticLayerError) and exc.code == "CALL_ARGUMENT_TYPE":
+            raise
         add_error(errors, f"{path}: failed to load package config: {exc}")
         return errors
 
@@ -1498,6 +1502,7 @@ def parse_snapshot_report(
     if progress is not None:
         progress(f"Parsing package: {ref.display_name}")
     snapshot = None
+    call_error = None
     try:
         source = capture_package_source(ref.source_path)
         messages = validate_runtime_package(Path(ref.source_path))
@@ -1510,8 +1515,14 @@ def parse_snapshot_report(
                 snapshot = None
     except SemanticLayerError as exc:
         messages = [str(exc)]
+        if exc.code == "CALL_ARGUMENT_TYPE":
+            call_error = exc
     warnings: list[dict[str, Any]] = []
-    errors = [_error_payload("INVALID_CONFIG", message) for message in messages]
+    errors = (
+        [_error_payload(call_error.code, str(call_error), details=call_error.details)]
+        if call_error
+        else [_error_payload("INVALID_CONFIG", message) for message in messages]
+    )
     config = None
     if not errors:
         assert snapshot is not None

@@ -138,6 +138,8 @@ from .expressions import (
     SemanticExpr,
     expr_kind,
     expr_to_dict,
+    is_constant_expression,
+    validate_expression_calls,
     validate_expression_shapes,
 )
 from .fanout import analyze_fanout, choose_path, one_to_many_descent
@@ -3915,7 +3917,21 @@ def _plan_query(
     *,
     collapse_window: bool,
 ) -> LogicalPlan:
-    raw_query = normalize_query(payload)
+    validate_expression_calls(payload, config)
+    validate_expression_calls(config, config)
+    raw_query = normalize_query(payload, warehouse=config.package.warehouse)
+    if (
+        raw_query.select
+        and all(is_constant_expression(item.expression) for item in raw_query.select)
+        and not (
+            raw_query.group_by or raw_query.where or raw_query.time or raw_query.metric_filters
+        )
+    ):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            "A select of literals only reads no data; add a measure, a group_by dimension or time",
+            details={"reason": "literal_only_select"},
+        )
 
     # Lift inline ``aggregate_if`` shorthand into synthetic measures. The
     # rest of plan_query (and every downstream pass) operates on

@@ -1,0 +1,388 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import date
+
+import duckdb
+import pytest
+import yaml
+
+from semantic_rails.compiler import compile_query, plan_query
+from semantic_rails.compiler_parts.bind import _config_expr_to_sql
+from semantic_rails.config import load_package_config
+from semantic_rails.config_validation import PackageReference
+from semantic_rails.diagnostics import recovery_hints_for_error
+from semantic_rails.dialects import accepted_call_names, dialect_for_warehouse
+from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import (
+    CallExpr,
+    LiteralExpr,
+    parse_semantic_expression,
+    validate_expression_calls,
+)
+from semantic_rails.package_tools import check_package_report
+from semantic_rails.relation_pipelines import _semantic_expr_to_sql
+from semantic_rails.renderer import render_expr
+from semantic_rails.runtime import Runtime
+from semantic_rails.sql_ast import SqlCast, SqlLiteral
+
+WAREHOUSES = ["duckdb", "postgres", "snowflake", "bigquery", "databricks", "clickhouse", "athena"]
+
+
+def literal(value):
+    return {"kind": "literal", "value": value}
+
+
+def call(name, *args):
+    return {"kind": "call", "name": name, "args": list(args)}
+
+
+def cast(value, target="DOUBLE"):
+    return call("CAST", value, literal(target))
+
+
+def column(name):
+    return {"kind": "column", "column": name, "entity": "entity.numbers_row"}
+
+
+def maximum(value):
+    return {
+        "kind": "aggregate_if",
+        "aggregation": "max",
+        "condition": {
+            "kind": "comparison",
+            "op": ">",
+            "left": column("amount"),
+            "right": literal(0),
+        },
+        "value": value,
+    }
+
+
+def query(expression):
+    return {"select": [{"expression": expression, "as": "v"}]}
+
+
+@pytest.fixture
+def package(tmp_path):
+    files = {
+        "package.yml": "schema_version: 1\npackage: {id: numbers, namespace: numbers, warehouse: duckdb, default_db: data/db.duckdb, seed: {kind: sql_script, source: data/seed.sql}}\n",
+        "graph.yml": "graph: {entities: {row: {key: [id], model: rows}}}\n",
+        "models/rows.yml": """model:
+  id: rows
+  relation: numbers
+  entities: {row: {}}
+  dimensions:
+    text_value: {column: text_value, kind: string}
+    amount: {column: amount, kind: number}
+  measures:
+    amount: {kind: aggregate, expr: amount, accumulation: {kind: flow}}
+""",
+        "data/seed.sql": "CREATE TABLE numbers(id INTEGER, text_value VARCHAR, amount DOUBLE, unknown_value VARCHAR); INSERT INTO numbers VALUES (1, '9.5', 9.5, 'bad'), (2, '120.25', 120.25, 'bad'), (3, '64.0', 64.0, 'bad'), (4, NULL, NULL, 'bad');",
+    }
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    return tmp_path
+
+
+def execute(config, expression):
+    sql = compile_query(config, None, query(expression))["sql"]
+    with duckdb.connect() as conn:
+        conn.execute(
+            "CREATE TABLE numbers(id INTEGER, text_value VARCHAR, amount DOUBLE, unknown_value VARCHAR)"
+        )
+        conn.execute(
+            "INSERT INTO numbers VALUES (1, '9.5', 9.5, 'bad'), (2, '120.25', 120.25, 'bad'), (3, '64.0', 64.0, 'bad'), (4, NULL, NULL, 'bad')"
+        )
+        return conn.execute(sql).fetchall()
+
+
+def test_numeric_cast_max_and_post_aggregation_subtraction(package):
+    config = load_package_config(str(package))
+    assert execute(config, maximum(column("text_value"))) == [("9.5",)]
+    assert execute(config, maximum(cast(column("text_value")))) == [(120.25,)]
+    subtraction = {
+        "kind": "arithmetic",
+        "op": "subtract",
+        "left": cast(maximum(column("text_value"))),
+        "right": cast(literal("2.5")),
+    }
+    assert execute(config, subtraction) == [(7.0,)]
+    assert execute(config, maximum(cast(literal(None)))) == [(None,)]
+
+
+@pytest.mark.parametrize("warehouse", WAREHOUSES)
+@pytest.mark.parametrize("target", ["DOUBLE", "INTEGER", "BIGINT", "DECIMAL(12,3)", "VARCHAR"])
+def test_cast_sql_for_every_dialect(package, warehouse, target):
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    sql = compile_query(config, None, query(maximum(cast(column("text_value"), target))))["sql"]
+    expected = "BIGINT" if target in {"INTEGER", "BIGINT"} else target
+    if warehouse == "postgres" and target == "DOUBLE":
+        expected = "FLOAT8"
+    elif warehouse == "bigquery":
+        expected = {
+            "DOUBLE": "FLOAT64",
+            "INTEGER": "INT64",
+            "BIGINT": "INT64",
+            "DECIMAL(12,3)": "NUMERIC",
+            "VARCHAR": "STRING",
+        }[target]
+    elif warehouse == "clickhouse":
+        expected = (
+            "Nullable("
+            + {"DOUBLE": "Float64", "INTEGER": "Int64", "BIGINT": "Int64", "VARCHAR": "String"}.get(
+                target, target
+            )
+            + ")"
+        )
+    assert f" AS {expected})" in sql
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "DATE",
+        "TIMESTAMP",
+        "BOOLEAN",
+        "FLOAT",
+        "DOUBLE PRECISION",
+        "DECIMAL",
+        "DECIMAL(0,0)",
+        "DECIMAL(2,3)",
+        "DECIMAL(39,0)",
+        "DOUBLE); SELECT 1",
+        12,
+        None,
+    ],
+)
+def test_refused_cast_types_list_accepted_forms(target):
+    with pytest.raises(SemanticLayerError) as exc:
+        parse_semantic_expression(cast(literal(1), target), context="query")
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
+    assert "DOUBLE, DECIMAL(p,s), INTEGER, BIGINT, VARCHAR" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        [literal(1)],
+        [literal(1), column("text_value")],
+        [literal(1), literal("DOUBLE"), literal(2)],
+    ],
+)
+def test_refused_cast_shapes(args):
+    with pytest.raises(SemanticLayerError, match="string literal type"):
+        parse_semantic_expression(call("CAST", *args), context="query")
+
+
+def test_cast_case_and_invalid_value(package):
+    config = load_package_config(str(package))
+    assert execute(config, maximum(call("cast", literal("120.25"), literal(" double ")))) == [
+        (120.25,)
+    ]
+    runtime = Runtime.from_path(str(package))
+    try:
+        with pytest.raises(SemanticLayerError) as exc:
+            runtime.query(query(maximum(cast(column("unknown_value")))))
+        assert exc.value.code == "QUERY_EXECUTION_ERROR"
+        assert "bad" not in str(exc.value) + str(exc.value.details)
+    finally:
+        runtime.close()
+
+
+SMOKE_ARGS = {
+    "CAST": ["120.25", "DOUBLE"],
+    "COALESCE": [None, 1],
+    "NULLIF": [1, 0],
+    "CONCAT": ["a", "b"],
+    "POWER": [2, 3],
+    "REPLACE": ["abc", "a", "z"],
+    "SUBSTR": ["abc", 1, 2],
+    "SUBSTRING": ["abc", 1, 2],
+    "LEFT": ["abc", 1],
+    "RIGHT": ["abc", 1],
+    "DATE_PART": ["year", date(2020, 1, 1)],
+    "DATE_TRUNC": ["year", date(2020, 1, 1)],
+    "JSON_EXTRACT": ['{"a":1}', "$.a"],
+    "JSON_EXTRACT_STRING": ['{"a":"x"}', "$.a"],
+    "SPLIT": ["a,b", ","],
+    "STRING_SPLIT": ["a,b", ","],
+    "STR_SPLIT": ["a,b", ","],
+}
+
+
+@pytest.mark.parametrize("warehouse", WAREHOUSES)
+def test_allowed_names_are_constructible_and_duckdb_executes_each(package, warehouse):
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    dialect = dialect_for_warehouse(warehouse)
+    for name in sorted(accepted_call_names(warehouse)):
+        values = SMOKE_ARGS.get(
+            name, ["abc"] if name in {"LOWER", "UPPER", "LENGTH", "TRIM"} else [2]
+        )
+        expr = parse_semantic_expression(
+            call(name.lower(), *(literal(v) for v in values)), context="query", warehouse=warehouse
+        )
+        validate_expression_calls(expr, config)
+        compile_query(config, None, query(maximum(call(name, *(literal(v) for v in values)))))
+        sql_args = [SqlLiteral(v) for v in values]
+        if name in {"DATE_PART", "DATE_TRUNC"}:
+            sql_args[1] = SqlCast(sql_args[1], "DATE")
+        sql_expr = dialect.scalar_call(expr.name, sql_args)
+        if warehouse == "duckdb":
+            with duckdb.connect() as conn:
+                assert len(conn.execute("SELECT " + render_expr(sql_expr)).fetchall()) == 1
+
+
+@pytest.mark.parametrize("warehouse", WAREHOUSES)
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SUM",
+        "COUNT",
+        "AVG",
+        "ROW_NUMBER",
+        "LAG",
+        "GENERATE_SERIES",
+        "UNNEST",
+        "SEQUENCE",
+        "EXPLODE",
+        "TRY_CAST",
+        "CONVERT_TIMEZONE",
+    ],
+)
+def test_excluded_calls_report_exact_dialect_list(package, warehouse, name):
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    with pytest.raises(SemanticLayerError) as exc:
+        plan_query(config, None, query(call(name, literal(1))))
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
+    assert exc.value.details["allowed"] == sorted(accepted_call_names(warehouse))
+
+
+@pytest.mark.parametrize(
+    "expression,function,index,expected,received",
+    [
+        (maximum(call("ROUND", column("text_value"), literal(1))), "ROUND", 0, "number", "text"),
+        (call("DATE_PART", literal("year"), literal("2020-01-01")), "DATE_PART", 1, "date", "text"),
+        (maximum(call("UPPER", column("amount"))), "UPPER", 0, "text", "number"),
+        (maximum(call("ROUND", call("LOWER", column("text_value")))), "ROUND", 0, "number", "text"),
+        (maximum(call("ROUND", cast(column("amount"), "VARCHAR"))), "ROUND", 0, "number", "text"),
+    ],
+)
+def test_known_type_errors_before_planning(
+    package, expression, function, index, expected, received
+):
+    config = load_package_config(str(package))
+    with pytest.raises(SemanticLayerError) as exc:
+        plan_query(config, None, query(expression))
+    assert exc.value.code == "CALL_ARGUMENT_TYPE"
+    assert exc.value.details == {
+        "function": function,
+        "argument_index": index,
+        "expected": expected,
+        "received": received,
+    }
+    hints = recovery_hints_for_error(exc.value.code, exc.value.details)
+    if expected == "number" and received == "text":
+        assert "CAST" in hints[0]["message"]
+
+
+def test_numeric_column_and_cast_pass_but_unknown_reaches_warehouse(package):
+    config = load_package_config(str(package))
+    assert execute(config, maximum(call("ROUND", column("amount"), literal(1)))) == [(120.3,)]
+    assert execute(config, maximum(call("ROUND", cast(column("text_value")), literal(1)))) == [
+        (120.3,)
+    ]
+    unknown = maximum(call("ROUND", column("unknown_value"), literal(1)))
+    compile_query(config, None, query(unknown))
+    with pytest.raises(duckdb.Error):
+        execute(config, unknown)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        literal(6),
+        {"kind": "arithmetic", "op": "multiply", "left": literal(2), "right": literal(3)},
+        cast(literal("6")),
+    ],
+)
+def test_literal_only_select_has_precise_reason(package, expression):
+    with pytest.raises(SemanticLayerError) as exc:
+        plan_query(load_package_config(str(package)), None, query(expression))
+    assert exc.value.code == "INVALID_QUERY"
+    assert exc.value.details == {"reason": "literal_only_select"}
+    assert "add a measure, a group_by dimension or time" in str(exc.value)
+
+
+def test_package_cast_and_package_type_error_fails_check(package):
+    path = package / "models/rows.yml"
+    model = yaml.safe_load(path.read_text())
+    model["model"]["measures"]["amount"]["expr"] = cast({"kind": "column", "column": "text_value"})
+    path.write_text(yaml.safe_dump(model))
+    config = load_package_config(str(package))
+    assert execute(config, {"measure": "measure.numbers.amount", "aggregation": "max"}) == [
+        (120.25,)
+    ]
+    # Relation projections share the dialect CAST path too.
+    assert render_expr(
+        _semantic_expr_to_sql(config.measures[0].expr, default_alias="n", warehouse="postgres")
+    ).endswith(" AS FLOAT8)")
+    model["model"]["measures"]["amount"]["expr"] = call(
+        "ROUND", {"kind": "column", "column": "text_value"}, literal(1)
+    )
+    path.write_text(yaml.safe_dump(model))
+    report = check_package_report(PackageReference(source_path=str(package)))
+    assert not report["ok"]
+    assert report["blockers"][0]["code"] == "CALL_ARGUMENT_TYPE"
+    assert report["blockers"][0]["details"]["function"] == "ROUND"
+
+
+def test_direct_lowering_cannot_bypass_call_guard(package):
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse="bigquery"))
+    expr = CallExpr("DATE_PART", [LiteralExpr("year"), LiteralExpr(None)])
+    with pytest.raises(SemanticLayerError) as exc:
+        _config_expr_to_sql(expr, config.measures[0], config)
+    assert exc.value.details["allowed"] == sorted(accepted_call_names("bigquery"))
+
+
+@pytest.mark.parametrize(
+    "warehouse,name",
+    [
+        ("postgres", "SPLIT"),
+        ("bigquery", "DATE_PART"),
+        ("snowflake", "JSON_EXTRACT"),
+        ("clickhouse", "TRIM"),
+    ],
+)
+def test_dialect_spelling_is_refused_at_construction(warehouse, name):
+    with pytest.raises(SemanticLayerError) as exc:
+        parse_semantic_expression(call(name, literal(1)), context="config", warehouse=warehouse)
+    assert exc.value.details["allowed"] == sorted(accepted_call_names(warehouse))
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        maximum(call("ROUND", column("text_value"), literal(1))),
+        call("DATE_PART", literal("year"), literal("2020-01-01")),
+    ],
+)
+def test_runtime_validation_compile_and_execution_agree(package, expression):
+    runtime = Runtime.from_path(str(package))
+    try:
+        report = runtime.validate(query(expression))
+        assert not report["ok"]
+        assert report["errors"][0]["code"] == "CALL_ARGUMENT_TYPE"
+        for operation in [runtime.compile, runtime.query]:
+            with pytest.raises(SemanticLayerError) as exc:
+                operation(query(expression))
+            assert exc.value.code == "CALL_ARGUMENT_TYPE"
+    finally:
+        runtime.close()

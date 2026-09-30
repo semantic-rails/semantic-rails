@@ -358,7 +358,7 @@ def _compile_post_expr(
             current = SqlBinary(current, op.upper(), item)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name,
             [
                 _compile_post_expr(

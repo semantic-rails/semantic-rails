@@ -9,6 +9,7 @@ and compiler call. Also owns the connection-option schema used by
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,6 +34,95 @@ from .sql_ast import (
     SqlWithinGroup,
 )
 from .sql_preparation import PreparedQuery, prepare_query
+
+CALL_CAST_FORMS = ("DOUBLE", "DECIMAL(p,s)", "INTEGER", "BIGINT", "VARCHAR")
+
+
+def call_cast_type(value: Any) -> str:
+    """Validate the authored logical type before it can become a SQL token."""
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        normalized = re.sub(r"\s*([(),])\s*", r"\1", normalized)
+        if normalized in {"DOUBLE", "INTEGER", "BIGINT", "VARCHAR"}:
+            return normalized
+        match = re.fullmatch(r"DECIMAL\(([0-9]+),([0-9]+)\)", normalized)
+        if match and 0 <= int(match[2]) <= int(match[1]) <= 38 and int(match[1]) > 0:
+            return f"DECIMAL({int(match[1])},{int(match[2])})"
+    raise SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        "CAST requires two args, with a string literal type: " + ", ".join(CALL_CAST_FORMS),
+        details={"accepted_types": list(CALL_CAST_FORMS)},
+    )
+
+
+def accepted_call_names(warehouse: str = "duckdb") -> frozenset[str]:
+    """Scalar spellings valid as plain calls, independently of engine SQL tokens."""
+    common = frozenset(
+        {
+            "ABS",
+            "CAST",
+            "CEIL",
+            "CEILING",
+            "COALESCE",
+            "CONCAT",
+            "EXP",
+            "FLOOR",
+            "LENGTH",
+            "LN",
+            "LOG",
+            "LOWER",
+            "NULLIF",
+            "POWER",
+            "REPLACE",
+            "ROUND",
+            "SQRT",
+            "SUBSTR",
+            "SUBSTRING",
+            "TRIM",
+            "UPPER",
+        }
+    )
+    extras = {
+        "duckdb": {
+            "DATE_PART",
+            "DATE_TRUNC",
+            "LEFT",
+            "RIGHT",
+            "JSON_EXTRACT",
+            "JSON_EXTRACT_STRING",
+            "SPLIT",
+            "STRING_SPLIT",
+            "STR_SPLIT",
+        },
+        "postgres": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"},
+        "snowflake": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
+        "bigquery": {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"},
+        "databricks": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
+        "athena": {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"},
+        "clickhouse": set(),
+    }
+    warehouse = {"motherduck": "duckdb", "ducklake": "duckdb"}.get(warehouse, warehouse)
+    if warehouse == "clickhouse":
+        return common - {"TRIM"}
+    return common | frozenset(extras[warehouse]) if warehouse in extras else frozenset()
+
+
+def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
+    normalized = name.strip().upper()
+    allowed = accepted_call_names(warehouse)
+    if normalized not in allowed:
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"Unsupported scalar call: {name!r}"
+            + ("; use CAST with " + ", ".join(CALL_CAST_FORMS) if normalized == "TRY_CAST" else ""),
+            details={
+                "function": name,
+                "token_kind": "function",
+                "token": name,
+                "allowed": sorted(allowed),
+            },
+        )
+    return normalized
 
 
 def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) -> Any:
@@ -92,6 +182,39 @@ def _day_rows(day: Any, source: str, series: SqlTableFunction | None = None) -> 
 @dataclass(frozen=True)
 class SqlDialect:
     name: str
+
+    def scalar_call(self, name: str, args: list[Any], *, distinct: bool = False) -> Any:
+        """Central lowering guard for every query, package and relation call."""
+        name = validate_call_name(name, self.name)
+        if distinct:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
+            )
+        if name != "CAST":
+            return SqlCall(name, args)
+        value = args[1].value if len(args) == 2 and isinstance(args[1], SqlLiteral) else None
+        logical_type = call_cast_type(value)
+        base = logical_type.split("(")[0]
+        type_name = "BIGINT" if base in {"INTEGER", "BIGINT"} else logical_type
+        if self.name == "postgres" and base == "DOUBLE":
+            type_name = "FLOAT8"
+        elif self.name == "bigquery":
+            type_name = {
+                "DOUBLE": "FLOAT64",
+                "INTEGER": "INT64",
+                "BIGINT": "INT64",
+                "DECIMAL": "NUMERIC",
+                "VARCHAR": "STRING",
+            }[base]
+        elif self.name == "clickhouse":
+            type_name = {
+                "DOUBLE": "Float64",
+                "INTEGER": "Int64",
+                "BIGINT": "Int64",
+                "VARCHAR": "String",
+            }.get(base, logical_type)
+            type_name = f"Nullable({type_name})"
+        return SqlCast(args[0], type_name)
 
     def prepare_query(self, sql: str) -> PreparedQuery:
         """Finalize the executable statement and result-column mapping."""

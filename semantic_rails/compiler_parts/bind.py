@@ -314,7 +314,7 @@ def _config_expr_to_sql_inner(
             current = SqlBinary(current, op.upper(), item)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name,
             [_config_expr_to_sql(arg, measure, config) for arg in expr.args],
             distinct=expr.distinct,

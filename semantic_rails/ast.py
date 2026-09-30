@@ -981,7 +981,7 @@ def rewrite_select_shorthand(
     return {**payload, "select": select, "group_by": [*group_by, *moved]}, notes
 
 
-def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
+def normalize_query(payload: dict[str, Any], *, warehouse: str = "duckdb") -> NormalizedQuery:
     _check_unknown_top_level_keys(payload)
     _check_supported_version(payload)
     # Validate `select` is a list before iterating. ``list(scalar)`` either
@@ -1000,7 +1000,9 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
     select: list[QuerySelect] = []
     group_by = _normalize_group_by_list(payload.get("group_by", []))
     for idx, row in enumerate(list(payload.get("select", []) or [])):
-        expression = parse_semantic_expression(row.get("expression", {}) or {}, context="query")
+        expression = parse_semantic_expression(
+            row.get("expression", {}) or {}, context="query", warehouse=warehouse
+        )
         _validate_query_expr(expression)
         if isinstance(expression, MetricPredicateExpr):
             raise SemanticLayerError(
@@ -1047,7 +1049,7 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
         metric_filters.append(
             MetricFilter(
                 expression=parse_semantic_expression(
-                    item.get("expression", {}) or {}, context="query"
+                    item.get("expression", {}) or {}, context="query", warehouse=warehouse
                 ),
                 op=str(item.get("op", "=")),
                 value=mf_value,
@@ -1147,7 +1149,9 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
     )
 
 
-def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
+def normalize_partial_query(
+    payload: dict[str, Any], *, warehouse: str = "duckdb"
+) -> PartialQueryState:
     # Same silent-drift defense as normalize_query — build_options /
     # plan also accept partial query payloads and should reject
     # unknown top-level keys with the same USE_CANONICAL_KEY hint.
@@ -1159,7 +1163,11 @@ def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
         if not isinstance(row, dict):
             raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
         raw_expr = row.get("expression", {}) or {}
-        expression = parse_semantic_expression(raw_expr, context="query") if raw_expr else None
+        expression = (
+            parse_semantic_expression(raw_expr, context="query", warehouse=warehouse)
+            if raw_expr
+            else None
+        )
         if expression:
             _validate_query_expr(expression)
             if isinstance(expression, MetricPredicateExpr):
@@ -1179,7 +1187,7 @@ def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
         metric_filters.append(
             MetricFilter(
                 expression=parse_semantic_expression(
-                    item.get("expression", {}) or {}, context="query"
+                    item.get("expression", {}) or {}, context="query", warehouse=warehouse
                 )
                 if item.get("expression")
                 else None,
