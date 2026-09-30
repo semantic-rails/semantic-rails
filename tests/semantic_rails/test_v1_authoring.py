@@ -177,6 +177,136 @@ def test_as_with_wrong_namespace_overrides_auto_derived(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "entities_block", [None, {}, {"device": {}}, {"reading": {}, "device": {}}]
+)
+@pytest.mark.parametrize("with_relationship", [False, True])
+def test_graph_entity_never_borrows_another_entity_key(
+    tmp_path: Path, entities_block: dict | None, with_relationship: bool
+) -> None:
+    reading_model = {"relation": "readings"}
+    if entities_block is not None:
+        reading_model["entities"] = entities_block
+    pkg = _write_synthetic_package(
+        tmp_path / "readings",
+        graph_entities={
+            "reading": {"model": "readings"},
+            "device": {"model": "devices", "key": "device_id"},
+        },
+        models={"readings": reading_model, "devices": {"relation": "devices"}},
+        graph_relationships={"reading_device": {"entities": ["reading", "device"]}}
+        if with_relationship
+        else None,
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "graph entity 'reading' must declare key" in str(exc.value)
+    assert "model 'readings'" in str(exc.value)
+
+
+@pytest.mark.parametrize("own_first", [False, True])
+@pytest.mark.parametrize("key_source", ["graph", "grain", "primary"])
+def test_graph_binding_selects_primary_independently_of_entity_order(
+    tmp_path: Path, own_first: bool, key_source: str
+) -> None:
+    block = {"reading": {}, "device": {}} if own_first else {"device": {}, "reading": {}}
+    model: dict[str, Any] = {"relation": "readings", "entities": block}
+    if not own_first:
+        model["entity"] = "device"  # A conflicting singular field cannot override the graph.
+    reading = {"model": "readings"}
+    if key_source == "graph":
+        reading["key"] = "reading_id"
+    elif key_source == "grain":
+        model["grain"] = ["reading_id"]
+    else:
+        model["keys"] = {"primary": ["reading_id"]}
+    pkg = _write_synthetic_package(
+        tmp_path / "readings",
+        graph_entities={
+            "reading": reading,
+            "device": {"model": "devices", "key": "device_id"},
+        },
+        models={"readings": model, "devices": {"relation": "devices"}},
+        graph_relationships={"reading_device": {"entities": ["reading", "device"]}},
+    )
+    config = load_package_config(str(pkg))
+    entity = next(e for e in config.entities if e.id == "entity.synth_reading")
+    assert entity.key == ["reading_id"]
+    assert entity.foreign_keys == {"device": ["device_id"]}
+    assert [(r.id, r.source_entity, r.target_entity) for r in config.relationships] == [
+        ("relationship.reading_device", "entity.synth_reading", "entity.synth_device")
+    ]
+
+
+def test_graph_model_cannot_be_primary_for_two_entities(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "conflicting_bindings",
+        graph_entities={
+            "reading": {"model": "readings", "key": "reading_id"},
+            "device": {"model": "readings", "key": "device_id"},
+        },
+        models={"readings": {"relation": "readings", "entities": {"device": {}}}},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert all(name in str(exc.value) for name in ("readings", "reading", "device"))
+
+
+def test_model_primary_is_not_chosen_by_declaration_order(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "unresolved_primary",
+        models={"widgets": {"relation": "widgets", "entities": {"widget": {}}}},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "model 'widgets' must identify its primary entity" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "relationship",
+    [
+        {"entities": ["missing", "widget"]},
+        {"entities": ["widget", "missing"]},
+        {"entities": ["orphan", "widget"], "via": "widget_id"},
+        {"entities": ["widget"]},
+        {"entities": "widget"},
+        {"from": "widget", "to": "widget"},
+        {},
+        None,
+        "widget",
+    ],
+)
+def test_unattachable_graph_relationship_is_refused(tmp_path: Path, relationship: Any) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "unattachable",
+        graph_relationships={"unattachable_edge": relationship},
+    )
+    # An unbound model must not make an unknown graph entity attachable.
+    _write_yaml(
+        pkg / "models" / "orphan.yml",
+        {"models": {"orphan": {"entity": "orphan", "relation": "orphan"}}},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "unattachable_edge" in str(exc.value)
+
+
+def test_graph_relationships_must_be_a_mapping(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(tmp_path / "invalid_relationship_block")
+    graph_path = pkg / "graph.yml"
+    graph = yaml.safe_load(graph_path.read_text(encoding="utf-8"))
+    graph["graph"]["relationships"] = [{"entities": ["widget", "widget"]}]
+    _write_yaml(graph_path, graph)
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "graph.relationships must be a mapping" in str(exc.value)
+
+
 def test_model_entities_block_translates_to_legacy_shape(tmp_path: Path) -> None:
     pkg_dir = tmp_path / "pkg_entities_block"
     # Two-entity model: orders (primary) + customer (FK).

@@ -709,6 +709,13 @@ The graph is the canonical source for entity identity. It declares the entities
 the package exposes, their key column names, and any non-default relationships
 between them.
 
+Each graph entity must have a key, declared on the entity or through its own
+model's `keys.primary:` or `grain:`. A graph model binding makes that entity the
+model's primary entity, regardless of the order of its `entities:` block. A
+keyless entity cannot borrow a foreign entity's key: loading fails with
+`INVALID_CONFIG` naming the entity and model before graph relationships are
+translated. Each model can be the primary home of only one graph entity.
+
 ```yaml
 graph:
   entities:
@@ -761,6 +768,10 @@ declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe` specifies which aggregations roll up safely in each direction.
 When several relationships join one pair (roles), an aggregation must be listed
 by every one that lists any.
+
+Every authored relationship must declare `entities: [source, target]` and attach
+to graph models for both endpoints. An invalid or unattached entry fails loading
+with `INVALID_CONFIG` naming the relationship; it is never silently omitted.
 
 Most relationships are **inferred** from FK references in `model.entities:`
 blocks. Author an explicit `graph.relationships:` entry only when you need a
@@ -845,6 +856,10 @@ primary, and all entities whose keys are in a compound grain (`grain: [date_id,
 account_id]`) are co-primary. Under `schema_strict`, directory packages reject
 `grain:` authored alongside an `entities:` block ("Drop 'grain:' — it's derived
 from the primary entity's key"); single-file packages accept both.
+
+Without a graph model binding, an explicit singular `entity:` or a matching
+grain must identify the primary entity. Declaration order never selects it;
+loading fails with `INVALID_CONFIG` if it cannot be resolved.
 
 ### `bridge: false` — junction tables
 
