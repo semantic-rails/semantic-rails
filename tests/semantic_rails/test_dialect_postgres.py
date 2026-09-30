@@ -47,7 +47,7 @@ def test_registry_wires_postgres_dialect_and_adapter():
     connector = warehouse_connector("postgres")
     assert connector is not None
     assert isinstance(connector.dialect, PostgresDialect)
-    assert connector.connection_kinds == ("postgres_native",)
+    assert connector.connection_kinds == ("postgres_native", "postgres_adbc")
     assert connector.adapter == "semantic_rails.db_parts.postgres:create_adapter"
     assert isinstance(dialect_for_warehouse("postgres"), PostgresDialect)
 

@@ -1328,7 +1328,7 @@ _WAREHOUSE_CONNECTORS: dict[str, WarehouseConnectorSpec] = {
     "postgres": WarehouseConnectorSpec(
         name="postgres",
         dialect=PostgresDialect(),
-        connection_kinds=("postgres_native",),
+        connection_kinds=("postgres_native", "postgres_adbc"),
         connection_options=POSTGRES_CONNECTION_OPTIONS,
         adapter="semantic_rails.db_parts.postgres:create_adapter",
     ),

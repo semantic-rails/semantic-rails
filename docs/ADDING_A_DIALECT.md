@@ -12,6 +12,34 @@ This guide uses **Redshift** as the worked example because it is the
 next connector scheduled to land (the env-var names are already
 reserved in `.env.example`).
 
+### Experimental Postgres Arrow profile
+
+On the experimental connector branch, install `semantic-rails[adbc-spike]`
+and explicitly choose `connection.kind: postgres_adbc` with the same validated
+options as `postgres_native`. The latter still selects psycopg. The experiment
+is excluded from the `all` extra and is not a supported replacement yet.
+
+The compiler finalizes typed row-filter slots as Postgres `$1`, `$2`, … before
+execution. The adapter checks those slots and binds values separately; it never
+rewrites prepared SQL or interpolates policy values. Arrow batches are sliced
+before Python row conversion to at most `max_rows + 1`, with the existing
+`QueryRows.truncated` signal and semantic column aliases preserved.
+
+NUMERIC returns `Decimal` with its scale intact. Aware timestamps retain
+microseconds and use the requested query time zone (otherwise the server's
+session zone). PostgreSQL stores instants, so the originally authored offset
+cannot be recovered. Intervals preserve separate months, days and nanoseconds
+as Arrow `MonthDayNano` values; their public wire policy still needs qualification.
+The adapter sets millisecond server deadlines and uses `adbc_cancel()` as a
+watchdog through both execution and Arrow fetching. Failed queries discard the
+connection before reuse. There is a fixed ten-second libpq connect timeout;
+this experiment does not qualify a separate network-read deadline.
+
+For local conformance, set `SR_POSTGRES_CONNECTION_KIND=postgres_adbc` along
+with the usual `SR_POSTGRES_*` fixture variables, then run the Postgres cases in
+`tests/integration/test_conformance.py` and `tests/integration/test_adbc_postgres.py`.
+The exact-type, isolation and timeout tests supplement normalized battery parity.
+
 ## 1. Dialect class — `semantic_rails/dialects.py`
 
 Subclass `SqlDialect` and override only what differs from the portable

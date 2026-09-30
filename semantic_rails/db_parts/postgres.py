@@ -190,6 +190,10 @@ class PostgresAdapter(DbApiAdapter):
 def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:
     """Registry entry point for the postgres warehouse (see dialects.py)."""
     kind = str(package.connection.kind or "").strip()
+    if kind == "postgres_adbc":
+        from .adbc import AdbcAdapter
+
+        return AdbcAdapter(package.connection.options)
     if kind != "postgres_native":
         raise SemanticLayerError(
             "INVALID_CONFIG",

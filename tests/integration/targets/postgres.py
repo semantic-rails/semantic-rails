@@ -16,7 +16,7 @@ from ..loaders.postgres import PostgresFixtureLoader
 
 TARGET = IntegrationTarget(
     warehouse="postgres",
-    connection_kind="postgres_native",
+    connection_kind=os.environ.get("SR_POSTGRES_CONNECTION_KIND", "postgres_native"),
     connection_options={
         "host_env": "SR_POSTGRES_HOST",
         "port": os.environ.get("SR_POSTGRES_PORT", "5433"),

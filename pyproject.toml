@@ -68,6 +68,11 @@ snowflake = [
 postgres = [
   "psycopg[binary]>=3.3.4",
 ]
+# Experimental branch-only connector; deliberately excluded from `all`.
+adbc-spike = [
+  "adbc-driver-manager[dbapi]==1.12.0",
+  "adbc-driver-postgresql==1.12.0",
+]
 bigquery = [
   "google-cloud-bigquery>=3.41.0",
 ]

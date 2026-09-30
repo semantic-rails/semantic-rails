@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 from .errors import SemanticLayerError
@@ -81,6 +81,42 @@ def checked_slot_value(slot: ParameterSlot, value: Any) -> ParameterValue:
     if type(value) is not _SLOT_TYPES[slot.type]:
         raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
     return cast(ParameterValue, value)
+
+
+# Compiler SQL uses ANSI literals/identifiers. Also skip comments and dollar
+# quotes so a direct prepared call cannot disguise a placeholder as quoted data.
+_PARAMETER_TOKEN = re.compile(
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?\*/|"
+    r"(?P<dollar>\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$).*?(?P=dollar)|\?|\$[0-9]+",
+    re.DOTALL,
+)
+
+
+def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
+    return [m for m in _PARAMETER_TOKEN.finditer(sql) if re.fullmatch(r"\?|\$[0-9]+", m[0])]
+
+
+def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> PreparedQuery:
+    """Finalize the opt-in Postgres bind syntax before handing SQL to execution."""
+    if connection_kind != "postgres_adbc" or not prepared.parameters:
+        return prepared
+    tokens = postgres_parameter_tokens(prepared.sql)
+    if len(tokens) != len(prepared.parameters) or any(m[0] != "?" for m in tokens):
+        raise parameters_denied("parameter_placeholder_mismatch")
+    sql = prepared.sql
+    for index, token in reversed(list(enumerate(tokens, 1))):
+        sql = sql[: token.start()] + f"${index}" + sql[token.end() :]
+    return replace(prepared, sql=sql)
+
+
+def check_postgres_parameters(prepared: PreparedQuery) -> None:
+    """Every slot has exactly one numbered placeholder; refuse bypasses centrally."""
+    if not prepared.parameters:
+        return
+    actual = [m[0] for m in postgres_parameter_tokens(prepared.sql)]
+    expected = [f"${index}" for index in range(1, len(prepared.parameters) + 1)]
+    if actual != expected:
+        raise parameters_denied("parameter_placeholder_mismatch")
 
 
 def prepare_query(sql: str, warehouse: str) -> PreparedQuery:
