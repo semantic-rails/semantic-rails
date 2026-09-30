@@ -1647,19 +1647,21 @@ def _parse_path_preferences(
         _, _, suffix = known_rel.id.partition(".")
         if suffix:
             rel_lookup.setdefault(suffix, known_rel)
+    # An entity by key, name or id: an AMBIGUOUS_PATH refusal lists its pins by entity id.
+    entities = {**{entity_id: entity_id for entity_id in entity_lookup.values()}, **entity_lookup}
     out: list[PathPreferenceConfig] = []
     for row in rows:
         row_dict = dict(row or {})
         source_ref = str(row_dict.get("source_entity", "")).strip()
         target_ref = str(row_dict.get("target_entity", "")).strip()
         for label, ref in (("source_entity", source_ref), ("target_entity", target_ref)):
-            if ref not in entity_lookup:
+            if ref not in entities:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     f"{path}: path_preferences row references unknown {label} '{ref}'",
                 )
-        source_entity = entity_lookup[source_ref]
-        target_entity = entity_lookup[target_ref]
+        source_entity = entities[source_ref]
+        target_entity = entities[target_ref]
         preferred = row_dict.get("preferred_paths")
         if preferred is not None:
             paths_raw = list(preferred or [])

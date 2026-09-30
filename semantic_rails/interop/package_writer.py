@@ -240,6 +240,15 @@ class _Writer:
             graph["relationships"] = dict(map(self.relationship, config.relationships))
         if config.path_policy != type(config.path_policy)():
             graph["path_policy"] = _authored(config.path_policy)
+        if config.path_preferences:
+            graph["path_preferences"] = [
+                {
+                    "source_entity": self.keys[row.source_entity][0],
+                    "target_entity": self.keys[row.target_entity][0],
+                    "relationship_path": list(row.relationship_path),
+                }
+                for row in config.path_preferences
+            ]
         documents: dict[str, dict[str, Any]] = {
             "package.yml": {"schema_version": config.version, "package": package},
             "graph.yml": {"graph": graph},

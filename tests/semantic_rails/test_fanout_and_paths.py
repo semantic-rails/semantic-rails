@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 import semantic_rails.fanout as fanout_module
@@ -10,7 +12,7 @@ from semantic_rails.compiler_parts.indexes import (
     get_package_analysis,
 )
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.fanout import choose_path
+from semantic_rails.fanout import resolve_path
 from semantic_rails.registry import Registry
 from semantic_rails.schema import (
     DimensionConfig,
@@ -25,10 +27,10 @@ from semantic_rails.schema import (
 )
 
 
-def test_choose_path_returns_safe_path_for_jaffle_shop(package_config_factory):
+def test_resolve_path_returns_the_pinned_path_for_jaffle_shop(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
-    path, candidates = choose_path(
-        config, start="entity.jaffle_order", target="entity.jaffle_store", hop_limit=4
+    path, candidates = resolve_path(
+        config, start="entity.jaffle_order", target="entity.jaffle_store"
     )
 
     assert path == ["relationship.orders_store"]
@@ -44,30 +46,25 @@ def test_package_analysis_reuses_hot_path_indexes(package_config_factory):
     assert _relationship_index(config) is analysis.relationships
 
 
-def test_choose_path_reuses_cached_candidates(package_config_factory, monkeypatch):
+def test_resolve_path_reuses_cached_candidates(package_config_factory, monkeypatch):
     config, _ = package_config_factory("jaffle_shop")
-    first_path, _ = fanout_module.choose_path(
-        config,
-        start="entity.jaffle_order",
-        target="entity.jaffle_store",
-        hop_limit=4,
+    # An unpinned pair, so the answer comes from enumeration and then the cache.
+    first_path, _ = fanout_module.resolve_path(
+        config, start="entity.jaffle_item", target="entity.jaffle_product"
     )
 
     def fail_enumerate_paths(*_args, **_kwargs):
-        raise AssertionError("cached choose_path should not enumerate the graph again")
+        raise AssertionError("cached resolve_path should not enumerate the graph again")
 
     monkeypatch.setattr(fanout_module, "enumerate_paths", fail_enumerate_paths)
-    second_path, _ = fanout_module.choose_path(
-        config,
-        start="entity.jaffle_order",
-        target="entity.jaffle_store",
-        hop_limit=4,
+    second_path, _ = fanout_module.resolve_path(
+        config, start="entity.jaffle_item", target="entity.jaffle_product"
     )
 
     assert second_path == first_path
 
 
-def test_choose_path_reports_ambiguous_path():
+def test_resolve_path_refuses_a_tie_and_follows_its_pin():
     config = PackageConfig(
         version=1,
         package=PackageMeta(
@@ -153,14 +150,19 @@ def test_choose_path_reports_ambiguous_path():
         ],
     )
 
-    try:
-        choose_path(config, start="A", target="D", hop_limit=4)
-    except SemanticLayerError as exc:
-        assert exc.code == "AMBIGUOUS_PATH"
-        assert len(exc.details["candidates"]) == 2
+    assert resolve_path(config, start="A", target="D") == (["A_B", "B_D"], [["A_B", "B_D"]])
+    with pytest.raises(SemanticLayerError) as exc:
+        resolve_path(replace(config, path_preferences=[]), start="A", target="D")
+    assert exc.value.code == "AMBIGUOUS_PATH"
+    assert exc.value.details["candidates"] == [["A_B", "B_D"], ["A_C", "C_D"]]
+    assert exc.value.details["pins"][1] == {
+        "source_entity": "A",
+        "target_entity": "D",
+        "relationship_path": ["A_C", "C_D"],
+    }
 
 
-def test_choose_path_honors_allowed_directions():
+def test_resolve_path_honors_allowed_directions():
     config = PackageConfig(
         version=1,
         package=PackageMeta(
@@ -215,13 +217,13 @@ def test_choose_path_honors_allowed_directions():
         segments=[],
     )
 
-    assert choose_path(config, start="event", target="account", hop_limit=4)[0] == ["event_account"]
+    assert resolve_path(config, start="event", target="account")[0] == ["event_account"]
     with pytest.raises(SemanticLayerError) as exc:
-        choose_path(config, start="account", target="event", hop_limit=4)
+        resolve_path(config, start="account", target="event")
     assert exc.value.code == "PATH_NOT_FOUND"
 
 
-def test_choose_path_handles_cycles_without_recursing_indefinitely():
+def test_resolve_path_handles_cycles_without_recursing_indefinitely():
     config = PackageConfig(
         version=1,
         package=PackageMeta(
@@ -291,13 +293,17 @@ def test_choose_path_handles_cycles_without_recursing_indefinitely():
         segments=[],
     )
 
-    path, candidates = choose_path(config, start="A", target="C", hop_limit=4)
-
-    assert path in candidates
-    assert len(candidates) == 2
+    # Both routes around the cycle are found, and as one-to-one routes of different lengths
+    # they are refused rather than chosen by hop count.
+    with pytest.raises(SemanticLayerError) as exc:
+        resolve_path(config, start="A", target="C")
+    assert exc.value.code == "AMBIGUOUS_PATH"
+    assert exc.value.details["candidates"] == [["C_A"], ["A_B", "B_C"]]
 
 
 def test_distinct_values_root_selection_uses_deterministic_tie_breaker():
+    # Many-to-one links, so each root reaches D and E by one functional route (one-to-one
+    # links would also reach D through E and the other root, a longer one-to-one route).
     config = PackageConfig(
         version=1,
         package=PackageMeta(
@@ -327,7 +333,7 @@ def test_distinct_values_root_selection_uses_deterministic_tie_breaker():
                 target_entity="D",
                 source_column="id",
                 target_column="id",
-                cardinality="1:1",
+                cardinality="N:1",
                 safety="safe",
             ),
             RelationshipConfig(
@@ -336,7 +342,7 @@ def test_distinct_values_root_selection_uses_deterministic_tie_breaker():
                 target_entity="E",
                 source_column="id",
                 target_column="id",
-                cardinality="1:1",
+                cardinality="N:1",
                 safety="safe",
             ),
             RelationshipConfig(
@@ -345,7 +351,7 @@ def test_distinct_values_root_selection_uses_deterministic_tie_breaker():
                 target_entity="D",
                 source_column="id",
                 target_column="id",
-                cardinality="1:1",
+                cardinality="N:1",
                 safety="safe",
             ),
             RelationshipConfig(
@@ -354,7 +360,7 @@ def test_distinct_values_root_selection_uses_deterministic_tie_breaker():
                 target_entity="E",
                 source_column="id",
                 target_column="id",
-                cardinality="1:1",
+                cardinality="N:1",
                 safety="safe",
             ),
         ],

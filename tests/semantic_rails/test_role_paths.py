@@ -30,6 +30,7 @@ from semantic_rails.compiler_parts.paths import (
 from semantic_rails.config import load_package_config, normalize_package
 from semantic_rails.config_validation import _compiled_package_warnings
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.fanout import resolve_path
 from semantic_rails.runtime import Runtime
 
 SEED_SQL = """
@@ -633,13 +634,15 @@ def test_the_key_shortcut_declines_when_a_pin_names_another_route(tmp_path):
     ]
     assert _direct_entity_key_source_expr(leg, airport, "airport_code", pinned) is None
     assert _direct_dimension_source_expr(leg, CODE, pinned) is None
-    # No pin: path selection prefers the direct relationship, so the shortcut stands.
+    # No pin: the direct and the gate routes differ in length, and neither is chosen by hop
+    # count, so the shortcut declines too and path selection refuses.
     unpinned = load_package_config(
         str(_write_package(tmp_path / "unpinned", explicit=("origin",), gate_hop=True))
     )
-    expr = _direct_entity_key_source_expr(leg, airport, "airport_code", unpinned)
-    assert expr is not None
-    assert expr.parts[-1] == "origin_code"
+    assert _direct_entity_key_source_expr(leg, airport, "airport_code", unpinned) is None
+    with pytest.raises(SemanticLayerError) as exc_info:
+        resolve_path(unpinned, start=leg, target=airport)
+    assert exc_info.value.code == "AMBIGUOUS_PATH"
 
 
 def test_the_key_shortcut_stands_when_the_pin_names_only_the_direct_relationship(tmp_path):
