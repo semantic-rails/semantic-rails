@@ -1303,11 +1303,17 @@ once when at least one child matches. Non-temporal paths of declared `N:1`,
 `1:N` and `1:1` hops may include a lookup before reaching children, and may
 use an alternate parent key; all authored join columns participate in the
 correlation. This supports parent counts and sums without multiplying their
-values. Unsafe, unknown-cardinality and temporal paths retain their refusals.
+values. A lookup-before-child or alternate-key path requires exactly one
+candidate route after authored `graph.path_preferences` pins. Several
+remaining routes retain `MIXED_GRAIN_INVALID`, even when one is shorter.
+This applies to query filters and measure-bound filters, including beside
+a lookup. Unsafe, unknown-cardinality and temporal paths retain their refusals.
 ClickHouse retains a deduplicated-parent leaf for servers without correlated
-subqueries. It refuses child-filter rewrites combined with a lookup selection,
-grouping or filter, paths that look up a parent before reaching children, and
-paths joined off the parent's declared key, with `MIXED_GRAIN_INVALID`.
+subqueries. Key-based descents retain their existing SQL shape, including
+beside lookup selections, groupings and filters; those lookups remain inner
+joins. It refuses paths that look up a parent before reaching children and
+paths joined off the parent's declared key, including beside a lookup, with
+`MIXED_GRAIN_INVALID`.
 
 Grouping retains a narrower exception: a path that only goes down one-to-many hops before any lookup
 (`order → order_item → product`), each hop joined on the declared key of its

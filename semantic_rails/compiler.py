@@ -846,23 +846,7 @@ def _fanout_dedup_refusal(
     item dimension reads as the item-level split ("revenue by product type") as often as the
     orders-that-included-it total, and the two differ, so that shape stays refused.
     """
-    crossing = [row for row in selections if row.analysis.get("status") != "ok"]
-    if (
-        config.package.warehouse == "clickhouse"
-        and any(row.purpose in {"where", "metric_filter"} for row in crossing)
-        and any(
-            row.analysis.get("status") == "ok"
-            and row.chosen_path
-            and row.purpose in {"group_by", "where", "metric_filter", "measure_expr"}
-            for row in selections
-        )
-    ):
-        return (
-            "ClickHouse does not support a child-filter rewrite beside a lookup "
-            "selection, grouping or filter. Remove the lookup from this query.",
-            crossing[0],
-        )
-    selections = crossing
+    selections = [row for row in selections if row.analysis.get("status") != "ok"]
     for row in selections:
         if row.purpose not in _FANOUT_DEDUP_PURPOSES:
             return (
@@ -873,24 +857,29 @@ def _fanout_dedup_refusal(
     grouped = [row for row in selections if row.purpose == "group_by"]
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
+        # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
+        # leaf beside lookups. Broader EXISTS paths must have exactly one route
+        # after authored pins; hop count cannot decide which children are meant.
+        if one_to_many_descent(row.analysis, keys):
+            continue
         if (
             not grouped
             and config.package.warehouse != "clickhouse"
             and filter_only_semijoin(row.analysis)
+            and len(row.candidate_paths) == 1
         ):
             continue
-        if not one_to_many_descent(row.analysis, keys):
-            return (
-                (
-                    "ClickHouse requires a key-based descent before any lookup. "
-                    if config.package.warehouse == "clickhouse"
-                    else ""
-                )
-                + f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
-                "lookup before the one-to-many hop, an M:N or time-bounded relationship, or a "
-                "join off the declared key), so no single set of rows belongs to each row.",
-                row,
+        return (
+            (
+                "ClickHouse requires a key-based descent before any lookup. "
+                if config.package.warehouse == "clickhouse"
+                else ""
             )
+            + f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
+            "lookup before the one-to-many hop, an M:N or time-bounded relationship, or a "
+            "join off the declared key), so no single set of rows belongs to each row.",
+            row,
+        )
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
         return (

@@ -29,7 +29,7 @@ from semantic_rails.expressions import ColumnRefExpr
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.schema import PathPreferenceConfig, SemanticPolicyConfig
 
 # Order 1 has two beverages (the double-count trap), order 2 a beverage and a jaffle, order 3
 # two jaffles, order 4 a beverage after Q4 2016, order 5 no items, and order 6 a beverage and a
@@ -519,8 +519,9 @@ def test_clickhouse_refuses_child_filter_paths_requiring_exists(
     ids=["grouped_lookup", "selected_lookup", "lookup_filter", "null_lookup_filter"],
 )
 @pytest.mark.parametrize("bound_filter", [False, True], ids=["where", "measure_filter"])
-def test_clickhouse_refuses_a_lookup_beside_a_child_filter(
-    package: Path, lookup: dict[str, Any], bound_filter: bool
+@pytest.mark.parametrize("clause", [BEVERAGE, WEB], ids=["descent", "lookup_then_child"])
+def test_clickhouse_keeps_supported_lookups_beside_a_child_filter(
+    package: Path, lookup: dict[str, Any], bound_filter: bool, clause: dict[str, Any]
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse="clickhouse"))
@@ -530,15 +531,205 @@ def test_clickhouse_refuses_a_lookup_beside_a_child_filter(
             "kind": "aggregate",
             "measure": "measure.hop.order_count",
             "aggregation": "count_distinct",
-            "filter": {"all": [BEVERAGE]},
+            "filter": {"all": [clause]},
         }
         query["select"] = [{"expression": expression, "as": "orders"}, *query["select"][1:]]
     else:
-        query["where"] = [BEVERAGE, *query.get("where", [])]
+        query["where"] = [clause, *query.get("where", [])]
+    if clause == WEB:
+        with pytest.raises(SemanticLayerError) as caught:
+            compile_query(config, Registry(config), query)
+        assert caught.value.code == "MIXED_GRAIN_INVALID"
+        assert "ClickHouse" in caught.value.details["why_invalid"]
+        return
+    sql = compile_query(config, Registry(config), query)["prepared_query"].sql.removesuffix(
+        "\nSETTINGS join_use_nulls = 1"
+    )
+    assert "SELECT DISTINCT" in sql
+    assert "INNER JOIN coupons" in sql
+    assert "EXISTS" not in sql
+    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
+        rows = _normal(conn.execute(sql).fetchall())
+    if "group_by" in lookup or "select" in lookup:
+        reference = """
+            SELECT c.coupon_id, COUNT(DISTINCT o.order_id) FROM orders o
+            JOIN coupons c ON c.code = o.coupon_code
+            WHERE EXISTS (SELECT 1 FROM order_items i
+              WHERE i.order_id = o.order_id AND i.product_type = 'beverage') GROUP BY 1
+        """
+    else:
+        condition = (
+            "c.coupon_id IS NULL" if lookup["where"][0]["value"] is None else "c.coupon_id = 1"
+        )
+        reference = f"""
+            SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(DISTINCT o.order_id) ELSE NULL END FROM orders o
+            JOIN coupons c ON c.code = o.coupon_code WHERE {condition}
+            AND EXISTS (SELECT 1 FROM order_items i
+              WHERE i.order_id = o.order_id AND i.product_type = 'beverage')
+        """
+    assert rows == _reference(package, reference)
+
+
+@pytest.fixture
+def diamond_package(tmp_path: Path) -> Path:
+    root = tmp_path / "diamond"
+    edges = {
+        "account_client": ("account", "client", "client_id"),
+        "district_client": ("district", "client", "client_id"),
+        "account_branch": ("account", "branch", "branch_id"),
+        "zone_branch": ("zone", "branch", "branch_id"),
+        "district_zone": ("district", "zone", "zone_id"),
+    }
+    graph = {
+        "entities": {
+            entity: {
+                "label": entity,
+                "key": [f"{entity}_id"],
+                "model": "branches" if entity == "branch" else f"{entity}s",
+            }
+            for entity in ("account", "client", "branch", "zone", "district")
+        },
+        "relationships": {
+            name: {
+                "id": f"relationship.{name}",
+                "entities": [source, target],
+                "cardinality": "many_to_one",
+                "via": [column],
+                "target": [column],
+            }
+            for name, (source, target, column) in edges.items()
+        },
+    }
+    seed = """
+        CREATE TABLE accounts AS SELECT * FROM (VALUES (1, 10, 100, 50), (2, 20, 200, 70))
+          AS t(account_id, client_id, branch_id, amount);
+        CREATE TABLE clients AS SELECT * FROM (VALUES (10), (20)) AS t(client_id);
+        CREATE TABLE branches AS SELECT * FROM (VALUES (100, 'east'), (200, 'west'))
+          AS t(branch_id, name);
+        CREATE TABLE zones AS SELECT * FROM (VALUES (1000, 100), (2000, 200))
+          AS t(zone_id, branch_id);
+        CREATE TABLE districts AS SELECT * FROM (VALUES
+          (1, 10, 2000, 'premium'), (2, 20, 1000, 'standard'))
+          AS t(district_id, client_id, zone_id, category);
+    """
+    models: dict[str, Any] = {
+        "accounts": {
+            "measures": {
+                "amount": {
+                    "label": "Amount",
+                    "kind": "aggregate",
+                    "expr": "amount",
+                    "accumulation": {"kind": "flow"},
+                    "value_type": "currency",
+                }
+            }
+        },
+        "clients": {},
+        "branches": {"dimensions": {"name": {"label": "Name", "kind": "categorical"}}},
+        "zones": {},
+        "districts": {"dimensions": {"category": {"label": "Category", "kind": "categorical"}}},
+    }
+    files = {
+        "package.yml": PACKAGE.replace("hop", "diamond"),
+        "graph.yml": yaml.safe_dump({"graph": graph}),
+        "data/seed.sql": seed,
+        **{
+            f"models/{name}.yml": yaml.safe_dump(
+                {
+                    "model": {
+                        "id": name,
+                        "relation": name,
+                        "entities": {"branch" if name == "branches" else name[:-1]: {}},
+                        **parts,
+                    }
+                }
+            )
+            for name, parts in models.items()
+        },
+    }
+    for name, contents in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("alternate_key", [False, True], ids=["lookup_first", "alternate_key"])
+@pytest.mark.parametrize("bound_filter", [False, True], ids=["where", "measure_filter"])
+@pytest.mark.parametrize("beside_lookup", [False, True], ids=["ungrouped", "lookup_group"])
+def test_new_child_filter_paths_require_one_candidate_or_a_pin(
+    diamond_package: Path, alternate_key: bool, bound_filter: bool, beside_lookup: bool
+) -> None:
+    clause = {"field": "dimension.diamond_district_category", "op": "=", "value": "premium"}
+    expression: dict[str, Any] = {"measure": "measure.diamond.amount"}
+    query: dict[str, Any] = {"version": 1, "select": [{"expression": expression, "as": "amount"}]}
+    if bound_filter:
+        expression.update(kind="aggregate", aggregation="sum", filter={"all": [clause]})
+    else:
+        query["where"] = [clause]
+    if beside_lookup:
+        query["group_by"] = ["dimension.diamond_branch_name"]
+    config = load_package_config(str(diamond_package))
+    if alternate_key:
+        config = replace(
+            config,
+            relationships=[
+                replace(rel, cardinality="1:N") if rel.id == "relationship.account_client" else rel
+                for rel in config.relationships
+            ],
+        )
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(config, Registry(config), query)
     assert caught.value.code == "MIXED_GRAIN_INVALID"
-    assert "ClickHouse" in caught.value.details["why_invalid"]
+    purpose = "metric_filter" if bound_filter else "where"
+    assert str(caught.value) == (
+        "Path to 'entity.diamond_district' requires a rewrite that is not supported for " + purpose
+    )
+    assert "no single set of rows belongs to each row" in caught.value.details["why_invalid"]
+    routes = [
+        (["relationship.account_client", "relationship.district_client"], 50, "east"),
+        (
+            [
+                "relationship.account_branch",
+                "relationship.zone_branch",
+                "relationship.district_zone",
+            ],
+            70,
+            "west",
+        ),
+    ]
+    # Seed once; pinning must select the authored route even when it is longer.
+    _run(diamond_package, {"select": [{"expression": {"measure": "measure.diamond.amount"}}]})
+    for path, expected, branch in routes:
+        pinned = replace(
+            config,
+            path_preferences=[
+                PathPreferenceConfig(
+                    source_entity="entity.diamond_account",
+                    target_entity="entity.diamond_district",
+                    relationship_path=path,
+                )
+            ],
+        )
+        compiled = compile_query(pinned, Registry(pinned), query)
+        selection = next(
+            row
+            for row in compiled["logical_plan"].measure_plans[0].path_selections
+            if row.target_entity == "entity.diamond_district"
+        )
+        assert selection.candidate_paths == [path]
+        with duckdb.connect(str(diamond_package / "data/warehouse.duckdb"), read_only=True) as conn:
+            actual = conn.execute(compiled["prepared_query"].sql).fetchall()
+        reference = (
+            "SELECT SUM(a.amount) FROM accounts a WHERE EXISTS (SELECT 1 FROM districts d "
+            "WHERE d.client_id = a.client_id AND d.category = 'premium')"
+            if expected == 50
+            else "SELECT SUM(a.amount) FROM accounts a WHERE EXISTS (SELECT 1 FROM zones z "
+            "JOIN districts d ON d.zone_id = z.zone_id "
+            "WHERE z.branch_id = a.branch_id AND d.category = 'premium')"
+        )
+        assert _reference(diamond_package, reference) == [(expected,)]
+        assert actual == ([(branch, expected)] if beside_lookup else [(expected,)])
 
 
 HOT_ITEMS = {"dimension": HOT, "attribute": "hot", "type": "boolean"}
