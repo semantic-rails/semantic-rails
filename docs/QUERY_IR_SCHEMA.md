@@ -220,6 +220,24 @@ Supported `op` values (all compile end-to-end):
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
 
+A positive child-dimension filter on a parent-grain measure means "parents with at
+least one matching child". It lowers to correlated `EXISTS`, so multiple matching
+children never multiply a parent count or sum. This also applies to an aggregate's
+own `filter`, and to non-temporal paths that look up a parent before reaching its
+children or join on an alternate key. Each hop must declare `N:1`, `1:N` or `1:1`;
+unknown, unsafe and temporal paths retain their refusals.
+ClickHouse uses a deduplicated-parent leaf with the same semantics to support
+servers without correlated subqueries.
+
+At most one group or filter may cross a one-to-many hop. Negated child predicates
+and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
+and "has no child that is X" have different answers, and the IR has no explicit
+`NOT EXISTS` predicate. Grouped child dimensions retain their distinct-parent
+count rules; summing a parent amount by a child dimension or reading a child
+measure expression at parent grain remains refused. Applicable child row policies
+are enforced inside `EXISTS`; joins or repeated physical scans under a row policy
+remain `POLICY_DENIED`.
+
 ## OrderBy
 
 ```jsonc

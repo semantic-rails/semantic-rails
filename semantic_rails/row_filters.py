@@ -2,9 +2,9 @@
 
 A ``row_filter`` policy names a dimension and a host-supplied attribute. When it applies to
 a request, the compiler adds ``<column> = ?`` to the scan of the dimension's relation, and
-the runtime binds the attribute to that parameter. Only the minimum query family is
-qualified: a statement that reads exactly one physical relation, once, as a ``FROM``, which
-an applicable filter covers. Any other statement is denied, never answered unfiltered.
+the runtime binds the attribute to that parameter. Qualified statements read a physical
+relation once as a ``FROM``, or filter it through EXISTS with each additional relation read
+once as a nested ``FROM``. Joins and repeated scans are denied, never answered unfiltered.
 """
 
 from __future__ import annotations
@@ -19,10 +19,13 @@ from .schema import PackageConfig, SemanticPolicyConfig
 from .sql_ast import (
     SqlBinary,
     SqlCte,
+    SqlExists,
     SqlExpr,
     SqlIdentifier,
+    SqlJoin,
     SqlParameter,
     SqlSelect,
+    SqlSetQuery,
     SqlTableFunction,
     SqlTableRef,
 )
@@ -110,7 +113,7 @@ def validate_row_filters(config: PackageConfig) -> None:
 def apply_row_filters(
     sql: SqlSelect, filters: Sequence[RowFilter]
 ) -> tuple[SqlSelect, tuple[ParameterSlot, ...]]:
-    """Filter the one relation ``sql`` reads, or deny the statement."""
+    """Filter each covered FROM scan in a qualified statement, or deny it."""
     if not filters:
         return sql, ()
     nodes = list(_walk(sql))
@@ -121,25 +124,65 @@ def apply_row_filters(
         if isinstance(node, SqlTableFunction)
         or (isinstance(node, SqlTableRef) and node.name not in ctes)
     ]
-    read = reads[0] if len(reads) == 1 and isinstance(reads[0], SqlTableRef) else None
-    scan = next(
-        (node for node in nodes if isinstance(node, SqlSelect) and node.from_table is read), None
-    )
-    applied = [row for row in filters if read is not None and row.table == read.name]
-    # A filtered relation named like a CTE would be read through the CTE: deny, don't guess.
-    if read is None or scan is None or not applied or any(row.table in ctes for row in filters):
+    scans = [
+        node
+        for node in nodes
+        if isinstance(node, SqlSelect) and any(node.from_table is read for read in reads)
+    ]
+    if (
+        not reads
+        or any(not isinstance(read, SqlTableRef) for read in reads)
+        or len(scans) != len(reads)
+        or len({read.name for read in reads}) != len(reads)
+    ):
         raise _unsupported(filters)
-    qualifier = (read.alias or read.name).split(".")
-    condition = _conjunction(
-        [
-            SqlBinary(SqlIdentifier([*qualifier, row.column]), "=", SqlParameter(row.slot))
-            for row in applied
-        ]
-    )
-    if scan.where:
-        # One AND node keeps the filter outside any OR in the existing conditions.
-        condition = SqlBinary(condition, "AND", _conjunction(scan.where))
-    filtered = _rewrite(sql, scan, replace(scan, where=[condition]))
+    if len(reads) > 1:
+        exists = [node for node in nodes if isinstance(node, SqlExists)]
+        nested_reads = {id(node) for expr in exists for node in _walk(expr.query)}
+        where_exists = {
+            id(node) for scan in scans for node in _walk(scan.where) if isinstance(node, SqlExists)
+        }
+        if (
+            any(isinstance(node, SqlJoin | SqlSetQuery) for node in nodes)
+            or any(id(expr) not in where_exists for expr in exists)
+            or sum(id(read) not in nested_reads for read in reads) != 1
+        ):
+            raise _unsupported(filters)
+    applied = [
+        row
+        for scan in scans
+        for row in filters
+        if isinstance(scan.from_table, SqlTableRef) and row.table == scan.from_table.name
+    ]
+    # A filtered relation named like a CTE would be read through the CTE: deny, don't guess.
+    if not applied or any(row.table in ctes for row in filters):
+        raise _unsupported(filters)
+    filtered = sql
+    # Children first: replacing a child changes its parent's identity. Find the current
+    # scan by its FROM object so every filter still lands on its own relation.
+    for original in reversed(scans):
+        scan = next(
+            node
+            for node in _walk(filtered)
+            if isinstance(node, SqlSelect) and node.from_table is original.from_table
+        )
+        read = scan.from_table
+        if not isinstance(read, SqlTableRef):
+            raise _unsupported(filters)
+        covered = [row for row in filters if row.table == read.name]
+        if not covered:
+            continue
+        qualifier = (read.alias or read.name).split(".")
+        condition = _conjunction(
+            [
+                SqlBinary(SqlIdentifier([*qualifier, row.column]), "=", SqlParameter(row.slot))
+                for row in covered
+            ]
+        )
+        if scan.where:
+            # One AND node keeps the filter outside any OR in the existing conditions.
+            condition = SqlBinary(condition, "AND", _conjunction(scan.where))
+        filtered = _rewrite(filtered, scan, replace(scan, where=[condition]))
     if sum(isinstance(node, SqlParameter) for node in _walk(filtered)) != len(applied):
         raise _unsupported(filters)  # the rewrite missed the scan: never run it unfiltered
     return filtered, tuple(row.slot for row in applied)
@@ -149,7 +192,8 @@ def _unsupported(filters: Sequence[RowFilter]) -> SemanticLayerError:
     return SemanticLayerError(
         "POLICY_DENIED",
         "A row filter applies to this request, and only a query that reads the filtered "
-        "relation once, without joins, rollups or other relations, can be answered under it.",
+        "relation once, with other relations read once through EXISTS and without joins "
+        "or rollups, can be answered under it.",
         details={
             "reason": "row_filter_unsupported_query",
             "policy_ids": sorted({row.policy_id for row in filters}),

@@ -590,9 +590,12 @@ behavior:
   needs `type:`. The policy takes no `object_ids`, `action` or operator. A request
   it applies to is denied if the attribute is missing or of another type, and
   so is any query outside the qualified family: the compiled statement must
-  read the filtered relation exactly once, as its only relation. Joins, metric
-  filters, calendar spines (prior-period comparisons, fill) and other second
-  scans are refused, and rollups are not routed to. The zero-row
+  read each physical relation exactly once as a `FROM` scan. It may read only
+  the filtered relation, or filter a parent through nested `EXISTS` scans;
+  a policy on a child is applied inside its `EXISTS`, before it qualifies a
+  parent. Joins, repeated relation scans, calendar spines (prior-period
+  comparisons, fill) and other independent scans are refused, and rollups
+  are not routed to. The zero-row
   data-coverage probe is skipped. Such a policy loads for any warehouse, but only
   DuckDB executes these statements today; every other adapter refuses them.
   An unscoped row filter applies to every request. A scoped one applies only
@@ -1297,12 +1300,25 @@ dimension four relationships away (`line_item → order → customer → city �
 region`), with each hop cardinality-checked. Every hop must be `N:1`/`1:1` in
 the traversal direction (or carry a declared rewrite, e.g. `rollup_safe`
 reverse aggregations or `temporal_validity`); anything else is a structured
-refusal, never a silently fanned-out number. The one exception needs no
-declaration: a path that only goes down one-to-many hops before any lookup
+refusal, never a silently fanned-out number. A positive child filter needs no
+`rollup_safe` opt-in: it lowers to correlated `EXISTS` and keeps each parent row
+once when at least one child matches. Non-temporal paths of declared `N:1`,
+`1:N` and `1:1` hops may include a lookup before reaching children, and may
+use an alternate parent key; all authored join columns participate in the
+correlation. This supports parent counts and sums without multiplying their
+values. Unsafe, unknown-cardinality and temporal paths retain their refusals.
+ClickHouse keeps the equivalent deduplicated-parent leaf for compatibility with
+servers without correlated subqueries.
+
+Grouping retains a narrower exception: a path that only goes down one-to-many hops before any lookup
 (`order → order_item → product`), each hop joined on the declared key of its
-one side, lets a measure be filtered by the far dimension, counting each of its
-rows once, and lets a distinct count be grouped by it; the entity's key is what
+one side, lets a distinct parent count be grouped by the far dimension; the entity's key is what
 the engine de-duplicates on.
+At most one group or filter may cross a one-to-many hop. Negated child filters
+and `IS NULL` stay refused because "has a non-matching child" and "has no matching
+child" differ; the IR has no explicit `NOT EXISTS` predicate. A parent sum
+grouped by child dimensions, or a child value authored at parent grain, stays
+`MIXED_GRAIN_INVALID`.
 
 ### `graph.path_policy:` — hop ceiling
 

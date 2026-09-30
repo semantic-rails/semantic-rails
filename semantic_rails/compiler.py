@@ -140,7 +140,7 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, choose_path, one_to_many_descent
+from .fanout import analyze_fanout, choose_path, filter_only_semijoin, one_to_many_descent
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -837,10 +837,10 @@ def _fanout_dedup_refusal(
     """Why this leaf can't count each measure row once across its one-to-many hops, and the
     path at fault; None when it can.
 
-    ``selections`` are the leaf's paths that need a rewrite. The de-duplicated leaf
-    (``sql_lowering._fanout_dedup_leaf_select``) keeps one row per (measure-entity key, output
-    grain) before it aggregates, so a row counts once at all under a filter (EXISTS), and once
-    per group it has a matching child row in.
+    ``selections`` are the leaf's paths that need a rewrite. Filter-only paths use correlated
+    EXISTS (or a de-duplicated parent leaf on ClickHouse). Grouped paths keep one row per
+    (measure-entity key, output grain) before aggregation, so each row counts once in every
+    group it has a matching child in.
 
     Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
     item dimension reads as the item-level split ("revenue by product type") as often as the
@@ -853,8 +853,11 @@ def _fanout_dedup_refusal(
                 "a one-to-many hop; only filters and distinct-count groupings can.",
                 row,
             )
+    grouped = [row for row in selections if row.purpose == "group_by"]
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
+        if not grouped and filter_only_semijoin(row.analysis):
+            continue
         if not one_to_many_descent(row.analysis, keys):
             return (
                 f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
@@ -863,7 +866,6 @@ def _fanout_dedup_refusal(
                 row,
             )
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-    grouped = [row for row in selections if row.purpose == "group_by"]
     if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
         return (
             f"'{aggregation}' of '{measure.id}' grouped by a dimension of "

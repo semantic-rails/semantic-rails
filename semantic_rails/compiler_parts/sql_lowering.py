@@ -56,6 +56,7 @@ from ..sql_ast import (
     SqlCaseWhen,
     SqlCast,
     SqlCte,
+    SqlExists,
     SqlExpr,
     SqlField,
     SqlIdentifier,
@@ -1883,6 +1884,66 @@ def _fanout_dedup_leaf_select(
     )
 
 
+def _fanout_filter_leaf_select(
+    plan: LogicalPlan,
+    measure_plan: MeasurePlan,
+    config: PackageConfig,
+    *,
+    key_fields: list[SqlField],
+    where: list[Any],
+    child_where: list[Any],
+    value_expr: Any,
+    calendar_join: SqlJoin | None,
+) -> SqlSelect:
+    """Filter the measure's rows with correlated EXISTS, never join copies into its sum.
+
+    Each hop is nested so its authored join condition correlates with the preceding row.
+    This also leaves each child as a FROM scan for its row-filter policies.
+    """
+    measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
+    crossing = [row for row in measure_plan.path_selections if row.analysis.get("status") != "ok"]
+    child_joins = _joins_for_paths(measure.entity, crossing, config, time_spec=plan.time)
+    conditions = child_where
+    for join in reversed(child_joins):
+        if join.on is None:
+            raise SemanticLayerError(
+                "MIXED_GRAIN_INVALID", "A child filter needs a correlated join."
+            )
+        conditions = [
+            SqlExists(
+                SqlSelect(
+                    select=[SqlField(SqlLiteral(1), "match")],
+                    from_table=join.table,
+                    where=[join.on, *conditions],
+                )
+            )
+        ]
+    joins = _joins_for_paths(
+        measure.entity,
+        [row for row in measure_plan.path_selections if row.analysis.get("status") == "ok"],
+        config,
+        time_spec=plan.time,
+    )
+    return SqlSelect(
+        select=[
+            *key_fields,
+            SqlField(
+                _aggregation_expr(
+                    value_expr,
+                    measure_plan.bound_measure.aggregation,
+                    parameters=measure_plan.bound_measure.aggregation_params,
+                    dialect=_dialect(config),
+                ),
+                measure_plan.bound_measure.alias,
+            ),
+        ],
+        from_table=SqlTableRef(name=_measure_owned_relation(measure, _entity_index(config))),
+        joins=[*joins, *([calendar_join] if calendar_join is not None else [])],
+        where=[*where, *conditions],
+        group_by=[field.expression for field in key_fields],
+    )
+
+
 def _source_rollup_leaf_select(
     plan: LogicalPlan,
     measure_plan: MeasurePlan,
@@ -2113,6 +2174,19 @@ def _measure_leaf_select(
         group_fields.append(time_expr)
 
     where_clauses: list[Any] = []
+    child_where: list[Any] = []
+    crossing_filters = {
+        (row.target_entity, row.purpose)
+        for row in measure_plan.path_selections
+        if row.analysis.get("status") != "ok"
+    }
+    # ClickHouse 24.8 has no correlated EXISTS; its existing DISTINCT-parent leaf
+    # implements the same semi-join without requiring a newer server.
+    semijoin = (
+        config.package.warehouse != "clickhouse"
+        and measure_plan.rewrite_strategy == "fanout_dedup"
+        and all(purpose in {"where", "metric_filter"} for _, purpose in crossing_filters)
+    )
     for item in list(query.get("where", []) or []):
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
@@ -2120,7 +2194,12 @@ def _measure_leaf_select(
             config,
             source_relation_override=measure_source_override,
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item))
+        target = (
+            child_where
+            if semijoin and (dimensions[item["field"]].entity, "where") in crossing_filters
+            else where_clauses
+        )
+        target.append(_value_filter_condition(expr, item))
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
@@ -2128,7 +2207,12 @@ def _measure_leaf_select(
             config,
             source_relation_override=measure_source_override,
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item))
+        target = (
+            child_where
+            if semijoin and (dimensions[item["field"]].entity, "metric_filter") in crossing_filters
+            else where_clauses
+        )
+        target.append(_value_filter_condition(expr, item))
     if plan.time:
         time = dict(plan.time)
         role = temporal_roles[leaf_time_role]
@@ -2161,6 +2245,17 @@ def _measure_leaf_select(
 
     leaf_alias = measure_plan.bound_measure.alias
     leaf_value_expr = _config_expr_to_sql(measure.expr, measure, config)
+    if semijoin:
+        return _fanout_filter_leaf_select(
+            plan,
+            measure_plan,
+            config,
+            key_fields=select_fields,
+            where=where_clauses,
+            child_where=child_where,
+            value_expr=leaf_value_expr,
+            calendar_join=leaf_calendar_join,
+        )
     if measure_plan.rewrite_strategy == "fanout_dedup":
         joins = _joins_for_paths(
             measure.entity, measure_plan.path_selections, config, time_spec=plan.time
