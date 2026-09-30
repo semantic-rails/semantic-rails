@@ -422,27 +422,6 @@ def test_a_read_inside_a_cte_is_filtered_there():
         apply_row_filters(statement, [ROW, shadowed])
 
 
-def test_parent_and_child_filters_bind_in_sql_order_inside_exists():
-    parent = RowFilter("parent", "parents", "owner", ParameterSlot("owner", "string"))
-    child = RowFilter("child", "children", "visible", ParameterSlot("visible", "boolean"))
-    grandchild = RowFilter("grandchild", "t", "c", ROW.slot)
-    statement = _scan(
-        SqlTableRef("parents"),
-        where=[
-            SqlExists(
-                _scan(
-                    SqlTableRef("children", alias="child"),
-                    where=[SqlExists(_scan(SqlTableRef("t")))],
-                )
-            )
-        ],
-    )
-    filtered, slots = apply_row_filters(statement, [grandchild, child, parent])
-    assert slots == (parent.slot, child.slot, ROW.slot)
-    sql = render_select(filtered)
-    assert sql.index("parents.owner = ?") < sql.index("child.visible = ?") < sql.index("t.c = ?")
-
-
 @pytest.mark.parametrize(
     "statement",
     [
@@ -469,8 +448,36 @@ def test_parent_and_child_filters_bind_in_sql_order_inside_exists():
         ),
         # An EXISTS in the projection is not a child-row filter.
         SqlSelect([SqlField(SqlExists(_scan(SqlTableRef("t"))), "value")], SqlTableRef("parents")),
+        # Nor is one projected by a child scan inside the parent's EXISTS.
+        _scan(
+            SqlTableRef("parents"),
+            where=[
+                SqlExists(
+                    SqlSelect(
+                        [SqlField(SqlExists(_scan(SqlTableRef("grandchildren"))), "match")],
+                        SqlTableRef("t"),
+                        where=[
+                            SqlBinary(
+                                SqlIdentifier(["t", "parent_id"]),
+                                "=",
+                                SqlIdentifier(["parents", "id"]),
+                            )
+                        ],
+                    )
+                )
+            ],
+        ),
+        # "Has no matching child" is not "has a matching child".
+        _scan(SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableRef("t")), negated=True)]),
     ],
-    ids=["extra_scan", "joined_child", "table_function", "projected_exists"],
+    ids=[
+        "extra_scan",
+        "joined_child",
+        "table_function",
+        "projected_exists",
+        "nested_projected_exists",
+        "not_exists",
+    ],
 )
 def test_exists_does_not_bypass_row_filter_scan_guard(statement):
     with pytest.raises(SemanticLayerError) as caught:

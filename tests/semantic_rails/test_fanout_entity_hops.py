@@ -34,8 +34,9 @@ from semantic_rails.schema import SemanticPolicyConfig
 # Order 1 has two beverages (the double-count trap), order 2 a beverage and a jaffle, order 3
 # two jaffles, order 4 a beverage after Q4 2016, order 5 no items, and order 6 a beverage and a
 # NULL total. Two orders with a NULL key and the same total hold beverages with a NULL order
-# key: no join matches them, so they count nowhere. Customer 10 has sessions on two channels,
-# 11 on one, and 12 none. Coupons join orders on their code, which is not their key.
+# key: no join matches them, so they count nowhere. Customer 10 has sessions on two channels
+# (two on web), 11 on one, and 12 none. Coupons join orders on their code, which is not their
+# key, and orders 4 to 6 have none.
 SEED = """
 CREATE TABLE orders AS SELECT * FROM (VALUES
   (1, 10, TIMESTAMP '2016-10-05 10:00:00', 10.0, 'A'),
@@ -63,10 +64,10 @@ CREATE TABLE products AS SELECT * FROM (VALUES
   ('coffee', 'hot'), ('tea', 'hot'), ('toast', 'food'), ('melt', 'food')
 ) AS t(sku, category);
 CREATE TABLE customers AS SELECT * FROM (VALUES
-  (10, 100.0, 1.5), (11, 200.0, 2.5), (12, 400.0, 3.5)
-) AS t(customer_id, credit, score);
+  (10, 100.0, 1.5, 'retail'), (11, 200.0, 2.5, 'wholesale'), (12, 400.0, 3.5, 'retail')
+) AS t(customer_id, credit, score, segment);
 CREATE TABLE sessions AS SELECT * FROM (VALUES
-  (1, 10, 'web'), (2, 10, 'app'), (3, 11, 'web')
+  (1, 10, 'web'), (2, 10, 'app'), (3, 11, 'web'), (4, 10, 'web')
 ) AS t(session_id, customer_id, channel);
 CREATE TABLE coupons AS SELECT * FROM (VALUES (1, 'A', 5.0), (2, 'B', 7.0)) AS t(coupon_id, code, face_value);
 CREATE TABLE payments AS SELECT * FROM (VALUES (1, 1, 5.0), (2, 1, 5.0)) AS t(payment_id, order_id, amount);
@@ -120,6 +121,8 @@ model:
   id: customers
   relation: customers
   entities: {customer: {}}
+  dimensions:
+    segment: {label: Customer segment, kind: categorical}
   measures:
     customer_count: {label: Customers, kind: entity_count, entity_key: customer_id,
       accumulation: {kind: event}, value_type: count}
@@ -190,9 +193,12 @@ HOT = "dimension.hop_item_is_hot"
 CATEGORY = "dimension.hop_product_category"
 CHANNEL = "dimension.hop_session_channel"
 METHOD = "dimension.hop_payment_method"
+COUPON = "dimension.hop_coupon_id"
+SEGMENT = "dimension.hop_customer_segment"
 Q4_2016 = {"temporal_role": ROLE, "grain": "quarter", "start": "2016-10-01", "end": "2017-01-01"}
 IN_Q4 = "o.ordered_at >= TIMESTAMP '2016-10-01' AND o.ordered_at < TIMESTAMP '2017-01-01'"
 BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
+WEB = {"field": CHANNEL, "op": "=", "value": "web"}
 FILTERED_SUM = {
     "select": [{"expression": {"measure": "measure.hop.revenue"}, "as": "revenue"}],
     "where": [BEVERAGE],
@@ -459,48 +465,134 @@ def test_child_filter_does_not_admit_many_to_many_or_unknown_hops(
     assert caught.value.code == "MIXED_GRAIN_INVALID"
 
 
-@pytest.mark.parametrize("measure", ["order_count", "face_value"])
-def test_clickhouse_uses_equivalent_parent_deduplication(package: Path, measure: str) -> None:
+@pytest.mark.parametrize(
+    ("measure", "clause", "expected"),
+    [
+        ("order_count", BEVERAGE, 4),
+        ("face_value", BEVERAGE, 5),
+        # Orders -> customer -> sessions; customer 10's two web sessions must not double its orders.
+        ("order_count", WEB, 4),
+        ("revenue", WEB, 60),
+    ],
+    ids=["parent_count", "alternate_key", "lookup_then_child_count", "lookup_then_child_sum"],
+)
+def test_clickhouse_uses_equivalent_parent_deduplication(
+    package: Path, measure: str, clause: dict[str, Any], expected: int
+) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse="clickhouse"))
-    query = {"version": 1, "select": [_measure(measure)], "where": [BEVERAGE]}
+    query = {"version": 1, "select": [_measure(measure)], "where": [clause]}
     compiled = compile_query(config, Registry(config), query)
     sql = compiled["prepared_query"].sql.removesuffix("\nSETTINGS join_use_nulls = 1")
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
         actual = _normal(conn.execute(sql).fetchall())
-    assert actual == _rows(package, query) == [(4 if measure == "order_count" else 5,)]
+    assert actual == _rows(package, query) == [(expected,)]
     assert "SELECT DISTINCT" in sql
     assert "EXISTS" not in sql
 
 
-@pytest.mark.parametrize("measure", ["order_count", "revenue"])
-def test_child_row_policy_is_enforced_inside_exists(package: Path, measure: str) -> None:
+HOT_ITEMS = {"dimension": HOT, "attribute": "hot", "type": "boolean"}
+OWN_ORDERS = {"dimension": "dimension.hop_order_customer_id", "attribute": "customer",
+              "type": "integer"}  # fmt: skip
+
+
+def _under_row_policy(
+    package: Path, policy: dict[str, Any], attributes: dict[str, Any], query: dict[str, Any]
+) -> dict[str, Any]:
     config = load_package_config(str(package))
-    policy = SemanticPolicyConfig(
-        id="policy.hop.hot_items",
-        kind="row_filter",
-        config={"dimension": HOT, "attribute": "hot", "type": "boolean"},
+    config = replace(
+        config,
+        semantic_policies=[SemanticPolicyConfig(id="policy.hop.rows", kind="row_filter",
+                                                config=policy)],
+    )  # fmt: skip
+    context = RequestContext(attributes=attributes).to_policy_context()
+    return compile_query(
+        config,
+        Registry(config),
+        {"version": 1, **query},
+        row_filters=row_filters_for_context(config, context),
     )
-    config = replace(config, semantic_policies=[policy])
-    context = RequestContext(attributes={"hot": True}).to_policy_context()
-    query = {
-        "version": 1,
-        "select": [_measure(measure)],
-        "where": [{**BEVERAGE, "value": "jaffle"}],
-    }
-    compiled = compile_query(
-        config, Registry(config), query, row_filters=row_filters_for_context(config, context)
-    )
-    prepared = compiled["prepared_query"]
-    reference = (
-        f"SELECT {'COUNT(*)' if measure == 'order_count' else 'SUM(o.total)'} FROM orders o "
-        "WHERE EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.order_id "
-        "AND i.product_type = 'jaffle' AND i.is_hot = true)"
-    )
+
+
+@pytest.mark.parametrize(
+    ("policy", "attributes"),
+    [(HOT_ITEMS, {"hot": True}), (OWN_ORDERS, {"customer": 10})],
+    ids=["child_policy", "parent_policy"],
+)
+@pytest.mark.parametrize("measure", ["order_count", "revenue"])
+def test_child_filters_stay_denied_under_a_row_policy(
+    package: Path, policy: dict[str, Any], attributes: dict[str, Any], measure: str
+) -> None:
+    """A row policy qualifies only a query that reads its one relation; EXISTS reads two."""
+    query = {"select": [_measure(measure)], "where": [BEVERAGE]}
+    with pytest.raises(SemanticLayerError) as caught:
+        _under_row_policy(package, policy, attributes, query)
+    assert caught.value.code == "POLICY_DENIED"
+    assert caught.value.details["reason"] == "row_filter_unsupported_query"
+
+
+def test_a_parent_row_policy_still_answers_without_a_child_filter(package: Path) -> None:
+    query = {"select": [_measure("revenue")]}
+    prepared = _under_row_policy(package, OWN_ORDERS, {"customer": 10}, query)["prepared_query"]
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        actual = _normal(conn.execute(prepared.sql, [True]).fetchall())
-    assert actual == _reference(package, reference) == [(1 if measure == "order_count" else 30,)]
-    assert "order_items.is_hot = ?" in compiled["sql"]
+        actual = _normal(conn.execute(prepared.sql, [10]).fetchall())
+    reference = "SELECT SUM(total) FROM orders WHERE customer_id = 10"
+    assert actual == _reference(package, reference) == [(30.0,)]
+
+
+_HAS_BEVERAGE = (
+    "SELECT 1 FROM order_items i WHERE i.order_id = o.order_id AND i.product_type = 'beverage'"
+)
+_HAS_WEB_SESSION = (
+    "SELECT 1 FROM sessions s WHERE s.customer_id = o.customer_id AND s.channel = 'web'"
+)
+
+
+@pytest.mark.parametrize(
+    ("measure", "clause", "child", "expected"),
+    [
+        ("order_count", BEVERAGE, _HAS_BEVERAGE, [(1, 2), (None, 2)]),
+        ("order_count", WEB, _HAS_WEB_SESSION, [(1, 2), (2, 1), (None, 1)]),
+        ("revenue", BEVERAGE, _HAS_BEVERAGE, [(1, 30.0), (None, 40.0)]),
+    ],
+    ids=["count_by_child", "count_by_lookup_then_child", "sum_by_child"],
+)
+def test_a_lookup_beside_a_child_filter_keeps_parents_it_finds_no_match_for(
+    package: Path, measure: str, clause: dict[str, Any], child: str, expected: list[tuple[Any, ...]]
+) -> None:
+    """Grouped by coupon, orders without one stay in a NULL group, as in the ordinary leaf."""
+    rows = _rows(package, {"select": [_measure(measure)], "group_by": [COUPON], "where": [clause]})
+    value = "COUNT(*)" if measure == "order_count" else "SUM(o.total)"
+    reference = f"""
+        SELECT c.coupon_id, {value} FROM orders o LEFT JOIN coupons c ON c.code = o.coupon_code
+        WHERE EXISTS ({child}) GROUP BY 1
+    """
+    assert rows == _reference(package, reference) == _normal(expected)
+    ungrouped = _rows(package, {"select": [_measure(measure)], "where": [clause]})
+    assert ungrouped == _normal([(sum(row[-1] for row in rows),)])
+
+
+def test_a_lookup_joined_outside_exists_is_scanned_again_inside_it(package: Path) -> None:
+    """Customers are joined for the group and read again on the path to sessions."""
+    query = {
+        "select": [_measure("order_count"), _measure("revenue")],
+        "group_by": [SEGMENT],
+        "where": [WEB],
+    }
+    result = _run(package, query)
+    reference = f"""
+        SELECT c.segment, COUNT(*), SUM(o.total) FROM orders o
+        LEFT JOIN customers c ON c.customer_id = o.customer_id
+        WHERE EXISTS ({_HAS_WEB_SESSION}) GROUP BY 1
+    """
+    assert (
+        _normal(tuple(row.values()) for row in result["rows"])
+        == _reference(package, reference)
+        == [("retail", 2, 30.0), ("wholesale", 2, 30.0)]
+    )
+    # Each measure's leaf joins customers outside EXISTS and scans them inside it.
+    sql = result["rendered_sql"]
+    assert sql.count("LEFT JOIN customers ON") == sql.count("FROM customers\n") == 2
 
 
 @pytest.mark.parametrize("query", [FILTERED_SUM, GROUPED_COUNT], ids=["filtered", "grouped"])
@@ -1064,3 +1156,13 @@ def test_each_dialect_renders_the_de_duplicated_leaf(
     expected = templates[shape].format(month=MONTH[warehouse], median=median)
     # ClickHouse reads an unmatched outer-join field as NULL only with this setting.
     assert sql == expected + ("\nSETTINGS join_use_nulls = 1" if warehouse == "clickhouse" else "")
+
+
+@pytest.mark.parametrize("warehouse", ["snowflake", "bigquery", "databricks"])
+def test_remote_dialects_render_the_filter_as_correlated_exists(
+    package: Path, warehouse: str
+) -> None:
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    sql = compile_query(config, Registry(config), {"version": 1, **FILTERED_SUM})["sql"]
+    assert sql == DIALECT_SQL["filtered"]

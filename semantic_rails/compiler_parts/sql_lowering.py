@@ -1898,7 +1898,7 @@ def _fanout_filter_leaf_select(
     """Filter the measure's rows with correlated EXISTS, never join copies into its sum.
 
     Each hop is nested so its authored join condition correlates with the preceding row.
-    This also leaves each child as a FROM scan for its row-filter policies.
+    Lookups outside EXISTS keep rows they find no match for, as in the ordinary leaf.
     """
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
     crossing = [row for row in measure_plan.path_selections if row.analysis.get("status") != "ok"]
@@ -1923,6 +1923,7 @@ def _fanout_filter_leaf_select(
         [row for row in measure_plan.path_selections if row.analysis.get("status") == "ok"],
         config,
         time_spec=plan.time,
+        lookup_selections=_lookup_selections(plan, [measure_plan], config),
     )
     return SqlSelect(
         select=[

@@ -234,9 +234,8 @@ and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not
 and "has no child that is X" have different answers, and the IR has no explicit
 `NOT EXISTS` predicate. Grouped child dimensions retain their distinct-parent
 count rules; summing a parent amount by a child dimension or reading a child
-measure expression at parent grain remains refused. Applicable child row policies
-are enforced inside `EXISTS`; joins or repeated physical scans under a row policy
-remain `POLICY_DENIED`.
+measure expression at parent grain remains refused. Under a row policy these
+queries are refused with `POLICY_DENIED`, as before.
 
 ## OrderBy
 
