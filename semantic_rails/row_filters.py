@@ -3,8 +3,9 @@
 A ``row_filter`` policy names a dimension and a host-supplied attribute. When it applies to
 a request, the compiler adds ``<column> = ?`` to the scan of the dimension's relation, and
 the runtime binds the attribute to that parameter. Only the minimum query family is
-qualified: a statement that reads exactly one physical relation, once, as a ``FROM``, which
-an applicable filter covers. Any other statement is denied, never answered unfiltered.
+qualified: a statement that reads exactly one physical relation as a ``FROM``, which an
+applicable filter covers, with one scan that returns rows (and any number that only test the
+relation, see ``apply_row_filters``). Any other statement is denied, never answered unfiltered.
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ from .errors import SemanticLayerError
 from .schema import PackageConfig, SemanticPolicyConfig
 from .sql_ast import (
     SqlBinary,
+    SqlCall,
     SqlCte,
     SqlExpr,
     SqlIdentifier,
+    SqlLiteral,
     SqlParameter,
     SqlSelect,
     SqlTableFunction,
@@ -110,7 +113,12 @@ def validate_row_filters(config: PackageConfig) -> None:
 def apply_row_filters(
     sql: SqlSelect, filters: Sequence[RowFilter]
 ) -> tuple[SqlSelect, tuple[ParameterSlot, ...]]:
-    """Filter the one relation ``sql`` reads, or deny the statement."""
+    """Filter the one relation ``sql`` reads, or deny the statement.
+
+    Besides its one scan that returns rows, the statement may test the relation with scans
+    that return only constants and aggregates (see :func:`_observes`). Each scan carries the
+    filter, so a test never sees another customer's rows.
+    """
     if not filters:
         return sql, ()
     nodes = list(_walk(sql))
@@ -121,28 +129,63 @@ def apply_row_filters(
         if isinstance(node, SqlTableFunction)
         or (isinstance(node, SqlTableRef) and node.name not in ctes)
     ]
-    read = reads[0] if len(reads) == 1 and isinstance(reads[0], SqlTableRef) else None
-    scan = next(
-        (node for node in nodes if isinstance(node, SqlSelect) and node.from_table is read), None
-    )
+    selects = [node for node in nodes if isinstance(node, SqlSelect)]
+    scan_of = {id(node.from_table): node for node in selects if node.from_table is not None}
+    # Every read must be a scan (a FROM) of its own; one that is joined, shared or a table
+    # function is denied.
+    scans = [read for read in reads if isinstance(read, SqlTableRef) and id(read) in scan_of]
+    owners = [node for node in selects if id(node.from_table) in {id(read) for read in scans}]
+    returning = [read for read in scans if not _observes(scan_of[id(read)])]
+    read = (returning or scans)[0] if scans and len(scans) == len(reads) else None
     applied = [row for row in filters if read is not None and row.table == read.name]
     # A filtered relation named like a CTE would be read through the CTE: deny, don't guess.
-    if read is None or scan is None or not applied or any(row.table in ctes for row in filters):
+    if (
+        read is None
+        or len(returning) > 1
+        or len(owners) != len(scans)
+        or len({id(scan) for scan in scans}) != len(scans)
+        or any(scan.name != read.name for scan in scans)
+        or not applied
+        or any(row.table in ctes for row in filters)
+    ):
         raise _unsupported(filters)
-    qualifier = (read.alias or read.name).split(".")
-    condition = _conjunction(
-        [
-            SqlBinary(SqlIdentifier([*qualifier, row.column]), "=", SqlParameter(row.slot))
-            for row in applied
-        ]
+    filtered = sql
+    for ref in scans:
+        scan = next(
+            (n for n in _walk(filtered) if isinstance(n, SqlSelect) and n.from_table is ref), None
+        )
+        if scan is None:
+            raise _unsupported(filters)
+        qualifier = (ref.alias or ref.name).split(".")
+        condition = _conjunction(
+            [
+                SqlBinary(SqlIdentifier([*qualifier, row.column]), "=", SqlParameter(row.slot))
+                for row in applied
+            ]
+        )
+        if scan.where:
+            # One AND node keeps the filter outside any OR in the existing conditions.
+            condition = SqlBinary(condition, "AND", _conjunction(scan.where))
+        filtered = _rewrite(filtered, scan, replace(scan, where=[condition]))
+    if sum(isinstance(node, SqlParameter) for node in _walk(filtered)) != len(applied) * len(scans):
+        raise _unsupported(filters)  # a rewrite missed a scan: never run it unfiltered
+    return filtered, tuple(row.slot for row in applied) * len(scans)
+
+
+_OBSERVING = frozenset({"MIN", "MAX", "COUNT"})
+
+
+def _observes(scan: SqlSelect) -> bool:
+    """Whether ``scan`` only tests its relation: no join, and only constants and aggregates out.
+
+    Such a scan returns no row of the relation, and its filter is the same one the scan that
+    does. The empty-group guard reads the relation this way to see past a time window.
+    """
+    return not (scan.joins or scan.ctes or scan.group_by) and all(
+        isinstance(item.expression, SqlLiteral)
+        or (isinstance(item.expression, SqlCall) and item.expression.name.upper() in _OBSERVING)
+        for item in scan.select
     )
-    if scan.where:
-        # One AND node keeps the filter outside any OR in the existing conditions.
-        condition = SqlBinary(condition, "AND", _conjunction(scan.where))
-    filtered = _rewrite(sql, scan, replace(scan, where=[condition]))
-    if sum(isinstance(node, SqlParameter) for node in _walk(filtered)) != len(applied):
-        raise _unsupported(filters)  # the rewrite missed the scan: never run it unfiltered
-    return filtered, tuple(row.slot for row in applied)
 
 
 def _unsupported(filters: Sequence[RowFilter]) -> SemanticLayerError:

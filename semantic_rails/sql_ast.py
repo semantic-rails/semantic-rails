@@ -95,6 +95,10 @@ SQL_FUNCTION_NAMES = frozenset(
         # ``compiler_parts/bind.py:_maybe_conditional_aggregate``.
         "COUNT_IF",
         "COUNTIF",
+        # The current time, one spelling per dialect (dialects.SqlDialect.now). Engine-only:
+        # expressions.ENGINE_ONLY_FUNCTIONS keeps them out of `call` expressions.
+        "CURRENT_DATETIME",
+        "CURRENT_TIMESTAMP",
         "DATE_ADD",
         "DATEADD",
         "DATEDIFF",
@@ -130,6 +134,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "MEDIAN",
         "MIN",
         "MIN_BY",
+        "NOW",
         "NULLIF",
         # Spark SQL exact percentile aggregate.
         "PERCENTILE",

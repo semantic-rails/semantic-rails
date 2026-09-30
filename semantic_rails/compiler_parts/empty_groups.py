@@ -23,7 +23,8 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
+from datetime import datetime
 from typing import Any
 
 from ..errors import SemanticLayerError
@@ -42,15 +43,18 @@ from ..sql_ast import (
     SqlCase,
     SqlCaseWhen,
     SqlCte,
+    SqlExists,
     SqlField,
     SqlIdentifier,
     SqlJoin,
     SqlLiteral,
     SqlSelect,
+    SqlStar,
     SqlTableRef,
     SqlWindow,
 )
 from .bind import _parse_public_expr
+from .dependencies import plan_is_root
 from .indexes import _measure_index, _recipe_index
 
 GUARDED_BASE = "guarded_base"
@@ -118,36 +122,173 @@ def zero_outputs(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
     }
 
 
-def guard_empty_groups(
-    source: str, keys: Iterable[str], measures: Iterable[str], zero: Mapping[str, str]
-) -> SqlCte:
-    """The ``guarded_base`` CTE: ``source`` with each ``zero`` measure's NULLs settled.
+@dataclass(frozen=True)
+class LeafScope:
+    """What one leaf reads, kept so the guard can look at its measure outside the query's window.
 
-    ``zero`` maps a measure alias to its aggregation. Its NULL reads 0 while some row of the
-    whole grouped result holds a value, and stays NULL when none does. The other measures
-    pass through. It sits below the projection, so a LIMIT or a metric filter can't change
-    which groups it sees.
+    ``where`` holds the leaf's filters without the query's time bounds. ``bucket`` is the label
+    of the leaf's time axis and ``raw_time`` the column it comes from, when the guard can also
+    tell which buckets the relation has loaded.
     """
-    fields_: list[SqlField] = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
+
+    from_table: SqlTableRef
+    joins: tuple[SqlJoin, ...]
+    where: tuple[Any, ...]
+    value: Any
+    grain: str = ""
+    bucket: Any | None = None
+    raw_time: Any | None = None
+    calendar: SqlJoin | None = None
+    as_of: str = ""
+
+
+_leaf_scopes: ContextVar[dict[str, LeafScope] | None] = ContextVar("leaf_scopes", default=None)
+
+
+@contextmanager
+def recording_leaf_scopes() -> Iterator[dict[str, LeafScope]]:
+    """Collect the scope of each plain leaf of the request's own query, by measure alias."""
+    scopes: dict[str, LeafScope] = {}
+    token = _leaf_scopes.set(scopes)
+    try:
+        yield scopes
+    finally:
+        _leaf_scopes.reset(token)
+
+
+def record_leaf_scope(alias: str, scope: LeafScope) -> None:
+    """Keep ``scope`` for the guard; a nested query's leaves (a predicate's, say) are not kept."""
+    scopes = _leaf_scopes.get()
+    if scopes is not None and plan_is_root():
+        scopes[alias] = scope
+
+
+def guard_empty_groups(
+    source: str,
+    keys: Iterable[str],
+    measures: Iterable[str],
+    zero: Mapping[str, str],
+    scopes: Mapping[str, LeafScope] | None = None,
+    *,
+    time_key: str = "",
+    dialect: Any = None,
+) -> list[SqlCte]:
+    """The ``guarded_base`` CTE (last), with any coverage CTEs it reads: ``source`` settled.
+
+    ``zero`` maps a measure alias to its aggregation. Its NULL reads 0 while the measure has
+    data in scope, and stays NULL when it has none. The other measures pass through. It sits
+    below the projection, so a LIMIT or a metric filter can't change which groups it sees.
+
+    A measure has data in scope when some row of the whole grouped result holds a value, or,
+    given its ``scopes`` (a query with a time window), when it has a value anywhere outside
+    the window under the same filters. With a ``time_key`` and a bucket, only buckets that the
+    relation has loaded read 0: one before its first row or after its last (up to now)
+    reads NULL, since nothing says it was recorded.
+    """
+    fields_: list[SqlField] = []
+    for key in keys:
+        fields_.append(SqlField(SqlIdentifier(parts=["base", key]), key))
+    ctes: list[SqlCte] = []
+    joins: list[SqlJoin] = []
+    coverage: dict[str, str] = {}
     for alias in measures:
         value: Any = SqlIdentifier(parts=["base", alias])
         aggregation = zero.get(alias)
         if aggregation is not None:
-            seen = SqlCall("MAX" if aggregation in _COUNTING else "COUNT", [value])
-            value = SqlCase(
-                whens=[
-                    SqlCaseWhen(
-                        SqlBinary(SqlWindow(function=seen), ">", SqlLiteral(0)),
-                        SqlCall("COALESCE", [value, SqlLiteral(0)]),
+            seen: Any = SqlBinary(
+                SqlWindow(function=SqlCall("MAX" if aggregation in _COUNTING else "COUNT", [value])),
+                ">",
+                SqlLiteral(0),
+            )
+            fill: Any = SqlLiteral(0)
+            scope = (scopes or {}).get(alias)
+            if scope is not None:
+                seen = SqlBinary(seen, "OR", _seen_outside_window(scope))
+                if time_key and scope.bucket is not None:
+                    loaded = repr(
+                        (scope.from_table, scope.raw_time, scope.bucket, scope.calendar)
+                        + (scope.grain, scope.as_of)
                     )
-                ],
-                else_expr=None,
+                    name = coverage.get(loaded)
+                    if name is None:
+                        name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
+                        ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
+                        joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
+                    fill = _loaded_bucket(time_key, name, fill)
+            value = SqlCase(
+                whens=[SqlCaseWhen(seen, SqlCall("COALESCE", [value, fill]))], else_expr=None
             )
         fields_.append(SqlField(value, alias))
-    return SqlCte(
-        name=GUARDED_BASE,
-        query=SqlSelect(select=fields_, from_table=SqlTableRef(name=source, alias="base")),
+    guard = SqlSelect(
+        select=fields_, from_table=SqlTableRef(name=source, alias="base"), joins=joins
     )
+    return [*ctes, SqlCte(name=GUARDED_BASE, query=guard)]
+
+
+def _seen_outside_window(scope: LeafScope) -> SqlExists:
+    """Whether the measure has a value under the leaf's filters, whatever the time window."""
+    where = list(scope.where)
+    if not isinstance(scope.value, SqlStar):
+        where.append(SqlBinary(scope.value, "IS NOT", SqlLiteral(None)))
+    probe = SqlSelect(
+        select=[SqlField(SqlLiteral(1), "seen")],
+        # A copy: a row filter finds each scan of a relation by its own node.
+        from_table=replace(scope.from_table),
+        joins=list(scope.joins),
+        where=where,
+        limit=1,
+    )
+    return SqlExists(probe)
+
+
+def _loaded_bucket(time_key: str, coverage: str, zero: Any) -> SqlCase:
+    """``zero`` for a bucket between the relation's first loaded bucket and its last, else NULL."""
+    bucket = SqlIdentifier(parts=["base", time_key])
+    inside = SqlBinary(
+        SqlBinary(bucket, ">=", SqlIdentifier(parts=[coverage, "loaded_from"])),
+        "AND",
+        SqlBinary(bucket, "<=", SqlIdentifier(parts=[coverage, "loaded_to"])),
+    )
+    return SqlCase(whens=[SqlCaseWhen(inside, zero)], else_expr=None)
+
+
+def coverage_select(scope: LeafScope, dialect: Any) -> SqlSelect:
+    """The buckets a relation has loaded: its first, and its last up to now, in one row.
+
+    The last is the relation's authored ``freshness_as_of`` when it declares one, else the
+    latest row that isn't in the future, so a placeholder such as 9999-12-31 never extends
+    it. ``first_at`` and ``last_at`` are the raw times the buckets come from.
+    """
+    known = dialect.timestamp_cast(scope.raw_time)
+    now = dialect.timestamp_cast(dialect.now())
+    if (stamp := _authored_as_of(scope.as_of)) is None:
+        past = SqlBinary(known, "<=", now)
+        last_at: Any = SqlCase(whens=[SqlCaseWhen(past, known)])
+        last_bucket: Any = SqlCase(whens=[SqlCaseWhen(past, scope.bucket)])
+    else:
+        authored = dialect.timestamp_cast(SqlLiteral(stamp))
+        last_at = SqlCase(
+            whens=[SqlCaseWhen(SqlBinary(authored, "<=", now), authored)], else_expr=now
+        )
+        last_bucket = dialect.date_trunc(scope.grain, last_at)
+    return SqlSelect(
+        select=[
+            SqlField(SqlCall("MIN", [scope.bucket]), "loaded_from"),
+            SqlField(SqlCall("MAX", [last_bucket]), "loaded_to"),
+            SqlField(SqlCall("MIN", [known]), "first_at"),
+            SqlField(SqlCall("MAX", [last_at]), "last_at"),
+        ],
+        from_table=replace(scope.from_table),
+        joins=[scope.calendar] if scope.calendar is not None else [],
+    )
+
+
+def _authored_as_of(value: str) -> str | None:
+    try:
+        moment = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment.replace(tzinfo=None).isoformat(sep=" ")
 
 
 def absent_entities_gate(name: str, source: str, value: str) -> tuple[SqlCte, SqlJoin, SqlBinary]:

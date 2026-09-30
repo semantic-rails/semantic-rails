@@ -129,6 +129,10 @@ class SqlDialect:
     def timestamp_cast(self, expr: Any) -> Any:
         return SqlCast(expr, self.timestamp_type_name())
 
+    def now(self) -> Any:
+        """The current time, as a value comparable with ``timestamp_cast`` of a column."""
+        return SqlCall("NOW", [])
+
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         return SqlCall("DATE_TRUNC", [SqlLiteral(grain), self.timestamp_cast(ts_expr)])
 
@@ -258,6 +262,9 @@ class SnowflakeDialect(SqlDialect):
 
     def timestamp_type_name(self) -> str:
         return "TIMESTAMP_NTZ"
+
+    def now(self) -> Any:
+        return SqlCall("CURRENT_TIMESTAMP", [])
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         return SqlCall(
@@ -718,6 +725,9 @@ class BigQueryDialect(SqlDialect):
         # DATETIME and string literal -> DATETIME both coerce wherever
         # the DATETIME_* functions and comparisons expect a DATETIME.
         return expr
+
+    def now(self) -> Any:
+        return SqlCall("CURRENT_DATETIME", [])
 
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         # BigQuery reverses the portable order: DATETIME_TRUNC(ts, unit)

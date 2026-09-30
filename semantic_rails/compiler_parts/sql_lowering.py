@@ -95,10 +95,13 @@ from .dependencies import (
 )
 from .empty_groups import (
     GUARDED_BASE,
+    LeafScope,
     base_reads,
     expr_resolves_to_zero,
     guard_empty_groups,
+    record_leaf_scope,
     record_zero_output,
+    recording_leaf_scopes,
     refuse_unsettled,
     zero_aliases,
     zero_outputs,
@@ -404,6 +407,16 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
             whens=[SqlCaseWhen(SqlIsNull(raw_expr), SqlLiteral(0))], else_expr=SqlLiteral(0)
         )
     return raw_expr
+
+
+def _has_time_window(plan: LogicalPlan) -> bool:
+    """Whether the request's own query is cut to a time window that can hide data (not a total)."""
+    time = plan.time or {}
+    return (
+        plan_is_root()
+        and not time.get("window_total")
+        and (time.get("start") is not None or time.get("end") is not None)
+    )
 
 
 def _is_window_total_key(expr: Any, time_alias: str) -> bool:
@@ -1266,7 +1279,7 @@ def _lower_agent_dag_to_sql(
     # those outputs again over the combined result, the same way each branch did.
     guard_ctes: list[SqlCte] = []
     if guard_empty and (zero := zero_outputs(plan, config)):
-        guard_ctes.append(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
+        guard_ctes.extend(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
         combined_name = GUARDED_BASE
 
     final_source = "agent_projected"
@@ -2129,6 +2142,7 @@ def _measure_leaf_select(
             source_relation_override=measure_source_override,
         ) or _resolve_dimension_expr(str(item["field"]), config)
         where_clauses.append(_value_filter_condition(expr, item))
+    untimed = list(where_clauses)
     if plan.time:
         time = dict(plan.time)
         role = temporal_roles[leaf_time_role]
@@ -4493,19 +4507,22 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
 
     key_aliases = _query_key_aliases(plan)
     measure_aliases: list[str] = []
+    scopes: dict[str, LeafScope] = {}
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
-        for measure_group in measure_groups:
-            cte_name = measure_group[0].cte_name
-            # A folded group shares one scan, so its filters cut every leaf in it.
-            with cut_owners(*(row.bound_measure.alias for row in measure_group)):
-                leaf_select = _measure_group_leaf_select(plan, measure_group, config)
-            _refuse_varying_time_key(plan, leaf_select)
-            leaf_ctes.append(
-                SqlCte(name=cte_name, query=_namespace_sql_select(leaf_select, f"{cte_name}__"))
-            )
+        # A window on the request's own query hides data outside it: keep what each leaf reads.
+        with recording_leaf_scopes() if _has_time_window(plan) else nullcontext({}) as scopes:
+            for measure_group in measure_groups:
+                cte_name = measure_group[0].cte_name
+                # A folded group shares one scan, so its filters cut every leaf in it.
+                with cut_owners(*(row.bound_measure.alias for row in measure_group)):
+                    leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                _refuse_varying_time_key(plan, leaf_select)
+                leaf_ctes.append(
+                    SqlCte(name=cte_name, query=_namespace_sql_select(leaf_select, f"{cte_name}__"))
+                )
 
         conversion_aliases: list[str] = []
         for index, expr in enumerate(conversion_exprs):
@@ -4679,7 +4696,17 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # every such measure through this CTE, so nothing after it can change what it sees.
     zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
     if zero:
-        ctes.append(guard_empty_groups(base_table.name, key_aliases, measure_aliases, zero))
+        ctes.extend(
+            guard_empty_groups(
+                base_table.name,
+                key_aliases,
+                measure_aliases,
+                zero,
+                scopes,
+                time_key=time_alias,
+                dialect=_dialect(config),
+            )
+        )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
 
     projected_fields: list[SqlField] = [
