@@ -230,13 +230,23 @@ def build_hop_profile(
     }
 
 
+def enters_validity_window(rel: RelationshipConfig, near_table: str) -> bool:
+    """Whether a hop over ``rel`` from ``near_table`` joins the table holding its validity
+    window, whose rows are versions of the far row. A window on the near table itself means
+    each near row is one version already; any other window (or an unqualified one) counts."""
+    window = rel.temporal_validity or {}
+    refs = [str(window.get(key, "")).strip() for key in ("valid_from", "valid_to")]
+    tables = {ref.partition(".")[0] for ref in refs if "." in ref}
+    return bool(window) and tables != {near_table}
+
+
 def _directional_status(
-    rel: RelationshipConfig, *, current_entity: str, time_bound: bool = False
+    rel: RelationshipConfig, *, current_entity: str, time_bound: bool = False, near_table: str = ""
 ) -> str:
     status = _cardinality_status(rel, current_entity=current_entity, time_bound=time_bound)
-    # A time-valid hop reaches one version of the far row only at the instant the query's time
-    # gives each row; without one it reaches every version, so it is never safe.
-    if rel.temporal_validity and not time_bound and status == "safe":
+    # A hop into a validity window reaches one version of the far row only at the instant the
+    # query's time gives each row; without one it reaches every version, so it is never safe.
+    if not time_bound and status == "safe" and enters_validity_window(rel, near_table):
         return "unsafe"
     return status
 
@@ -287,7 +297,8 @@ def analyze_fanout(
     *,
     time_bound_relationships: set[str] | None = None,
 ) -> dict[str, Any]:
-    rel_index = get_package_analysis(config).relationships
+    analysis = get_package_analysis(config)
+    rel_index = analysis.relationships
     temporal_overrides = time_bound_relationships or set()
     joins: list[dict[str, Any]] = []
     current_entity = start_entity
@@ -298,8 +309,12 @@ def analyze_fanout(
         rel = rel_index[rel_id]
         traversal = "forward" if current_entity == rel.source_entity else "reverse"
         next_entity = rel.target_entity if traversal == "forward" else rel.source_entity
+        near_table = getattr(analysis.entities.get(current_entity), "table", "")
         status = _directional_status(
-            rel, current_entity=current_entity, time_bound=rel_id in temporal_overrides
+            rel,
+            current_entity=current_entity,
+            time_bound=rel_id in temporal_overrides,
+            near_table=near_table,
         )
         row = asdict(rel)
         row["traversal"] = traversal
@@ -307,7 +322,8 @@ def analyze_fanout(
         joins.append(row)
         if status == "unsafe":
             unsafe.append(rel.id)
-            if _directional_status(rel, current_entity=current_entity, time_bound=True) == "safe":
+            anchored = _directional_status(rel, current_entity=current_entity, time_bound=True)
+            if anchored == "safe":
                 unanchored.append((rel.id, next_entity))
         elif status == "requires_rewrite":
             rewrite_required.append(rel.id)

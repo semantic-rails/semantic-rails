@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import Any
 
 from ..expressions import MeasureRefExpr, expr_to_dict
+from ..fanout import enters_validity_window
 
 
 @dataclass(frozen=True)
@@ -465,6 +466,14 @@ def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
 
 
 def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False) -> Any | None:
+    # A dimension read from a table holding a validity window is one version, which only a
+    # query time picks: of two equal matches, prefer the one that needs none.
+    windows = [rel for rel in config.relationships if rel.temporal_validity]
+    versioned = {
+        entity.id
+        for entity in config.entities
+        if any(not enters_validity_window(rel, entity.table) for rel in windows)
+    }
     candidates = []
     for row in config.dimensions:
         row_score = _score(row, terms)
@@ -472,9 +481,10 @@ def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False
             continue
         if prefer_parent and "parent" in _object_text(row):
             row_score += 2
-        candidates.append((row_score, getattr(row, "label", ""), getattr(row, "id", ""), row))
-    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return candidates[0][3] if candidates else None
+        label, versioned_row = getattr(row, "label", ""), row.entity in versioned
+        candidates.append((row_score, label, versioned_row, getattr(row, "id", ""), row))
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
+    return candidates[0][4] if candidates else None
 
 
 def _dimension_for_value(config: Any, value: str, *, terms: Iterable[str] = ()) -> Any | None:

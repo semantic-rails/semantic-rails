@@ -39,11 +39,11 @@ INSERT INTO accounts VALUES ('A1', 'North'), ('A2', 'South'), ('A3', 'North');
 CREATE TABLE tiers (tier_id VARCHAR, tier_name VARCHAR);
 INSERT INTO tiers VALUES ('T1', 'Gold'), ('T2', 'Silver');
 CREATE TABLE account_segments (account_id VARCHAR, segment VARCHAR, tier_id VARCHAR,
-  valid_from TIMESTAMP, valid_to TIMESTAMP);
+  seats INTEGER, valid_from TIMESTAMP, valid_to TIMESTAMP);
 INSERT INTO account_segments VALUES
-  ('A1', 'starter', 'T1', TIMESTAMP '2026-01-01 00:00:00', TIMESTAMP '2026-02-01 00:00:00'),
-  ('A1', 'business', 'T2', TIMESTAMP '2026-02-01 00:00:00', NULL),
-  ('A2', 'starter', 'T1', TIMESTAMP '2026-01-01 00:00:00', NULL);
+  ('A1', 'starter', 'T1', 2, TIMESTAMP '2026-01-01 00:00:00', TIMESTAMP '2026-02-01 00:00:00'),
+  ('A1', 'business', 'T2', 5, TIMESTAMP '2026-02-01 00:00:00', NULL),
+  ('A2', 'starter', 'T1', 1, TIMESTAMP '2026-01-01 00:00:00', NULL);
 CREATE TABLE usage (usage_id INTEGER, account_id VARCHAR, used_at TIMESTAMP,
   amount DECIMAL(10, 2));
 INSERT INTO usage VALUES
@@ -84,6 +84,15 @@ FILES = {
               temporal_validity:
                 valid_from: account_segments.valid_from
                 valid_to: account_segments.valid_to
+            # The window is on the near table: each segment row is one version already.
+            account_segment_account:
+              id: relationship.account_segment_account
+              entities: [account_segment, account]
+              cardinality: many_to_one
+              allowed_directions: [forward]
+              temporal_validity:
+                valid_from: account_segments.valid_from
+                valid_to: account_segments.valid_to
         """,
     "models/accounts.yml": """
         model:
@@ -112,6 +121,9 @@ FILES = {
             valid_to: {label: Valid to, column: valid_to, kind: timestamp, class: state_time}
           dimensions:
             segment: {label: Segment, kind: categorical}
+          measures:
+            seats: {label: Seats, kind: aggregate, expr: seats, default_agg: sum,
+              accumulation: {kind: flow}}
         """,
     "models/usage.yml": """
         model:
@@ -196,7 +208,9 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
     "query",
     [
         pytest.param(_amount(group_by=[SEGMENT]), id="group-by"),
-        pytest.param(_amount(where=[{"field": SEGMENT, "op": "=", "value": "starter"}]), id="where"),
+        pytest.param(
+            _amount(where=[{"field": SEGMENT, "op": "=", "value": "starter"}]), id="where"
+        ),
         pytest.param(_amount(group_by=[TIER]), id="two-hops"),
         pytest.param(
             {
@@ -277,23 +291,45 @@ def test_a_relationship_without_temporal_validity_needs_no_time(runtime, gold):
     )
 
 
-def test_valid_values_counts_rows_at_their_version_or_refuses(runtime):
-    """A live valid-values lookup counts rows through the same classification."""
+def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
+    """Each segment row is one version already, so reading its account is a plain lookup."""
+    query = {
+        "version": 1,
+        "select": [{"as": "value", "expression": {"measure": "measure.hist.seats"}}],
+        "group_by": [REGION],
+    }
+
+    by_region = _rows(runtime, query, [REGION])
+
+    assert by_region == {("North",): 7.0, ("South",): 1.0}
+    assert by_region == gold(
+        "SELECT (SELECT a.region FROM accounts AS a WHERE a.account_id = s.account_id),"
+        " SUM(s.seats) FROM account_segments AS s GROUP BY 1"
+    )
+
+
+def test_valid_values_counts_usage_at_its_version_or_refuses(runtime):
+    """A live lookup filtered by usage has to count usage, which reads the segment through the
+    hop: at each usage's version with a time, and never through every version without one."""
+    by_usage = {"where": [{"field": USAGE_ID, "op": ">", "value": 0}]}
+
     counted = valid_values_payload(
         runtime,
         dimension_id=SEGMENT,
-        query={"time": MONTHLY},
+        query={**by_usage, "time": MONTHLY},
         allow_live_query=True,
         include_counts=True,
     )
     with pytest.raises(SemanticLayerError) as exc:
-        valid_values_payload(runtime, dimension_id=SEGMENT, allow_live_query=True)
+        valid_values_payload(runtime, dimension_id=SEGMENT, query=by_usage, allow_live_query=True)
 
+    assert counted["anchor_measure"] == "measure.hist.amount"
     assert {row["value"]: float(row["count"]) for row in counted["values"]} == {
         "starter": 15.0,
         "business": 20.0,
     }
-    assert {attempt["code"] for attempt in exc.value.details["attempts"]} == {"FANOUT_UNSAFE"}
+    attempts = {row["measure"]: row["code"] for row in exc.value.details["attempts"]}
+    assert attempts["measure.hist.amount"] == "FANOUT_UNSAFE"
 
 
 def test_the_classification_names_the_hop_and_the_fix(package):
@@ -308,8 +344,11 @@ def test_the_classification_names_the_hop_and_the_fix(package):
     assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
     assert "time" in exc.value.details["hint"]
     assert anchored["status"] == "ok"
-    # Reachability metadata answers for a query that gives a time.
-    assert _path_availability(config, usage, HISTORY)["available"] is True
+    # Build-options, discover and the planner offer the hop only to a query that gives a time.
+    assert _path_availability(config, usage, HISTORY, query_time=True)["available"] is True
+    assert _path_availability(config, usage, HISTORY, query_time=False)["error_code"] == (
+        "FANOUT_UNSAFE"
+    )
 
 
 def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(package, monkeypatch):
@@ -320,8 +359,8 @@ def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(packag
     monkeypatch.setattr(
         fanout_module,
         "_directional_status",
-        lambda rel, *, current_entity, time_bound=False: rate(
-            rel, current_entity=current_entity, time_bound=True
+        lambda rel, *, current_entity, time_bound=False, near_table="": rate(
+            rel, current_entity=current_entity, time_bound=True, near_table=near_table
         ),
     )
 

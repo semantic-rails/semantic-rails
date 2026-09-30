@@ -637,7 +637,7 @@ def _result_shape_preview(query_patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def _availability_for_object(
-    config: PackageConfig, root_entity: str, object_id: str, kind: str
+    config: PackageConfig, root_entity: str, object_id: str, kind: str, *, query_time: bool = True
 ) -> dict[str, Any]:
     maps = _config_maps(config)
     if kind == "measure":
@@ -649,7 +649,9 @@ def _availability_for_object(
             _first_root_entity(config, maps["metric_recipes"][object_id].expression),
         )
     if kind == "dimension":
-        return _path_availability(config, root_entity, maps["dimensions"][object_id].entity)
+        return _path_availability(
+            config, root_entity, maps["dimensions"][object_id].entity, query_time=query_time
+        )
     if kind == "segment":
         return _path_availability(config, root_entity, maps["segments"][object_id].entity)
     if kind == "entity":
@@ -2240,10 +2242,13 @@ def discover_payload(
         if top_three_entities.count(leader) >= 2:
             inferred_root_entity = leader
 
+    query_time = bool(partial_query.get("time"))
     for dim in config.dimensions:
         if dim.id in hidden_ids:
             continue
-        availability = _availability_for_object(config, root_entity, dim.id, "dimension")
+        availability = _availability_for_object(
+            config, root_entity, dim.id, "dimension", query_time=query_time
+        )
         row = {
             "id": dim.id,
             "kind": "dimension",
@@ -2304,7 +2309,9 @@ def discover_payload(
             continue
         if dim.id in hidden_ids:
             continue
-        availability = _availability_for_object(config, root_entity, dim.id, "dimension")
+        availability = _availability_for_object(
+            config, root_entity, dim.id, "dimension", query_time=query_time
+        )
         for value in domain.values:
             row = {
                 "id": f"{dim.id}={value.value}",
@@ -2761,7 +2768,9 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     for dim in config.dimensions:
         if dim.id in hidden_ids:
             continue
-        availability = _path_availability(config, root_entity, dim.entity)
+        availability = _path_availability(
+            config, root_entity, dim.entity, query_time=bool(partial_query.get("time"))
+        )
         row = {**asdict(dim), **availability}
         (valid_dimensions if availability["available"] else disabled_dimensions).append(row)
 

@@ -43,21 +43,19 @@ def _dimensions_by_id(config: PackageConfig) -> dict[str, Any]:
 
 
 def _path_availability(
-    config: PackageConfig, root_entity: str, target_entity: str
+    config: PackageConfig, root_entity: str, target_entity: str, *, query_time: bool = True
 ) -> dict[str, Any]:
+    """``query_time``: whether the query gives a time, which a time-valid hop needs. Callers
+    with no query in hand describe reachability given one, as the history notes below do."""
     if not root_entity or target_entity == root_entity:
         return {"available": True, "reason": "", "path": [], "candidates": []}
     try:
         path, candidates = choose_path(
             config, start=root_entity, target=target_entity, hop_limit=package_hop_limit(config)
         )
-        # Reachability given a query time, as the history notes below assume: a query that
-        # crosses a time-valid hop without one is refused when it is planned.
+        time_bound = get_package_analysis(config).temporal_relationship_ids if query_time else ()
         analysis = analyze_fanout(
-            config,
-            root_entity,
-            path,
-            time_bound_relationships=set(get_package_analysis(config).temporal_relationship_ids),
+            config, root_entity, path, time_bound_relationships=set(time_bound)
         )
         status = analysis["status"]
         if status == "ok":

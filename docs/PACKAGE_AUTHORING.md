@@ -746,6 +746,10 @@ graph:
         reverse: []                             # aggregating customer → customer_history
 ```
 
+A query that crosses a `temporal_validity` relationship needs a `time`, so each row reads the
+version valid at its time; without one it is refused with `FANOUT_UNSAFE`, naming the
+relationship and the entity, because joining every version would count a row once per version.
+
 ### `disallowed_names:` — explicit anti-pattern guard
 
 Author the names that should NEVER appear as a column, dimension, or measure on

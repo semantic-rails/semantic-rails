@@ -1239,6 +1239,8 @@ def test_build_options_prefers_human_readable_business_dimensions(runtime_factor
                 "select": [
                     {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
                 ],
+                # A history dimension reads the version valid at each order's time.
+                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             },
             step="group_by",
             focus_terms="historical revenue by customer segment",
