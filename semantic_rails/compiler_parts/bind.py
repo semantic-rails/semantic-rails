@@ -50,6 +50,7 @@ from ..sql_ast import (
     SqlCaseWhen,
     SqlIn,
     SqlLiteral,
+    build_comparison_condition,
 )
 from .dependencies import binding_cut, measure_cut_owners, measure_objects
 from .indexes import (
@@ -284,7 +285,7 @@ def _config_expr_to_sql_inner(
             _config_expr_to_sql(expr.right, measure, config),
         )
     if isinstance(expr, ComparisonExpr):
-        return SqlBinary(
+        return build_comparison_condition(
             _config_expr_to_sql(expr.left, measure, config),
             expr.op,
             _config_expr_to_sql(expr.right, measure, config),

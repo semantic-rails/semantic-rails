@@ -312,6 +312,14 @@ class SqlBinary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "op", normalize_sql_binary_operator(self.op))
+        if self.op in {"=", "!=", "<>", "<", "<=", ">", ">=", "LIKE", "NOT LIKE"} and any(
+            isinstance(operand, SqlLiteral) and operand.value is None
+            for operand in (self.left, self.right)
+        ):
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST",
+                "Comparisons with a null literal must use build_comparison_condition",
+            )
 
 
 @dataclass(frozen=True)
@@ -618,10 +626,20 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
             return SqlLiteral(bool(negated))
         return SqlIn(expr=expr, values=[SqlLiteral(item) for item in values], negated=negated)
     if op_normalized == "IS NULL":
-        return SqlIsNull(expr=expr)
+        return build_comparison_condition(expr, "IS", SqlLiteral(None), path=path)
     if op_normalized == "IS NOT NULL":
-        return SqlBinary(expr, "IS NOT", SqlLiteral(None))
-    if value is None:
+        return build_comparison_condition(expr, "IS NOT", SqlLiteral(None), path=path)
+    validate_single_value_filter_shape(op, value, path=path)
+    return build_comparison_condition(expr, str(op or "="), SqlLiteral(value), path=path)
+
+
+def build_comparison_condition(
+    left: SqlExpr, op: str, right: SqlExpr, *, path: str = "expression"
+) -> SqlExpr:
+    """Lower comparisons centrally; a null literal on either side is a null test."""
+    op_normalized = normalize_sql_binary_operator(op)
+    if any(isinstance(operand, SqlLiteral) and operand.value is None for operand in (left, right)):
+        expr = right if isinstance(left, SqlLiteral) and left.value is None else left
         if op_normalized in _NULL_TEST_EQUALITY_OPS:
             return SqlIsNull(expr=expr)
         if op_normalized in _NULL_TEST_INEQUALITY_OPS:
@@ -648,17 +666,7 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
                 ],
             },
         )
-    return _single_value_comparison(expr, op, value, path=path)
-
-
-def _single_value_comparison(expr: SqlExpr, op: Any, value: Any, *, path: str) -> SqlExpr:
-    """``expr <op> value`` for a comparison that takes one value.
-
-    A list would render as one string literal (``= '[''a'', ''b'']'``) and
-    silently match no rows, so it is rejected with a pointer to ``IN``.
-    """
-    validate_single_value_filter_shape(op, value, path=path)
-    return SqlBinary(expr, str(op or "="), SqlLiteral(value))
+    return SqlBinary(left, op_normalized, right)
 
 
 def validate_single_value_filter_shape(op: Any, value: Any, *, path: str = "where") -> None:

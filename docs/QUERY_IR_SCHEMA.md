@@ -154,6 +154,15 @@ shorthands for the most common cases:
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
+Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
+`=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
+inside CASE and aggregate-if conditions, post-aggregation expressions, metric
+predicates, segment membership, and relation filters, as well as `where` filters.
+Ordering (`<`, `<=`, `>`, `>=`) and LIKE comparisons with a null literal refuse
+with `INVALID_QUERY` and the `USE_NULL_TEST_OR_SCALAR` recovery hint, since they
+would always evaluate to unknown in SQL. A comparison between two nullable
+columns retains ordinary SQL three-valued semantics.
+
 ## MetricFilter expressions
 
 Different shape from `select`. The most common pattern is `kind: metric_predicate`:

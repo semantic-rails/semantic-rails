@@ -183,6 +183,7 @@ from .sql_ast import (
     SqlWindow,
     SqlWithinGroup,
     _compact_token,
+    build_comparison_condition,
     build_filter_condition,
     validate_single_value_filter_shape,
 )
@@ -1618,7 +1619,7 @@ def _inline_threshold_cte_and_where(
         table=SqlTableRef(name=threshold_name, alias="predicate_threshold"),
         on=None,
     )
-    where_condition = SqlBinary(
+    where_condition = build_comparison_condition(
         SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
         str(predicate.op),
         SqlIdentifier(parts=["predicate_threshold", "__threshold"]),

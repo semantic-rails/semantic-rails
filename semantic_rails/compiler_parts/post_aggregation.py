@@ -42,6 +42,7 @@ from ..sql_ast import (
     SqlLiteral,
     SqlOrderTerm,
     SqlWindow,
+    build_comparison_condition,
 )
 from .bind import _expression_alias
 from .dependencies import _recipes, recipe_objects, record_leaf_reference
@@ -258,7 +259,7 @@ def _compile_post_expr(
         )
         return SqlBinary(left, "/", SqlCall("NULLIF", [right, SqlLiteral(0)]))
     if isinstance(expr, ComparisonExpr):
-        return SqlBinary(
+        return build_comparison_condition(
             _compile_post_expr(
                 expr.left,
                 config,

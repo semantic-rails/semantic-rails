@@ -56,6 +56,8 @@ from .sql_ast import (
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
+    build_comparison_condition,
+    build_filter_condition,
 )
 
 
@@ -128,7 +130,7 @@ def _semantic_expr_to_sql(
             _semantic_expr_to_sql(expr.right, default_alias=default_alias, warehouse=warehouse),
         )
     if isinstance(expr, ComparisonExpr):
-        return SqlBinary(
+        return build_comparison_condition(
             _semantic_expr_to_sql(expr.left, default_alias=default_alias, warehouse=warehouse),
             expr.op,
             _semantic_expr_to_sql(expr.right, default_alias=default_alias, warehouse=warehouse),
@@ -221,9 +223,7 @@ def _predicate(raw: Any, *, default_alias: str = "src", warehouse: str = "duckdb
                 values=[SqlLiteral(item) for item in list(value or [])],
                 negated=op == "NOT IN",
             )
-        if value is None and op in {"=", "IS"}:
-            return SqlIsNull(left)
-        return SqlBinary(left, op, SqlLiteral(value))
+        return build_filter_condition(left, op, value, path="relation.filter")
     return _expr(raw, default_alias=default_alias, warehouse=warehouse)
 
 
@@ -449,10 +449,12 @@ def _join_condition(
     left = _expr(config.get("left"), default_alias=left_alias, warehouse=warehouse)
     right = _expr(config.get("right"), default_alias=right_alias, warehouse=warehouse)
     op = str(config.get("op", "=") or "=")
-    condition: SqlExpr = SqlBinary(left, op, right)
+    condition: SqlExpr = build_comparison_condition(left, op, right, path="relation.join")
     transform = str(config.get("transform", "") or "").lower()
     if transform == "lower":
-        condition = SqlBinary(SqlCall("LOWER", [left]), op, SqlCall("LOWER", [right]))
+        condition = build_comparison_condition(
+            SqlCall("LOWER", [left]), op, SqlCall("LOWER", [right]), path="relation.join"
+        )
     lag = config.get("date_lag")
     if isinstance(lag, dict):
         unit = str(lag.get("unit", "day") or "day")
