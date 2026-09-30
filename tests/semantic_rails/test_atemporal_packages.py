@@ -352,9 +352,6 @@ def test_plan_ordinary_time_words_answer(
         "year to date",
         "rolling",
         "cumulative",
-        "last month",
-        "since 2023-01-01",
-        "in 2023",
         "monthly",
     ],
 )
@@ -381,6 +378,32 @@ def test_plan_time_phrase_category_values_answer(package_path, phrase, match_by)
         rows = runtime.query(query)["rows"]
         assert len(rows) == 1
         assert [v for k, v in rows[0].items() if k != CATEGORY] == [2]
+        with pytest.raises(SemanticLayerError, match="declares no time") as exc:
+            plan_payload(runtime, intent=f"item count for the {phrase} category per day")
+        assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("phrase", ["last month", "since 2023-01-01", "in 2023"])
+@pytest.mark.parametrize("match_by", ["value", "label", "alias"])
+def test_plan_window_shaped_category_values_downgrade(package_path, phrase, match_by) -> None:
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    value = phrase if match_by == "value" else "A"
+    entry = {"value": value, "label": phrase if match_by == "label" else value}
+    if match_by == "alias":
+        entry["aliases"] = [phrase]
+    model["model"]["dimensions"]["category"]["domain"] = [entry, "B"]
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    (package_path / "data/catalogue_csv/items.csv").write_text(
+        f"item_id,category,amount\n1,{value},10\n2,{value},20\n3,B,30\n4,B,40\n"
+    )
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        result = plan_payload(runtime, intent=f"item count for the {phrase} category")
+        assert result["status"] == "low_confidence", result.get("why")
+        assert "time" not in result["best"]["query_ir"]
         with pytest.raises(SemanticLayerError, match="declares no time") as exc:
             plan_payload(runtime, intent=f"item count for the {phrase} category per day")
         assert exc.value.code == "INVALID_TEMPORAL_ROLE"
