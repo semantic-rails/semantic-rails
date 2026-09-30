@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import pytest
 
+from semantic_rails import runtime as runtime_module
 from semantic_rails.config import load_package_config
 from semantic_rails.runtime import Runtime
 
@@ -296,15 +297,14 @@ def test_routed_values_survive_shorter_raw_retention(changed_runtime, expression
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 def test_filled_query_executes_one_warehouse_statement(raw_runtime, monkeypatch):
     rt = raw_runtime("utc_implicit")
-    adapter = rt._get_adapter()
-    original = adapter.query
+    original = runtime_module._adapter_query
     calls = []
 
-    def query(sql, **kwargs):
-        calls.append(sql)
-        return original(sql, **kwargs)
+    def query(*args, **kwargs):
+        calls.append(args[1].sql)
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(adapter, "query", query)
+    monkeypatch.setattr(runtime_module, "_adapter_query", query)
     result = rt.query(
         _ask("month", _item(REVENUE, "v"), start="2024-01-01", end="2024-03-01", fill=True)
     )

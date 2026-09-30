@@ -206,9 +206,16 @@ def _per_order(aggregate: str, grain: str = "month") -> str:
 
 
 def _fiscal(grain: str, clock: str, start: str, end: str) -> str:
-    """Revenue per fiscal ``grain`` over the calendar's days in [start, end), 0 without orders."""
+    """Fiscal revenue, preserving values and filling only inside loaded calendar coverage."""
+    zone = "America/New_York" if clock == "ny" else "UTC"
     return (
-        f"SELECT f.{grain}_start, COALESCE(SUM(o.amount), 0) FROM dim_fiscal AS f"
+        f"WITH coverage AS (SELECT MIN(c.{grain}_start) lo, "
+        f"MAX(CASE WHEN {CLOCK[clock]} <= (CURRENT_TIMESTAMP AT TIME ZONE '{zone}') "
+        f"THEN c.{grain}_start END) hi FROM orders o "
+        f"JOIN dim_fiscal c ON c.date_day = CAST({CLOCK[clock]} AS DATE)) "
+        f"SELECT f.{grain}_start, COALESCE(SUM(o.amount), "
+        f"CASE WHEN f.{grain}_start BETWEEN (SELECT lo FROM coverage) AND "
+        f"(SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f"
         f" LEFT JOIN orders AS o ON f.date_day = CAST({CLOCK[clock]} AS DATE)"
         f" WHERE f.date_day >= DATE '{start}' AND f.date_day < DATE '{end}' GROUP BY 1"
     )
