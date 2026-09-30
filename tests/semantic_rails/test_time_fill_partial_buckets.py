@@ -20,6 +20,24 @@ from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
 
+@pytest.mark.parametrize("threads", [2, 4])
+def test_parallel_window_finalization_with_empty_input(threads):
+    # Empty-group settlement adds a window over a stream with empty input blocks.
+    # DuckDB before 1.5.6 could finalize those blocks before their sink tasks ran.
+    # This reduced query reproduces the race without dates or shared connections.
+    sql = """
+        WITH t AS (SELECT 0 AS x), u AS (
+            SELECT * FROM t WHERE x >= 5000
+            UNION ALL
+            SELECT * FROM t
+        )
+        SELECT x, COUNT(*) OVER () FROM u ORDER BY x DESC
+    """
+    with duckdb.connect(config={"threads": threads}) as connection:
+        for _ in range(1000):
+            assert connection.execute(sql).fetchall() == [(0, 1)]
+
+
 def _as_date(value) -> date:
     return value.date() if isinstance(value, datetime) else value
 
