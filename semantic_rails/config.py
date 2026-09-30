@@ -3127,6 +3127,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         operational_contract=operational_contract,
         meta_contract=meta_contract,
     )
+    from .temporal_support import require_temporal_support
+
+    require_temporal_support(config, requested=bool(time_defaults.get("default_query_axis")))
     _ensure_unique_object_ids(config, path=path)
     _validate_caveat_refs(config, path=path)
     validate_row_filters(config)

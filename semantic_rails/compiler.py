@@ -187,6 +187,7 @@ from .sql_ast import (
     validate_single_value_filter_shape,
 )
 from .sql_preparation import ParameterSlot
+from .temporal_support import validate_temporal_support
 
 __all__ = [
     "AggregateExpr",
@@ -3915,6 +3916,7 @@ def _plan_query(
     *,
     collapse_window: bool,
 ) -> LogicalPlan:
+    validate_temporal_support(config, payload)
     raw_query = normalize_query(payload)
 
     # Lift inline ``aggregate_if`` shorthand into synthetic measures. The
@@ -4344,6 +4346,7 @@ def compile_query(
     row_filters: Sequence[RowFilter] = (),
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    validate_temporal_support(config, payload)
     if binding is not None and row_filters:
         raise ValueError("Pass row_filters to bind_query, not with an existing binding.")
     bound = (

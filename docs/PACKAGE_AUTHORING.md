@@ -868,6 +868,15 @@ arbitrary multi-hop traversal.
 
 ### `times:` — temporal roles
 
+Time is optional. A package without dates can omit every model's `times:` block.
+Counts, sums, ratios, grouping, filters and lookups work without a time axis.
+Requests for time ranges, grains, windows, temporal overrides, prior-period or
+cumulative expressions, and plan intents such as "last month" are refused with
+`INVALID_TEMPORAL_ROLE`: the package declares no time. Declare a `times:` entry
+before requesting time analysis. A `defaults.time.default_query_axis: true`
+also requires a declared temporal role. Architect and CLI scaffolds accept a blank
+`time_column` to generate a package, seed, examples and tests without dates.
+
 The `times:` block key IS the temporal role. The backing date/timestamp dimension
 is auto-created from `column:`. `default: true` replaces the separate
 `default_time:` field.

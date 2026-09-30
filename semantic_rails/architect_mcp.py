@@ -99,7 +99,9 @@ class ProjectSetupAnswers(BaseModel):
         default="raw_events", description="Table or view backing it, schema-qualified if needed."
     )
     primary_key: str = Field(default="event_id")
-    time_column: str = Field(default="occurred_at")
+    time_column: str = Field(
+        default="occurred_at", description="Date/timestamp column; blank for no time."
+    )
     amount_column: str = Field(
         default="", description="Numeric column to sum; blank for none (starter data: amount)."
     )
@@ -535,7 +537,7 @@ def _project_spec(arguments: dict[str, Any]) -> ProjectSpec:
             entity=str(arguments.get("first_entity") or "event"),
             relation=str(arguments.get("relation") or "raw_events"),
             primary_key=str(arguments.get("primary_key") or "event_id"),
-            time_column=str(arguments.get("time_column") or "occurred_at"),
+            time_column=str(arguments.get("time_column", "occurred_at")),
             amount_column=str(arguments.get("amount_column") or ""),
             dimension_column=str(arguments.get("dimension_column") or ""),
         ),
