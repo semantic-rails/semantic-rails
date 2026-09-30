@@ -1,6 +1,6 @@
 """Fanout / path-safety analysis for measure rollups across relationships.
 
-Exposes :func:`analyze_fanout` and :func:`choose_path` — the compiler
+Exposes :func:`analyze_fanout` and :func:`resolve_path` — the compiler
 calls these to decide whether a requested rollup across a chain of
 relationships is safe (1:1, M:1, declared-as-rollup-safe) or unsafe
 (many-side traversal with non-additive aggregations). Builds the
@@ -82,21 +82,76 @@ def enumerate_paths(
     return found
 
 
-def choose_path(
-    config: PackageConfig,
-    *,
-    start: str,
-    target: str,
-    hop_limit: int,
-    preference: str = "fewest_hops",
-) -> tuple[list[str], list[list[str]]]:
-    analysis = get_package_analysis(config)
-    cache_key = (start, target, hop_limit, preference)
-    cached = analysis.path_cache.get(cache_key)
-    if cached is not None:
-        chosen, cached_ranked = cached
-        return list(chosen), [list(path) for path in cached_ranked]
+def hop_is_functional(rel: RelationshipConfig, current_entity: str) -> bool:
+    """True when walking ``rel`` from ``current_entity`` reaches at most one row: an N:1 or
+    1:1 relationship walked forward, or a 1:N or 1:1 relationship walked in reverse."""
+    cardinality = rel.cardinality.upper().replace(" ", "")
+    if ":" not in cardinality:
+        return False
+    source_side, target_side = cardinality.split(":", 1)
+    return (target_side if current_entity == rel.source_entity else source_side) == "1"
 
+
+def is_functional_route(config: PackageConfig, start: str, path: list[str]) -> bool:
+    """True when every hop of ``path``, walked from ``start``, reaches at most one row."""
+    rel_index = get_package_analysis(config).relationships
+    current = start
+    for rel_id in path:
+        rel = rel_index[rel_id]
+        if not hop_is_functional(rel, current):
+            return False
+        current = rel.target_entity if current == rel.source_entity else rel.source_entity
+    return True
+
+
+def _ambiguous_path(
+    start: str, target: str, routes: list[list[str]], hint: str
+) -> SemanticLayerError:
+    listed = "; ".join(" -> ".join(path) for path in routes)
+    return SemanticLayerError(
+        "AMBIGUOUS_PATH",
+        f"Ambiguous path from '{start}' to '{target}': {listed}",
+        details={
+            "start": start,
+            "target": target,
+            "candidates": [list(path) for path in routes],
+            "pins": [
+                {"source_entity": start, "target_entity": target, "relationship_path": list(path)}
+                for path in routes
+            ],
+            "hint": hint,
+        },
+    )
+
+
+def resolve_path(
+    config: PackageConfig, *, start: str, target: str
+) -> tuple[list[str], list[list[str]]]:
+    """The route from ``start`` to ``target``, and every route considered (the chosen first).
+
+    The one route chooser: compilation, grain recovery, discovery and the direct key read
+    all ask it. It never chooses between routes that can mean different things by hop count
+    or by ``path_preference`` weights:
+
+    1. A ``graph.path_preferences`` row for the pair wins.
+    2. Eligible routes are every functional route (each hop reaches at most one row in the
+       direction walked) and every route with a one-to-many hop that is no longer than the
+       shortest functional route.
+    3. Eligible routes of different lengths refuse ``AMBIGUOUS_PATH``, listing each route
+       with the ``graph.path_preferences`` row that would pin it. Otherwise they share one
+       length, and the lowest ``path_preference`` sum wins; equal sums refuse.
+    4. With no functional route at all, the shortest route wins, then the lowest sum;
+       equal length and sum refuse.
+    """
+    analysis = get_package_analysis(config)
+    pinned = analysis.path_preferences.get((start, target))
+    if pinned is not None:
+        return list(pinned), [list(pinned)]
+    cached = analysis.path_cache.get((start, target))
+    if cached is not None:
+        return list(cached[0]), [list(path) for path in cached]
+
+    hop_limit = package_hop_limit(config)
     candidates = enumerate_paths(analysis.graph, start, target, hop_limit)
     if not candidates:
         reachable_at = _min_hops_unbounded(analysis.graph, start, target)
@@ -129,44 +184,48 @@ def choose_path(
             },
         )
     rel_index = analysis.relationships
+
+    def _score(path: list[str]) -> tuple[int, int]:
+        return len(path), sum(rel_index[rel_id].path_preference for rel_id in path)
+
     ranked = sorted(
         candidates,
         key=lambda path: (
-            len(path),
-            sum(rel_index[rel_id].path_preference for rel_id in path),
+            *_score(path),
             sum(1000 if rel_index[rel_id].safety == "unsafe" else 0 for rel_id in path),
         ),
     )
-    if len(ranked) > 1:
-        first = ranked[0]
-        second = ranked[1]
-        first_score = (len(first), sum(rel_index[r].path_preference for r in first))
-        second_score = (len(second), sum(rel_index[r].path_preference for r in second))
-        if first_score == second_score:
-            tied = [
-                path
-                for path in ranked
-                if (len(path), sum(rel_index[r].path_preference for r in path)) == first_score
-            ]
-            routes = "; ".join(" -> ".join(path) for path in tied)
-            raise SemanticLayerError(
-                "AMBIGUOUS_PATH",
-                f"Ambiguous path from '{start}' to '{target}': {routes}",
-                details={
-                    "start": start,
-                    "target": target,
-                    "candidates": tied,
-                    "hint": (
-                        "These routes can give different answers. "
-                        "Pin the one the question means: give the intended relationship a lower "
-                        "path_preference (it applies to every query), or add "
-                        "graph.path_preferences with source_entity, target_entity and "
-                        "relationship_path set to one of the routes (it applies only to "
-                        "queries from that source entity to that target entity)."
-                    ),
-                },
+    functional = [is_functional_route(config, start, path) for path in ranked]
+    if any(functional):
+        # ``ranked`` is shortest first, so the first functional route is the shortest one.
+        shortest = len(ranked[functional.index(True)])
+        eligible = [
+            path
+            for path, is_functional in zip(ranked, functional, strict=True)
+            if is_functional or len(path) <= shortest
+        ]
+        if len({len(path) for path in eligible}) > 1:
+            raise _ambiguous_path(
+                start,
+                target,
+                eligible,
+                "These routes can give different answers, and neither hop count nor "
+                "path_preference chooses between routes of different lengths. Pin the one the "
+                "question means: add the graph.path_preferences row for it from details.pins "
+                "(it applies only to queries from that source entity to that target entity).",
             )
-    analysis.path_cache[cache_key] = (tuple(ranked[0]), tuple(tuple(path) for path in ranked))
+    if len(ranked) > 1 and _score(ranked[0]) == _score(ranked[1]):
+        raise _ambiguous_path(
+            start,
+            target,
+            [path for path in ranked if _score(path) == _score(ranked[0])],
+            "These routes can give different answers. "
+            "Pin the one the question means: give the intended relationship a lower "
+            "path_preference (it applies to every query), or add the "
+            "graph.path_preferences row for it from details.pins (it applies only to "
+            "queries from that source entity to that target entity).",
+        )
+    analysis.path_cache[(start, target)] = tuple(tuple(path) for path in ranked)
     return list(ranked[0]), [list(path) for path in ranked]
 
 

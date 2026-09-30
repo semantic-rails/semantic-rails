@@ -2689,7 +2689,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     str(k): str(v)
                     for k, v in dict(membership.get("temporal_role_overrides", {}) or {}).items()
                 },
-                path_policy=dict(membership.get("path_policy", {}) or {}),
                 aliases=list(spec.get("synonyms", []) or []),
                 name=str(spec.get("name", segment_id)),
                 label=str(spec.get("label", _titleize(segment_key))),

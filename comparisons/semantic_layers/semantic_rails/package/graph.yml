@@ -76,3 +76,28 @@ graph:
       temporal_validity:
         valid_from: comparison_customer_history.valid_from
         valid_to: comparison_customer_history.valid_to
+
+  # Routes of different lengths to one entity can mean different things, and the
+  # engine never picks one by hop count, so each such pair pins its direct route.
+  path_preferences:
+    - source_entity: order
+      target_entity: customer
+      relationship_path: [relationship.orders_customer]
+    - source_entity: item
+      target_entity: customer
+      relationship_path: [relationship.order_items_order, relationship.orders_customer]
+    - source_entity: order_lifecycle
+      target_entity: customer
+      relationship_path: [relationship.order_lifecycle_customer]
+    - source_entity: order_lifecycle
+      target_entity: store
+      relationship_path: [relationship.order_lifecycle_store]
+    - source_entity: order_lifecycle
+      target_entity: customer_history
+      relationship_path: [relationship.order_lifecycle_to_customer_history]
+    - source_entity: storefront_session
+      target_entity: customer
+      relationship_path: [relationship.storefront_sessions_customer]
+    - source_entity: storefront_session
+      target_entity: store
+      relationship_path: [relationship.storefront_sessions_store]

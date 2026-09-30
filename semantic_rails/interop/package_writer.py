@@ -53,7 +53,7 @@ _CARDINALITY = {
 }
 _ROLLUPS = {"rollup_safe_aggregations": "forward", "rollup_safe_aggregations_reverse": "reverse"}
 _MODEL_FIELDS = {"calendar_id", "freshness_source", "freshness_sla_seconds", "freshness_as_of"}
-_MEMBERSHIP = ("where", "metric_filters", "time", "temporal_role_overrides", "path_policy")
+_MEMBERSHIP = ("where", "metric_filters", "time", "temporal_role_overrides")
 
 
 def _keyed(sr_id: str, prefix: str) -> tuple[str, dict[str, str]]:

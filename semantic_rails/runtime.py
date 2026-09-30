@@ -81,7 +81,7 @@ from .diagnostics import (
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
-from .fanout import build_hop_profile
+from .fanout import build_hop_profile, is_functional_route
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
@@ -309,21 +309,21 @@ def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
 
 
 _LOG = logging.getLogger(__name__)
-_DEFAULT_PATH_PREFERENCE = 100
 
 
 def _path_alternates_warnings(config, logical_plan) -> list[dict[str, Any]]:
-    """Warn when fewest-hops alone decided between semantically different
-    join routes and the author never expressed a preference.
+    """Warn when hop count alone decided between join routes that each cross a
+    one-to-many hop.
 
     Fires only when (a) more than one candidate path reached the target,
-    (b) the runner-up has a different hop count (equal-score ties already
-    raise AMBIGUOUS_PATH), (c) no relationship on either route carries a
-    non-default ``path_preference``, and (d) no ``path_preferences`` pin
-    covers the pair. Adding a shortcut relationship to a package can
-    silently reroute existing queries; this warning is the tripwire.
+    (b) none of them is functional (with a functional route the resolver
+    either takes the only eligible route or refuses AMBIGUOUS_PATH), (c) the
+    runner-up has a different hop count (equal-score ties already raise
+    AMBIGUOUS_PATH), and (d) no ``path_preferences`` pin covers the pair,
+    whatever the relationships' ``path_preference`` weights say. Adding a
+    shortcut relationship to a package can silently reroute existing
+    queries; this warning is the tripwire.
     """
-    relationships = {row.id: row for row in config.relationships}
     pinned = {(row.source_entity, row.target_entity) for row in config.path_preferences}
     root_entity = str(getattr(logical_plan, "root_entity", "") or "")
     selected = dict(getattr(logical_plan, "selected_paths", {}) or {})
@@ -339,19 +339,14 @@ def _path_alternates_warnings(config, logical_plan) -> list[dict[str, Any]]:
             continue
         if (root_entity, target) in pinned:
             continue
-        involved = set(chosen) | set(runner_up)
-        if any(
-            relationships[rel_id].path_preference != _DEFAULT_PATH_PREFERENCE
-            for rel_id in involved
-            if rel_id in relationships
-        ):
+        if any(is_functional_route(config, root_entity, list(path)) for path in candidates):
             continue
         warnings.append(
             semantic_issue(
                 code="PATH_ALTERNATES_UNPINNED",
                 message=(
                     f"Join route from '{root_entity}' to '{target}' was chosen by hop count "
-                    "alone; an alternate route exists and no path preference is declared. "
+                    "alone; an alternate route exists and no path_preferences row pins one. "
                     "The routes may have different semantics (e.g. role-playing foreign keys)."
                 ),
                 severity="warning",
@@ -362,8 +357,9 @@ def _path_alternates_warnings(config, logical_plan) -> list[dict[str, Any]]:
                     "chosen_path": chosen,
                     "alternate_path": runner_up,
                     "hint": (
-                        "Declare path_preferences for this entity pair, or set "
-                        "path_preference on the intended relationship, to pin the route."
+                        "Declare a graph.path_preferences row for this entity pair to pin "
+                        "the route; path_preference weights never choose between routes of "
+                        "different lengths."
                     ),
                 },
                 object_ids=[target],

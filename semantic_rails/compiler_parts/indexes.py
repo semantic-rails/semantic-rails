@@ -31,9 +31,8 @@ class PackageAnalysis:
     graph: GraphIndex
     path_preferences: dict[tuple[str, str], list[str]]
     temporal_relationship_ids: set[str]
-    path_cache: dict[
-        tuple[str, str, int, str], tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]
-    ] = field(default_factory=dict)
+    # (start, target) -> every route, the chosen first. Keyed only by package inputs.
+    path_cache: dict[tuple[str, str], tuple[tuple[str, ...], ...]] = field(default_factory=dict)
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:

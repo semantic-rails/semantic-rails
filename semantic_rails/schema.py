@@ -279,7 +279,6 @@ class SegmentConfig:
     metric_filters: list[dict[str, Any]] = field(default_factory=list)
     time: dict[str, Any] = field(default_factory=dict)
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
-    path_policy: dict[str, Any] = field(default_factory=dict)
     aliases: list[str] = field(default_factory=list)
     name: str = ""
     label: str = ""

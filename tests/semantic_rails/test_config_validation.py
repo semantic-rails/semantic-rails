@@ -2586,6 +2586,10 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
             ),
             "has 'filters' outside membership: — the loader reads membership.where only",
         ),
+        (
+            lambda segment: segment["membership"].update(path_policy={"preference": "fewest_hops"}),
+            "membership has unknown key 'path_policy'",
+        ),
     ],
     ids=[
         "where-outside-membership",
@@ -2594,6 +2598,7 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
         "segment-meta",
         "dimension-filters",
         "top-level-filters",
+        "membership-path-policy",
     ],
 )
 def test_directory_validation_rejects_unknown_segment_keys(
@@ -2651,7 +2656,7 @@ def test_directory_validation_accepts_every_membership_key_the_loader_reads(
     def add_every_key(segment):
         for key in ("where", "metric_filters"):
             segment["membership"].setdefault(key, [])
-        for key in ("time", "temporal_role_overrides", "path_policy"):
+        for key in ("time", "temporal_role_overrides"):
             segment["membership"].setdefault(key, {})
 
     errors = validate_runtime_package(_jaffle_with_segment(package_config_factory, add_every_key))

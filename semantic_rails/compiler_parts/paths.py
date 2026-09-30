@@ -29,6 +29,7 @@ from ..expressions import (
     SemanticExpr,
     expr_kind,
 )
+from ..fanout import resolve_path
 from ..ir import BoundMeasure, PathSelection
 from ..schema import PackageConfig, RelationshipConfig
 from ..sql_ast import SqlBinary, SqlIdentifier, SqlIsNull, SqlJoin, SqlLiteral, SqlTableRef
@@ -147,14 +148,17 @@ def _direct_entity_key_source_expr(
     if len(routes) != 1:
         return None
     rel, source_col = routes[0]
-    # A pin on this pair, in either direction, is decided by path selection (it may pick a
-    # multi-hop route that reads a different row than the source table's own column), so the
-    # shortcut only stands when the pin names exactly the one direct relationship found.
-    preferences = get_package_analysis(config).path_preferences
-    for pair in ((source_entity, target_entity), (target_entity, source_entity)):
-        pinned = preferences.get(pair)
-        if pinned is not None and pinned != [rel.id]:
-            return None
+    # The shortcut only stands when the route resolver picks exactly the one direct
+    # relationship found: a pin or another route to the target may mean a different row than
+    # the source table's own column, and an ambiguous pair falls through to path selection,
+    # which refuses. A pin on the reverse pair must name the same relationship.
+    try:
+        resolved, _candidates = resolve_path(config, start=source_entity, target=target_entity)
+    except SemanticLayerError:
+        return None
+    reverse_pin = get_package_analysis(config).path_preferences.get((target_entity, source_entity))
+    if resolved != [rel.id] or reverse_pin not in (None, [rel.id]):
+        return None
     record_bound_object(rel, config)
     return _column_ref(source_table, source_col)
 

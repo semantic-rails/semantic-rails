@@ -92,7 +92,6 @@ from .compiler_parts.post_aggregation import (
 from .compiler_parts.sql_lowering import (
     _count_key_expr,
     _last_token,
-    _preferred_path,
     _slug,
     recording_stock_key_gaps,
 )
@@ -140,7 +139,7 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, choose_path, one_to_many_descent
+from .fanout import analyze_fanout, one_to_many_descent, resolve_path
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -321,7 +320,6 @@ __all__ = [
     "_predicate_time_join_expr",
     "_predicate_time_spec",
     "_predicate_where_condition",
-    "_preferred_path",
     "_preferred_root_order",
     "_public_time_spec",
     "_query_metric_predicates",
@@ -355,7 +353,6 @@ __all__ = [
     "_validate_where_value_type",
     "analyze_fanout",
     "attach_relation_ctes",
-    "choose_path",
     "compile_query",
     "dialect_for_warehouse",
     "expr_kind",
@@ -366,6 +363,7 @@ __all__ = [
     "plan_query",
     "relationship_contract_payload",
     "render_select_for_profile",
+    "resolve_path",
 ]
 
 
@@ -1427,14 +1425,11 @@ def _path_selection(
     query: NormalizedQuery,
     start_entity: str,
     target_entity: str,
-    preference: str,
     purpose: str,
 ) -> PathSelection | None:
     if target_entity == start_entity:
         return None
-    chosen, candidates = _preferred_path(
-        config, start=start_entity, target=target_entity, preference=preference
-    )
+    chosen, candidates = resolve_path(config, start=start_entity, target=target_entity)
     analysis = analyze_fanout(
         config,
         start_entity,
@@ -1689,15 +1684,12 @@ def _entity_determines(
     config: PackageConfig,
     source_entity: str,
     target_entity: str,
-    preference: str,
     time_bound_relationships: set[str],
 ) -> bool:
     if source_entity == target_entity:
         return True
     try:
-        chosen, candidates = _preferred_path(
-            config, start=source_entity, target=target_entity, preference=preference
-        )
+        chosen, candidates = resolve_path(config, start=source_entity, target=target_entity)
     except SemanticLayerError:
         return False
     if len(candidates) != 1:
@@ -1728,7 +1720,6 @@ def _reduced_context_entities(
                 config=config,
                 source_entity=other,
                 target_entity=entity_id,
-                preference=query.path_policy.preference,
                 time_bound_relationships=time_bound_relationships,
             ):
                 redundant = True
@@ -1924,7 +1915,6 @@ def _predicate_scope(
             query=query,
             start_entity=input_root,
             target_entity=predicate.entity,
-            preference=query.path_policy.preference,
             purpose="metric_predicate_entity",
         )
         if selection is not None and selection.analysis.get("status") != "ok":
@@ -1967,7 +1957,6 @@ def _predicate_scope(
                 query=query,
                 start_entity=input_root,
                 target_entity=entity_id,
-                preference=query.path_policy.preference,
                 purpose="metric_predicate_context",
             )
             if selection is not None and selection.analysis.get("status") != "ok":
@@ -2002,7 +1991,6 @@ def _predicate_scope(
                 query=query,
                 start_entity=input_root,
                 target_entity=dim.entity,
-                preference=query.path_policy.preference,
                 purpose="metric_predicate_filter",
             )
             if selection is not None and selection.analysis.get("status") != "ok":
@@ -2276,7 +2264,6 @@ def _leaf_path_selections(
             query=query,
             start_entity=measure.entity,
             target_entity=entity_id,
-            preference=query.path_policy.preference,
             purpose="measure_expr",
         )
         if selection is not None:
@@ -2291,7 +2278,6 @@ def _leaf_path_selections(
             query=query,
             start_entity=measure.entity,
             target_entity=dim.entity,
-            preference=query.path_policy.preference,
             purpose="group_by",
         )
         if selection is not None:
@@ -2306,7 +2292,6 @@ def _leaf_path_selections(
                 query=query,
                 start_entity=measure.entity,
                 target_entity=time_entity,
-                preference=query.path_policy.preference,
                 purpose="time",
             )
             if selection is not None:
@@ -2321,7 +2306,6 @@ def _leaf_path_selections(
             query=query,
             start_entity=measure.entity,
             target_entity=dim.entity,
-            preference=query.path_policy.preference,
             purpose="where",
         )
         if selection is not None:
@@ -2336,7 +2320,6 @@ def _leaf_path_selections(
             query=query,
             start_entity=measure.entity,
             target_entity=dim.entity,
-            preference=query.path_policy.preference,
             purpose="metric_filter",
         )
         if selection is not None:
@@ -2350,7 +2333,6 @@ def _leaf_path_selections(
             query=query,
             start_entity=measure.entity,
             target_entity=predicate.entity,
-            preference=query.path_policy.preference,
             purpose="metric_predicate",
         )
         if selection is not None:
@@ -2370,7 +2352,6 @@ def _leaf_path_selections(
             query=query,
             start_entity=measure.entity,
             target_entity=metric_filter.expression.entity,
-            preference=query.path_policy.preference,
             purpose="metric_predicate",
         )
         if selection is not None:
@@ -2525,12 +2506,7 @@ def _root_path_summary(
         if target_entity == root_entity:
             continue
         try:
-            chosen, candidates = _preferred_path(
-                config,
-                start=root_entity,
-                target=target_entity,
-                preference=query.path_policy.preference,
-            )
+            chosen, candidates = resolve_path(config, start=root_entity, target=target_entity)
         except SemanticLayerError as exc:
             if exc.code in {"PATH_NOT_FOUND", "AMBIGUOUS_PATH"} and purpose == "measure":
                 measure = next(
@@ -2627,9 +2603,7 @@ def _candidate_root_summary(
     for target_entity, purpose in sorted(targets.items()):
         if target_entity == root_entity:
             continue
-        chosen, candidates = _preferred_path(
-            config, start=root_entity, target=target_entity, preference=query.path_policy.preference
-        )
+        chosen, candidates = resolve_path(config, start=root_entity, target=target_entity)
         analysis = analyze_fanout(
             config,
             root_entity,
@@ -2935,7 +2909,6 @@ def _conversion_dimension_paths(
             query=query,
             start_entity=source_entity,
             target_entity=dim.entity,
-            preference=query.path_policy.preference,
             purpose=purpose,
         )
         if selection is not None:
@@ -3063,7 +3036,6 @@ def _conversion_event_cte(
                                 query=query,
                                 start_entity=source_entity,
                                 target_entity=match_entity,
-                                preference=query.path_policy.preference,
                                 purpose="conversion_match_entity",
                             )
                         ]
@@ -3293,7 +3265,6 @@ def _conversion_dimension_requires_binding(
                 query=query,
                 start_entity=entity_id,
                 target_entity=dim.entity,
-                preference=query.path_policy.preference,
                 purpose="conversion_dimension_probe",
             )
         except SemanticLayerError:

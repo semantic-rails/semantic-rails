@@ -183,3 +183,34 @@ graph:
       via: [converted_order_id]
       target: [order_id]
       allowed_directions: [forward]
+
+  # Orders, items, lifecycle events and sessions reach customer and store both
+  # directly and through the order's customer_history row, and those routes can
+  # mean different things. The engine never picks one by hop count, so each pair
+  # pins the direct route: the customer who placed the order and the store it was
+  # placed at.
+  path_preferences:
+    - source_entity: order
+      target_entity: customer
+      relationship_path: [relationship.orders_customer]
+    - source_entity: order
+      target_entity: store
+      relationship_path: [relationship.orders_store]
+    - source_entity: item
+      target_entity: customer
+      relationship_path: [relationship.order_items_order, relationship.orders_customer]
+    - source_entity: item
+      target_entity: store
+      relationship_path: [relationship.order_items_order, relationship.orders_store]
+    - source_entity: order_lifecycle
+      target_entity: customer
+      relationship_path: [relationship.order_lifecycle_customer]
+    - source_entity: order_lifecycle
+      target_entity: store
+      relationship_path: [relationship.order_lifecycle_store]
+    - source_entity: storefront_session
+      target_entity: customer
+      relationship_path: [relationship.storefront_sessions_customer]
+    - source_entity: storefront_session
+      target_entity: store
+      relationship_path: [relationship.storefront_sessions_store]
