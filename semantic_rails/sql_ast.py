@@ -61,7 +61,6 @@ SQL_CAST_TYPE_NAMES = frozenset(
         "TEXT",
         "TIMESTAMP",
         "TIMESTAMPTZ",
-        "TIMESTAMP WITH TIME ZONE",
         "TIMESTAMP_NTZ",
         "VARCHAR",
     }
@@ -97,10 +96,6 @@ SQL_FUNCTION_NAMES = frozenset(
         # ``compiler_parts/bind.py:_maybe_conditional_aggregate``.
         "COUNT_IF",
         "COUNTIF",
-        # The current time, one spelling per dialect (dialects.SqlDialect.now). Engine-only:
-        # expressions.ENGINE_ONLY_FUNCTIONS keeps them out of `call` expressions.
-        "CURRENT_DATETIME",
-        "CURRENT_TIMESTAMP",
         "DATE_ADD",
         "DATEADD",
         "DATEDIFF",
@@ -136,6 +131,9 @@ SQL_FUNCTION_NAMES = frozenset(
         "MEDIAN",
         "MIN",
         "MIN_BY",
+        # The current time and a value's physical type, for base time coverage on DuckDB
+        # and Postgres (dialects.SqlDialect.now and utc_timestamp). Engine-only:
+        # expressions.ENGINE_ONLY_FUNCTIONS keeps them out of `call` expressions.
         "NOW",
         "NULLIF",
         # Spark SQL exact percentile aggregate.
@@ -177,8 +175,6 @@ SQL_FUNCTION_NAMES = frozenset(
         "TIMEZONE",
         "TO_DATE_TIME",
         "TO_TIME_ZONE",
-        "TO_VARIANT",
-        "TYPEOF",
         "TRIM",
         "UNNEST",
         "UPPER",
@@ -264,8 +260,6 @@ def normalize_sql_date_part(part: str) -> str:
 
 def normalize_sql_cast_type_name(type_name: str) -> str:
     normalized = _compact_token(type_name).upper()
-    if normalized == "TIMESTAMP WITH TIME ZONE":
-        return normalized
     normalized = re.sub(r"\s*\(\s*", "(", normalized)
     normalized = re.sub(r"\s*,\s*", ",", normalized)
     normalized = re.sub(r"\s*\)\s*", ")", normalized)

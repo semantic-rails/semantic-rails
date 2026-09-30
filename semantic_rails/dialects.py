@@ -129,8 +129,18 @@ class SqlDialect:
     def timestamp_cast(self, expr: Any) -> Any:
         return SqlCast(expr, self.timestamp_type_name())
 
+    @property
+    def has_time_coverage(self) -> bool:
+        """Whether an empty time bucket reads 0 only inside the base's loaded range.
+
+        That coverage compares stored instants with :meth:`now` through :meth:`utc_timestamp`,
+        spelled here for DuckDB (and MotherDuck and DuckLake, which run it) and Postgres, the
+        warehouses whose execution is tested. The others keep the in-window observation test.
+        """
+        return isinstance(self, DuckDbDialect | PostgresDialect)
+
     def now(self, timezone: str = "UTC") -> Any:
-        """Current instant as role wall time, independent of session and storage zones."""
+        """Current instant as wall time in ``timezone``, independent of the session zone."""
         return SqlCall("TIMEZONE", [SqlLiteral(timezone), SqlCall("NOW", [])])
 
     def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
@@ -138,6 +148,7 @@ class SqlDialect:
 
         Package timestamp metadata does not distinguish these physical SQL types.
         Both CASE arms return naive UTC, so session coercion cannot change the cutoff.
+        Only used where :attr:`has_time_coverage` holds.
         """
         aware = SqlBinary(
             SqlCast(SqlCall("PG_TYPEOF", [expr]), "VARCHAR"),
@@ -277,22 +288,6 @@ class SnowflakeDialect(SqlDialect):
 
     def timestamp_type_name(self) -> str:
         return "TIMESTAMP_NTZ"
-
-    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
-        physical_type = SqlCall("TYPEOF", [SqlCall("TO_VARIANT", [expr])])
-        aware = SqlBinary(
-            SqlBinary(physical_type, "=", SqlLiteral("TIMESTAMP_TZ")),
-            "OR",
-            SqlBinary(physical_type, "=", SqlLiteral("TIMESTAMP_LTZ")),
-        )
-        instant = self.timestamp_cast(SqlCall("CONVERT_TIMEZONE", [SqlLiteral("UTC"), expr]))
-        naive = self.convert_timezone(storage_zone, "UTC", self.timestamp_cast(expr))
-        return SqlCase([SqlCaseWhen(aware, instant)], naive)
-
-    def now(self, timezone: str = "UTC") -> Any:
-        return self.timestamp_cast(
-            SqlCall("CONVERT_TIMEZONE", [SqlLiteral(timezone), SqlCall("CURRENT_TIMESTAMP", [])])
-        )
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         return SqlCall(
@@ -754,19 +749,6 @@ class BigQueryDialect(SqlDialect):
         # the DATETIME_* functions and comparisons expect a DATETIME.
         return expr
 
-    def now(self, timezone: str = "UTC") -> Any:
-        return SqlCall("CURRENT_DATETIME", [SqlLiteral(timezone)])
-
-    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
-        aware = SqlBinary(SqlCall("TYPEOF", [expr]), "=", SqlLiteral("TIMESTAMP"))
-        # String overloads keep both CASE arms valid for TIMESTAMP, DATETIME and DATE.
-        text = SqlCast(expr, "STRING")
-        instant = SqlCase(
-            [SqlCaseWhen(aware, SqlCall("TIMESTAMP", [text]))],
-            SqlCall("TIMESTAMP", [text, SqlLiteral(storage_zone)]),
-        )
-        return SqlCall("DATETIME", [instant, SqlLiteral("UTC")])
-
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         # BigQuery reverses the portable order: DATETIME_TRUNC(ts, unit)
         # with the unit as a keyword. 'week' maps to ISOWEEK (Monday
@@ -854,16 +836,6 @@ class DatabricksDialect(SqlDialect):
     """
 
     name: str = "databricks"
-
-    def now(self, timezone: str = "UTC") -> Any:
-        # The two-argument form takes the source zone from the session, then returns NTZ.
-        return SqlCall("CONVERT_TIMEZONE", [SqlLiteral(timezone), SqlCall("CURRENT_TIMESTAMP", [])])
-
-    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
-        aware = SqlBinary(SqlCall("TYPEOF", [expr]), "=", SqlLiteral("timestamp"))
-        instant = SqlCall("CONVERT_TIMEZONE", [SqlLiteral("UTC"), expr])
-        naive = self.convert_timezone(storage_zone, "UTC", SqlCast(expr, "TIMESTAMP_NTZ"))
-        return SqlCase([SqlCaseWhen(aware, instant)], naive)
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day by default.
@@ -968,21 +940,6 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
-
-    def now(self, timezone: str = "UTC") -> Any:
-        return self.timestamp_cast(
-            SqlCall("AT_TIMEZONE", [SqlCall("NOW", []), SqlLiteral(timezone)])
-        )
-
-    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
-        aware = SqlBinary(SqlCall("TYPEOF", [expr]), "LIKE", SqlLiteral("%with time zone"))
-        instant = self.timestamp_cast(
-            SqlCall("AT_TIMEZONE", [SqlCast(expr, "TIMESTAMP WITH TIME ZONE"), SqlLiteral("UTC")])
-        )
-        naive = self.timestamp_cast(
-            self.convert_timezone(storage_zone, "UTC", self.timestamp_cast(expr))
-        )
-        return SqlCase([SqlCaseWhen(aware, instant)], naive)
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day. Trino caps one
@@ -1125,14 +1082,6 @@ class ClickHouseDialect(SqlDialect):
     """
 
     name: str = "clickhouse"
-
-    def now(self, timezone: str = "UTC") -> Any:
-        return SqlCall("NOW", [SqlLiteral(timezone)])
-
-    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
-        # DateTime values already hold instants; toDateTime preserves them and
-        # interprets DATE values in the declared storage zone.
-        return self.convert_timezone(storage_zone, "UTC", expr)
 
     # No day_series override: it was withheld because an unmatched LEFT JOIN field reads 0
     # rather than NULL. Every compiled statement now sets join_use_nulls, but a generated

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
@@ -411,16 +411,28 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
     return raw_expr
 
 
+def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """The one boundary for base time coverage: the guard emits it, routing refuses rollups.
+
+    A fill, a dense series or combined branches can show a bucket no leaf has, which reads 0
+    only inside the base's loaded range. Only DuckDB and Postgres execute that coverage.
+    Branches are counted unrouted, so the answer never depends on routing.
+    """
+    if not plan.time or plan.time.get("window_total") or not _dialect(config).has_time_coverage:
+        return False
+    if _query_requires_dense_series(plan, config):
+        return True
+    unrouted = [replace(row, aggregate_relation_id="") for row in plan.measure_plans]
+    return len(_measure_plan_groups(replace(plan, measure_plans=unrouted), config)) > 1
+
+
 def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
-    return bool(
+    """Whether base leaves record their scope: for coverage, or a window's observation."""
+    return _emits_time_coverage(plan, config) or bool(
         plan.time
         and not plan.time.get("window_total")
-        and (
-            plan.time.get("start")
-            or plan.time.get("end")
-            or _query_requires_dense_series(plan, config)
-            or len(_measure_plan_groups(plan, config)) > 1
-        )
+        and (plan.time.get("start") or plan.time.get("end"))
+        and _dialect(config).has_time_coverage
     )
 
 
@@ -531,16 +543,6 @@ def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any
     if not column_tz or not target_tz or column_tz == target_tz:
         return raw_expr
     return _dialect(config).convert_timezone(column_tz, target_tz, raw_expr)
-
-
-def _coverage_role_time(raw: Any, role: Any, plan: LogicalPlan, config: PackageConfig) -> Any:
-    """Bucket covered base reads in the role frame after preserving the stored instant."""
-    dialect = _dialect(config)
-    if dialect.name == "generic" or not _requires_base_coverage(plan, config):
-        return _apply_role_timezone(raw, role, config)
-    utc = dialect.utc_timestamp(raw, role.column_timezone or role.timezone or "UTC")
-    zone = role.timezone or role.column_timezone or "UTC"
-    return utc if zone == "UTC" else dialect.convert_timezone("UTC", zone, utc)
 
 
 def _metric_filter_alias(index: int) -> str:
@@ -2167,15 +2169,14 @@ def _measure_leaf_select(
             else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
         )
         coverage_time = raw_expr
-        bucket_time = _coverage_role_time(raw_expr, role, plan, config)
         raw_expr = _apply_role_timezone(raw_expr, role, config)
         cal_binding = _leaf_calendar_binding(plan, config)
         if cal_binding is not None and time.get("grain"):
             cal_table, cal_grain_column, cal_join_column = cal_binding
             time_expr = _column_ref(cal_table, cal_grain_column)
-            leaf_calendar_join = _calendar_join_for_leaf(bucket_time, cal_table, cal_join_column)
+            leaf_calendar_join = _calendar_join_for_leaf(raw_expr, cal_table, cal_join_column)
         else:
-            time_expr = _time_bucket_expr(time, bucket_time, config)
+            time_expr = _time_bucket_expr(time, raw_expr, config)
         time_alias = (
             time["temporal_role"]
             if not time.get("grain")
@@ -3964,15 +3965,14 @@ def _measure_group_leaf_select(
             else _column_ref(_measure_dim_relation(first_measure, dim, entities), dim.column)
         )
         coverage_time = raw_expr
-        bucket_time = _coverage_role_time(raw_expr, role, plan, config)
         raw_expr = _apply_role_timezone(raw_expr, role, config)
         cal_binding = _leaf_calendar_binding(plan, config)
         if cal_binding is not None and time.get("grain"):
             cal_table, cal_grain_column, cal_join_column = cal_binding
             time_expr = _column_ref(cal_table, cal_grain_column)
-            leaf_calendar_join = _calendar_join_for_leaf(bucket_time, cal_table, cal_join_column)
+            leaf_calendar_join = _calendar_join_for_leaf(raw_expr, cal_table, cal_join_column)
         else:
-            time_expr = _time_bucket_expr(time, bucket_time, config)
+            time_expr = _time_bucket_expr(time, raw_expr, config)
         time_alias = (
             time["temporal_role"]
             if not time.get("grain")
@@ -4066,23 +4066,11 @@ def _query_requires_dense_series(plan: LogicalPlan, config: PackageConfig) -> bo
     return _metric_filters_require_dense_series(plan, config)
 
 
-def _requires_base_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
-    return bool(
-        plan.time
-        and not plan.time.get("window_total")
-        and (
-            _query_requires_dense_series(plan, config)
-            or (
-                (plan.time.get("start") or plan.time.get("end"))
-                and len(_measure_plan_groups(plan, config)) > 1
-            )
-        )
-    )
-
-
-def coverage_base_plan(plan: LogicalPlan, config: PackageConfig) -> LogicalPlan:
-    """Coverage-dependent answers always read the base, regardless of available rollups."""
-    if not _requires_base_coverage(plan, config):
+def coverage_base_plan(
+    plan: LogicalPlan, config: PackageConfig, strategies: Sequence[str]
+) -> LogicalPlan:
+    """A plan that emits base coverage reads the base, with each leaf's pre-routing strategy."""
+    if not _emits_time_coverage(plan, config):
         return plan
     return replace(
         plan,
@@ -4090,7 +4078,7 @@ def coverage_base_plan(plan: LogicalPlan, config: PackageConfig) -> LogicalPlan:
             replace(
                 row,
                 aggregate_relation_id="",
-                rewrite_strategy="direct" if row.aggregate_relation_id else row.rewrite_strategy,
+                rewrite_strategy=strategy,
                 aggregate_relation_rejections={
                     **{
                         rel.id: "base_time_coverage_required"
@@ -4100,7 +4088,7 @@ def coverage_base_plan(plan: LogicalPlan, config: PackageConfig) -> LogicalPlan:
                     **row.aggregate_relation_rejections,
                 },
             )
-            for row in plan.measure_plans
+            for row, strategy in zip(plan.measure_plans, strategies, strict=True)
         ],
     )
 
@@ -4634,7 +4622,7 @@ def _conversion_exprs_for_plan(plan: LogicalPlan, config: PackageConfig) -> list
 def lower_to_sql(
     plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
 ) -> SqlSelect:
-    if _requires_base_coverage(plan, config) and any(
+    if _emits_time_coverage(plan, config) and any(
         row.aggregate_relation_id for row in plan.measure_plans
     ):
         raise SemanticLayerError(
@@ -4862,7 +4850,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 measure_aliases,
                 zero,
                 scopes,
-                time_key=time_alias if fill_binding is not None or len(measure_groups) > 1 else "",
+                time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
             )
         )

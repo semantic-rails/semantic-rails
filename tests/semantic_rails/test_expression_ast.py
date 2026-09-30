@@ -581,18 +581,8 @@ def test_parse_between_rejects_unknown_keys():
     assert exc.value.code == "INVALID_EXPRESSION_KEY"
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "NOW",
-        "now",
-        "CURRENT_TIMESTAMP",
-        "current_timestamp",
-        "CURRENT_DATETIME",
-        "current_datetime",
-    ],
-)
-def test_coverage_clock_functions_are_engine_only(name):
+@pytest.mark.parametrize("name", ["NOW", "now", "PG_TYPEOF", "pg_typeof"])
+def test_coverage_cutoff_functions_are_engine_only(name):
     with pytest.raises(SemanticLayerError) as caught:
         parse_semantic_expression({"kind": "call", "name": name, "args": []}, context="query")
     assert caught.value.code == "INVALID_EXPRESSION_AST"

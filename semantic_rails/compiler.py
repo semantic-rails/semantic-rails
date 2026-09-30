@@ -3971,6 +3971,7 @@ def _plan_query(
     _validate_rollup_safety(bound_measures, config)
     _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
+    leaf_strategies: list[str] = []  # each leaf's strategy before rollup routing
     if bound_measures:
         root_entity = measures[bound_measures[0].measure_id].entity
         selected_paths, candidate_paths, rewrite_steps, root_analyses = _root_path_summary(
@@ -4039,6 +4040,7 @@ def _plan_query(
                     aggregate_relation_rejections=aggregate_relation_rejections,
                 )
             )
+            leaf_strategies.append(rewrite_strategy)
     elif conversion_exprs:
         root_entity = _expression_root_entity(conversion_exprs[0].base, config)
         selected_paths = {}
@@ -4112,7 +4114,7 @@ def _plan_query(
     )
     from .compiler_parts.sql_lowering import coverage_base_plan
 
-    return coverage_base_plan(plan, config)
+    return coverage_base_plan(plan, config, leaf_strategies)
 
 
 def _calendar_fill_binding(

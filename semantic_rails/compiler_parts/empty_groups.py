@@ -141,7 +141,12 @@ def guard_empty_groups(
     time_key: str = "",
     dialect: Any = None,
 ) -> list[SqlCte]:
-    """Settle measures centrally, with untimed observation and loaded coverage guards."""
+    """Settle measures centrally, with untimed observation and loaded coverage guards.
+
+    Scopes and ``time_key`` need a dialect with time coverage; anything else is refused.
+    """
+    if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
+        raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
     fields_ = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []

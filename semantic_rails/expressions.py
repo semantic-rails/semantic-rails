@@ -22,11 +22,11 @@ if TYPE_CHECKING:
     from .schema import MeasureConfig, PackageConfig
 
 # Row generators only the engine emits (the implicit calendar's day series, in
-# dialects.SqlDialect.day_series) and the current time (a coverage window, in
-# dialects.SqlDialect.now). A query or package `call` may not name them.
+# dialects.SqlDialect.day_series) and the time coverage cutoff (dialects.SqlDialect.now and
+# utc_timestamp). A query or package `call` may not name them.
 ENGINE_ONLY_FUNCTIONS = frozenset(
     {"ARRAY_GENERATE_RANGE", "EXPLODE", "GENERATE_DATE_ARRAY", "SEQUENCE"}
-) | {"CURRENT_DATETIME", "CURRENT_TIMESTAMP", "NOW", "PG_TYPEOF", "TYPEOF", "TO_VARIANT"}
+) | {"NOW", "PG_TYPEOF"}
 
 
 @dataclass(frozen=True)
