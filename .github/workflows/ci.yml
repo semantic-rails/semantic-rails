@@ -51,6 +51,7 @@ jobs:
               - "pyproject.toml"
               - "README.md"
               - "scripts/**"
+              - "security/**"
               - "schemas/**"
               - "semantic_rails/**"
               - "mf2sr/**"
@@ -137,15 +138,8 @@ jobs:
           prune-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --locked
-      - name: pip-audit (core and all warehouse extras)
-        # Export every supported install surface without the editable
-        # self-install, then audit the complete locked dependency graph.
-        # --quiet suppresses the "Resolved N packages" header that pip-audit
-        # would otherwise treat as a requirement specifier.
-        run: |
-          uv export --quiet --format requirements-txt --all-extras --no-emit-project --no-dev \
-            > requirements-audit.txt
-          uv run pip-audit -r requirements-audit.txt --strict
+      - name: Audit core and individual warehouse connectors
+        run: uv run --no-sync python scripts/audit_dependencies.py
       - name: npm audit (Malloy comparison harness)
         run: |
           npm ci --prefix comparisons/semantic_layers/malloy
