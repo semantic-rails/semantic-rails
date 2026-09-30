@@ -168,30 +168,27 @@ def test_operand_expression_filter_clause_is_rejected_not_dropped(runtime_factor
     assert "metric_filters" in report["errors"][0]["message"]
 
 
-def test_operand_filter_with_unsupported_combinator_is_rejected(runtime_factory):
+@pytest.mark.parametrize(
+    ("base_filter", "code"),
+    [
+        # `any:` fails as an invalid AST before conversion checks run.
+        pytest.param(
+            {"any": [{"field": "dimension.jaffle_product_name", "op": "=", "value": "adele-ade"}]},
+            "INVALID_EXPRESSION_AST",
+            id="unsupported-combinator",
+        ),
+        pytest.param(
+            {"all": [{"field": "dimension.does_not_exist", "op": "=", "value": "x"}]},
+            "OBJECT_NOT_FOUND",
+            id="unknown-dimension",
+        ),
+    ],
+)
+def test_invalid_operand_filter_is_rejected(runtime_factory, base_filter, code):
     runtime = runtime_factory("jaffle_shop")
-    report = runtime.validate(
-        _conversion_query(
-            base_filter={
-                "any": [{"field": "dimension.jaffle_product_name", "op": "=", "value": "adele-ade"}]
-            }
-        )
-    )
+    report = runtime.validate(_conversion_query(base_filter=base_filter))
     assert report["ok"] is False
-    # `any:` is not an aggregate filter shape anywhere, so it fails as an invalid AST
-    # before the conversion checks run.
-    assert report["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
-
-
-def test_operand_filter_with_unknown_dimension_is_rejected(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    report = runtime.validate(
-        _conversion_query(
-            base_filter={"all": [{"field": "dimension.does_not_exist", "op": "=", "value": "x"}]}
-        )
-    )
-    assert report["ok"] is False
-    assert report["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+    assert report["errors"][0]["code"] == code
 
 
 def test_unfiltered_conversion_sql_is_unchanged_by_the_filter_path(runtime_factory):
