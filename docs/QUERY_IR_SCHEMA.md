@@ -145,7 +145,7 @@ shorthands for the most common cases:
 | Arithmetic | `{ "kind": "arithmetic", "op": "divide", "left": {...}, "right": {...} }` |
 | Ratio | `{ "kind": "ratio", "numerator": {...}, "denominator": {...} }` |
 | Case | `{ "kind": "case", "whens": [{"when": {...}, "then": {...}}], "else": {...} }` |
-| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). It aggregates the rows of the value's entity (all `value` columns share it; without a value column, the condition's columns must share one entity). `condition` may also read any entity that entity reaches over declared many-to-one or one-to-one relationships, on the route a `where` filter on that entity takes: a row with no match there reads NULL, exactly as that `where` filter reads it, and is left out where that filter's lookup stays an inner join (see `where` below). A condition across a one-to-many, many-to-many, bridge or time-valid hop, or over two routes with no path preference, is refused with `UNSUPPORTED_CONDITIONAL_AGGREGATE`. |
+| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). It aggregates the rows of the value's entity (all `value` columns share it; without a value column, the condition's columns must share one entity). `condition` may also read any entity that entity reaches over declared many-to-one or one-to-one relationships, on the route a `where` filter on that entity takes. A value row with no match on that route never satisfies the condition: for each such entity, a top-level `and` term must compare one of its columns with `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in` or `IS NOT` null, and a condition such a row could satisfy (`IS NULL`, an `or` with the value's own column) is refused with `UNSUPPORTED_CONDITIONAL_AGGREGATE`. So is a condition across a one-to-many, many-to-many, bridge or time-valid hop, or over two routes with no path preference. |
 | Between | `{ "kind": "between", "expr": {...}, "low": {...}, "high": {...} }` — sugar for `expr >= low AND expr <= high`. Use `kind: "not_between"` or `negated: true` for the inverted form (`expr < low OR expr > high`). Desugared at parse time; the kind does not appear in the lowered IR. |
 | Literal | `{ "kind": "literal", "value": 0 }` |
 | Prior period | `{ "kind": "prior_period", "input": {...}, "offset": {"unit": "month", "value": 1} }` |
@@ -211,8 +211,7 @@ Supported `op` values (all compile end-to-end):
   NULL on a row whose lookup found no match, and a filter treats the row as
   any other NULL: `IS NULL` keeps it (an anti-join, such as boardings with no
   crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds for
-  a `group_by` or `where` dimension of the measure, and for a column an
-  `aggregate_if` condition reads through a lookup. Other reads of a lookup
+  a `group_by` or `where` dimension of the measure. Other reads of a lookup
   (a time role, a metric filter and its context, a conversion, a qualified
   set) leave such a row out, as before, and so does a dimension any rollup of the
   measure's model holds, even at a grain that rollup can never answer. ClickHouse is the exception: its

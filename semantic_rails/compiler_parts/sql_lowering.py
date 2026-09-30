@@ -2839,6 +2839,8 @@ def _foldable_leaf_signature(
         return None
     if any(row.analysis.get("status") != "ok" for row in measure_plan.path_selections):
         return None  # a one-to-many hop: the leaf rewrites (entity_in_terms_of, fanout_dedup)
+    if any(row.purpose == "aggregate_if" for row in measure_plan.path_selections):
+        return None  # a folded scan joins as its first leaf does; this leaf's joins are its own
     if measure_plan.path_selections and not _paths_are_single_hop_safe(
         measure_plan.path_selections, config
     ):

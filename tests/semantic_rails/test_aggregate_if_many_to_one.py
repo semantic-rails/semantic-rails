@@ -2,12 +2,15 @@
 
 An aggregate_if aggregates at the grain of its value's entity; every other column it reads
 must be reachable from that entity by one unambiguous chain of declared many-to-one hops.
-Anything else is refused with ``UNSUPPORTED_CONDITIONAL_AGGREGATE``. Across a lookup, a row
-with no match reads NULL, exactly as a ``where`` filter on the looked-up dimension reads it,
-so each result equals the filtered-measure leaf that asks the same question.
+Anything else is refused with ``UNSUPPORTED_CONDITIONAL_AGGREGATE``. A value row with no match
+on the path never satisfies the condition, and a condition such a row could satisfy is
+refused, so whether the lookup joins LEFT or INNER changes no value, and each result equals
+the filtered-measure leaf that asks the same question.
 
 Fixture: consumption rows of customers. Row 6's customer has no currency, row 7's customer
-has no record, row 8 has no customer and row 9 no amount; customer C5 has no rows. Posts of
+has no record, row 8 has no customer and row 9 no amount; customer C5 has no rows. Each
+consumption row has at most one receipt (one-to-one): row 7 has one, rows 4, 6, 8 and 9 none,
+and receipt 99 has no row. Posts of
 users, with an owner and an editor (the path preference pins the owner): post 15's owner has
 no record and user 3 no age. Order lines, two hops from their customer: line 4's order has a
 customer with no record and line 6 an order with no record. Gold values come from SQL
@@ -67,6 +70,9 @@ INSERT INTO orders VALUES (100, 'C1'), (101, 'C2'), (102, 'C9'), (103, 'C3');
 CREATE TABLE order_lines (line_id INTEGER, order_id INTEGER, quantity INTEGER);
 INSERT INTO order_lines VALUES (1, 100, 2), (2, 100, 1), (3, 101, 3), (4, 102, 1), (5, 103, 4),
   (6, 999, 1);
+CREATE TABLE receipts (row_id INTEGER, channel VARCHAR);
+INSERT INTO receipts VALUES (1, 'web'), (2, 'shop'), (3, 'web'), (5, 'web'), (7, 'web'),
+  (99, 'web');
 """
 
 PACKAGE = """
@@ -95,6 +101,7 @@ graph:
     post_tag: {label: Post tag, key: [post_id, tag_id], model: post_tags}
     order: {label: Order, key: [order_id], model: orders}
     order_line: {label: Order line, key: [line_id], model: order_lines}
+    receipt: {label: Receipt, key: [row_id], model: receipts}
   relationships:
     post_owner:
       id: relationship.post_owner
@@ -123,6 +130,12 @@ graph:
       temporal_validity:
         valid_from: segment_history.valid_from
         valid_to: segment_history.valid_to
+    consumption_receipt:
+      id: relationship.consumption_receipt
+      entities: [consumption, receipt]
+      cardinality: one_to_one
+      via: [row_id]
+      target: [row_id]
 """
 
 
@@ -180,6 +193,20 @@ MODELS = {
                       op: "="
                       left: {kind: column, entity: entity.shop_customer, column: currency}
                       right: {kind: literal, value: EUR}
+                    then: {kind: column, column: amount}
+            null_currency_amount:
+              label: Amount with no customer currency
+              kind: aggregate
+              default_agg: sum
+              accumulation: {kind: flow}
+              expr:
+                kind: case
+                whens:
+                  - when:
+                      kind: comparison
+                      op: IS
+                      left: {kind: column, entity: entity.shop_customer, column: currency}
+                      right: {kind: literal, value: null}
                     then: {kind: column, column: amount}
         """,
     "users": """
@@ -254,6 +281,14 @@ MODELS = {
                       right: {kind: literal, value: EUR}
                     then: {kind: column, column: quantity}
         """,
+    "receipts": """
+        model:
+          id: receipts
+          relation: receipts
+          entities: {receipt: {}}
+          dimensions:
+            channel: {label: Channel, kind: categorical}
+        """,
 }
 
 
@@ -290,6 +325,7 @@ AGE = "dimension.shop_user_age"
 # Scalar subqueries: NULL where the lookup finds no row, independently of any join.
 SQL_CUR = "(SELECT c.currency FROM customers AS c WHERE c.customer_id = t.customer_id)"
 SQL_SEG = "(SELECT c.segment FROM customers AS c WHERE c.customer_id = t.customer_id)"
+SQL_CHANNEL = "(SELECT r.channel FROM receipts AS r WHERE r.row_id = t.row_id)"
 SQL_LINE_CUR = (
     "(SELECT c.currency FROM orders AS o, customers AS c"
     " WHERE o.order_id = l.order_id AND c.customer_id = o.customer_id)"
@@ -395,12 +431,11 @@ ONE_HOP = {
         _measure("consuming_customers"),
         {"field": CURRENCY, "op": "=", "value": "EUR"},
     ),
-    # A row with no customer (7, 8) reads NULL, as the where filter reads it.
-    "sum_no_currency": (
-        _aggif("sum", NO_CURRENCY, AMOUNT),
-        f"SELECT SUM(CASE WHEN {SQL_CUR} IS NULL THEN t.amount END) FROM consumption AS t",
+    "one_to_one": (
+        _aggif("sum", _cmp(_col("receipt", "channel"), "=", "web"), AMOUNT),
+        f"SELECT SUM(CASE WHEN {SQL_CHANNEL} = 'web' THEN t.amount END) FROM consumption AS t",
         _measure("amount"),
-        {"field": CURRENCY, "op": "IS NULL"},
+        {"field": "dimension.shop_receipt_channel", "op": "=", "value": "web"},
     ),
     "posts_of_owners_over_65": (
         _aggif("count", OVER_65, _col("post", "post_id")),
@@ -441,16 +476,105 @@ def test_a_condition_across_many_to_one_hops_matches_gold_and_the_filtered_leaf(
     assert value == pytest.approx(_ask(runtime, leaf, where=[where]))
 
 
-def test_a_row_with_no_match_reads_null_but_its_own_columns_still_count(runtime, gold):
-    # Row 7 has no customer record, but its own amount passes: it counts, as in SQL.
-    either = {"kind": "boolean", "op": "or", "args": [EUR, _cmp(AMOUNT, ">", 500)]}
-    value = _ask(runtime, _aggif("count", either, _col("consumption", "row_id")))
+# A metric filter that every consumption row passes; it keeps the leaf's lookups inner.
+EVERY_ROW = {
+    "expression": {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_consumption",
+        "input": _measure("consumption_count"),
+        "op": ">",
+        "value": 0,
+    },
+    "op": "=",
+    "value": True,
+}
 
-    assert value == {None: 5.0}
-    assert value == gold(
-        f"SELECT COUNT(CASE WHEN {SQL_CUR} = 'EUR' OR t.amount > 500 THEN t.row_id END) "
-        "FROM consumption AS t"
+
+@pytest.mark.parametrize(
+    "case", sorted(case for case, row in ONE_HOP.items() if "FROM consumption" in row[1])
+)
+def test_a_metric_filter_every_row_passes_changes_no_value(runtime, case):
+    expression = ONE_HOP[case][0]
+
+    assert _ask(runtime, expression, metric_filters=[EVERY_ROW]) == pytest.approx(
+        _ask(runtime, expression)
     )
+
+
+def _in(kind: str, values: list[Any]) -> dict[str, Any]:
+    return {"kind": kind, "expr": _col("customer", "currency"), "values": values}
+
+
+# Conditions on a consumption row's customer: (condition, refused because a row with no
+# customer could satisfy it).
+CONDITION_SHAPES = {
+    "in": (_in("in", ["EUR", "CZK"]), False),
+    "not_in": (_in("not_in", ["CZK"]), False),
+    "between": (
+        {
+            "kind": "between",
+            "expr": _col("customer", "segment"),
+            "low": _lit("KAM"),
+            "high": _lit("LAM"),
+        },
+        False,
+    ),
+    "column_on_the_right": (
+        {
+            "kind": "comparison",
+            "op": "=",
+            "left": _lit("EUR"),
+            "right": _col("customer", "currency"),
+        },
+        False,
+    ),
+    "is_not_null": (_cmp(_col("customer", "currency"), "IS NOT", None), False),
+    "or_inside_an_and": (
+        {
+            "kind": "boolean",
+            "op": "and",
+            "args": [
+                {"kind": "boolean", "op": "or", "args": [EUR, _cmp(AMOUNT, ">", 500)]},
+                _cmp(_col("customer", "currency"), "IS NOT", None),
+            ],
+        },
+        False,
+    ),
+    "equals_null": (_cmp(_col("customer", "currency"), "=", None), True),
+    "is_not_a_value": (_cmp(_col("customer", "currency"), "IS NOT", "EUR"), True),
+    "not": ({"kind": "boolean", "op": "not", "args": [CZK]}, True),
+    "in_with_null": (_in("in", ["EUR", None]), True),
+    "inside_a_call": (
+        {
+            "kind": "comparison",
+            "op": "=",
+            "left": {
+                "kind": "call",
+                "name": "COALESCE",
+                "args": [_col("customer", "currency"), _lit("EUR")],
+            },
+            "right": _lit("EUR"),
+        },
+        True,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(CONDITION_SHAPES))
+def test_a_condition_a_row_with_no_match_could_satisfy_is_refused(runtime, case):
+    condition, refused = CONDITION_SHAPES[case]
+    expression = _aggif("sum", condition, AMOUNT)
+
+    if not refused:
+        assert _ask(runtime, expression, metric_filters=[EVERY_ROW]) == pytest.approx(
+            _ask(runtime, expression)
+        )
+        return
+    with pytest.raises(SemanticLayerError) as raised:
+        _ask(runtime, expression)
+    assert raised.value.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
+    assert raised.value.details["reason"] == "null_accepting_condition"
+    assert raised.value.details["entity"] == "entity.shop_customer"
 
 
 def test_arithmetic_and_ratio_of_conditional_aggregates(runtime, gold):
@@ -517,6 +641,20 @@ def test_the_path_preference_picks_the_role(tmp_path, gold, pin, role):
 
 # (aggregate_if, details["reason"], words the message must name)
 REFUSALS = {
+    "is_null_on_the_one_side": (
+        _aggif("sum", NO_CURRENCY, AMOUNT),
+        "null_accepting_condition",
+        ["entity.shop_consumption", "entity.shop_customer"],
+    ),
+    "or_with_the_value_entity": (
+        _aggif(
+            "count",
+            {"kind": "boolean", "op": "or", "args": [EUR, _cmp(AMOUNT, ">", 500)]},
+            _col("consumption", "row_id"),
+        ),
+        "null_accepting_condition",
+        ["entity.shop_consumption", "entity.shop_customer"],
+    ),
     "condition_on_the_many_side": (
         _aggif("count_distinct", _cmp(AMOUNT, ">", 10), _col("customer", "customer_id")),
         "fanout_hop",
@@ -623,21 +761,38 @@ def test_inside_a_metric_recipe_it_is_refused(runtime):
     assert "aggregate_if" in str(raised.value)
 
 
-def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(runtime, gold):
-    # The authored measure reads the customer over an inner join, as before; the
-    # aggregate_if beside it still reads rows 7 and 8, which have no customer, as NULL.
-    query = {
-        "version": 1,
-        "select": [
-            {"as": "authored", "expression": _measure("eur_amount")},
-            {"as": "value", "expression": ONE_HOP["sum_no_currency"][0]},
-        ],
-    }
+@pytest.mark.parametrize("aggif_first", [False, True], ids=["authored_first", "aggif_first"])
+def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
+    package, gold, aggif_first
+):
+    # The authored measure reads the customer over an inner join, as before, so rows 7 and 8
+    # (no customer) drop out of it. Named with its own table as its source, as a fact model
+    # names it and as the aggregate_if's measure is, it still never shares one scan with it.
+    config = load_package_config(str(package))
+    authored = "measure.shop.null_currency_amount"
+    measures = [
+        dataclasses.replace(measure, source_relation="consumption")
+        if measure.id == authored
+        else measure
+        for measure in config.measures
+    ]
+    runtime = Runtime.from_config(
+        dataclasses.replace(config, measures=measures), source_path=str(package)
+    )
+    select = [
+        {"as": "authored", "expression": _measure("null_currency_amount")},
+        {"as": "value", "expression": SUM_EUR},
+    ]
+    try:
+        alone = _ask(runtime, _measure("null_currency_amount"))
+        query = {"version": 1, "select": select[::-1] if aggif_first else select}
+        [row] = runtime.query(query)["rows"]
+    finally:
+        runtime.close()
 
-    [row] = runtime.query(query)["rows"]
-
-    assert {None: _number(row["value"])} == pytest.approx(gold(ONE_HOP["sum_no_currency"][1]))
-    assert _number(row["authored"]) == 130.0
+    assert alone == {None: 50.0}
+    assert _number(row["authored"]) == 50.0
+    assert {None: _number(row["value"])} == pytest.approx(gold(ONE_HOP["sum"][1]))
 
 
 @pytest.mark.parametrize(

@@ -232,7 +232,9 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
             "inside `condition` / `value` must specify `entity` or `table` "
             "(no surrounding measure to inherit from). It aggregates the rows "
             "of the value's entity; `condition` may also read entities that "
-            "entity reaches over many-to-one relationships. Compiles to "
+            "entity reaches over many-to-one relationships. A value row with no "
+            "match there never satisfies it; a condition such a row could "
+            "satisfy (IS NULL, OR with the value's own column) is refused. Compiles to "
             "COUNT_IF / SUM_IF natively on Snowflake; portable CASE WHEN "
             "elsewhere. `value` may be omitted when aggregation=count."
         ),

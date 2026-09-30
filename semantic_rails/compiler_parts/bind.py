@@ -874,9 +874,9 @@ def _collect_conversion_exprs(
 # An aggregate_if aggregates at the grain of its value's entity (the base);
 # every other column it reads must be reachable from the base by one
 # unambiguous chain of declared many-to-one hops.
-# ``check_conditional_aggregate_paths`` holds that rule, and every measure
-# leaf that plans the synthetic measure's joins runs it first; the joins take
-# the path a ``where`` filter on that entity would take.
+# ``check_conditional_aggregate_path`` holds that rule, and every measure
+# leaf that plans the synthetic measure's joins runs it on the path a
+# ``where`` filter on that entity would take.
 #
 # Constraints surfaced through ``UNSUPPORTED_CONDITIONAL_AGGREGATE``:
 #  - Every column ref inside ``condition`` / ``value`` must resolve to an
@@ -888,7 +888,12 @@ def _collect_conversion_exprs(
 #  - Each other entity the condition reads is reached from the base over
 #    N:1 or 1:1 hops only: no one-to-many, many-to-many or bridge hop, no
 #    hop valid over time, and one route (pin ambiguous routes and roles
-#    with a path preference). A value row with no match reads NULL there.
+#    with a path preference).
+#  - A value row with no match on the path never satisfies the condition:
+#    for each such entity, a top-level AND term compares a bare column of
+#    it (=, !=, <, <=, >, >=, IN, NOT IN, IS NOT NULL). A condition such a
+#    row could satisfy (IS NULL, an OR with the base's own column) is
+#    refused, so whether the lookup joins LEFT or INNER changes no value.
 #  - The aggregation must be a scalar aggregation that
 #    ``_aggregation_expr`` already supports (count, sum, avg, min, max,
 #    median, percentile). Window-only aggregations are rejected.
@@ -973,18 +978,81 @@ def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: Packag
     return next(iter(condition_entities))
 
 
+# A NULL operand makes these comparisons NULL, so a row with no match fails them.
+_NULL_REJECTING_OPS = frozenset({"=", "!=", "<>", "<", "<=", ">", ">=", "IN", "NOT IN"})
+
+
+def _and_terms(expr: SemanticExpr) -> list[SemanticExpr]:
+    if isinstance(expr, BooleanExpr) and expr.op.lower() == "and":
+        return [term for arg in expr.args for term in _and_terms(arg)]
+    return [expr]
+
+
+def _null_rejected_entities(term: SemanticExpr, config: PackageConfig) -> set[str]:
+    """The entities one of whose bare columns, read as NULL, makes ``term`` not true."""
+    if isinstance(term, InExpr):
+        if isinstance(term.expr, ColumnRefExpr) and not any(
+            isinstance(value, LiteralExpr) and value.value is None for value in term.values
+        ):
+            return {_resolve_column_entity(term.expr, config)}
+        return set()
+    if not isinstance(term, ComparisonExpr):
+        return set()
+    op = " ".join(term.op.split()).upper()
+    rejected = set()
+    for column, other in ((term.left, term.right), (term.right, term.left)):
+        if not isinstance(column, ColumnRefExpr):
+            continue
+        # `= null` reads as IS NULL, which a row with no match satisfies.
+        if isinstance(other, LiteralExpr) and other.value is None:
+            rejects = op in {"!=", "<>", "IS NOT"}
+        else:
+            rejects = op in _NULL_REJECTING_OPS
+        if rejects:
+            rejected.add(_resolve_column_entity(column, config))
+    return rejected
+
+
+def _require_null_rejecting_condition(
+    expr: ConditionalAggregateExpr, base: str, config: PackageConfig
+) -> None:
+    """Refuse a condition that a value row with no match on its path could satisfy.
+
+    Each entity other than the base that the condition reads needs a top-level AND term
+    comparing a bare column of it, so that such a row fails the condition whether its lookup
+    joins LEFT or INNER, and the join kind never changes a value.
+    """
+    terms = _and_terms(expr.condition)
+    rejected = {entity for term in terms for entity in _null_rejected_entities(term, config)}
+    read = {_resolve_column_entity(ref, config) for ref in collect_column_refs(expr.condition)}
+    accepting = sorted(read - rejected - {base})
+    if accepting:
+        entity = accepting[0]
+        raise _conditional_path_refusal(
+            base,
+            entity,
+            "a value row with no match there could satisfy the condition",
+            "null_accepting_condition",
+            (
+                f"Compare a column of '{entity}' with =, !=, <, <=, >, >=, IN, NOT IN or "
+                "IS NOT NULL in a top-level AND term of the condition, or use a where filter "
+                "on its dimension with the plain measure."
+            ),
+        )
+
+
 def is_conditional_aggregate(measure: MeasureConfig) -> bool:
     return measure.meta.get("source") == "aggregate_if"
 
 
 def _conditional_path_refusal(
-    measure: MeasureConfig, target: str, message: str, reason: str, hint: str, **details: Any
+    base: str, target: str, message: str, reason: str, hint: str, **details: Any
 ) -> SemanticLayerError:
     return SemanticLayerError(
         "UNSUPPORTED_CONDITIONAL_AGGREGATE",
-        f"aggregate_if over '{measure.entity}' reads '{target}': {message}",
+        f"aggregate_if over '{base}' reads '{target}': {message}",
         details={
-            "base_entity": measure.entity,
+            "base_entity": base,
             "entity": target,
             "reason": reason,
             "hint": hint,
@@ -993,72 +1061,65 @@ def _conditional_path_refusal(
     )
 
 
-def check_conditional_aggregate_paths(
-    measure: MeasureConfig, config: PackageConfig, preference: str
+def conditional_aggregate_route_refusal(
+    measure: MeasureConfig, target: str, exc: SemanticLayerError
+) -> SemanticLayerError:
+    """The aggregate_if refusal for an entity its base reaches by no route, or by two."""
+    return _conditional_path_refusal(
+        measure.entity,
+        target,
+        str(exc),
+        exc.code.lower(),
+        str(exc.details.get("hint", ""))
+        or "Declare a many-to-one relationship from the value's entity to this entity.",
+        candidates=exc.details.get("candidates", []),
+    )
+
+
+def check_conditional_aggregate_path(
+    measure: MeasureConfig, target: str, path: list[str], config: PackageConfig
 ) -> None:
-    """Refuse an aggregate_if unless each other entity it reads is on a many-to-one path.
+    """Refuse an aggregate_if unless every hop of its path to ``target`` reaches at most one row.
 
     The path is the one a ``where`` filter on that entity's dimension takes (path
-    preferences and role rules included), and every hop must reach at most one row, so no
-    value row is counted twice.
+    preferences and role rules included), so no value row is counted twice.
     """
-    from .sql_lowering import _preferred_path
-
     relationships = _relationship_index(config)
-    for target in sorted(_measure_required_entities(measure, config) - {measure.entity}):
-        try:
-            path, _ = _preferred_path(
-                config, start=measure.entity, target=target, preference=preference
+    current = measure.entity
+    for rel_id in path:
+        rel = relationships[rel_id]
+        forward = current == rel.source_entity
+        following = rel.target_entity if forward else rel.source_entity
+        if rel.temporal_validity or not _reaches_at_most_one(rel, current):
+            cardinality = rel.cardinality if forward else ":".join(rel.cardinality.split(":")[::-1])
+            why, hint = (
+                (
+                    "is valid over time",
+                    "An aggregate_if has no time to pick one version by; read an entity "
+                    "that holds one row per key instead.",
+                )
+                if rel.temporal_validity
+                else (
+                    f"is {cardinality}: it can reach many rows",
+                    "A condition may read only the entities its value's entity reaches "
+                    "over many-to-one hops. To keep rows by what their related rows hold, "
+                    "use a metric_predicate on the value's entity instead.",
+                )
             )
-        except SemanticLayerError as exc:
-            if exc.code not in {"AMBIGUOUS_PATH", "PATH_NOT_FOUND"}:
-                raise
             raise _conditional_path_refusal(
-                measure,
+                measure.entity,
                 target,
-                str(exc),
-                exc.code.lower(),
-                str(exc.details.get("hint", ""))
-                or "Declare a many-to-one relationship from the value's entity to this entity.",
-                candidates=exc.details.get("candidates", []),
-            ) from exc
-        current = measure.entity
-        for rel_id in path:
-            rel = relationships[rel_id]
-            forward = current == rel.source_entity
-            following = rel.target_entity if forward else rel.source_entity
-            if rel.temporal_validity or not _reaches_at_most_one(rel, current):
-                cardinality = (
-                    rel.cardinality if forward else ":".join(rel.cardinality.split(":")[::-1])
-                )
-                why, hint = (
-                    (
-                        "is valid over time",
-                        "An aggregate_if has no time to pick one version by; read an entity "
-                        "that holds one row per key instead.",
-                    )
-                    if rel.temporal_validity
-                    else (
-                        f"is {cardinality}: it can reach many rows",
-                        "A condition may read only the entities its value's entity reaches "
-                        "over many-to-one hops. To keep rows by what their related rows hold, "
-                        "use a metric_predicate on the value's entity instead.",
-                    )
-                )
-                raise _conditional_path_refusal(
-                    measure,
-                    target,
-                    f"the hop '{rel.id}' from '{current}' to '{following}' {why}, so one value "
-                    "row could be aggregated more than once",
-                    "fanout_hop",
-                    hint,
-                    path=list(path),
-                    relationship=rel.id,
-                    from_entity=current,
-                    to_entity=following,
-                    cardinality=cardinality,
-                )
-            current = following
+                f"the hop '{rel.id}' from '{current}' to '{following}' {why}, so one value "
+                "row could be aggregated more than once",
+                "fanout_hop",
+                hint,
+                path=list(path),
+                relationship=rel.id,
+                from_entity=current,
+                to_entity=following,
+                cardinality=cardinality,
+            )
+        current = following
 
 
 def _synthetic_conditional_measure(
@@ -1075,6 +1136,7 @@ def _synthetic_conditional_measure(
             details={"aggregation": expr.aggregation},
         )
     entity_id = _conditional_aggregate_entity(expr, config)
+    _require_null_rejecting_condition(expr, entity_id, config)
     entities = _entity_index(config)
     entity = entities[entity_id]
 
