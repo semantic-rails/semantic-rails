@@ -29,12 +29,8 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import require_temporal_support, validate_temporal_support
 from ._base import (
-    _TO_DATE_OR_ROLLING_RE,
-    _TREND_CUE_RE,
-    _explicit_grain,
     _period_shift_grain,
     _time_window,
-    _tokens,
     _with_fiscal_calendar,
 )
 from .faithfulness import (
@@ -109,19 +105,6 @@ def plan_payload(
             },
         )
 
-    validate_temporal_support(runtime._config, partial_query or {})
-    if not runtime._config.temporal_roles:
-        require_temporal_support(
-            runtime._config,
-            requested=bool(
-                _time_window(intent).spans
-                or _explicit_grain(intent)
-                or _period_shift_grain(intent)
-                or _TREND_CUE_RE.search(intent.lower())
-                or _TO_DATE_OR_ROLLING_RE.search(intent.lower())
-                or "cumulative" in _tokens(intent)
-            ),
-        )
     partial_query = _checked_partial_query(partial_query)
     intent_str = intent.strip()
     detail_level = str(detail or "best").lower()
@@ -168,7 +151,15 @@ def plan_payload(
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
 
+    validate_temporal_support(runtime._config, partial_query or {})
+    if not runtime._config.temporal_roles:
+        require_temporal_support(
+            runtime._config,
+            requested=bool(_time_window(intent).spans or _period_shift_grain(intent)),
+        )
     result = compose(runtime, intent)
+    if result.draft is not None:
+        validate_temporal_support(runtime._config, result.draft.query)
     intent_ir = result.intent_ir
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []

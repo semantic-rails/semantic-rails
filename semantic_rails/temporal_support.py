@@ -52,13 +52,13 @@ def validate_temporal_support(config: PackageConfig, payload: Mapping[str, Any])
 
     def visit(node: Any) -> None:
         if isinstance(node, Mapping):
-            if node.get("kind") == "literal":
+            kind = str(node.get("kind", "")).strip()
+            if kind == "literal":
                 return
+            require_temporal_support(config, requested=kind in time_kinds)
             require_temporal_support(
-                config, requested=isinstance(node.get("kind"), str) and node["kind"] in time_kinds
-            )
-            require_temporal_support(
-                config, requested=str(node.get("aggregation", "")) in {"first_value", "last_value"}
+                config,
+                requested=str(node.get("aggregation", "")).strip() in {"first_value", "last_value"},
             )
             for key, child in node.items():
                 if key == "policy_context" or _opaque_expression_data(node, key):
@@ -71,14 +71,15 @@ def validate_temporal_support(config: PackageConfig, payload: Mapping[str, Any])
                 if key in {"metric", "metric_recipe", "basis_metric", "measure"} and isinstance(
                     child, str
                 ):
+                    reference = child.strip()
                     objects = measures if key == "measure" else recipes
-                    obj = objects.get(child)
+                    obj = objects.get(reference)
                     if obj is None:
                         obj = next(
                             (
                                 row
                                 for row in objects.values()
-                                if child in {row.name, row.label, *row.aliases}
+                                if reference in {row.name, row.label, *row.aliases}
                             ),
                             None,
                         )

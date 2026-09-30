@@ -874,7 +874,9 @@ Requests for time ranges, grains, windows, temporal overrides, prior-period or
 cumulative expressions, and plan intents such as "last month" are refused with
 `INVALID_TEMPORAL_ROLE`: the package declares no time. Declare a `times:` entry
 before requesting time analysis. A `defaults.time.default_query_axis: true`
-also requires a declared temporal role. Architect and CLI scaffolds accept a blank
+also requires a declared temporal role. Expression kinds, aggregation names and
+referenced IDs are trimmed before checking whether they require time.
+Architect and CLI scaffolds accept a blank
 `time_column` to generate a package, seed, examples and tests without dates.
 
 The `times:` block key IS the temporal role. The backing date/timestamp dimension

@@ -284,6 +284,156 @@ def test_plan_time_phrases_refuse(runtime, intent: str) -> None:
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
 
 
+@pytest.mark.parametrize(
+    ("intent", "measure_label", "dimension_label"),
+    [
+        ("item count for the History category", "Item count", "Category"),
+        ("item count by daycare", "Item count", "Daycare"),
+        ("count of monthly plans", "Monthly plans", "Category"),
+        ("moving company count", "Moving company count", "Category"),
+    ],
+)
+def test_plan_ordinary_time_words_answer(
+    package_path, intent: str, measure_label: str, dimension_label: str
+) -> None:
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["measures"]["item_count"]["label"] = measure_label
+    model["model"]["dimensions"]["category"]["label"] = dimension_label
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    metrics_path = package_path / "metrics/core.yml"
+    metrics = yaml.safe_load(metrics_path.read_text())
+    metrics["metrics"]["item_count"]["label"] = measure_label
+    metrics_path.write_text(yaml.safe_dump(metrics, sort_keys=False))
+    (package_path / "data/catalogue_csv/items.csv").write_text(
+        "item_id,category,amount\n1,History,10\n2,History,20\n3,B,30\n4,B,40\n"
+    )
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        result = plan_payload(runtime, intent=intent)
+        assert result["status"] == "ok", result
+        query = result["best"]["query_ir"]
+        assert "time" not in query
+        rows = runtime.query(query)["rows"]
+        values = [next(value for key, value in row.items() if key != CATEGORY) for row in rows]
+        assert sorted(values) == (
+            [2] if "History" in intent else [2, 2] if "daycare" in intent else [4]
+        )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("partial_query", [None, {"time": {}}])
+def test_plan_off_topic_time_phrase_is_out_of_scope(runtime, partial_query) -> None:
+    result = plan_payload(
+        runtime, intent="write a poem about last month", partial_query=partial_query
+    )
+    assert result["status"] == "out_of_scope"
+    assert result["best"] is None
+
+
+def test_plan_irrelevant_time_phrase_is_out_of_scope(runtime) -> None:
+    result = plan_payload(runtime, intent="rainfall last month")
+    assert result["status"] == "out_of_scope"
+    assert result["best"] is None
+
+
+def test_plan_drafted_time_cannot_bypass_guard(runtime, monkeypatch) -> None:
+    from semantic_rails.planner.orchestrator import compose
+
+    result = compose(runtime, "item count")
+    assert result.draft is not None
+    result = replace(result, draft=replace(result.draft, query={**BASE, "time": {}}))
+    monkeypatch.setattr("semantic_rails.planner.plan.compose", lambda *_: result)
+    with pytest.raises(SemanticLayerError, match="declares no time") as exc:
+        plan_payload(runtime, intent="item count")
+    assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+
+
+def test_plan_relevant_revenue_window_refuses(package_path) -> None:
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["measures"]["total_amount"]["label"] = "Revenue"
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        with pytest.raises(SemanticLayerError, match="declares no time") as exc:
+            plan_payload(runtime, intent="revenue last month")
+        assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "cumulative",
+        "prior_period",
+        "rolling",
+        "period_to_date",
+        "first_value",
+        "last_value",
+        "metric",
+        "measure",
+    ],
+)
+@pytest.mark.parametrize(
+    "operation",
+    ["validate", "compile", "inspect", "discover", "build-options", "valid-values", "plan"],
+)
+def test_normalized_time_expressions_refuse(runtime, variant: str, operation: str) -> None:
+    if variant in {"metric", "measure"}:
+        if variant == "metric":
+            obj = replace(
+                runtime._config.metric_recipes[0],
+                expression=CumulativeExpr(MeasureRefExpr(COUNT)),
+            )
+            runtime._config = replace(runtime._config, metric_recipes=[obj])
+        else:
+            obj = replace(
+                next(row for row in runtime._config.measures if row.id == AMOUNT),
+                expr=CumulativeExpr(MeasureRefExpr(COUNT)),
+            )
+            runtime._config = replace(
+                runtime._config,
+                measures=[obj if row.id == obj.id else row for row in runtime._config.measures],
+            )
+        expression = {variant: f" {obj.id} "}
+    elif variant in {"first_value", "last_value"}:
+        expression = {"measure": AMOUNT, "aggregation": f" {variant} "}
+    else:
+        expression = {"kind": f" {variant} ", "input": {"measure": COUNT}}
+        expression.update(
+            {
+                "prior_period": {"offset": {"unit": "month", "value": 1}},
+                "rolling": {"window": {"unit": "day", "value": 7}},
+                "period_to_date": {"period": "year"},
+            }.get(variant, {})
+        )
+    query = {**BASE, "select": [{"expression": expression}]}
+    if operation == "validate":
+        result = runtime.validate(query)
+        assert result["ok"] is False
+        assert result["errors"][0]["code"] == "INVALID_TEMPORAL_ROLE"
+        assert result["recovery_hints"][0]["kind"] == "remove_time_or_declare_role"
+        return
+    with pytest.raises(SemanticLayerError, match="declares no time") as exc:
+        if operation == "compile":
+            runtime.compile(query)
+        elif operation == "inspect":
+            inspect_payload(runtime, object_id=COUNT, partial_query=query)
+        elif operation == "discover":
+            discover_payload(runtime, terms="item count", partial_query=query)
+        elif operation == "build-options":
+            build_options_payload(runtime, partial_query=query)
+        elif operation == "valid-values":
+            valid_values_payload(runtime, dimension_id=CATEGORY, query=query)
+        else:
+            plan_payload(runtime, intent="item count", partial_query=query)
+    assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    assert exc.value.details["available_temporal_roles"] == []
+
+
 def test_plan_partial_time_refuses_before_it_can_be_dropped(runtime) -> None:
     with pytest.raises(SemanticLayerError, match="declares no time"):
         plan_payload(runtime, intent="item count", partial_query={"time": {}})
