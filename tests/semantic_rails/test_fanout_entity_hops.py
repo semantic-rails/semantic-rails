@@ -25,6 +25,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.result_helpers import typed_rows
 
 # Order 1 has two beverages (the double-count trap), order 2 a beverage and a jaffle, order 3
 # two jaffles, order 4 a beverage after Q4 2016, order 5 no items, and order 6 a beverage and a
@@ -238,7 +239,7 @@ def _run(package: Path, query: dict[str, Any], *, validate: bool = False) -> dic
 def _rows(package: Path, query: dict[str, Any]) -> list[tuple[Any, ...]]:
     result = _run(package, query)
     assert result.get("ok", True), result
-    return _normal(tuple(row.values()) for row in result["rows"])
+    return _normal(tuple(row.values()) for row in typed_rows(result))
 
 
 def _reference(package: Path, sql: str) -> list[tuple[Any, ...]]:
@@ -602,7 +603,7 @@ def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> No
             "SELECT product_type, COUNT(DISTINCT order_id), SUM(item_revenue_cents) / 100.0"
             " FROM jaffle_item GROUP BY 1"
         ).fetchall()
-    assert _normal(tuple(row.values()) for row in result["rows"]) == _normal(expected)
+    assert _normal(tuple(row.values()) for row in typed_rows(result)) == _normal(expected)
 
 
 @pytest.mark.parametrize(

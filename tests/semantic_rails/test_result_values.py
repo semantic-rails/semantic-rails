@@ -9,6 +9,7 @@ from uuid import UUID
 
 import duckdb
 import pytest
+import yaml
 
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.cli.common import _print_json
@@ -20,7 +21,9 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter, json_text
 from semantic_rails.result_values import result_rows
+from semantic_rails.runtime import Runtime
 from tests.integration.harness import assert_column_types_match, assert_rows_match, normalize_rows
+from tests.semantic_rails.dbt_warehouse import write_orders_package
 
 QUERY = {
     "version": 1,
@@ -134,8 +137,9 @@ def test_date_bucket_and_timestamp_bucket_have_one_wire_type(runtime_factory, mo
         runtime.close()
 
 
+@pytest.mark.parametrize("include_snowflake", [False, True])
 def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
-    runtime_factory, monkeypatch, capsys
+    runtime_factory, monkeypatch, capsys, include_snowflake
 ) -> None:
     # psycopg returns these standard Python types for numeric, timestamp,
     # timestamptz, date, time, interval and bytea; no Postgres server needed.
@@ -154,7 +158,7 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
     }
     with duckdb.connect(":memory:") as connection:
         cursor = connection.execute("""
-            SELECT 0.10::DOUBLE AS amount,
+            SELECT 0.10::DECIMAL(3,2) AS amount,
                 123456789012345678.123456789::DECIMAL(27,9) AS precise,
                 42 AS orders, (TIMESTAMPTZ '2026-09-30 12:15:00+00' AT TIME ZONE 'UTC') AS at,
                 TIMESTAMP '2026-09-30 08:15:00' AS local,
@@ -167,11 +171,27 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
         )
     # Fetch the UTC clock then attach its zone without requiring optional pytz.
     duckdb_row["at"] = duckdb_row["at"].replace(tzinfo=UTC)
+    driver_rows = [duckdb_row, postgres_row]
+    columns = []
+    if include_snowflake:
+        bucket = "temporal_role.jaffle_order_time__day"
+        columns = [{"field": bucket, "semantic_id": "temporal_role.jaffle_order_time"}]
+        with duckdb.connect(":memory:") as connection:
+            amount, orders, day = connection.execute(
+                "SELECT 12.50::DECIMAL(4,2), 3, DATE '2026-09-30'"
+            ).fetchone()
+        driver_rows = [
+            {"amount": amount, "orders": orders, bucket: day},
+            {"amount": Decimal("12.50"), "orders": 3, bucket: datetime(2026, 9, 30)},
+            _extract_snowflake_json_rows(
+                f'[{{"amount":12.50,"orders":3,"{bucket}":"2026-09-30T00:00:00"}}]'
+            )[0],
+        ]
     runtime = runtime_factory("jaffle_shop")
-    raw_rows = [duckdb_row]
+    raw_rows = [driver_rows[0]]
     monkeypatch.setattr(
         "semantic_rails.runtime.output_columns",
-        lambda *args: [{"field": "amount", "type": "decimal"}],
+        lambda *args: columns,
     )
     monkeypatch.setattr(
         "semantic_rails.runtime._adapter_query",
@@ -181,7 +201,7 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
     adapter = SemanticLayerMCPAdapter(runtime)
     outputs = []
     try:
-        for row in (duckdb_row, postgres_row):
+        for row in driver_rows:
             raw_rows[:] = [row]
             sdk = runtime.query(QUERY)
             assert sdk["truncated"] is True
@@ -200,7 +220,10 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
             for payload in (sdk, http, mcp, cli):
                 outputs.append(json_text({key: payload[key] for key in ("rows", "column_types")}))
         assert len(set(outputs)) == 1
-        assert json.loads(outputs[0])["rows"][0]["precise"] == "123456789012345678.123456789"
+        if include_snowflake:
+            assert sdk["rows"] == [{"amount": "12.5", "orders": 3, bucket: "2026-09-30T00:00:00"}]
+        else:
+            assert sdk["rows"][0]["precise"] == "123456789012345678.123456789"
         columnar = adapter.call_tool("execute", {"query": QUERY, "row_format": "columns"})
         assert columnar["column_types"] == sdk["column_types"]
         assert columnar["rows"] == [[sdk["rows"][0][key] for key in columnar["columns"]]]
@@ -273,50 +296,15 @@ def test_aware_timestamp_outside_utc_range_refuses() -> None:
     assert exc.value.code == "RESULT_VALUE_UNSUPPORTED"
 
 
-def test_json_only_adapters_use_declared_types_without_guessing_text() -> None:
-    columns = [
-        {"field": "n", "type": "currency"},
-        {"field": "t", "type": "time", "semantic_id": "temporal_role.created"},
-        {"field": "d", "type": "date"},
-        {"field": "clock", "type": "time"},
-        {"field": "text", "type": "string"},
-    ]
-    typed = [
-        {
-            "n": Decimal("0.1"),
-            "t": datetime(2026, 9, 30, tzinfo=UTC),
-            "d": date(2026, 9, 30),
-            "clock": time(8, 15),
-            "text": "0.1",
-        }
-    ]
-    text = [
-        {
-            "n": "0.10",
-            "t": "2026-09-30 00:00:00+00:00",
-            "d": "2026-09-30",
-            "clock": "08:15:00",
-            "text": "0.1",
-        }
-    ]
-    assert result_rows(typed, output_columns=columns) == result_rows(text, output_columns=columns)
-    assert result_rows(text, output_columns=columns)["column_types"]["text"] == {"type": "string"}
-
-
 @pytest.mark.parametrize(
-    ("value", "kind"),
-    [
-        ("not numeric", "number"),
-        ("not a date", "date"),
-        ("not a clock", "time"),
-        ("not a timestamp", "timestamp"),
-        ("NaN", "decimal"),
-    ],
+    "kind", ["number", "decimal", "integer", "float", "date", "time", "timestamp"]
 )
-def test_invalid_declared_values_refuse(value: str, kind: str) -> None:
-    with pytest.raises(SemanticLayerError) as exc:
-        result_rows([{"a": value}], output_columns=[{"field": "a", "type": kind}])
-    assert exc.value.code == "RESULT_VALUE_UNSUPPORTED"
+def test_authored_types_never_convert_or_refuse_text(kind: str) -> None:
+    rows = [{"a": "007"}, {"a": "N/A"}]
+    assert result_rows(rows, output_columns=[{"field": "a", "type": kind}]) == {
+        "rows": rows,
+        "column_types": {"a": {"type": "string"}},
+    }
 
 
 def test_conformance_distinguishes_integer_values_without_float_rounding() -> None:
@@ -336,23 +324,18 @@ def test_json_adapter_does_not_lose_precision_before_encoding() -> None:
     assert result["column_types"]["a"] == {"type": "decimal"}
 
 
-@pytest.mark.parametrize("kind", ["decimal", "float", "double", "integer"])
-def test_numeric_encoding_is_chosen_once_per_column(kind: str) -> None:
-    values = [Decimal("1"), Decimal("9007199254740993")]
-    if kind != "integer":
-        values.append(Decimal("1.0000000000000001"))
-    result = result_rows(
-        [{"a": value} for value in values], output_columns=[{"field": "a", "type": kind}]
-    )
-    expected_type = str if kind == "decimal" else int if kind == "integer" else float
-    assert all(type(row["a"]) is expected_type for row in result["rows"])
-    assert result["column_types"]["a"]["type"] == ("float" if kind == "double" else kind)
-    if kind == "decimal":
-        assert result["rows"] == [
-            {"a": "1"},
-            {"a": "9007199254740993"},
-            {"a": "1.0000000000000001"},
-        ]
+@pytest.mark.parametrize("integer", [9007199254740993, 10**400])
+def test_inexact_integer_float_promotion_refuses(integer: int) -> None:
+    with pytest.raises(SemanticLayerError) as exc:
+        result_rows([{"a": integer}, {"a": 1.5}])
+    assert exc.value.code == "RESULT_VALUE_UNSUPPORTED"
+    assert exc.value.details == {}
+
+
+def test_exact_integer_float_promotion_uses_one_type() -> None:
+    result = result_rows([{"a": 3}, {"a": 1.5}])
+    assert result == {"rows": [{"a": 3.0}, {"a": 1.5}], "column_types": {"a": {"type": "float"}}}
+    assert all(type(row["a"]) is float for row in result["rows"])
 
 
 def test_observed_numeric_types_apply_to_the_entire_column() -> None:
@@ -368,7 +351,13 @@ def test_json_temporal_text_retains_submicrosecond_precision(
 ) -> None:
     value = prefix + "08:15:00." + fraction + "+00:00"
     rows = _extract_snowflake_json_rows(json.dumps([{"a": value}]))
-    result = result_rows(rows, output_columns=[{"field": "a", "type": kind}], zone="Asia/Tokyo")
+    result = result_rows(
+        rows,
+        output_columns=[{"field": "a", "semantic_id": "temporal_role.created"}]
+        if kind == "timestamp"
+        else [{"field": "a", "type": kind}],
+        zone="Asia/Tokyo",
+    )
     expected = ("2026-09-30T17:15:00." + fraction + "+09:00") if kind == "timestamp" else value
     assert result["rows"] == [{"a": expected}]
 
@@ -408,15 +397,14 @@ def test_conformance_compares_decimal_columns_numerically_and_sorts_consistently
 
 
 @pytest.mark.parametrize(
-    "kind,typed,text",
+    "typed,text",
     [
-        ("timestamp", datetime(2026, 9, 30, 8, 15, 0, 123500), "2026-09-30T08:15:00.123500000"),
-        ("time", time(8, 15, 0, 123500), "08:15:00.123500000"),
-        ("time", time(8, 15), "08:15:00.000000000"),
+        (datetime(2026, 9, 30, 8, 15, 0, 123500), "2026-09-30T08:15:00.123500000"),
+        (datetime(2026, 9, 30, 8, 15), "2026-09-30T08:15:00.000000000"),
     ],
 )
-def test_temporal_fraction_encoding_is_canonical(kind, typed, text) -> None:
-    columns = [{"field": "a", "type": kind}]
+def test_bucket_fraction_encoding_is_canonical(typed, text) -> None:
+    columns = [{"field": "a", "semantic_id": "temporal_role.created"}]
     assert result_rows([{"a": typed}], output_columns=columns) == result_rows(
         [{"a": text}], output_columns=columns
     )
@@ -425,12 +413,59 @@ def test_temporal_fraction_encoding_is_canonical(kind, typed, text) -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        "08:15.123456789",
-        "08:15:00.123456789+00:00:00.000000001",
-        "08:15:00.123456789+00:00:00.000001",
+        "not a timestamp",
+        "2026-09-30T08:15.123456789",
+        "2026-09-30T08:15:00.123456789+00:00:00.000000001",
+        "2026-09-30T08:15:00.123456789+00:00:00.000001",
     ],
 )
-def test_unrepresentable_temporal_fraction_refuses(value: str) -> None:
+def test_unrepresentable_bucket_text_refuses(value: str) -> None:
     with pytest.raises(SemanticLayerError) as exc:
-        result_rows([{"a": value}], output_columns=[{"field": "a", "type": "time"}])
+        result_rows(
+            [{"a": value}], output_columns=[{"field": "a", "semantic_id": "temporal_role.created"}]
+        )
     assert exc.value.code == "RESULT_VALUE_UNSUPPORTED"
+
+
+@pytest.mark.parametrize("case", ["division", "text"])
+def test_runtime_encoding_follows_driver_values_over_authored_types(tmp_path, case) -> None:
+    package = write_orders_package(tmp_path, schema="", with_customers=False)
+    (package / "data" / "seed.sql").write_text(
+        "CREATE TABLE fct_orders AS SELECT * FROM (VALUES "
+        "(1, TIMESTAMP '2024-01-01', '007', 1), "
+        "(2, TIMESTAMP '2024-01-02', 'N/A', 1)) "
+        "AS t(order_id, ordered_at, status, order_total);"
+    )
+    path = package / "models" / "orders.yml"
+    model = yaml.safe_load(path.read_text())
+    model["model"]["measures"]["order_count"]["value_type"] = "integer"
+    model["model"]["dimensions"]["status"]["kind"] = "integer"
+    path.write_text(yaml.safe_dump(model))
+    expression = {"measure": "measure.shop.order_count"}
+    if case == "division":
+        expression = {
+            "kind": "arithmetic",
+            "op": "/",
+            "left": expression,
+            "right": {"kind": "literal", "value": 2},
+        }
+    runtime = Runtime.from_path(str(package))
+    try:
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": expression, "as": "v"}],
+                "group_by": ["dimension.shop_order_status"],
+            }
+        )
+        assert sorted(row["dimension.shop_order_status"] for row in result["rows"]) == [
+            "007",
+            "N/A",
+        ]
+        assert result["column_types"]["dimension.shop_order_status"] == {"type": "string"}
+        assert [row["v"] for row in result["rows"]] == (
+            [0.5, 0.5] if case == "division" else [1, 1]
+        )
+        assert result["column_types"]["v"] == {"type": "float" if case == "division" else "integer"}
+    finally:
+        runtime.close()

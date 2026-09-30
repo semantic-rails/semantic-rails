@@ -711,32 +711,34 @@ all verbosity levels and MCP record/column row formats. It is separate from
 | UUID | Lowercase, hyphenated string | `{"type":"uuid"}` |
 | JSON array / object | JSON-native structure | `{"type":"array"}` / `{"type":"object"}` |
 
-A column uses one numeric encoding, selected from explicit numeric type metadata
-(`decimal`, `integer`, `float`/`double`) or the observed driver types. Semantic
-display types such as `currency`, `count` and `number` do not specify a SQL type.
-Without an explicit SQL type, Decimal takes precedence over float, then integer,
-for the entire column. `Decimal("0.10")` becomes `"0.1"` and
-`Decimal("9007199254740993")` becomes `"9007199254740993"`; a native integer
-`9007199254740993` remains a JSON number. Consumers that use binary64 must read
-integer JSON tokens without first rounding them to float. The text `"0.1"`
-remains text with type `string`. Cross-warehouse conformance compares decimal
-columns numerically using `column_types`, including when another warehouse
-returns the same calculation as float.
+A column's JSON type follows the driver's result type: DECIMAL/NUMERIC becomes
+canonical strings; FLOAT/DOUBLE and INTEGER become JSON numbers. Authored types
+never convert, re-encode or refuse a value. For mixed numeric driver values,
+Decimal takes precedence over float, then integer, for the entire column.
+An integer mixed with floats converts only if `float(n) == n`; otherwise the
+column refuses with `RESULT_VALUE_UNSUPPORTED` rather than rounding the integer.
+`Decimal("0.10")` becomes `"0.1"` and `Decimal("9007199254740993")` becomes
+`"9007199254740993"`; a native integer `9007199254740993` remains a JSON number.
+Consumers that use binary64 must read integer JSON tokens without first rounding
+them to float. Numeric-looking text remains text with type `string`, even when
+authored as an integer dimension.
 
-Temporal-role outputs and authored timestamp columns are timestamps even when a
-driver returns a date for a midnight bucket: that date becomes a naive midnight
-timestamp. Date dimensions retain their date type. Aware values preserve the
-instant in the query's time zone, so month buckets retain their own first day.
-Typed timestamp and time text retains its complete seconds fraction, including
-precision beyond Python's microseconds. Nonstandard fractional clocks and
-fractional zone offsets that cannot be retained refuse with
+The same aggregate can have a different SQL result type per warehouse: `AVG`
+is DOUBLE on DuckDB and NUMERIC on Postgres. `column_types` reports the driver's
+result type. Cross-warehouse conformance and package tests compare numeric
+columns numerically using this metadata, preserving the distinction from text.
+
+The engine-derived time-bucket hint (`semantic_id` starting `temporal_role.`)
+is the only column hint used for encoding: a driver's DATE becomes a naive
+midnight timestamp, and ISO timestamp text is parsed with its complete seconds
+fraction, including precision beyond Python's microseconds. Aware values
+preserve the instant in the query's time zone, so month buckets retain their
+own first day. Other date/time values follow their driver types; authored
+temporal types do not parse text. Nonstandard fractional clocks and fractional
+zone offsets in bucket text that cannot be retained refuse with
 `RESULT_VALUE_UNSUPPORTED` before parsing.
 Intervals represent the duration provided by the driver; calendar months/years
 are not inferred from a `timedelta`.
-
-For JSON-only adapters, explicit semantic numeric and temporal column types
-restore typed values before encoding; text is never inferred from its contents.
-Invalid typed text refuses with the same error.
 
 Metadata is inferred from returned values, not the warehouse catalog: an
 all-null column has type `null`, and an empty result has `column_types: {}`.

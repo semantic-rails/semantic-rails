@@ -1,4 +1,4 @@
-"""Warehouse-independent JSON values for public result rows."""
+"""Encode driver values as JSON rows with logical types through ``result_rows``."""
 
 from __future__ import annotations
 
@@ -72,7 +72,12 @@ def _value(value: Any, *, zone: str = "", numeric_type: str = "") -> tuple[Any, 
             if decimal != decimal.to_integral_value():
                 raise _refuse()
             return int(decimal), {"type": "integer"}
-        number = float(decimal)
+        try:
+            number = float(value)
+        except OverflowError:
+            raise _refuse() from None
+        if isinstance(value, int) and number != value:
+            raise _refuse()
         if not math.isfinite(number):
             raise _refuse()
         return number, {"type": "float"}
@@ -121,36 +126,6 @@ def _json_container(value: Any) -> Any:
     raise _refuse()
 
 
-def _declared_value(value: Any, declared_type: str) -> Any:
-    """Restore explicit semantic types for adapters that return JSON text.
-
-    Never guess from a string's contents: numeric-looking text remains text.
-    """
-    if not isinstance(value, str):
-        return value
-    try:
-        if declared_type in {
-            "decimal",
-            "number",
-            "integer",
-            "float",
-            "double",
-            "count",
-            "currency",
-            "percent",
-        }:
-            return Decimal(value)
-        if declared_type in {"timestamp", "datetime"}:
-            return datetime.fromisoformat(value)
-        if declared_type == "time":
-            return time.fromisoformat(value)
-        if declared_type == "date":
-            return date.fromisoformat(value)
-    except (ValueError, ArithmeticError):
-        raise _refuse() from None
-    return value
-
-
 def result_rows(
     rows: list[dict[str, Any]],
     *,
@@ -165,49 +140,39 @@ def result_rows(
     """
     encoded: list[dict[str, Any]] = []
     types: dict[str, dict[str, str]] = {}
-    declared = {
-        column["field"]: (
-            "timestamp"
-            if str(column.get("semantic_id", "")).startswith("temporal_role.")
-            else column.get("type", "")
-        )
+    buckets = {
+        column["field"]
         for column in output_columns or []
+        if str(column.get("semantic_id", "")).startswith("temporal_role.")
     }
-    # Choose once from declared SQL types or observed Python types, never
-    # from the magnitude/precision of individual values. Semantic display
-    # types (currency, count, number) do not specify a warehouse SQL type.
+    # Choose once from observed driver types; authored types never encode values.
     numeric_types: dict[str, str] = {}
+    priority = {"integer": 0, "float": 1, "decimal": 2}
     for row in rows:
         for column, value in row.items():
-            kind = declared.get(column, "")
-            value = _declared_value(value, kind)
             if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
                 continue
-            if kind in {"decimal", "integer", "float", "double"}:
-                numeric_types[column] = "float" if kind == "double" else kind
-            else:
-                observed = (
-                    "decimal"
-                    if isinstance(value, Decimal)
-                    else "float"
-                    if isinstance(value, float)
-                    else "integer"
-                )
-                priority = {"integer": 0, "float": 1, "decimal": 2}
-                prior_type = numeric_types.get(column, observed)
-                numeric_types[column] = max((prior_type, observed), key=priority.__getitem__)
+            observed = (
+                "decimal"
+                if isinstance(value, Decimal)
+                else "float"
+                if isinstance(value, float)
+                else "integer"
+            )
+            prior_type = numeric_types.get(column, observed)
+            numeric_types[column] = max((prior_type, observed), key=priority.__getitem__)
     for row in rows:
         output: dict[str, Any] = {}
         for column, value in row.items():
-            declared_type = declared.get(column, "")
+            bucket = column in buckets
             # Python's temporal parsers retain only microseconds. Keep the
             # original seconds fraction while normalizing the calendar/zone.
             fraction = (
                 re.match(r"(?:\d{4}-\d{2}-\d{2}[T ])?\d{2}:\d{2}:\d{2}[.,](\d+)", value)
-                if isinstance(value, str) and declared_type in {"timestamp", "datetime", "time"}
+                if isinstance(value, str) and bucket
                 else None
             )
-            if isinstance(value, str) and declared_type in {"timestamp", "datetime", "time"}:
+            if isinstance(value, str) and bucket:
                 for part in re.finditer(r"[.,](\d+)", value):
                     if any(digit != "0" for digit in part[1]) and (
                         fraction is None or part.span(1) != fraction.span(1)
@@ -215,14 +180,14 @@ def result_rows(
                         # Nonstandard clocks or fractional zone offsets that
                         # Python cannot retain must never silently collapse.
                         raise _refuse()
-            value = _declared_value(value, declared_type)
+            if bucket and isinstance(value, str):
+                try:
+                    value = datetime.fromisoformat(value)
+                except ValueError:
+                    raise _refuse() from None
             # Some engines return DATE for a midnight temporal bucket and
             # others TIMESTAMP. Its semantic output type is still a timestamp.
-            if (
-                declared_type in ("timestamp", "datetime")
-                and isinstance(value, date)
-                and not isinstance(value, datetime)
-            ):
+            if bucket and isinstance(value, date) and not isinstance(value, datetime):
                 value = datetime.combine(value, time())
             item, metadata = _value(value, zone=zone, numeric_type=numeric_types.get(column, ""))
             if fraction is not None and len(fraction[1]) > 6:

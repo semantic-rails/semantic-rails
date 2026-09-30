@@ -11,6 +11,7 @@ import yaml
 
 from semantic_rails.config_validation import resolve_package_reference
 from semantic_rails.package_tools import _normalize_rows, _run_test, run_package_tests_report
+from semantic_rails.result_values import result_rows
 from semantic_rails.yaml_loader import safe_load
 from tests.semantic_rails.dbt_warehouse import write_orders_package
 
@@ -137,5 +138,22 @@ def test_snapshot_does_not_coerce_numeric_looking_text(runtime_factory, monkeypa
     }
     try:
         assert _run_test(runtime, "text", spec)["ok"] is False
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("expected", [0.1, "0.1", 1, 1.0])
+def test_metric_equivalence_uses_each_response_column_types(
+    runtime_factory, monkeypatch, expected
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    decimal = Decimal("0.1") if expected in (0.1, "0.1") else Decimal("1")
+    responses = iter([result_rows([{"v": decimal}]), result_rows([{"v": expected}])])
+    monkeypatch.setattr(runtime, "query", lambda query: next(responses))
+    try:
+        report = _run_test(runtime, "equivalent", {"kind": "metric_equals_query"})
+        assert report["ok"] is (not isinstance(expected, str))
+        if isinstance(expected, str):
+            assert report["error"]["code"] == "METRIC_QUERY_MISMATCH"
     finally:
         runtime.close()

@@ -1191,17 +1191,11 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
         expected_rows = list(spec.get("expected_rows", []) or [])
         compiled = runtime._compile(query, policy_context={})
         columns = output_columns(runtime._config, compiled)
-        # Snapshot values use the result column's numeric type even when YAML
-        # loaded the same number as int/float instead of a driver Decimal.
-        for column in columns:
-            kind = result["column_types"].get(column["field"], {}).get("type")
-            if kind in {"decimal", "float", "integer"}:
-                column["type"] = kind
         encoded_expected = result_rows(
             expected_rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
         )
-        actual_rows = _normalize_rows(result["rows"])
-        ok = actual_rows == _normalize_rows(encoded_expected["rows"])
+        actual_rows = _typed_rows(result)
+        ok = actual_rows == _typed_rows(encoded_expected)
         return _test_result(
             test_id,
             ok,
@@ -1212,8 +1206,8 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
     if kind == "metric_equals_query":
         metric_query = dict(spec.get("metric_query", query) or {})
         expected_query = dict(spec.get("expected_query", {}) or {})
-        metric_rows = _normalize_rows(runtime.query(metric_query)["rows"])
-        expected_rows = _normalize_rows(runtime.query(expected_query)["rows"])
+        metric_rows = _typed_rows(runtime.query(metric_query))
+        expected_rows = _typed_rows(runtime.query(expected_query))
         ok = metric_rows == expected_rows
         return _test_result(
             test_id,
@@ -1558,6 +1552,20 @@ def _package_file_parts(name: str, prefix: str) -> tuple[str, ...] | None:
     if not inside or any("\\" in part or ":" in part for part in inside):
         return None
     return inside
+
+
+def _typed_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compare numbers by value while keeping encoded decimal strings distinct from text."""
+    return _normalize_rows(
+        {
+            key: _canonical_number(Decimal(str(value)))
+            if value is not None
+            and result["column_types"].get(key, {}).get("type") in {"decimal", "float", "integer"}
+            else value
+            for key, value in row.items()
+        }
+        for row in result["rows"]
+    )
 
 
 def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
