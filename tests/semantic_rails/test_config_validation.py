@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from contextlib import nullcontext
 from pathlib import Path
@@ -2060,6 +2061,149 @@ def test_check_passes_column_reachability_on_jaffle(tmp_path: Path):
     assert report["ok"] is True, report["errors"]
     assert report["summary"]["tables_probed"] > 0
     assert report["summary"]["missing_columns"] == 0
+
+
+@pytest.mark.parametrize("expression", ["1", "1.0"])
+def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str):
+    package_dir = _copy_external_jaffle_package(tmp_path)
+    orders_path = package_dir / "models" / "core" / "orders.yml"
+    payload = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
+    payload["model"]["measures"]["row_count"] = {
+        "label": "Source rows",
+        "kind": "aggregate",
+        "expr": expression,
+        "default_agg": "sum",
+        "accumulation": {"kind": "flow"},
+        "value_type": "count",
+    }
+    _write_yaml(orders_path, payload)
+    # Bound the real CLI check in a subprocess: a recursive walker regression
+    # must fail the test rather than strand a test worker indefinitely.
+    proc = subprocess.run(
+        [sys.executable, "-m", "semantic_rails.cli", "check", "--path", str(package_dir)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    runtime = Runtime.from_path(str(package_dir))
+    try:
+        query = {
+            "version": 1,
+            "select": [{"expression": {"measure": "measure.jaffle.row_count"}, "as": "rows"}],
+        }
+        sql = runtime.compile(query)["rendered_sql"]
+        assert "SUM(" in sql.upper(), sql
+        assert f"SUM({expression})" in sql.upper(), sql
+        result = runtime.query(query)
+        expected = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "rows"}],
+            }
+        )
+        assert result["rows"] == expected["rows"]
+        assert result["row_count"] == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "expression, expected",
+    [
+        ({"kind": "literal", "value": 1}, []),
+        ({"kind": "literal", "value": True}, []),
+        ({"kind": "literal", "value": "text"}, []),
+        ({"kind": "literal", "value": None}, []),
+        (
+            {
+                "kind": "arithmetic",
+                "op": "+",
+                "left": {"kind": "column", "column": "amount"},
+                "right": {"kind": "literal", "value": 1},
+            },
+            ["amount"],
+        ),
+        (
+            {
+                "kind": "call",
+                "name": "COALESCE",
+                "args": [{"kind": "column", "column": "amount"}, {"kind": "literal", "value": 0}],
+            },
+            ["amount"],
+        ),
+        (
+            {
+                "kind": "case",
+                "whens": [
+                    {
+                        "when": {"kind": "column", "column": "flag"},
+                        "then": {"kind": "column", "column": "amount"},
+                    }
+                ],
+                "else": {"kind": "column", "column": "fallback"},
+            },
+            ["flag", "amount", "fallback"],
+        ),
+        (
+            {
+                "kind": "date_add",
+                "unit": "day",
+                "value": {"kind": "literal", "value": 1},
+                "date": {"kind": "column", "column": "created_at"},
+            },
+            ["created_at"],
+        ),
+    ],
+)
+def test_column_refs_visit_only_expression_nodes(expression, expected):
+    from semantic_rails.expressions import parse_semantic_expression
+    from semantic_rails.package_tools import _collect_column_refs
+
+    out: list[str] = []
+    _collect_column_refs(parse_semantic_expression(expression, context="config"), out=out)
+    assert out == expected
+
+
+@pytest.mark.parametrize("field", ["when", "then", "else"])
+def test_check_flags_missing_column_inside_case(tmp_path: Path, field: str):
+    from semantic_rails.package_tools import check_warehouse_column_reachability_report
+
+    package_dir = _copy_external_jaffle_package(tmp_path)
+    orders_path = package_dir / "models" / "core" / "orders.yml"
+    payload = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
+    expression = {
+        "kind": "case",
+        "whens": [
+            {"when": {"kind": "literal", "value": True}, "then": {"kind": "literal", "value": 1}}
+        ],
+        "else": {"kind": "literal", "value": 0},
+    }
+    missing = {"kind": "column", "column": "missing_source_column"}
+    if field == "else":
+        expression["else"] = missing
+    else:
+        expression["whens"][0][field] = missing
+    payload["model"]["measures"]["row_count"] = {
+        "label": "Source rows",
+        "kind": "aggregate",
+        "expr": expression,
+        "default_agg": "sum",
+        "accumulation": {"kind": "flow"},
+        "value_type": "count",
+    }
+    _write_yaml(orders_path, payload)
+    report = check_warehouse_column_reachability_report(
+        resolve_package_reference(path=str(package_dir))
+    )
+    assert report["ok"] is False
+    assert any(
+        error["code"] == "WAREHOUSE_COLUMN_NOT_FOUND"
+        and error["details"].get("measure_id") == "measure.jaffle.row_count"
+        and error["details"].get("column") == "missing_source_column"
+        for error in report["errors"]
+    )
 
 
 def test_check_flags_dimension_referencing_missing_column(tmp_path: Path):
