@@ -223,7 +223,9 @@ or add that script.
 
 ## Warehouses
 
-DuckDB is included. Add a connector only when you need it, for example Postgres:
+DuckDB 1.5.6 or newer is included; this minimum version fixes parallel window
+execution over empty input blocks used when filling time buckets. Add a connector
+only when you need it, for example Postgres:
 
 ```bash
 uv tool install 'semantic-rails[postgres]'

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from contextlib import nullcontext
 from pathlib import Path
@@ -26,6 +27,7 @@ from semantic_rails.db import Database, SnowflakeCliAdapter, load_csv_dir_to_duc
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.yaml_loader import safe_load as yaml12_safe_load
+from tests.semantic_rails.result_helpers import typed_rows
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -1663,29 +1665,48 @@ def _write_strict_minimal_package(
     _write_seed_sql(package_dir / "data" / "seed_example.sql")
 
 
-def test_strict_rejects_metric_without_value_type(tmp_path: Path):
-    """Docs PACKAGE_AUTHORING.md L641 lists `Metric without value_type:`
-    as a strict-mode rejection. Pre-fix: silently defaulted to "number".
-    """
-    package_dir = tmp_path / "strict_no_vt"
-    _write_strict_minimal_package(
-        package_dir,
-        extra_metrics={
-            "no_vt": {
+@pytest.mark.parametrize(
+    ("package_name", "metric_name", "metric_spec"),
+    [
+        pytest.param(
+            "strict_no_vt",
+            "no_vt",
+            {
                 "label": "No VT",
                 "description": "metric missing value_type",
                 "kind": "aggregate",
                 "measure": "order_count",
-                # value_type intentionally omitted
-            }
-        },
-    )
+            },
+            id="aggregate",
+        ),
+        pytest.param(
+            "strict_ratio_no_vt",
+            "no_vt_ratio",
+            {
+                "label": "No VT ratio",
+                "description": "ratio missing value_type",
+                "kind": "ratio",
+                "numerator": "order_count",
+                "denominator": "order_count",
+            },
+            id="ratio",
+        ),
+    ],
+)
+def test_strict_rejects_metric_without_value_type(
+    tmp_path: Path, package_name, metric_name, metric_spec
+):
+    # Missing value_type must not silently default to "number" in strict mode.
+    package_dir = tmp_path / package_name
+    _write_strict_minimal_package(package_dir, extra_metrics={metric_name: metric_spec})
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
     assert report["ok"] is False
     messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any("missing 'value_type:'" in msg and "'no_vt'" in msg for msg in messages), messages
+    assert any("missing 'value_type:'" in msg and f"'{metric_name}'" in msg for msg in messages), (
+        messages
+    )
 
 
 def test_strict_accepts_metric_with_value_type(tmp_path: Path):
@@ -1724,28 +1745,6 @@ def test_strict_accepts_an_explicit_number_value_type(tmp_path: Path, kind: str)
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
     assert report["ok"] is True, [e.get("message") for e in report.get("errors", [])]
-
-
-def test_strict_rejects_a_ratio_without_value_type(tmp_path: Path):
-    package_dir = tmp_path / "strict_ratio_no_vt"
-    _write_strict_minimal_package(
-        package_dir,
-        extra_metrics={
-            "no_vt_ratio": {
-                "label": "No VT ratio",
-                "description": "ratio missing value_type",
-                "kind": "ratio",
-                "numerator": "order_count",
-                "denominator": "order_count",
-            }
-        },
-    )
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert report["ok"] is False
-    assert any("missing 'value_type:'" in msg and "'no_vt_ratio'" in msg for msg in messages)
 
 
 @pytest.mark.parametrize("value_type", [None, ""], ids=["null", "empty"])
@@ -1971,76 +1970,62 @@ def test_strict_accepts_measure_rollup_semantics(tmp_path: Path):
     assert report["ok"] is True, [e.get("message") for e in report.get("errors", [])]
 
 
-def test_strict_rejects_id_on_measure(tmp_path: Path):
-    """Strict row: `id:` on semantic objects."""
-    package_dir = tmp_path / "strict_id_measure"
-    _write_strict_minimal_package(
-        package_dir,
-        measure_overrides={"id": "measure.custom.explicit"},
-    )
+@pytest.mark.parametrize(
+    ("package_name", "package_options", "message_parts"),
+    [
+        pytest.param(
+            "strict_id_measure",
+            {"measure_overrides": {"id": "measure.custom.explicit"}},
+            ["authors 'id:'"],
+            id="id_on_measure",
+        ),
+        pytest.param(
+            "strict_pref_ops",
+            {
+                "extra_dimensions": {
+                    "status": {
+                        "label": "Status",
+                        "kind": "categorical",
+                        "preferred_filter_ops": ["="],
+                    }
+                }
+            },
+            ["preferred_filter_ops"],
+            id="dimension_preferred_filter_ops",
+        ),
+        pytest.param(
+            "strict_bad_accum",
+            {"measure_overrides": {"accumulation": "bogus"}},
+            ["accumulation", "bogus"],
+            id="accumulation_outside_enum",
+        ),
+        pytest.param(
+            "strict_topics_dim",
+            {
+                "extra_dimensions": {
+                    "status": {
+                        "label": "Status",
+                        "kind": "categorical",
+                        "topics": ["sales"],
+                    }
+                }
+            },
+            ["topics"],
+            id="topics_on_dimension",
+        ),
+    ],
+)
+def test_strict_rejects_unsupported_authoring(
+    tmp_path: Path, package_name, package_options, message_parts
+):
+    package_dir = tmp_path / package_name
+    _write_strict_minimal_package(package_dir, **package_options)
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
     assert report["ok"] is False
     messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any("authors 'id:'" in msg for msg in messages), messages
-
-
-def test_strict_rejects_dimension_preferred_filter_ops(tmp_path: Path):
-    """Strict row: `dimension.preferred_filter_ops`."""
-    package_dir = tmp_path / "strict_pref_ops"
-    _write_strict_minimal_package(
-        package_dir,
-        extra_dimensions={
-            "status": {
-                "label": "Status",
-                "kind": "categorical",
-                "preferred_filter_ops": ["="],
-            }
-        },
-    )
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any("preferred_filter_ops" in msg for msg in messages), messages
-
-
-def test_strict_rejects_accumulation_outside_enum(tmp_path: Path):
-    """Strict row: `accumulation:` value not in {flow, stock, event, population}."""
-    package_dir = tmp_path / "strict_bad_accum"
-    _write_strict_minimal_package(
-        package_dir,
-        measure_overrides={"accumulation": "bogus"},
-    )
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any("accumulation" in msg and "bogus" in msg for msg in messages), messages
-
-
-def test_strict_rejects_topics_on_dimension(tmp_path: Path):
-    """Strict row: `topics:` on any object."""
-    package_dir = tmp_path / "strict_topics_dim"
-    _write_strict_minimal_package(
-        package_dir,
-        extra_dimensions={
-            "status": {
-                "label": "Status",
-                "kind": "categorical",
-                "topics": ["sales"],
-            }
-        },
-    )
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any("topics" in msg for msg in messages), messages
+    assert any(all(part in msg for part in message_parts) for msg in messages), messages
 
 
 def test_check_passes_column_reachability_on_jaffle(tmp_path: Path):
@@ -2060,6 +2045,149 @@ def test_check_passes_column_reachability_on_jaffle(tmp_path: Path):
     assert report["ok"] is True, report["errors"]
     assert report["summary"]["tables_probed"] > 0
     assert report["summary"]["missing_columns"] == 0
+
+
+@pytest.mark.parametrize("expression", ["1", "1.0"])
+def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str):
+    package_dir = _copy_external_jaffle_package(tmp_path)
+    orders_path = package_dir / "models" / "core" / "orders.yml"
+    payload = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
+    payload["model"]["measures"]["row_count"] = {
+        "label": "Source rows",
+        "kind": "aggregate",
+        "expr": expression,
+        "default_agg": "sum",
+        "accumulation": {"kind": "flow"},
+        "value_type": "count",
+    }
+    _write_yaml(orders_path, payload)
+    # Bound the real CLI check in a subprocess: a recursive walker regression
+    # must fail the test rather than strand a test worker indefinitely.
+    proc = subprocess.run(
+        [sys.executable, "-m", "semantic_rails.cli", "check", "--path", str(package_dir)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    runtime = Runtime.from_path(str(package_dir))
+    try:
+        query = {
+            "version": 1,
+            "select": [{"expression": {"measure": "measure.jaffle.row_count"}, "as": "rows"}],
+        }
+        sql = runtime.compile(query)["rendered_sql"]
+        assert "SUM(" in sql.upper(), sql
+        assert f"SUM({expression})" in sql.upper(), sql
+        result = runtime.query(query)
+        expected = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "rows"}],
+            }
+        )
+        assert typed_rows(result) == typed_rows(expected)
+        assert result["row_count"] == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "expression, expected",
+    [
+        ({"kind": "literal", "value": 1}, []),
+        ({"kind": "literal", "value": True}, []),
+        ({"kind": "literal", "value": "text"}, []),
+        ({"kind": "literal", "value": None}, []),
+        (
+            {
+                "kind": "arithmetic",
+                "op": "+",
+                "left": {"kind": "column", "column": "amount"},
+                "right": {"kind": "literal", "value": 1},
+            },
+            ["amount"],
+        ),
+        (
+            {
+                "kind": "call",
+                "name": "COALESCE",
+                "args": [{"kind": "column", "column": "amount"}, {"kind": "literal", "value": 0}],
+            },
+            ["amount"],
+        ),
+        (
+            {
+                "kind": "case",
+                "whens": [
+                    {
+                        "when": {"kind": "column", "column": "flag"},
+                        "then": {"kind": "column", "column": "amount"},
+                    }
+                ],
+                "else": {"kind": "column", "column": "fallback"},
+            },
+            ["flag", "amount", "fallback"],
+        ),
+        (
+            {
+                "kind": "date_add",
+                "unit": "day",
+                "value": {"kind": "literal", "value": 1},
+                "date": {"kind": "column", "column": "created_at"},
+            },
+            ["created_at"],
+        ),
+    ],
+)
+def test_column_refs_visit_only_expression_nodes(expression, expected):
+    from semantic_rails.expressions import parse_semantic_expression
+    from semantic_rails.package_tools import _collect_column_refs
+
+    out: list[str] = []
+    _collect_column_refs(parse_semantic_expression(expression, context="config"), out=out)
+    assert out == expected
+
+
+@pytest.mark.parametrize("field", ["when", "then", "else"])
+def test_check_flags_missing_column_inside_case(tmp_path: Path, field: str):
+    from semantic_rails.package_tools import check_warehouse_column_reachability_report
+
+    package_dir = _copy_external_jaffle_package(tmp_path)
+    orders_path = package_dir / "models" / "core" / "orders.yml"
+    payload = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
+    expression = {
+        "kind": "case",
+        "whens": [
+            {"when": {"kind": "literal", "value": True}, "then": {"kind": "literal", "value": 1}}
+        ],
+        "else": {"kind": "literal", "value": 0},
+    }
+    missing = {"kind": "column", "column": "missing_source_column"}
+    if field == "else":
+        expression["else"] = missing
+    else:
+        expression["whens"][0][field] = missing
+    payload["model"]["measures"]["row_count"] = {
+        "label": "Source rows",
+        "kind": "aggregate",
+        "expr": expression,
+        "default_agg": "sum",
+        "accumulation": {"kind": "flow"},
+        "value_type": "count",
+    }
+    _write_yaml(orders_path, payload)
+    report = check_warehouse_column_reachability_report(
+        resolve_package_reference(path=str(package_dir))
+    )
+    assert report["ok"] is False
+    assert any(
+        error["code"] == "WAREHOUSE_COLUMN_NOT_FOUND"
+        and error["details"].get("measure_id") == "measure.jaffle.row_count"
+        and error["details"].get("column") == "missing_source_column"
+        for error in report["errors"]
+    )
 
 
 def test_check_flags_dimension_referencing_missing_column(tmp_path: Path):

@@ -999,6 +999,11 @@ measures:
     value_type: count
 ```
 
+An `aggregate` measure with `expr: "1"`, `default_agg: sum`,
+`accumulation: { kind: flow }`, and `value_type: count` counts source rows.
+Package checks treat literal values as constants with no column dependencies;
+columns inside compound expressions are still checked against the warehouse.
+
 `entity_key:` on `kind: entity_count` measures names the **key column** declared
 in `graph.entities.<entity>.key` (e.g. `order_id`), not the entity name
 (`order`). The loader treats the value as a literal column reference.
