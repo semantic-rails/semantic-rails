@@ -117,11 +117,19 @@ When an upstream connector caps a dependency below its patched version, add one
 `fixed_in`, an HTTPS tracking `issue`, `review_by` (a TOML date no more
 than 30 days away), and `reason`. Every finding needs an entry for its own extra.
 The checker rejects expired or unused entries and core-reachable packages.
-An exception is valid only when the latest release of the `blocked_by` package
-declares a dependency requirement in PyPI's JSON `requires_dist` metadata whose
-specifier excludes every patched version reported by the advisory, including
-backports. `fixed_in` must appear among those reported versions. Markers are evaluated
-for the current interpreter and platform and the blocker's requested extras.
+The normalized `blocked_by` package must appear in the extra's audit report and
+be named by an active direct requirement in `project.dependencies` or that extra's
+`optional-dependencies`. A blocker reached only transitively cannot authorize an
+exception. Its latest release must declare an active dependency requirement in
+PyPI's JSON `requires_dist` metadata with an upper bound admitting no version at
+or above the lowest patched version reported by the advisory, including backports.
+`<V` qualifies when `V` is at most that patched version; `<=V`, `==V` and `===V`
+qualify only when `V` is lower. For `~=V` and `==V.*`, the implied exclusive upper
+bound must be at most the patched version. Lower bounds (`>=`, `>`) and exclusions
+(`!=`) never establish a cap; unknown operators or unparseable versions fail the
+check. `fixed_in` must appear among the reported patched versions. Markers are
+evaluated for the current interpreter and platform; only active direct edges
+select the blocker's requested extras.
 A lifted cap fails with "cap lifted: upgrade now"; missing requirements, metadata
 fetch or parse failures, and audit errors fail the check. Resolver explanations
 cannot authorize an exception. Once the cap lifts,
