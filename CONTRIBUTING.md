@@ -130,6 +130,8 @@ bound must be at most the patched version. Lower bounds (`>=`, `>`) and exclusio
 check. `fixed_in` must appear among the reported patched versions. Markers are
 evaluated for the current interpreter and platform; only active direct edges
 select the blocker's requested extras.
+The combined active requirements must also exclude every reported patched version
+under packaging specifier rules, including versions with local labels.
 A lifted cap fails with "cap lifted: upgrade now"; missing requirements, metadata
 fetch or parse failures, and audit errors fail the check. Resolver explanations
 cannot authorize an exception. Once the cap lifts,

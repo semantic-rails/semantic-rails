@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
+from packaging.requirements import Requirement
 
 from scripts import audit_dependencies as audit
 
@@ -197,8 +198,11 @@ def test_fixed_in_must_match_advisory_evidence(reports, fixes):
     def cap_excludes(*_):
         pytest.fail("Invalid patched-version evidence must fail before metadata verification")
 
-    _, errors = audit.check_policy(reports, [ENTRY], TODAY, cap_excludes)
+    lines, errors = audit.check_policy(reports, [ENTRY], TODAY, cap_excludes)
     assert any("fixed_in missing from advisory patched versions" in error for error in errors)
+    assert [line for line in lines if line.startswith("[databricks] oauthlib GHSA-example:")] == [
+        "[databricks] oauthlib GHSA-example: FAIL"
+    ]
 
 
 @pytest.mark.parametrize("source", ["", "[exceptions]\n", "exceptions = []\ntypo = []\n"])
@@ -299,6 +303,8 @@ def mock_metadata(monkeypatch, document):
         (["oauthlib~=3.2"], ["4.0.0"], True),
         (["oauthlib==3.2.*"], ["4.0.0"], True),
         (["oauthlib==3.3.1"], ["4.0.0"], True),
+        (["oauthlib==3.3.1"], ["4.0.0", "3.3.1+patched"], False),
+        (["oauthlib<=3.3.1"], ["4.0.0", "3.3.1+patched"], False),
         (["oauthlib===3.3.1"], ["4.0.0"], True),
         (["oauthlib<=4"], ["4.0.0"], False),
         (["oauthlib==4"], ["4.0.0"], False),
@@ -311,6 +317,7 @@ def mock_metadata(monkeypatch, document):
         (["oauthlib~=3.2"], ["4.0.0", "3.2.5"], False),
         (["oauthlib==3.2.*"], ["4.0.0", "3.2.5"], False),
         (["oauthlib<4"], ["3.2.5", "4.0.0"], False),
+        # Epoch cases cover the comparison helper only; entry validation rejects epochs in fixed_in.
         (["oauthlib~=1!3.2"], ["1!4.0.0"], True),
         (["oauthlib==1!3.2.*"], ["1!4.0.0"], True),
         (["oauthlib===unparseable"], ["4.0.0"], None),
@@ -436,16 +443,64 @@ def test_only_active_blocker_edges_select_extras(metadata_project, monkeypatch, 
     assert any("cap lifted: upgrade now" in error for error in errors)
 
 
-def test_live_databricks_exception_with_offline_metadata(monkeypatch, reports):
-    entries = audit.load_exceptions(audit.ROOT / "security/audit-exceptions.toml", TODAY)
-    mock_metadata(monkeypatch, metadata(["oauthlib>=3.1.0,<4.0.0"]))
+def check_live_exceptions_with_offline_metadata(path, monkeypatch):
+    entries = audit.load_exceptions(path, date.today())
+    if not entries:
+        pytest.skip("No live dependency exceptions")
+    reports = {"core": []}
+    documents = {}
+    for entry in entries:
+        blocker, _, constraint = entry.blocked_by.partition(":")
+        blocker = audit.normalize(blocker.strip())
+        url = f"https://pypi.org/pypi/{blocker}/json"
+        document = documents.setdefault(
+            url, {"info": {"name": blocker, "version": "1.0.0", "requires_dist": []}}
+        )
+        specifier = Requirement(constraint.strip()).specifier
+        document["info"]["requires_dist"].append(f"{entry.package}{specifier}")
+        for extra in entry.extras:
+            finding = dependency(entry.package)
+            finding["vulns"][0].update(aliases=[entry.id], fix_versions=[entry.fixed_in])
+            reports.setdefault(extra, []).extend([finding, dependency(blocker, False)])
+
+    def urlopen(url, *, timeout):
+        assert timeout == 30
+        return io.BytesIO(json.dumps(documents[url]).encode())
+
+    monkeypatch.setattr(audit, "urlopen", urlopen)
     _, errors = audit.check_policy(
         reports,
         entries,
-        TODAY,
+        min(entry.review_by for entry in entries),
         lambda extra, entry, versions: audit.cap_excludes_fixes(audit.ROOT, extra, entry, versions),
     )
     assert errors == []
+
+
+def test_live_databricks_exception_with_offline_metadata(monkeypatch):
+    check_live_exceptions_with_offline_metadata(
+        audit.ROOT / "security/audit-exceptions.toml", monkeypatch
+    )
+
+
+def test_renewed_live_exceptions_with_offline_metadata(tmp_path, monkeypatch):
+    review_by = date.today() + timedelta(days=30)
+    source = (audit.ROOT / "security/audit-exceptions.toml").read_text()
+    path = tmp_path / "exceptions.toml"
+    path.write_text(
+        "\n".join(
+            f"review_by = {review_by.isoformat()}" if line.startswith("review_by =") else line
+            for line in source.splitlines()
+        )
+    )
+    check_live_exceptions_with_offline_metadata(path, monkeypatch)
+
+
+def test_removed_live_exceptions_skip_offline_metadata(tmp_path, monkeypatch):
+    path = tmp_path / "exceptions.toml"
+    path.write_text("exceptions = []\n")
+    with pytest.raises(pytest.skip.Exception, match="No live dependency exceptions"):
+        check_live_exceptions_with_offline_metadata(path, monkeypatch)
 
 
 @pytest.mark.parametrize("error", [OSError("missing package"), TimeoutError("timeout")])

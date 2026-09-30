@@ -218,7 +218,13 @@ def cap_excludes_fixes(
         if not caps or any(requirement.url for requirement in caps):
             raise ValueError("missing verifiable dependency requirement")
         # Evaluate every active requirement so malformed evidence cannot be bypassed.
-        return any([caps_below(requirement.specifier, patched) for requirement in caps])
+        capped = any([caps_below(requirement.specifier, patched) for requirement in caps])
+        combined = SpecifierSet()
+        for requirement in caps:
+            combined &= requirement.specifier
+        return capped and not any(
+            combined.contains(version, prereleases=True) for version in patched_versions
+        )
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise ValueError(f"{extra}: cannot verify the cap: {error}") from error
 
@@ -275,6 +281,7 @@ def check_policy(
                         or entry.fixed_in not in fixes
                     ):
                         errors.append(f"{prefix}: fixed_in missing from advisory patched versions")
+                        lines.append(f"{prefix}: FAIL")
                         continue
                     if not cap_excludes(surface, entry, fixes):
                         errors.append(f"{prefix}: cap lifted: upgrade now")
