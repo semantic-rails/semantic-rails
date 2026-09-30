@@ -177,6 +177,12 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `entity_only`. `time_alignment` is one of `same_query_period`,
 `query_window`, or `rolling_window_in_period`.
 
+`input` may combine a metric with literals, such as `rate * 100` or `orders - 3`; a literal
+never changes the predicate's entity grain, and an entity with no rows reads the arithmetic's
+value (`orders - 3` reads `-3`, a division by `0` reads `NULL`). An input made only of literals
+is refused with `PREDICATE_INPUT_REQUIRED`, and one that combines two root entities with
+`PREDICATE_GRAIN_UNSAFE`.
+
 ## WhereFilter
 
 ```jsonc
