@@ -27,7 +27,6 @@ and the comparison fixtures: see
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
 | `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. |
-| `path_policy` | `object` | Path resolution preferences. |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
 | `limits` | `object` | Per-request `statement_timeout_ms`, `max_rows`. |
 | `verbosity` | `"summary"\|"minimal"\|"compact"\|"full"` | Response detail level (default `compact`). On `catalog`, `summary` returns counts + flat ID lists per kind (under 10KB) — recommended for cold-start orientation. |
@@ -39,7 +38,11 @@ and the comparison fixtures: see
 Unknown top-level keys are **rejected** with `INVALID_QUERY` and the
 offending keys are returned under `details.unsupported_keys`, so typos
 surface as structured errors instead of silently no-op'ing. There is
-**no `having` field** — use `metric_filters` (see below). The only
+**no `having` field** — use `metric_filters` (see below). There is no
+`path_policy` field either: a query can't choose a join route. The package
+pins one with `graph.path_preferences`, and a query whose routes can answer
+differently is refused with `AMBIGUOUS_PATH` (see
+[the route rule](PACKAGE_AUTHORING.md#the-route-rule)). The only
 top-level extras accepted by the runtime and schema are
 underscore-prefixed annotations such as `_note`, which are ignored before
 planning and SQL generation.

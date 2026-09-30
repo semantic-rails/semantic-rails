@@ -404,10 +404,6 @@ At least one of `select`, `group_by`, or `time` must be present.
     "calendar_id": "default"
   },
   "temporal_role_overrides": {},
-  "path_policy": {
-    "preference": "fewest_hops",
-    "ask_if_ambiguous": true
-  },
   "order_by": [
     {
       "field": "orders",

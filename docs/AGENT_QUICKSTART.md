@@ -316,7 +316,10 @@ orient -> discover -> draft -> execute
 Branch on structured status fields: a `plan` draft that isn't `ok`, or has warnings, goes to a
 repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 `MIXED_GRAIN_INVALID`, `POLICY_DENIED`, and low-relevance results should route to repair or refusal
-nodes instead of being retried as raw SQL.
+nodes instead of being retried as raw SQL. `AMBIGUOUS_PATH` means two join routes can answer the
+question differently (an account's branch region or its owner's home region). A query can't pick
+one: ask which meaning is wanted, or refuse; `details.pins` lists the `graph.path_preferences` row
+a package author adds to pin each.
 
 ## Local Warehouse Defaults
 

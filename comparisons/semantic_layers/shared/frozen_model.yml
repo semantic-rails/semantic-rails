@@ -14,7 +14,7 @@
 # A layer not listed here isn't assessed on the variants.
 semantic_rails:
   model: [semantic_rails/package]
-  sha256: eba785a8b55e154d5b1adfc5be3b22c4da70b60acb55b2063f2d8f132a35f527
+  sha256: 17f2373d88add0aadf31ec32a366eea40d855cd9b1b242819699894e3f9d64b2
   interface: The Query API (conversion, rolling, prior_period, aggregate overrides, scoped aggregates and metric_filters).
   requires_model_change:
     q19_trailing_3_month_revenue_by_month: &sr_calendar
