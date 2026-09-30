@@ -36,7 +36,6 @@ def validate_temporal_support(config: PackageConfig, payload: Mapping[str, Any])
         "rolling",
         "prior_period",
         "period_to_date",
-        "date_add",
     }
     time_keys = {
         "temporal_role",

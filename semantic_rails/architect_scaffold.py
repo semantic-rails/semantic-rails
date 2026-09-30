@@ -291,21 +291,20 @@ def _plan(spec: ProjectSpec) -> _Plan:
         )
     model = spec.first_model
     entity = slug(model.entity, fallback="event")
+    time_column = model.time_column.strip()
     starter = is_duckdb and warehouse.data == "starter"
     if starter:
         # Starter names describe a CSV this scaffold writes, so they are made safe.
         relation = slug(model.relation, fallback="raw_events")
         primary_key = slug(model.primary_key, fallback="event_id")
-        time_column = slug(model.time_column, fallback="occurred_at") if model.time_column else ""
+        time_column = slug(time_column, fallback="occurred_at") if time_column else ""
         amount_column = slug(model.amount_column or "amount", fallback="amount")
         dimension_column = slug(model.dimension_column or "event_type", fallback="event_type")
     else:
         # Everything else must name what the warehouse already holds.
         relation = _identifier(model.relation, field_name="relation", dotted=True)
         primary_key = _identifier(model.primary_key, field_name="primary_key")
-        time_column = (
-            _identifier(model.time_column, field_name="time_column") if model.time_column else ""
-        )
+        time_column = _identifier(time_column, field_name="time_column") if time_column else ""
         amount_column = (
             _identifier(model.amount_column, field_name="amount_column")
             if model.amount_column

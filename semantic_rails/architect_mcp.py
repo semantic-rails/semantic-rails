@@ -537,7 +537,7 @@ def _project_spec(arguments: dict[str, Any]) -> ProjectSpec:
             entity=str(arguments.get("first_entity") or "event"),
             relation=str(arguments.get("relation") or "raw_events"),
             primary_key=str(arguments.get("primary_key") or "event_id"),
-            time_column=str(arguments.get("time_column", "occurred_at")),
+            time_column=str(arguments.get("time_column", "occurred_at")).strip(),
             amount_column=str(arguments.get("amount_column") or ""),
             dimension_column=str(arguments.get("dimension_column") or ""),
         ),

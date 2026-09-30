@@ -425,6 +425,110 @@ def test_plan_unrealized_category_cannot_hide_time(runtime, monkeypatch) -> None
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
 
 
+@pytest.mark.parametrize(
+    ("measure", "label", "intent"),
+    [
+        ("total_amount", "Monthly rent", "monthly rent by category"),
+        ("item_count", "Monthly plans", "count of monthly plans"),
+    ],
+)
+def test_plan_measure_label_without_recipe_answers(package_path, measure, label, intent) -> None:
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["measures"][measure]["label"] = label
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    metrics_path = package_path / "metrics/core.yml"
+    metrics = yaml.safe_load(metrics_path.read_text())
+    del metrics["metrics"][measure]
+    metrics_path.write_text(yaml.safe_dump(metrics, sort_keys=False))
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        result = plan_payload(runtime, intent=intent)
+        assert result["status"] == "ok", result
+        assert "time" not in result["best"]["query_ir"]
+        with pytest.raises(SemanticLayerError) as exc:
+            plan_payload(runtime, intent=f"{intent} last month")
+        assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    finally:
+        runtime.close()
+
+
+def test_plan_partial_category_value_cannot_hide_time(package_path) -> None:
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["dimensions"]["category"]["domain"] = ["last", "B"]
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        with pytest.raises(SemanticLayerError) as exc:
+            plan_payload(runtime, intent="item count last month")
+        assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    finally:
+        runtime.close()
+
+
+def test_plan_short_category_keeps_original_question(runtime, monkeypatch) -> None:
+    from semantic_rails.planner.faithfulness import unconsumed_terms
+
+    questions = []
+
+    def record(runtime, question, query):
+        questions.append(question)
+        return unconsumed_terms(runtime, question, query)
+
+    monkeypatch.setattr("semantic_rails.planner.plan.unconsumed_terms", record)
+    intent = "item count for A as a category"
+    plan_payload(runtime, intent=intent)
+    assert questions and all(question == intent for question in questions)
+
+
+def test_scalar_date_arithmetic_without_time_matches_independent_sql(runtime) -> None:
+    def column(name):
+        return {"kind": "column", "entity": "entity.catalogue_item", "column": name}
+
+    date_add = {
+        "kind": "date_add",
+        "unit": "day",
+        "value": {"kind": "literal", "value": 1},
+        "date": column("delivery_date"),
+    }
+    query = {
+        "version": 2,
+        "select": [
+            {
+                "expression": {
+                    "kind": "aggregate_if",
+                    "aggregation": "count",
+                    "condition": {
+                        "kind": "comparison",
+                        "op": "=",
+                        "left": date_add,
+                        "right": column("due_date"),
+                    },
+                },
+                "as": "value",
+            }
+        ],
+    }
+    compiled = compile_query(runtime._config, runtime.registry, query)
+    with duckdb.connect(":memory:") as db:
+        db.execute("CREATE TABLE items(item_id INT, delivery_date DATE, due_date DATE)")
+        db.execute(
+            "INSERT INTO items VALUES (1, '2026-01-01', '2026-01-02'), "
+            "(2, '2026-01-01', '2026-01-03')"
+        )
+        actual = db.execute(compiled["sql"]).fetchall()
+        expected = db.execute(
+            "SELECT COUNT(*) FROM items WHERE delivery_date + INTERVAL '1 day' = due_date"
+        ).fetchall()
+    assert actual == expected == [(1,)]
+    # Scalar arithmetic still traverses operands that themselves require time.
+    date_add["date"] = {"kind": "cumulative", "input": {"measure": COUNT}}
+    with pytest.raises(SemanticLayerError) as exc:
+        compile_query(runtime._config, runtime.registry, query)
+    assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+
+
 def test_plan_dimension_label_with_time_word_answers(package_path) -> None:
     model_path = package_path / "models/core/items.yml"
     model = yaml.safe_load(model_path.read_text())
@@ -553,10 +657,29 @@ def test_literal_filter_values_and_caller_metadata_are_not_time_requests(runtime
     assert runtime.validate(query)["ok"]
 
 
-def test_architect_blank_time_column_is_preserved() -> None:
+@pytest.mark.parametrize("time_column", ["", "   ", "\t\n"])
+def test_architect_blank_time_column_is_preserved(time_column) -> None:
     assert (
-        _project_spec({"package_id": "catalogue", "time_column": ""}).first_model.time_column == ""
+        _project_spec(
+            {"package_id": "catalogue", "time_column": time_column}
+        ).first_model.time_column
+        == ""
     )
+
+
+@pytest.mark.parametrize("data", ["starter", "external"])
+def test_scaffold_whitespace_time_column_is_absent(data) -> None:
+    spec = ProjectSpec(
+        package_id="catalogue",
+        warehouse=ProjectWarehouse(data=data),
+        first_model=FirstModel(time_column=" \t "),
+    )
+    files = project_scaffold_files(spec)
+    model = yaml.safe_load(
+        next(contents for path, contents in files.items() if path.startswith("models/"))
+    )
+    assert "times" not in model["model"]
+    assert all(b"occurred_at" not in contents for contents in files.values())
 
 
 @pytest.mark.parametrize("operation", ["inspect", "build-options", "discover", "valid-values"])

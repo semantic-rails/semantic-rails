@@ -29,8 +29,7 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import require_temporal_support, validate_temporal_support
 from ._base import (
-    _named_metric,
-    _period_shift_grain,
+    _PERIOD_SHIFT_TRIGGERS,
     _time_window,
     _with_fiscal_calendar,
 )
@@ -56,18 +55,20 @@ _ATEMPORAL_TIME_PHRASE_RE = re.compile(
 )
 
 
-def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> str:
-    """Refuse time left after consuming names and category values the draft carries."""
+def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> None:
+    """Excuse a time cue only when one carried catalogue span wholly contains it."""
     if runtime._config.temporal_roles:
-        return intent
-    named = _named_metric(runtime._config, intent)
-    text = (
-        named[1].replace(named[0].id, " ")
-        if named is not None and named[0].id in _object_ids_in_node(query)
-        else intent
-    )
+        return
+    from ..metadata import _config_maps  # noqa: WPS433
+
+    maps = _config_maps(runtime._config)
     phrases: set[str] = set()
-    for row in _matched_value_rows(runtime, query, text):
+    for object_id in [*_object_ids_in_node(query), *query.get("group_by", [])]:
+        for kind in ("measures", "metric_recipes", "dimensions"):
+            obj = maps[kind].get(object_id)
+            if obj is not None:
+                phrases.update([obj.name, obj.label, *(obj.aliases or [])])
+    for row in _matched_value_rows(runtime, query, intent):
         if not any(
             predicate["field"] == row["dimension_id"]
             and predicate["op"] == "="
@@ -82,28 +83,27 @@ def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> 
             for value in domain.values or []:
                 if value.value == row["value"]:
                     phrases.update(value.aliases or [])
-    for dim in runtime._config.dimensions:
-        if dim.id in query.get("group_by", []):
-            phrases.update([dim.name, dim.label, *(dim.aliases or [])])
-    # Only exact, word-bounded catalogue phrases consume text. Other time
-    # phrases in the same question must still refuse, including resolved dates.
-    for phrase in sorted(phrases, key=len, reverse=True):
-        if phrase.strip():
-            text = re.sub(
-                rf"(?<!\w){re.escape(phrase.strip())}s?(?!\w)",
-                " ",
-                text,
-                flags=re.IGNORECASE,
-            )
+    consumed = [
+        match.span()
+        for phrase in phrases
+        if phrase.strip()
+        for match in re.finditer(
+            rf"(?<!\w){re.escape(phrase.strip())}(?!\w)", intent, re.IGNORECASE
+        )
+    ]
+    patterns = [_ATEMPORAL_TIME_PHRASE_RE.pattern, *(p for p, _grain in _PERIOD_SHIFT_TRIGGERS)]
+    cues = list(_time_window(intent).spans) + [
+        match.span()
+        for pattern in patterns
+        for match in re.finditer(pattern, intent, re.IGNORECASE)
+    ]
     require_temporal_support(
         runtime._config,
-        requested=bool(
-            _ATEMPORAL_TIME_PHRASE_RE.search(text)
-            or _time_window(text).spans
-            or _period_shift_grain(text)
+        requested=any(
+            not any(start <= cue_start and cue_end <= end for start, end in consumed)
+            for cue_start, cue_end in cues
         ),
     )
-    return text
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +298,7 @@ def plan_payload(
     best_draft = best["draft"]
     best_validation = best["validation"]
     best_ok = bool(best_validation.get("ok"))
-    time_intent = _atemporal_time_intent(runtime, intent_str, best_draft.query)
+    _atemporal_time_intent(runtime, intent_str, best_draft.query)
     fallback_drift_why = _first_fallback_drift_why(planned, best)
     # Query validation proves executability, not that every high-confidence
     # clause survived natural-language realization.  Keep the valid draft for
@@ -307,7 +307,7 @@ def plan_payload(
     faithfulness_why = (
         intent_faithfulness_why(
             runtime,
-            question=time_intent,
+            question=intent_str,
             intent_ir=intent_ir,
             query=best_draft.query,
             partial_query=partial_query,
@@ -320,10 +320,10 @@ def plan_payload(
     # query), the draft answers a *different* question than the user
     # asked. Downgrade instead of marking it ready to execute.
     time_why = (
-        _unresolved_time_why(time_intent, partial_query)
+        _unresolved_time_why(intent_str, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
-            or _pattern_dropped_start(time_intent, best_draft.query, partial_query)
+            or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
         )
         if best_ok
         else None
@@ -353,7 +353,7 @@ def plan_payload(
     # something the draft carries. Otherwise an hour, a range or a threshold was dropped.
     value_why = (
         (
-            _unconsumed_terms_why(unconsumed_terms(runtime, time_intent, best_draft.query))
+            _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
             or _dropped_value_why(intent_str, unmatched, catalog_tokens, set(intent_ir.unresolved))
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
@@ -395,7 +395,7 @@ def plan_payload(
         payload["tie_break_hints"] = _slim_recovery_hints(
             list(best_validation.get("recovery_hints") or [])
         )
-    assumptions = _time_assumptions(time_intent, best_draft.query) if best_ok else []
+    assumptions = _time_assumptions(intent_str, best_draft.query) if best_ok else []
     if assumptions:
         payload["assumptions"] = assumptions
     if unmatched:
