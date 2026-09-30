@@ -252,7 +252,7 @@ def _install_fake_adbc(monkeypatch: pytest.MonkeyPatch, captured: dict) -> None:
                 raise RuntimeError("connection reset by peer")
 
         def fetchone(self):
-            return ("UTC",)
+            return ("UTC", "5s")
 
         def fetch_record_batch(self):
             return Reader([Batch([{"one": 1, "two": "x"}])])
@@ -362,11 +362,15 @@ def test_adapter_queries_with_fake_driver_and_maps_rows(monkeypatch: pytest.Monk
     assert ("select 1", None) in captured["sql"]
     assert captured["kwargs"]["autocommit"] is True
     assert captured["sql"][0] == ("SELECT set_config('search_path', $1, false)", ('"analytics"',))
+    assert captured["sql"][1:] == [
+        ("SELECT current_setting('TimeZone'), current_setting('statement_timeout')", None),
+        ("select 1", None),
+    ]
     assert captured["cursor_closed"] is True
     assert captured["connection_closed"] is True
 
 
-def test_adapter_applies_and_resets_statement_timeout(monkeypatch: pytest.MonkeyPatch):
+def test_adapter_applies_and_restores_statement_timeout(monkeypatch: pytest.MonkeyPatch):
     _set_pg_env(monkeypatch)
     captured: dict = {}
     _install_fake_adbc(monkeypatch, captured)
@@ -377,7 +381,7 @@ def test_adapter_applies_and_resets_statement_timeout(monkeypatch: pytest.Monkey
 
     assert ("SELECT set_config('statement_timeout', $1, false)", ("1500",)) in captured["sql"]
     assert ("select 1", None) in captured["sql"]
-    assert ("RESET statement_timeout", None) in captured["sql"]
+    assert ("SELECT set_config('statement_timeout', $1, false)", ("5s",)) in captured["sql"]
 
 
 @pytest.mark.parametrize("timeout", [None, 0, 250])

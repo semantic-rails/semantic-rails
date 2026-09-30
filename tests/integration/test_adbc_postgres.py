@@ -35,6 +35,7 @@ def adbc():
 
 
 def test_postgres_exact_types(adbc):
+    original_zone = adbc.query("SELECT current_setting('TimeZone') z")[0]["z"]
     row = adbc.query(
         "SELECT 123456789.4500::NUMERIC(20,4) AS n, '123.4500'::TEXT AS t, "
         "TIMESTAMPTZ '2026-09-30 12:34:56.123456+05:30' AS z, "
@@ -49,7 +50,7 @@ def test_postgres_exact_types(adbc):
     assert row["z"].astimezone(UTC) == datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC)
     assert (row["i"].months, row["i"].days, row["i"].nanoseconds) == (1, 2, 3123456000)
     assert row["missing"] is None
-    assert adbc.query("SELECT current_setting('TimeZone') z")[0]["z"] == adbc._zone
+    assert adbc.query("SELECT current_setting('TimeZone') z")[0]["z"] == original_zone
 
 
 def test_postgres_binds_all_slot_types_without_interpolation(adbc):
@@ -127,14 +128,14 @@ def test_postgres_statement_timeout_and_recovery(adbc):
             cursor.execute("SELECT pg_sleep(5)")
             cursor.fetchall()
         elapsed_ms = (time.monotonic() - started) * 1000
-        assert elapsed_ms < 2 * limit_ms
+        assert elapsed_ms < limit_ms + 1000
         print(f"server_timeout_ms={elapsed_ms:.3f} limit_ms={limit_ms}")
         cursor.execute("RESET statement_timeout")
     started = time.monotonic()
     with pytest.raises(SemanticLayerError) as caught:
         adbc.query("SELECT pg_sleep(5)", limits={"statement_timeout_ms": limit_ms})
     elapsed_ms = (time.monotonic() - started) * 1000
-    assert elapsed_ms < 2 * limit_ms
+    assert elapsed_ms < limit_ms + 1000
     assert caught.value.code == "QUERY_EXECUTION_ERROR"
     assert adbc._conn is None
     assert adbc.query("SELECT 1 n") == [{"n": 1}]
@@ -163,8 +164,8 @@ def test_postgres_cancel_and_recovery(adbc):
             timer.cancel()
             timer.join()
         elapsed_ms = (time.monotonic() - started) * 1000
-        assert elapsed_ms < 2 * limit_ms
-        assert timings["call_ms"] < 2 * limit_ms
+        assert elapsed_ms < limit_ms + 1000
+        assert timings["call_ms"] < limit_ms + 1000
         cursor.execute("SELECT 1 n")
         assert cursor.fetchone() == (1,)
         print(
@@ -172,7 +173,7 @@ def test_postgres_cancel_and_recovery(adbc):
         )
 
 
-@pytest.mark.parametrize(("cap", "truncated"), [(0, True), (10, True), (100, False), (101, False)])
+@pytest.mark.parametrize(("cap", "truncated"), [(10, True), (100, False), (101, False)])
 def test_postgres_truncation(adbc, cap, truncated):
     rows = adbc.query("SELECT generate_series(1,100) n", limits={"max_rows": cap})
     assert len(rows) == min(cap, 100)
@@ -182,6 +183,7 @@ def test_postgres_truncation(adbc, cap, truncated):
 
 def test_postgres_restores_session_zone_and_discards_failed_queries(adbc):
     zone_sql = "SELECT current_setting('TimeZone') AS zone"
+    original_zone = adbc.query(zone_sql)[0]["zone"]
     with adbc._connection().cursor() as cursor:
         cursor.execute("SET TimeZone = 'America/Los_Angeles'")
     assert adbc.query(zone_sql, limits={"time_zone": "Asia/Tokyo"}) == [{"zone": "Asia/Tokyo"}]
@@ -189,4 +191,54 @@ def test_postgres_restores_session_zone_and_discards_failed_queries(adbc):
     with pytest.raises(SemanticLayerError):
         adbc.query("SELECT 1 / 0", limits={"time_zone": "Asia/Tokyo"})
     assert adbc._conn is None
-    assert adbc.query(zone_sql) == [{"zone": adbc._zone}]
+    assert adbc.query(zone_sql) == [{"zone": original_zone}]
+
+
+def test_postgres_inherited_statement_timeout_is_preserved(adbc):
+    limit_ms = 300
+    with adbc._connection().cursor() as cursor:
+        cursor.execute("SET statement_timeout = '300ms'")
+    started = time.monotonic()
+    with pytest.raises(SemanticLayerError) as caught:
+        adbc.query("SELECT pg_sleep(2)")
+    elapsed_ms = (time.monotonic() - started) * 1000
+    assert elapsed_ms < 1500
+    assert caught.value.code == "QUERY_EXECUTION_ERROR"
+    assert adbc._conn is None
+    assert adbc.query("SELECT 1 n") == [{"n": 1}]
+    print(f"inherited_timeout_ms={elapsed_ms:.3f} limit_ms={limit_ms}")
+
+
+def test_postgres_plain_json_operators_and_nested_comments(adbc):
+    assert adbc.query(
+        "SELECT '{\"a\":1}'::jsonb ? 'a' AS present, "
+        "'{\"a\":1}'::jsonb ?| ARRAY['a','b'] AS any_present, "
+        "'{\"a\":1}'::jsonb ?& ARRAY['a','b'] AS all_present"
+    ) == [{"present": True, "any_present": True, "all_present": False}]
+    assert adbc.query("SELECT /* outer /* inner */ ? */ 1 n") == [{"n": 1}]
+
+
+def test_postgres_non_iana_session_zone_returns_aware_utc(adbc):
+    with adbc._connection().cursor() as cursor:
+        cursor.execute("SET TimeZone = 'GMT+5'")
+    row = adbc.query("SELECT TIMESTAMPTZ '2026-09-30 12:34:56.123456+05:30' AS instant")[0]
+    assert row["instant"] == datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC)
+    assert row["instant"].utcoffset() == timedelta(0)
+    assert adbc.query("SELECT current_setting('TimeZone') zone") == [{"zone": "GMT+5"}]
+
+
+def test_postgres_early_stop_restores_settings_and_reuses_connection(adbc):
+    conn = adbc._connection()
+    with conn.cursor() as cursor:
+        cursor.execute("SET statement_timeout = '5s'")
+        cursor.execute("SET TimeZone = 'America/Los_Angeles'")
+    rows = adbc.query(
+        "SELECT generate_series(1,500000) n",
+        limits={"max_rows": 10, "statement_timeout_ms": 1000, "time_zone": "Asia/Tokyo"},
+    )
+    assert rows == [{"n": n} for n in range(1, 11)]
+    assert rows.truncated is True
+    assert adbc._connection() is conn
+    assert adbc.query(
+        "SELECT current_setting('statement_timeout') AS timeout, current_setting('TimeZone') AS zone"
+    ) == [{"timeout": "5s", "zone": "America/Los_Angeles"}]

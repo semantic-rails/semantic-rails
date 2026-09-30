@@ -87,14 +87,29 @@ def checked_slot_value(slot: ParameterSlot, value: Any) -> ParameterValue:
 # Compiler SQL uses ANSI literals/identifiers. Also skip comments and dollar
 # quotes so a direct prepared call cannot disguise a placeholder as quoted data.
 _PARAMETER_TOKEN = re.compile(
-    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?\*/|"
+    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*|"
     r"(?P<dollar>\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$).*?(?P=dollar)|\?|\$[0-9]+",
     re.DOTALL,
 )
 
 
 def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
-    return [m for m in _PARAMETER_TOKEN.finditer(sql) if re.fullmatch(r"\?|\$[0-9]+", m[0])]
+    tokens: list[re.Match[str]] = []
+    position = 0
+    while match := _PARAMETER_TOKEN.search(sql, position):
+        position = match.end()
+        if match[0] == "/*":
+            depth = 1
+            for delimiter in re.compile(r"/\*|\*/").finditer(sql, position):
+                depth += 1 if delimiter[0] == "/*" else -1
+                if not depth:
+                    position = delimiter.end()
+                    break
+            else:
+                position = len(sql)
+        elif re.fullmatch(r"\?|\$[0-9]+", match[0]):
+            tokens.append(match)
+    return tokens
 
 
 def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> PreparedQuery:
@@ -113,6 +128,8 @@ def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> Prepar
 def check_postgres_parameters(prepared: PreparedQuery) -> None:
     """Every slot has exactly one numbered placeholder; refuse bypasses centrally."""
     actual = [m[0] for m in postgres_parameter_tokens(prepared.sql)]
+    if not prepared.parameters:
+        actual = [token for token in actual if token != "?"]
     expected = [f"${index}" for index in range(1, len(prepared.parameters) + 1)]
     if actual != expected:
         raise parameters_denied("parameter_placeholder_mismatch")

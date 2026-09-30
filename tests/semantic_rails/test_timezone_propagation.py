@@ -430,4 +430,8 @@ def test_postgres_restores_the_current_session_zone(zone: str) -> None:
         (sql, args)
         for sql, args in zip(cursor.statements, cursor.parameters, strict=True)
         if sql == zone_sql
-    ] == [(zone_sql, (zone or "Europe/Paris",)), (zone_sql, ("Europe/Paris",))]
+    ] == (
+        [(zone_sql, (zone,)), (zone_sql, ("Europe/Paris",))]
+        if zone and zone != "Europe/Paris"
+        else []
+    )

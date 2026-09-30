@@ -89,7 +89,30 @@ def _split_sql_statements(sql: str) -> list[str]:
     current: list[str] = []
     in_single = False
     in_double = False
-    for ch in sql:
+    i = 0
+    while i < len(sql):
+        if not in_single and not in_double:
+            if sql.startswith("--", i):
+                end = sql.find("\n", i + 2)
+                i = len(sql) if end < 0 else end
+                current.append(" ")
+                continue
+            if sql.startswith("/*", i):
+                depth = 1
+                i += 2
+                while i < len(sql) and depth:
+                    if sql.startswith("/*", i):
+                        depth += 1
+                        i += 2
+                    elif sql.startswith("*/", i):
+                        depth -= 1
+                        i += 2
+                    else:
+                        i += 1
+                current.append(" ")
+                continue
+        ch = sql[i]
+        i += 1
         if ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:

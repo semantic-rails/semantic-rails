@@ -10,10 +10,10 @@ import threading
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, tzinfo
 from decimal import Decimal
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..dialects import POSTGRES_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError, query_execution_error
@@ -72,7 +72,6 @@ class AdbcAdapter(WarehouseAdapter):
             self.engine, self.connection_kind, options or {}, profile.connection_options
         )
         self._conn: Any = None
-        self._zone = "UTC"
         self._lock = threading.RLock()
 
     def _int_option(self, name: str, default: int) -> int:
@@ -118,8 +117,6 @@ class AdbcAdapter(WarehouseAdapter):
                 if self.options.get("schema"):
                     schema = '"' + self.options["schema"].replace('"', '""') + '"'
                     cursor.execute("SELECT set_config('search_path', $1, false)", (schema,))
-                cursor.execute("SELECT current_setting('TimeZone')")
-                self._zone = cursor.fetchone()[0]
             self._conn = conn
         except Exception:
             conn.close()
@@ -145,13 +142,17 @@ class AdbcAdapter(WarehouseAdapter):
                     0, self._int_option("statement_timeout_seconds", 0) * 1000
                 )
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT current_setting('TimeZone')")
-                    original_zone = cursor.fetchone()[0]
-                    zone = session_time_zone(limits) or original_zone
                     cursor.execute(
-                        "SELECT set_config('statement_timeout', $1, false)", (str(timeout),)
+                        "SELECT current_setting('TimeZone'), current_setting('statement_timeout')"
                     )
-                    cursor.execute("SELECT set_config('TimeZone', $1, false)", (zone,))
+                    original_zone, original_timeout = cursor.fetchone()
+                    zone = session_time_zone(limits) or original_zone
+                    if timeout:
+                        cursor.execute(
+                            "SELECT set_config('statement_timeout', $1, false)", (str(timeout),)
+                        )
+                    if zone != original_zone:
+                        cursor.execute("SELECT set_config('TimeZone', $1, false)", (zone,))
                     finished = threading.Event()
                     cancel_errors: list[Exception] = []
 
@@ -180,8 +181,12 @@ class AdbcAdapter(WarehouseAdapter):
                             watchdog.join()
                     if cancel_errors:
                         raise cancel_errors[0]
-                    cursor.execute("RESET statement_timeout")
-                    cursor.execute("SELECT set_config('TimeZone', $1, false)", (original_zone,))
+                    if timeout:
+                        cursor.execute(
+                            "SELECT set_config('statement_timeout', $1, false)", (original_timeout,)
+                        )
+                    if zone != original_zone:
+                        cursor.execute("SELECT set_config('TimeZone', $1, false)", (original_zone,))
                 return restore_column_names(rows, prepared)
             except Exception as exc:
                 # A cancelled COPY or failed reset must never leave a session reusable.
@@ -196,8 +201,11 @@ class AdbcAdapter(WarehouseAdapter):
     @staticmethod
     def _rows(cursor: Any, limits: dict[str, Any] | None, zone: str) -> QueryRows:
         cap = _limit_max_rows(limits)
-        if limits and limits.get("max_rows") == 0:
-            cap = 0
+        result_zone: tzinfo
+        try:
+            result_zone = ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, ValueError):
+            result_zone = UTC
         rows: list[dict[str, Any]] = []
         with cursor.fetch_record_batch() as reader:
             numeric = {
@@ -214,7 +222,7 @@ class AdbcAdapter(WarehouseAdapter):
                         if value is not None and key in numeric:
                             row[key] = Decimal(value)
                         elif isinstance(value, datetime) and value.tzinfo is not None:
-                            row[key] = value.astimezone(ZoneInfo(zone))
+                            row[key] = value.astimezone(result_zone)
                     rows.append(row)
                 if cap is not None and len(rows) > cap:
                     break

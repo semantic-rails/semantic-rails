@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from semantic_rails.db import _split_sql_statements
 from semantic_rails.db_parts.common import (
     option_or_env,
 )
@@ -10,6 +13,24 @@ from semantic_rails.sql_preparation import (
     map_double_quoted_identifiers,
     rewrite_double_quoted_identifiers,
 )
+
+
+@pytest.mark.parametrize(
+    "comment",
+    ["-- the base table's key;\n", "/* the base table's key; */", "/* outer /* '; */ inner */"],
+)
+def test_seed_splitting_ignores_comment_quotes_and_semicolons(comment):
+    assert _split_sql_statements(f"{comment} SELECT 'a;b'; SELECT 2;") == [
+        "SELECT 'a;b'",
+        "SELECT 2",
+    ]
+
+
+def test_seed_splitting_preserves_quoted_comments_and_token_boundaries():
+    assert _split_sql_statements("SELECT/**/1; SELECT '-- /* ; */' AS \"a;b\"; -- tail") == [
+        "SELECT 1",
+        "SELECT '-- /* ; */' AS \"a;b\"",
+    ]
 
 
 def test_rewrites_identifiers_to_backticks():

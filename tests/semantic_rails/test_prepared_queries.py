@@ -81,7 +81,7 @@ class CaptureCursor:
         self.parameters.append(parameters)
 
     def fetchone(self):
-        return ("Europe/Paris",)
+        return ("Europe/Paris", "5s")
 
     def fetch_record_batch(self):
         column = self.description[0][0]
@@ -131,12 +131,10 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
 
     expected = {
         "postgres": [
-            "SELECT current_setting('TimeZone')",
+            "SELECT current_setting('TimeZone'), current_setting('statement_timeout')",
             "SELECT set_config('statement_timeout', $1, false)",
-            "SELECT set_config('TimeZone', $1, false)",
             prepared.sql,
-            "RESET statement_timeout",
-            "SELECT set_config('TimeZone', $1, false)",
+            "SELECT set_config('statement_timeout', $1, false)",
         ],
         "databricks": ["SET STATEMENT_TIMEOUT = 1", prepared.sql, "RESET STATEMENT_TIMEOUT"],
         "athena": [prepared.sql],
@@ -230,7 +228,10 @@ def test_postgres_direct_query_preserves_long_unicode_aliases():
     adapter = AdbcAdapter()
     adapter._conn = SimpleNamespace(cursor=lambda: cursor)
     rows = adapter.query(original, limits={"max_rows": 1})
-    assert cursor.statements[3] == prepared.sql
+    assert cursor.statements == [
+        "SELECT current_setting('TimeZone'), current_setting('statement_timeout')",
+        prepared.sql,
+    ]
     assert rows == [{aliases[0]: 1.25}]
     assert rows.truncated is True
 

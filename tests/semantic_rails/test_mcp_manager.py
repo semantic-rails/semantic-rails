@@ -514,12 +514,12 @@ def test_requirement_recreates_extras_version_and_source(
         "Requires-Dist: duckdb>=1.5.3\n"
         "Provides-Extra: postgres\n"
         'Requires-Dist: adbc-driver-postgresql==1.12.0; extra == "postgres"\n'
-        'Requires-Dist: adbc-driver-manager[dbapi]==1.12.0; extra == "postgres"\n'
-        'Requires-Dist: pyarrow>=20; extra == "postgres"\n'
+        'Requires-Dist: adbc-driver-manager==1.12.0; extra == "postgres"\n'
+        'Requires-Dist: pyarrow>=25.0.1; extra == "postgres"\n'
         "Provides-Extra: all\n"
         'Requires-Dist: adbc-driver-postgresql==1.12.0; extra == "all"\n'
-        'Requires-Dist: adbc-driver-manager[dbapi]==1.12.0; extra == "all"\n'
-        'Requires-Dist: pyarrow>=20; extra == "all"\n'
+        'Requires-Dist: adbc-driver-manager==1.12.0; extra == "all"\n'
+        'Requires-Dist: pyarrow>=25.0.1; extra == "all"\n'
         'Requires-Dist: pyathena>=3.32.0; extra == "all"\n'
     )
     if direct_url:

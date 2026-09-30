@@ -41,6 +41,16 @@ FROM t WHERE tenant = ? /* ? */ AND active = ?"""
     assert finalize_parameters(prepared, "duckdb") is prepared
 
 
+def test_nested_comments_hide_tokens_in_both_finalization_and_execution(monkeypatch):
+    adapter, cursor = _recording_adapter(monkeypatch)
+    prepared = PreparedQuery("SELECT ? /* outer /* inner */ $2 ? */", parameters=(SLOT,))
+    final = finalize_parameters(prepared, "postgres_native")
+    assert final.sql == "SELECT $1 /* outer /* inner */ $2 ? */"
+    adapter.query_prepared(final, parameters=("tenant",))
+    assert (final.sql, ("tenant",)) == (cursor.statements[-1], cursor.parameters[-1])
+    assert adapter.query("SELECT /* outer /* inner */ $1 */ 1")
+
+
 @pytest.mark.parametrize(
     "sql", ["SELECT ?", "SELECT $2", "SELECT $1, $1", "SELECT '?'", "SELECT $1, ?"]
 )
@@ -101,7 +111,7 @@ class Reader:
 
 @pytest.mark.parametrize(
     ("cap", "count", "truncated", "reads"),
-    [(0, 0, True, 1), (1, 1, True, 1), (3, 3, False, 2), (4, 3, False, 2)],
+    [(0, 3, False, 2), (1, 1, True, 1), (3, 3, False, 2), (4, 3, False, 2)],
 )
 def test_bounded_fetch_reads_only_enough_batches(cap, count, truncated, reads):
     reader = Reader([Batch([{"n": 1}, {"n": 2}]), Batch([{"n": 3}])])
@@ -130,7 +140,7 @@ def test_prepared_sql_and_values_reach_driver_separately(monkeypatch):
             sent.append((sql, parameters))
 
         def fetchone(self):
-            return ("UTC",)
+            return ("UTC", "5s")
 
         def fetch_record_batch(self):
             return reader
@@ -142,6 +152,85 @@ def test_prepared_sql_and_values_reach_driver_separately(monkeypatch):
     assert (prepared.sql, ("canary' OR true",)) in sent
     assert all("canary" not in sql for sql, _ in sent)
     assert replace(prepared, parameters=()).sql == prepared.sql
+
+
+def _recording_adapter(monkeypatch, options=None):
+    from tests.semantic_rails.test_prepared_queries import CaptureCursor
+
+    cursor = CaptureCursor("n")
+    monkeypatch.setattr(cursor, "fetchone", lambda: ("UTC", "5s"))
+    adapter = AdbcAdapter(options)
+    adapter._conn = SimpleNamespace(cursor=lambda: cursor)
+    return adapter, cursor
+
+
+@pytest.mark.parametrize("limits", [None, {}, {"time_zone": "UTC"}])
+def test_no_overrides_leave_inherited_timeout_and_zone_untouched(monkeypatch, limits):
+    adapter, cursor = _recording_adapter(monkeypatch)
+    adapter.query("SELECT 1", limits=limits)
+    assert cursor.statements == [
+        "SELECT current_setting('TimeZone'), current_setting('statement_timeout')",
+        "SELECT 1",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("options", "limits", "expected"),
+    [
+        ({}, {"statement_timeout_ms": 250}, "250"),
+        ({"statement_timeout_seconds": "1"}, None, "1000"),
+    ],
+)
+def test_timeout_override_restores_exact_prior_session_value(
+    monkeypatch, options, limits, expected
+):
+    adapter, cursor = _recording_adapter(monkeypatch, options)
+    adapter.query("SELECT 1", limits=limits)
+    assert list(zip(cursor.statements, cursor.parameters, strict=True)) == [
+        ("SELECT current_setting('TimeZone'), current_setting('statement_timeout')", None),
+        ("SELECT set_config('statement_timeout', $1, false)", (expected,)),
+        ("SELECT 1", None),
+        ("SELECT set_config('statement_timeout', $1, false)", ("5s",)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT '{}'::jsonb ? 'a'",
+        "SELECT '{}'::jsonb ?| ARRAY['a']",
+        "SELECT '{}'::jsonb ?& ARRAY['a']",
+        "SELECT /* outer /* inner */ ? */ 1",
+    ],
+)
+def test_plain_sql_operators_and_nested_comments_reach_execution(monkeypatch, sql):
+    adapter, cursor = _recording_adapter(monkeypatch)
+    assert adapter.query(sql) == [{"n": 1.25}, {"n": 2.5}]
+    assert cursor.statements[-1] == sql
+
+
+def test_parameterized_json_operator_remains_denied_before_connect(monkeypatch):
+    adapter = AdbcAdapter()
+    monkeypatch.setattr(adapter, "_connection", lambda: pytest.fail("must deny before connection"))
+    with pytest.raises(SemanticLayerError) as caught:
+        adapter.query_prepared(
+            PreparedQuery("SELECT '{}'::jsonb ? $1", parameters=(SLOT,)), parameters=("a",)
+        )
+    assert caught.value.details == {"reason": "parameter_placeholder_mismatch"}
+
+
+@pytest.mark.parametrize("zone", ["GMT+5", "<+05>-05"])
+def test_non_iana_session_zone_preserves_real_arrow_utc_timestamps(zone):
+    from datetime import UTC, datetime
+
+    pa = pytest.importorskip("pyarrow")
+
+    instant = datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC)
+    batch = pa.record_batch({"instant": pa.array([instant], type=pa.timestamp("us", tz="UTC"))})
+    reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+    row = AdbcAdapter._rows(SimpleNamespace(fetch_record_batch=lambda: reader), None, zone)[0]
+    assert row["instant"] == instant
+    assert row["instant"].utcoffset() == UTC.utcoffset(None)
 
 
 def test_query_failure_discards_session_and_redacts_driver_text(monkeypatch):
@@ -168,7 +257,7 @@ def test_query_failure_discards_session_and_redacts_driver_text(monkeypatch):
     assert "sql-canary" not in str(caught.value.details)
 
 
-@pytest.mark.parametrize("sql", ["SELECT $1", "SELECT ?"])
+@pytest.mark.parametrize("sql", ["SELECT $1"])
 def test_placeholders_without_authored_slots_deny_before_connect(sql, monkeypatch):
     adapter = AdbcAdapter()
     monkeypatch.setattr(adapter, "_connection", lambda: pytest.fail("must deny before connection"))
@@ -237,13 +326,15 @@ def test_failures_finish_watchdog_before_discarding_connection(failure, monkeypa
                 self.executed = True
                 if failure == "execute":
                     raise RuntimeError("execute failure")
-            if (failure == "timeout_reset" and sql == "RESET statement_timeout") or (
-                failure == "zone_reset" and self.executed and "set_config('TimeZone'" in sql
-            ):
+            if (
+                failure == "timeout_reset"
+                and self.executed
+                and "set_config('statement_timeout'" in sql
+            ) or (failure == "zone_reset" and self.executed and "set_config('TimeZone'" in sql):
                 raise RuntimeError("reset failure")
 
         def fetchone(self):
-            return ("UTC",)
+            return ("UTC", "5s")
 
         def fetch_record_batch(self):
             if failure == "fetch":
@@ -267,7 +358,7 @@ def test_failures_finish_watchdog_before_discarding_connection(failure, monkeypa
     adapter = AdbcAdapter()
     adapter._conn = SimpleNamespace(cursor=Cursor, close=lambda: events.append("closed"))
     with pytest.raises(SemanticLayerError) as caught:
-        adapter.query("SELECT 1", limits={"statement_timeout_ms": 250})
+        adapter.query("SELECT 1", limits={"statement_timeout_ms": 250, "time_zone": "Asia/Tokyo"})
     assert caught.value.code == "QUERY_EXECUTION_ERROR"
     assert events == ["started", "cancelled", "joined", "closed"]
     assert adapter._conn is None

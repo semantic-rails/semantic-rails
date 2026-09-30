@@ -26,22 +26,30 @@ Postgres profile is qualified today; the adapter refuses another profile until
 its session setup, timeout, binding and type conversion have been implemented
 and tested. Credentials stay in the in-memory libpq connection string, with
 keyword values escaped. Packages cannot choose a driver or native library path.
+The `schema` option selects one exact, case-sensitive schema name.
 
 The compiler finalizes typed row-filter slots as Postgres `$1`, `$2`, … before
 execution. The adapter checks slot types, counts and placeholder order before
-connecting, binds values separately and sends prepared SQL unchanged. Every
-placeholder must correspond to one authored slot, including on direct prepared
-calls. Arrow batches are sliced before Python row conversion to at most
+connecting, binds values separately and sends prepared SQL unchanged. In the
+compiler's ANSI SQL, every placeholder corresponds to one authored slot. Direct
+parameterized calls use the same strict check and refuse `?` JSON operators;
+plain SQL without slots allows those operators and refuses unbound `$n` tokens.
+Arrow batches are sliced before Python row conversion to at most
 `max_rows + 1`, with `QueryRows.truncated` and semantic aliases preserved. The
 64 KiB driver batch hint bounds typical batches, not arbitrarily large cells.
 
 NUMERIC returns `Decimal` with its scale intact. Aware timestamps retain
 microseconds and use the requested query zone (otherwise the current session
-zone). PostgreSQL stores instants, so the originally authored offset cannot be
-recovered. Intervals retain separate months, days and nanoseconds as Arrow
+zone, falling back to aware UTC when Python cannot load it). PostgreSQL stores
+instants, so the originally authored offset cannot be recovered. Intervals retain
+separate months, days and nanoseconds as Arrow
 `MonthDayNano` values. Each query restores the session's previous zone. The
-adapter sets millisecond server deadlines and uses `adbc_cancel()` as a watchdog
-through execution and Arrow fetching. Failed queries discard the connection
+adapter preserves inherited statement timeouts unless a request or connection
+option overrides them, then restores the exact previous value. It changes the
+zone only when needed. A query without overrides takes two round trips: read
+the session settings, then execute. For overrides, the adapter sets millisecond
+server deadlines and uses `adbc_cancel()` as a watchdog through execution and
+Arrow fetching. Failed queries discard the connection
 before reuse. The libpq connect timeout is ten seconds; a separate network-read
 deadline is not exposed.
 
