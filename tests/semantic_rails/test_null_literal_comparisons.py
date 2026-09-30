@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from semantic_rails.compiler import compile_query
+from semantic_rails.compiler_parts.bind import _config_expr_to_sql
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
@@ -301,6 +302,67 @@ def test_configured_not_null_reads_null(runtime):
 def test_relation_not_null_reads_null():
     expr = parse_semantic_expression(NOT_NULL, context="relation")
     assert _gold(f"SELECT {render_expr(_semantic_expr_to_sql(expr))}") == [(None,)]
+
+
+def _false_not_equal_not_null(*, reverse=False):
+    false = {"kind": "literal", "value": False}
+    return {
+        "kind": "comparison",
+        "op": "!=",
+        "left": NOT_NULL if reverse else false,
+        "right": false if reverse else NOT_NULL,
+    }
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_relation_false_not_equal_not_null_stays_unknown(reverse):
+    expr = parse_semantic_expression(_false_not_equal_not_null(reverse=reverse), context="relation")
+    condition = render_expr(_semantic_expr_to_sql(expr))
+    expected = _gold("SELECT FALSE != (NOT NULL) FROM records")
+    assert expected == [(None,)] * 7
+    assert _gold(f"SELECT {condition} FROM records") == expected
+    assert (
+        _gold(f"SELECT id FROM records WHERE {condition}")
+        == _gold("SELECT id FROM records WHERE FALSE != (NOT NULL)")
+        == []
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_configured_false_not_equal_not_null_stays_unknown(runtime, reverse):
+    comparison = _false_not_equal_not_null(reverse=reverse)
+    expr = parse_semantic_expression(comparison, context="config")
+    config = runtime.config
+    measure = next(measure for measure in config.measures if measure.id == COUNT["measure"])
+    condition = render_expr(_config_expr_to_sql(expr, measure, config))
+    assert _gold(f"SELECT {condition} FROM records") == [(None,)] * 7
+    assert (
+        _gold(f"SELECT COUNT(*) FROM records WHERE {condition}")
+        == _gold("SELECT COUNT(*) FROM records WHERE FALSE != (NOT NULL)")
+        == [(0,)]
+    )
+    expression = {
+        "kind": "aggregate_if",
+        "aggregation": "count",
+        "condition": comparison,
+        "value": {"kind": "column", "entity": ENTITY, "column": "id"},
+    }
+    # An inline aggregate with no matching rows follows the existing empty-group rule.
+    assert runtime.query(_query(expression))["rows"] == [{"n": None}]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_post_aggregate_false_not_equal_not_null_stays_unknown(runtime, reverse):
+    query = {
+        "version": 2,
+        "select": [
+            {"expression": COUNT, "as": "n"},
+            {"expression": _false_not_equal_not_null(reverse=reverse), "as": "flag"},
+        ],
+    }
+    ((n, flag),) = _gold("SELECT COUNT(*), FALSE != (NOT NULL) FROM records")
+    assert flag is None
+    assert runtime.query(query)["rows"] == [{"n": n, "flag": flag}]
 
 
 @pytest.mark.parametrize(

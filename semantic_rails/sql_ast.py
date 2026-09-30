@@ -682,10 +682,11 @@ def build_negation(arg: SqlExpr) -> SqlExpr:
     """``NOT arg`` as ``FALSE = arg`` (no unary-NOT node), which has the same truth table.
 
     The arg goes on the right so the renderer parenthesizes it (``FALSE = (x > y)``); chained
-    comparisons are non-associative in Snowflake/Postgres. ``NOT NULL`` is NULL.
+    comparisons are non-associative in Snowflake/Postgres. ``NOT NULL`` is a boolean
+    NULL expression, distinct from an authored null literal for comparison lowering.
     """
     if is_null_literal(arg):
-        return SqlLiteral(None)
+        return SqlCast(SqlLiteral(None), "BOOLEAN")
     return SqlBinary(SqlLiteral(False), "=", arg)
 
 
