@@ -226,8 +226,10 @@ children never multiply a parent count or sum. This also applies to an aggregate
 own `filter`, and to non-temporal paths that look up a parent before reaching its
 children or join on an alternate key. Each hop must declare `N:1`, `1:N` or `1:1`;
 unknown, unsafe and temporal paths retain their refusals.
-ClickHouse uses a deduplicated-parent leaf with the same semantics to support
-servers without correlated subqueries.
+ClickHouse retains a deduplicated-parent leaf for servers without correlated
+subqueries. It refuses child-filter rewrites combined with a lookup selection,
+grouping or filter, paths that look up a parent before reaching children, and
+paths joined off the parent's declared key, with `MIXED_GRAIN_INVALID`.
 
 At most one group or filter may cross a one-to-many hop. Negated child predicates
 and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"

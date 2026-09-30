@@ -469,12 +469,9 @@ def test_child_filter_does_not_admit_many_to_many_or_unknown_hops(
     ("measure", "clause", "expected"),
     [
         ("order_count", BEVERAGE, 4),
-        ("face_value", BEVERAGE, 5),
-        # Orders -> customer -> sessions; customer 10's two web sessions must not double its orders.
-        ("order_count", WEB, 4),
-        ("revenue", WEB, 60),
+        ("revenue", BEVERAGE, 70),
     ],
-    ids=["parent_count", "alternate_key", "lookup_then_child_count", "lookup_then_child_sum"],
+    ids=["parent_count", "parent_sum"],
 )
 def test_clickhouse_uses_equivalent_parent_deduplication(
     package: Path, measure: str, clause: dict[str, Any], expected: int
@@ -489,6 +486,59 @@ def test_clickhouse_uses_equivalent_parent_deduplication(
     assert actual == _rows(package, query) == [(expected,)]
     assert "SELECT DISTINCT" in sql
     assert "EXISTS" not in sql
+
+
+@pytest.mark.parametrize(
+    ("measure", "clause"),
+    [("face_value", BEVERAGE), ("order_count", WEB), ("revenue", WEB)],
+    ids=["alternate_key", "lookup_then_child_count", "lookup_then_child_sum"],
+)
+def test_clickhouse_refuses_child_filter_paths_requiring_exists(
+    package: Path, measure: str, clause: dict[str, Any]
+) -> None:
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(
+            config,
+            Registry(config),
+            {"version": 1, "select": [_measure(measure)], "where": [clause]},
+        )
+    assert caught.value.code == "MIXED_GRAIN_INVALID"
+    assert "ClickHouse" in caught.value.details["why_invalid"]
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        {"group_by": [COUPON]},
+        {"select": [_measure("order_count"), {"expression": {"dimension": COUPON}}]},
+        {"where": [{"field": COUPON, "op": "=", "value": 1}]},
+        {"where": [{"field": COUPON, "op": "IS NULL", "value": None}]},
+    ],
+    ids=["grouped_lookup", "selected_lookup", "lookup_filter", "null_lookup_filter"],
+)
+@pytest.mark.parametrize("bound_filter", [False, True], ids=["where", "measure_filter"])
+def test_clickhouse_refuses_a_lookup_beside_a_child_filter(
+    package: Path, lookup: dict[str, Any], bound_filter: bool
+) -> None:
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    query = {"version": 1, "select": [_measure("order_count")], **lookup}
+    if bound_filter:
+        expression = {
+            "kind": "aggregate",
+            "measure": "measure.hop.order_count",
+            "aggregation": "count_distinct",
+            "filter": {"all": [BEVERAGE]},
+        }
+        query["select"] = [{"expression": expression, "as": "orders"}, *query["select"][1:]]
+    else:
+        query["where"] = [BEVERAGE, *query.get("where", [])]
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), query)
+    assert caught.value.code == "MIXED_GRAIN_INVALID"
+    assert "ClickHouse" in caught.value.details["why_invalid"]
 
 
 HOT_ITEMS = {"dimension": HOT, "attribute": "hot", "type": "boolean"}

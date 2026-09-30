@@ -1304,8 +1304,10 @@ once when at least one child matches. Non-temporal paths of declared `N:1`,
 use an alternate parent key; all authored join columns participate in the
 correlation. This supports parent counts and sums without multiplying their
 values. Unsafe, unknown-cardinality and temporal paths retain their refusals.
-ClickHouse keeps the equivalent deduplicated-parent leaf for compatibility with
-servers without correlated subqueries.
+ClickHouse retains a deduplicated-parent leaf for servers without correlated
+subqueries. It refuses child-filter rewrites combined with a lookup selection,
+grouping or filter, paths that look up a parent before reaching children, and
+paths joined off the parent's declared key, with `MIXED_GRAIN_INVALID`.
 
 Grouping retains a narrower exception: a path that only goes down one-to-many hops before any lookup
 (`order → order_item → product`), each hop joined on the declared key of its
