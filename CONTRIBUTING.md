@@ -106,17 +106,24 @@ If `test_embedding_consumer_contract.py` fails, the change breaks a known embedd
 
 Run `uv run --no-sync python scripts/audit_dependencies.py` after syncing the dev
 group. CI's Security audit checks the locked base install as a hard gate, then
-audits `snowflake`, `postgres`, `bigquery`, `databricks`, `athena`, and `clickhouse`
-separately. Core-reachable packages can never receive an exception.
+audits every extra declared in `pyproject.toml` separately, except the aggregate
+`all` extra. Only `snowflake`, `postgres`, `bigquery`, `databricks`, `athena`, and
+`clickhouse` can receive exceptions; `server`, `repl`, and core-reachable packages
+can never receive an exception.
 
 When an upstream connector caps a dependency below its patched version, add one
 `[[exceptions]]` entry per advisory to `security/audit-exceptions.toml`, with `id`,
-`package`, the affected connector `extras`, `blocked_by` (the capping package and
-specifier), `fixed_in`, an HTTPS tracking `issue`, `review_by` (a TOML date no more
+`package`, the affected connector `extras`, `blocked_by` (`capping-package: specifier`),
+`fixed_in`, an HTTPS tracking `issue`, `review_by` (a TOML date no more
 than 30 days away), and `reason`. Every finding needs an entry for its own extra.
 The checker rejects expired or unused entries, core-reachable packages, and
-exceptions whose fix now resolves with the connector's published dependency
-ranges. Resolver or audit errors also fail the check. Once the fix resolves,
+exceptions when any patched version reported by the advisory (including a
+backport) resolves with the connector's published dependency ranges. `fixed_in`
+must appear among those reported versions. The checker resolves from each reported
+patched version upward, using the current interpreter and platform with builds disabled.
+A resolution conflict confirms a block only when its explanation names the
+`blocked_by` package; unrelated conflicts and resolver or audit errors fail the
+check with an unverifiable cap. Once the fix resolves,
 upgrade the lockfile and remove the exception; if the advisory disappears, remove
 the unused entry. Review the tracking issue before renewing a blocked exception.
 The `all` extra includes these connectors and inherits their findings; it cannot

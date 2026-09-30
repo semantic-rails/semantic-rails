@@ -1,4 +1,4 @@
-"""Audit locked core/connector installs with bounded, self-invalidating exceptions."""
+"""Audit locked core/extra installs with bounded, self-invalidating exceptions."""
 
 from __future__ import annotations
 
@@ -14,8 +14,12 @@ from datetime import date, timedelta
 from pathlib import Path
 
 CONNECTORS = ("snowflake", "postgres", "bigquery", "databricks", "athena", "clickhouse")
-SURFACES = ("core", *CONNECTORS)
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def audit_surfaces(root: Path) -> tuple[str, ...]:
+    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    return ("core", *(extra for extra in project["optional-dependencies"] if extra != "all"))
 
 
 def normalize(package: str) -> str:
@@ -62,6 +66,13 @@ def load_exceptions(path: Path, today: date) -> list[ExceptionEntry]:
             raise ValueError(f"{entry.id}: issue must be an HTTPS link")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", entry.package):
             raise ValueError(f"{entry.id}: invalid package name")
+        blocker, separator, constraint = entry.blocked_by.partition(":")
+        if (
+            not separator
+            or not constraint.strip()
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", blocker.strip())
+        ):
+            raise ValueError(f"{entry.id}: blocked_by must name a package and its cap")
         if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*(?:[a-zA-Z]+[0-9]*)?", entry.fixed_in):
             raise ValueError(f"{entry.id}: invalid fixed_in version")
         entries.append(entry)
@@ -123,7 +134,9 @@ def audit_surface(root: Path, surface: str, scratch: Path) -> list[dict]:
     return dependencies
 
 
-def fix_resolves(root: Path, extra: str, entry: ExceptionEntry, scratch: Path) -> bool:
+def fix_resolves(
+    root: Path, extra: str, entry: ExceptionEntry, patched_version: str, scratch: Path
+) -> bool:
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
     requirements = scratch / "fixed.in"
     # Resolve current published ranges, never locked versions or overrides: a new
@@ -133,41 +146,47 @@ def fix_resolves(root: Path, extra: str, entry: ExceptionEntry, scratch: Path) -
             [
                 *project["dependencies"],
                 *project["optional-dependencies"][extra],
-                f"{entry.package}>={entry.fixed_in}",
+                f"{entry.package}>={patched_version}",
             ]
         )
         + "\n"
     )
-    resolved = run(
-        [
-            "uv",
-            "pip",
-            "compile",
-            str(requirements),
-            "--no-config",
-            "--refresh",
-            "--no-build",
-            "--default-index",
-            "https://pypi.org/simple",
-            "--color",
-            "never",
-            "--python-version",
-            f"{sys.version_info.major}.{sys.version_info.minor}",
-        ],
-        root,
-    )
+    try:
+        resolved = run(
+            [
+                "uv",
+                "pip",
+                "compile",
+                str(requirements),
+                "--no-config",
+                "--refresh",
+                "--no-build",
+                "--default-index",
+                "https://pypi.org/simple",
+                "--color",
+                "never",
+                "--python-version",
+                f"{sys.version_info.major}.{sys.version_info.minor}",
+            ],
+            root,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"{extra}: cannot verify the cap: {error}") from error
     if resolved.returncode == 0:
         return True
-    if resolved.returncode == 1 and "No solution found" in resolved.stderr:
+    conflict = resolved.stderr.partition("No solution found")[2]
+    blocker = normalize(entry.blocked_by.partition(":")[0].strip())
+    named_packages = {normalize(token) for token in re.findall(r"[A-Za-z0-9_.-]+", conflict)}
+    if resolved.returncode == 1 and conflict and blocker in named_packages:
         return False
-    raise ValueError(f"{extra}: fix resolution failed: {resolved.stderr.strip()}")
+    raise ValueError(f"{extra}: cannot verify the cap: {resolved.stderr.strip()}")
 
 
 def check_policy(
     reports: dict[str, list[dict]],
     entries: list[ExceptionEntry],
     today: date,
-    resolves: Callable[[str, ExceptionEntry], bool],
+    resolves: Callable[[str, ExceptionEntry, str], bool],
 ) -> tuple[list[str], list[str]]:
     """Only reported connector advisories with a still-blocked fix can be excepted."""
     errors = []
@@ -179,7 +198,7 @@ def check_policy(
             errors.append(f"{entry.id}: package reachable from core; exceptions forbidden")
         if entry.review_by < today:
             errors.append(f"{entry.id}: expired review_by {entry.review_by}")
-    for surface in SURFACES:
+    for surface in reports:
         findings = 0
         for dependency in reports[surface]:
             for advisory in dependency["vulns"]:
@@ -193,13 +212,21 @@ def check_policy(
                     and surface in entry.extras
                 ]
                 prefix = f"[{surface}] {dependency['name']} {advisory['id']}"
-                if surface == "core" or len(matches) != 1:
+                if surface not in CONNECTORS or len(matches) != 1:
                     errors.append(f"{prefix}: unexcepted advisory")
                     lines.append(f"{prefix}: FAIL")
                 else:
                     entry = matches[0]
                     used.add((entry.id, surface))
-                    if resolves(surface, entry):
+                    fixes = advisory.get("fix_versions")
+                    if (
+                        not isinstance(fixes, list)
+                        or not all(isinstance(version, str) for version in fixes)
+                        or entry.fixed_in not in fixes
+                    ):
+                        errors.append(f"{prefix}: fixed_in missing from advisory patched versions")
+                        continue
+                    if any(resolves(surface, entry, version) for version in fixes):
                         errors.append(f"{prefix}: fix is resolvable; upgrade now")
                     lines.append(
                         f"{prefix}: listed exception until {entry.review_by} ({entry.issue})"
@@ -219,12 +246,14 @@ def main() -> int:
         entries = load_exceptions(ROOT / "security/audit-exceptions.toml", today)
         with tempfile.TemporaryDirectory(prefix="sr-dependency-audit-") as directory:
             scratch = Path(directory)
-            reports = {surface: audit_surface(ROOT, surface, scratch) for surface in SURFACES}
+            reports = {
+                surface: audit_surface(ROOT, surface, scratch) for surface in audit_surfaces(ROOT)
+            }
             lines, errors = check_policy(
                 reports,
                 entries,
                 today,
-                lambda extra, entry: fix_resolves(ROOT, extra, entry, scratch),
+                lambda extra, entry, version: fix_resolves(ROOT, extra, entry, version, scratch),
             )
         for line in lines:
             print(line)
