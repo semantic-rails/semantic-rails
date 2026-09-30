@@ -102,6 +102,26 @@ uv run python scripts/changelog_fragments.py check
 If `test_embedding_consumer_contract.py` fails, the change breaks a known embedder's use of
 `semantic_rails.embedding`: follow "Changing the facade" in [docs/EMBEDDING.md](docs/EMBEDDING.md).
 
+## Dependency advisories
+
+Run `uv run --no-sync python scripts/audit_dependencies.py` after syncing the dev
+group. CI's Security audit checks the locked base install as a hard gate, then
+audits `snowflake`, `postgres`, `bigquery`, `databricks`, `athena`, and `clickhouse`
+separately. Core-reachable packages can never receive an exception.
+
+When an upstream connector caps a dependency below its patched version, add one
+`[[exceptions]]` entry per advisory to `security/audit-exceptions.toml`, with `id`,
+`package`, the affected connector `extras`, `blocked_by` (the capping package and
+specifier), `fixed_in`, an HTTPS tracking `issue`, `review_by` (a TOML date no more
+than 30 days away), and `reason`. Every finding needs an entry for its own extra.
+The checker rejects expired or unused entries, core-reachable packages, and
+exceptions whose fix now resolves with the connector's published dependency
+ranges. Resolver or audit errors also fail the check. Once the fix resolves,
+upgrade the lockfile and remove the exception; if the advisory disappears, remove
+the unused entry. Review the tracking issue before renewing a blocked exception.
+The `all` extra includes these connectors and inherits their findings; it cannot
+have a separate exception.
+
 ## Full Verification Matrix
 
 For release-surface work or anything that touches the runtime, packages, or
