@@ -18,6 +18,7 @@ import argparse
 from pathlib import Path
 
 import pytest
+import yaml
 
 from semantic_rails.cli.commands.package import cmd_init
 from semantic_rails.config import load_package_config
@@ -81,6 +82,23 @@ def test_grain_that_matches_no_entity_key_is_rejected(starter_package: Path) -> 
     path = _mutated(starter_package, "grain: [customer_id]", "grain: [customerid]")
     errors = _errors(path)
     assert any("grain" in e and "customerid" in e and "customer_id" in e for e in errors), errors
+
+
+@pytest.mark.parametrize("primary_source", ["graph", "entity"])
+def test_grain_does_not_select_primary_when_identity_is_authored(
+    starter_package: Path, primary_source: str
+) -> None:
+    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
+    raw["models"]["customers"]["grain"] = ["authored_row_id"]
+    if primary_source == "graph":
+        raw["graph"]["entities"]["customer"]["model"] = "customers"
+    else:
+        raw["models"]["customers"]["entity"] = "customer"
+    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    assert _errors(starter_package) == []
+    config = load_package_config(str(starter_package))
+    customer = next(entity for entity in config.entities if entity.id.endswith("_customer"))
+    assert customer.key == ["customer_id"]
 
 
 @pytest.mark.parametrize(

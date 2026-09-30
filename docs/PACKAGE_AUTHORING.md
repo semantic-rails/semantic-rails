@@ -710,8 +710,9 @@ the package exposes, their key column names, and any non-default relationships
 between them.
 
 Each graph entity must have a key, declared on the entity or through its own
-model's `keys.primary:` or `grain:`. A graph model binding makes that entity the
-model's primary entity, regardless of the order of its `entities:` block. A
+model's `keys.primary:` or `grain:`. An explicit graph model binding makes that
+entity the model's primary entity, regardless of the order of its `entities:` block. A
+conflicting authored `entity:` fails with `INVALID_CONFIG` naming both entities. A
 keyless entity cannot borrow a foreign entity's key: loading fails with
 `INVALID_CONFIG` naming the entity and model before graph relationships are
 translated. Each model can be the primary home of only one graph entity.
@@ -852,14 +853,16 @@ The **primary entity** of a model is resolved without authoring `grain:`:
 entity (the jaffle and tpch packages author it this way), and the row grain is
 derived from that entity's canonical key. Single-file packages may instead pin
 the primary by authoring `grain:` — the entity whose key matches the grain is
-primary, and all entities whose keys are in a compound grain (`grain: [date_id,
-account_id]`) are co-primary. Under `schema_strict`, directory packages reject
+primary. Under `schema_strict`, directory packages reject
 `grain:` authored alongside an `entities:` block ("Drop 'grain:' — it's derived
 from the primary entity's key"); single-file packages accept both.
 
-Without a graph model binding, an explicit singular `entity:` or a matching
-grain must identify the primary entity. Declaration order never selects it;
-loading fails with `INVALID_CONFIG` if it cannot be resolved.
+Without an explicit graph model binding, the loader resolves the primary from
+an authored singular `entity:`, then a matching grain, then an entity listed in
+the model's `entities:` block whose name matches the model and which has no
+explicit graph binding. It back-fills implicit graph bindings from the resolved
+identity. Declaration order never selects the primary; loading fails with
+`INVALID_CONFIG` if it cannot be resolved or two graph entities bind to one model.
 
 ### `bridge: false` — junction tables
 

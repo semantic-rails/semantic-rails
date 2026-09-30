@@ -569,14 +569,17 @@ def _check_model_shape(
                     errors=errors,
                 )
 
-    # Grain ↔ entity-key consistency. When a model authors an `entities:`
-    # block plus an explicit `grain:`, the loader auto-detects the primary
-    # entity by matching grain columns against each entity's key (or
-    # `expr:` override). A grain that matches nothing silently falls back
-    # to the first entity — almost always a typo'd column name.
+    # Grain selects the primary only without an explicit binding or authored identity.
+    # In that case, check it against entity keys (or `expr:` overrides).
     model_kind = str(model.get("kind", "model") or "model").strip().lower()
+    explicitly_bound = any(
+        isinstance(entity, dict) and str(entity.get("model", "") or "") == model_id
+        for entity in (graph_entities or {}).values()
+    )
     if (
         model_kind == "model"
+        and not explicitly_bound
+        and not str(model.get("entity", "") or "").strip()
         and isinstance(entities_block, dict)
         and graph_entities is not None
         and model.get("grain") is not None
@@ -610,9 +613,8 @@ def _check_model_shape(
             add_error(
                 errors,
                 f"{label} grain {grain_cols} does not match the key of any entity "
-                f"in its entities: block ({rendered}) — primary-entity detection "
-                f"would silently fall back to the first entry; fix the grain or "
-                f"the entity key",
+                f"in its entities: block ({rendered}); fix the grain or entity key, "
+                "or identify the primary with a graph model binding or entity",
             )
 
 
