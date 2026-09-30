@@ -263,6 +263,8 @@ def _config_expr_to_sql_inner(
     if isinstance(expr, ColumnRefExpr):
         entity_id = _resolve_expr_entity(expr, measure, config)
         entity = entities[entity_id]
+        if is_conditional_aggregate(measure):
+            bind_conditional_aggregate_column(measure, entity_id, expr.column, config)
         # For a measure's own entity, prefer source_relation (fact table)
         # over entity.table (which is typically the calendar relation for
         # fact measures that bind to a time entity).
@@ -897,6 +899,10 @@ def _collect_conversion_exprs(
 #  - The aggregation must be a scalar aggregation that
 #    ``_aggregation_expr`` already supports (count, sum, avg, min, max,
 #    median, percentile). Window-only aggregations are rejected.
+#
+# When it reads another entity, each column it reads binds the dimensions
+# over that column, as a ``where`` filter binds its dimension, so object
+# policies on them refuse it (``bind_conditional_aggregate_column``).
 
 
 _AGGIF_SCALAR_AGGREGATIONS = frozenset(
@@ -1043,6 +1049,55 @@ def _require_null_rejecting_condition(
 
 def is_conditional_aggregate(measure: MeasureConfig) -> bool:
     return measure.meta.get("source") == "aggregate_if"
+
+
+# Policy kinds that refuse a query by the ids of the objects it reads.
+_OBJECT_POLICY_KINDS = frozenset({"object_access", "object_visibility"})
+
+
+def bind_conditional_aggregate_column(
+    measure: MeasureConfig, entity_id: str, column: str, config: PackageConfig
+) -> None:
+    """Bind a column a cross-entity aggregate_if reads as a where filter binds its dimension.
+
+    Every lowering of the measure's expression reads its columns here, so each dimension over
+    the column becomes a dependency that object policies see before SQL is rendered. A column
+    of another entity that no dimension declares cannot be named by a policy, so it is refused
+    whenever the package declares an object policy. A single-entity aggregate_if is unchanged.
+    """
+    joined = _measure_required_entities(measure, config) - {measure.entity}
+    if not joined:
+        return
+    dimensions = [
+        row.id
+        for row in config.dimensions
+        if row.entity == entity_id and row.column.casefold() == column.casefold()
+    ]
+    if (
+        not dimensions
+        and entity_id in joined
+        and any(policy.kind in _OBJECT_POLICY_KINDS for policy in config.semantic_policies)
+    ):
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            (
+                f"aggregate_if over '{measure.entity}' reads column '{column}' of "
+                f"'{entity_id}', which no dimension declares, so object policies "
+                "cannot govern it"
+            ),
+            details={
+                "reason": "column_without_dimension",
+                "entity": entity_id,
+                "column": column,
+                "hint": (
+                    "Declare a dimension on the column, or use a where filter on a "
+                    "dimension of that entity with the plain measure."
+                ),
+            },
+        )
+    index = _dimension_index(config)
+    for dimension_id in dimensions:
+        index.get(dimension_id)
 
 
 def _conditional_path_refusal(
