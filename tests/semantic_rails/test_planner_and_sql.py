@@ -844,8 +844,7 @@ def test_same_fact_measures_fold_into_one_leaf_scan(package_config_factory):
 
     assert "FULL OUTER JOIN" not in rendered
     assert "leaf_2 AS (" not in rendered
-    # One grouped scan, plus two observation probes and one shared coverage scan.
-    assert rendered.count("FROM jaffle_order") == 4
+    assert rendered.count("FROM jaffle_order") == 1
     assert "leaf_base AS (" not in rendered
     assert "projected AS (" not in rendered
     assert compiled["explain"].performance_plan["raw_fact_count"] == 1

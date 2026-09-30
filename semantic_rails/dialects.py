@@ -129,9 +129,9 @@ class SqlDialect:
     def timestamp_cast(self, expr: Any) -> Any:
         return SqlCast(expr, self.timestamp_type_name())
 
-    def now(self) -> Any:
-        """The current time, as a value comparable with ``timestamp_cast`` of a column."""
-        return SqlCall("NOW", [])
+    def now(self, timezone: str = "UTC") -> Any:
+        """Current instant as role wall time, independent of session and storage zones."""
+        return SqlCall("TIMEZONE", [SqlLiteral(timezone), SqlCall("NOW", [])])
 
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         return SqlCall("DATE_TRUNC", [SqlLiteral(grain), self.timestamp_cast(ts_expr)])
@@ -263,8 +263,10 @@ class SnowflakeDialect(SqlDialect):
     def timestamp_type_name(self) -> str:
         return "TIMESTAMP_NTZ"
 
-    def now(self) -> Any:
-        return SqlCall("CURRENT_TIMESTAMP", [])
+    def now(self, timezone: str = "UTC") -> Any:
+        return self.timestamp_cast(
+            SqlCall("CONVERT_TIMEZONE", [SqlLiteral(timezone), SqlCall("CURRENT_TIMESTAMP", [])])
+        )
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         return SqlCall(
@@ -726,8 +728,8 @@ class BigQueryDialect(SqlDialect):
         # the DATETIME_* functions and comparisons expect a DATETIME.
         return expr
 
-    def now(self) -> Any:
-        return SqlCall("CURRENT_DATETIME", [])
+    def now(self, timezone: str = "UTC") -> Any:
+        return SqlCall("CURRENT_DATETIME", [SqlLiteral(timezone)])
 
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         # BigQuery reverses the portable order: DATETIME_TRUNC(ts, unit)
@@ -816,6 +818,10 @@ class DatabricksDialect(SqlDialect):
     """
 
     name: str = "databricks"
+
+    def now(self, timezone: str = "UTC") -> Any:
+        # The two-argument form takes the source zone from the session, then returns NTZ.
+        return SqlCall("CONVERT_TIMEZONE", [SqlLiteral(timezone), SqlCall("CURRENT_TIMESTAMP", [])])
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day by default.
@@ -920,6 +926,11 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
+
+    def now(self, timezone: str = "UTC") -> Any:
+        return self.timestamp_cast(
+            SqlCall("AT_TIMEZONE", [SqlCall("NOW", []), SqlLiteral(timezone)])
+        )
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day. Trino caps one
@@ -1062,6 +1073,9 @@ class ClickHouseDialect(SqlDialect):
     """
 
     name: str = "clickhouse"
+
+    def now(self, timezone: str = "UTC") -> Any:
+        return SqlCall("NOW", [SqlLiteral(timezone)])
 
     # No day_series override: it was withheld because an unmatched LEFT JOIN field reads 0
     # rather than NULL. Every compiled statement now sets join_use_nulls, but a generated

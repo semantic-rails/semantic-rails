@@ -96,7 +96,6 @@ from .dependencies import (
 from .empty_groups import (
     GUARDED_BASE,
     LeafScope,
-    authored_as_of,
     base_reads,
     expr_resolves_to_zero,
     guard_empty_groups,
@@ -411,12 +410,37 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
     return raw_expr
 
 
-def _record_time_scope(plan, config, leaf, rows, untimed, axis):
-    raw_time, bucket, calendar, local = axis
+def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
+    return bool(
+        plan.time
+        and not plan.time.get("window_total")
+        and (
+            plan.time.get("start")
+            or plan.time.get("end")
+            or _query_requires_dense_series(plan, config)
+            or len(_measure_plan_groups(plan, config)) > 1
+        )
+    )
+
+
+def _record_time_scope(
+    plan: LogicalPlan,
+    config: PackageConfig,
+    leaf: SqlSelect,
+    rows: list[MeasurePlan],
+    untimed: list[Any],
+    *,
+    raw_time: Any,
+    bucket: Any,
+    calendar: SqlJoin | None,
+    local: bool,
+) -> None:
     if not plan.time or plan.time.get("window_total") or leaf.ctes:
         return
-    entities = _entity_index(config)
-    measures = _measure_index(config)
+    if not _needs_time_scope(plan, config):
+        return
+    if not isinstance(leaf.from_table, SqlTableRef):
+        raise SemanticLayerError("EMPTY_GROUPS_UNSETTLED", "A time scope needs a base relation.")
     dialect = _dialect(config)
     for row in rows:
         alias = row.bound_measure.alias
@@ -424,24 +448,18 @@ def _record_time_scope(plan, config, leaf, rows, untimed, axis):
         role = _temporal_role_index(config)[
             _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
         ]
-        stamp = authored_as_of(
-            entities[measures[row.bound_measure.measure_id].entity].freshness_as_of
-        )
-        authored = dialect.timestamp_cast(SqlLiteral(stamp))
-        freshness = _apply_role_timezone(authored, role, config) if stamp else None
         record_leaf_scope(
             alias,
             LeafScope(
-                leaf.from_table,
-                tuple(j for j in leaf.joins if j is not calendar),
-                tuple(untimed),
-                value,
-                (plan.time or {}).get("grain", ""),
-                bucket if local else None,
-                raw_time,
-                calendar,
-                freshness,
-                _apply_role_timezone(dialect.timestamp_cast(dialect.now()), role, config),
+                from_table=leaf.from_table,
+                joins=tuple(j for j in leaf.joins if j is not calendar),
+                where=tuple(untimed),
+                value=value,
+                bucket=bucket if local else None,
+                raw_time=raw_time,
+                calendar=calendar,
+                now=dialect.now(role.timezone or "UTC"),
+                bounded=bool(plan.time.get("start") or plan.time.get("end")),
             ),
         )
 
@@ -2082,7 +2100,6 @@ def _measure_leaf_select(
     measure = measures[measure_plan.bound_measure.measure_id]
     selected_aggregate = _selected_aggregate_relation(measure_plan, config)
     if selected_aggregate is not None:
-        _measure_leaf_select(plan, replace(measure_plan, aggregate_relation_id=""), config)
         return _aggregate_relation_leaf_select(plan, [measure_plan], selected_aggregate, config)
 
     predicate_ctes: list[SqlCte] = []
@@ -2287,8 +2304,17 @@ def _measure_leaf_select(
         group_by=group_fields,
     )
     if plan.time:
-        axis = (raw_expr, time_expr, leaf_calendar_join, time_source_local)
-        _record_time_scope(plan, config, leaf, [measure_plan], untimed, axis)
+        _record_time_scope(
+            plan,
+            config,
+            leaf,
+            [measure_plan],
+            untimed,
+            raw_time=raw_expr,
+            bucket=time_expr,
+            calendar=leaf_calendar_join,
+            local=time_source_local,
+        )
     return leaf
 
 
@@ -3853,9 +3879,6 @@ def _measure_group_leaf_select(
         if aggregate_id:
             aggregate = _aggregate_relation_index(config).get(aggregate_id)
             if aggregate is not None:
-                _measure_group_leaf_select(
-                    plan, [replace(row, aggregate_relation_id="") for row in measure_plans], config
-                )
                 return _aggregate_relation_leaf_select(plan, measure_plans, aggregate, config)
 
     entities = _entity_index(config)
@@ -3963,8 +3986,17 @@ def _measure_group_leaf_select(
         group_by=group_fields,
     )
     if plan.time:
-        axis = (raw_expr, time_expr, leaf_calendar_join, time_source_local)
-        _record_time_scope(plan, config, leaf, measure_plans, untimed, axis)
+        _record_time_scope(
+            plan,
+            config,
+            leaf,
+            measure_plans,
+            untimed,
+            raw_time=raw_expr,
+            bucket=time_expr,
+            calendar=leaf_calendar_join,
+            local=time_source_local,
+        )
     return leaf
 
 
@@ -4539,8 +4571,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 if (
                     guard_empty
                     and plan_is_root()
-                    and plan.time
-                    and not plan.time.get("window_total")
+                    and _needs_time_scope(plan, config)
                     and not leaf_select.ctes
                     and isinstance(leaf_select.from_table, SqlTableRef)
                     and not any(row.aggregate_relation_id for row in measure_group)
@@ -4731,7 +4762,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 measure_aliases,
                 zero,
                 scopes,
-                time_key=time_alias,
+                time_key=time_alias if fill_binding is not None or len(measure_groups) > 1 else "",
                 dialect=_dialect(config),
             )
         )

@@ -10,7 +10,6 @@ from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, fields, is_dataclass, replace
-from datetime import UTC, datetime
 from typing import Any
 
 from ..errors import SemanticLayerError
@@ -28,7 +27,6 @@ from ..sql_ast import (
     SqlCall,
     SqlCase,
     SqlCaseWhen,
-    SqlCast,
     SqlCte,
     SqlExists,
     SqlField,
@@ -106,12 +104,11 @@ class LeafScope:
     joins: tuple[SqlJoin, ...]
     where: tuple[Any, ...]
     value: Any
-    grain: str = ""
     bucket: Any = None
     raw_time: Any | None = None
     calendar: SqlJoin | None = None
-    as_of: Any = None
     now: Any = None
+    bounded: bool = False
 
 
 _leaf_scopes: ContextVar[dict[str, LeafScope] | None] = ContextVar("leaf_scopes", default=None)
@@ -161,22 +158,25 @@ def guard_empty_groups(
             )
             scope = (scopes or {}).get(alias)
             if scope is not None:
-                seen = SqlBinary(seen, "OR", _seen_outside_window(scope))
+                if scope.bounded:
+                    seen = SqlBinary(seen, "OR", _seen_outside_window(scope))
                 if time_key and scope.bucket is not None:
-                    loaded = repr(
-                        (scope.from_table, scope.raw_time, scope.bucket, scope.calendar)
-                        + (scope.grain, scope.as_of)
-                    )
+                    loaded = repr((scope.from_table, scope.raw_time, scope.bucket, scope.calendar))
                     name = coverage.get(loaded)
                     if name is None:
                         name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
                         ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
                         joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
                     seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
-            value = SqlCase(
-                whens=[SqlCaseWhen(seen, SqlCall("COALESCE", [value, SqlLiteral(0)]))],
-                else_expr=None,
-            )
+                # A zero count records no observation. A positive count or populated sum
+                # always survives; coverage gates only the empty-group substitution.
+                if aggregation in _COUNTING:
+                    value = SqlCall("NULLIF", [value, SqlLiteral(0)])
+                value = SqlCall("COALESCE", [value, SqlCase([SqlCaseWhen(seen, SqlLiteral(0))])])
+            else:
+                value = SqlCase(
+                    whens=[SqlCaseWhen(seen, SqlCall("COALESCE", [value, SqlLiteral(0)]))],
+                )
         fields_.append(SqlField(value, alias))
     guard = SqlSelect(
         select=fields_, from_table=SqlTableRef(name=source, alias="base"), joins=joins
@@ -185,22 +185,25 @@ def guard_empty_groups(
 
 
 def _seen_outside_window(scope: LeafScope) -> SqlExists:
-    counting = isinstance(scope.value, SqlCall) and scope.value.name.upper() in {
-        "COUNT",
-        "COUNT_IF",
-        "COUNTIF",
-    }
+    if (
+        not isinstance(scope.value, SqlCall)
+        or scope.value.name not in {"SUM", "COUNT", "COUNT_IF", "COUNTIF"}
+        or len(scope.value.args) != 1
+    ):
+        raise _unsettled_error({"observation": "unsupported_aggregate"})
+    operand = scope.value.args[0]
+    observed = (
+        operand
+        if scope.value.name in {"COUNT_IF", "COUNTIF"}
+        else SqlBinary(operand, "IS NOT", SqlLiteral(None))
+    )
     return SqlExists(
         SqlSelect(
             select=[SqlField(SqlLiteral(1), "seen")],
             from_table=replace(scope.from_table),
             joins=list(scope.joins),
-            where=list(scope.where),
-            having=[
-                SqlBinary(
-                    scope.value, ">" if counting else "IS NOT", SqlLiteral(0 if counting else None)
-                )
-            ],
+            where=[*scope.where, observed],
+            limit=1,
             observation_scan=True,
         )
     )
@@ -217,64 +220,21 @@ def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
 
 def coverage_select(scope: LeafScope, dialect: Any) -> SqlSelect:
     known = dialect.timestamp_cast(scope.raw_time)
-    now = dialect.timestamp_cast(scope.now or dialect.now())
+    now = scope.now
     joins = [scope.calendar] if scope.calendar is not None else []
-    if scope.as_of is None:
-        past = SqlBinary(known, "<=", now)
-        last_at: Any = SqlCase(whens=[SqlCaseWhen(past, known)])
-        last_bucket: Any = SqlCase(whens=[SqlCaseWhen(past, scope.bucket)])
-    else:
-        authored = dialect.timestamp_cast(scope.as_of)
-        last_at = SqlCase(
-            whens=[SqlCaseWhen(SqlBinary(authored, "<=", now), authored)], else_expr=now
-        )
-        last_bucket = dialect.date_trunc(scope.grain, last_at)
-        if scope.calendar is not None:
-            assert isinstance(scope.calendar.on, SqlBinary) and isinstance(
-                scope.calendar.on.left, SqlIdentifier
-            )
-            assert isinstance(scope.bucket, SqlIdentifier)
-            last_bucket = SqlIdentifier(["coverage_edge", scope.bucket.parts[-1]])
-            joins.append(
-                SqlJoin(
-                    "LEFT",
-                    replace(scope.calendar.table, alias="coverage_edge"),
-                    SqlBinary(
-                        SqlIdentifier(["coverage_edge", scope.calendar.on.left.parts[-1]]),
-                        "=",
-                        SqlCast(last_at, "DATE"),
-                    ),
-                )
-            )
+    last_bucket = SqlCase([SqlCaseWhen(SqlBinary(known, "<=", now), scope.bucket)])
     return SqlSelect(
         select=[
             SqlField(
-                SqlCall("MIN", [SqlCase([SqlCaseWhen(SqlBinary(known, "<=", now), scope.bucket)])]),
+                SqlCall("MIN", [scope.bucket]),
                 "loaded_from",
             ),
             SqlField(SqlCall("MAX", [last_bucket]), "loaded_to"),
-            SqlField(
-                SqlBinary(
-                    SqlCall("MIN", [known]),
-                    ">",
-                    dialect.timestamp_cast(SqlCall("MIN", [scope.bucket])),
-                ),
-                "first_partial",
-            ),
         ],
         from_table=replace(scope.from_table),
         joins=joins,
         observation_scan=True,
     )
-
-
-def authored_as_of(value: str) -> str | None:
-    try:
-        moment = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    moment = moment.astimezone(UTC) if moment.tzinfo is not None else moment
-    return moment.replace(tzinfo=None).isoformat(sep=" ")
 
 
 def require_time_scopes(aliases: Iterable[str], scopes: Mapping[str, LeafScope]) -> None:

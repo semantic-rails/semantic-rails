@@ -458,7 +458,9 @@ them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` to the on
 ordinary scan and every engine-tagged observation or coverage scan of a filtered relation.
 It denies other repeated reads, joins, other relations and rollups (routing is off under
 a row filter). Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
-observation determines whether zero is defined, and base time coverage bounds where it applies.
+observation determines whether zero is defined, and base time coverage bounds only zero
+substitution on filled, dense or combined leaves. Populated values pass through; routed
+queries keep the window test and never scan a shadow raw leaf.
 Segment preview and count execute their prepared statements independently; the
 preview response includes both statements. Live valid-values uses the ordinary
 query path and includes the loaded semantic identity in its provenance.

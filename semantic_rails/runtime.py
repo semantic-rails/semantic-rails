@@ -45,7 +45,6 @@ from .cache import (
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
 from .compiler import BoundQuery, bind_query, compile_query
-from .compiler_parts.empty_groups import base_reads, sql_nodes
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -88,7 +87,6 @@ from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
-from .renderer import render_select
 from .request_context import (
     context_from_policy_context,
     request_context_payload,
@@ -109,15 +107,6 @@ from .seed_provenance import (
     recorded_seed_digest,
 )
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
-from .sql_ast import (
-    SqlExists,
-    SqlField,
-    SqlIdentifier,
-    SqlJoin,
-    SqlParameter,
-    SqlSelect,
-    SqlTableRef,
-)
 from .sql_preparation import PreparedQuery, checked_parameter_values
 
 __all__ = [
@@ -682,75 +671,6 @@ def _unchained_failure(exc: Exception, adapter: Any, query: PreparedQuery) -> Se
     return query_execution_error({"engine": engine, "sql_redacted": True})
 
 
-def _partial_bucket_warnings(adapter, config, compiled, rows, limits, policy_context):
-    axis = compiled["logical_plan"].time or {}
-    grain = axis.get("grain")
-    key = f"{axis.get('temporal_role')}__{grain}"
-    all_ctes = compiled["sql_ast"].ctes
-    ctes = [
-        c
-        for c in all_ctes
-        if c.name.startswith("coverage_") and getattr(c.query, "observation_scan", False)
-    ]
-    if not rows or not grain or not ctes:
-        return [], set()
-    fields = [
-        SqlField(SqlIdentifier([c.name, field]), f"edge_{i}_{field}")
-        for i, c in enumerate(ctes)
-        for field in ("loaded_from", "loaded_to", "first_partial")
-    ]
-    probes = [
-        (field.alias, node)
-        for c in all_ctes
-        if c.name == "guarded_base"
-        for field in c.query.select
-        for node in sql_nodes(field.expression)
-        if isinstance(node, SqlExists)
-    ]
-    fields.extend(SqlField(node, f"seen_{alias}") for alias, node in probes)
-    probe = SqlSelect(
-        fields,
-        SqlTableRef(ctes[0].name),
-        joins=[SqlJoin("CROSS", SqlTableRef(c.name)) for c in ctes[1:]],
-        ctes=all_ctes[: all_ctes.index(ctes[-1]) + 1],
-    )
-    dialect = dialect_for_warehouse(config.package.warehouse)
-    prepared = replace(
-        dialect.prepare_query(render_select(probe)),
-        parameters=tuple(
-            n.slot for n in sql_nodes([*probe.ctes, *probe.select]) if isinstance(n, SqlParameter)
-        ),
-    )
-    edges = _adapter_query(adapter, prepared, limits=limits, policy_context=policy_context)
-    buckets = set()
-    for edge in edges:
-        for i in range(len(ctes)):
-            for field, partial in (
-                ("loaded_from", edge[f"edge_{i}_first_partial"]),
-                ("loaded_to", True),
-            ):
-                bucket = edge[f"edge_{i}_{field}"]
-                if bucket is not None and partial and any(row.get(key) == bucket for row in rows):
-                    buckets.add(str(bucket))
-    observed_aliases = {
-        alias for alias, _ in probes if any(edge.get(f"seen_{alias}") for edge in edges)
-    }
-    projection = next((c.query for c in all_ctes if c.name == "projected"), compiled["sql_ast"])
-    observed = {
-        f.alias
-        for f in projection.select
-        if (reads := base_reads(f.expression)) and reads <= observed_aliases
-    }
-    warning = semantic_issue(
-        code="PARTIAL_BUCKET",
-        message="A returned bucket straddles a data coverage edge.",
-        severity="warning",
-        stage="execution",
-        details={"buckets": sorted(buckets)},
-    )
-    return ([warning] if buckets else []), observed
-
-
 def _data_coverage_probe(
     adapter: Any,
     config: Any,
@@ -1217,13 +1137,16 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     ]
 
 
-def _no_data_in_scope_warnings(compiled, rows, *, observed=frozenset()) -> list[dict[str, Any]]:
-    """Warn on NULL-only guarded outputs, excluding operands observed beyond time coverage.
+def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
+    """Say when a measure that reads 0 for empty groups had no data at all, so it read NULL.
 
-    Coverage diagnostics supply untimed observations; other queries need only answer rows.
+    A sum, count or distinct count is 0 in a group with no rows only while its measure has
+    data somewhere in scope; with none, every group reads NULL. A misspelled filter value
+    produces exactly that, so the answer names the outputs that came back NULL on every row
+    (or, when nothing came back and no time bounds explain it, every such output). One
+    warning covers them all, and it needs no query beyond the answer.
     """
     outputs = {item["output"]: item for item in list(compiled.get("zero_outputs") or [])}
-    outputs = {name: item for name, item in outputs.items() if name not in observed}
     window = compiled["logical_plan"].time
     if getattr(rows, "truncated", False) or not outputs:
         return []
@@ -1242,8 +1165,12 @@ def _no_data_in_scope_warnings(compiled, rows, *, observed=frozenset()) -> list[
     return [
         semantic_issue(
             code="NO_DATA_IN_SCOPE",
-            message=f"No data in scope for {', '.join(outputs)}: the scoped operands hold no "
-            "values, so the result reads NULL rather than 0. Check the filter values.",
+            message=(
+                f"No data in scope for {', '.join(outputs)}: nothing in this query's filters and "
+                f"time window holds a value, so {'it reads' if len(outputs) == 1 else 'they read'}"
+                " NULL rather than 0. A sum or count reads 0 only where its measure has data "
+                "elsewhere in scope; check the filter values."
+            ),
             severity="warning",
             stage="execution",
             details={"outputs": list(outputs)},
@@ -2362,9 +2289,6 @@ class Runtime:
                     limits=limits,
                     policy_context=policy_context,
                 )
-                partial_warnings, observed = _partial_bucket_warnings(
-                    adapter, self._config, compiled, rows, limits, policy_context
-                )
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -2390,8 +2314,7 @@ class Runtime:
             "errors": [],
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
-                *_no_data_in_scope_warnings(compiled, rows, observed=observed),
-                *partial_warnings,
+                *_no_data_in_scope_warnings(compiled, rows),
                 *limits_warnings,
                 *self._seed_warnings,
             ],

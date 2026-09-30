@@ -4,11 +4,13 @@ from dataclasses import replace
 
 import pytest
 
+from semantic_rails.config import load_package_config
 from semantic_rails.runtime import Runtime
 
 from .conftest import _rows, _write_variant
 from .test_correctness import (
     AVERAGE,
+    ORDERS,
     REVENUE,
     ROLE,
     STORE,
@@ -19,11 +21,29 @@ from .test_correctness import (
 )
 
 
+@pytest.fixture
+def raw_runtime(request, backend_name):
+    backend = _backend(request, backend_name)
+    opened = []
+
+    def make(variant):
+        original = backend.runtimes[variant]
+        rt = Runtime.from_config(
+            replace(original.config, aggregate_relations=[]), source_path=original.source_path
+        )
+        opened.append(rt)
+        return rt
+
+    yield make
+    for rt in opened:
+        rt.close()
+
+
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("bucket", ["2023-10-01", "2024-02-01", "2024-08-01", "2024-09-01"])
 @pytest.mark.parametrize("variant", ["utc_authored", "utc_implicit"])
 def test_loaded_buckets_use_the_whole_base_not_the_filtered_measure(
-    request, backend_name, bucket, variant
+    request, backend_name, bucket, variant, raw_runtime
 ):
     backend = _backend(request, backend_name)
     # The measured value occurs only in November; February is loaded but has no order.
@@ -40,7 +60,7 @@ def test_loaded_buckets_use_the_whole_base_not_the_filtered_measure(
         end=f"{int(bucket[:4]) + 1}-01-01",
         fill=True,
     )
-    result = backend.runtimes[variant].query(query)
+    result = raw_runtime(variant).query(query)
     reference = f"""
       WITH scope AS (SELECT SUM(amount) v FROM orders WHERE store_id = 'b'),
       coverage AS (SELECT date_trunc('month', MIN(ordered_at)) lo,
@@ -49,8 +69,8 @@ def test_loaded_buckets_use_the_whole_base_not_the_filtered_measure(
       m AS (SELECT date_trunc('month', ordered_at) b,
         SUM(CASE WHEN store_id = 'b' THEN amount END) v, AVG(amount) a
         FROM orders GROUP BY 1)
-      SELECT g.b, CASE WHEN scope.v IS NOT NULL AND g.b BETWEEN coverage.lo AND coverage.hi
-        THEN COALESCE(m.v, 0) END, m.a
+      SELECT g.b, COALESCE(m.v, CASE WHEN scope.v IS NOT NULL
+        AND g.b BETWEEN coverage.lo AND coverage.hi THEN 0 END), m.a
       FROM generate_series(TIMESTAMP '{bucket}', TIMESTAMP '{int(bucket[:4]) + 1}-01-01' - INTERVAL '1 month',
         INTERVAL '1 month') g(b) CROSS JOIN scope CROSS JOIN coverage LEFT JOIN m ON m.b=g.b
     """
@@ -117,165 +137,175 @@ def test_placeholder_rows_do_not_extend_coverage(request, backend_name, tmp_path
             backend.reference("DELETE FROM orders WHERE order_id = 999")
 
 
-@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_freshness_extends_coverage_and_reports_the_partial_edge(request, backend_name):
+@pytest.fixture
+def changed_runtime(request, backend_name, tmp_path):
+    """A disposable seed or a transaction rolled back on the CI Postgres backend."""
     backend = _backend(request, backend_name)
-    original = backend.runtimes["utc_implicit"]
-    config = replace(
-        original.config,
-        entities=[
-            replace(e, freshness_as_of="2024-10-15T12:00:00") if e.id == "entity.shop_order" else e
-            for e in original.config.entities
-        ],
-    )
-    rt = Runtime.from_config(config, source_path=original.source_path)
-    try:
-        result = rt.query(
-            _ask(
-                "month",
-                _item(REVENUE, "v"),
-                _item(AVERAGE, "avg"),
-                start="2024-09-01",
-                end="2024-12-01",
-                fill=True,
-            )
-        )
-        gold = backend.reference(
-            "SELECT TIMESTAMP '2024-09-01', 0 UNION ALL SELECT TIMESTAMP '2024-10-01', 0 "
-            "UNION ALL SELECT TIMESTAMP '2024-11-01', NULL"
-        )
-        _assert_rows(gold, [(r[f"{ROLE}__month"], r["v"]) for r in result["rows"]], "freshness")
-        warning = [w for w in result["warnings"] if w["code"] == "PARTIAL_BUCKET"]
-        assert len(warning) == 1 and warning[0]["details"]["buckets"] == ["2024-10-01 00:00:00"]
-    finally:
+    opened = []
+
+    def make(variant="utc_implicit", insert="", routed=False):
+        if backend_name == "duckdb":
+            package = _write_variant(tmp_path, variant)
+            seed = package / "data/seed.sql"
+            seed.write_text(seed.read_text() + "\n" + insert + ";")
+            config = load_package_config(str(package))
+            if not routed:
+                config = replace(config, aggregate_relations=[])
+            rt = Runtime.from_config(config, source_path=str(package))
+        else:
+            original = backend.runtimes[variant]
+            config = original.config if routed else replace(original.config, aggregate_relations=[])
+            rt = Runtime.from_config(config, source_path=original.source_path)
+            _rows(rt, "BEGIN")
+            _rows(rt, insert)
+        opened.append(rt)
+        return rt
+
+    yield make
+    for rt in opened:
+        if backend_name == "postgres":
+            _rows(rt, "ROLLBACK")
         rt.close()
-
-
-@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_outside_coverage_does_not_report_an_observed_measure_as_unobserved(request, backend_name):
-    backend = _backend(request, backend_name)
-    result = backend.runtimes["utc_implicit"].query(
-        _ask("month", _item(REVENUE, "v"), start="2024-09-01", end="2024-10-01", fill=True)
-    )
-    assert [r["v"] for r in result["rows"]] == [None]
-    assert not [w for w in result["warnings"] if w["code"] == "NO_DATA_IN_SCOPE"]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize(
-    ("variant", "stamp", "grain", "calendar", "start", "end", "edge"),
-    [
-        (
-            "utc_implicit",
-            "2024-11-01T00:30:00+02:00",
-            "month",
-            None,
-            "2024-10-01",
-            "2024-12-01",
-            "2024-10-01",
-        ),
-        (
-            "ny_implicit",
-            "2024-11-01T02:00:00Z",
-            "month",
-            None,
-            "2024-10-01",
-            "2024-12-01",
-            "2024-10-01",
-        ),
-        (
-            "utc_authored",
-            "2024-05-15T00:00:00Z",
-            "quarter",
-            "fiscal",
-            "2024-05-01",
-            "2024-11-01",
-            "2024-05-01",
-        ),
-    ],
+    ("stamp", "fill"),
+    [("TIMESTAMP '2098-01-15'", True), ("NULL", False), ("TIMESTAMP '2098-01-15'", False)],
+    ids=["after_coverage_edge", "null_time_key", "future_without_window"],
 )
-def test_freshness_uses_the_role_zone_and_calendar(
-    request, backend_name, variant, stamp, grain, calendar, start, end, edge
-):
-    backend = _backend(request, backend_name)
-    original = backend.runtimes[variant]
-    config = replace(
-        original.config,
-        entities=[
-            replace(e, freshness_as_of=stamp) if e.id == "entity.shop_order" else e
-            for e in original.config.entities
-        ],
+def test_populated_values_survive_coverage(changed_runtime, stamp, fill):
+    rt = changed_runtime(
+        insert=f"INSERT INTO orders (order_id, ordered_at, amount) VALUES (999, {stamp}, 100)"
     )
-    rt = Runtime.from_config(config, source_path=original.source_path)
-    try:
-        extra = {"calendar_id": calendar} if calendar else {}
-        result = rt.query(
-            _ask(
-                grain,
-                _item(REVENUE, "v"),
-                _item(AVERAGE, "avg"),
-                start=start,
-                end=end,
-                fill=True,
-                **extra,
-            )
-        )
-        zone = "America/New_York" if variant.startswith("ny") else "UTC"
-        freshness = f"(TIMESTAMPTZ '{stamp}' AT TIME ZONE '{zone}')"
-        clock = (
-            "((ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')"
-            if zone != "UTC"
-            else "ordered_at"
-        )
-        bucket = f"date_trunc('{grain}', {clock})"
-        edge_bucket = f"date_trunc('{grain}', {freshness})"
-        if calendar:
-            bucket = f"date_trunc('quarter', {clock} - INTERVAL '1 month') + INTERVAL '1 month'"
-            edge_bucket = (
-                f"date_trunc('quarter', {freshness} - INTERVAL '1 month') + INTERVAL '1 month'"
-            )
-        step = "3 months" if grain == "quarter" else "1 month"
-        gold = backend.reference(
-            f"SELECT g.b, CASE WHEN g.b <= {edge_bucket} THEN COALESCE("
-            f"(SELECT SUM(amount) FROM orders WHERE {bucket} = g.b), 0) END FROM "
-            f"generate_series(TIMESTAMP '{start}', TIMESTAMP '{end}' - INTERVAL '{step}', INTERVAL '{step}') g(b)"
-        )
-        _assert_rows(
-            gold, [(r[f"{ROLE}__{grain}"], r["v"]) for r in result["rows"]], "freshness frame"
-        )
-        warning = [w for w in result["warnings"] if w["code"] == "PARTIAL_BUCKET"]
-        assert [b[:10] for b in warning[0]["details"]["buckets"]] == [edge]
-    finally:
-        rt.close()
+    extra = {"fill": True, "start": "2098-01-01", "end": "2098-02-01"} if fill else {}
+    result = rt.query(_ask("month", _item(REVENUE, "v"), _item(ORDERS, "n"), **extra))
+    gold = _rows(
+        rt,
+        "SELECT date_trunc('month', ordered_at), SUM(amount), COUNT(order_id) "
+        "FROM orders WHERE order_id = 999 GROUP BY 1",
+    )
+    got = [(r[f"{ROLE}__month"], r["v"], r["n"]) for r in result["rows"]]
+    _assert_rows(gold, [row for row in got if row[0] == gold[0][0]], "populated coverage")
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_future_authored_freshness_is_capped_at_now(request, backend_name):
-    backend = _backend(request, backend_name)
-    original = backend.runtimes["utc_implicit"]
-    config = replace(
-        original.config,
-        entities=[
-            replace(e, freshness_as_of="9999-12-31T00:00:00Z") if e.id == "entity.shop_order" else e
-            for e in original.config.entities
-        ],
+@pytest.mark.parametrize("variant", ["utc_implicit", "ny_implicit"])
+def test_recent_observation_uses_the_roles_current_instant(changed_runtime, variant):
+    rt = changed_runtime(
+        variant,
+        "INSERT INTO orders (order_id, ordered_at, amount) VALUES "
+        "(999, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') - INTERVAL '1 hour', 100)",
     )
-    rt = Runtime.from_config(config, source_path=original.source_path)
-    try:
-        result = rt.query(
-            _ask(
-                "month",
-                _item(REVENUE, "v"),
-                _item(AVERAGE, "avg"),
-                start="2098-01-01",
-                end="2098-02-01",
-                fill=True,
-            )
+    clock = (
+        "((ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')"
+        if variant.startswith("ny")
+        else "ordered_at"
+    )
+    start, end = _rows(
+        rt,
+        f"SELECT date_trunc('day', {clock}), "
+        f"date_trunc('day', {clock}) + INTERVAL '1 day' FROM orders WHERE order_id = 999",
+    )[0]
+    apple = {
+        "kind": "aggregate",
+        **REVENUE,
+        "filter": {"all": [{"field": STORE, "op": "=", "value": "b"}]},
+    }
+    result = rt.query(
+        _ask(
+            "day",
+            _item(REVENUE, "v"),
+            _item(ORDERS, "n"),
+            _item(apple, "b"),
+            start=str(start),
+            end=str(end),
+            fill=True,
         )
-        gold = backend.reference(
-            "SELECT CASE WHEN TIMESTAMP '2098-01-01' <= "
-            "date_trunc('month', CURRENT_TIMESTAMP) THEN 0 END"
+    )
+    gold = _rows(
+        rt,
+        f"SELECT date_trunc('day', {clock}), SUM(amount), COUNT(order_id), "
+        "COALESCE(SUM(CASE WHEN store_id = 'b' THEN amount END), 0) "
+        "FROM orders WHERE order_id = 999 GROUP BY 1",
+    )
+    _assert_rows(
+        gold,
+        [(r[f"{ROLE}__day"], r["v"], r["n"], r["b"]) for r in result["rows"]],
+        "recent observation",
+    )
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+def test_fiscal_coverage_preserves_the_populated_final_quarter(request, backend_name, raw_runtime):
+    backend = _backend(request, backend_name)
+    result = raw_runtime("utc_authored").query(
+        _ask(
+            "quarter",
+            _item(REVENUE, "v"),
+            start="2024-05-01",
+            end="2024-11-01",
+            calendar_id="fiscal",
+            fill=True,
         )
-        assert [r["v"] for r in result["rows"]] == [r[0] for r in gold]
-    finally:
-        rt.close()
+    )
+    bucket = "date_trunc('quarter', ordered_at - INTERVAL '1 month') + INTERVAL '1 month'"
+    gold = backend.reference(
+        f"SELECT {bucket}, SUM(amount) FROM orders "
+        "WHERE ordered_at >= TIMESTAMP '2024-05-01' GROUP BY 1"
+    )
+    _assert_rows(gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in result["rows"]], "fiscal coverage")
+    assert result["rows"][-1]["v"] == 2
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("expressions", [(REVENUE,), (REVENUE, ORDERS)])
+def test_routed_values_survive_shorter_raw_retention(changed_runtime, expressions, monkeypatch):
+    from semantic_rails.compiler_parts import sql_lowering
+
+    rt = changed_runtime(
+        insert="DELETE FROM orders WHERE ordered_at < TIMESTAMP '2024-01-01'", routed=True
+    )
+
+    def no_shadow(*args):
+        pytest.fail("A routed plan must not lower or record a shadow raw leaf")
+
+    monkeypatch.setattr(sql_lowering, "record_leaf_scope", no_shadow)
+    result = rt.query(
+        _ask(
+            "month",
+            *[_item(expr, f"v{i}") for i, expr in enumerate(expressions)],
+            start="2023-11-01",
+            end="2023-12-01",
+            fill=True,
+        )
+    )
+    assert "FROM orders_monthly" in result["rendered_sql"]
+    assert (
+        "FROM orders\n" not in result["rendered_sql"] and "coverage_" not in result["rendered_sql"]
+    )
+    columns = "SUM(revenue)" + (", SUM(order_count)" if len(expressions) == 2 else "")
+    gold = _rows(rt, f"SELECT {columns} FROM orders_monthly WHERE month_start = DATE '2023-11-01'")
+    _assert_rows(
+        gold,
+        [tuple(row[f"v{i}"] for i in range(len(expressions))) for row in result["rows"]],
+        "routed retention",
+    )
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+def test_filled_query_executes_one_warehouse_statement(raw_runtime, monkeypatch):
+    rt = raw_runtime("utc_implicit")
+    adapter = rt._get_adapter()
+    original = adapter.query
+    calls = []
+
+    def query(sql, **kwargs):
+        calls.append(sql)
+        return original(sql, **kwargs)
+
+    monkeypatch.setattr(adapter, "query", query)
+    result = rt.query(
+        _ask("month", _item(REVENUE, "v"), start="2024-01-01", end="2024-03-01", fill=True)
+    )
+    assert len(calls) == 1 and result["row_count"] == 2
