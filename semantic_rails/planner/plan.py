@@ -29,6 +29,7 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import require_temporal_support, validate_temporal_support
 from ._base import (
+    _named_metric,
     _period_shift_grain,
     _time_window,
     _with_fiscal_calendar,
@@ -39,11 +40,70 @@ from .faithfulness import (
     unconsumed_terms,
     unmatched_intent_terms,
 )
-from .generators import blocked_object_not_found, fallback_drafts
+from .generators import _matched_value_rows, blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 
 _VERSION = 1
+
+_GRAIN_WORD = r"(?:second|minute|hour|day|week|month|quarter|year)s?"
+_ATEMPORAL_TIME_PHRASE_RE = re.compile(
+    rf"\b(?:(?:by|per)\s+{_GRAIN_WORD}|over\s+time|{_GRAIN_WORD}\s+to\s+date|"
+    rf"ytd|mtd|qtd|rolling|cumulative|running\s+total|"
+    rf"(?:last|this|next|previous)\s+{_GRAIN_WORD}|"
+    r"daily|weekly|monthly|quarterly|yearly|annual(?:ly)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> str:
+    """Refuse time left after consuming names and category values the draft carries."""
+    if runtime._config.temporal_roles:
+        return intent
+    named = _named_metric(runtime._config, intent)
+    text = (
+        named[1].replace(named[0].id, " ")
+        if named is not None and named[0].id in _object_ids_in_node(query)
+        else intent
+    )
+    phrases: set[str] = set()
+    for row in _matched_value_rows(runtime, query, text):
+        if not any(
+            predicate["field"] == row["dimension_id"]
+            and predicate["op"] == "="
+            and predicate["value"] == row["value"]
+            for predicate in _where_filters(query)
+        ):
+            continue
+        phrases.update(str(row.get(key, "") or "") for key in ("value", "label"))
+        for domain in runtime._config.value_domains:
+            if row["dimension_id"] not in domain.dimensions:
+                continue
+            for value in domain.values or []:
+                if value.value == row["value"]:
+                    phrases.update(value.aliases or [])
+    for dim in runtime._config.dimensions:
+        if dim.id in query.get("group_by", []):
+            phrases.update([dim.name, dim.label, *(dim.aliases or [])])
+    # Only exact, word-bounded catalogue phrases consume text. Other time
+    # phrases in the same question must still refuse, including resolved dates.
+    for phrase in sorted(phrases, key=len, reverse=True):
+        if phrase.strip():
+            text = re.sub(
+                rf"(?<!\w){re.escape(phrase.strip())}s?(?!\w)",
+                " ",
+                text,
+                flags=re.IGNORECASE,
+            )
+    require_temporal_support(
+        runtime._config,
+        requested=bool(
+            _ATEMPORAL_TIME_PHRASE_RE.search(text)
+            or _time_window(text).spans
+            or _period_shift_grain(text)
+        ),
+    )
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -152,14 +212,14 @@ def plan_payload(
             return _query_detail_payload(payload) if detail_level == "query" else payload
 
     validate_temporal_support(runtime._config, partial_query or {})
-    if not runtime._config.temporal_roles:
-        require_temporal_support(
-            runtime._config,
-            requested=bool(_time_window(intent).spans or _period_shift_grain(intent)),
-        )
     result = compose(runtime, intent)
     if result.draft is not None:
         validate_temporal_support(runtime._config, result.draft.query)
+    _atemporal_time_intent(
+        runtime,
+        intent_str,
+        result.draft.query if result.draft is not None else partial_query or {},
+    )
     intent_ir = result.intent_ir
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []
@@ -238,6 +298,7 @@ def plan_payload(
     best_draft = best["draft"]
     best_validation = best["validation"]
     best_ok = bool(best_validation.get("ok"))
+    time_intent = _atemporal_time_intent(runtime, intent_str, best_draft.query)
     fallback_drift_why = _first_fallback_drift_why(planned, best)
     # Query validation proves executability, not that every high-confidence
     # clause survived natural-language realization.  Keep the valid draft for
@@ -246,7 +307,7 @@ def plan_payload(
     faithfulness_why = (
         intent_faithfulness_why(
             runtime,
-            question=intent_str,
+            question=time_intent,
             intent_ir=intent_ir,
             query=best_draft.query,
             partial_query=partial_query,
@@ -259,10 +320,10 @@ def plan_payload(
     # query), the draft answers a *different* question than the user
     # asked. Downgrade instead of marking it ready to execute.
     time_why = (
-        _unresolved_time_why(intent_str, partial_query)
+        _unresolved_time_why(time_intent, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
-            or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
+            or _pattern_dropped_start(time_intent, best_draft.query, partial_query)
         )
         if best_ok
         else None
@@ -292,7 +353,7 @@ def plan_payload(
     # something the draft carries. Otherwise an hour, a range or a threshold was dropped.
     value_why = (
         (
-            _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            _unconsumed_terms_why(unconsumed_terms(runtime, time_intent, best_draft.query))
             or _dropped_value_why(intent_str, unmatched, catalog_tokens, set(intent_ir.unresolved))
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
@@ -334,7 +395,7 @@ def plan_payload(
         payload["tie_break_hints"] = _slim_recovery_hints(
             list(best_validation.get("recovery_hints") or [])
         )
-    assumptions = _time_assumptions(intent_str, best_draft.query) if best_ok else []
+    assumptions = _time_assumptions(time_intent, best_draft.query) if best_ok else []
     if assumptions:
         payload["assumptions"] = assumptions
     if unmatched:

@@ -3,3 +3,5 @@
   project scaffolds accept a blank time column.
 - Keep the same time-refusal error and recovery hint for expression kinds,
   aggregation names and referenced IDs with surrounding whitespace.
+- Screen planner scope and relevance before refusing explicit time phrases,
+  while preserving resolved catalogue labels and category values.

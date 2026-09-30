@@ -276,6 +276,26 @@ def test_nested_authored_time_expression_cannot_bypass_guard(runtime) -> None:
         "rolling item count",
         "item count year to date",
         "cumulative item count",
+        "item count per quarter",
+        "item count YTD",
+        "item count MTD",
+        "item count QTD",
+        "running total item count",
+        "item count this week",
+        "item count next year",
+        "item count previous day",
+        "item count since 2023-01-01",
+        "item count between 2023-01-01 and 2023-02-01",
+        "item count before 2023-01-01",
+        "item count after 2023-01-01",
+        "item count in 2023",
+        "daily item count",
+        "weekly item count",
+        "monthly item count",
+        "quarterly item count",
+        "yearly item count",
+        "annual item count",
+        "item count annually",
     ],
 )
 def test_plan_time_phrases_refuse(runtime, intent: str) -> None:
@@ -300,6 +320,7 @@ def test_plan_ordinary_time_words_answer(
     model = yaml.safe_load(model_path.read_text())
     model["model"]["measures"]["item_count"]["label"] = measure_label
     model["model"]["dimensions"]["category"]["label"] = dimension_label
+    model["model"]["dimensions"]["category"]["domain"] = ["History", "B"]
     model_path.write_text(yaml.safe_dump(model, sort_keys=False))
     metrics_path = package_path / "metrics/core.yml"
     metrics = yaml.safe_load(metrics_path.read_text())
@@ -319,6 +340,50 @@ def test_plan_ordinary_time_words_answer(
         assert sorted(values) == (
             [2] if "History" in intent else [2, 2] if "daycare" in intent else [4]
         )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "by month",
+        "over time",
+        "year to date",
+        "rolling",
+        "cumulative",
+        "last month",
+        "since 2023-01-01",
+        "in 2023",
+        "monthly",
+    ],
+)
+@pytest.mark.parametrize("match_by", ["value", "label", "alias"])
+def test_plan_time_phrase_category_values_answer(package_path, phrase, match_by) -> None:
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    value = phrase if match_by == "value" else "A"
+    entry = {"value": value, "label": phrase if match_by == "label" else value}
+    if match_by == "alias":
+        entry["aliases"] = [phrase]
+    model["model"]["dimensions"]["category"]["domain"] = [entry, "B"]
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    (package_path / "data/catalogue_csv/items.csv").write_text(
+        f"item_id,category,amount\n1,{value},10\n2,{value},20\n3,B,30\n4,B,40\n"
+    )
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        result = plan_payload(runtime, intent=f"item count for the {phrase} category")
+        assert result["status"] == "ok", result.get("why")
+        query = result["best"]["query_ir"]
+        assert "time" not in query
+        assert query["where"] == [{"field": CATEGORY, "op": "=", "value": value}]
+        rows = runtime.query(query)["rows"]
+        assert len(rows) == 1
+        assert [v for k, v in rows[0].items() if k != CATEGORY] == [2]
+        with pytest.raises(SemanticLayerError, match="declares no time") as exc:
+            plan_payload(runtime, intent=f"item count for the {phrase} category per day")
+        assert exc.value.code == "INVALID_TEMPORAL_ROLE"
     finally:
         runtime.close()
 
@@ -348,6 +413,33 @@ def test_plan_drafted_time_cannot_bypass_guard(runtime, monkeypatch) -> None:
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
         plan_payload(runtime, intent="item count")
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+
+
+def test_plan_unrealized_category_cannot_hide_time(runtime, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "semantic_rails.planner.plan._matched_value_rows",
+        lambda *_: [{"dimension_id": CATEGORY, "value": "A", "label": "rolling"}],
+    )
+    with pytest.raises(SemanticLayerError, match="declares no time") as exc:
+        plan_payload(runtime, intent="rolling item count")
+    assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+
+
+def test_plan_dimension_label_with_time_word_answers(package_path) -> None:
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["dimensions"]["category"]["label"] = "Monthly plans"
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        result = plan_payload(runtime, intent="item count by monthly plans")
+        assert result["status"] == "ok", result
+        query = result["best"]["query_ir"]
+        assert query["group_by"] == [CATEGORY]
+        assert "time" not in query
+        assert sorted(row["item_count"] for row in runtime.query(query)["rows"]) == [2, 2]
+    finally:
+        runtime.close()
 
 
 def test_plan_relevant_revenue_window_refuses(package_path) -> None:
