@@ -457,6 +457,8 @@ from trusted attributes; only adapters that bind values separately execute it
 them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` to the one
 scan of a filtered relation, and denies any statement that reads another
 relation, reads it twice or reads a rollup (routing is off under a row filter).
+DuckDB binds `?` directly; Postgres preparation finalizes slots as `$1`, `$2`, …
+and ADBC validates them before connecting. Other adapters deny parameterized SQL.
 Segment preview and count execute their prepared statements independently; the
 preview response includes both statements. Live valid-values uses the ordinary
 query path and includes the loaded semantic identity in its provenance.

@@ -1,10 +1,9 @@
 """Exact Postgres Arrow checks beyond the normalized conformance battery.
 
-Opt in with SR_POSTGRES_CONNECTION_KIND=postgres_adbc and local fixture env.
+Uses the standard SR_POSTGRES_* fixture environment.
 """
 
 import json
-import os
 import threading
 import time
 from dataclasses import replace
@@ -26,8 +25,8 @@ from .targets.postgres import TARGET
 
 @pytest.fixture
 def adbc():
-    if os.environ.get("SR_POSTGRES_CONNECTION_KIND") != "postgres_adbc" or TARGET.missing_env():
-        pytest.skip("requires explicit local Postgres ADBC environment")
+    if TARGET.missing_env():
+        pytest.skip("requires Postgres fixture environment")
     adapter = AdbcAdapter(dict(TARGET.connection_options))
     try:
         yield adapter
@@ -35,7 +34,7 @@ def adbc():
         adapter.close()
 
 
-def test_postgres_adbc_exact_types(adbc):
+def test_postgres_exact_types(adbc):
     row = adbc.query(
         "SELECT 123456789.4500::NUMERIC(20,4) AS n, '123.4500'::TEXT AS t, "
         "TIMESTAMPTZ '2026-09-30 12:34:56.123456+05:30' AS z, "
@@ -53,7 +52,7 @@ def test_postgres_adbc_exact_types(adbc):
     assert adbc.query("SELECT current_setting('TimeZone') z")[0]["z"] == adbc._zone
 
 
-def test_postgres_adbc_binds_all_slot_types_without_interpolation(adbc):
+def test_postgres_binds_all_slot_types_without_interpolation(adbc):
     prepared = finalize_parameters(
         PreparedQuery(
             "SELECT ?::TEXT AS tenant, ?::BIGINT AS tier, ?::BOOLEAN AS active",
@@ -63,7 +62,7 @@ def test_postgres_adbc_binds_all_slot_types_without_interpolation(adbc):
                 ParameterSlot("active", "boolean"),
             ),
         ),
-        "postgres_adbc",
+        "postgres_native",
     )
     canary = "tenant' OR true --"
     assert adbc.query_prepared(prepared, parameters=(canary, 42, False)) == [
@@ -72,7 +71,7 @@ def test_postgres_adbc_binds_all_slot_types_without_interpolation(adbc):
     assert canary not in prepared.sql
 
 
-def test_postgres_adbc_row_filter_isolation(adbc, tmp_path):
+def test_postgres_row_filter_isolation(adbc, tmp_path):
     root = _package(tmp_path / "filtered", [OWN_ORDERS])
     config = load_package_config(str(root))
     package = replace(
@@ -80,7 +79,7 @@ def test_postgres_adbc_row_filter_isolation(adbc, tmp_path):
         warehouse="postgres",
         default_db="",
         seed=SeedSpec(),
-        connection=ConnectionSpec(kind="postgres_adbc", options=dict(TARGET.connection_options)),
+        connection=ConnectionSpec(kind="postgres_native", options=dict(TARGET.connection_options)),
     )
     runtime = Runtime.from_config(
         replace(config, package=package), source_path=str(root), package_id="rf"
@@ -117,7 +116,7 @@ def test_postgres_adbc_row_filter_isolation(adbc, tmp_path):
         runtime.close()
 
 
-def test_postgres_adbc_statement_timeout_and_recovery(adbc):
+def test_postgres_statement_timeout_and_recovery(adbc):
     conn = adbc._connection()
     limit_ms = 250
     # Server deadline independently of the adapter's watchdog.
@@ -142,7 +141,7 @@ def test_postgres_adbc_statement_timeout_and_recovery(adbc):
     print(f"adapter_timeout_ms={elapsed_ms:.3f} limit_ms={limit_ms}")
 
 
-def test_postgres_adbc_cancel_and_recovery(adbc):
+def test_postgres_cancel_and_recovery(adbc):
     conn = adbc._connection()
     limit_ms = 250
     timings = {}
@@ -174,8 +173,20 @@ def test_postgres_adbc_cancel_and_recovery(adbc):
 
 
 @pytest.mark.parametrize(("cap", "truncated"), [(0, True), (10, True), (100, False), (101, False)])
-def test_postgres_adbc_truncation(adbc, cap, truncated):
+def test_postgres_truncation(adbc, cap, truncated):
     rows = adbc.query("SELECT generate_series(1,100) n", limits={"max_rows": cap})
     assert len(rows) == min(cap, 100)
     assert rows.truncated is truncated
     assert adbc.query("SELECT 42 n") == [{"n": 42}]
+
+
+def test_postgres_restores_session_zone_and_discards_failed_queries(adbc):
+    zone_sql = "SELECT current_setting('TimeZone') AS zone"
+    with adbc._connection().cursor() as cursor:
+        cursor.execute("SET TimeZone = 'America/Los_Angeles'")
+    assert adbc.query(zone_sql, limits={"time_zone": "Asia/Tokyo"}) == [{"zone": "Asia/Tokyo"}]
+    assert adbc.query(zone_sql) == [{"zone": "America/Los_Angeles"}]
+    with pytest.raises(SemanticLayerError):
+        adbc.query("SELECT 1 / 0", limits={"time_zone": "Asia/Tokyo"})
+    assert adbc._conn is None
+    assert adbc.query(zone_sql) == [{"zone": adbc._zone}]

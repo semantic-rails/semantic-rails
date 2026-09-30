@@ -1,6 +1,6 @@
-"""Experimental Arrow execution under the warehouse adapter contract.
+"""Arrow execution under the warehouse adapter contract.
 
-The only profile here is opt-in ``postgres_adbc``. Credentials stay in the
+The qualified profile is Postgres (``postgres_native``). Credentials stay in the
 in-memory libpq connection string; callers never select native library paths.
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -41,15 +42,34 @@ from .common import (
 )
 
 
+@dataclass(frozen=True)
+class AdbcProfile:
+    engine: str
+    connection_kind: str
+    driver: str
+    connection_options: tuple[str, ...]
+
+
+POSTGRES_PROFILE = AdbcProfile(
+    "postgres", "postgres_native", "adbc_driver_postgresql.dbapi", POSTGRES_CONNECTION_OPTIONS
+)
+
+
 class AdbcAdapter(WarehouseAdapter):
-    engine = "postgres"
-    connection_kind = "postgres_adbc"
+    engine = POSTGRES_PROFILE.engine
+    connection_kind = POSTGRES_PROFILE.connection_kind
     supports_parameters = True
     supports_statement_timeout = True
 
-    def __init__(self, options: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, options: dict[str, Any] | None = None, *, profile: AdbcProfile = POSTGRES_PROFILE
+    ) -> None:
+        # Session SQL and type conversion below are qualified for this profile only.
+        if profile != POSTGRES_PROFILE:
+            raise SemanticLayerError("INVALID_CONFIG", "Unsupported ADBC warehouse profile")
+        self.profile = profile
         self.options = normalize_connection_options(
-            self.engine, self.connection_kind, options or {}, POSTGRES_CONNECTION_OPTIONS
+            self.engine, self.connection_kind, options or {}, profile.connection_options
         )
         self._conn: Any = None
         self._zone = "UTC"
@@ -60,15 +80,7 @@ class AdbcAdapter(WarehouseAdapter):
             self.options, name, default, engine=self.engine, connection_kind=self.connection_kind
         )
 
-    def _connection(self) -> Any:
-        if self._conn is not None:
-            return self._conn
-        driver = import_driver(
-            "adbc_driver_postgresql.dbapi",
-            extra="adbc-spike",
-            engine=self.engine,
-            connection_kind=self.connection_kind,
-        )
+    def _connect_uri(self) -> str:
         missing: list[str] = []
         values = {name: option_or_env(self.options, name, missing) for name in ("host", "user")}
         values["password"] = secret_value(
@@ -85,12 +97,22 @@ class AdbcAdapter(WarehouseAdapter):
             if self.options.get(option):
                 values[key] = self.options[option]
         # libpq keyword values: quotes and backslashes are escaped, not SQL.
-        uri = " ".join(
+        return " ".join(
             key + "='" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
             for key, value in values.items()
             if value
         )
-        conn = driver.connect(uri, autocommit=True)
+
+    def _connection(self) -> Any:
+        if self._conn is not None:
+            return self._conn
+        driver = import_driver(
+            self.profile.driver,
+            extra="postgres",
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+        )
+        conn = driver.connect(self._connect_uri(), autocommit=True)
         try:
             with conn.cursor() as cursor:
                 if self.options.get("schema"):
@@ -119,11 +141,13 @@ class AdbcAdapter(WarehouseAdapter):
         with self._lock:
             try:
                 conn = self._connection()
-                zone = session_time_zone(limits) or self._zone
                 timeout = _limit_timeout_milliseconds(limits) or max(
                     0, self._int_option("statement_timeout_seconds", 0) * 1000
                 )
                 with conn.cursor() as cursor:
+                    cursor.execute("SELECT current_setting('TimeZone')")
+                    original_zone = cursor.fetchone()[0]
+                    zone = session_time_zone(limits) or original_zone
                     cursor.execute(
                         "SELECT set_config('statement_timeout', $1, false)", (str(timeout),)
                     )
@@ -157,7 +181,7 @@ class AdbcAdapter(WarehouseAdapter):
                     if cancel_errors:
                         raise cancel_errors[0]
                     cursor.execute("RESET statement_timeout")
-                    cursor.execute("SELECT set_config('TimeZone', $1, false)", (self._zone,))
+                    cursor.execute("SELECT set_config('TimeZone', $1, false)", (original_zone,))
                 return restore_column_names(rows, prepared)
             except Exception as exc:
                 # A cancelled COPY or failed reset must never leave a session reusable.

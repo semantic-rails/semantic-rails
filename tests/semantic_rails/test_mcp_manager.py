@@ -486,11 +486,19 @@ def test_client_config_outlives_a_pruned_uv_cache(
     ("present", "direct_url", "expected"),
     [
         (set(), None, "semantic-rails==0.3.0"),
-        ({"psycopg"}, None, "semantic-rails[postgres]==0.3.0"),
-        ({"psycopg", "pyathena"}, None, "semantic-rails[postgres,all]==0.3.0"),
+        (
+            {"adbc-driver-manager", "adbc-driver-postgresql", "pyarrow"},
+            None,
+            "semantic-rails[postgres]==0.3.0",
+        ),
+        (
+            {"adbc-driver-manager", "adbc-driver-postgresql", "pyarrow", "pyathena"},
+            None,
+            "semantic-rails[postgres,all]==0.3.0",
+        ),
         (set(), {"url": "file:///src", "dir_info": {}}, "semantic-rails @ file:///src"),
         (
-            {"psycopg"},
+            {"adbc-driver-manager", "adbc-driver-postgresql", "pyarrow"},
             {"url": "https://example.com/r.git", "vcs_info": {"vcs": "git", "commit_id": "c0"}},
             "semantic-rails[postgres] @ git+https://example.com/r.git@c0",
         ),
@@ -505,9 +513,13 @@ def test_requirement_recreates_extras_version_and_source(
         "Metadata-Version: 2.4\nName: semantic-rails\nVersion: 0.3.0\n"
         "Requires-Dist: duckdb>=1.5.3\n"
         "Provides-Extra: postgres\n"
-        'Requires-Dist: psycopg[binary]>=3.3.4; extra == "postgres"\n'
+        'Requires-Dist: adbc-driver-postgresql==1.12.0; extra == "postgres"\n'
+        'Requires-Dist: adbc-driver-manager[dbapi]==1.12.0; extra == "postgres"\n'
+        'Requires-Dist: pyarrow>=20; extra == "postgres"\n'
         "Provides-Extra: all\n"
-        'Requires-Dist: psycopg[binary]>=3.3.4; extra == "all"\n'
+        'Requires-Dist: adbc-driver-postgresql==1.12.0; extra == "all"\n'
+        'Requires-Dist: adbc-driver-manager[dbapi]==1.12.0; extra == "all"\n'
+        'Requires-Dist: pyarrow>=20; extra == "all"\n'
         'Requires-Dist: pyathena>=3.32.0; extra == "all"\n'
     )
     if direct_url:

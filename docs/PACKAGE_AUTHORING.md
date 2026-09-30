@@ -594,7 +594,9 @@ behavior:
   filters, calendar spines (prior-period comparisons, fill) and other second
   scans are refused, and rollups are not routed to. The zero-row
   data-coverage probe is skipped. Such a policy loads for any warehouse, but only
-  DuckDB executes these statements today; every other adapter refuses them.
+  DuckDB and Postgres execute these statements today; every other adapter
+  refuses them. Postgres finalizes the placeholders as `$1`, `$2`, … before
+  execution and binds trusted values through ADBC.
   An unscoped row filter applies to every request. A scoped one applies only
   when the request context carries the listed audience, environment or role,
   so a request without it is not filtered: scope by them only when the host

@@ -57,3 +57,5 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --extra postgres --locked
       - run: uv run --no-sync pytest -q -rfE tests/integration/correctness
+      - name: Postgres conformance and bound-filter isolation
+        run: uv run --no-sync pytest -q -rfE tests/integration/test_conformance.py tests/integration/test_adbc_postgres.py -k postgres

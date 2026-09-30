@@ -16,7 +16,8 @@ import pytest
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.db import create_warehouse_adapter
-from semantic_rails.db_parts.postgres import PostgresAdapter, create_adapter
+from semantic_rails.db_parts.adbc import AdbcAdapter
+from semantic_rails.db_parts.postgres import create_adapter
 from semantic_rails.dialects import (
     PostgresDialect,
     dialect_for_warehouse,
@@ -47,7 +48,7 @@ def test_registry_wires_postgres_dialect_and_adapter():
     connector = warehouse_connector("postgres")
     assert connector is not None
     assert isinstance(connector.dialect, PostgresDialect)
-    assert connector.connection_kinds == ("postgres_native", "postgres_adbc")
+    assert connector.connection_kinds == ("postgres_native",)
     assert connector.adapter == "semantic_rails.db_parts.postgres:create_adapter"
     assert isinstance(dialect_for_warehouse("postgres"), PostgresDialect)
 
@@ -231,75 +232,77 @@ def _set_pg_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SR_PG_TEST_PASSWORD", "super-secret")
 
 
-def _install_fake_psycopg(monkeypatch: pytest.MonkeyPatch, captured: dict) -> None:
+def _install_fake_adbc(monkeypatch: pytest.MonkeyPatch, captured: dict) -> None:
+    from types import SimpleNamespace
+
+    from tests.semantic_rails.test_adbc_adapter import Batch, Reader
+
     class FakeCursor:
-        description = [("one",), ("two",)]
+        adbc_statement = SimpleNamespace(set_options=lambda **kwargs: None)
 
-        def execute(self, sql):
-            captured.setdefault("sql", []).append(sql)
-            raiser = captured.get("raise_on")
-            if raiser and raiser in sql:
-                raise RuntimeError("connection reset by peer")
+        def __enter__(self):
+            return self
 
-        def fetchall(self):
-            return [(1, "x")]
-
-        def close(self):
+        def __exit__(self, *args):
             captured["cursor_closed"] = True
 
-    class FakeConnection:
-        def __init__(self, **kwargs):
-            captured["kwargs"] = kwargs
+        def execute(self, sql, parameters=None):
+            captured.setdefault("sql", []).append((sql, parameters))
+            if captured.get("raise_on") and captured["raise_on"] in sql:
+                raise RuntimeError("connection reset by peer")
 
+        def fetchone(self):
+            return ("UTC",)
+
+        def fetch_record_batch(self):
+            return Reader([Batch([{"one": 1, "two": "x"}])])
+
+    class FakeConnection:
         def cursor(self):
             return FakeCursor()
 
         def close(self):
             captured["connection_closed"] = True
 
-    module = types.ModuleType("psycopg")
-    module.connect = lambda **kwargs: FakeConnection(**kwargs)
-    monkeypatch.setitem(sys.modules, "psycopg", module)
+    module = types.ModuleType("adbc_driver_postgresql.dbapi")
+
+    def connect(uri, **kwargs):
+        captured.update(uri=uri, kwargs=kwargs)
+        return FakeConnection()
+
+    module.connect = connect
+    monkeypatch.setitem(sys.modules, "adbc_driver_postgresql.dbapi", module)
 
 
-def test_adapter_normalizes_options_and_builds_connect_kwargs(monkeypatch: pytest.MonkeyPatch):
+def test_adapter_normalizes_options_and_escapes_libpq_values(monkeypatch: pytest.MonkeyPatch):
     _set_pg_env(monkeypatch)
-    adapter = PostgresAdapter(
+    adapter = AdbcAdapter(
         {
             "HOST-ENV": "SR_PG_TEST_HOST",
-            **{key: value for key, value in VALID_OPTIONS.items() if key != "host_env"},
+            **{k: v for k, v in VALID_OPTIONS.items() if k != "host_env"},
         }
     )
-
     assert adapter.options == VALID_OPTIONS
-    kwargs = adapter._connect_kwargs()
-    assert kwargs == {
-        "port": 5433,
-        "autocommit": True,
-        "host": "pg.example.test",
-        "user": "svc_user",
-        "password": "super-secret",
-        "dbname": "sr_jaffle",
-        "options": "-c search_path=analytics",
-    }
+    assert adapter._connect_uri() == (
+        "host='pg.example.test' user='svc_user' password='super-secret' "
+        "port='5433' connect_timeout='10' dbname='sr_jaffle'"
+    )
+    monkeypatch.setenv("SR_PG_TEST_PASSWORD", "quote' and slash\\")
+    assert "password='quote\\' and slash\\\\'" in adapter._connect_uri()
 
 
-def test_adapter_defaults_port_and_includes_sslmode_and_session_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_adapter_defaults_port_and_preserves_sslmode(monkeypatch: pytest.MonkeyPatch):
     _set_pg_env(monkeypatch)
     options = {key: value for key, value in VALID_OPTIONS.items() if key != "port"}
     options.update({"sslmode": "require", "statement_timeout_seconds": "30"})
-    kwargs = PostgresAdapter(options)._connect_kwargs()
-
-    assert kwargs["port"] == 5432
-    assert kwargs["sslmode"] == "require"
-    assert kwargs["options"] == "-c search_path=analytics -c statement_timeout=30000"
+    uri = AdbcAdapter(options)._connect_uri()
+    assert "port='5432'" in uri
+    assert "sslmode='require'" in uri
 
 
 def test_adapter_rejects_unsupported_option():
     with pytest.raises(SemanticLayerError) as exc:
-        PostgresAdapter({**VALID_OPTIONS, "warehouse": "COMPUTE_WH"})
+        AdbcAdapter({**VALID_OPTIONS, "warehouse": "COMPUTE_WH"})
 
     assert exc.value.code == "INVALID_CONFIG"
     assert "unsupported package.connection option 'warehouse'" in str(exc.value)
@@ -307,7 +310,7 @@ def test_adapter_rejects_unsupported_option():
 
 def test_adapter_rejects_literal_password_without_leaking_it():
     with pytest.raises(SemanticLayerError) as exc:
-        PostgresAdapter({**VALID_OPTIONS, "password": "hunter2"})
+        AdbcAdapter({**VALID_OPTIONS, "password": "hunter2"})
 
     assert exc.value.code == "INVALID_CONFIG"
     assert "password" in str(exc.value)
@@ -318,7 +321,7 @@ def test_adapter_rejects_literal_password_without_leaking_it():
 def test_adapter_rejects_non_integer_port(monkeypatch: pytest.MonkeyPatch):
     _set_pg_env(monkeypatch)
     with pytest.raises(SemanticLayerError) as exc:
-        PostgresAdapter({**VALID_OPTIONS, "port": "fivefourthreetwo"})._connect_kwargs()
+        AdbcAdapter({**VALID_OPTIONS, "port": "fivefourthreetwo"})._connect_uri()
 
     assert exc.value.code == "INVALID_CONFIG"
     assert exc.value.details["option"] == "port"
@@ -331,10 +334,10 @@ def test_adapter_reports_every_missing_env_var_without_secret_values(
 ):
     for name in ("SR_PG_TEST_HOST", "SR_PG_TEST_USER", "SR_PG_TEST_PASSWORD"):
         monkeypatch.delenv(name, raising=False)
-    adapter = PostgresAdapter(VALID_OPTIONS)
+    adapter = AdbcAdapter(VALID_OPTIONS)
 
     with pytest.raises(SemanticLayerError) as exc:
-        adapter._connect_kwargs()
+        adapter._connect_uri()
 
     assert exc.value.code == "INVALID_CONFIG"
     assert exc.value.details["missing_env"] == [
@@ -349,16 +352,16 @@ def test_adapter_reports_every_missing_env_var_without_secret_values(
 def test_adapter_queries_with_fake_driver_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
     _set_pg_env(monkeypatch)
     captured: dict = {}
-    _install_fake_psycopg(monkeypatch, captured)
-    adapter = PostgresAdapter(VALID_OPTIONS)
+    _install_fake_adbc(monkeypatch, captured)
+    adapter = AdbcAdapter(VALID_OPTIONS)
 
     rows = adapter.query("select 1")
     adapter.close()
 
     assert rows == [{"one": 1, "two": "x"}]
-    assert captured["sql"] == ["select 1"]
+    assert ("select 1", None) in captured["sql"]
     assert captured["kwargs"]["autocommit"] is True
-    assert captured["kwargs"]["options"] == "-c search_path=analytics"
+    assert captured["sql"][0] == ("SELECT set_config('search_path', $1, false)", ('"analytics"',))
     assert captured["cursor_closed"] is True
     assert captured["connection_closed"] is True
 
@@ -366,26 +369,34 @@ def test_adapter_queries_with_fake_driver_and_maps_rows(monkeypatch: pytest.Monk
 def test_adapter_applies_and_resets_statement_timeout(monkeypatch: pytest.MonkeyPatch):
     _set_pg_env(monkeypatch)
     captured: dict = {}
-    _install_fake_psycopg(monkeypatch, captured)
-    adapter = PostgresAdapter(VALID_OPTIONS)
+    _install_fake_adbc(monkeypatch, captured)
+    adapter = AdbcAdapter(VALID_OPTIONS)
     assert adapter.supports_statement_timeout is True
 
     adapter.query("select 1", limits={"statement_timeout_ms": 1500})
 
-    # 1500 ms rounds up to 2 s at the limits layer, re-expressed in ms
-    # for SET statement_timeout, and reset after the statement.
-    assert captured["sql"] == [
-        "SET statement_timeout = 2000",
-        "select 1",
-        "RESET statement_timeout",
-    ]
+    assert ("SELECT set_config('statement_timeout', $1, false)", ("1500",)) in captured["sql"]
+    assert ("select 1", None) in captured["sql"]
+    assert ("RESET statement_timeout", None) in captured["sql"]
+
+
+@pytest.mark.parametrize("timeout", [None, 0, 250])
+def test_configured_timeout_is_the_default(monkeypatch, timeout):
+    _set_pg_env(monkeypatch)
+    captured = {}
+    _install_fake_adbc(monkeypatch, captured)
+    adapter = AdbcAdapter({**VALID_OPTIONS, "statement_timeout_seconds": "30"})
+    limits = {} if timeout is None else {"statement_timeout_ms": timeout}
+    adapter.query("select 1", limits=limits)
+    expected = "30000" if not timeout else "250"
+    assert ("SELECT set_config('statement_timeout', $1, false)", (expected,)) in captured["sql"]
 
 
 def test_adapter_redacts_query_errors(monkeypatch: pytest.MonkeyPatch):
     _set_pg_env(monkeypatch)
     captured: dict = {"raise_on": "jaffle"}
-    _install_fake_psycopg(monkeypatch, captured)
-    adapter = PostgresAdapter(VALID_OPTIONS)
+    _install_fake_adbc(monkeypatch, captured)
+    adapter = AdbcAdapter(VALID_OPTIONS)
 
     with pytest.raises(SemanticLayerError) as exc:
         adapter.query("SELECT secret_col FROM jaffle_orders_internal")
@@ -407,8 +418,8 @@ def test_adapter_redacts_query_errors(monkeypatch: pytest.MonkeyPatch):
 
 def test_missing_driver_maps_to_missing_dependency(monkeypatch: pytest.MonkeyPatch):
     _set_pg_env(monkeypatch)
-    monkeypatch.setitem(sys.modules, "psycopg", None)
-    adapter = PostgresAdapter(VALID_OPTIONS)
+    monkeypatch.setitem(sys.modules, "adbc_driver_postgresql.dbapi", None)
+    adapter = AdbcAdapter(VALID_OPTIONS)
 
     with pytest.raises(SemanticLayerError) as exc:
         adapter.query("select 1")
@@ -430,16 +441,17 @@ def _package(kind: str) -> PackageMeta:
 def test_create_warehouse_adapter_selects_postgres_native():
     adapter = create_warehouse_adapter(_package("postgres_native"))
 
-    assert isinstance(adapter, PostgresAdapter)
+    assert isinstance(adapter, AdbcAdapter)
     assert adapter.options == VALID_OPTIONS
 
 
-def test_create_adapter_rejects_unknown_connection_kind():
+@pytest.mark.parametrize("kind", ["postgres_cli", "removed_kind"])
+def test_create_adapter_rejects_unknown_connection_kind(kind):
     with pytest.raises(SemanticLayerError) as exc:
-        create_adapter(_package("postgres_cli"))
+        create_adapter(_package(kind))
 
     assert exc.value.code == "INVALID_CONFIG"
-    assert "postgres_cli" in str(exc.value)
+    assert kind in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

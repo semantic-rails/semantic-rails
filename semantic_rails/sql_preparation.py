@@ -23,7 +23,7 @@ _SLOT_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool}
 
 @dataclass(frozen=True)
 class ParameterSlot:
-    """One positional ``?`` placeholder, bound per request from a trusted attribute.
+    """One positional placeholder, bound per request from a trusted attribute.
 
     The value must have exactly the declared type: ``string``, ``integer`` or
     ``boolean``. A compiled statement holds only slots, never their values.
@@ -43,7 +43,8 @@ class ParameterSlot:
 class PreparedQuery:
     """Executable SQL with physical-to-semantic result column names.
 
-    ``parameters`` lists the statement's ``?`` placeholders in order. Only an
+    ``parameters`` lists the statement's placeholders in order (``?`` before
+    driver finalization, ``$n`` for Postgres). Only an
     adapter that sends values to its driver separately may execute such a
     statement; values are never rendered into the SQL text.
     """
@@ -97,8 +98,8 @@ def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
 
 
 def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> PreparedQuery:
-    """Finalize the opt-in Postgres bind syntax before handing SQL to execution."""
-    if connection_kind != "postgres_adbc" or not prepared.parameters:
+    """Finalize Postgres bind syntax before handing SQL to execution."""
+    if connection_kind != "postgres_native" or not prepared.parameters:
         return prepared
     tokens = postgres_parameter_tokens(prepared.sql)
     if len(tokens) != len(prepared.parameters) or any(m[0] != "?" for m in tokens):
@@ -111,8 +112,6 @@ def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> Prepar
 
 def check_postgres_parameters(prepared: PreparedQuery) -> None:
     """Every slot has exactly one numbered placeholder; refuse bypasses centrally."""
-    if not prepared.parameters:
-        return
     actual = [m[0] for m in postgres_parameter_tokens(prepared.sql)]
     expected = [f"${index}" for index in range(1, len(prepared.parameters) + 1)]
     if actual != expected:

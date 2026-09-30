@@ -333,7 +333,7 @@ class DuckDbDialect(SqlDialect):
 
 @dataclass(frozen=True)
 class PostgresDialect(SqlDialect):
-    """PostgreSQL (psycopg 3, ``postgres_native``).
+    """PostgreSQL (ADBC, ``postgres_native``).
 
     Quirks covered here (each verified against PostgreSQL 16):
 
@@ -1328,7 +1328,7 @@ _WAREHOUSE_CONNECTORS: dict[str, WarehouseConnectorSpec] = {
     "postgres": WarehouseConnectorSpec(
         name="postgres",
         dialect=PostgresDialect(),
-        connection_kinds=("postgres_native", "postgres_adbc"),
+        connection_kinds=("postgres_native",),
         connection_options=POSTGRES_CONNECTION_OPTIONS,
         adapter="semantic_rails.db_parts.postgres:create_adapter",
     ),

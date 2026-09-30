@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from semantic_rails.config import load_package_config
+from semantic_rails.db import _split_sql_statements
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 
@@ -94,9 +95,12 @@ def _rows(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
     adapter = runtime._get_adapter()  # noqa: SLF001 - the reference shares the connection
     if hasattr(adapter, "_db"):  # DuckDB
         return [tuple(row) for row in adapter._db.conn.execute(sql).fetchall()]  # noqa: SLF001
-    cursor = adapter._connection().cursor()  # noqa: SLF001
-    cursor.execute(sql)
-    return [tuple(row) for row in cursor.fetchall()]
+    with adapter._connection().cursor() as cursor:  # noqa: SLF001
+        rows = []
+        for statement in _split_sql_statements(sql):
+            cursor.execute(statement)
+            rows = [tuple(row) for row in cursor.fetchall()]
+        return rows
 
 
 @pytest.fixture(scope="session")
