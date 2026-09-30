@@ -102,6 +102,27 @@ uv run python scripts/changelog_fragments.py check
 If `test_embedding_consumer_contract.py` fails, the change breaks a known embedder's use of
 `semantic_rails.embedding`: follow "Changing the facade" in [docs/EMBEDDING.md](docs/EMBEDDING.md).
 
+### Intermittent tests
+
+Merge-group CI on Python 3.12 repeats affected unit test files three times with
+random test ordering and `-n auto`. `scripts/flake_guard.py` selects changed tests
+from the default test roots and tests that directly import changed `semantic_rails`
+modules, prioritizing changed tests and capping the set at 20 files. Seeds and any
+omitted file count are logged. The guard has a five-minute budget; any failure or
+timeout fails the job with `intermittent: investigate` and its repetition, without
+retrying the failure away. Warehouse integration tests keep their separate CI.
+
+`tests/quarantine.toml` starts empty. To temporarily quarantine a known failure,
+replace `tests = []` with `[[tests]]` entries containing the exact pytest node `id`
+(including parameter IDs), a nonempty `reason`, an HTTPS `upstream` issue link,
+and a `review_by` date no more
+than 30 days ahead. The collection hook applies `xfail(strict=False)` so unexpected
+passes are visible. Expired entries fail collection; full-suite CI also uses
+`--validate-quarantine` to fail on nonexistent IDs. Use
+`uv run pytest --collect-only -q --validate-quarantine` to check entries locally;
+targeted runs omit that flag because they collect only part of the suite. Remove
+entries when fixed, or review the linked issue before extending the date.
+
 ## Full Verification Matrix
 
 For release-surface work or anything that touches the runtime, packages, or
