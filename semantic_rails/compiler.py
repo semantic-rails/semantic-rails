@@ -4092,7 +4092,7 @@ def _plan_query(
     plan_time = asdict(query.time) if query.time else {}
     if collapse_window and bound_measures and _is_window_total(query, config, bound_measures):
         plan_time["window_total"] = True
-    return LogicalPlan(
+    plan = LogicalPlan(
         version=2,
         query=query.to_dict(),
         root_entity=root_entity,
@@ -4110,6 +4110,9 @@ def _plan_query(
         semantic_dag=_semantic_dag_for_query(query, config),
         synthetic_measures=dict(synthetic_measures),
     )
+    from .compiler_parts.sql_lowering import coverage_base_plan
+
+    return coverage_base_plan(plan, config)
 
 
 def _calendar_fill_binding(
@@ -4364,7 +4367,7 @@ def compile_query(
 
     physical_plan = build_physical_plan(plan, config)
     performance_plan = build_performance_plan(
-        plan, config, physical_plan, rendered, bound.rollup_scans
+        plan, config, physical_plan, rendered, bound.rollup_scans, sql_ast
     )
     compile_stats = {
         "compile_ms": round((time.perf_counter() - started) * 1000, 3),

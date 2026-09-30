@@ -434,7 +434,6 @@ def test_databricks_compiles_full_battery_offline():
             "DATEADD(",
             "DATE_ADD(",
             "EQUAL_NULL(",
-            "TIMESTAMP_NTZ",
         ):
             assert forbidden not in sql, f"{case.name}: '{forbidden}' leaked into databricks SQL"
 

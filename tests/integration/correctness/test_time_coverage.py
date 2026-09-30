@@ -278,7 +278,6 @@ def test_routed_values_survive_shorter_raw_retention(changed_runtime, expression
             *[_item(expr, f"v{i}") for i, expr in enumerate(expressions)],
             start="2023-11-01",
             end="2023-12-01",
-            fill=True,
         )
     )
     assert "FROM orders_monthly" in result["rendered_sql"]
@@ -292,6 +291,47 @@ def test_routed_values_survive_shorter_raw_retention(changed_runtime, expression
         [tuple(row[f"v{i}"] for i in range(len(expressions))) for row in result["rows"]],
         "routed retention",
     )
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+def test_filled_monthly_answers_match_with_and_without_rollups(request, backend_name, raw_runtime):
+    backend = _backend(request, backend_name)
+    query = _ask("month", _item(REVENUE, "v"), start="2023-10-01", end="2024-09-01", fill=True)
+    routed = backend.runtimes["utc_authored"].query(query)
+    raw = raw_runtime("utc_authored").query(query)
+
+    def key(row):
+        return str(row[f"{ROLE}__month"])
+
+    assert sorted(routed["rows"], key=key) == sorted(raw["rows"], key=key)
+    october = next(r for r in routed["rows"] if str(r[f"{ROLE}__month"]).startswith("2023-10-01"))
+    assert october["v"] is None
+    assert "FROM orders_monthly" not in routed["rendered_sql"]
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("hours", [-1, 1], ids=["past", "future"])
+def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend_name, hours):
+    rt = changed_runtime(
+        "tz_implicit",
+        "INSERT INTO orders (order_id, ordered_at_tz, amount) VALUES "
+        f"(999, CURRENT_TIMESTAMP + INTERVAL '{hours} hour', NULL)",
+    )
+    setting = "SET GLOBAL TimeZone" if backend_name == "duckdb" else "SET TimeZone"
+    _rows(rt, f"{setting} = 'America/Los_Angeles'")
+    start, end = _rows(
+        rt,
+        "SELECT date_trunc('day', ordered_at_tz AT TIME ZONE 'UTC'), "
+        "date_trunc('day', ordered_at_tz AT TIME ZONE 'UTC') + INTERVAL '1 day' "
+        "FROM orders WHERE order_id = 999",
+    )[0]
+    result = rt.query(_ask("day", _item(REVENUE, "v"), start=str(start), end=str(end), fill=True))
+    gold = _rows(
+        rt,
+        "SELECT CASE WHEN ordered_at_tz <= CURRENT_TIMESTAMP THEN 0 END "
+        "FROM orders WHERE order_id = 999",
+    )
+    assert [r["v"] for r in result["rows"]] == [r[0] for r in gold]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])

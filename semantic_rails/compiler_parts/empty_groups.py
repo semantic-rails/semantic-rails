@@ -106,6 +106,7 @@ class LeafScope:
     value: Any
     bucket: Any = None
     raw_time: Any | None = None
+    storage_zone: str = "UTC"
     calendar: SqlJoin | None = None
     now: Any = None
     bounded: bool = False
@@ -161,7 +162,15 @@ def guard_empty_groups(
                 if scope.bounded:
                     seen = SqlBinary(seen, "OR", _seen_outside_window(scope))
                 if time_key and scope.bucket is not None:
-                    loaded = repr((scope.from_table, scope.raw_time, scope.bucket, scope.calendar))
+                    loaded = repr(
+                        (
+                            scope.from_table,
+                            scope.raw_time,
+                            scope.storage_zone,
+                            scope.bucket,
+                            scope.calendar,
+                        )
+                    )
                     name = coverage.get(loaded)
                     if name is None:
                         name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
@@ -219,7 +228,7 @@ def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
 
 
 def coverage_select(scope: LeafScope, dialect: Any) -> SqlSelect:
-    known = dialect.timestamp_cast(scope.raw_time)
+    known = dialect.utc_timestamp(scope.raw_time, scope.storage_zone)
     now = scope.now
     joins = [scope.calendar] if scope.calendar is not None else []
     last_bucket = SqlCase([SqlCaseWhen(SqlBinary(known, "<=", now), scope.bucket)])

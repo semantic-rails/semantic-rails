@@ -498,11 +498,17 @@ stock has no value for a period nobody observed, so neither is ever made zero.
   range reads `0`; an empty bucket before its first loaded timestamp or after its last
   reads `NULL`. Coverage uses the whole base relation under policy filters, ignoring
   measure and query filters, and excludes future timestamps from its upper edge. The
-  current instant is converted once into the role's timezone, independently of the
-  column's storage zone. Coverage gates only zero substitution: populated sums and
-  positive counts always survive, including NULL time keys and future-dated rows.
-  Routed aggregates skip these scans and retain the window observation test, as do
-  nested, fanout and predicate sources. Coverage uses data alone.
+  cutoff compares UTC instants: timezone-aware columns preserve their instant, and
+  naive columns use their declared storage zone (`column_timezone`, then `timezone`,
+  defaulting to UTC). Bucket keys retain the query's role frame. Coverage gates only
+  zero substitution: populated sums and positive counts always survive, including
+  NULL time keys and future-dated rows.
+  Filled, dense-series and bounded combined plans read the base relation, even when
+  rollups are available, so routing cannot change their coverage answers. Other routed
+  aggregates, nested, fanout and predicate sources retain the window observation test.
+  Coverage uses data alone. Performance guidance includes the emitted observation and
+  coverage reads as scans without request-window bounds; narrowing the requested window
+  does not bound those reads.
 - **An ungrouped distinct-population count over nothing reads `0`, with no warning.** That is a
   known limitation: a count of distinct customers under a `where` that matches no rows returns
   `0`, not `NULL` with `NO_DATA_IN_SCOPE` as the rule says. An empty group of a grouped answer

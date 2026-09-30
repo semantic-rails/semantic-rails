@@ -211,6 +211,8 @@ Aggregate relation rules:
   don't route
 - all selected measures, grouped dimensions, and filtered dimensions must be
   covered by the relation
+- filled, dense-series and bounded combined plans read base relations to preserve
+  time coverage; candidates report `base_time_coverage_required`
 - unsupported rollups fall back to the raw model relation rather than compiling
   an unsafe shortcut
 

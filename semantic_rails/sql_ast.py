@@ -60,6 +60,8 @@ SQL_CAST_TYPE_NAMES = frozenset(
         "STRING",
         "TEXT",
         "TIMESTAMP",
+        "TIMESTAMPTZ",
+        "TIMESTAMP WITH TIME ZONE",
         "TIMESTAMP_NTZ",
         "VARCHAR",
     }
@@ -140,6 +142,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "PERCENTILE",
         "PERCENTILE_CONT",
         "POWER",
+        "PG_TYPEOF",
         # ClickHouse exact quantiles (case-sensitive — see canonical map).
         "QUANTILE_EXACT",
         "QUANTILE_EXACT_INCLUSIVE",
@@ -174,6 +177,8 @@ SQL_FUNCTION_NAMES = frozenset(
         "TIMEZONE",
         "TO_DATE_TIME",
         "TO_TIME_ZONE",
+        "TO_VARIANT",
+        "TYPEOF",
         "TRIM",
         "UNNEST",
         "UPPER",
@@ -259,6 +264,8 @@ def normalize_sql_date_part(part: str) -> str:
 
 def normalize_sql_cast_type_name(type_name: str) -> str:
     normalized = _compact_token(type_name).upper()
+    if normalized == "TIMESTAMP WITH TIME ZONE":
+        return normalized
     normalized = re.sub(r"\s*\(\s*", "(", normalized)
     normalized = re.sub(r"\s*,\s*", ",", normalized)
     normalized = re.sub(r"\s*\)\s*", ")", normalized)

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 # dialects.SqlDialect.now). A query or package `call` may not name them.
 ENGINE_ONLY_FUNCTIONS = frozenset(
     {"ARRAY_GENERATE_RANGE", "EXPLODE", "GENERATE_DATE_ARRAY", "SEQUENCE"}
-) | {"CURRENT_DATETIME", "CURRENT_TIMESTAMP", "NOW"}
+) | {"CURRENT_DATETIME", "CURRENT_TIMESTAMP", "NOW", "PG_TYPEOF", "TYPEOF", "TO_VARIANT"}
 
 
 @dataclass(frozen=True)
