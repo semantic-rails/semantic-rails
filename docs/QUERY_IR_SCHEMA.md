@@ -468,7 +468,8 @@ no rows reads one or the other, by one rule, in every query:
 A measure has data in scope when at least one group of the answer holds a value: a sum with a
 non-NULL amount, or a count above zero. The scope is the measure's own filters, the query's
 `where` filters and policy row filters, before the `group_by`. Plain time leaves check
-for data outside the query's time bounds. Where a measure has data in scope,
+for data outside the query's time bounds (DuckDB and Postgres; see time coverage below).
+Where a measure has data in scope,
 a group with no rows reads `0`: a store with orders but no refunds has 0 refunds, and a
 month whose orders all have a NULL amount has a revenue of 0. Where it has none, every group
 reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds", because nothing
@@ -500,15 +501,22 @@ stock has no value for a period nobody observed, so neither is ever made zero.
   measure and query filters, and excludes future timestamps from its upper edge. The
   cutoff compares UTC instants: timezone-aware columns preserve their instant, and
   naive columns use their declared storage zone (`column_timezone`, then `timezone`,
-  defaulting to UTC). Bucket keys retain the query's role frame. Coverage gates only
+  defaulting to UTC). That cutoff is the only instant comparison: buckets, calendar joins
+  and the window keep each leaf's own time frame, and the loaded range is the lowest and
+  highest of the leaf's own bucket. Coverage gates only
   zero substitution: populated sums and positive counts always survive, including
   NULL time keys and future-dated rows.
-  Filled, dense-series and bounded combined plans read the base relation, even when
-  rollups are available, so routing cannot change their coverage answers. Other routed
+  Filled, dense-series (rolling, prior-period) and combined plans, bounded or not, read
+  the base relation even when rollups are available, so routing cannot change their
+  coverage answers. Other routed
   aggregates, nested, fanout and predicate sources retain the window observation test.
   Coverage uses data alone. Performance guidance includes the emitted observation and
   coverage reads as scans without request-window bounds; narrowing the requested window
   does not bound those reads.
+  Coverage and the outside-window check run only on DuckDB (with MotherDuck and DuckLake)
+  and Postgres, whose execution is tested. On Snowflake, BigQuery, Databricks, Athena and
+  ClickHouse an empty bucket reads `0` only while the measure has data inside the window,
+  and rollups route as they would without coverage.
 - **An ungrouped distinct-population count over nothing reads `0`, with no warning.** That is a
   known limitation: a count of distinct customers under a `where` that matches no rows returns
   `0`, not `NULL` with `NO_DATA_IN_SCOPE` as the rule says. An empty group of a grouped answer

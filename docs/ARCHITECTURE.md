@@ -211,8 +211,8 @@ Aggregate relation rules:
   don't route
 - all selected measures, grouped dimensions, and filtered dimensions must be
   covered by the relation
-- filled, dense-series and bounded combined plans read base relations to preserve
-  time coverage; candidates report `base_time_coverage_required`
+- on DuckDB and Postgres, filled, dense-series and combined plans read base relations
+  to preserve time coverage; candidates report `base_time_coverage_required`
 - unsupported rollups fall back to the raw model relation rather than compiling
   an unsafe shortcut
 
@@ -461,7 +461,8 @@ ordinary scan and every engine-tagged observation or coverage scan of a filtered
 It denies other repeated reads, joins, other relations and rollups (routing is off under
 a row filter). Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
 observation determines whether zero is defined, and base time coverage bounds only zero
-substitution on filled, dense or combined leaves. Populated values pass through; routed
+substitution on filled, dense or combined leaves. One predicate decides both coverage and
+rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed
 queries keep the window test and never scan a shadow raw leaf.
 Segment preview and count execute their prepared statements independently; the
 preview response includes both statements. Live valid-values uses the ordinary
