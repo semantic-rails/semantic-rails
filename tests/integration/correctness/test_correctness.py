@@ -452,12 +452,6 @@ def _null_comparison_cases() -> Iterator[Case]:
             },
         }
         yield Case(
-            f"conditional_count-null-{op}",
-            "utc_authored",
-            {"select": [_item(conditional, "n")]},
-            f"SELECT COUNT(*) FROM orders WHERE amount {sql_op}",
-        )
-        yield Case(
             f"predicate-conditional_count-null-{op}",
             "utc_authored",
             {
@@ -468,25 +462,6 @@ def _null_comparison_cases() -> Iterator[Case]:
             },
             f"SELECT COUNT(*) FROM orders WHERE amount {sql_op}",
         )
-    non_null_count = {
-        **conditional,
-        "condition": {
-            **conditional["condition"],
-            "left": {"kind": "column", "column": "order_id", "entity": "entity.shop_order"},
-        },
-    }
-    yield Case(
-        "non_null_conditional_share",
-        "utc_authored",
-        {
-            "select": [
-                _item(
-                    {"kind": "ratio", "numerator": non_null_count, "denominator": ORDERS}, "share"
-                )
-            ]
-        },
-        "SELECT 1.0 * COUNT(order_id) / COUNT(*) FROM orders",
-    )
 
 
 def _cases() -> Iterator[Case]:

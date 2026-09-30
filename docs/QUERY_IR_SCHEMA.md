@@ -156,12 +156,18 @@ shorthands for the most common cases:
 
 Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
 `=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
-inside CASE and aggregate-if conditions, post-aggregation expressions, metric
-predicates, segment membership, and relation filters, as well as `where` filters.
+inside CASE and aggregate-if conditions (including a metric predicate's input),
+post-aggregation expressions, segment membership, and relation filters and joins,
+as well as `where` filters.
 Ordering (`<`, `<=`, `>`, `>=`) and LIKE comparisons with a null literal refuse
 with `INVALID_QUERY` and the `USE_NULL_TEST_OR_SCALAR` recovery hint, since they
-would always evaluate to unknown in SQL. A comparison between two nullable
-columns retains ordinary SQL three-valued semantics.
+would always evaluate to unknown in SQL. `IS DISTINCT FROM`, `IS NOT DISTINCT FROM`
+and `<=>` already handle null, so they pass through unchanged. A comparison
+between two nullable columns retains ordinary SQL three-valued semantics.
+A `metric_predicate` whose `value` is null refuses with `INVALID_METRIC_PREDICATE`:
+its input reads `0` for an entity with no rows and `NULL` for one with no data, so
+a count of none is `= 0`, and a null test belongs inside the input as an
+`aggregate_if` condition.
 
 ## MetricFilter expressions
 

@@ -58,6 +58,8 @@ from .sql_ast import (
     SqlWindow,
     build_comparison_condition,
     build_filter_condition,
+    build_negation,
+    is_null_literal,
 )
 
 
@@ -157,9 +159,7 @@ def _semantic_expr_to_sql(
                     "INVALID_EXPRESSION_AST",
                     f"Boolean 'not' expressions require exactly one arg, got {len(args)}",
                 )
-            # No unary-NOT node exists in the SQL AST; FALSE = (arg) has the
-            # same three-valued truth table and forces parens around the arg.
-            return SqlBinary(SqlLiteral(False), "=", args[0])
+            return build_negation(args[0])
         current = args[0]
         for arg in args[1:]:
             current = SqlBinary(current, expr.op.upper(), arg)
@@ -449,12 +449,15 @@ def _join_condition(
     left = _expr(config.get("left"), default_alias=left_alias, warehouse=warehouse)
     right = _expr(config.get("right"), default_alias=right_alias, warehouse=warehouse)
     op = str(config.get("op", "=") or "=")
-    condition: SqlExpr = build_comparison_condition(left, op, right, path="relation.join")
-    transform = str(config.get("transform", "") or "").lower()
-    if transform == "lower":
-        condition = build_comparison_condition(
-            SqlCall("LOWER", [left]), op, SqlCall("LOWER", [right]), path="relation.join"
-        )
+    lower = str(config.get("transform", "") or "").lower() == "lower"
+    # A null literal stays bare under the transform, so the comparison still sees it.
+    compared_left, compared_right = (
+        SqlCall("LOWER", [side]) if lower and not is_null_literal(side) else side
+        for side in (left, right)
+    )
+    condition: SqlExpr = build_comparison_condition(
+        compared_left, op, compared_right, path="relation.join"
+    )
     lag = config.get("date_lag")
     if isinstance(lag, dict):
         unit = str(lag.get("unit", "day") or "day")
