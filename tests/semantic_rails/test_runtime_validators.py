@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from semantic_rails.config_validation import (
@@ -23,20 +24,22 @@ def _patch_yaml(path: Path, mutate) -> None:
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
 
-def test_disallowed_names_rejects_matching_dimension(tmp_path):
+@pytest.mark.parametrize(
+    ("disallowed_name", "collision"),
+    [
+        pytest.param("customer_id", True, id="matching-dimension"),
+        pytest.param("an_unused_column_name", False, id="no-collision"),
+    ],
+)
+def test_disallowed_names_validation(tmp_path, disallowed_name, collision):
     pkg = copy_package_config(tmp_path, "jaffle_shop")
     graph = pkg / "graph.yml"
 
     def mutate(raw):
-        # disallow `customer_id` (the canonical key column) so authoring a
-        # near-duplicate dimension would fail. Jaffle already authors a
-        # dimension with column=customer_id; this test confirms the validator
-        # catches it.
         entities = raw["graph"]["entities"]
-        # Find the customer entity
         for key, val in entities.items():
             if key == "customer":
-                val.setdefault("disallowed_names", []).append("customer_id")
+                val.setdefault("disallowed_names", []).append(disallowed_name)
 
     _patch_yaml(graph, mutate)
 
@@ -46,31 +49,11 @@ def test_disallowed_names_rejects_matching_dimension(tmp_path):
         err.get("message", "") if isinstance(err, dict) else str(err)
         for err in (report.get("errors") or [])
     )
-    # The customer model authors a dimension with column=customer_id; the
-    # validator should fire.
-    assert "disallowed" in errors.lower()
-    assert "customer_id" in errors
-
-
-def test_disallowed_names_passes_when_no_collision(tmp_path):
-    pkg = copy_package_config(tmp_path, "jaffle_shop")
-    graph = pkg / "graph.yml"
-
-    def mutate(raw):
-        entities = raw["graph"]["entities"]
-        for key, val in entities.items():
-            if key == "customer":
-                val.setdefault("disallowed_names", []).append("an_unused_column_name")
-
-    _patch_yaml(graph, mutate)
-
-    ref = PackageReference(source_path=str(pkg))
-    report = validate_config_report(ref)
-    errors = "\n".join(
-        err.get("message", "") if isinstance(err, dict) else str(err)
-        for err in (report.get("errors") or [])
-    )
-    assert "disallowed" not in errors.lower() or "an_unused_column_name" not in errors
+    if collision:
+        assert "disallowed" in errors.lower()
+        assert "customer_id" in errors
+    else:
+        assert "disallowed" not in errors.lower() or "an_unused_column_name" not in errors
 
 
 def test_multiple_default_query_axis_rejected(tmp_path):
