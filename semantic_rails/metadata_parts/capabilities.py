@@ -230,7 +230,9 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
         "description": (
             "shorthand for <AGG>(CASE WHEN cond THEN value END). Column refs "
             "inside `condition` / `value` must specify `entity` or `table` "
-            "(no surrounding measure to inherit from). Compiles to "
+            "(no surrounding measure to inherit from). It aggregates the rows "
+            "of the value's entity; `condition` may also read entities that "
+            "entity reaches over many-to-one relationships. Compiles to "
             "COUNT_IF / SUM_IF natively on Snowflake; portable CASE WHEN "
             "elsewhere. `value` may be omitted when aggregation=count."
         ),

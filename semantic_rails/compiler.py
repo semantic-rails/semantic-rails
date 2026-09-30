@@ -41,6 +41,8 @@ from .compiler_parts.bind import (
     _resolve_filter_dimension,
     _scoped_aggregate_filter_spec,
     _scoped_predicate_expr_payload,
+    check_conditional_aggregate_paths,
+    is_conditional_aggregate,
     lift_conditional_aggregates,
 )
 from .compiler_parts.dependencies import (
@@ -2270,6 +2272,11 @@ def _leaf_path_selections(
 
     selections: list[PathSelection] = []
     required_entities: set[str] = set(_measure_required_entities(measure, config))
+    # An aggregate_if's condition joins as a where filter does (a lookup), over the
+    # many-to-one path its resolver checks here, on every leaf that plans it.
+    conditional = is_conditional_aggregate(measure)
+    if conditional:
+        check_conditional_aggregate_paths(measure, config, query.path_policy.preference)
     for entity_id in sorted(required_entities):
         selection = _path_selection(
             config=config,
@@ -2277,7 +2284,7 @@ def _leaf_path_selections(
             start_entity=measure.entity,
             target_entity=entity_id,
             preference=query.path_policy.preference,
-            purpose="measure_expr",
+            purpose="aggregate_if" if conditional else "measure_expr",
         )
         if selection is not None:
             selections.append(selection)
