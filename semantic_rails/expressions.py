@@ -1639,27 +1639,17 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                 "metric_predicate time_alignment is only supported for entity_only bounded-window predicates",
             )
         if expr.get("value") is None:
+            # The input is 0 for an entity with no rows and NULL for one with no data, so a
+            # null threshold would keep the wrong entities.
+            hint = (
+                "A count of none is op '=' with value 0; a null test belongs inside the "
+                "input, as an aggregate_if condition."
+            )
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
-                "metric_predicate expressions require a non-null 'value'",
+                f"metric_predicate 'value' cannot be null. {hint}",
                 details={
-                    "expression_kind": "metric_predicate",
-                    "expression_position": context,
-                    "op": op,
-                    "why_invalid": (
-                        "The input reads 0 for an entity with no rows and NULL for one with "
-                        "no data, so a null threshold would keep the wrong entities."
-                    ),
-                    "recovery_hints": [
-                        {
-                            "code": "USE_ZERO_OR_INPUT_NULL_TEST",
-                            "message": (
-                                "For entities with a count of none use op '=' with value 0. "
-                                "To test a column for NULL, put the null test inside the "
-                                "input as an aggregate_if condition."
-                            ),
-                        }
-                    ],
+                    "recovery_hints": [{"code": "USE_ZERO_OR_INPUT_NULL_TEST", "message": hint}]
                 },
             )
         # ``value`` accepts either a literal or an expression-shaped

@@ -26,6 +26,8 @@ from semantic_rails.sql_ast import (
 ENTITY = "entity.nulls_record"
 KEY = "dimension.nulls_record_id"
 COUNT = {"measure": "measure.nulls.records"}
+NULL = {"kind": "literal", "value": None}
+NOT_NULL = {"kind": "boolean", "op": "not", "args": [NULL]}
 SEED = """
 CREATE TABLE records (id INTEGER, value INTEGER);
 INSERT INTO records VALUES (1, NULL), (2, NULL), (3, NULL), (4, NULL),
@@ -176,6 +178,40 @@ def test_non_null_share_is_one_hundred_percent(runtime):
     assert runtime.query(_query(expression))["rows"] == [{"n": expected}]
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("op", ["IS DISTINCT FROM", "IS NOT DISTINCT FROM"])
+def test_null_safe_comparisons_keep_their_meaning(runtime, op, reverse):
+    query = _query(_conditional_count(op, reverse=reverse))
+    expected = _gold(f"SELECT COUNT(*) FROM records WHERE value {op} NULL")[0][0]
+    assert expected == (1 if op == "IS DISTINCT FROM" else 6)
+    assert runtime.query(query)["rows"] == [{"n": expected}]
+    sql = compile_query(runtime.config, runtime.registry, query)["sql"]
+    assert (f"NULL {op} records.value" if reverse else f"records.value {op} NULL") in sql
+
+
+@pytest.mark.parametrize("op", ["IS DISTINCT FROM", "IS NOT DISTINCT FROM"])
+def test_where_filter_null_safe_comparison_matches_sql(runtime, op):
+    where = [{"field": "dimension.nulls_value", "op": op, "value": None}]
+    expected = _gold(f"SELECT COUNT(*) FROM records WHERE value {op} NULL")[0][0]
+    assert runtime.query(_query(COUNT, where=where))["rows"] == [{"n": expected}]
+
+
+@pytest.mark.parametrize(
+    ("op", "expected"), [("IS DISTINCT FROM", False), ("IS NOT DISTINCT FROM", True)]
+)
+def test_two_null_literals_under_a_null_safe_op(op, expected):
+    sql = render_expr(build_comparison_condition(SqlLiteral(None), op, SqlLiteral(None)))
+    assert sql == f"NULL {op} NULL"
+    assert _gold(f"SELECT {sql}") == [(expected,)]
+
+
+@pytest.mark.parametrize("warehouse", ["databricks", "clickhouse"])
+def test_null_safe_equality_operator_renders_unchanged(runtime, warehouse):
+    config = replace(runtime.config, package=replace(runtime.config.package, warehouse=warehouse))
+    sql = compile_query(config, None, _query(_conditional_count("<=>")))["sql"]
+    assert "records.value <=> NULL" in sql
+
+
 @pytest.mark.parametrize("op", ["<", "<=", ">", ">="])
 @pytest.mark.parametrize("reverse", [False, True])
 def test_ordering_null_refuses(runtime, op, reverse):
@@ -190,16 +226,6 @@ def test_ordering_null_refuses(runtime, op, reverse):
 def test_metric_predicate_conditional_count_matches_sql(runtime):
     query = _query(COUNT, metric_filters=[_metric_predicate(_conditional_count())])
     expected = _gold("SELECT COUNT(*) FROM records WHERE value IS NULL")[0][0]
-    assert runtime.query(query)["rows"] == [{"n": expected}]
-
-
-@pytest.mark.parametrize("op, gold_op", [("=", "IS NULL"), ("!=", "IS NOT NULL")])
-def test_metric_predicate_null_threshold_matches_sql(runtime, op, gold_op):
-    input_ = {"kind": "aggregate", "measure": "measure.nulls.value", "aggregation": "avg"}
-    query = _query(COUNT, metric_filters=[_metric_predicate(input_, op, None)])
-    expected = _gold(
-        f"SELECT COUNT(*) FROM (SELECT id FROM records GROUP BY id HAVING AVG(value) {gold_op})"
-    )[0][0]
     assert runtime.query(query)["rows"] == [{"n": expected}]
 
 
@@ -238,6 +264,43 @@ def test_post_aggregate_comparison_matches_sql(runtime, op, sql_op):
 def test_relation_comparison_uses_null_test(op, sql_op):
     expr = parse_semantic_expression(_comparison(op), context="relation")
     assert sql_op in render_expr(_semantic_expr_to_sql(expr))
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(("op", "gold_op"), [("=", "IS NULL"), ("!=", "IS NOT NULL")])
+def test_lower_cased_join_on_null_matches_null_test(op, gold_op, reverse):
+    comparison = {**_comparison(op, reverse=reverse), "transform": "lower"}
+    condition = render_expr(_join_condition(comparison, warehouse="duckdb"))
+    alias = "right" if reverse else "left"
+    rows = _gold(
+        f"SELECT {condition}, value {gold_op} FROM (VALUES (NULL), ('x')) AS \"{alias}\"(value)"
+    )
+    assert len(rows) == 2 and all(got == want for got, want in rows)
+
+
+def test_post_aggregate_not_null_reads_null(runtime):
+    query = {
+        "version": 2,
+        "select": [{"expression": COUNT, "as": "n"}, {"expression": NOT_NULL, "as": "flag"}],
+    }
+    ((n, flag),) = _gold("SELECT COUNT(*), NOT NULL FROM records")
+    assert flag is None
+    assert runtime.query(query)["rows"] == [{"n": n, "flag": flag}]
+
+
+def test_configured_not_null_reads_null(runtime):
+    # FALSE in place of NULL would make the null test on the negation false and count 0.
+    negation_is_null = {"kind": "comparison", "op": "=", "left": NOT_NULL, "right": NULL}
+    condition = {"kind": "boolean", "op": "and", "args": [negation_is_null, _comparison()]}
+    query = _query({"kind": "aggregate_if", "aggregation": "count", "condition": condition})
+    expected = _gold("SELECT COUNT(*) FROM records WHERE (NOT NULL) IS NULL AND value IS NULL")
+    assert expected == [(6,)]
+    assert runtime.query(query)["rows"] == [{"n": 6}]
+
+
+def test_relation_not_null_reads_null():
+    expr = parse_semantic_expression(NOT_NULL, context="relation")
+    assert _gold(f"SELECT {render_expr(_semantic_expr_to_sql(expr))}") == [(None,)]
 
 
 @pytest.mark.parametrize(

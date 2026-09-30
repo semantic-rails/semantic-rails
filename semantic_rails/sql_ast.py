@@ -679,12 +679,10 @@ def build_comparison_condition(
 
 
 def build_negation(arg: SqlExpr) -> SqlExpr:
-    """``NOT arg``, built as ``FALSE = arg``: the SQL AST has no unary-NOT node.
+    """``NOT arg`` as ``FALSE = arg`` (no unary-NOT node), which has the same truth table.
 
-    ``FALSE = arg`` has the same three-valued truth table as ``NOT arg`` (TRUE -> FALSE,
-    FALSE -> TRUE, NULL -> NULL). The arg goes on the right so the renderer parenthesizes
-    same-precedence comparisons (``FALSE = (x > y)``), since chained comparisons are
-    non-associative in Snowflake/Postgres. ``NOT NULL`` is NULL, so a null literal stays one.
+    The arg goes on the right so the renderer parenthesizes it (``FALSE = (x > y)``); chained
+    comparisons are non-associative in Snowflake/Postgres. ``NOT NULL`` is NULL.
     """
     if is_null_literal(arg):
         return SqlLiteral(None)

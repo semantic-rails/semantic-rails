@@ -451,13 +451,10 @@ def _join_condition(
     op = str(config.get("op", "=") or "=")
     lower = str(config.get("transform", "") or "").lower() == "lower"
     # A null literal stays bare under the transform, so the comparison still sees it.
-    compared_left, compared_right = (
-        SqlCall("LOWER", [side]) if lower and not is_null_literal(side) else side
-        for side in (left, right)
-    )
-    condition: SqlExpr = build_comparison_condition(
-        compared_left, op, compared_right, path="relation.join"
-    )
+    sides = [
+        SqlCall("LOWER", [s]) if lower and not is_null_literal(s) else s for s in (left, right)
+    ]
+    condition: SqlExpr = build_comparison_condition(sides[0], op, sides[1], path="relation.join")
     lag = config.get("date_lag")
     if isinstance(lag, dict):
         unit = str(lag.get("unit", "day") or "day")
