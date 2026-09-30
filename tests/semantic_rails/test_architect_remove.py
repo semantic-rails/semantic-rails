@@ -273,6 +273,30 @@ def test_a_model_goes_with_its_entity_and_the_references_to_it(workspace: Path) 
     assert {path: path.read_bytes() for path in (workspace / "shop").rglob("*.yml")} == before
 
 
+@pytest.mark.parametrize(
+    ("kind", "key", "model"), [("model", "customers", ""), ("relationship", "customer", "orders")]
+)
+def test_a_removal_drops_the_route_pins_through_what_it_removes(
+    workspace: Path, kind: str, key: str, model: str
+) -> None:
+    graph = _yaml(workspace, "graph.yml")
+    graph["graph"]["path_preferences"] = [
+        {
+            "source_entity": "order",
+            "target_entity": "customer",
+            "relationship_path": ["relationship.orders_customer"],
+        }
+    ]
+    _dump(workspace / "shop" / "graph.yml", graph)
+    project = _project(workspace)
+    project.remove_object(kind="metric", key="customers")
+
+    report = project.remove_object(kind=kind, key=key, model=model).report
+
+    assert report["ok"] is True, report
+    assert "path_preferences" not in _yaml(workspace, "graph.yml")["graph"]
+
+
 def test_every_definition_goes_and_mentions_are_reported(workspace: Path) -> None:
     # A one-object file after metrics/core.yml overrides its gross.
     _dump(

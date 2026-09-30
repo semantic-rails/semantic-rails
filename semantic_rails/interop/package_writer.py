@@ -4,8 +4,8 @@ The loader derives much of a package (ids, names, key dimensions, aggregation se
 the compact authoring form that ``schema_strict`` packages must use. This writer goes the other
 way: each object in the keys the loader reads, leaving out what the loader derives anyway. It
 then loads the directory back, and refuses (removing it) unless every object comes back the
-same, naming the ones that don't: relation pipelines, aggregate relations and path preferences
-aren't written yet. Deployment settings (connection, seed, default database) are written and
+same, naming the ones that don't: relation pipelines and aggregate relations aren't written
+yet. Deployment settings (connection, seed, default database) are written and
 compared as they are: relative paths in them aren't rebased, so they name files in the new
 directory, which the caller supplies.
 """

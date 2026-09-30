@@ -1837,7 +1837,8 @@ class ArchitectProject:
         *,
         source: str = "",
     ) -> None:
-        """Drop ``graph.relationships`` entries naming ``entity`` (with ``source``, if given)."""
+        """Drop ``graph.relationships`` entries naming ``entity`` (with ``source``, if given),
+        and the ``graph.path_preferences`` pins that name the entity or walk a dropped entry."""
         if not raw["entities"]:
             return
         path = raw["entities"][0].source_path
@@ -1845,17 +1846,28 @@ class ArchitectProject:
         graph = dict(graph_doc.get("graph", {}) or {})
         relationships = dict(graph.get("relationships", {}) or {})
         kept = {}
+        dropped: set[str] = set()
         for entry_name, entry in relationships.items():
             pair = set(_as_list(dict(entry or {}).get("entities")))
             if pair == {source, entity} if source else entity in pair:
                 removed.append(self._row("relationship", str(entry_name), path, entry))
+                rel_id = str(dict(entry or {}).get("id") or f"relationship.{entry_name}")
+                dropped |= {rel_id, rel_id.partition(".")[2]}
             else:
                 kept[entry_name] = entry
-        if kept != relationships:  # else the file stays as it is
-            if kept:
-                graph["relationships"] = kept
-            else:
-                graph.pop("relationships")
+        pins = list(graph.get("path_preferences", []) or [])
+        kept_pins = [
+            pin
+            for pin in pins
+            if (source or entity not in {pin.get("source_entity"), pin.get("target_entity")})
+            and not dropped & {str(ref) for ref in _as_list(pin.get("relationship_path"))}
+        ]
+        if kept != relationships or kept_pins != pins:  # else the file stays as it is
+            for key, value in (("relationships", kept), ("path_preferences", kept_pins)):
+                if value:
+                    graph[key] = value
+                else:
+                    graph.pop(key, None)
             graph_doc["graph"] = graph
 
     def _removal_impact(
