@@ -572,6 +572,17 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         },
     )
 
+    # An order reaches its customer directly or through the customer history row: routes of
+    # different lengths, which the engine won't choose between, so the pair is pinned.
+    graph = yaml.safe_load((package_dir / "graph.yml").read_text(encoding="utf-8"))
+    graph["graph"]["path_preferences"] = [
+        {
+            "source_entity": "order",
+            "target_entity": "customer",
+            "relationship_path": ["relationship.demo_order_customer"],
+        }
+    ]
+    _write_yaml(package_dir / "graph.yml", graph)
     config, registry = _load_config(package_dir)
     compiled = compile_query(
         config,
