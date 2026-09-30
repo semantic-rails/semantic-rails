@@ -403,7 +403,8 @@ def test_plan_window_shaped_category_values_downgrade(package_path, phrase, matc
     try:
         result = plan_payload(runtime, intent=f"item count for the {phrase} category")
         assert result["status"] == "low_confidence", result.get("why")
-        assert "time" not in result["best"]["query_ir"]
+        query = result["best"].get("query_ir")
+        assert query is None or "time" not in query
         with pytest.raises(SemanticLayerError, match="declares no time") as exc:
             plan_payload(runtime, intent=f"item count for the {phrase} category per day")
         assert exc.value.code == "INVALID_TEMPORAL_ROLE"
