@@ -144,7 +144,10 @@ def test_placeholder_rows_do_not_extend_coverage(request, backend_name, tmp_path
 
 @pytest.fixture
 def changed_runtime(request, backend_name, tmp_path):
-    """A disposable seed or a transaction rolled back on the CI Postgres backend."""
+    """A disposable seed or a transaction rolled back on the CI Postgres backend.
+
+    ``zones`` overrides role time zones by role id; ``routed`` keeps the package's rollups.
+    """
     backend = _backend(request, backend_name)
     opened = []
 
