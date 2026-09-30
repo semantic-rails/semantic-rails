@@ -723,22 +723,24 @@ def test_two_roles_with_no_preference_are_refused_never_picked(tmp_path):
     assert "path_preferences" in error.details["hint"]
 
 
-def test_inside_a_metric_predicate_it_computes_gold_or_refuses(runtime, gold):
-    def predicate(expression: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "expression": {
-                "kind": "metric_predicate",
-                "entity": "entity.shop_customer",
-                "input": expression,
-                "op": ">",
-                "value": 15,
-            },
-            "op": "=",
-            "value": True,
-        }
+def _predicate(expression: dict[str, Any]) -> dict[str, Any]:
+    """A metric filter keeping the customers whose ``expression`` is over 15."""
+    return {
+        "expression": {
+            "kind": "metric_predicate",
+            "entity": "entity.shop_customer",
+            "input": expression,
+            "op": ">",
+            "value": 15,
+        },
+        "op": "=",
+        "value": True,
+    }
 
+
+def test_inside_a_metric_predicate_it_computes_gold_or_refuses(runtime, gold):
     # The amount of customers whose euro amount is over 15 (C1: 30, C3: 100).
-    value = _ask(runtime, _measure("amount"), metric_filters=[predicate(SUM_EUR)])
+    value = _ask(runtime, _measure("amount"), metric_filters=[_predicate(SUM_EUR)])
     assert value == pytest.approx(
         gold(
             "SELECT SUM(t.amount) FROM consumption AS t WHERE t.customer_id IN ("
@@ -749,7 +751,7 @@ def test_inside_a_metric_predicate_it_computes_gold_or_refuses(runtime, gold):
 
     many_side = REFUSALS["condition_on_the_many_side"][0]
     with pytest.raises(SemanticLayerError) as raised:
-        _ask(runtime, _measure("amount"), metric_filters=[predicate(many_side)])
+        _ask(runtime, _measure("amount"), metric_filters=[_predicate(many_side)])
     assert raised.value.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
 
 
@@ -873,6 +875,121 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
         assert result["policy_effects"][0]["violations"][0]["disallowed"] == [
             "entity.shop_customer"
         ]
+
+
+# The policy kind that declares each action refusing a query by the objects it reads.
+POLICY_KINDS = {"deny": "object_access", "redact": "object_access", "hidden": "object_visibility"}
+
+# Queries whose aggregate_if reads the customer's currency across a hop.
+READS_CURRENCY = {
+    "select": {"select": [{"as": "value", "expression": SUM_EUR}]},
+    "metric_predicate": {
+        "select": [{"as": "value", "expression": _measure("amount")}],
+        "metric_filters": [_predicate(SUM_EUR)],
+    },
+    "two_hops": {"select": [{"as": "value", "expression": ONE_HOP["two_hops"][0]}]},
+}
+RESTRICTED = {"audience": "restricted"}
+
+
+def _policy(action: str, object_id: str) -> SemanticPolicyConfig:
+    return SemanticPolicyConfig(
+        id=f"policy.shop.{action}",
+        kind=POLICY_KINDS[action],
+        object_ids=[object_id],
+        audiences=["restricted"],
+        action=action,
+    )
+
+
+def _governed(package: Path, *policies: SemanticPolicyConfig, without: str = "") -> Runtime:
+    config = load_package_config(str(package))
+    return Runtime.from_config(
+        dataclasses.replace(
+            config,
+            dimensions=[row for row in config.dimensions if row.id != without],
+            semantic_policies=list(policies),
+        ),
+        source_path=str(package),
+    )
+
+
+def _refusals(runtime: Runtime, monkeypatch, query: dict[str, Any]) -> list[SemanticLayerError]:
+    """validate, compile and query each refuse, before the renderer or the adapter runs."""
+
+    def no_output(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("the renderer or the adapter was reached before the refusal")
+
+    monkeypatch.setattr("semantic_rails.compiler.render_select_for_profile", no_output)
+    monkeypatch.setattr(runtime, "_compile", no_output)
+    monkeypatch.setattr(runtime, "_get_adapter", no_output)
+    assert runtime.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+    refusals = []
+    for operation in (runtime.compile, runtime.query):
+        with pytest.raises(SemanticLayerError) as raised:
+            operation(query)
+        refusals.append(raised.value)
+    return refusals
+
+
+@pytest.mark.parametrize("placement", sorted(READS_CURRENCY))
+@pytest.mark.parametrize("action", sorted(POLICY_KINDS))
+def test_a_policy_on_a_dimension_the_condition_reads_refuses_it(
+    package, monkeypatch, action, placement
+):
+    # The condition reads the dimension's column, as a where filter on it would.
+    query = {"version": 1, **READS_CURRENCY[placement]}
+    runtime = _governed(package, _policy(action, CURRENCY))
+    try:
+        allowed = {**query, "policy_context": {"audience": "internal"}}
+        assert runtime.validate(allowed)["ok"]
+        assert runtime.compile(allowed)["rendered_sql"]
+        refusals = _refusals(runtime, monkeypatch, {**query, "policy_context": RESTRICTED})
+    finally:
+        runtime.close()
+
+    for error in refusals:
+        assert error.code == "POLICY_DENIED"
+        assert error.details["blocked_objects"] == [CURRENCY]
+        assert [row["action"] for row in error.details["policy_effects"]] == [action]
+
+
+def test_a_column_no_dimension_declares_is_refused_under_an_object_policy(package, monkeypatch):
+    # With no dimension on the currency column, no policy can name what the condition reads.
+    query = {"version": 1, "select": [{"as": "value", "expression": SUM_EUR}]}
+    ungoverned = _governed(package, without=CURRENCY)
+    governed = _governed(package, _policy("deny", PERIOD), without=CURRENCY)
+    try:
+        assert ungoverned.compile(query)["rendered_sql"]
+        refusals = _refusals(governed, monkeypatch, query)
+    finally:
+        ungoverned.close()
+        governed.close()
+
+    for error in refusals:
+        assert error.code == "POLICY_DENIED"
+        assert error.details["reason"] == "column_without_dimension"
+        assert (error.details["entity"], error.details["column"]) == (
+            "entity.shop_customer",
+            "currency",
+        )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="a single-entity aggregate_if does not bind the dimensions it reads yet",
+)
+def test_a_policy_on_a_dimension_a_single_entity_condition_reads_refuses_it(package):
+    expression = _aggif("sum", _cmp(_col("consumption", "period"), "=", "2026-01"), AMOUNT)
+    query = {"version": 1, "select": [{"as": "value", "expression": expression}]}
+    runtime = _governed(package, _policy("deny", PERIOD))
+    try:
+        result = runtime.validate({**query, "policy_context": RESTRICTED})
+    finally:
+        runtime.close()
+
+    assert [error["code"] for error in result["errors"]] == ["POLICY_DENIED"]
 
 
 # The lookup join type (ClickHouse keeps lookups inner, as for a where filter) and the
