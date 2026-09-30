@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import operator
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -1486,8 +1486,10 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _zero_satisfies_threshold(op: str, value: Any) -> bool:
-    """Whether a value of 0 passes the ``op value`` threshold of a metric_predicate."""
+def _reading_satisfies_threshold(reading: Any, op: str, value: Any) -> bool:
+    """Whether ``reading`` passes the ``op value`` threshold of a metric_predicate; NULL never does."""
+    if reading is None:
+        return False
     token = " ".join(str(op or "").upper().split())
     if token in {"IN", "NOT IN"}:
         values = list(value) if isinstance(value, (list, tuple)) else [value]
@@ -1495,9 +1497,9 @@ def _zero_satisfies_threshold(op: str, value: Any) -> bool:
             return token == "NOT IN"  # NOT IN () is always true, IN () never
         if not all(_is_number(item) for item in values):
             return False
-        return (0 in values) == (token == "IN")
+        return (reading in values) == (token == "IN")
     compare = _ZERO_COMPARISONS.get(token)
-    return compare is not None and _is_number(value) and bool(compare(0, value))
+    return compare is not None and _is_number(value) and bool(compare(reading, value))
 
 
 def _require_predicate_over_rows(
@@ -1516,19 +1518,52 @@ def _require_predicate_over_rows(
         )
 
 
-def _predicate_input_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
-    """Whether the predicate input is 0, not NULL, for an entity with no rows.
+_ARITHMETIC_OPS: dict[str, Any] = {
+    "add": operator.add,
+    "subtract": operator.sub,
+    "multiply": operator.mul,
+    "divide": operator.truediv,
+}
 
-    A count or sum is, and so is an add or subtract of them: the source query settles each
-    operand the way any query does (see ``empty_groups``), so this is the same rule, never a
-    second one. Only a bare measure may also be a distinct population.
+
+def _is_constant(expr: SemanticExpr) -> bool:
+    if isinstance(expr, ArithmeticExpr):
+        return _is_constant(expr.left) and _is_constant(expr.right)
+    return isinstance(expr, LiteralExpr)
+
+
+def _predicate_reading_without_rows(
+    expr: SemanticExpr,
+    config: PackageConfig,
+    classes: Collection[str] = _ZERO_ON_MISSING_PREDICATE_CLASSES,
+) -> Any:
+    """What the predicate input reads for an entity with no rows: a number, or None for NULL.
+
+    A count or sum reads 0, and so does an add or subtract of them: the source query settles
+    each operand the way any query does (see ``empty_groups``), so this is the same rule, never
+    a second one. A literal reads its own value, so ``count - 3`` reads -3, not 0, and a
+    division by 0 reads NULL, as in the SQL. Only a bare measure may also be a distinct
+    population.
     """
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
-        return recipe is not None and _predicate_input_zero_on_missing(recipe.expression, config)
+        if recipe is None:
+            return None
+        return _predicate_reading_without_rows(recipe.expression, config, classes)
+    if isinstance(expr, LiteralExpr):
+        return expr.value if _is_number(expr.value) else None
     if isinstance(expr, ArithmeticExpr):
-        return expr_resolves_to_zero(expr, config)
-    return expr_resolves_to_zero(expr, config, _ZERO_ON_MISSING_PREDICATE_CLASSES)
+        if expr.op not in {"add", "subtract"} and not (
+            _is_constant(expr.left) or _is_constant(expr.right)
+        ):
+            return None
+        left = _predicate_reading_without_rows(expr.left, config, ZERO_MEASURE_CLASSES)
+        right = _predicate_reading_without_rows(expr.right, config, ZERO_MEASURE_CLASSES)
+        combine = _ARITHMETIC_OPS.get(expr.op)
+        if left is None or right is None or combine is None:
+            return None
+        return None if expr.op == "divide" and right == 0 else combine(left, right)
+    return 0 if expr_resolves_to_zero(expr, config, classes) else None
 
 
 def _predicate_includes_entities_without_rows(
@@ -1538,14 +1573,15 @@ def _predicate_includes_entities_without_rows(
 
     An entity with no rows never reaches the predicate's aggregate, so a
     threshold that zero passes (``count = 0``, ``< 3``, ``<= 0``) would
-    otherwise match nothing. Only where "no rows" is 0 (a count or sum) does the
-    entity qualify, and, as for every entity the source lists, only while the measure has
-    data somewhere in the predicate's scope. An average, minimum, maximum or ratio over no
-    rows is NULL, which no threshold satisfies, so those entities stay out.
+    otherwise match nothing. Only where "no rows" is a number (a count or sum, and
+    literals combined with it) does the entity qualify, and, as for every entity the
+    source lists, only while the measure has data somewhere in the predicate's scope. An
+    average, minimum, maximum or ratio over no rows is NULL, which no threshold satisfies,
+    so those entities stay out.
     """
-    return _zero_satisfies_threshold(
-        predicate.op, predicate.value
-    ) and _predicate_input_zero_on_missing(predicate.input, config)
+    return _reading_satisfies_threshold(
+        _predicate_reading_without_rows(predicate.input, config), predicate.op, predicate.value
+    )
 
 
 def _inline_threshold_cte_and_where(
@@ -2245,7 +2281,7 @@ def _predicate_ctes_and_join(
         *(SqlBinary(key_expr, "IS NOT", SqlLiteral(None)) for key_expr in outer_keys),
     ]
     joins = [SqlJoin(join_type="LEFT", table=SqlTableRef(name=set_name), on=join_condition)]
-    if expr_resolves_to_zero(predicate.input, config):
+    if _predicate_reading_without_rows(predicate.input, config, ZERO_MEASURE_CLASSES) is not None:
         # An entity absent from the source reads 0 only where the measures have data in scope,
         # the test the guard applied to the entities it lists; a distinct population has none.
         require_settled_source(predicate_sql, {"predicate": expr_to_dict(predicate)})

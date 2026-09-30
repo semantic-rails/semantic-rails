@@ -210,6 +210,28 @@ def _entity_key_dimension_ids(entity_id: str, config: PackageConfig) -> list[str
     return key_dims
 
 
+_OPERATOR_EXPRS = (ArithmeticExpr, ComparisonExpr, RatioExpr, BooleanExpr, CallExpr)
+
+
+def _operand_root_entities(expr: SemanticExpr, config: PackageConfig) -> set[str]:
+    """The root entities of an operator's operands. A literal never changes a predicate
+    input's grain, so literals, and operators made only of literals, add no root."""
+    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
+        operands: Iterable[SemanticExpr] = (expr.left, expr.right)
+    elif isinstance(expr, RatioExpr):
+        operands = (expr.numerator, expr.denominator)
+    else:
+        assert isinstance(expr, (BooleanExpr, CallExpr))
+        operands = expr.args
+    roots: set[str] = set()
+    for operand in operands:
+        if isinstance(operand, _OPERATOR_EXPRS):
+            roots |= _operand_root_entities(operand, config)
+        elif not isinstance(operand, LiteralExpr):
+            roots.add(_expression_root_entity(operand, config))
+    return roots
+
+
 def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
     if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         measure = _measure_index(config).get(expr.measure)
@@ -237,64 +259,23 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
         return _expression_root_entity(expr.input, config)
     if isinstance(expr, ConversionExpr):
         return _expression_root_entity(expr.base, config)
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        left = _expression_root_entity(expr.left, config)
-        right = _expression_root_entity(expr.right, config)
-        if left == right:
-            return left
+    if isinstance(expr, _OPERATOR_EXPRS):
+        roots = _operand_root_entities(expr, config)
+        if len(roots) == 1:
+            return next(iter(roots))
+        if not roots:
+            raise SemanticLayerError(
+                "PREDICATE_INPUT_REQUIRED", "Predicate expressions require a metric input"
+            )
         raise SemanticLayerError(
             "PREDICATE_GRAIN_UNSAFE",
-            "Expression combines incompatible root entities",
-            details={"left": left, "right": right},
-        )
-    if isinstance(expr, RatioExpr):
-        left = _expression_root_entity(expr.numerator, config)
-        right = _expression_root_entity(expr.denominator, config)
-        if left == right:
-            return left
-        raise SemanticLayerError(
-            "PREDICATE_GRAIN_UNSAFE",
-            "Ratio expression combines incompatible root entities",
-            details={"left": left, "right": right},
+            f"{expr_kind(expr).capitalize()} expression combines incompatible root entities",
+            details={"roots": sorted(roots)},
         )
     if isinstance(expr, EntityValueExpr):
         return _expression_root_entity(expr.input, config)
     if isinstance(expr, DistributionExpr):
         return _expression_root_entity(expr.over, config)
-    if isinstance(expr, BooleanExpr):
-        roots = {
-            _expression_root_entity(arg, config)
-            for arg in expr.args
-            if not isinstance(arg, LiteralExpr)
-        }
-        if len(roots) == 1:
-            return next(iter(roots))
-        if not roots:
-            raise SemanticLayerError(
-                "PREDICATE_INPUT_REQUIRED", "Predicate expressions require a metric input"
-            )
-        raise SemanticLayerError(
-            "PREDICATE_GRAIN_UNSAFE",
-            "Boolean expression combines incompatible root entities",
-            details={"roots": sorted(roots)},
-        )
-    if isinstance(expr, CallExpr):
-        roots = {
-            _expression_root_entity(arg, config)
-            for arg in expr.args
-            if not isinstance(arg, LiteralExpr)
-        }
-        if len(roots) == 1:
-            return next(iter(roots))
-        if not roots:
-            raise SemanticLayerError(
-                "PREDICATE_INPUT_REQUIRED", "Predicate expressions require a metric input"
-            )
-        raise SemanticLayerError(
-            "PREDICATE_GRAIN_UNSAFE",
-            "Call expression combines incompatible root entities",
-            details={"roots": sorted(roots)},
-        )
     raise SemanticLayerError(
         "PREDICATE_NOT_SUPPORTED",
         f"Expression kind '{expr_kind(expr)}' is not supported for predicate planning",
