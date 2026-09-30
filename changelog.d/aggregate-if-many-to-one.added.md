@@ -8,4 +8,7 @@
   refused with the same code, as is a condition across a one-to-many, many-to-many, bridge
   or time-valid hop, over two routes with no path preference, or in a count with no value
   column whose condition reads several entities. The error names the entities and the
-  failing hop or condition, with a hint.
+  failing hop or condition, with a hint. Object policies on the dimensions over the
+  columns it reads refuse it as they refuse a `where` filter on them; while any
+  `object_access` or `object_visibility` policy is declared, reading a column of another
+  entity that no dimension declares is refused with `POLICY_DENIED`.
