@@ -1,11 +1,7 @@
-"""Row filters: package policies that limit a relation's rows to a trusted request attribute.
+"""Tenant-filter every supported base scan; deny unsupported shapes.
 
-A ``row_filter`` policy names a dimension and a host-supplied attribute. When it applies to
-a request, the compiler adds ``<column> = ?`` to the scan of the dimension's relation, and
-the runtime binds the attribute to that parameter. Only the minimum query family is
-qualified: a statement that reads exactly one physical relation as a ``FROM``, which an
-applicable filter covers, with one scan that returns rows (and any number that only test the
-relation, see ``apply_row_filters``). Any other statement is denied, never answered unfiltered.
+One ordinary scan plus engine-tagged observation/coverage scans may read the same
+physical relation. Every scan gets the same bound predicate; joins remain denied.
 """
 
 from __future__ import annotations
@@ -20,6 +16,7 @@ from .schema import PackageConfig, SemanticPolicyConfig
 from .sql_ast import (
     SqlBinary,
     SqlCall,
+    SqlCast,
     SqlCte,
     SqlExpr,
     SqlIdentifier,
@@ -113,12 +110,7 @@ def validate_row_filters(config: PackageConfig) -> None:
 def apply_row_filters(
     sql: SqlSelect, filters: Sequence[RowFilter]
 ) -> tuple[SqlSelect, tuple[ParameterSlot, ...]]:
-    """Filter the one relation ``sql`` reads, or deny the statement.
-
-    Besides its one scan that returns rows, the statement may test the relation with scans
-    that return only constants and aggregates (see :func:`_observes`). Each scan carries the
-    filter, so a test never sees another customer's rows.
-    """
+    """Filter every qualified scan, or refuse the entire statement."""
     if not filters:
         return sql, ()
     nodes = list(_walk(sql))
@@ -131,18 +123,13 @@ def apply_row_filters(
     ]
     selects = [node for node in nodes if isinstance(node, SqlSelect)]
     scan_of = {id(node.from_table): node for node in selects if node.from_table is not None}
-    # Every read must be a scan (a FROM) of its own; one that is joined, shared or a table
-    # function is denied.
     scans = [read for read in reads if isinstance(read, SqlTableRef) and id(read) in scan_of]
-    owners = [node for node in selects if id(node.from_table) in {id(read) for read in scans}]
     returning = [read for read in scans if not _observes(scan_of[id(read)])]
     read = (returning or scans)[0] if scans and len(scans) == len(reads) else None
     applied = [row for row in filters if read is not None and row.table == read.name]
-    # A filtered relation named like a CTE would be read through the CTE: deny, don't guess.
     if (
         read is None
         or len(returning) > 1
-        or len(owners) != len(scans)
         or len({id(scan) for scan in scans}) != len(scans)
         or any(scan.name != read.name for scan in scans)
         or not applied
@@ -175,16 +162,22 @@ def apply_row_filters(
 _OBSERVING = frozenset({"MIN", "MAX", "COUNT"})
 
 
-def _observes(scan: SqlSelect) -> bool:
-    """Whether ``scan`` only tests its relation: no join, and only constants and aggregates out.
+def _aggregate_only(expr: Any) -> bool:
+    if isinstance(expr, SqlBinary):
+        return _aggregate_only(expr.left) and _aggregate_only(expr.right)
+    if isinstance(expr, SqlCast):
+        return _aggregate_only(expr.expr)
+    return isinstance(expr, SqlLiteral) or (
+        isinstance(expr, SqlCall) and expr.name.upper() in _OBSERVING
+    )
 
-    Such a scan returns no row of the relation, and its filter is the same one the scan that
-    does. The empty-group guard reads the relation this way to see past a time window.
-    """
-    return not (scan.joins or scan.ctes or scan.group_by) and all(
-        isinstance(item.expression, SqlLiteral)
-        or (isinstance(item.expression, SqlCall) and item.expression.name.upper() in _OBSERVING)
-        for item in scan.select
+
+def _observes(scan: SqlSelect) -> bool:
+    """Only engine-tagged, join-free constant/aggregate scans may be repeated."""
+    return (
+        scan.observation_scan
+        and not (scan.joins or scan.ctes or scan.group_by)
+        and all(_aggregate_only(item.expression) for item in scan.select)
     )
 
 
@@ -192,7 +185,8 @@ def _unsupported(filters: Sequence[RowFilter]) -> SemanticLayerError:
     return SemanticLayerError(
         "POLICY_DENIED",
         "A row filter applies to this request, and only a query that reads the filtered "
-        "relation once, without joins, rollups or other relations, can be answered under it.",
+        "relation with one ordinary scan and filtered observation scans, without joins or "
+        "other relations, can be answered under it.",
         details={
             "reason": "row_filter_unsupported_query",
             "policy_ids": sorted({row.policy_id for row in filters}),

@@ -590,9 +590,10 @@ behavior:
   needs `type:`. The policy takes no `object_ids`, `action` or operator. A request
   it applies to is denied if the attribute is missing or of another type, and
   so is any query outside the qualified family: the compiled statement must
-  read the filtered relation exactly once, as its only relation. Joins, metric
-  filters, calendar spines (prior-period comparisons, fill) and other second
-  scans are refused, and rollups are not routed to. The zero-row
+  read one ordinary scan of the filtered relation, as its only relation. Engine-generated
+  observation and coverage scans may repeat that relation; each receives the same policy
+  filter. Joins, metric filters, calendar spines (prior-period comparisons, fill) and
+  other second scans are refused, and rollups are not routed to. The zero-row
   data-coverage probe is skipped. Such a policy loads for any warehouse, but only
   DuckDB executes these statements today; every other adapter refuses them.
   An unscoped row filter applies to every request. A scoped one applies only

@@ -304,6 +304,7 @@ class SqlCall:
     name: str
     args: list[SqlExpr] = field(default_factory=list)
     distinct: bool = False
+    observation_scan: bool = False  # Engine-only coverage/observation scan, filter every read.
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_sql_function_name(self.name))
@@ -547,6 +548,7 @@ class SqlSelect:
     limit: int | None = None
     ctes: list[SqlCte] = field(default_factory=list)
     distinct: bool = False
+    observation_scan: bool = False  # Engine-only coverage/observation scan, filter every read.
 
 
 @dataclass(frozen=True)

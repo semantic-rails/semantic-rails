@@ -129,6 +129,10 @@ def _package(root, policies):
         "measures": {
             "revenue": {"kind": "aggregate", "expr": "amount", "rollup": "additive"},
             "order_count": {"kind": "entity_count", "entity_key": "order_id", "rollup": "additive"},
+            "s2_count": {"kind": "entity_count", "accumulation": {"kind": "event"}, "expr": {
+                "kind": "case", "whens": [{"when": {"kind": "comparison", "op": "=",
+                    "left": {"kind": "column", "column": "store_id"}, "right": {"kind": "literal", "value": "s2"}},
+                    "then": {"kind": "column", "column": "order_id"}}], "else": {"kind": "literal", "value": None}}},
         },
         "default_variant": "tx", "variants": {"tx": {**tx, "covers": "inherit_all"}, "monthly": monthly},
     }})  # fmt: skip
@@ -507,3 +511,26 @@ def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
     codes = [code for event in events for code in event.get("error_codes", [])]
     assert codes == ["POLICY_DENIED", "QUERY_EXECUTION_ERROR"]
     assert A not in json.dumps([missing, failed, events], default=str)
+
+
+@pytest.mark.parametrize("tenant", [A, B, "customer-with-no-rows"])
+def test_observation_and_coverage_never_see_another_customers_rows(runtime, tenant):
+    count = {"measure": "measure.rf.s2_count"}
+    query = {
+        "version": 2,
+        "select": [{"expression": REVENUE, "as": "revenue"}, {"expression": count, "as": "v"}],
+        "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
+    }
+    result = runtime.query(_q(query, customer_id=tenant))
+    # A has an s2 sale outside January; B has no s2 sale anywhere.
+    assert [r["v"] for r in result["rows"]] == (
+        [0] if tenant == A else [None] if tenant == B else []
+    )
+    assert result["rendered_sql"].count("customer_id = ?") >= 3
+    assert tenant not in result["rendered_sql"]
+
+
+def test_a_tagged_row_returning_scan_is_still_refused():
+    extra = replace(_scan(SqlTableRef("t")), observation_scan=True)
+    statement = replace(_scan(SqlTableRef("t")), where=[SqlExists(extra)])
+    assert _denied(lambda: apply_row_filters(statement, [ROW])) == "row_filter_unsupported_query"

@@ -60,13 +60,6 @@ CLOCK = {
 }
 STEP = {"day": "1 day", "week": "7 day", "month": "1 month", "quarter": "3 month", "year": "1 year"}
 
-# Known wrong answers.
-EMPTY_WINDOW_NULL = (
-    "time.fill buckets in a window with no rows read NULL until the engine checks for data"
-    " outside the window (https://github.com/semantic-rails/semantic-rails/issues/201);"
-    " the reference is the 0 the rule gives"
-)
-
 
 def BOTH(reason: str) -> dict[str, str]:  # noqa: N802 - reads as a constant at the call sites
     """A wrong answer on both backends: each misses the reference, and they still agree."""
@@ -247,7 +240,10 @@ FILL_WINDOW = """
         AVG(o.amount) AS a
       FROM orders AS o GROUP BY 1
     )
-    SELECT g.b, COALESCE(m.v, 0), m.a
+    SELECT g.b, CASE WHEN g.b BETWEEN
+      (SELECT date_trunc('month', MIN({clock})) FROM orders o) AND
+      (SELECT date_trunc('month', MAX({clock})) FROM orders o)
+      THEN COALESCE(m.v, 0) END, m.a
     FROM generate_series(TIMESTAMP '2023-10-01', TIMESTAMP '2024-08-01',
       INTERVAL '1 month') AS g(b)
     LEFT JOIN m ON m.b = g.b
@@ -564,7 +560,6 @@ def _cases() -> Iterator[Case]:
         "utc_authored",
         _ask("month", revenue, start="2024-02-01", end="2024-03-01", fill=True),
         "SELECT TIMESTAMP '2024-02-01', 0",
-        known=BOTH(EMPTY_WINDOW_NULL),
     )
 
     # Windows over the series: rolling, prior_period, cumulative, period_to_date. The week

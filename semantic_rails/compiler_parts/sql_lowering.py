@@ -96,6 +96,7 @@ from .dependencies import (
 from .empty_groups import (
     GUARDED_BASE,
     LeafScope,
+    authored_as_of,
     base_reads,
     expr_resolves_to_zero,
     guard_empty_groups,
@@ -103,6 +104,7 @@ from .empty_groups import (
     record_zero_output,
     recording_leaf_scopes,
     refuse_unsettled,
+    require_time_scopes,
     zero_aliases,
     zero_outputs,
 )
@@ -409,14 +411,39 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
     return raw_expr
 
 
-def _has_time_window(plan: LogicalPlan) -> bool:
-    """Whether the request's own query is cut to a time window that can hide data (not a total)."""
-    time = plan.time or {}
-    return (
-        plan_is_root()
-        and not time.get("window_total")
-        and (time.get("start") is not None or time.get("end") is not None)
-    )
+def _record_time_scope(plan, config, leaf, rows, untimed, axis):
+    raw_time, bucket, calendar, local = axis
+    if not plan.time or plan.time.get("window_total") or leaf.ctes:
+        return
+    entities = _entity_index(config)
+    measures = _measure_index(config)
+    dialect = _dialect(config)
+    for row in rows:
+        alias = row.bound_measure.alias
+        value = next(field.expression for field in leaf.select if field.alias == alias)
+        role = _temporal_role_index(config)[
+            _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
+        ]
+        stamp = authored_as_of(
+            entities[measures[row.bound_measure.measure_id].entity].freshness_as_of
+        )
+        authored = dialect.timestamp_cast(SqlLiteral(stamp))
+        freshness = _apply_role_timezone(authored, role, config) if stamp else None
+        record_leaf_scope(
+            alias,
+            LeafScope(
+                leaf.from_table,
+                tuple(j for j in leaf.joins if j is not calendar),
+                tuple(untimed),
+                value,
+                (plan.time or {}).get("grain", ""),
+                bucket if local else None,
+                raw_time,
+                calendar,
+                freshness,
+                _apply_role_timezone(dialect.timestamp_cast(dialect.now()), role, config),
+            ),
+        )
 
 
 def _is_window_total_key(expr: Any, time_alias: str) -> bool:
@@ -2055,6 +2082,7 @@ def _measure_leaf_select(
     measure = measures[measure_plan.bound_measure.measure_id]
     selected_aggregate = _selected_aggregate_relation(measure_plan, config)
     if selected_aggregate is not None:
+        _measure_leaf_select(plan, replace(measure_plan, aggregate_relation_id=""), config)
         return _aggregate_relation_leaf_select(plan, [measure_plan], selected_aggregate, config)
 
     predicate_ctes: list[SqlCte] = []
@@ -2145,20 +2173,6 @@ def _measure_leaf_select(
     untimed = list(where_clauses)
     if plan.time:
         time = dict(plan.time)
-        role = temporal_roles[leaf_time_role]
-        dim = dimensions[role.dimension]
-        direct_time = _direct_dimension_source_expr(
-            measure.entity,
-            role.dimension,
-            config,
-            source_relation_override=measure_source_override,
-        )
-        raw_expr = (
-            direct_time[0]
-            if direct_time is not None
-            else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
-        )
-        raw_expr = _apply_role_timezone(raw_expr, role, config)
         if time.get("start") is not None:
             where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
         if time.get("end") is not None:
@@ -2264,7 +2278,7 @@ def _measure_leaf_select(
             leaf_alias,
         )
     )
-    return SqlSelect(
+    leaf = SqlSelect(
         ctes=predicate_ctes,
         select=select_fields,
         from_table=SqlTableRef(name=_measure_source_relation(measure, entities[measure.entity])),
@@ -2272,6 +2286,10 @@ def _measure_leaf_select(
         where=where_clauses,
         group_by=group_fields,
     )
+    if plan.time:
+        axis = (raw_expr, time_expr, leaf_calendar_join, time_source_local)
+        _record_time_scope(plan, config, leaf, [measure_plan], untimed, axis)
+    return leaf
 
 
 def _minimal_predicate_set_ctes(
@@ -3835,6 +3853,9 @@ def _measure_group_leaf_select(
         if aggregate_id:
             aggregate = _aggregate_relation_index(config).get(aggregate_id)
             if aggregate is not None:
+                _measure_group_leaf_select(
+                    plan, [replace(row, aggregate_relation_id="") for row in measure_plans], config
+                )
                 return _aggregate_relation_leaf_select(plan, measure_plans, aggregate, config)
 
     entities = _entity_index(config)
@@ -3860,6 +3881,7 @@ def _measure_group_leaf_select(
         role = temporal_roles[leaf_time_role]
         dim = dimensions[role.dimension]
         direct_time = _direct_dimension_source_expr(first_measure.entity, role.dimension, config)
+        time_source_local = dim.entity == first_measure.entity or direct_time is not None
         raw_expr = (
             direct_time[0]
             if direct_time is not None
@@ -3892,17 +3914,9 @@ def _measure_group_leaf_select(
             first_measure.entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
         where_clauses.append(_value_filter_condition(expr, item))
+    untimed = list(where_clauses)
     if plan.time:
         time = dict(plan.time)
-        role = temporal_roles[leaf_time_role]
-        dim = dimensions[role.dimension]
-        direct_time = _direct_dimension_source_expr(first_measure.entity, role.dimension, config)
-        raw_expr = (
-            direct_time[0]
-            if direct_time is not None
-            else _column_ref(_measure_dim_relation(first_measure, dim, entities), dim.column)
-        )
-        raw_expr = _apply_role_timezone(raw_expr, role, config)
         if time.get("start") is not None:
             where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
         if time.get("end") is not None:
@@ -3941,13 +3955,17 @@ def _measure_group_leaf_select(
     )
     if leaf_calendar_join is not None:
         joins.append(leaf_calendar_join)
-    return SqlSelect(
+    leaf = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=_measure_owned_relation(first_measure, entities)),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,
     )
+    if plan.time:
+        axis = (raw_expr, time_expr, leaf_calendar_join, time_source_local)
+        _record_time_scope(plan, config, leaf, measure_plans, untimed, axis)
+    return leaf
 
 
 def _query_requires_dense_series(plan: LogicalPlan, config: PackageConfig) -> bool:
@@ -4507,18 +4525,28 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
 
     key_aliases = _query_key_aliases(plan)
     measure_aliases: list[str] = []
-    scopes: dict[str, LeafScope] = {}
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
         # A window on the request's own query hides data outside it: keep what each leaf reads.
-        with recording_leaf_scopes() if _has_time_window(plan) else nullcontext({}) as scopes:
+        with recording_leaf_scopes() as scopes:
             for measure_group in measure_groups:
                 cte_name = measure_group[0].cte_name
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                if (
+                    guard_empty
+                    and plan_is_root()
+                    and plan.time
+                    and not plan.time.get("window_total")
+                    and not leaf_select.ctes
+                    and isinstance(leaf_select.from_table, SqlTableRef)
+                    and not any(row.aggregate_relation_id for row in measure_group)
+                    and _entity_in_terms_of_anchor_plan(plan, measure_group[0], config) is None
+                ):
+                    require_time_scopes((row.bound_measure.alias for row in measure_group), scopes)
                 _refuse_varying_time_key(plan, leaf_select)
                 leaf_ctes.append(
                     SqlCte(name=cte_name, query=_namespace_sql_select(leaf_select, f"{cte_name}__"))

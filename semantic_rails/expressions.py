@@ -25,16 +25,8 @@ if TYPE_CHECKING:
 # dialects.SqlDialect.day_series) and the current time (a coverage window, in
 # dialects.SqlDialect.now). A query or package `call` may not name them.
 ENGINE_ONLY_FUNCTIONS = frozenset(
-    {
-        "ARRAY_GENERATE_RANGE",
-        "CURRENT_DATETIME",
-        "CURRENT_TIMESTAMP",
-        "EXPLODE",
-        "GENERATE_DATE_ARRAY",
-        "NOW",
-        "SEQUENCE",
-    }
-)
+    {"ARRAY_GENERATE_RANGE", "EXPLODE", "GENERATE_DATE_ARRAY", "SEQUENCE"}
+) | {"CURRENT_DATETIME", "CURRENT_TIMESTAMP", "NOW"}
 
 
 @dataclass(frozen=True)

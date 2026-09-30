@@ -467,7 +467,8 @@ no rows reads one or the other, by one rule, in every query:
 
 A measure has data in scope when at least one group of the answer holds a value: a sum with a
 non-NULL amount, or a count above zero. The scope is the measure's own filters, the query's
-`where` filters and its time window, before the `group_by`. Where a measure has data in scope,
+`where` filters and policy row filters, before the `group_by`. Plain time leaves check
+for data outside the query's time bounds. Where a measure has data in scope,
 a group with no rows reads `0`: a store with orders but no refunds has 0 refunds, and a
 month whose orders all have a NULL amount has a revenue of 0. Where it has none, every group
 reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds", because nothing
@@ -491,10 +492,18 @@ stock has no value for a period nobody observed, so neither is ever made zero.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
-- **A time window narrows it too, for now.** A `fill: true` bucket in a window with no rows
-  reads `NULL` even where the measure has data outside the window. That is a known limitation
-  (it should read `0`) until the engine checks for data outside the window
-  ([issue #201](https://github.com/semantic-rails/semantic-rails/issues/201)).
+- **Time coverage bounds zero filling.** Plain time leaves check for observation outside
+  the query's window under the same authored, query and policy row filters. A gap inside
+  the base relation's loaded range reads `0`; buckets before its first loaded timestamp or
+  after its last read `NULL`. Coverage uses the whole base relation under policy filters,
+  ignoring measure and query filters, and caps its upper edge at now. A future placeholder
+  such as `9999-12-31` cannot extend it. An authored entity `freshness_as_of` overrides the
+  upper edge, capped at now. Nested rollup, fanout and predicate sources retain the
+  conservative window observation test. Routed aggregates use their raw base for the probe.
+- **`PARTIAL_BUCKET`** names returned buckets that straddle a coverage edge. Execution
+  checks the already filtered coverage AST in one extra bounded statement; no diagnostic
+  columns enter the answer. The same statement checks untimed observation so an observed
+  measure whose window lies outside coverage is not reported as `NO_DATA_IN_SCOPE`.
 - **An ungrouped distinct-population count over nothing reads `0`, with no warning.** That is a
   known limitation: a count of distinct customers under a `where` that matches no rows returns
   `0`, not `NULL` with `NO_DATA_IN_SCOPE` as the rule says. An empty group of a grouped answer
@@ -508,7 +517,8 @@ When an output that is a sum, count or distinct count (or a sum or difference of
 `NULL` on every returned row, or nothing came back with no time bounds and no metric filter,
 the response carries one `NO_DATA_IN_SCOPE` warning that names those outputs. A `prior_period`,
 ratio or rolling output never gets it: it can be `NULL` while its measure has data. It costs
-no extra query, and a clipped result (`truncated`) never gets it.
+no extra query except when reusing time-coverage diagnostics, and a clipped result
+(`truncated`) never gets it.
 
 ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
 unless the join yields NULLs, so every ClickHouse statement ends with
