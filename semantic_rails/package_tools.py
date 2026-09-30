@@ -37,7 +37,9 @@ from .expressions import expr_to_dict
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import package_release_labels
 from .renderer import _quote_ident
-from .runtime import Runtime
+from .result_values import result_rows
+from .runtime import Runtime, _time_zone
+from .runtime_parts.responses import output_columns
 from .yaml_loader import safe_load as yaml_safe_load
 
 ARTIFACT_MANIFEST_NAME = "semantic-rails-manifest.json"
@@ -1187,8 +1189,19 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
     if kind == "query_matches_snapshot":
         result = runtime.query(query)
         expected_rows = list(spec.get("expected_rows", []) or [])
+        compiled = runtime._compile(query, policy_context={})
+        columns = output_columns(runtime._config, compiled)
+        # Snapshot values use the result column's numeric type even when YAML
+        # loaded the same number as int/float instead of a driver Decimal.
+        for column in columns:
+            kind = result["column_types"].get(column["field"], {}).get("type")
+            if kind in {"decimal", "float", "integer"}:
+                column["type"] = kind
+        encoded_expected = result_rows(
+            expected_rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
+        )
         actual_rows = _normalize_rows(result["rows"])
-        ok = actual_rows == _normalize_rows(expected_rows)
+        ok = actual_rows == _normalize_rows(encoded_expected["rows"])
         return _test_result(
             test_id,
             ok,

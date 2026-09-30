@@ -2305,7 +2305,11 @@ class Runtime:
             ) from exc
         out: dict[str, Any] = {
             "ok": True,
-            **result_rows(rows, output_columns=output_columns(self._config, compiled)),
+            **result_rows(
+                rows,
+                output_columns=output_columns(self._config, compiled),
+                zone=_time_zone(self._config, compiled),
+            ),
             "row_count": len(rows),
             "truncated": bool(getattr(rows, "truncated", False)),
             "rendered_sql": compiled["sql"],
@@ -2671,7 +2675,9 @@ class Runtime:
             "member_key_dimensions": list(normalized.member_key_dimensions),
             "preview_dimensions": list(normalized.preview_dimensions),
             **result_rows(
-                visible_rows, output_columns=output_columns(self._config, preview_compiled)
+                visible_rows,
+                output_columns=output_columns(self._config, preview_compiled),
+                zone=_time_zone(self._config, preview_compiled),
             ),
             "preview_row_count": len(visible_rows),
             "member_count": member_count,

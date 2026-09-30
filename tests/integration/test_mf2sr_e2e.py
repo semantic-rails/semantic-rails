@@ -249,7 +249,10 @@ def mf_reference_results(
             )
             rows = result.get("rows") or []
             assert rows, f"reference (duckdb) returned no rows for {name}"
-            results[name] = {"rows": normalize_rows(rows), "column_types": result["column_types"]}
+            results[name] = {
+                "rows": normalize_rows(rows, result["column_types"]),
+                "column_types": result["column_types"],
+            }
         return results
     finally:
         runtime.close()
@@ -267,10 +270,18 @@ def test_mf2sr_battery_parity(
     payload = dict(next(payload for name, payload in BATTERY if name == case_name))
     result = mf_runtime.query(payload)
     assert result.get("ok", True), f"{target.warehouse}/{case_name}: query failed — {result}"
-    actual = normalize_rows(result.get("rows") or [])
+    actual = normalize_rows(result.get("rows") or [], result["column_types"])
     assert_rows_match(
         mf_reference_results[case_name]["rows"],
         actual,
+        column_types={
+            **mf_reference_results[case_name]["column_types"],
+            **{
+                key: value
+                for key, value in result["column_types"].items()
+                if value["type"] == "decimal"
+            },
+        },
         context=f"{target.warehouse}/{case_name}",
     )
     assert_column_types_match(

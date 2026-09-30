@@ -32,14 +32,14 @@ QUERY = {
 @pytest.mark.parametrize(
     ("value", "expected", "metadata"),
     [
-        (Decimal("0.1"), 0.1, {"type": "decimal"}),
-        (Decimal("1.2500"), 1.25, {"type": "decimal"}),
-        (Decimal("42.0"), 42, {"type": "decimal"}),
-        (42.0, 42, {"type": "decimal"}),
-        (Decimal("-0.000"), 0, {"type": "decimal"}),
-        (Decimal("9007199254740992"), 9007199254740992, {"type": "decimal"}),
+        (Decimal("0.1"), "0.1", {"type": "decimal"}),
+        (Decimal("1.2500"), "1.25", {"type": "decimal"}),
+        (Decimal("42.0"), "42", {"type": "decimal"}),
+        (42.0, 42.0, {"type": "float"}),
+        (Decimal("-0.000"), "0", {"type": "decimal"}),
+        (Decimal("9007199254740992"), "9007199254740992", {"type": "decimal"}),
         (Decimal("9007199254740993"), "9007199254740993", {"type": "decimal"}),
-        (9007199254740993, "9007199254740993", {"type": "decimal"}),
+        (9007199254740993, 9007199254740993, {"type": "integer"}),
         (Decimal("1.00000000000000010"), "1.0000000000000001", {"type": "decimal"}),
         (Decimal("1E+400"), "1" + "0" * 400, {"type": "decimal"}),
         (Decimal("1E-400"), "0." + "0" * 399 + "1", {"type": "decimal"}),
@@ -169,6 +169,10 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
     duckdb_row["at"] = duckdb_row["at"].replace(tzinfo=UTC)
     runtime = runtime_factory("jaffle_shop")
     raw_rows = [duckdb_row]
+    monkeypatch.setattr(
+        "semantic_rails.runtime.output_columns",
+        lambda *args: [{"field": "amount", "type": "decimal"}],
+    )
     monkeypatch.setattr(
         "semantic_rails.runtime._adapter_query",
         lambda *args, **kwargs: QueryRows(raw_rows, truncated=True),
@@ -327,6 +331,106 @@ def test_json_adapter_does_not_lose_precision_before_encoding() -> None:
     assert rows[0]["a"] == Decimal("123456789012345678.123456789")
     result = result_rows(rows)
     assert result["rows"] == [
-        {"a": "123456789012345678.123456789", "b": 0.1, "text": "0.1", "nested": [0.1]}
+        {"a": "123456789012345678.123456789", "b": "0.1", "text": "0.1", "nested": [0.1]}
     ]
     assert result["column_types"]["a"] == {"type": "decimal"}
+
+
+@pytest.mark.parametrize("kind", ["decimal", "float", "double", "integer"])
+def test_numeric_encoding_is_chosen_once_per_column(kind: str) -> None:
+    values = [Decimal("1"), Decimal("9007199254740993")]
+    if kind != "integer":
+        values.append(Decimal("1.0000000000000001"))
+    result = result_rows(
+        [{"a": value} for value in values], output_columns=[{"field": "a", "type": kind}]
+    )
+    expected_type = str if kind == "decimal" else int if kind == "integer" else float
+    assert all(type(row["a"]) is expected_type for row in result["rows"])
+    assert result["column_types"]["a"]["type"] == ("float" if kind == "double" else kind)
+    if kind == "decimal":
+        assert result["rows"] == [
+            {"a": "1"},
+            {"a": "9007199254740993"},
+            {"a": "1.0000000000000001"},
+        ]
+
+
+def test_observed_numeric_types_apply_to_the_entire_column() -> None:
+    result = result_rows([{"a": 1}, {"a": Decimal("1.0000000000000001")}, {"a": 2.5}])
+    assert result["column_types"] == {"a": {"type": "decimal"}}
+    assert result["rows"] == [{"a": "1"}, {"a": "1.0000000000000001"}, {"a": "2.5"}]
+
+
+@pytest.mark.parametrize("kind,prefix", [("timestamp", "2026-09-30T"), ("time", "")])
+@pytest.mark.parametrize("fraction", ["123456789", "000000001", "000000002"])
+def test_json_temporal_text_retains_submicrosecond_precision(
+    kind: str, prefix: str, fraction: str
+) -> None:
+    value = prefix + "08:15:00." + fraction + "+00:00"
+    rows = _extract_snowflake_json_rows(json.dumps([{"a": value}]))
+    result = result_rows(rows, output_columns=[{"field": "a", "type": kind}], zone="Asia/Tokyo")
+    expected = ("2026-09-30T17:15:00." + fraction + "+09:00") if kind == "timestamp" else value
+    assert result["rows"] == [{"a": expected}]
+
+
+@pytest.mark.parametrize(
+    "rows", [[], [{"member_count": 1, "amount": Decimal("1.0000000000000001")}]]
+)
+def test_default_mcp_segment_preview_keeps_column_metadata(
+    runtime_factory, monkeypatch, rows
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: rows)
+    try:
+        result = SemanticLayerMCPAdapter(runtime).call_tool(
+            "segment", {"action": "preview", "segment_id": "segment.jaffle.high_value_customers"}
+        )
+        assert result["column_types"] == result_rows(rows)["column_types"]
+        if rows:
+            assert result["rows"][0]["amount"] == "1.0000000000000001"
+    finally:
+        runtime.close()
+
+
+def test_conformance_compares_decimal_columns_numerically_and_sorts_consistently() -> None:
+    columns = {"a": {"type": "decimal"}}
+    reference = normalize_rows([{"a": "10.3333333333333333"}, {"a": "2"}], columns)
+    actual = normalize_rows([{"a": 2.0}, {"a": 10.333333333333334}], {"a": {"type": "float"}})
+    assert_rows_match(reference, actual, context="averages", column_types=columns)
+    assert_column_types_match(
+        {"column_types": columns}, {"column_types": {"a": {"type": "float"}}}, context="averages"
+    )
+    for invalid in ("wrong", True, None, "11", "NaN"):
+        with pytest.raises(AssertionError):
+            assert_rows_match(
+                [{"a": "10"}], [{"a": invalid}], context="decimal", column_types=columns
+            )
+
+
+@pytest.mark.parametrize(
+    "kind,typed,text",
+    [
+        ("timestamp", datetime(2026, 9, 30, 8, 15, 0, 123500), "2026-09-30T08:15:00.123500000"),
+        ("time", time(8, 15, 0, 123500), "08:15:00.123500000"),
+        ("time", time(8, 15), "08:15:00.000000000"),
+    ],
+)
+def test_temporal_fraction_encoding_is_canonical(kind, typed, text) -> None:
+    columns = [{"field": "a", "type": kind}]
+    assert result_rows([{"a": typed}], output_columns=columns) == result_rows(
+        [{"a": text}], output_columns=columns
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "08:15.123456789",
+        "08:15:00.123456789+00:00:00.000000001",
+        "08:15:00.123456789+00:00:00.000001",
+    ],
+)
+def test_unrepresentable_temporal_fraction_refuses(value: str) -> None:
+    with pytest.raises(SemanticLayerError) as exc:
+        result_rows([{"a": value}], output_columns=[{"field": "a", "type": "time"}])
+    assert exc.value.code == "RESULT_VALUE_UNSUPPORTED"

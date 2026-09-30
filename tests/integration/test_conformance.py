@@ -103,10 +103,18 @@ def test_battery_parity(
         pytest.skip("reference target defines the expected rows")
     result = target_runtime.query(case.payload)
     assert result.get("ok", True), f"{target.warehouse}/{case.name}: query failed — {result}"
-    actual = normalize_rows(result.get("rows") or [])
+    actual = normalize_rows(result.get("rows") or [], result["column_types"])
     assert_rows_match(
         reference_results[case.name]["rows"],
         actual,
+        column_types={
+            **reference_results[case.name]["column_types"],
+            **{
+                key: value
+                for key, value in result["column_types"].items()
+                if value["type"] == "decimal"
+            },
+        },
         context=f"{target.warehouse}/{case.name}",
     )
     assert_column_types_match(

@@ -17,6 +17,7 @@ import os
 import pkgutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -137,12 +138,22 @@ def load_battery() -> tuple[BatteryCase, ...]:
 _FLOAT_SORT_DIGITS = 6
 
 
-def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def normalize_rows(
+    rows: list[dict[str, Any]], column_types: dict[str, dict[str, str]] | None = None
+) -> list[dict[str, Any]]:
     normalized = [{str(key).lower(): val for key, val in row.items()} for row in rows]
+    types = {key.lower(): value for key, value in (column_types or {}).items()}
 
     def sort_key(row: dict[str, Any]) -> str:
         rounded = {
-            key: (round(val, _FLOAT_SORT_DIGITS) if isinstance(val, float) else val)
+            key: (
+                format(Decimal(str(val)), f".{_FLOAT_SORT_DIGITS}f")
+                if val is not None
+                and types.get(key, {}).get("type") in {"decimal", "float", "integer"}
+                else round(val, _FLOAT_SORT_DIGITS)
+                if isinstance(val, float)
+                else val
+            )
             for key, val in row.items()
         }
         return json.dumps(rounded, sort_keys=True, allow_nan=False)
@@ -150,7 +161,20 @@ def normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(normalized, key=sort_key)
 
 
-def _values_match(expected: Any, actual: Any) -> bool:
+def _values_match(expected: Any, actual: Any, *, decimal: bool = False) -> bool:
+    if decimal and expected is not None and actual is not None:
+        if isinstance(expected, bool) or isinstance(actual, bool):
+            return False
+        try:
+            left, right = Decimal(str(expected)), Decimal(str(actual))
+        except InvalidOperation:
+            return False
+        return (
+            left.is_finite()
+            and right.is_finite()
+            and abs(left - right)
+            <= max(Decimal("1e-9"), Decimal("1e-6") * max(abs(left), abs(right)))
+        )
     # JSON has one number type, but booleans and numeric-looking strings
     # are distinct. Never coerce text or erase timestamp awareness.
     expected_number = type(expected) in (int, float)
@@ -173,20 +197,27 @@ def _values_match(expected: Any, actual: Any) -> bool:
 
 
 def assert_rows_match(
-    reference: list[dict[str, Any]], actual: list[dict[str, Any]], *, context: str
+    reference: list[dict[str, Any]],
+    actual: list[dict[str, Any]],
+    *,
+    context: str,
+    column_types: dict[str, dict[str, str]] | None = None,
 ) -> None:
     """Assert two normalized row lists are equivalent (float-tolerant)."""
     assert len(reference) == len(actual), (
         f"{context}: row count mismatch — reference={len(reference)} actual={len(actual)}\n"
         f"reference[:3]={reference[:3]}\nactual[:3]={actual[:3]}"
     )
+    types = {key.lower(): value for key, value in (column_types or {}).items()}
     for idx, (ref_row, act_row) in enumerate(zip(reference, actual, strict=True)):
         assert set(ref_row) == set(act_row), (
             f"{context}: row {idx} column mismatch — "
             f"reference={sorted(ref_row)} actual={sorted(act_row)}"
         )
         for key in ref_row:
-            assert _values_match(ref_row[key], act_row[key]), (
+            assert _values_match(
+                ref_row[key], act_row[key], decimal=types.get(key, {}).get("type") == "decimal"
+            ), (
                 f"{context}: row {idx} value mismatch for '{key}' — "
                 f"reference={ref_row[key]!r} actual={act_row[key]!r}\n"
                 f"reference row={ref_row}\nactual row={act_row}"
@@ -197,12 +228,21 @@ def assert_column_types_match(
     reference: dict[str, Any], actual: dict[str, Any], *, context: str
 ) -> None:
     """Column metadata distinguishes equal strings with different logical types."""
-    assert {key.lower(): value for key, value in reference["column_types"].items()} == {
-        key.lower(): value for key, value in actual["column_types"].items()
-    }, f"{context}: result column types differ"
+
+    def comparable(types: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+        return {
+            key.lower(): {"type": "number"}
+            if value["type"] in {"decimal", "float", "integer"}
+            else value
+            for key, value in types.items()
+        }
+
+    assert comparable(reference["column_types"]) == comparable(actual["column_types"]), (
+        f"{context}: result column types differ"
+    )
 
 
 def run_battery_case(runtime: Runtime, case: BatteryCase) -> list[dict[str, Any]]:
     result = runtime.query(case.payload)
     assert result.get("ok", True), f"{case.name}: query failed — {result}"
-    return normalize_rows(result.get("rows") or [])
+    return normalize_rows(result.get("rows") or [], result["column_types"])

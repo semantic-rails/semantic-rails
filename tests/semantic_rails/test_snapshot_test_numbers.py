@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 import yaml
 
 from semantic_rails.config_validation import resolve_package_reference
-from semantic_rails.package_tools import _normalize_rows, run_package_tests_report
+from semantic_rails.package_tools import _normalize_rows, _run_test, run_package_tests_report
+from semantic_rails.yaml_loader import safe_load
 from tests.semantic_rails.dbt_warehouse import write_orders_package
 
 # DuckDB returns SUM over these DECIMAL(4,2) literals as Python Decimals.
@@ -63,3 +66,76 @@ def test_numbers_compare_by_value_to_the_last_digit() -> None:
     assert _normalize_rows([{"x": wide}])[0]["x"] == wide
     assert _normalize_rows([{"x": wide}]) != _normalize_rows([{"x": wide + Decimal("1E-18")}])
     assert _normalize_rows([{"flag": True}])[0]["flag"] is True  # bools stay bools
+
+
+@pytest.mark.parametrize("kind", ["date", "month", "integer"])
+def test_snapshots_encode_dates_buckets_and_large_integers_like_results(
+    tmp_path: Path, kind: str
+) -> None:
+    package = write_orders_package(tmp_path, schema="", with_customers=False)
+    (package / "data" / "seed.sql").write_text(
+        SEED_SQL
+        + "\nALTER TABLE fct_orders ADD COLUMN order_date DATE;\nUPDATE fct_orders SET order_date = CAST(ordered_at AS DATE);\nALTER TABLE fct_orders ADD COLUMN large_id BIGINT DEFAULT 9007199254740993;\n"
+    )
+    model_path = package / "models" / "orders.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["times"]["order_date"] = {
+        "kind": "date",
+        "column": "order_date",
+        "class": "event_time",
+    }
+    model["model"]["dimensions"]["large_id"] = {"kind": "integer", "column": "large_id"}
+    model_path.write_text(yaml.safe_dump(model))
+    query = {
+        "version": 1,
+        "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+    }
+    if kind == "month":
+        query["time"] = {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"}
+        expected = [{"temporal_role.shop_order_ordered_at__month": date(2024, 1, 1), "orders": 2}]
+    elif kind == "date":
+        query["group_by"] = ["dimension.shop_order_order_date"]
+        expected = safe_load(
+            "- {dimension.shop_order_order_date: 2024-01-01, orders: 1}\n- {dimension.shop_order_order_date: 2024-01-02, orders: 1}"
+        )
+        assert isinstance(expected[0]["dimension.shop_order_order_date"], date)
+    else:
+        query["group_by"] = ["dimension.shop_order_large_id"]
+        expected = [{"dimension.shop_order_large_id": 9007199254740993, "orders": 2}]
+    (package / "tests").mkdir()
+    (package / "tests" / "core.yml").write_text(
+        yaml.safe_dump(
+            {
+                "tests": {
+                    "typed_values": {
+                        "kind": "query_matches_snapshot",
+                        "query": query,
+                        "expected_rows": expected,
+                    }
+                }
+            }
+        )
+    )
+    report = run_package_tests_report(resolve_package_reference(path=str(package)))
+    assert report["summary"] == {"tests_total": 1, "passed": 1, "failed": 0}, report
+
+
+def test_snapshot_does_not_coerce_numeric_looking_text(runtime_factory, monkeypatch) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr(
+        "semantic_rails.runtime._adapter_query",
+        lambda *args, **kwargs: [{"dimension.jaffle_store_name": "007", "orders": 1}],
+    )
+    spec = {
+        "kind": "query_matches_snapshot",
+        "query": {
+            "version": 1,
+            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "group_by": ["dimension.jaffle_store_name"],
+        },
+        "expected_rows": [{"dimension.jaffle_store_name": 7, "orders": 1}],
+    }
+    try:
+        assert _run_test(runtime, "text", spec)["ok"] is False
+    finally:
+        runtime.close()

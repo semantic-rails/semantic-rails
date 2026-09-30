@@ -377,13 +377,13 @@ def test_measures_folded_into_one_leaf_keep_the_rows_too(runtime, package, gold)
 
     rows = runtime.query(query)["rows"]
 
-    assert {row[EMPLOYEE]: (row["boardings"], row["fare"]) for row in rows} == {
+    assert {row[EMPLOYEE]: (row["boardings"], float(row["fare"])) for row in rows} == {
         False: (6, 370),
         True: (5, 130),
         None: (2, 130),
     }
     assert sum(row["boardings"] for row in rows) == _ask(runtime, "boarding_count")[None] == 13
-    assert {row[EMPLOYEE]: row["fare"] for row in rows} == gold(
+    assert {row[EMPLOYEE]: float(row["fare"]) for row in rows} == gold(
         f"SELECT {SQL_EMPLOYEE}, SUM(b.fare) FROM boardings AS b GROUP BY 1"
     )
     assert _lookup_left_joins(load_package_config(str(package)), query) == ["people"]

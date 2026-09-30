@@ -102,7 +102,7 @@ def reference_results(jaffle_fixture: JaffleFixture) -> dict[str, dict[str, Any]
                 f"reference (duckdb) failed battery case {case.name}: {payload}"
             )
             results[case.name] = {
-                "rows": normalize_rows(payload.get("rows") or []),
+                "rows": normalize_rows(payload.get("rows") or [], payload["column_types"]),
                 "column_types": payload["column_types"],
             }
         return results

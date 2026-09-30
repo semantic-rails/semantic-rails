@@ -150,7 +150,7 @@ def test_disjoint_catalog_discovery_inspect_plan_query(granted_runtime, metric, 
     assert compiled["rendered_sql"]
     result = runtime.query({**portable, "policy_context": policy})
     assert result["rows"] == [{"value": 7}]
-    assert result["column_types"] == {"value": {"type": "decimal"}}
+    assert result["column_types"] == {"value": {"type": "integer"}}
     assert len(runtime.adapter.statements) == 1
     forbidden_plan = plan_payload(runtime, intent=hidden, partial_query=partial, detail="debug")
     assert forbidden_plan["best"] is None

@@ -697,8 +697,10 @@ all verbosity levels and MCP record/column row formats. It is separate from
 
 | Source value | JSON value | `column_types` metadata |
 |---|---|---|
-| Decimal, integer, finite float | Number if a binary64 float can round-trip its shortest JSON decimal representation to the original decimal value; otherwise a canonical decimal string, without redundant fractional zeros | `{"type":"decimal"}` |
-| Aware timestamp | ISO 8601 string, normalized to UTC with `+00:00` | `{"type":"timestamp","timezone":"aware"}` |
+| Decimal column | Canonical decimal strings, without redundant fractional zeros, for every non-null cell | `{"type":"decimal"}` |
+| Integer column | Integer JSON numbers, including values larger than binary64's exact integer range | `{"type":"integer"}` |
+| Float/double column | Finite JSON numbers | `{"type":"float"}` |
+| Aware timestamp | ISO 8601 string, normalized to the query time zone; UTC with `+00:00` when no zone is available | `{"type":"timestamp","timezone":"aware"}` |
 | Naive timestamp | ISO 8601 string with `T` and no offset; no zone is inferred | `{"type":"timestamp","timezone":"naive"}` |
 | Date | `YYYY-MM-DD` | `{"type":"date"}` |
 | Time | ISO 8601 string; aware times normalized to UTC with offset, naive times without offset | `{"type":"time","timezone":"aware"}` or `"naive"` |
@@ -709,17 +711,26 @@ all verbosity levels and MCP record/column row formats. It is separate from
 | UUID | Lowercase, hyphenated string | `{"type":"uuid"}` |
 | JSON array / object | JSON-native structure | `{"type":"array"}` / `{"type":"object"}` |
 
-For example, `Decimal("0.10")` becomes `0.1`, `Decimal("42.0")` becomes `42`,
-and `Decimal("9007199254740993")` becomes `"9007199254740993"` with type
-`decimal`. The text `"0.1"` remains text with type `string`. The precision rule
-compares decimal values, not binary expansions: `0.1` qualifies because parsing
-its shortest JSON float representation recovers the original decimal. Exact
-integral numbers use integer JSON notation; negative zero becomes `0`.
+A column uses one numeric encoding, selected from explicit numeric type metadata
+(`decimal`, `integer`, `float`/`double`) or the observed driver types. Semantic
+display types such as `currency`, `count` and `number` do not specify a SQL type.
+Without an explicit SQL type, Decimal takes precedence over float, then integer,
+for the entire column. `Decimal("0.10")` becomes `"0.1"` and
+`Decimal("9007199254740993")` becomes `"9007199254740993"`; a native integer
+`9007199254740993` remains a JSON number. Consumers that use binary64 must read
+integer JSON tokens without first rounding them to float. The text `"0.1"`
+remains text with type `string`. Cross-warehouse conformance compares decimal
+columns numerically using `column_types`, including when another warehouse
+returns the same calculation as float.
 
 Temporal-role outputs and authored timestamp columns are timestamps even when a
 driver returns a date for a midnight bucket: that date becomes a naive midnight
 timestamp. Date dimensions retain their date type. Aware values preserve the
-instant, with UTC providing a deterministic offset across driver session zones.
+instant in the query's time zone, so month buckets retain their own first day.
+Typed timestamp and time text retains its complete seconds fraction, including
+precision beyond Python's microseconds. Nonstandard fractional clocks and
+fractional zone offsets that cannot be retained refuse with
+`RESULT_VALUE_UNSUPPORTED` before parsing.
 Intervals represent the duration provided by the driver; calendar months/years
 are not inferred from a `timedelta`.
 
