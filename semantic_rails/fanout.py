@@ -258,6 +258,9 @@ def _cardinality_status(rel: RelationshipConfig, *, current_entity: str, time_bo
     return rel.safety
 
 
+UNANCHORED_TIME_VALID_HOP = "time_valid_hop_without_query_time"
+
+
 def unanchored_time_valid_hop_error(
     hops: list[tuple[str, str]], path: list[str]
 ) -> SemanticLayerError:
@@ -271,7 +274,7 @@ def unanchored_time_valid_hop_error(
             "relationships": [rel_id for rel_id, _ in hops],
             "entities": [entity for _, entity in hops],
             "path": list(path),
-            "reason": "time_valid_hop_without_query_time",
+            "reason": UNANCHORED_TIME_VALID_HOP,
             "hint": "Add `time` to the query so each row reads the version valid at its time.",
         },
     )

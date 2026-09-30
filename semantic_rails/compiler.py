@@ -140,7 +140,12 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, choose_path, one_to_many_descent
+from .fanout import (
+    UNANCHORED_TIME_VALID_HOP,
+    analyze_fanout,
+    choose_path,
+    one_to_many_descent,
+)
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -2692,7 +2697,11 @@ def _infer_root_entity_for_distinct_query(
 
     if not candidates:
         if failures:
-            raise failures[0]
+            # Prefer the refusal a query time would lift, so it names the hop and the fix.
+            raise next(
+                (exc for exc in failures if exc.details.get("reason") == UNANCHORED_TIME_VALID_HOP),
+                failures[0],
+            )
         raise SemanticLayerError(
             "PATH_NOT_FOUND",
             "No valid root entity found for distinct-values query",
