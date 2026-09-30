@@ -116,18 +116,20 @@ When an upstream connector caps a dependency below its patched version, add one
 `package`, the affected connector `extras`, `blocked_by` (`capping-package: specifier`),
 `fixed_in`, an HTTPS tracking `issue`, `review_by` (a TOML date no more
 than 30 days away), and `reason`. Every finding needs an entry for its own extra.
-The checker rejects expired or unused entries, core-reachable packages, and
-exceptions when any patched version reported by the advisory (including a
-backport) resolves with the connector's published dependency ranges. `fixed_in`
-must appear among those reported versions. The checker resolves from each reported
-patched version upward, using the current interpreter and platform with builds disabled.
-A resolution conflict confirms a block only when its explanation names the
-`blocked_by` package; unrelated conflicts and resolver or audit errors fail the
-check with an unverifiable cap. Once the fix resolves,
+The checker rejects expired or unused entries and core-reachable packages.
+An exception is valid only when the latest release of the `blocked_by` package
+declares a dependency requirement in PyPI's JSON `requires_dist` metadata whose
+specifier excludes every patched version reported by the advisory, including
+backports. `fixed_in` must appear among those reported versions. Markers are evaluated
+for the current interpreter and platform and the blocker's requested extras.
+A lifted cap fails with "cap lifted: upgrade now"; missing requirements, metadata
+fetch or parse failures, and audit errors fail the check. Resolver explanations
+cannot authorize an exception. Once the cap lifts,
 upgrade the lockfile and remove the exception; if the advisory disappears, remove
 the unused entry. Review the tracking issue before renewing a blocked exception.
-The `all` extra includes these connectors and inherits their findings; it cannot
-have a separate exception.
+The `all` extra must equal the union of the other extras, including `server` and
+`repl`, with normalized package names and specifiers. It inherits their findings
+and cannot have a separate exception.
 
 ## Full Verification Matrix
 

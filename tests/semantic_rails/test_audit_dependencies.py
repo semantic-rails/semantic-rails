@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import tomllib
@@ -86,7 +87,7 @@ def test_policy(reports, case, expected):
         reports["snowflake"] = [dependency()]
     elif case == "extra-unused":
         entries = [replace(ENTRY, extras=["databricks", "snowflake"])]
-    lines, errors = audit.check_policy(reports, entries, TODAY, lambda *_: case == "resolvable")
+    lines, errors = audit.check_policy(reports, entries, TODAY, lambda *_: case != "resolvable")
     assert len(lines) == len(reports)
     if expected:
         assert any(expected in error for error in errors)
@@ -101,7 +102,7 @@ def test_normalized_package_name(reports):
         reports,
         [replace(ENTRY, package="oauth-lib")],
         TODAY,
-        lambda *_: False,
+        lambda *_: True,
     )
     assert errors == []
 
@@ -170,38 +171,33 @@ def test_nonconnector_advisory_cannot_be_excepted(reports, surface):
     reports["databricks"] = []
     reports[surface] = [dependency()]
     _, errors = audit.check_policy(
-        reports, [replace(ENTRY, extras=[surface])], TODAY, lambda *_: False
+        reports, [replace(ENTRY, extras=[surface])], TODAY, lambda *_: True
     )
     assert any(f"[{surface}]" in error and "unexcepted advisory" in error for error in errors)
 
 
-@pytest.mark.parametrize("resolvable_version", [None, "3.3.2", "4.0.0"])
-def test_all_advisory_patched_versions_are_checked(reports, resolvable_version):
+def test_all_advisory_patched_versions_are_checked(reports):
     reports["databricks"][0]["vulns"][0]["fix_versions"] = ["4.0.0", "3.3.2"]
     checked = []
 
-    def resolves(extra, entry, version):
+    def cap_excludes(extra, entry, versions):
         assert extra == "databricks" and entry == ENTRY
-        checked.append(version)
-        return version == resolvable_version
+        checked.extend(versions)
+        return True
 
-    _, errors = audit.check_policy(reports, [ENTRY], TODAY, resolves)
-    if resolvable_version:
-        assert any("upgrade now" in error for error in errors)
-        assert resolvable_version in checked
-    else:
-        assert errors == []
-        assert checked == ["4.0.0", "3.3.2"]
+    _, errors = audit.check_policy(reports, [ENTRY], TODAY, cap_excludes)
+    assert errors == []
+    assert checked == ["4.0.0", "3.3.2"]
 
 
 @pytest.mark.parametrize("fixes", [None, [], ["3.3.2"], "4.0.0", ["4.0.0", None]])
 def test_fixed_in_must_match_advisory_evidence(reports, fixes):
     reports["databricks"][0]["vulns"][0]["fix_versions"] = fixes
 
-    def resolves(*_):
-        pytest.fail("Invalid patched-version evidence must fail before resolution")
+    def cap_excludes(*_):
+        pytest.fail("Invalid patched-version evidence must fail before metadata verification")
 
-    _, errors = audit.check_policy(reports, [ENTRY], TODAY, resolves)
+    _, errors = audit.check_policy(reports, [ENTRY], TODAY, cap_excludes)
     assert any("fixed_in missing from advisory patched versions" in error for error in errors)
 
 
@@ -261,85 +257,153 @@ def test_failed_or_partial_audit_rejected(tmp_path, monkeypatch, code, payload):
         audit.audit_surface(tmp_path, "core", tmp_path)
 
 
-@pytest.mark.parametrize(
-    "code, stderr, expected",
-    [
-        (0, "", True),
-        (
-            1,
-            "No solution found when resolving dependencies:\n"
-            "Because databricks-sql-connector depends on oauthlib<4.0.0 "
-            "and you require oauthlib>=4.0.0, your requirements are unsatisfiable.",
-            False,
-        ),
-        (1, "No solution found: unrelated-package requires duckdb<1.5.6", None),
-        (1, "No solution found: databricks-sql-connector-tools requires duckdb<1.5.6", None),
-        (1, "No solution found: Failed to fetch package index", None),
-        (1, "Failed to fetch package index", None),
-        (1, "Failed to fetch databricks-sql-connector", None),
-        (2, "Invalid option", None),
-        (None, "timeout", None),
-        (None, "spawn failed", None),
-    ],
-)
-def test_resolver_uses_ranges_and_fixed_version(tmp_path, monkeypatch, code, stderr, expected):
+@pytest.fixture
+def metadata_project(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\ndependencies = ["duckdb>=1.5.6"]\n'
-        '[project.optional-dependencies]\ndatabricks = ["databricks-sql-connector>=4.3.0"]\n'
+        '[project.optional-dependencies]\ndatabricks = ["databricks-sql-connector[auth]>=4.3.0"]\n'
     )
-
-    def run(command, root):
-        assert (tmp_path / "fixed.in").read_text().splitlines() == [
-            "duckdb>=1.5.6",
-            "databricks-sql-connector>=4.3.0",
-            "oauthlib>=4.0.0",
-        ]
-        assert "--refresh" in command and "--no-config" in command
-        if code is None:
-            if stderr == "timeout":
-                raise subprocess.TimeoutExpired(command, 120)
-            raise OSError(stderr)
-        return subprocess.CompletedProcess(command, code, "", stderr)
-
-    monkeypatch.setattr(audit, "run", run)
-    if expected is None:
-        with pytest.raises(ValueError, match="cannot verify the cap"):
-            audit.fix_resolves(tmp_path, "databricks", ENTRY, "4.0.0", tmp_path)
-    else:
-        assert audit.fix_resolves(tmp_path, "databricks", ENTRY, "4.0.0", tmp_path) is expected
+    return tmp_path
 
 
-def test_backport_resolves_despite_recorded_fix_cap(tmp_path, monkeypatch, reports):
-    (tmp_path / "pyproject.toml").write_text(
-        "[project]\ndependencies = []\n"
-        '[project.optional-dependencies]\ndatabricks = ["databricks-sql-connector>=4.3.0"]\n'
-    )
-    reports["databricks"][0]["vulns"][0]["fix_versions"] = ["4.0.0", "3.3.2"]
-    attempted = []
+def metadata(requirements):
+    return {
+        "info": {
+            "name": "databricks-sql-connector",
+            "version": "4.3.0",
+            "requires_dist": requirements,
+        }
+    }
 
-    def run(command, root):
-        constraint = (tmp_path / "fixed.in").read_text().splitlines()[-1]
-        attempted.append(constraint)
-        if constraint == "oauthlib>=3.3.2":
-            return subprocess.CompletedProcess(command, 0, "oauthlib==3.3.2\n", "")
-        return subprocess.CompletedProcess(
-            command,
-            1,
-            "",
-            "No solution found: databricks-sql-connector depends on oauthlib<4.0.0",
+
+def mock_metadata(monkeypatch, document):
+    def urlopen(url, *, timeout):
+        assert url == "https://pypi.org/pypi/databricks-sql-connector/json"
+        assert timeout == 30
+        return io.BytesIO(json.dumps(document).encode())
+
+    monkeypatch.setattr(audit, "urlopen", urlopen)
+
+
+@pytest.mark.parametrize(
+    "requirements, fixes, expected",
+    [
+        (["oauthlib>=3.1,<4"], ["4.0.0"], True),
+        (["oauthlib>=3.1,<4"], ["4.0.0", "3.3.2"], False),
+        (["oauthlib>=3.1,<3.3.2"], ["4.0.0", "3.3.2"], True),
+        (["oauthlib>=3.1,<5"], ["4.0.0"], False),
+        (["oauthlib"], ["4.0.0"], False),
+        (["oauthlib<4; extra == 'auth'"], ["4.0.0"], True),
+        (["oauthlib<4; python_version >= '3.11'"], ["4.0.0"], True),
+        (["oauthlib<4; extra == 'unused'"], ["4.0.0"], None),
+        (["oauthlib<4; extra == 'databricks'"], ["4.0.0"], None),
+        (["oauthlib<4; python_version < '3.0'"], ["4.0.0"], None),
+        (["oauthlib>=4", "oauthlib<4; extra == 'unused'"], ["4.0.0"], False),
+        (["other<4"], ["4.0.0"], None),
+        (["oauthlib-tools<4"], ["4.0.0"], None),
+        (["oauthlib @ https://example.com/oauthlib.whl"], ["4.0.0"], None),
+        (["oauthlib<4", "not a requirement!"], ["4.0.0"], None),
+        ([None], ["4.0.0"], None),
+        (None, ["4.0.0"], None),
+        ([], ["4.0.0"], None),
+        (["oauthlib<4"], ["4.0.0", "invalid-version"], None),
+    ],
+)
+def test_latest_metadata_cap(metadata_project, monkeypatch, reports, requirements, fixes, expected):
+    mock_metadata(monkeypatch, metadata(requirements))
+    reports["databricks"][0]["vulns"][0]["fix_versions"] = fixes
+
+    def check():
+        return audit.check_policy(
+            reports,
+            [ENTRY],
+            TODAY,
+            lambda extra, entry, versions: audit.cap_excludes_fixes(
+                metadata_project, extra, entry, versions
+            ),
         )
 
-    monkeypatch.setattr(audit, "run", run)
-    _, errors = audit.check_policy(
-        reports,
-        [ENTRY],
-        TODAY,
-        lambda extra, entry, version=ENTRY.fixed_in: audit.fix_resolves(
-            tmp_path, extra, entry, version, tmp_path
-        ),
+    if expected is None:
+        with pytest.raises(ValueError, match="cannot verify the cap"):
+            check()
+    else:
+        _, errors = check()
+        if expected:
+            assert errors == []
+        else:
+            assert any("cap lifted: upgrade now" in error for error in errors)
+
+
+@pytest.mark.parametrize("document", [{}, {"info": {}}, {"info": None}])
+def test_invalid_metadata_document(metadata_project, monkeypatch, document):
+    mock_metadata(monkeypatch, document)
+    with pytest.raises(ValueError, match="cannot verify the cap"):
+        audit.cap_excludes_fixes(metadata_project, "databricks", ENTRY, ["4.0.0"])
+
+
+@pytest.mark.parametrize("error", [OSError("missing package"), TimeoutError("timeout")])
+def test_metadata_fetch_errors_fail_closed(metadata_project, monkeypatch, error):
+    def urlopen(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(audit, "urlopen", urlopen)
+    with pytest.raises(ValueError, match="cannot verify the cap"):
+        audit.cap_excludes_fixes(metadata_project, "databricks", ENTRY, ["4.0.0"])
+
+
+def test_malformed_json_fails_closed(metadata_project, monkeypatch):
+    monkeypatch.setattr(audit, "urlopen", lambda *a, **kw: io.BytesIO(b"not JSON"))
+    with pytest.raises(ValueError, match="cannot verify the cap"):
+        audit.cap_excludes_fixes(metadata_project, "databricks", ENTRY, ["4.0.0"])
+
+
+@pytest.mark.parametrize(
+    "requirements",
+    [
+        ["duckdb<1.5.6"],  # A conflict involving the blocker says nothing about oauthlib.
+        None,  # A missing package has no verifiable dependency metadata.
+    ],
+    ids=["unrelated-duckdb-conflict", "missing-package"],
+)
+def test_unrelated_failures_cannot_authorize_exception(
+    metadata_project, monkeypatch, reports, capsys, requirements
+):
+    mock_metadata(monkeypatch, metadata(requirements))
+    monkeypatch.setattr(audit, "ROOT", metadata_project)
+    monkeypatch.setattr(audit, "load_exceptions", lambda *_: [ENTRY])
+    monkeypatch.setattr(audit, "audit_surface", lambda root, surface, scratch: reports[surface])
+    assert audit.main() == 1
+    assert "cannot verify the cap" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "aggregate",
+    [
+        ["foo>=1", "other>=2", "all-only==1"],
+        ["foo>=1"],
+        ["foo>=1", "other>=3"],
+    ],
+)
+def test_all_must_equal_other_extras_union(tmp_path, monkeypatch, capsys, aggregate):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project.optional-dependencies]\nfirst = ["foo>=1"]\nsecond = ["other>=2"]\n'
+        f"all = {json.dumps(aggregate)}\n"
     )
-    assert attempted == ["oauthlib>=4.0.0", "oauthlib>=3.3.2"]
-    assert any("upgrade now" in error for error in errors)
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.setattr(audit, "load_exceptions", lambda *_: [])
+    monkeypatch.setattr(
+        audit, "audit_surface", lambda *_: pytest.fail("must reject before auditing")
+    )
+    assert audit.main() == 1
+    assert "all must equal the union of the other extras" in capsys.readouterr().err
+
+
+def test_all_union_normalizes_requirements(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project.optional-dependencies]\nfirst = ["Some_Pkg[AUTH_EXTRA]>=1,<2"]\n'
+        'second = ["other>=2"]\nall = ["some-pkg[auth-extra]<2,>=1", "other >= 2"]\n'
+    )
+    assert audit.audit_surfaces(tmp_path) == ("core", "first", "second")
 
 
 def test_main_fails_on_timeout(monkeypatch):

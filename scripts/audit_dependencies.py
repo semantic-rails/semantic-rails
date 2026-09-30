@@ -12,6 +12,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.request import urlopen
+
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 CONNECTORS = ("snowflake", "postgres", "bigquery", "databricks", "athena", "clickhouse")
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +23,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def audit_surfaces(root: Path) -> tuple[str, ...]:
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
-    return ("core", *(extra for extra in project["optional-dependencies"] if extra != "all"))
+    optional = project["optional-dependencies"]
+
+    def requirements(values: list[str]) -> set[tuple]:
+        return {
+            (
+                normalize(req.name),
+                frozenset(normalize(extra) for extra in req.extras),
+                req.specifier,
+                req.url,
+                str(req.marker) if req.marker else None,
+            )
+            for req in map(Requirement, values)
+        }
+
+    if "all" in optional and requirements(optional["all"]) != requirements(
+        [value for extra, values in optional.items() if extra != "all" for value in values]
+    ):
+        raise ValueError("all must equal the union of the other extras")
+    return ("core", *(extra for extra in optional if extra != "all"))
 
 
 def normalize(package: str) -> str:
@@ -134,59 +156,57 @@ def audit_surface(root: Path, surface: str, scratch: Path) -> list[dict]:
     return dependencies
 
 
-def fix_resolves(
-    root: Path, extra: str, entry: ExceptionEntry, patched_version: str, scratch: Path
+def cap_excludes_fixes(
+    root: Path, extra: str, entry: ExceptionEntry, patched_versions: list[str]
 ) -> bool:
-    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
-    requirements = scratch / "fixed.in"
-    # Resolve current published ranges, never locked versions or overrides: a new
-    # connector release lifting the cap must invalidate the old exception.
-    requirements.write_text(
-        "\n".join(
-            [
-                *project["dependencies"],
-                *project["optional-dependencies"][extra],
-                f"{entry.package}>={patched_version}",
-            ]
-        )
-        + "\n"
-    )
-    try:
-        resolved = run(
-            [
-                "uv",
-                "pip",
-                "compile",
-                str(requirements),
-                "--no-config",
-                "--refresh",
-                "--no-build",
-                "--default-index",
-                "https://pypi.org/simple",
-                "--color",
-                "never",
-                "--python-version",
-                f"{sys.version_info.major}.{sys.version_info.minor}",
-            ],
-            root,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ValueError(f"{extra}: cannot verify the cap: {error}") from error
-    if resolved.returncode == 0:
-        return True
-    conflict = resolved.stderr.partition("No solution found")[2]
+    """Only an active dependency cap in the latest blocker release permits an exception."""
     blocker = normalize(entry.blocked_by.partition(":")[0].strip())
-    named_packages = {normalize(token) for token in re.findall(r"[A-Za-z0-9_.-]+", conflict)}
-    if resolved.returncode == 1 and conflict and blocker in named_packages:
-        return False
-    raise ValueError(f"{extra}: cannot verify the cap: {resolved.stderr.strip()}")
+    try:
+        project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+        # Dependency markers use the blocker's requested extras, not our connector's name.
+        selected_extras = {""}
+        for value in [*project["dependencies"], *project["optional-dependencies"][extra]]:
+            requirement = Requirement(value)
+            if normalize(requirement.name) == blocker and (
+                requirement.marker is None or requirement.marker.evaluate({"extra": extra})
+            ):
+                selected_extras.update(requirement.extras)
+        with urlopen(f"https://pypi.org/pypi/{blocker}/json", timeout=30) as response:
+            info = json.load(response)["info"]
+        if normalize(info["name"]) != blocker:
+            raise ValueError("metadata names a different package")
+        Version(info["version"])
+        values = info["requires_dist"]
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError("invalid requires_dist metadata")
+        requirements = [Requirement(value) for value in values]
+        patched = [Version(version) for version in patched_versions]
+        caps = [
+            requirement
+            for requirement in requirements
+            if normalize(requirement.name) == normalize(entry.package)
+            and (
+                requirement.marker is None
+                or any(requirement.marker.evaluate({"extra": name}) for name in selected_extras)
+            )
+        ]
+        if not caps or any(requirement.url for requirement in caps):
+            raise ValueError("missing verifiable dependency requirement")
+        return any(
+            all(
+                not requirement.specifier.contains(version, prereleases=True) for version in patched
+            )
+            for requirement in caps
+        )
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise ValueError(f"{extra}: cannot verify the cap: {error}") from error
 
 
 def check_policy(
     reports: dict[str, list[dict]],
     entries: list[ExceptionEntry],
     today: date,
-    resolves: Callable[[str, ExceptionEntry, str], bool],
+    cap_excludes: Callable[[str, ExceptionEntry, list[str]], bool],
 ) -> tuple[list[str], list[str]]:
     """Only reported connector advisories with a still-blocked fix can be excepted."""
     errors = []
@@ -226,8 +246,8 @@ def check_policy(
                     ):
                         errors.append(f"{prefix}: fixed_in missing from advisory patched versions")
                         continue
-                    if any(resolves(surface, entry, version) for version in fixes):
-                        errors.append(f"{prefix}: fix is resolvable; upgrade now")
+                    if not cap_excludes(surface, entry, fixes):
+                        errors.append(f"{prefix}: cap lifted: upgrade now")
                     lines.append(
                         f"{prefix}: listed exception until {entry.review_by} ({entry.issue})"
                     )
@@ -253,7 +273,7 @@ def main() -> int:
                 reports,
                 entries,
                 today,
-                lambda extra, entry, version: fix_resolves(ROOT, extra, entry, version, scratch),
+                lambda extra, entry, versions: cap_excludes_fixes(ROOT, extra, entry, versions),
             )
         for line in lines:
             print(line)
