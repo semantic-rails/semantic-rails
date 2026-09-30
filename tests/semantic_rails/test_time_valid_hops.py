@@ -1,11 +1,12 @@
-"""A hop over a time-valid relationship needs a query time.
+"""A hop into a time-valid table needs a query time.
 
-A relationship with ``temporal_validity`` keeps several versions of the far row, each valid
-over a window. A hop over it reaches at most one version only when the query gives each row an
-instant to pick its version by (a ``time``). Without one the join reaches every version, and a
-row counts once per version, so the engine refuses with ``FANOUT_UNSAFE``, naming the
-relationship and the entity, rather than count a row twice. It never picks a "current" version
-or de-duplicates: a row in two versions would belong to two groups.
+A relationship with ``temporal_validity`` joins a table holding several versions of a row, each
+valid over a window. A hop into that table reaches at most one version only when the query
+gives each row an instant to pick its version by (a ``time``). Without one the join reaches
+every version, and a row counts once per version, so the engine refuses with ``FANOUT_UNSAFE``,
+naming the relationship and the entity, rather than count a row twice. It never picks a
+"current" version or de-duplicates: a row in two versions would belong to two groups. A hop out
+of the table holding the window reads one version per row, and needs no time.
 
 Fixture: usage events of accounts, with a segment history. Account A1 was ``starter`` in
 January and ``business`` from February; A2 is ``starter`` from January; A3 has no history row;
@@ -28,6 +29,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import analyze_fanout
+from semantic_rails.metadata import build_options_payload, discover_payload
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.registry import Registry
@@ -349,6 +351,22 @@ def test_the_classification_names_the_hop_and_the_fix(package):
     assert _path_availability(config, usage, HISTORY, query_time=False)["error_code"] == (
         "FANOUT_UNSAFE"
     )
+
+
+@pytest.mark.parametrize(("time", "offered"), [(None, False), (MONTHLY, True)])
+def test_discover_and_build_options_offer_the_hop_only_with_a_time(runtime, time, offered):
+    partial = _amount(**({"time": time} if time else {}))
+
+    found = discover_payload(runtime, terms="segment", partial_query=partial, kinds=["dimension"])
+    options = build_options_payload(
+        runtime, partial_query=partial, step="group_by", focus_terms="segment"
+    )
+
+    (row,) = [row for row in found["dimensions"] if row["id"] == SEGMENT]
+    assert row["available"] is offered
+    assert (HOP in row["blocked_reason"]) is not offered  # the reason names the hop
+    patches = [row["id"] for row in [*options["recommended"], *options["available"]]]
+    assert (SEGMENT in patches) is offered
 
 
 def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(package, monkeypatch):

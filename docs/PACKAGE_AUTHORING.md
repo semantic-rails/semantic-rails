@@ -738,17 +738,19 @@ graph:
       entities: [customer_history, customer]    # bidirectional pair
       cardinality: many_to_one                  # first→second (history is many; customer is one)
       safety: requires_rewrite
-      temporal_validity:
-        valid_from: effective_from
-        valid_to: effective_to
+      temporal_validity:                        # <table holding the window>.<column>
+        valid_from: shop_customer_history.effective_from
+        valid_to: shop_customer_history.effective_to
       rollup_safe:
         forward: [sum, count]                   # aggregating customer_history → customer
         reverse: []                             # aggregating customer → customer_history
 ```
 
-A query that crosses a `temporal_validity` relationship needs a `time`, so each row reads the
-version valid at its time; without one it is refused with `FANOUT_UNSAFE`, naming the
-relationship and the entity, because joining every version would count a row once per version.
+A query that joins into the table holding the window needs a `time`, so each row reads the
+version valid at its time. Without one, a many-to-one hop into it is refused with
+`FANOUT_UNSAFE`, naming the relationship and the entity, because joining every version would
+count a row once per version. A hop out of that table (`customer_history → customer` here)
+reads one version per row and needs no time.
 
 ### `disallowed_names:` — explicit anti-pattern guard
 
