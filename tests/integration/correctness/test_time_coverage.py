@@ -5,15 +5,19 @@ from dataclasses import replace
 import pytest
 
 from semantic_rails import runtime as runtime_module
+from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
+from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 
 from .conftest import _rows, _write_variant
 from .test_correctness import (
     AVERAGE,
     ORDERS,
+    REFUNDS,
     REVENUE,
     ROLE,
+    SIGNUP_ROLE,
     STORE,
     _ask,
     _assert_rows,
@@ -144,19 +148,23 @@ def changed_runtime(request, backend_name, tmp_path):
     backend = _backend(request, backend_name)
     opened = []
 
-    def make(variant="utc_implicit", insert="", routed=False):
+    def make(variant="utc_implicit", insert="", routed=False, zones=None):
         if backend_name == "duckdb":
             package = _write_variant(tmp_path, variant)
             seed = package / "data/seed.sql"
             seed.write_text(seed.read_text() + "\n" + insert + ";")
             config = load_package_config(str(package))
-            if not routed:
-                config = replace(config, aggregate_relations=[])
-            rt = Runtime.from_config(config, source_path=str(package))
+            source = str(package)
         else:
-            original = backend.runtimes[variant]
-            config = original.config if routed else replace(original.config, aggregate_relations=[])
-            rt = Runtime.from_config(config, source_path=original.source_path)
+            config = backend.runtimes[variant].config
+            source = backend.runtimes[variant].source_path
+        if not routed:
+            config = replace(config, aggregate_relations=[])
+        roles = [
+            replace(r, timezone=(zones or {}).get(r.id, r.timezone)) for r in config.temporal_roles
+        ]
+        rt = Runtime.from_config(replace(config, temporal_roles=roles), source_path=source)
+        if backend_name == "postgres":
             _rows(rt, "BEGIN")
             _rows(rt, insert)
         opened.append(rt)
@@ -349,3 +357,70 @@ def test_filled_query_executes_one_warehouse_statement(raw_runtime, monkeypatch)
         _ask("month", _item(REVENUE, "v"), start="2024-01-01", end="2024-03-01", fill=True)
     )
     assert len(calls) == 1 and result["row_count"] == 2
+
+
+# 2024-01-31 22:00 in Los Angeles is 2024-02-01 06:00 UTC.
+EDGE_ORDER = (
+    "INSERT INTO orders (order_id, ordered_at_tz, amount) "
+    "VALUES (999, TIMESTAMPTZ '2024-02-01 06:00:00+00', 50)"
+)
+
+
+def _in_los_angeles(rt, backend_name, *queries):
+    """Each query's compiled SQL, run as is in a Los Angeles session."""
+    setting = "SET GLOBAL TimeZone" if backend_name == "duckdb" else "SET TimeZone"
+    _rows(rt, f"{setting} = 'America/Los_Angeles'")
+    return [
+        [(str(row[0])[:10], *row[1:]) for row in _rows(rt, compiled["sql"])]
+        for compiled in (compile_query(rt.config, Registry(rt.config), q) for q in queries)
+    ]
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("variant", ["tz_authored", "tz_implicit"])
+def test_filled_and_unfilled_buckets_share_the_windows_frame(
+    changed_runtime, backend_name, variant
+):
+    rt = changed_runtime(variant, EDGE_ORDER)
+    window = {"start": "2024-01-01", "end": "2024-02-01"}
+    plain, filled = _in_los_angeles(
+        rt,
+        backend_name,
+        _ask("month", _item(REVENUE, "v"), **window),
+        _ask("month", _item(REVENUE, "v"), **window, fill=True),
+    )
+    assert plain == filled == [("2024-01-01", 70)]
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("variant", ["tz_authored", "tz_implicit"])
+def test_combined_branches_align_on_the_windows_frame(changed_runtime, backend_name, variant):
+    rt = changed_runtime(variant, EDGE_ORDER)
+    query = _ask(
+        "month", _item(REVENUE, "v"), _item(REFUNDS, "r"), start="2024-01-01", end="2024-03-01"
+    )
+    (rows,) = _in_los_angeles(rt, backend_name, query)
+    # Order 5 (2024-03-01 02:00 UTC) is February in Los Angeles, inside the window.
+    assert sorted(rows) == [("2024-01-01", 70, 1), ("2024-02-01", 8, 0)]
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+def test_a_secondary_zone_aware_role_keeps_its_populated_value(changed_runtime):
+    rt = changed_runtime(
+        insert="ALTER TABLE signups ALTER COLUMN signed_up_at TYPE TIMESTAMPTZ "
+        "USING signed_up_at AT TIME ZONE 'UTC'; "
+        "INSERT INTO signups VALUES (999, TIMESTAMPTZ '2024-03-01 02:00:00+00', 'web')",
+        zones={SIGNUP_ROLE: "America/New_York"},
+    )
+    result = rt.query(
+        _ask(
+            "day",
+            _item(REVENUE, "v"),
+            _item({"measure": "measure.shop.signup_count"}, "n"),
+            start="2024-03-01",
+            end="2024-03-02",
+            fill=True,
+        )
+    )
+    rows = [(str(r[f"{ROLE}__day"])[:10], r["v"], r["n"]) for r in result["rows"]]
+    assert rows == [("2024-03-01", 8, 1)]
