@@ -2142,13 +2142,25 @@ def test_metric_predicate_with_literal_input_raises_predicate_not_supported(runt
         runtime.close()
 
 
-def test_metric_predicate_without_time_anchor_through_temporal_path_raises_predicate_scope_unsafe(
-    runtime_factory,
+@pytest.mark.parametrize(
+    ("time", "code"),
+    [
+        # The query's own path to the predicate entity crosses the time-valid hop first.
+        pytest.param(None, "FANOUT_UNSAFE", id="no-query-time"),
+        # An entity_only predicate has no time of its own to pick the SCD2 slice by.
+        pytest.param(
+            {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+            "PREDICATE_SCOPE_UNSAFE",
+            id="query-time",
+        ),
+    ],
+)
+def test_metric_predicate_without_time_anchor_through_temporal_path_is_refused(
+    runtime_factory, time, code
 ):
-    # compiler.py:902 — predicate.entity != input_root, the chosen path
-    # crosses a temporal_validity relationship (orders → customer_history),
-    # but the query supplies no time anchor, so the planner cannot pick
-    # an SCD2 slice. Expected: PREDICATE_SCOPE_UNSAFE.
+    # predicate.entity != input_root and the chosen path crosses a
+    # temporal_validity relationship (orders → customer_history) with no
+    # time anchor, so the planner cannot pick an SCD2 slice.
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
@@ -2160,22 +2172,23 @@ def test_metric_predicate_without_time_anchor_through_temporal_path_raises_predi
                     "input": {"measure": "measure.jaffle.order_count"},
                     "op": ">",
                     "value": 0,
-                }
+                },
+                **({"time": time} if time else {}),
             )
         )
         assert report["ok"] is False
         codes = [err["code"] for err in report["errors"]]
-        assert "PREDICATE_SCOPE_UNSAFE" in codes, codes
+        assert code in codes, codes
     finally:
         runtime.close()
 
 
-def test_metric_predicate_filter_through_temporal_path_without_time_raises_predicate_filter_incompatible(
+def test_metric_predicate_filter_through_temporal_path_without_time_is_refused(
     runtime_factory,
 ):
-    # compiler.py:954 — contextual predicate with a where-filter on a
-    # dimension reachable only through a temporal_validity path, but the
-    # query supplies no time anchor. Expected: PREDICATE_FILTER_INCOMPATIBLE.
+    # A contextual predicate with a where-filter on a dimension reachable
+    # only through a temporal_validity path, and no time anchor: the query's
+    # own where crosses the hop first, so it is refused as a fan-out.
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
@@ -2199,7 +2212,7 @@ def test_metric_predicate_filter_through_temporal_path_without_time_raises_predi
         )
         assert report["ok"] is False
         codes = [err["code"] for err in report["errors"]]
-        assert "PREDICATE_FILTER_INCOMPATIBLE" in codes, codes
+        assert "FANOUT_UNSAFE" in codes, codes
     finally:
         runtime.close()
 

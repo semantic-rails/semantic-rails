@@ -29,6 +29,7 @@ from ..expressions import (
     SemanticExpr,
     expr_kind,
 )
+from ..fanout import unanchored_time_valid_hop_error
 from ..ir import BoundMeasure, PathSelection
 from ..schema import PackageConfig, RelationshipConfig
 from ..sql_ast import SqlBinary, SqlIdentifier, SqlIsNull, SqlJoin, SqlLiteral, SqlTableRef
@@ -377,6 +378,9 @@ def _join_on_for_relationship(
             SqlBinary(_column_ref(left_table, left_col), "=", _column_ref(right_table, right_col)),
         )
     time_anchor = _time_anchor_expr(time_spec, config)
+    if rel.temporal_validity and time_anchor is None:
+        # analyze_fanout refuses such a hop when it plans the path; this is the join's own guard.
+        raise unanchored_time_valid_hop_error([(rel.id, next_entity)], [rel.id])
     if time_anchor is not None and rel.temporal_validity:
         valid_from = str(rel.temporal_validity.get("valid_from", "")).strip()
         valid_to = str(rel.temporal_validity.get("valid_to", "")).strip()

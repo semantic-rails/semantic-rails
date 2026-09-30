@@ -614,4 +614,6 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                 "group_by": ["dimension.demo_customer_status", "dimension.demo_plan_name"],
             },
         )
-    assert exc.value.code == "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE"
+    # The query's own grouping crosses the time-valid hop with no time, before the predicate.
+    assert exc.value.code == "FANOUT_UNSAFE"
+    assert exc.value.details["relationships"] == ["relationship.demo_order_customer_history"]

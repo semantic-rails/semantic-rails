@@ -27,6 +27,7 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any
 
+from ..compiler_parts.indexes import get_package_analysis
 from ..errors import SemanticLayerError
 from ..fanout import analyze_fanout, choose_path, package_hop_limit
 from ..schema import PackageConfig
@@ -50,7 +51,14 @@ def _path_availability(
         path, candidates = choose_path(
             config, start=root_entity, target=target_entity, hop_limit=package_hop_limit(config)
         )
-        analysis = analyze_fanout(config, root_entity, path)
+        # Reachability given a query time, as the history notes below assume: a query that
+        # crosses a time-valid hop without one is refused when it is planned.
+        analysis = analyze_fanout(
+            config,
+            root_entity,
+            path,
+            time_bound_relationships=set(get_package_analysis(config).temporal_relationship_ids),
+        )
         status = analysis["status"]
         if status == "ok":
             return {
