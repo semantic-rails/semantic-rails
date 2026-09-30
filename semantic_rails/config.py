@@ -1221,7 +1221,11 @@ def _parse_package_meta(package_raw: dict[str, Any], *, path: str) -> PackageMet
                     "INVALID_CONFIG",
                     f"{path}: {warehouse} package.connection has invalid options: {'; '.join(direct_errors)}",
                 )
-        elif connector.requires_connection_name and not connection.name:
+        elif (
+            connector.requires_connection_name
+            and connection.kind != "snowflake_adbc"
+            and not connection.name
+        ):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"{path}: {warehouse} packages must declare package.connection.name",

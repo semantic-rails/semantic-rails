@@ -21,11 +21,10 @@ driver plus PyArrow. PyArrow supplies DB-API parameter binding, bounded batch
 conversion and PostgreSQL extension type metadata; converting through DuckDB
 would add another type-conversion boundary.
 
-A profile names the driver, connection kind and allowed options. Only the
-Postgres profile is qualified today; the adapter refuses another profile until
-its session setup, timeout, binding and type conversion have been implemented
-and tested. Credentials stay in the in-memory libpq connection string, with
-keyword values escaped. Packages cannot choose a driver or native library path.
+A profile names the driver, connection kind and allowed options. Postgres is
+qualified; Snowflake is an opt-in experiment described below. Other profiles
+are refused. Postgres credentials stay in the in-memory libpq connection string,
+with keyword values escaped; its packages cannot choose a native library path.
 
 The compiler finalizes typed row-filter slots as Postgres `$1`, `$2`, … before
 execution. The adapter checks slot types, counts and placeholder order before
@@ -50,6 +49,69 @@ The hosted Postgres correctness job runs the conformance battery and
 fixture variables. Exact-type, two-tenant isolation and timeout tests supplement
 normalized parity. The conformance loader uses `adbc_ingest` on the production
 connection; psycopg is not a runtime or test dependency.
+
+#### Experimental Snowflake profile
+
+Select `package.connection.kind: snowflake_adbc` to use `SNOWFLAKE_PROFILE`.
+This experimental path retains the Snowflake SQL dialect and the existing CLI
+and native connectors. It is excluded from the `[all]` extra. Install the Python
+manager 1.12.0 and PyArrow with `semantic-rails[snowflake-adbc]`, then install the
+target native driver, version **1.14.0**, using an existing `dbc` installation:
+
+```sh
+dbc install "snowflake=1.14.0"
+```
+
+The [dbc registry](https://docs.columnar.tech/dbc/guides/finding_drivers/)
+distributes the Snowflake driver. The Python manager loads `driver="snowflake"`
+from its standard [driver search paths](https://arrow.apache.org/adbc/23/format/driver_manifests.html),
+including `ADBC_DRIVER_PATH` and the user installation directory. An explicit
+`driver_path` option selects a shared-library or manifest path instead; that
+option is accepted only for this experimental connection kind. `dbc` verifies
+the downloaded driver signature during installation; do not disable verification.
+
+Password authentication uses `account_env`, `user_env` and either `password_env`
+or `password_file`. Optional locators are `database`, `schema`, `warehouse` and
+`role`; a named Snowflake connector profile is not used. Key-pair authentication
+instead uses `private_key_env` or `private_key_file` containing PEM PKCS #8 text,
+with optional `private_key_passphrase_env`. Both encrypted and unencrypted keys
+are mapped to the driver's in-memory PKCS #8 options. Exactly one password or
+key is required. Literal credentials and other authentication modes are refused.
+Key-pair mapping is covered with stubs; live key-pair authentication is unqualified.
+
+`use_high_precision` defaults to `"true"`: the driver returns NUMBER columns as
+Arrow decimals with precision and scale intact. `"false"` opts into the driver's
+integer/float conversion. The [Snowflake driver options](https://arrow.apache.org/adbc/23/driver/snowflake.html#client-options)
+describe that conversion and the authentication vocabulary. An optional `query_tag`
+is set with escaped session SQL. The adapter binds `?` placeholders without SQL
+rewrites; every placeholder must correspond to an authored slot, and each bound
+value must match its slot's type. This guard also covers direct prepared calls.
+
+Per-query `statement_timeout_ms` takes precedence over `statement_timeout_seconds`.
+`ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS` rounds a positive millisecond
+limit up to whole seconds; the shared cancellation watchdog uses the original
+millisecond limit through execution and fetching. Successful queries restore
+the previous timeout and timezone; failures discard the connection. Arrow
+conversion preserves Decimal values and converts aware timestamps to the query
+timezone, or the current session zone. Live timestamp fidelity, cancellation
+latency and native-buffer memory bounds remain qualification work.
+
+On a credentialed runner, select `SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc`
+for the existing conformance target. Run its Snowflake battery and the dedicated
+two-tenant isolation test:
+
+```sh
+uv run pytest tests/integration/test_conformance.py tests/integration/test_adbc_snowflake.py -k snowflake -q
+```
+
+Both use `SR_SNOWFLAKE_ACCOUNT`, `SR_SNOWFLAKE_USER`, `SR_SNOWFLAKE_PASSWORD`
+and optional `SR_SNOWFLAKE_DATABASE`, `SR_SNOWFLAKE_SCHEMA`,
+`SR_SNOWFLAKE_WAREHOUSE`. The isolation test creates only a session-local table,
+alternates tenants on identical SQL, checks an injection-shaped attribute and
+denies missing attributes. It explicitly skips when credentials are absent;
+configured driver or warehouse failures fail the test. For that test alone,
+`SR_SNOWFLAKE_ADBC_DRIVER_PATH` can override driver discovery. Stub unit tests
+prove mapping and lifecycle behavior; they do not establish live qualification.
 
 ## 1. Dialect class — `semantic_rails/dialects.py`
 

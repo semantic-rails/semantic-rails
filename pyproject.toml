@@ -65,6 +65,11 @@ server = [
 snowflake = [
   "snowflake-connector-python>=4.6.0",
 ]
+# Opt-in experiment; the native driver is installed separately with dbc.
+snowflake-adbc = [
+  "adbc-driver-manager[dbapi]==1.12.0",
+  "pyarrow>=25.0.1",
+]
 postgres = [
   "adbc-driver-manager[dbapi]==1.12.0",
   "adbc-driver-postgresql==1.12.0",

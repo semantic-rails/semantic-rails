@@ -1,7 +1,7 @@
 """Arrow execution under the warehouse adapter contract.
 
-The qualified profile is Postgres (``postgres_native``). Credentials stay in the
-in-memory libpq connection string; callers never select native library paths.
+Postgres is qualified; Snowflake (``snowflake_adbc``) is an opt-in experiment.
+Credentials stay in memory and are never interpolated into query SQL.
 """
 
 from __future__ import annotations
@@ -15,11 +15,16 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..dialects import POSTGRES_CONNECTION_OPTIONS
+from ..dialects import (
+    POSTGRES_CONNECTION_OPTIONS,
+    SNOWFLAKE_ADBC_CONNECTION_OPTIONS,
+    backslash_escaped_string_literal,
+)
 from ..errors import SemanticLayerError, query_execution_error
 from ..sql_preparation import (
     PreparedQuery,
     check_postgres_parameters,
+    check_snowflake_parameters,
     checked_parameter_values,
     prepare_query,
 )
@@ -53,6 +58,9 @@ class AdbcProfile:
 POSTGRES_PROFILE = AdbcProfile(
     "postgres", "postgres_native", "adbc_driver_postgresql.dbapi", POSTGRES_CONNECTION_OPTIONS
 )
+SNOWFLAKE_PROFILE = AdbcProfile(
+    "snowflake", "snowflake_adbc", "adbc_driver_manager.dbapi", SNOWFLAKE_ADBC_CONNECTION_OPTIONS
+)
 
 
 class AdbcAdapter(WarehouseAdapter):
@@ -64,10 +72,11 @@ class AdbcAdapter(WarehouseAdapter):
     def __init__(
         self, options: dict[str, Any] | None = None, *, profile: AdbcProfile = POSTGRES_PROFILE
     ) -> None:
-        # Session SQL and type conversion below are qualified for this profile only.
-        if profile != POSTGRES_PROFILE:
+        if profile not in (POSTGRES_PROFILE, SNOWFLAKE_PROFILE):
             raise SemanticLayerError("INVALID_CONFIG", "Unsupported ADBC warehouse profile")
         self.profile = profile
+        self.engine = profile.engine
+        self.connection_kind = profile.connection_kind
         self.options = normalize_connection_options(
             self.engine, self.connection_kind, options or {}, profile.connection_options
         )
@@ -103,28 +112,125 @@ class AdbcAdapter(WarehouseAdapter):
             if value
         )
 
+    def _snowflake_connect_options(self) -> dict[str, str]:
+        missing: list[str] = []
+        options = {
+            "adbc.snowflake.sql.account": option_or_env(self.options, "account", missing),
+            "username": option_or_env(self.options, "user", missing),
+        }
+        for name in ("password", "private_key", "private_key_passphrase"):
+            value = secret_value(
+                name,
+                self.options.get(f"{name}_env", ""),
+                self.options.get(f"{name}_file", ""),
+                missing,
+                engine=self.engine,
+                connection_kind=self.connection_kind,
+            )
+            if value:
+                key = {
+                    "password": "password",
+                    "private_key": "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_value",
+                    "private_key_passphrase": "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_password",
+                }[name]
+                options[key] = value
+        require_missing_env(missing, engine=self.engine, connection_kind=self.connection_kind)
+        has_key = "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_value" in options
+        if (
+            not options["adbc.snowflake.sql.account"]
+            or not options["username"]
+            or (has_key == ("password" in options))
+            or (self.options.get("private_key_passphrase_env") and not has_key)
+        ):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "Snowflake ADBC requires account, user and exactly one password or PKCS #8 key",
+            )
+        options["adbc.snowflake.sql.auth_type"] = "auth_jwt" if has_key else "auth_snowflake"
+        for name, key in (
+            ("database", "db"),
+            ("schema", "schema"),
+            ("warehouse", "warehouse"),
+            ("role", "role"),
+        ):
+            if self.options.get(name):
+                options[f"adbc.snowflake.sql.{key}"] = self.options[name]
+        precision = self.options.get("use_high_precision", "true").lower()
+        if precision not in ("true", "false"):
+            raise SemanticLayerError("INVALID_CONFIG", "use_high_precision must be true or false")
+        options["adbc.snowflake.sql.client_option.use_high_precision"] = precision
+        return options
+
     def _connection(self) -> Any:
         if self._conn is not None:
             return self._conn
+        snowflake = self.profile == SNOWFLAKE_PROFILE
+        credentials = self._snowflake_connect_options() if snowflake else None
         driver = import_driver(
             self.profile.driver,
-            extra="postgres",
+            extra="snowflake-adbc" if snowflake else "postgres",
             engine=self.engine,
             connection_kind=self.connection_kind,
         )
-        conn = driver.connect(self._connect_uri(), autocommit=True)
+        conn = (
+            driver.connect(
+                driver=self.options.get("driver_path", "snowflake"),
+                db_kwargs=credentials,
+                autocommit=True,
+            )
+            if snowflake
+            else driver.connect(self._connect_uri(), autocommit=True)
+        )
         try:
             with conn.cursor() as cursor:
-                if self.options.get("schema"):
-                    schema = '"' + self.options["schema"].replace('"', '""') + '"'
-                    cursor.execute("SELECT set_config('search_path', $1, false)", (schema,))
-                cursor.execute("SELECT current_setting('TimeZone')")
-                self._zone = cursor.fetchone()[0]
+                if snowflake:
+                    if self.options.get("query_tag"):
+                        cursor.execute(
+                            "ALTER SESSION SET QUERY_TAG = "
+                            + backslash_escaped_string_literal(self.options["query_tag"])
+                        )
+                    cursor.execute("SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION")
+                    self._zone = cursor.fetchone()[1]
+                else:
+                    if self.options.get("schema"):
+                        schema = '"' + self.options["schema"].replace('"', '""') + '"'
+                        cursor.execute("SELECT set_config('search_path', $1, false)", (schema,))
+                    cursor.execute("SELECT current_setting('TimeZone')")
+                    self._zone = cursor.fetchone()[0]
             self._conn = conn
         except Exception:
             conn.close()
             raise
         return conn
+
+    def _setup_session(
+        self, cursor: Any, timeout: int, limits: dict[str, Any] | None
+    ) -> tuple[str, str, int]:
+        if self.profile == SNOWFLAKE_PROFILE:
+            cursor.execute("SHOW PARAMETERS LIKE 'TIMEZONE' IN SESSION")
+            original_zone = cursor.fetchone()[1]
+            cursor.execute("SHOW PARAMETERS LIKE 'STATEMENT_TIMEOUT_IN_SECONDS' IN SESSION")
+            original_timeout = int(cursor.fetchone()[1])
+            zone = session_time_zone(limits) or original_zone
+            cursor.execute(
+                f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {(timeout + 999) // 1000}"
+            )
+            cursor.execute("ALTER SESSION SET TIMEZONE = " + backslash_escaped_string_literal(zone))
+            return zone, original_zone, original_timeout
+        cursor.execute("SELECT current_setting('TimeZone')")
+        original_zone = cursor.fetchone()[0]
+        zone = session_time_zone(limits) or original_zone
+        cursor.execute("SELECT set_config('statement_timeout', $1, false)", (str(timeout),))
+        cursor.execute("SELECT set_config('TimeZone', $1, false)", (zone,))
+        return zone, original_zone, 0
+
+    def _reset_session(self, cursor: Any, zone: str, timeout: int) -> None:
+        if self.profile == SNOWFLAKE_PROFILE:
+            cursor.execute(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {timeout}")
+            cursor.execute("ALTER SESSION SET TIMEZONE = " + backslash_escaped_string_literal(zone))
+        else:
+            cursor.execute("RESET statement_timeout")
+            cursor.execute("SELECT set_config('TimeZone', $1, false)", (zone,))
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
@@ -137,7 +243,10 @@ class AdbcAdapter(WarehouseAdapter):
         parameters: Sequence[Any] = (),
     ) -> list[dict[str, Any]]:
         values = checked_parameter_values(prepared, parameters)
-        check_postgres_parameters(prepared)
+        if self.profile == SNOWFLAKE_PROFILE:
+            check_snowflake_parameters(prepared)
+        else:
+            check_postgres_parameters(prepared)
         with self._lock:
             try:
                 conn = self._connection()
@@ -145,13 +254,9 @@ class AdbcAdapter(WarehouseAdapter):
                     0, self._int_option("statement_timeout_seconds", 0) * 1000
                 )
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT current_setting('TimeZone')")
-                    original_zone = cursor.fetchone()[0]
-                    zone = session_time_zone(limits) or original_zone
-                    cursor.execute(
-                        "SELECT set_config('statement_timeout', $1, false)", (str(timeout),)
+                    zone, original_zone, original_timeout = self._setup_session(
+                        cursor, timeout, limits
                     )
-                    cursor.execute("SELECT set_config('TimeZone', $1, false)", (zone,))
                     finished = threading.Event()
                     cancel_errors: list[Exception] = []
 
@@ -167,9 +272,10 @@ class AdbcAdapter(WarehouseAdapter):
                         watchdog.daemon = True
                         watchdog.start()
                     try:
-                        cursor.adbc_statement.set_options(
-                            **{"adbc.postgresql.batch_size_hint_bytes": "65536"}
-                        )
+                        if self.profile == POSTGRES_PROFILE:
+                            cursor.adbc_statement.set_options(
+                                **{"adbc.postgresql.batch_size_hint_bytes": "65536"}
+                            )
                         # Prepared SQL is immutable here. Values go only to Arrow binding.
                         cursor.execute(prepared.sql, values or None)
                         rows = self._rows(cursor, limits, zone)
@@ -180,8 +286,7 @@ class AdbcAdapter(WarehouseAdapter):
                             watchdog.join()
                     if cancel_errors:
                         raise cancel_errors[0]
-                    cursor.execute("RESET statement_timeout")
-                    cursor.execute("SELECT set_config('TimeZone', $1, false)", (original_zone,))
+                    self._reset_session(cursor, original_zone, original_timeout)
                 return restore_column_names(rows, prepared)
             except Exception as exc:
                 # A cancelled COPY or failed reset must never leave a session reusable.

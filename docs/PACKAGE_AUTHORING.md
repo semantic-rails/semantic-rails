@@ -494,6 +494,10 @@ Two connection kinds are supported:
 
 Literal credentials in YAML are rejected.
 
+An additional opt-in `snowflake_adbc` experiment binds row-filter parameters
+through Arrow. See [the experimental profile](ADDING_A_DIALECT.md#experimental-snowflake-profile)
+for the pinned `dbc` driver installation, supported options and live-test setup.
+
 ### Secrets
 
 **Secrets must come from process environment or an external secret store. Package

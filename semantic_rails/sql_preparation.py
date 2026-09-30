@@ -92,6 +92,14 @@ _PARAMETER_TOKEN = re.compile(
     re.DOTALL,
 )
 
+# Snowflake string literals also consume backslash escapes; placeholders in
+# those literals cannot count as bind slots. Dollar-quoted strings are opaque.
+_SNOWFLAKE_PARAMETER_TOKEN = re.compile(
+    r"'(?:[^'\\]|\\.|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?\*/|"
+    r"\$\$.*?\$\$|\?|\$[0-9]+",
+    re.DOTALL,
+)
+
 
 def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
     return [m for m in _PARAMETER_TOKEN.finditer(sql) if re.fullmatch(r"\?|\$[0-9]+", m[0])]
@@ -115,6 +123,17 @@ def check_postgres_parameters(prepared: PreparedQuery) -> None:
     actual = [m[0] for m in postgres_parameter_tokens(prepared.sql)]
     expected = [f"${index}" for index in range(1, len(prepared.parameters) + 1)]
     if actual != expected:
+        raise parameters_denied("parameter_placeholder_mismatch")
+
+
+def check_snowflake_parameters(prepared: PreparedQuery) -> None:
+    """Every authored slot has one qmark; refuse direct prepared bypasses."""
+    actual = [
+        m[0]
+        for m in _SNOWFLAKE_PARAMETER_TOKEN.finditer(prepared.sql)
+        if re.fullmatch(r"\?|\$[0-9]+", m[0])
+    ]
+    if actual != ["?"] * len(prepared.parameters):
         raise parameters_denied("parameter_placeholder_mismatch")
 
 
