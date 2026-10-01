@@ -378,6 +378,9 @@ query states it. A child group is a `where` item of its own:
   filter (one value per row of its entity; no window, distribution or metric predicate
   across the hop).
   Under a row policy the query is refused with `POLICY_DENIED`.
+  Under [restricted metric grants](QUERY_API.md#restricted-metric-grants), explicit
+  groups are refused with `RESOURCE_ACCESS_DENIED`: metric and dimension grants do not
+  authorize a caller-selected child entity scope.
 - ClickHouse answers one `any` group on the child's own columns, as the only condition
   across a one-to-many hop, with its de-duplicated parent leaf. A `none` group (a NULL-safe
   anti-join is unproven there), several groups, a lookup from the child, or another child
@@ -387,7 +390,7 @@ Plain filters on a child:
 
 - One positive plain filter reaching a child keeps its meaning: an `any` group of one.
 - Two or more plain filters reaching one child entity by one route (a lookup from the
-  child counts as that child), or a plain filter beside a group on that child, are
+  child counts as that child), or a plain filter beside an `any` group on that child, are
   refused with `AMBIGUOUS_CHILD_SCOPE`. So is a negated plain filter on a child (`!=`,
   `<>`, `NOT IN`, `NOT LIKE`, `IS DISTINCT FROM`, `IS NULL`, a null value, or on a boolean
   anything but `= true`): "has an item that is not a beverage" and "has no beverage
@@ -410,6 +413,10 @@ Plain filters on a child:
   written) and `none` (a `none` group with its opposite: `=` for `!=`, `IN` for `NOT IN`,
   `IS NOT NULL` for `IS NULL`). Each option's `where` is the query's whole `where`, with
   the other items unchanged; resend it as is. `recovery_hints` carry the same options.
+  ClickHouse offers only options supported by its child-group rules above. If no option
+  is supported, the query retains `MIXED_GRAIN_INVALID` without a clarification.
+- One positive plain filter beside a `none` group on the same child is unambiguous:
+  it requires a matching child row and independently excludes rows matching the group.
 - Plain filters on different children (an item and a payment of a customer's orders)
   remain `MIXED_GRAIN_INVALID`: they may mean the same order or any orders. State each
   with its own group. A measure's own `filter` keeps its rules: one positive condition

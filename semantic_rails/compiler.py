@@ -978,24 +978,34 @@ def _clickhouse_child_group_refusal(
     config: PackageConfig,
     query: NormalizedQuery,
 ) -> tuple[str, PathSelection] | None:
-    """ClickHouse answers one ``any`` group on the child's own columns, beside no other child
-    condition, with its de-duplicated parent leaf. A ``none`` group would need an anti-join
-    whose NULL handling is unproven there."""
-    groups = child_groups(query.where)
-    route = next(row for row in selections if row.purpose == "child_group")
-    reason = ""
-    if any(group.match == "none" for group in groups):
-        reason = "a 'none' child group needs a NULL-safe anti-join, which is unproven there"
-    elif len(groups) > 1 or conditions:
-        reason = "it answers one child group, as the only condition across a one-to-many hop"
-    elif any(child_group_route(config, query, measure, groups[0])[1]):
-        reason = "a child group's conditions must be on the child's own columns there"
+    reason = _clickhouse_child_group_reason(measure, config, query, bool(conditions))
     if not reason:
         return None
+    route = next(row for row in selections if row.purpose == "child_group")
     return (f"ClickHouse cannot answer this child group: {reason}.", route)
 
 
+def _clickhouse_child_group_reason(
+    measure: MeasureConfig,
+    config: PackageConfig,
+    query: NormalizedQuery,
+    has_other_conditions: bool,
+) -> str:
+    """ClickHouse answers one ``any`` group on the child's own columns, beside no other child
+    condition, with its de-duplicated parent leaf. A ``none`` group would need an anti-join
+    whose NULL handling is unproven there. Clarification choices use this same rule."""
+    groups = child_groups(query.where)
+    if any(group.match == "none" for group in groups):
+        return "a 'none' child group needs a NULL-safe anti-join, which is unproven there"
+    if len(groups) > 1 or has_other_conditions:
+        return "it answers one child group, as the only condition across a one-to-many hop"
+    if any(child_group_route(config, query, measure, groups[0])[1]):
+        return "a child group's conditions must be on the child's own columns there"
+    return ""
+
+
 # The complement of each comparison: what a 'none' group reads for a negated flat filter.
+# Positive comparisons also need complements for boolean dimensions and null values.
 _COMPLEMENT_OPS = {
     "=": "!=",
     "==": "!=",
@@ -1052,21 +1062,44 @@ def _ambiguous_child_scope(
     scoped_groups: dict[int, tuple[str, tuple[str, ...]]] = {}
     for index, item in enumerate(query.where):
         if isinstance(item, ChildGroup):
-            route = crossing[(item.child, "child_group")]
-            scoped_groups[index] = (item.child, tuple(route.chosen_path))
+            if item.match == "any":
+                route = crossing[(item.child, "child_group")]
+                scoped_groups[index] = (item.child, tuple(route.chosen_path))
             continue
         dim = dimensions[item.field]
         hop = crossing.get((dim.entity, "where"))
         if hop is not None:
             flat.append((index, item, dim, _child_scope(measure.entity, hop)))
+    ambiguity = None
     for index, item, dim, scope in flat:
         same = [row for row in flat if row[3] == scope]
         beside = [position for position, key in scoped_groups.items() if key == scope]
         if len(same) > 1 or beside:
-            return _child_scope_clarification(scope[0], same, beside, config, query)
+            ambiguity = _child_scope_clarification(scope[0], same, beside, config, query)
+            break
         if _negated_filter(asdict(item), dim):
-            return _negation_clarification(scope[0], index, item, dim, config, query)
-    return None
+            ambiguity = _negation_clarification(scope[0], index, item, dim, config, query)
+            break
+    if ambiguity is None or config.package.warehouse != "clickhouse":
+        return ambiguity
+    # Do not ask callers to choose a reading that this dialect then refuses.
+    crossing_fields = {item.field for _, item, *_ in flat}
+    options = []
+    for option in ambiguity.details["clarification"]["options"]:
+        proposed = normalize_query({**query.to_dict(), "where": option["where"]})
+        has_other_conditions = any(
+            item.field in crossing_fields for item in plain_filters(proposed.where)
+        )
+        if not _clickhouse_child_group_reason(measure, config, proposed, has_other_conditions):
+            options.append(option)
+    if not options:
+        return None  # Retain the existing MIXED_GRAIN_INVALID refusal.
+    ambiguity.details["clarification"]["options"] = options
+    option_ids = {option["id"] for option in options}
+    ambiguity.details["recovery_hints"] = [
+        hint for hint in ambiguity.details["recovery_hints"] if hint["option"] in option_ids
+    ]
+    return ambiguity
 
 
 def _rewritten_where(

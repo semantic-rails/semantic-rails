@@ -461,6 +461,42 @@ def test_a_flat_condition_beside_a_group_on_its_child_asks_too(package: Path) ->
         assert _rows(package, {**query, "where": options[option]}) == _customers(package, sql)
 
 
+@pytest.mark.parametrize(
+    ("absent", "present", "reference", "kept"),
+    [
+        (
+            BEVERAGE,
+            OVER_5,
+            "NOT "
+            + HAS_ITEM.format("i.product_type = 'beverage'")
+            + " AND "
+            + HAS_ITEM.format("i.price > 5"),
+            [],
+        ),
+        (
+            OVER_5,
+            BEVERAGE,
+            "NOT "
+            + HAS_ITEM.format("i.price > 5")
+            + " AND "
+            + HAS_ITEM.format("i.product_type = 'beverage'"),
+            [4],
+        ),
+    ],
+    ids=["no_beverage_with_expensive_item", "no_expensive_item_with_beverage"],
+)
+def test_a_positive_flat_condition_beside_none_has_one_reading(
+    package: Path, absent: dict[str, Any], present: dict[str, Any], reference: str, kept: list[int]
+) -> None:
+    where = [{"child": ITEM, "match": "none", "where": [absent]}, present]
+    assert _who(package, where) == kept
+    assert _reference(package, f"SELECT c.customer_id FROM customers c WHERE {reference}") == [
+        (item,) for item in kept
+    ]
+    # A total with no data in its filtered scope retains the engine's NULL contract.
+    assert _rows(package, _query(where)) == [(len(kept) or None,)]
+
+
 def test_one_flat_condition_answers_as_before(package: Path) -> None:
     has_beverage = HAS_ITEM.format("i.product_type = 'beverage'")
     assert _rows(package, _query([BEVERAGE])) == _customers(package, has_beverage) == [(5,)]
@@ -679,30 +715,68 @@ def test_a_distribution_beside_a_group_refuses(package: Path) -> None:
 # ---- Guards ---------------------------------------------------------------------------
 
 
-def test_a_dimension_the_grant_denies_is_denied_inside_a_group(package: Path) -> None:
-    def context(dimensions: tuple[str, ...]) -> dict[str, Any]:
-        return RequestContext(
-            actor="subject",
-            metric_allowlist=("metric.scope.customers",),
-            dimension_allowlist=dimensions,
-        ).to_policy_context()
-
+@pytest.mark.parametrize(
+    ("where", "dimensions"),
+    [
+        (SAME_ROW, (TYPE, PRICE)),
+        (SAME_ROW, (TYPE,)),
+        (
+            [
+                {
+                    "child": SESSION,
+                    "match": "any",
+                    "where": [{"field": CUSTOMER_ID, "op": "=", "value": 7}],
+                }
+            ],
+            (CUSTOMER_ID,),
+        ),
+        (
+            [
+                {
+                    "child": SESSION,
+                    "match": "none",
+                    "where": [{"field": CUSTOMER_ID, "op": "=", "value": 7}],
+                }
+            ],
+            (CUSTOMER_ID,),
+        ),
+    ],
+    ids=["granted_child_dimensions", "ungranted_dimension", "parent_only_any", "parent_only_none"],
+)
+def test_restricted_grants_cannot_authorize_a_child_scope_with_dimensions(
+    package: Path, monkeypatch: pytest.MonkeyPatch, where: list[Any], dimensions: tuple[str, ...]
+) -> None:
+    context = RequestContext(
+        actor="subject",
+        metric_allowlist=("metric.scope.customers",),
+        dimension_allowlist=dimensions,
+    ).to_policy_context()
     query = {
         "version": 1,
         "select": [{"expression": {"metric": "metric.scope.customers"}, "as": "value"}],
-        "where": SAME_ROW,
+        "where": where,
     }
     engine = Runtime.from_path(str(package))
     try:
-        allowed = engine.validate({**query, "policy_context": context((TYPE, PRICE))})
-        denied = engine.validate({**query, "policy_context": context((TYPE,))})
-        with pytest.raises(SemanticLayerError) as caught:
-            engine.query({**query, "policy_context": context((TYPE,))})
+        # Warm the unrestricted path, then ensure denial precedes warehouse access.
+        assert engine.query(query)["ok"] is True
+        plain = {**query, "where": [], "policy_context": context}
+        assert engine.validate(plain)["ok"] is True
+
+        def no_warehouse(*args: Any, **kwargs: Any) -> Any:
+            pytest.fail("A restricted child scope reached the warehouse")
+
+        monkeypatch.setattr("semantic_rails.runtime._adapter_query", no_warehouse)
+        restricted = {**query, "policy_context": context}
+        denied = engine.validate(restricted)
+        assert denied["ok"] is False
+        assert denied["errors"][0]["code"] == "RESOURCE_ACCESS_DENIED"
+        for operation in (engine.compile, engine.query):
+            with pytest.raises(SemanticLayerError) as caught:
+                operation(restricted)
+            assert caught.value.code == "RESOURCE_ACCESS_DENIED"
     finally:
         engine.close()
-    assert allowed["ok"] is True, allowed
-    assert denied["ok"] is False
-    assert denied["errors"][0]["code"] == caught.value.code == "RESOURCE_ACCESS_DENIED"
 
 
 def test_a_cut_policy_sees_the_conditions_inside_a_group(package: Path) -> None:
@@ -899,6 +973,37 @@ def test_clickhouse_refuses_groups_its_leaf_cannot_answer(package: Path, where: 
         compile_query(config, Registry(config), _query(where))
     assert caught.value.code == "MIXED_GRAIN_INVALID"
     assert "ClickHouse" in caught.value.details["why_invalid"]
+
+
+@pytest.mark.parametrize(
+    ("where", "option_ids"),
+    [
+        ([BEVERAGE, OVER_5], {"same_row"}),
+        ([{"field": TYPE, "op": "!=", "value": "beverage"}], {"any_not"}),
+        ([BEVERAGE, {"field": CATEGORY, "op": "=", "value": "hot"}], set()),
+        ([{"child": ITEM, "match": "any", "where": [BEVERAGE]}, OVER_5], {"same_row"}),
+        ([BEVERAGE, OVER_5, WEB], set()),
+    ],
+    ids=["two_flat", "negated_flat", "child_lookup", "beside_any", "another_child"],
+)
+def test_clickhouse_offers_only_clarification_options_its_leaf_can_compile(
+    package: Path, where: list[Any], option_ids: set[str]
+) -> None:
+    config = _clickhouse(package)
+    query = _query(where)
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), query)
+    error = caught.value
+    if not option_ids:
+        assert error.code == "MIXED_GRAIN_INVALID"
+        assert "clarification" not in error.details
+        return
+    assert error.code == "AMBIGUOUS_CHILD_SCOPE"
+    options = error.details["clarification"]["options"]
+    assert {option["id"] for option in options} == option_ids
+    assert {hint["option"] for hint in error.details["recovery_hints"]} == option_ids
+    for option in options:
+        assert compile_query(config, Registry(config), {**query, "where": option["where"]})["sql"]
 
 
 def test_other_dialects_render_each_group_as_correlated_exists(package: Path) -> None:

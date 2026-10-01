@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from .ast import every_filter, normalize_query
+from .ast import child_groups, every_filter, normalize_query
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
@@ -191,7 +191,9 @@ class ResourceAccess:
             query = normalize_query(payload)
         except (SemanticLayerError, TypeError, ValueError, KeyError):
             raise access_denied() from None
-        if not query.select:
+        # Metric/dimension grants cannot authorize caller-selected entity scopes.
+        # Refuse child groups until the grant contract provides explicit authority.
+        if not query.select or child_groups(query.where):
             raise access_denied()
         metrics = set(self.context.metric_allowlist or ())
         known_metrics = {row.id for row in self.config.metric_recipes}
@@ -207,7 +209,6 @@ class ResourceAccess:
             references.add(metric)
         dimensions = set(self.context.dimension_allowlist or ())
         known_dimensions = {row.id for row in self.config.dimensions}
-        # A child group's conditions read dimensions as plain filters do: each is checked.
         requested_dimensions = set(query.group_by) | {
             row.field for row in every_filter(query.where)
         }
