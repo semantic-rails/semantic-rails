@@ -1,18 +1,30 @@
-- The engine no longer chooses a join route by hop count or `path_preference` weights when the
-  routes can mean different things. With a functional route (every hop many-to-one or
-  one-to-one), the eligible routes are the functional ones and any one-to-many route no longer
-  than the shortest functional one; one eligible route is used, routes of one length keep the
-  weight tie-break, and routes of different lengths are refused with `AMBIGUOUS_PATH`. The refusal
-  lists every route in `details.candidates` and the `graph.path_preferences` row that pins each in
-  `details.pins`; those rows load as written, since a pin now accepts entity ids as well as keys
-  and names. "Accounts by region" through an account's branch region beside its owner's home
-  region was answered by the branch route, even with weights favouring the other; it is now
-  refused until a pin says which. One place resolves every route (grouping, filters, a measure's
-  own filter, metric predicates, time roles, conversions, the direct read of a foreign key, grain
-  recovery hints and discovery), so discovery follows a pin as compilation does.
-- `PATH_ALTERNATES_UNPINNED` now warns only when every route crosses a one-to-many hop and no pin
-  covers the pair, whatever the weights say; a functional route beside longer one-to-many routes
-  answers without it. See [the route rule](docs/PACKAGE_AUTHORING.md#the-route-rule).
-- `jaffle_shop` and the comparison package pin the routes they already took (8 and 7 pairs), so
-  their answers are unchanged. The package writer now writes `graph.path_preferences`, and an
-  Architect removal drops the pins that name what it removes.
+- The engine never chooses a join route by hop count. Which of two routes to an entity a question
+  means is a business definition: the package records it once as a `graph.path_preferences` row,
+  and every query uses it. For each start and target entity, a row wins; otherwise the only route
+  is used; otherwise, when exactly one route is the start entity's own direct key (a many-to-one or
+  one-to-one relationship from it), that key is used and the response says so with
+  `PATH_ALTERNATES_UNPINNED`, naming every other route and the row that would record each.
+  Anything else is refused with `AMBIGUOUS_PATH`, whatever the routes' lengths: two direct keys,
+  routes with no direct key, and routes that all fan out, where the shortest used to win. The
+  refusal is a clarification: `details.reason` is `route_decision_required`, `details.meanings`
+  reads each route as a chain of labels ("Account → Owner → Home region"), and `details.pins` holds
+  the row that records each (rows accept entity ids as well as keys and names). One place resolves
+  every route (grouping, filters, a measure's own filter, metric predicates, time roles,
+  conversions, the direct read of a foreign key, grain recovery hints and discovery), and it
+  remembers a refusal as it remembers a route. So adding a route never changes an answer
+  silently: a pair answered by its own key keeps the answer and gains the warning, and any other
+  pair is refused until a row records it. See
+  [the route rule](docs/PACKAGE_AUTHORING.md#the-route-rule).
+- A calendar dimension reached only through other facts' rows (orders grouped by a calendar month
+  through store inventory snapshots) is now refused with `AMBIGUOUS_PATH` instead of
+  `MIXED_GRAIN_INVALID`; its recovery hint still points at `time.grain`.
+- `jaffle_shop` records four routes (an item's customer and store through its order, and the stores
+  and products a customer ordered) and the comparison package two (an item's customer and store
+  through its order); an order's, a lifecycle event's or a session's own customer and store keys
+  need no row, and their answers now carry the warning. Every answer is unchanged. The package
+  writer writes `graph.path_preferences`, and an Architect removal drops, and lists, the rows that
+  name an entity or relationship it removes.
+- Packages imported or converted from other tools may need `graph.path_preferences` rows: a
+  MetricFlow project with denormalized foreign keys, or a package exported to Ossie and back (the
+  export doesn't carry the rows), can have pairs that were answered by their shortest route and
+  are now refused until a row records the route.

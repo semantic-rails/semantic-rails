@@ -40,8 +40,9 @@ offending keys are returned under `details.unsupported_keys`, so typos
 surface as structured errors instead of silently no-op'ing. There is
 **no `having` field** — use `metric_filters` (see below). There is no
 `path_policy` field either: a query can't choose a join route. The package
-pins one with `graph.path_preferences`, and a query whose routes can answer
-differently is refused with `AMBIGUOUS_PATH` (see
+records one with `graph.path_preferences`; without a row, a query whose routes
+can answer differently uses the start entity's one direct key (and says so
+with `PATH_ALTERNATES_UNPINNED`) or is refused with `AMBIGUOUS_PATH` (see
 [the route rule](PACKAGE_AUTHORING.md#the-route-rule)). The only
 top-level extras accepted by the runtime and schema are
 underscore-prefixed annotations such as `_note`, which are ignored before
