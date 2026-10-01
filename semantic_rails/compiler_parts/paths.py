@@ -398,18 +398,23 @@ def _join_on_for_relationship(
     return condition, right_table, next_entity
 
 
-def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
-    """True when the hop reaches at most one row for each current row (N:1, 1:1) and the
-    warehouse's outer join reads NULL, not a type default, for an unmatched row (not ClickHouse).
-    """
-    if not dialect_for_warehouse(config.package.warehouse).outer_lookup_joins:
-        return False
+def _reaches_at_most_one(rel: RelationshipConfig, current_entity: str) -> bool:
+    """True when the hop reaches at most one row for each current row (N:1, 1:1)."""
     if ":" not in rel.cardinality:
         return False
     near, far = [part.strip() for part in rel.cardinality.upper().split(":", 1)]
     if current_entity != rel.source_entity:
         near, far = far, near
     return far == "1" and near in ("1", "N")
+
+
+def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
+    """True when the hop reaches at most one row for each current row (N:1, 1:1) and the
+    warehouse's outer join reads NULL, not a type default, for an unmatched row (not ClickHouse).
+    """
+    if not dialect_for_warehouse(config.package.warehouse).outer_lookup_joins:
+        return False
+    return _reaches_at_most_one(rel, current_entity)
 
 
 def _joins_for_paths(

@@ -1609,6 +1609,12 @@ def _paths_have_temporal_validity(
     return False
 
 
+def _expression_reads_joined_entity(path_selections: Iterable[PathSelection]) -> bool:
+    """Whether the measure's expression reads a joined entity, so it can't aggregate before
+    the join (an authored cross-entity expression, or an aggregate_if's condition)."""
+    return any(row.purpose in {"measure_expr", "aggregate_if"} for row in path_selections)
+
+
 def _paths_are_single_hop_safe(
     path_selections: Iterable[PathSelection], config: PackageConfig
 ) -> bool:
@@ -1977,6 +1983,8 @@ def _source_rollup_leaf_select(
         return None
     if _paths_are_single_hop_safe(measure_plan.path_selections, config):
         return None
+    if _expression_reads_joined_entity(measure_plan.path_selections):
+        return None
     if time_alias and not time_source_local:
         return None
     if _paths_have_temporal_validity(measure_plan.path_selections, config):
@@ -2084,9 +2092,10 @@ def _lookup_selections(
     """The path selections whose N:1 and 1:1 hops keep the rows they find no match for.
 
     Only the request's own measure leaf, and only the dimensions the query groups or filters
-    by. Every other read of a lookup keeps its INNER join: a time role, a measure or metric
-    filter, a metric predicate and its context, a nested query, a conversion, an entity-set
-    ratio, and a dimension some rollup of the measure's model holds pre-joined.
+    by and the entities an aggregate_if's condition reads. Every other read of a lookup keeps
+    its INNER join: a time role, a measure or metric filter, a metric predicate and its
+    context, a nested query, a conversion, an entity-set ratio, and a dimension some rollup of
+    the measure's model holds pre-joined.
     """
     from ..compiler import _all_metric_predicates
 
@@ -2097,7 +2106,8 @@ def _lookup_selections(
     return frozenset(
         (selection.target_entity, selection.purpose)
         for selection in first.path_selections
-        if selection.purpose in {"group_by", "where"} and selection.target_entity not in prejoined
+        if selection.purpose in {"group_by", "where", "aggregate_if"}
+        and selection.target_entity not in prejoined
     )
 
 
@@ -2902,6 +2912,8 @@ def _foldable_leaf_signature(
         return None
     if any(row.analysis.get("status") != "ok" for row in measure_plan.path_selections):
         return None  # a one-to-many hop: the leaf rewrites (entity_in_terms_of, fanout_dedup)
+    if any(row.purpose == "aggregate_if" for row in measure_plan.path_selections):
+        return None  # a folded scan joins as its first leaf does; this leaf's joins are its own
     if measure_plan.path_selections and not _paths_are_single_hop_safe(
         measure_plan.path_selections, config
     ):
@@ -2960,6 +2972,8 @@ def _source_rollup_strategy(
         return {"strategy": "direct_aggregate", "reason": "metric_predicate_scope"}
     if _paths_are_single_hop_safe(measure_plan.path_selections, config):
         return {"strategy": "direct_aggregate", "reason": "single_hop_safe_join"}
+    if _expression_reads_joined_entity(measure_plan.path_selections):
+        return {"strategy": "direct_aggregate", "reason": "measure_expression_reads_joined_entity"}
     if _paths_have_temporal_validity(measure_plan.path_selections, config):
         return {"strategy": "direct_aggregate", "reason": "temporal_validity_path"}
     if not _filter_dimensions_are_source_local(

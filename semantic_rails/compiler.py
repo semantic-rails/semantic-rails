@@ -41,6 +41,9 @@ from .compiler_parts.bind import (
     _resolve_filter_dimension,
     _scoped_aggregate_filter_spec,
     _scoped_predicate_expr_payload,
+    check_conditional_aggregate_path,
+    conditional_aggregate_route_refusal,
+    is_conditional_aggregate,
     lift_conditional_aggregates,
 )
 from .compiler_parts.dependencies import (
@@ -2270,16 +2273,26 @@ def _leaf_path_selections(
 
     selections: list[PathSelection] = []
     required_entities: set[str] = set(_measure_required_entities(measure, config))
+    # An aggregate_if's condition joins as a where filter does (a lookup), on the route that
+    # filter takes; every leaf that plans it refuses that route unless each hop is many-to-one.
+    conditional = is_conditional_aggregate(measure)
     for entity_id in sorted(required_entities):
-        selection = _path_selection(
-            config=config,
-            query=query,
-            start_entity=measure.entity,
-            target_entity=entity_id,
-            preference=query.path_policy.preference,
-            purpose="measure_expr",
-        )
+        try:
+            selection = _path_selection(
+                config=config,
+                query=query,
+                start_entity=measure.entity,
+                target_entity=entity_id,
+                preference=query.path_policy.preference,
+                purpose="aggregate_if" if conditional else "measure_expr",
+            )
+        except SemanticLayerError as exc:
+            if not conditional or exc.code not in {"AMBIGUOUS_PATH", "PATH_NOT_FOUND"}:
+                raise
+            raise conditional_aggregate_route_refusal(measure, entity_id, exc) from exc
         if selection is not None:
+            if conditional:
+                check_conditional_aggregate_path(measure, entity_id, selection.chosen_path, config)
             selections.append(selection)
     for dim_id in query.group_by:
         dim = dimensions[dim_id]
