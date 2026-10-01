@@ -273,17 +273,18 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `query_window`, or `rolling_window_in_period`.
 
 `input` may combine measures, metrics and ratios with numeric literals in `arithmetic` that
-adds, subtracts, multiplies by a constant or divides by a constant, such as `rate * 100`,
-`orders - 3` or `revenue / 1000`; a literal never changes the predicate's entity grain, and an
-entity with no rows reads the arithmetic's value (`orders - 3` reads `-3`, a division by `0`
-reads `NULL`). Any other input with a literal is refused with `PREDICATE_NOT_SUPPORTED`,
-because what an entity with no rows reads there is not known: a literal in a `ratio` or
-`comparison`, a text literal, a product of two non-constant operands such as
-`(orders + 1) * (orders + 1)`, a division that holds a literal but not a constant divisor,
-such as `5 / orders` or `5 / (orders - 2)`, or an operand of any other kind. An input made only
-of literals is
-refused with `PREDICATE_INPUT_REQUIRED`, and one that combines two root entities with
-`PREDICATE_GRAIN_UNSAFE`.
+adds, subtracts or multiplies by a constant, such as `rate * 100`, `100 * rate` or
+`orders - 3`. A literal never changes the predicate's entity grain, and an entity with no rows
+reads exactly what the arithmetic gives there in the SQL: `orders - 3` reads `-3`, and
+`orders - 0.1 - 0.2` reads `-0.3`, never a float. A literal with a fraction runs only on
+DuckDB, MotherDuck, DuckLake and Postgres, which read it as an exact decimal, over count
+measures, and with a threshold written as a plain decimal. Any other input with a literal is
+refused with `PREDICATE_NOT_SUPPORTED`, as it was before literal operands ran: a division with a
+literal, such as `revenue / 1000` or `5 / orders`, a call, a literal in a `ratio` or
+`comparison`, a text literal, a literal written with an exponent, a product of two non-constant
+operands such as `(orders + 1) * (orders + 1)`, or a literal with a fraction over a sum or on
+another warehouse. An input made only of literals is refused with `PREDICATE_INPUT_REQUIRED`,
+and one that combines two root entities with `PREDICATE_GRAIN_UNSAFE`.
 
 ## WhereFilter
 
