@@ -103,8 +103,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.924,
-      "compile_ms": 0.165,
+      "cache_lookup_ms": 2.874,
+      "compile_ms": 0.673,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -1471,6 +1471,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1542,6 +1543,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1625,6 +1627,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "DESC",
@@ -2463,6 +2466,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2534,6 +2538,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2617,6 +2622,7 @@
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "DESC",

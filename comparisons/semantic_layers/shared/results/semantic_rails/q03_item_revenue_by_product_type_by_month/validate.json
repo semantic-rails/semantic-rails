@@ -23,8 +23,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.49,
-      "compile_ms": 0.171,
+      "cache_lookup_ms": 1.613,
+      "compile_ms": 0.673,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -896,6 +896,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -967,6 +968,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1050,6 +1052,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "DESC",
@@ -1500,7 +1503,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 2.421,
+  "timing_ms": 7.84,
   "trace": {
     "fallback": {
       "reason": "",

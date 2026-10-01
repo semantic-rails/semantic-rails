@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.942,
-      "compile_ms": 0.231,
+      "cache_lookup_ms": 2.744,
+      "compile_ms": 0.978,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -717,6 +717,7 @@
                         "having": [],
                         "joins": [],
                         "limit": null,
+                        "observation_scan": false,
                         "order_by": [],
                         "qualify": [],
                         "select": [
@@ -767,6 +768,7 @@
                         "having": [],
                         "joins": [],
                         "limit": null,
+                        "observation_scan": false,
                         "order_by": [],
                         "qualify": [],
                         "select": [
@@ -841,6 +843,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -879,6 +882,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -960,6 +964,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1016,6 +1021,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1090,6 +1096,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -1492,6 +1499,7 @@
                       "having": [],
                       "joins": [],
                       "limit": null,
+                      "observation_scan": false,
                       "order_by": [],
                       "qualify": [],
                       "select": [
@@ -1542,6 +1550,7 @@
                       "having": [],
                       "joins": [],
                       "limit": null,
+                      "observation_scan": false,
                       "order_by": [],
                       "qualify": [],
                       "select": [
@@ -1616,6 +1625,7 @@
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -1654,6 +1664,7 @@
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -1735,6 +1746,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -1791,6 +1803,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -1865,6 +1878,7 @@
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "ASC",

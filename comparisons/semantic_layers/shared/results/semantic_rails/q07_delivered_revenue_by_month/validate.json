@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.327,
-      "compile_ms": 0.137,
+      "cache_lookup_ms": 1.044,
+      "compile_ms": 0.513,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -535,6 +535,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -597,6 +598,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -671,6 +673,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -981,7 +984,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 1.835,
+  "timing_ms": 14.614,
   "trace": {
     "fallback": {
       "reason": "",

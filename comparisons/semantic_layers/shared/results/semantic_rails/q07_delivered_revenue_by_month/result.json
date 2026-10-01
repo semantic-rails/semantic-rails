@@ -20,8 +20,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.49,
-      "compile_ms": 0.137,
+      "cache_lookup_ms": 1.862,
+      "compile_ms": 0.513,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -534,6 +534,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -596,6 +597,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -670,6 +672,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -989,51 +992,51 @@
   "row_count": 12,
   "rows": [
     {
-      "delivered_revenue": 18053.279999999995,
+      "delivered_revenue": 18053.280000000002,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-09-01 00:00:00"
     },
     {
-      "delivered_revenue": 21923.95000000005,
+      "delivered_revenue": 21923.95000000001,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-10-01 00:00:00"
     },
     {
-      "delivered_revenue": 27916.81999999999,
+      "delivered_revenue": 27916.820000000072,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-11-01 00:00:00"
     },
     {
-      "delivered_revenue": 35677.600000000006,
+      "delivered_revenue": 35677.60000000001,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-12-01 00:00:00"
     },
     {
-      "delivered_revenue": 45017.94999999985,
+      "delivered_revenue": 45017.94999999989,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01 00:00:00"
     },
     {
-      "delivered_revenue": 43358.119999999784,
+      "delivered_revenue": 43358.11999999982,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01 00:00:00"
     },
     {
-      "delivered_revenue": 73950.32000000034,
+      "delivered_revenue": 73950.32000000056,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-03-01 00:00:00"
     },
     {
-      "delivered_revenue": 83316.99000000164,
+      "delivered_revenue": 83316.99000000159,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-04-01 00:00:00"
     },
     {
-      "delivered_revenue": 96070.35000000306,
+      "delivered_revenue": 96070.35000000335,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01 00:00:00"
     },
     {
-      "delivered_revenue": 98378.87000000282,
+      "delivered_revenue": 98378.87000000302,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01 00:00:00"
     },
     {
-      "delivered_revenue": 94857.19000000272,
+      "delivered_revenue": 94857.19000000246,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-07-01 00:00:00"
     },
     {
-      "delivered_revenue": 107371.59000000401,
+      "delivered_revenue": 107371.59000000369,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01 00:00:00"
     }
   ],
@@ -1073,6 +1076,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -1135,6 +1139,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -1209,6 +1214,7 @@
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "ASC",

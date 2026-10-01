@@ -100,8 +100,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.005,
-      "compile_ms": 0.168,
+      "cache_lookup_ms": 2.81,
+      "compile_ms": 0.687,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -1756,6 +1756,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1821,6 +1822,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1943,6 +1945,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "DESC",
@@ -2903,11 +2906,11 @@
   "row_count": 2,
   "rows": [
     {
-      "aov_usd": 12.739104407255347,
+      "aov_usd": 12.73910440725512,
       "dimension.jaffle_store_name": "Philadelphia"
     },
     {
-      "aov_usd": 12.085946890286598,
+      "aov_usd": 12.085946890286616,
       "dimension.jaffle_store_name": "Brooklyn"
     }
   ],
@@ -2958,6 +2961,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -3023,6 +3027,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -3145,6 +3150,7 @@
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "DESC",

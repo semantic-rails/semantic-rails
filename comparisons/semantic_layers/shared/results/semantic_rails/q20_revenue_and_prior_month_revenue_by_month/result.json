@@ -38,8 +38,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.118,
-      "compile_ms": 0.251,
+      "cache_lookup_ms": 4.495,
+      "compile_ms": 1.536,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -403,6 +403,15 @@
             "start": null,
             "temporal_role": "temporal_role.jaffle_order_time"
           }
+        },
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": false,
+          "pushed_to_scan": false,
+          "relation": "comparison_orders",
+          "scan_id": "scope_scan_2",
+          "time_filter": {}
         }
       ],
       "estimated_scan_relations": [
@@ -420,6 +429,19 @@
           ],
           "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        },
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": false,
+          "has_time_filter": false,
+          "large_relation_hint": false,
+          "measures": [],
+          "relation": "comparison_orders",
+          "scan_id": "scope_scan_2",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
           "time_filter_has_end": false,
@@ -563,7 +585,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM series_base AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  LAG(base.m1, 1) OVER (ORDER BY base.t ASC) AS prior_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1\nFROM series_base AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  LAG(base.m1, 1) OVER (ORDER BY base.t ASC) AS prior_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -679,6 +701,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -738,6 +761,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -776,6 +800,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -866,6 +891,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -898,6 +924,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -964,6 +991,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1031,6 +1059,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1133,6 +1162,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1209,6 +1239,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1235,6 +1266,177 @@
           }
         },
         {
+          "name": "coverage_1",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "comparison_orders"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "observation_scan": true,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "loaded_from",
+                "expression": {
+                  "args": [
+                    {
+                      "args": [
+                        {
+                          "value": "month"
+                        },
+                        {
+                          "expr": {
+                            "parts": [
+                              "comparison_orders",
+                              "ordered_at"
+                            ]
+                          },
+                          "type_name": "TIMESTAMP"
+                        }
+                      ],
+                      "distinct": false,
+                      "name": "DATE_TRUNC"
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "MIN"
+                }
+              },
+              {
+                "alias": "loaded_to",
+                "expression": {
+                  "args": [
+                    {
+                      "else_expr": null,
+                      "whens": [
+                        {
+                          "condition": {
+                            "left": {
+                              "else_expr": {
+                                "args": [
+                                  {
+                                    "value": "UTC"
+                                  },
+                                  {
+                                    "args": [
+                                      {
+                                        "value": "UTC"
+                                      },
+                                      {
+                                        "expr": {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        },
+                                        "type_name": "TIMESTAMP"
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "TIMEZONE"
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "TIMEZONE"
+                              },
+                              "whens": [
+                                {
+                                  "condition": {
+                                    "left": {
+                                      "expr": {
+                                        "args": [
+                                          {
+                                            "parts": [
+                                              "comparison_orders",
+                                              "ordered_at"
+                                            ]
+                                          }
+                                        ],
+                                        "distinct": false,
+                                        "name": "PG_TYPEOF"
+                                      },
+                                      "type_name": "VARCHAR"
+                                    },
+                                    "op": "=",
+                                    "right": {
+                                      "value": "timestamp with time zone"
+                                    }
+                                  },
+                                  "result": {
+                                    "args": [
+                                      {
+                                        "value": "UTC"
+                                      },
+                                      {
+                                        "expr": {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        },
+                                        "type_name": "TIMESTAMPTZ"
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "TIMEZONE"
+                                  }
+                                }
+                              ]
+                            },
+                            "op": "<=",
+                            "right": {
+                              "args": [
+                                {
+                                  "value": "UTC"
+                                },
+                                {
+                                  "args": [],
+                                  "distinct": false,
+                                  "name": "NOW"
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "TIMEZONE"
+                            }
+                          },
+                          "result": {
+                            "args": [
+                              {
+                                "value": "month"
+                              },
+                              {
+                                "expr": {
+                                  "parts": [
+                                    "comparison_orders",
+                                    "ordered_at"
+                                  ]
+                                },
+                                "type_name": "TIMESTAMP"
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "DATE_TRUNC"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "MAX"
+                }
+              }
+            ],
+            "where": []
+          }
+        },
+        {
           "name": "guarded_base",
           "query": {
             "ctes": [],
@@ -1245,8 +1447,18 @@
             },
             "group_by": [],
             "having": [],
-            "joins": [],
+            "joins": [
+              {
+                "join_type": "CROSS",
+                "on": null,
+                "table": {
+                  "alias": "",
+                  "name": "coverage_1"
+                }
+              }
+            ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1262,49 +1474,85 @@
               {
                 "alias": "m1",
                 "expression": {
-                  "else_expr": null,
-                  "whens": [
+                  "args": [
                     {
-                      "condition": {
-                        "left": {
-                          "frame": "",
-                          "function": {
-                            "args": [
-                              {
-                                "parts": [
-                                  "base",
-                                  "m1"
-                                ]
+                      "parts": [
+                        "base",
+                        "m1"
+                      ]
+                    },
+                    {
+                      "else_expr": null,
+                      "whens": [
+                        {
+                          "condition": {
+                            "left": {
+                              "left": {
+                                "frame": "",
+                                "function": {
+                                  "args": [
+                                    {
+                                      "parts": [
+                                        "base",
+                                        "m1"
+                                      ]
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "COUNT"
+                                },
+                                "order_by": [],
+                                "partition_by": []
+                              },
+                              "op": ">",
+                              "right": {
+                                "value": 0
                               }
-                            ],
-                            "distinct": false,
-                            "name": "COUNT"
+                            },
+                            "op": "AND",
+                            "right": {
+                              "left": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "t"
+                                  ]
+                                },
+                                "op": ">=",
+                                "right": {
+                                  "parts": [
+                                    "coverage_1",
+                                    "loaded_from"
+                                  ]
+                                }
+                              },
+                              "op": "AND",
+                              "right": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "t"
+                                  ]
+                                },
+                                "op": "<=",
+                                "right": {
+                                  "parts": [
+                                    "coverage_1",
+                                    "loaded_to"
+                                  ]
+                                }
+                              }
+                            }
                           },
-                          "order_by": [],
-                          "partition_by": []
-                        },
-                        "op": ">",
-                        "right": {
-                          "value": 0
-                        }
-                      },
-                      "result": {
-                        "args": [
-                          {
-                            "parts": [
-                              "base",
-                              "m1"
-                            ]
-                          },
-                          {
+                          "result": {
                             "value": 0
                           }
-                        ],
-                        "distinct": false,
-                        "name": "COALESCE"
-                      }
+                        }
+                      ]
                     }
-                  ]
+                  ],
+                  "distinct": false,
+                  "name": "COALESCE"
                 }
               }
             ],
@@ -1321,6 +1569,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -1783,68 +2032,68 @@
     "version": 1
   },
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM series_base AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  LAG(base.m1, 1) OVER (ORDER BY base.t ASC) AS prior_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1\nFROM series_base AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  LAG(base.m1, 1) OVER (ORDER BY base.t ASC) AS prior_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
   "request_context": {},
   "row_count": 12,
   "rows": [
     {
       "prior_month_revenue_usd": null,
-      "revenue_usd": 18053.27999999999,
+      "revenue_usd": 18053.280000000002,
       "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 18053.27999999999,
-      "revenue_usd": 21923.95000000005,
+      "prior_month_revenue_usd": 18053.280000000002,
+      "revenue_usd": 21923.95000000001,
       "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 21923.95000000005,
-      "revenue_usd": 27916.81999999999,
+      "prior_month_revenue_usd": 21923.95000000001,
+      "revenue_usd": 27916.820000000072,
       "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 27916.81999999999,
-      "revenue_usd": 35677.600000000006,
+      "prior_month_revenue_usd": 27916.820000000072,
+      "revenue_usd": 35677.60000000001,
       "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 35677.600000000006,
-      "revenue_usd": 45017.94999999985,
+      "prior_month_revenue_usd": 35677.60000000001,
+      "revenue_usd": 45017.94999999989,
       "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 45017.94999999985,
-      "revenue_usd": 43358.119999999784,
+      "prior_month_revenue_usd": 45017.94999999989,
+      "revenue_usd": 43358.11999999982,
       "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 43358.119999999784,
-      "revenue_usd": 73950.32000000034,
+      "prior_month_revenue_usd": 43358.11999999982,
+      "revenue_usd": 73950.32000000056,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 73950.32000000034,
-      "revenue_usd": 83316.99000000164,
+      "prior_month_revenue_usd": 73950.32000000056,
+      "revenue_usd": 83316.99000000159,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 83316.99000000164,
-      "revenue_usd": 96070.35000000306,
+      "prior_month_revenue_usd": 83316.99000000159,
+      "revenue_usd": 96070.35000000335,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 96070.35000000306,
-      "revenue_usd": 98378.87000000282,
+      "prior_month_revenue_usd": 96070.35000000335,
+      "revenue_usd": 98378.87000000302,
       "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 98378.87000000282,
-      "revenue_usd": 94857.19000000272,
+      "prior_month_revenue_usd": 98378.87000000302,
+      "revenue_usd": 94857.19000000246,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
-      "prior_month_revenue_usd": 94857.19000000272,
-      "revenue_usd": 107371.59000000401,
+      "prior_month_revenue_usd": 94857.19000000246,
+      "revenue_usd": 107371.59000000369,
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     }
   ],
@@ -1888,6 +2137,7 @@
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -1947,6 +2197,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -1985,6 +2236,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2075,6 +2327,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2107,6 +2360,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2173,6 +2427,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2240,6 +2495,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2342,6 +2598,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2418,6 +2675,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2444,6 +2702,177 @@
         }
       },
       {
+        "name": "coverage_1",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "",
+            "name": "comparison_orders"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [],
+          "limit": null,
+          "observation_scan": true,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "loaded_from",
+              "expression": {
+                "args": [
+                  {
+                    "args": [
+                      {
+                        "value": "month"
+                      },
+                      {
+                        "expr": {
+                          "parts": [
+                            "comparison_orders",
+                            "ordered_at"
+                          ]
+                        },
+                        "type_name": "TIMESTAMP"
+                      }
+                    ],
+                    "distinct": false,
+                    "name": "DATE_TRUNC"
+                  }
+                ],
+                "distinct": false,
+                "name": "MIN"
+              }
+            },
+            {
+              "alias": "loaded_to",
+              "expression": {
+                "args": [
+                  {
+                    "else_expr": null,
+                    "whens": [
+                      {
+                        "condition": {
+                          "left": {
+                            "else_expr": {
+                              "args": [
+                                {
+                                  "value": "UTC"
+                                },
+                                {
+                                  "args": [
+                                    {
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMP"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "TIMEZONE"
+                            },
+                            "whens": [
+                              {
+                                "condition": {
+                                  "left": {
+                                    "expr": {
+                                      "args": [
+                                        {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        }
+                                      ],
+                                      "distinct": false,
+                                      "name": "PG_TYPEOF"
+                                    },
+                                    "type_name": "VARCHAR"
+                                  },
+                                  "op": "=",
+                                  "right": {
+                                    "value": "timestamp with time zone"
+                                  }
+                                },
+                                "result": {
+                                  "args": [
+                                    {
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMPTZ"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              }
+                            ]
+                          },
+                          "op": "<=",
+                          "right": {
+                            "args": [
+                              {
+                                "value": "UTC"
+                              },
+                              {
+                                "args": [],
+                                "distinct": false,
+                                "name": "NOW"
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "TIMEZONE"
+                          }
+                        },
+                        "result": {
+                          "args": [
+                            {
+                              "value": "month"
+                            },
+                            {
+                              "expr": {
+                                "parts": [
+                                  "comparison_orders",
+                                  "ordered_at"
+                                ]
+                              },
+                              "type_name": "TIMESTAMP"
+                            }
+                          ],
+                          "distinct": false,
+                          "name": "DATE_TRUNC"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "distinct": false,
+                "name": "MAX"
+              }
+            }
+          ],
+          "where": []
+        }
+      },
+      {
         "name": "guarded_base",
         "query": {
           "ctes": [],
@@ -2454,8 +2883,18 @@
           },
           "group_by": [],
           "having": [],
-          "joins": [],
+          "joins": [
+            {
+              "join_type": "CROSS",
+              "on": null,
+              "table": {
+                "alias": "",
+                "name": "coverage_1"
+              }
+            }
+          ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2471,49 +2910,85 @@
             {
               "alias": "m1",
               "expression": {
-                "else_expr": null,
-                "whens": [
+                "args": [
                   {
-                    "condition": {
-                      "left": {
-                        "frame": "",
-                        "function": {
-                          "args": [
-                            {
-                              "parts": [
-                                "base",
-                                "m1"
-                              ]
+                    "parts": [
+                      "base",
+                      "m1"
+                    ]
+                  },
+                  {
+                    "else_expr": null,
+                    "whens": [
+                      {
+                        "condition": {
+                          "left": {
+                            "left": {
+                              "frame": "",
+                              "function": {
+                                "args": [
+                                  {
+                                    "parts": [
+                                      "base",
+                                      "m1"
+                                    ]
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "COUNT"
+                              },
+                              "order_by": [],
+                              "partition_by": []
+                            },
+                            "op": ">",
+                            "right": {
+                              "value": 0
                             }
-                          ],
-                          "distinct": false,
-                          "name": "COUNT"
+                          },
+                          "op": "AND",
+                          "right": {
+                            "left": {
+                              "left": {
+                                "parts": [
+                                  "base",
+                                  "t"
+                                ]
+                              },
+                              "op": ">=",
+                              "right": {
+                                "parts": [
+                                  "coverage_1",
+                                  "loaded_from"
+                                ]
+                              }
+                            },
+                            "op": "AND",
+                            "right": {
+                              "left": {
+                                "parts": [
+                                  "base",
+                                  "t"
+                                ]
+                              },
+                              "op": "<=",
+                              "right": {
+                                "parts": [
+                                  "coverage_1",
+                                  "loaded_to"
+                                ]
+                              }
+                            }
+                          }
                         },
-                        "order_by": [],
-                        "partition_by": []
-                      },
-                      "op": ">",
-                      "right": {
-                        "value": 0
-                      }
-                    },
-                    "result": {
-                      "args": [
-                        {
-                          "parts": [
-                            "base",
-                            "m1"
-                          ]
-                        },
-                        {
+                        "result": {
                           "value": 0
                         }
-                      ],
-                      "distinct": false,
-                      "name": "COALESCE"
-                    }
+                      }
+                    ]
                   }
-                ]
+                ],
+                "distinct": false,
+                "name": "COALESCE"
               }
             }
           ],
@@ -2530,6 +3005,7 @@
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "ASC",

@@ -30,13 +30,20 @@ SELECT
 FROM leaf_1 AS left_side
 FULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t
 ),
+coverage_1 AS (
+SELECT
+  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,
+  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to
+FROM comparison_orders
+),
 guarded_base AS (
 SELECT
   base.g1 AS g1,
   base.t AS t,
-  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1,
-  CASE WHEN COUNT(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2
+  COALESCE(NULLIF(base.m1, 0), CASE WHEN MAX(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,
+  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 THEN 0 END) AS m2
 FROM combined_2 AS base
+CROSS JOIN coverage_1
 )
 SELECT
   base.g1 AS "dimension.jaffle_store_name",

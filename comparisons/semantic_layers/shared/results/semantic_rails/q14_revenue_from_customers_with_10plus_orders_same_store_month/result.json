@@ -100,8 +100,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.361,
-      "compile_ms": 0.293,
+      "cache_lookup_ms": 4.34,
+      "compile_ms": 1.279,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -1613,6 +1613,7 @@
                         "having": [],
                         "joins": [],
                         "limit": null,
+                        "observation_scan": false,
                         "order_by": [],
                         "qualify": [],
                         "select": [
@@ -1687,6 +1688,7 @@
                         "having": [],
                         "joins": [],
                         "limit": null,
+                        "observation_scan": false,
                         "order_by": [],
                         "qualify": [],
                         "select": [
@@ -1779,6 +1781,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -1835,6 +1838,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -2010,6 +2014,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -2081,6 +2086,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -2164,6 +2170,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -2944,67 +2951,67 @@
   "rows": [
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 6080.0599999999895,
+      "qualifying_revenue_usd": 6080.059999999976,
       "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 10002.659999999963,
+      "qualifying_revenue_usd": 10002.659999999982,
       "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 14757.66999999995,
+      "qualifying_revenue_usd": 14757.669999999986,
       "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 19451.920000000002,
+      "qualifying_revenue_usd": 19451.919999999947,
       "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 24923.48000000008,
+      "qualifying_revenue_usd": 24923.479999999992,
       "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 20033.92000000004,
+      "qualifying_revenue_usd": 20033.919999999966,
       "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 7047.029999999904,
+      "qualifying_revenue_usd": 7047.029999999905,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 27524.64000000003,
+      "qualifying_revenue_usd": 27524.639999999967,
       "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 19418.830000000147,
+      "qualifying_revenue_usd": 19418.830000000133,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 22774.049999999974,
+      "qualifying_revenue_usd": 22774.050000000025,
       "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 24180.960000000297,
+      "qualifying_revenue_usd": 24180.960000000345,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 29219.309999999983,
+      "qualifying_revenue_usd": 29219.31000000002,
       "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 19267.010000000206,
+      "qualifying_revenue_usd": 19267.010000000188,
       "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
     },
     {
@@ -3014,22 +3021,22 @@
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 22613.71000000031,
+      "qualifying_revenue_usd": 22613.710000000334,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 20318.68000000001,
+      "qualifying_revenue_usd": 20318.679999999993,
       "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "qualifying_revenue_usd": 35339.08000000041,
+      "qualifying_revenue_usd": 35339.08000000053,
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "qualifying_revenue_usd": 24424.960000000065,
+      "qualifying_revenue_usd": 24424.960000000032,
       "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
     }
   ],
@@ -3089,6 +3096,7 @@
                       "having": [],
                       "joins": [],
                       "limit": null,
+                      "observation_scan": false,
                       "order_by": [],
                       "qualify": [],
                       "select": [
@@ -3163,6 +3171,7 @@
                       "having": [],
                       "joins": [],
                       "limit": null,
+                      "observation_scan": false,
                       "order_by": [],
                       "qualify": [],
                       "select": [
@@ -3255,6 +3264,7 @@
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -3311,6 +3321,7 @@
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -3486,6 +3497,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -3557,6 +3569,7 @@
           "having": [],
           "joins": [],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -3640,6 +3653,7 @@
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "ASC",

@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.528,
-      "compile_ms": 0.236,
+      "cache_lookup_ms": 1.961,
+      "compile_ms": 1.092,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -706,6 +706,7 @@
                               "having": [],
                               "joins": [],
                               "limit": null,
+                              "observation_scan": false,
                               "order_by": [],
                               "qualify": [],
                               "select": [
@@ -781,6 +782,7 @@
                               "having": [],
                               "joins": [],
                               "limit": null,
+                              "observation_scan": false,
                               "order_by": [],
                               "qualify": [],
                               "select": [
@@ -897,6 +899,7 @@
                           }
                         ],
                         "limit": null,
+                        "observation_scan": false,
                         "order_by": [],
                         "qualify": [],
                         "select": [
@@ -938,6 +941,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -976,6 +980,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -1057,6 +1062,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1113,6 +1119,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1187,6 +1194,7 @@
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -1546,7 +1554,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 3.235,
+  "timing_ms": 11.64,
   "trace": {
     "fallback": {
       "reason": "",
