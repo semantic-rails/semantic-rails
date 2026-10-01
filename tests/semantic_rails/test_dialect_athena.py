@@ -181,7 +181,8 @@ class _FakeConnection:
         self._log = log
         self._fail = fail
 
-    def cursor(self) -> _FakeCursor:
+    def cursor(self, **kwargs) -> _FakeCursor:
+        self._log["cursor_kwargs"] = kwargs
         return _FakeCursor(self._log, self._fail)
 
     def close(self) -> None:
@@ -199,6 +200,17 @@ def _install_fake_pyathena(
 
     module.connect = _connect
     monkeypatch.setitem(sys.modules, "pyathena", module)
+    botocore = types.ModuleType("botocore")
+    config = types.ModuleType("botocore.config")
+
+    class FakeConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.connect_timeout = kwargs["connect_timeout"]
+            self.read_timeout = kwargs["read_timeout"]
+
+    config.Config = FakeConfig
+    monkeypatch.setitem(sys.modules, "botocore", botocore)
+    monkeypatch.setitem(sys.modules, "botocore.config", config)
 
 
 def test_athena_adapter_normalizes_options_and_disables_statement_timeout():
@@ -268,8 +280,12 @@ def test_athena_adapter_requires_region_and_staging_dir(monkeypatch: pytest.Monk
     assert exc.value.details["missing_options"] == ["region", "s3_staging_dir"]
 
 
+@pytest.mark.parametrize(
+    ("timeouts", "connect_timeout", "read_timeout"),
+    [({}, 10, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45)],
+)
 def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout
 ):
     log: dict[str, Any] = {}
     _install_fake_pyathena(monkeypatch, log)
@@ -281,6 +297,7 @@ def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
             "s3_staging_dir_env": "SR_TEST_ATHENA_STAGING",
             "database": "sr_jaffle",
             "workgroup": "primary",
+            **timeouts,
         }
     )
 
@@ -289,7 +306,11 @@ def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
 
     assert rows == [{"ONE": 1, "TWO": "x"}]
     assert log["sql"] == "select 1"
-    assert log["connect_kwargs"] == {
+    assert {
+        key: value
+        for key, value in log["connect_kwargs"].items()
+        if key not in {"config", "on_poll"}
+    } == {
         "s3_staging_dir": "s3://sr-bucket/athena-results/",
         "region_name": "eu-central-1",
         # Namespace defaults from connection options so unqualified
@@ -297,8 +318,90 @@ def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
         "schema_name": "sr_jaffle",
         "work_group": "primary",
     }
+    assert log["connect_kwargs"]["config"].connect_timeout == connect_timeout
+    assert log["connect_kwargs"]["config"].read_timeout == read_timeout
+    assert "on_poll" not in log["connect_kwargs"]
+    assert callable(log["cursor_kwargs"]["on_poll"])
     assert log["cursor_closed"] is True
     assert log["connection_closed"] is True
+
+
+@pytest.mark.parametrize("timeout_ms, deadline", [(None, 3), (120000, 125)])
+def test_athena_poll_deadline_cancels_before_abandoning_query(monkeypatch, timeout_ms, deadline):
+    now = [0.0]
+    monkeypatch.setattr("semantic_rails.db_parts.athena.time.monotonic", lambda: now[0])
+    adapter = AthenaAdapter({"read_timeout_seconds": "3"})
+    log = []
+    cursor = types.SimpleNamespace(cancel=lambda: log.append("cancel"))
+    callbacks = {}
+    connection = types.SimpleNamespace(cursor=lambda **kwargs: callbacks.update(kwargs) or cursor)
+    adapter._query_cursor(connection, (timeout_ms or 0) // 1000)
+    execution = types.SimpleNamespace(query_id="query-1", state="RUNNING")
+    now[0] = deadline - 0.1
+    callbacks["on_poll"](execution)
+    assert log == []
+    now[0] = deadline
+    with pytest.raises(TimeoutError, match="polling timed out"):
+        callbacks["on_poll"](execution)
+    assert log == ["cancel"]
+
+
+def test_athena_installed_driver_calls_poll_hook_and_cancels(monkeypatch):
+    import inspect
+
+    pytest.importorskip("pyathena")
+    import boto3
+    from botocore.stub import ANY, Stubber
+    from pyathena.connection import Connection
+
+    assert "on_poll" in inspect.signature(Connection).parameters
+    connection = Connection(
+        s3_staging_dir="s3://example/results",
+        region_name="us-east-1",
+        poll_interval=0,
+        session=boto3.Session(
+            aws_access_key_id="test", aws_secret_access_key="test", region_name="us-east-1"
+        ),
+    )
+    now = [0.0]
+    monkeypatch.setattr("semantic_rails.db_parts.athena.time.monotonic", lambda: now[0])
+    adapter = AthenaAdapter({"read_timeout_seconds": "3"})
+    cursor = adapter._query_cursor(connection, 0)
+    original_get = cursor._get_query_execution
+
+    def get_execution(query_id):
+        execution = original_get(query_id)
+        now[0] += 3
+        return execution
+
+    monkeypatch.setattr(cursor, "_get_query_execution", get_execution)
+    with Stubber(connection.client) as stub:
+        stub.add_response(
+            "start_query_execution",
+            {"QueryExecutionId": "query-1"},
+            {
+                "QueryString": ANY,
+                "QueryExecutionContext": ANY,
+                "ResultConfiguration": ANY,
+            },
+        )
+        stub.add_response(
+            "get_query_execution",
+            {
+                "QueryExecution": {
+                    "QueryExecutionId": "query-1",
+                    "Query": "select 1",
+                    "Status": {"State": "RUNNING"},
+                }
+            },
+            {"QueryExecutionId": "query-1"},
+        )
+        stub.add_response("stop_query_execution", {}, {"QueryExecutionId": "query-1"})
+        with pytest.raises(TimeoutError, match="polling timed out"):
+            cursor.execute("select 1")
+        stub.assert_no_pending_responses()
+    cursor.close()
+    connection.close()
 
 
 def test_athena_adapter_defaults_schema_and_omits_workgroup(monkeypatch: pytest.MonkeyPatch):
