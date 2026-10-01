@@ -17,7 +17,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
 
-from .compiler_parts.indexes import get_package_analysis
+from .compiler_parts.indexes import RouteRefusal, get_package_analysis
 from .errors import SemanticLayerError
 from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, RelationshipConfig
 
@@ -155,9 +155,9 @@ _route_choices: ContextVar[list[RouteChoice] | None] = ContextVar("route_choices
 
 @contextmanager
 def recording_route_choices() -> Iterator[list[RouteChoice]]:
-    """Collect, as (start, target, routes), each route rule 3 of ``resolve_path`` chose that
-    the SQL lowered in this block reads, nested compiles included, so the response discloses
-    it (``PATH_ALTERNATES_UNPINNED``)."""
+    """Collect, as (start, target, routes), each route ``resolve_path`` returned that the SQL
+    lowered in this block reads, nested compiles included, so the response can say how each
+    was chosen (``route_basis``)."""
     choices: list[RouteChoice] = []
     token = _route_choices.set(choices)
     try:
@@ -167,11 +167,24 @@ def recording_route_choices() -> Iterator[list[RouteChoice]]:
 
 
 def record_route_choice(start: str, target: str, routes: Sequence[Sequence[str]]) -> None:
-    """Note a route the SQL reads, with every route ``resolve_path`` returned for the pair:
-    more than one means rule 3 chose it."""
+    """Note a route the SQL reads, with every route ``resolve_path`` returned for the pair."""
     choices = _route_choices.get()
-    if choices is not None and len(routes) > 1:
+    if choices is not None:
         choices.append((start, target, tuple(tuple(path) for path in routes)))
+
+
+def route_basis(
+    config: PackageConfig, start: str, target: str, routes: Sequence[Sequence[str]]
+) -> str:
+    """How ``resolve_path`` chose the route it returned (``routes``) for a pair with two or
+    more routes: ``"recorded"`` (a ``graph.path_preferences`` row) or ``"colocated_key"``
+    (rule 3, the start's own key). ``""`` when the pair has one route, so nothing was chosen."""
+    if (start, target) in get_package_analysis(config).path_preferences:
+        unpinned = _unpinned_resolution(config, start, target)
+        if isinstance(unpinned, RouteRefusal):
+            return "recorded" if unpinned.code == "AMBIGUOUS_PATH" else ""
+        return "recorded" if len(unpinned) > 1 else ""
+    return "colocated_key" if len(routes) > 1 else ""
 
 
 def resolve_path(
@@ -187,32 +200,38 @@ def resolve_path(
     2. Exactly one route: it is used.
     3. Otherwise, when exactly one route is a direct relationship from ``start`` that reaches
        at most one row (the start row holds the target's key), it is used, and every route is
-       returned with it, so the response discloses the choice (``PATH_ALTERNATES_UNPINNED``).
+       returned with it.
     4. Otherwise ``AMBIGUOUS_PATH`` (``reason: route_decision_required``), whatever the
        routes' lengths, naming each route, its meaning and the row that would record it.
 
     So more than one route comes back exactly when rule 3 chose. Routes and refusals are
-    cached per pair.
+    cached per pair; ``route_basis`` says how a returned route was chosen.
     """
-    analysis = get_package_analysis(config)
-    pinned = analysis.path_preferences.get((start, target))
+    pinned = get_package_analysis(config).path_preferences.get((start, target))
     if pinned is not None:
         return list(pinned), [list(pinned)]
-    cached = analysis.path_cache.get((start, target))
-    if isinstance(cached, SemanticLayerError):
-        raise SemanticLayerError(cached.code, str(cached), details=deepcopy(cached.details))
-    if cached is not None:
-        return list(cached[0]), [list(path) for path in cached]
-    try:
-        routes = _resolve_uncached(config, start=start, target=target)
-    except SemanticLayerError as exc:
-        analysis.path_cache[(start, target)] = exc
-        raise SemanticLayerError(exc.code, str(exc), details=deepcopy(exc.details)) from None
-    analysis.path_cache[(start, target)] = tuple(tuple(path) for path in routes)
-    return list(routes[0]), [list(path) for path in routes]
+    resolved = _unpinned_resolution(config, start, target)
+    if isinstance(resolved, RouteRefusal):
+        raise resolved.error()
+    return list(resolved[0]), [list(path) for path in resolved]
 
 
-def _resolve_uncached(config: PackageConfig, *, start: str, target: str) -> list[list[str]]:
+def _unpinned_resolution(
+    config: PackageConfig, start: str, target: str
+) -> tuple[tuple[str, ...], ...] | RouteRefusal:
+    """Rules 2-4 of ``resolve_path`` for the pair, cached: its routes or its refusal."""
+    cache = get_package_analysis(config).path_cache
+    cached = cache.get((start, target))
+    if cached is None:
+        try:
+            cached = tuple(tuple(path) for path in _resolve_uncached(config, start, target))
+        except SemanticLayerError as exc:
+            cached = RouteRefusal(exc.code, str(exc), deepcopy(exc.details))
+        cache[(start, target)] = cached
+    return cached
+
+
+def _resolve_uncached(config: PackageConfig, start: str, target: str) -> list[list[str]]:
     """Every route for an unpinned pair, the chosen first (rules 2-4 of ``resolve_path``)."""
     analysis = get_package_analysis(config)
     hop_limit = package_hop_limit(config)

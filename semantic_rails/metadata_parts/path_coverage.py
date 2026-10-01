@@ -68,7 +68,8 @@ def _path_availability(
     except SemanticLayerError as exc:
         return {
             "available": False,
-            "reason": str(exc),
+            # The catalog repeats this per object; the routes and their rows are in details.
+            "reason": "route decision required" if exc.code == "AMBIGUOUS_PATH" else str(exc),
             "path": [],
             "candidates": [],
             "error_code": exc.code,

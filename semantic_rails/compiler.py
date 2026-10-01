@@ -4254,8 +4254,8 @@ class BoundQuery:
     stock_key_gaps: tuple[dict[str, Any], ...] = ()
     # Every output that reads 0 or NULL for an empty group, with the measures behind it.
     zero_outputs: tuple[dict[str, Any], ...] = ()
-    # Every route the SQL reads that the route rule chose by its direct key, nested compiles
-    # included (the plan's own root and leaf paths are in the plan).
+    # Every route the SQL reads, nested compiles included (the plan's own root and leaf paths
+    # are in the plan).
     route_choices: tuple[RouteChoice, ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:

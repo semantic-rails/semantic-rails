@@ -81,7 +81,7 @@ from .diagnostics import (
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
-from .fanout import build_hop_profile, route_meaning, route_pin
+from .fanout import build_hop_profile, route_basis, route_meaning
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
@@ -313,17 +313,25 @@ def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
 _LOG = logging.getLogger(__name__)
 
 
-def _path_alternates_warnings(config, compiled) -> list[dict[str, Any]]:
-    """Disclose every route the compiled query reads that the route rule chose by its direct
-    key (rule 3 of ``fanout.resolve_path``): another route reaches the same entity and no
-    ``graph.path_preferences`` row records which one is meant.
+_ROUTE_NOTES = {
+    "colocated_key": ("ROUTE_COLOCATED_KEY", "own key"),
+    "recorded": ("ROUTE_RECORDED", "recorded route"),
+}
 
-    ``resolve_path`` returns more than one route exactly then, so a pinned or single-route
-    pair never warns. The routes come from the plan's root and leaf paths and from the paths
-    lowering read (predicates, conversions, rewrite anchors, nested compiles, direct key
-    reads). Adding a route to a package never changes an answer silently: a pair with a
-    direct key keeps it and gains this warning, and any other pair is refused.
+
+def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """One short note per entity pair the compiled query reads where the engine chose one of
+    two or more routes (``fanout.route_basis``): by the start's own key (ROUTE_COLOCATED_KEY)
+    or by a ``graph.path_preferences`` row (ROUTE_RECORDED). The note is the code plus the
+    chosen route, its relationship ids and its readable meaning; a single-route pair gets none.
+
+    The pairs come from the plan's root and leaf paths and from the paths lowering read
+    (predicates, conversions, rewrite anchors, nested compiles, direct key reads). The minimal
+    response leaves the notes out: the route is the package's own meaning for the pair, not a
+    caveat on the numbers, and a pair with no such meaning is refused instead.
     """
+    if resolve_verbosity(payload) == "minimal":
+        return []
     plan = compiled["logical_plan"]
     choices = [
         (plan.root_entity, target, routes)
@@ -336,40 +344,27 @@ def _path_alternates_warnings(config, compiled) -> list[dict[str, Any]]:
         )
     choices.extend(compiled.get("route_choices") or [])
     seen: set[tuple[str, str]] = set()
-    warnings: list[dict[str, Any]] = []
-    for start, target, candidates in choices:
-        if len(candidates) < 2 or (start, target) in seen:
+    notes: list[dict[str, Any]] = []
+    for start, target, routes in choices:
+        if (start, target) in seen:
             continue
         seen.add((start, target))
-        routes = [list(path) for path in candidates]
-        meanings = [route_meaning(config, start, path) for path in routes]
-        warnings.append(
+        basis = route_basis(config, start, target, routes)
+        if not basis:
+            continue
+        code, how = _ROUTE_NOTES[basis]
+        route = list(routes[0])
+        notes.append(
             semantic_issue(
-                code="PATH_ALTERNATES_UNPINNED",
-                message=(
-                    f"'{target}' was read through {start}'s direct key {routes[0][0]}; "
-                    f"{len(routes) - 1} other route(s) reach it, and no graph.path_preferences "
-                    "row records which one is meant."
-                ),
-                severity="warning",
+                code=code,
+                message=f"{route_meaning(config, start, route)} ({how})",
+                severity="info",
                 stage="planning",
-                details={
-                    "start": start,
-                    "target": target,
-                    "chosen_path": routes[0],
-                    "alternate_paths": routes[1:],
-                    "meanings": meanings,
-                    "pins": [route_pin(start, target, path) for path in routes],
-                    "hint": (
-                        "Which route is meant is a business definition. Record it once as a "
-                        "graph.path_preferences row in the package (details.pins has the row "
-                        "for each route); then every query uses it, without this warning."
-                    ),
-                },
-                object_ids=[target],
+                details={"route": route},
+                object_ids=[start, target],
             )
         )
-    return warnings
+    return notes
 
 
 def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
@@ -754,7 +749,7 @@ def _compiled_warnings(
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
         *_stock_key_gap_warnings(compiled),
-        *_path_alternates_warnings(config, compiled),
+        *_route_notes(config, compiled, payload),
         *_time_zone_warnings(config, compiled),
     ]
     if payload is not None:

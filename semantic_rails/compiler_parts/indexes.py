@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import weakref
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..errors import SemanticLayerError
 from ..expressions import resolve_table_entity
@@ -20,6 +21,18 @@ from .dependencies import binding_index
 GraphIndex = dict[str, list[tuple[str, str]]]
 
 
+class RouteRefusal(NamedTuple):
+    """A cached route refusal: plain data, so the cache never holds an exception, its
+    traceback, or the frames (and package configuration) that traceback keeps alive."""
+
+    code: str
+    message: str
+    details: dict[str, Any]
+
+    def error(self) -> SemanticLayerError:
+        return SemanticLayerError(self.code, self.message, details=deepcopy(self.details))
+
+
 @dataclass
 class PackageAnalysis:
     entities: dict[str, EntityConfig]
@@ -32,9 +45,9 @@ class PackageAnalysis:
     graph: GraphIndex
     path_preferences: dict[tuple[str, str], list[str]]
     temporal_relationship_ids: set[str]
-    # (start, target) -> every route, the chosen first, or the refusal. Keyed only by package
-    # inputs.
-    path_cache: dict[tuple[str, str], tuple[tuple[str, ...], ...] | SemanticLayerError] = field(
+    # (start, target) -> every route, the chosen first, or the refusal, before any
+    # path_preferences row is applied. Keyed only by package inputs.
+    path_cache: dict[tuple[str, str], tuple[tuple[str, ...], ...] | RouteRefusal] = field(
         default_factory=dict
     )
 

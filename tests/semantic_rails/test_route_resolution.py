@@ -3,10 +3,11 @@ never guesses one.
 
 For each (start, target) the one route resolver (``fanout.resolve_path``) takes, in order: a
 ``graph.path_preferences`` row for the pair; the only route; the one direct relationship from
-the start that reaches at most one row (its own key), disclosed as PATH_ALTERNATES_UNPINNED.
-Anything else is refused as AMBIGUOUS_PATH, whatever the routes' lengths, naming each route,
-its meaning and the row that would record it. So adding a route never changes an answer
-silently.
+the start that reaches at most one row (its own key). Anything else is refused as
+AMBIGUOUS_PATH, whatever the routes' lengths, naming each route, its meaning and the row that
+would record it. So adding a route never changes an answer silently. Where the engine chose one
+of two or more routes, the response carries a short note (ROUTE_RECORDED or
+ROUTE_COLOCATED_KEY) with the chosen route, except at minimal verbosity.
 
 Fixture: accounts, their owners, regions, memberships and invoices, on DuckDB. The routes
 disagree on the data, so an answer shows which route it took:
@@ -22,8 +23,10 @@ disagree on the data, so an answer shows which route it took:
 
 from __future__ import annotations
 
+import gc
 import json
 import textwrap
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +36,7 @@ import yaml
 
 import semantic_rails.fanout as fanout_module
 from semantic_rails.compiler_parts.grain_recovery import _chosen_path
+from semantic_rails.compiler_parts.indexes import _PACKAGE_ANALYSIS_CACHE
 from semantic_rails.compiler_parts.paths import _direct_entity_key_source_expr
 from semantic_rails.config import load_package_config
 from semantic_rails.diagnostics import exception_issue
@@ -285,11 +289,12 @@ def _query(select: str, **parts: Any) -> dict[str, Any]:
     return {"version": 1, "select": [{"expression": {kind: select}, "as": "v"}], **parts}
 
 
-def _disclosed(out: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+def _route_notes(out: dict[str, Any]) -> dict[tuple[str, str], tuple[str, list[str]]]:
+    """Each route note in a response, by its (start, target): its code and the chosen route."""
     return {
-        (w["details"]["start"], w["details"]["target"]): w["details"]
+        (w["object_ids"][0], w["object_ids"][1]): (w["code"], w["details"]["route"])
         for w in out["warnings"]
-        if w["code"] == "PATH_ALTERNATES_UNPINNED"
+        if w["code"] in {"ROUTE_COLOCATED_KEY", "ROUTE_RECORDED"}
     }
 
 
@@ -335,28 +340,48 @@ INVOICE_HOME = [*INVOICE_ACCOUNT, *HOME]
 INVOICE_BRANCH = [*INVOICE_ACCOUNT, *BRANCH]
 
 
-def test_a_direct_key_answers_with_the_disclosure_and_the_owner_pin_answers_without(tmp_path):
+def test_the_direct_key_and_a_recorded_route_each_answer_with_a_short_note(tmp_path):
     """Account to region: the account's own branch key, or its owner's home region. The direct
-    key answers, and the response names the other route and the row that records each; with
-    the owner route recorded, the owner's answer comes back with no disclosure."""
+    key answers; with the owner route recorded, the owner's answer comes back. Either way the
+    response names the chosen route in one short note, and nothing more."""
     query = _query(BALANCE, group_by=[REGION_NAME])
     out = Runtime.from_path(str(_write_package(tmp_path / "direct"))).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
-    disclosed = _disclosed(out)
-    assert list(disclosed) == [(ACCOUNT, REGION)]
-    details = disclosed[(ACCOUNT, REGION)]
-    assert details["chosen_path"] == BRANCH
-    assert HOME in details["alternate_paths"]
-    routes = [details["chosen_path"], *details["alternate_paths"]]
-    assert details["pins"] == [_pin(ACCOUNT, REGION, path) for path in routes]
-    assert details["meanings"][0] == "Account → Region"
-    assert "graph.path_preferences" in details["hint"]
+    assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_COLOCATED_KEY", BRANCH)}
+    (note,) = [w for w in out["warnings"] if w["code"] == "ROUTE_COLOCATED_KEY"]
+    assert (note["severity"], note["message"]) == ("info", "Account → Region (own key)")
+    assert note["details"] == {"route": BRANCH}
 
     pinned = _write_package(tmp_path / "home", pins=[_pin("account", "region", HOME)])
     out = Runtime.from_path(str(pinned)).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_HOME)
-    assert _disclosed(out) == {}
+    assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_RECORDED", HOME)}
     assert _gold(BY_BRANCH) != _gold(BY_HOME)
+
+
+@pytest.mark.parametrize(
+    ("relationships", "pins", "verbosity"),
+    [
+        pytest.param(DIAMOND, None, "minimal", id="minimal-response"),
+        pytest.param(("accounts_branch_region",), None, "compact", id="one-route"),
+        pytest.param(
+            ("accounts_branch_region",),
+            [_pin("account", "region", BRANCH)],
+            "compact",
+            id="one-route-recorded",
+        ),
+    ],
+)
+def test_no_route_note_where_nothing_was_chosen_or_in_the_minimal_response(
+    tmp_path, relationships, pins, verbosity
+):
+    """A pair with one route had nothing to choose, recorded or not; and the minimal response
+    (the MCP default) carries no route note at all."""
+    pkg = _write_package(tmp_path, relationships=relationships, pins=pins)
+    query = {**_query(BALANCE, group_by=[REGION_NAME]), "verbosity": verbosity}
+    out = Runtime.from_path(str(pkg)).query(query)
+    assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
+    assert _route_notes(out) == {}
 
 
 @pytest.mark.parametrize(
@@ -444,7 +469,7 @@ def test_routes_without_one_direct_key_are_refused_and_each_pin_answers_its_gold
         pinned = _write_package(tmp_path / f"pin{index}", relationships=relationships, pins=[pin])
         out = Runtime.from_path(str(pinned)).query(query)
         assert _rows(out, columns) == _gold(golds[tuple(path)])
-        assert _disclosed(out) == {}
+        assert _route_notes(out)[(start, target)] == ("ROUTE_RECORDED", path)
     assert len({tuple(_gold(sql)) for sql in golds.values()}) == len(golds)
 
 
@@ -495,11 +520,11 @@ def test_adding_a_route_never_changes_an_answer_silently(
 ):
     """A pair with one route answers by it. Give it a longer route: a pair with no direct key
     is refused from then on, and a pair whose one route is its own key keeps the answer and
-    now says another route exists."""
+    now notes that its own key was chosen."""
     out = Runtime.from_path(str(_write_package(tmp_path / "before", relationships=before))).query(
         query
     )
-    assert _disclosed(out) == {}
+    assert _route_notes(out) == {}
     after = _write_package(tmp_path / "after", relationships=(*before, *added))
     if gold is None:
         assert _rows(out, columns) == _gold(AMOUNT_BY_BRANCH)
@@ -508,7 +533,7 @@ def test_adding_a_route_never_changes_an_answer_silently(
     assert _rows(out, columns) == _gold(gold)
     out = Runtime.from_path(str(after)).query(query)
     assert _rows(out, columns) == _gold(gold)
-    assert _disclosed(out)[(ACCOUNT, REGION)]["alternate_paths"] == [HOME]
+    assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_COLOCATED_KEY", BRANCH)}
 
 
 def test_discovery_grain_recovery_and_compile_report_the_pinned_route(tmp_path):
@@ -596,7 +621,7 @@ def test_every_entry_point_refuses_unrecorded_routes_and_follows_the_pin(tmp_pat
     if columns is not None:
         out = runtime.query(query)
         assert _rows(out, columns) == _gold(_entry_gold(entry, "home"))
-        assert _disclosed(out) == {}
+        assert _route_notes(out)[(ACCOUNT, REGION)] == ("ROUTE_RECORDED", HOME)
     sql = runtime.compile(query)["explain"]["rendered_sql"]
     assert "owners" in sql  # the home route, through the owner
     assert "branch_region_id" not in sql and "billing_region_id" not in sql
@@ -605,18 +630,14 @@ def test_every_entry_point_refuses_unrecorded_routes_and_follows_the_pin(tmp_pat
 @pytest.mark.parametrize("entry", ENTRY_POINTS)
 def test_every_entry_point_discloses_the_direct_key_it_reads(tmp_path, entry):
     """Each path a query reads by its direct key (root, leaf, predicate, conversion and the
-    key read) answers by that key and is disclosed with the other routes and their rows."""
+    key read) answers by that key and is noted as the start's own key."""
     query, columns = ENTRY_POINTS[entry]
     pkg = _write_package(tmp_path, relationships=(*DIAMOND, "invoices_issued_region"))
     out = Runtime.from_path(str(pkg)).query(query)
     if columns is not None:
         assert _rows(out, columns) == _gold(_entry_gold(entry, "branch"))
     start, chosen = (INVOICE, ISSUED) if entry == "conversion" else (ACCOUNT, BRANCH)
-    details = _disclosed(out)[(start, REGION)]
-    assert details["chosen_path"] == chosen
-    routes = [chosen, *details["alternate_paths"]]
-    assert details["pins"] == [_pin(start, REGION, path) for path in routes]
-    assert len(details["meanings"]) == len(routes) > 1
+    assert _route_notes(out)[(start, REGION)] == ("ROUTE_COLOCATED_KEY", chosen)
 
 
 def test_the_direct_key_read_and_discovery_follow_the_resolver(tmp_path):
@@ -653,6 +674,31 @@ def test_a_refusal_is_cached_and_its_recovery_hint_carries_the_rows(tmp_path, mo
     assert third.value.details == first.value.details
     (hint,) = exception_issue(first.value, stage="compile")["recovery_hints"]
     assert hint["pins"] == first.value.details["pins"]
+
+
+@pytest.mark.parametrize(
+    ("relationships", "start", "target", "code"),
+    [
+        pytest.param(DIAMOND, INVOICE, REGION, "AMBIGUOUS_PATH", id="ambiguous"),
+        pytest.param(("accounts_branch_region",), ACCOUNT, INVOICE, "PATH_NOT_FOUND", id="no-path"),
+    ],
+)
+def test_a_cached_refusal_lets_a_discarded_package_be_collected(
+    tmp_path, relationships, start, target, code
+):
+    """The cache keeps a refusal as plain data, never the raised exception, whose traceback
+    would hold the package configuration and keep its cache entry alive forever."""
+    config = load_package_config(str(_write_package(tmp_path, relationships=relationships)))
+    for _ in range(2):  # a miss, then a hit
+        with pytest.raises(SemanticLayerError) as exc_info:
+            resolve_path(config, start=start, target=target)
+        assert exc_info.value.code == code
+    del exc_info
+    collected, key = weakref.ref(config), id(config)
+    del config
+    gc.collect()
+    assert collected() is None
+    assert key not in _PACKAGE_ANALYSIS_CACHE
 
 
 @pytest.mark.parametrize("form", ["graph_relationship", "model_join"])
