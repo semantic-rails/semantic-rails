@@ -31,8 +31,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 4.183,
-      "compile_ms": 1.692,
+      "cache_lookup_ms": 0.881,
+      "compile_ms": 0.522,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -159,10 +159,6 @@
             "field": "temporal_role.jaffle_order_time__month"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "trailing_3_month_revenue_usd",
@@ -288,10 +284,6 @@
           "field": "temporal_role.jaffle_order_time__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "trailing_3_month_revenue_usd",
@@ -1633,10 +1625,6 @@
           "field": "temporal_role.jaffle_order_time__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "trailing_3_month_revenue_usd",
@@ -1763,10 +1751,6 @@
         "field": "temporal_role.jaffle_order_time__month"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "trailing_3_month_revenue_usd",
@@ -1862,7 +1846,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 15.352,
+  "timing_ms": 3.978,
   "trace": {
     "fallback": {
       "reason": "",

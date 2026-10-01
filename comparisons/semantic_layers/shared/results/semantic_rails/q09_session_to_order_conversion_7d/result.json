@@ -29,8 +29,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 2.503,
-      "compile_ms": 0.883,
+      "cache_lookup_ms": 0.78,
+      "compile_ms": 0.289,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -97,10 +97,6 @@
             "field": "temporal_role.jaffle_session_started_at__month"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "session_to_order_conversion_rate_7d",
@@ -225,10 +221,6 @@
           "field": "temporal_role.jaffle_session_started_at__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "session_to_order_conversion_rate_7d",
@@ -1057,10 +1049,6 @@
           "field": "temporal_role.jaffle_session_started_at__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "session_to_order_conversion_rate_7d",
@@ -1186,10 +1174,6 @@
         "field": "temporal_role.jaffle_session_started_at__month"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "session_to_order_conversion_rate_7d",
@@ -1274,8 +1258,8 @@
       "temporal_role.jaffle_session_started_at__month": "2016-09-01T00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:c5b79ea644809aa038e12ef9fe7bda2a7d463e63f00dc256f1bdcc06e33699d8",
-  "source_fingerprint": "8104a0af4cc06331a6ce8c02a3b23de4843667b9597c8175179565433e1a930a",
+  "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
+  "source_fingerprint": "3a04595d59e97537227dfd70f6e62ae026eef579da73543884aae311262f0e28",
   "sql_plan": {
     "ctes": [
       {
@@ -1799,5 +1783,40 @@
     "snapshot_row_selection": "aggregate_join",
     "timestamp_type": "TIMESTAMP"
   },
-  "warnings": []
+  "warnings": [
+    {
+      "code": "ROUTE_COLOCATED_KEY",
+      "details": {
+        "route": [
+          "relationship.storefront_sessions_customer"
+        ]
+      },
+      "message": "Storefront session \u2192 Customer (own key)",
+      "object_ids": [
+        "entity.jaffle_storefront_session",
+        "entity.jaffle_customer"
+      ],
+      "path": "",
+      "recovery_hints": [],
+      "severity": "info",
+      "stage": "planning"
+    },
+    {
+      "code": "ROUTE_COLOCATED_KEY",
+      "details": {
+        "route": [
+          "relationship.orders_customer"
+        ]
+      },
+      "message": "Order \u2192 Customer (own key)",
+      "object_ids": [
+        "entity.jaffle_order",
+        "entity.jaffle_customer"
+      ],
+      "path": "",
+      "recovery_hints": [],
+      "severity": "info",
+      "stage": "planning"
+    }
+  ]
 }

@@ -81,12 +81,6 @@ class OrderBy:
 
 
 @dataclass(frozen=True)
-class PathPolicy:
-    preference: str = "fewest_hops"
-    ask_if_ambiguous: bool = True
-
-
-@dataclass(frozen=True)
 class NormalizedQuery:
     version: int
     select: list[QuerySelect]
@@ -95,7 +89,6 @@ class NormalizedQuery:
     metric_filters: list[MetricFilter] = field(default_factory=list)
     time: TimeSpec | None = None
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
-    path_policy: PathPolicy = field(default_factory=PathPolicy)
     order_by: list[OrderBy] = field(default_factory=list)
     limit: int | None = None
     debug: bool = False
@@ -128,7 +121,6 @@ class NormalizedQuery:
             ],
             "time": asdict(self.time) if self.time else None,
             "temporal_role_overrides": dict(self.temporal_role_overrides),
-            "path_policy": asdict(self.path_policy),
             "order_by": [asdict(item) for item in self.order_by],
             "limit": self.limit,
             "debug": self.debug,
@@ -146,7 +138,6 @@ class PartialQueryState:
     metric_filters: list[MetricFilter] = field(default_factory=list)
     time: TimeSpec | None = None
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
-    path_policy: PathPolicy = field(default_factory=PathPolicy)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -174,7 +165,6 @@ class PartialQueryState:
             ],
             "time": asdict(self.time) if self.time else None,
             "temporal_role_overrides": dict(self.temporal_role_overrides),
-            "path_policy": asdict(self.path_policy),
         }
 
 
@@ -595,56 +585,6 @@ def _require_metric_filter_object(item: Any, index: int) -> dict[str, Any]:
     return item
 
 
-_PATH_POLICY_KEYS = ("preference", "ask_if_ambiguous")
-
-
-def _path_policy_from_payload(raw: Any) -> PathPolicy:
-    """Build a :class:`PathPolicy` from the raw payload with type guards.
-
-    ``PathPolicy(**payload["path_policy"])`` raised a bare ``TypeError``
-    on non-dict payloads or unexpected keys, surfacing as INTERNAL_ERROR
-    instead of a recoverable INVALID_QUERY.
-    """
-    if not raw:
-        return PathPolicy()
-    if not isinstance(raw, dict):
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            "query.path_policy must be an object",
-            details={
-                "path": "path_policy",
-                "received_type": type(raw).__name__,
-                "supported_keys": list(_PATH_POLICY_KEYS),
-            },
-        )
-    unknown_keys = sorted(set(raw) - set(_PATH_POLICY_KEYS))
-    if unknown_keys:
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            "query.path_policy contains unsupported keys",
-            details={
-                "path": "path_policy",
-                "unsupported_keys": unknown_keys,
-                "supported_keys": list(_PATH_POLICY_KEYS),
-                "recovery_hints": [
-                    {
-                        "code": "REMOVE_UNKNOWN_KEY",
-                        "message": (
-                            "path_policy accepts only 'preference' and 'ask_if_ambiguous'."
-                        ),
-                        "suggested_query_ir_change": {
-                            "remove": [f"path_policy.{key}" for key in unknown_keys]
-                        },
-                    }
-                ],
-            },
-        )
-    return PathPolicy(
-        preference=str(raw.get("preference", "fewest_hops") or "fewest_hops"),
-        ask_if_ambiguous=bool(raw.get("ask_if_ambiguous", True)),
-    )
-
-
 def _time_output_alias(time: TimeSpec | None) -> str:
     if time is None or not time.temporal_role:
         return ""
@@ -685,7 +625,6 @@ QUERY_INPUT_KEYS: frozenset[str] = frozenset(
         "limit",
         "time",
         "temporal_role_overrides",
-        "path_policy",
         "debug",
         "explain",
         "export",
@@ -1138,7 +1077,6 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
             str(k): str(v)
             for k, v in dict(payload.get("temporal_role_overrides", {}) or {}).items()
         },
-        path_policy=_path_policy_from_payload(payload.get("path_policy")),
         order_by=order_by,
         limit=limit_value,
         debug=bool(payload.get("debug", False)),
@@ -1208,5 +1146,4 @@ def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
             str(k): str(v)
             for k, v in dict(payload.get("temporal_role_overrides", {}) or {}).items()
         },
-        path_policy=_path_policy_from_payload(payload.get("path_policy")),
     )

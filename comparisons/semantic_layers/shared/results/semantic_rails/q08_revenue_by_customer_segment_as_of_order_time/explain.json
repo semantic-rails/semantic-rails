@@ -35,6 +35,11 @@
             "relationship.customer_history_customer"
           ],
           [
+            "relationship.order_lifecycle_order",
+            "relationship.order_lifecycle_customer",
+            "relationship.customer_history_customer"
+          ],
+          [
             "relationship.orders_customer",
             "relationship.order_lifecycle_customer",
             "relationship.order_lifecycle_to_customer_history"
@@ -45,12 +50,19 @@
             "relationship.order_lifecycle_to_customer_history"
           ],
           [
-            "relationship.order_lifecycle_order",
+            "relationship.storefront_sessions_order",
+            "relationship.storefront_sessions_customer",
+            "relationship.customer_history_customer"
+          ],
+          [
+            "relationship.orders_store",
+            "relationship.order_lifecycle_store",
             "relationship.order_lifecycle_customer",
             "relationship.customer_history_customer"
           ],
           [
-            "relationship.storefront_sessions_order",
+            "relationship.orders_store",
+            "relationship.storefront_sessions_store",
             "relationship.storefront_sessions_customer",
             "relationship.customer_history_customer"
           ],
@@ -65,18 +77,6 @@
             "relationship.storefront_sessions_store",
             "relationship.order_lifecycle_store",
             "relationship.order_lifecycle_to_customer_history"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.storefront_sessions_store",
-            "relationship.storefront_sessions_customer",
-            "relationship.customer_history_customer"
           ]
         ],
         "contracts": [
@@ -103,8 +103,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 4.243,
-      "compile_ms": 0.777,
+      "cache_lookup_ms": 0.91,
+      "compile_ms": 0.232,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -130,7 +130,6 @@
                   "join_semantics": "",
                   "label": "Order to Customer history",
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                  "path_preference": 50,
                   "rollup_safe_aggregations": [
                     "sum",
                     "count"
@@ -173,6 +172,11 @@
                 "relationship.customer_history_customer"
               ],
               [
+                "relationship.order_lifecycle_order",
+                "relationship.order_lifecycle_customer",
+                "relationship.customer_history_customer"
+              ],
+              [
                 "relationship.orders_customer",
                 "relationship.order_lifecycle_customer",
                 "relationship.order_lifecycle_to_customer_history"
@@ -183,12 +187,19 @@
                 "relationship.order_lifecycle_to_customer_history"
               ],
               [
-                "relationship.order_lifecycle_order",
+                "relationship.storefront_sessions_order",
+                "relationship.storefront_sessions_customer",
+                "relationship.customer_history_customer"
+              ],
+              [
+                "relationship.orders_store",
+                "relationship.order_lifecycle_store",
                 "relationship.order_lifecycle_customer",
                 "relationship.customer_history_customer"
               ],
               [
-                "relationship.storefront_sessions_order",
+                "relationship.orders_store",
+                "relationship.storefront_sessions_store",
                 "relationship.storefront_sessions_customer",
                 "relationship.customer_history_customer"
               ],
@@ -203,18 +214,6 @@
                 "relationship.storefront_sessions_store",
                 "relationship.order_lifecycle_store",
                 "relationship.order_lifecycle_to_customer_history"
-              ],
-              [
-                "relationship.orders_store",
-                "relationship.order_lifecycle_store",
-                "relationship.order_lifecycle_customer",
-                "relationship.customer_history_customer"
-              ],
-              [
-                "relationship.orders_store",
-                "relationship.storefront_sessions_store",
-                "relationship.storefront_sessions_customer",
-                "relationship.customer_history_customer"
               ]
             ],
             "chosen_path": [
@@ -244,7 +243,6 @@
               "join_semantics": "",
               "label": "Order to Customer history",
               "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-              "path_preference": 50,
               "rollup_safe_aggregations": [
                 "sum",
                 "count"
@@ -326,6 +324,11 @@
             "relationship.customer_history_customer"
           ],
           [
+            "relationship.order_lifecycle_order",
+            "relationship.order_lifecycle_customer",
+            "relationship.customer_history_customer"
+          ],
+          [
             "relationship.orders_customer",
             "relationship.order_lifecycle_customer",
             "relationship.order_lifecycle_to_customer_history"
@@ -336,12 +339,19 @@
             "relationship.order_lifecycle_to_customer_history"
           ],
           [
-            "relationship.order_lifecycle_order",
+            "relationship.storefront_sessions_order",
+            "relationship.storefront_sessions_customer",
+            "relationship.customer_history_customer"
+          ],
+          [
+            "relationship.orders_store",
+            "relationship.order_lifecycle_store",
             "relationship.order_lifecycle_customer",
             "relationship.customer_history_customer"
           ],
           [
-            "relationship.storefront_sessions_order",
+            "relationship.orders_store",
+            "relationship.storefront_sessions_store",
             "relationship.storefront_sessions_customer",
             "relationship.customer_history_customer"
           ],
@@ -356,18 +366,6 @@
             "relationship.storefront_sessions_store",
             "relationship.order_lifecycle_store",
             "relationship.order_lifecycle_to_customer_history"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.storefront_sessions_store",
-            "relationship.storefront_sessions_customer",
-            "relationship.customer_history_customer"
           ]
         ]
       },
@@ -394,7 +392,6 @@
                     "join_semantics": "",
                     "label": "Order to Customer history",
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                    "path_preference": 50,
                     "rollup_safe_aggregations": [
                       "sum",
                       "count"
@@ -437,6 +434,11 @@
                   "relationship.customer_history_customer"
                 ],
                 [
+                  "relationship.order_lifecycle_order",
+                  "relationship.order_lifecycle_customer",
+                  "relationship.customer_history_customer"
+                ],
+                [
                   "relationship.orders_customer",
                   "relationship.order_lifecycle_customer",
                   "relationship.order_lifecycle_to_customer_history"
@@ -447,12 +449,19 @@
                   "relationship.order_lifecycle_to_customer_history"
                 ],
                 [
-                  "relationship.order_lifecycle_order",
+                  "relationship.storefront_sessions_order",
+                  "relationship.storefront_sessions_customer",
+                  "relationship.customer_history_customer"
+                ],
+                [
+                  "relationship.orders_store",
+                  "relationship.order_lifecycle_store",
                   "relationship.order_lifecycle_customer",
                   "relationship.customer_history_customer"
                 ],
                 [
-                  "relationship.storefront_sessions_order",
+                  "relationship.orders_store",
+                  "relationship.storefront_sessions_store",
                   "relationship.storefront_sessions_customer",
                   "relationship.customer_history_customer"
                 ],
@@ -467,18 +476,6 @@
                   "relationship.storefront_sessions_store",
                   "relationship.order_lifecycle_store",
                   "relationship.order_lifecycle_to_customer_history"
-                ],
-                [
-                  "relationship.orders_store",
-                  "relationship.order_lifecycle_store",
-                  "relationship.order_lifecycle_customer",
-                  "relationship.customer_history_customer"
-                ],
-                [
-                  "relationship.orders_store",
-                  "relationship.storefront_sessions_store",
-                  "relationship.storefront_sessions_customer",
-                  "relationship.customer_history_customer"
                 ]
               ],
               "chosen_path": [
@@ -508,7 +505,6 @@
                 "join_semantics": "",
                 "label": "Order to Customer history",
                 "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                "path_preference": 50,
                 "rollup_safe_aggregations": [
                   "sum",
                   "count"
@@ -605,7 +601,6 @@
                     "join_semantics": "",
                     "label": "Order to Customer history",
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                    "path_preference": 50,
                     "rollup_safe_aggregations": [
                       "sum",
                       "count"
@@ -648,6 +643,11 @@
                   "relationship.customer_history_customer"
                 ],
                 [
+                  "relationship.order_lifecycle_order",
+                  "relationship.order_lifecycle_customer",
+                  "relationship.customer_history_customer"
+                ],
+                [
                   "relationship.orders_customer",
                   "relationship.order_lifecycle_customer",
                   "relationship.order_lifecycle_to_customer_history"
@@ -658,12 +658,19 @@
                   "relationship.order_lifecycle_to_customer_history"
                 ],
                 [
-                  "relationship.order_lifecycle_order",
+                  "relationship.storefront_sessions_order",
+                  "relationship.storefront_sessions_customer",
+                  "relationship.customer_history_customer"
+                ],
+                [
+                  "relationship.orders_store",
+                  "relationship.order_lifecycle_store",
                   "relationship.order_lifecycle_customer",
                   "relationship.customer_history_customer"
                 ],
                 [
-                  "relationship.storefront_sessions_order",
+                  "relationship.orders_store",
+                  "relationship.storefront_sessions_store",
                   "relationship.storefront_sessions_customer",
                   "relationship.customer_history_customer"
                 ],
@@ -678,18 +685,6 @@
                   "relationship.storefront_sessions_store",
                   "relationship.order_lifecycle_store",
                   "relationship.order_lifecycle_to_customer_history"
-                ],
-                [
-                  "relationship.orders_store",
-                  "relationship.order_lifecycle_store",
-                  "relationship.order_lifecycle_customer",
-                  "relationship.customer_history_customer"
-                ],
-                [
-                  "relationship.orders_store",
-                  "relationship.storefront_sessions_store",
-                  "relationship.storefront_sessions_customer",
-                  "relationship.customer_history_customer"
                 ]
               ],
               "chosen_path": [
@@ -728,10 +723,6 @@
             "field": "revenue_usd"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "revenue_usd",
@@ -849,10 +840,6 @@
           "field": "revenue_usd"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "revenue_usd",
@@ -955,7 +942,6 @@
                     "join_semantics": "",
                     "label": "Order to Customer history",
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                    "path_preference": 50,
                     "rollup_safe_aggregations": [
                       "sum",
                       "count"
@@ -998,6 +984,11 @@
                   "relationship.customer_history_customer"
                 ],
                 [
+                  "relationship.order_lifecycle_order",
+                  "relationship.order_lifecycle_customer",
+                  "relationship.customer_history_customer"
+                ],
+                [
                   "relationship.orders_customer",
                   "relationship.order_lifecycle_customer",
                   "relationship.order_lifecycle_to_customer_history"
@@ -1008,12 +999,19 @@
                   "relationship.order_lifecycle_to_customer_history"
                 ],
                 [
-                  "relationship.order_lifecycle_order",
+                  "relationship.storefront_sessions_order",
+                  "relationship.storefront_sessions_customer",
+                  "relationship.customer_history_customer"
+                ],
+                [
+                  "relationship.orders_store",
+                  "relationship.order_lifecycle_store",
                   "relationship.order_lifecycle_customer",
                   "relationship.customer_history_customer"
                 ],
                 [
-                  "relationship.storefront_sessions_order",
+                  "relationship.orders_store",
+                  "relationship.storefront_sessions_store",
                   "relationship.storefront_sessions_customer",
                   "relationship.customer_history_customer"
                 ],
@@ -1028,18 +1026,6 @@
                   "relationship.storefront_sessions_store",
                   "relationship.order_lifecycle_store",
                   "relationship.order_lifecycle_to_customer_history"
-                ],
-                [
-                  "relationship.orders_store",
-                  "relationship.order_lifecycle_store",
-                  "relationship.order_lifecycle_customer",
-                  "relationship.customer_history_customer"
-                ],
-                [
-                  "relationship.orders_store",
-                  "relationship.storefront_sessions_store",
-                  "relationship.storefront_sessions_customer",
-                  "relationship.customer_history_customer"
                 ]
               ],
               "chosen_path": [
@@ -1155,7 +1141,6 @@
                       "join_semantics": "",
                       "label": "Order to Customer history",
                       "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                      "path_preference": 50,
                       "rollup_safe_aggregations": [
                         "sum",
                         "count"
@@ -1198,6 +1183,11 @@
                     "relationship.customer_history_customer"
                   ],
                   [
+                    "relationship.order_lifecycle_order",
+                    "relationship.order_lifecycle_customer",
+                    "relationship.customer_history_customer"
+                  ],
+                  [
                     "relationship.orders_customer",
                     "relationship.order_lifecycle_customer",
                     "relationship.order_lifecycle_to_customer_history"
@@ -1208,12 +1198,19 @@
                     "relationship.order_lifecycle_to_customer_history"
                   ],
                   [
-                    "relationship.order_lifecycle_order",
+                    "relationship.storefront_sessions_order",
+                    "relationship.storefront_sessions_customer",
+                    "relationship.customer_history_customer"
+                  ],
+                  [
+                    "relationship.orders_store",
+                    "relationship.order_lifecycle_store",
                     "relationship.order_lifecycle_customer",
                     "relationship.customer_history_customer"
                   ],
                   [
-                    "relationship.storefront_sessions_order",
+                    "relationship.orders_store",
+                    "relationship.storefront_sessions_store",
                     "relationship.storefront_sessions_customer",
                     "relationship.customer_history_customer"
                   ],
@@ -1228,18 +1225,6 @@
                     "relationship.storefront_sessions_store",
                     "relationship.order_lifecycle_store",
                     "relationship.order_lifecycle_to_customer_history"
-                  ],
-                  [
-                    "relationship.orders_store",
-                    "relationship.order_lifecycle_store",
-                    "relationship.order_lifecycle_customer",
-                    "relationship.customer_history_customer"
-                  ],
-                  [
-                    "relationship.orders_store",
-                    "relationship.storefront_sessions_store",
-                    "relationship.storefront_sessions_customer",
-                    "relationship.customer_history_customer"
                   ]
                 ],
                 "chosen_path": [
@@ -1740,6 +1725,11 @@
           "relationship.customer_history_customer"
         ],
         [
+          "relationship.order_lifecycle_order",
+          "relationship.order_lifecycle_customer",
+          "relationship.customer_history_customer"
+        ],
+        [
           "relationship.orders_customer",
           "relationship.order_lifecycle_customer",
           "relationship.order_lifecycle_to_customer_history"
@@ -1750,12 +1740,19 @@
           "relationship.order_lifecycle_to_customer_history"
         ],
         [
-          "relationship.order_lifecycle_order",
+          "relationship.storefront_sessions_order",
+          "relationship.storefront_sessions_customer",
+          "relationship.customer_history_customer"
+        ],
+        [
+          "relationship.orders_store",
+          "relationship.order_lifecycle_store",
           "relationship.order_lifecycle_customer",
           "relationship.customer_history_customer"
         ],
         [
-          "relationship.storefront_sessions_order",
+          "relationship.orders_store",
+          "relationship.storefront_sessions_store",
           "relationship.storefront_sessions_customer",
           "relationship.customer_history_customer"
         ],
@@ -1770,18 +1767,6 @@
           "relationship.storefront_sessions_store",
           "relationship.order_lifecycle_store",
           "relationship.order_lifecycle_to_customer_history"
-        ],
-        [
-          "relationship.orders_store",
-          "relationship.order_lifecycle_store",
-          "relationship.order_lifecycle_customer",
-          "relationship.customer_history_customer"
-        ],
-        [
-          "relationship.orders_store",
-          "relationship.storefront_sessions_store",
-          "relationship.storefront_sessions_customer",
-          "relationship.customer_history_customer"
         ]
       ]
     },
@@ -1808,7 +1793,6 @@
                   "join_semantics": "",
                   "label": "Order to Customer history",
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                  "path_preference": 50,
                   "rollup_safe_aggregations": [
                     "sum",
                     "count"
@@ -1851,6 +1835,11 @@
                 "relationship.customer_history_customer"
               ],
               [
+                "relationship.order_lifecycle_order",
+                "relationship.order_lifecycle_customer",
+                "relationship.customer_history_customer"
+              ],
+              [
                 "relationship.orders_customer",
                 "relationship.order_lifecycle_customer",
                 "relationship.order_lifecycle_to_customer_history"
@@ -1861,12 +1850,19 @@
                 "relationship.order_lifecycle_to_customer_history"
               ],
               [
-                "relationship.order_lifecycle_order",
+                "relationship.storefront_sessions_order",
+                "relationship.storefront_sessions_customer",
+                "relationship.customer_history_customer"
+              ],
+              [
+                "relationship.orders_store",
+                "relationship.order_lifecycle_store",
                 "relationship.order_lifecycle_customer",
                 "relationship.customer_history_customer"
               ],
               [
-                "relationship.storefront_sessions_order",
+                "relationship.orders_store",
+                "relationship.storefront_sessions_store",
                 "relationship.storefront_sessions_customer",
                 "relationship.customer_history_customer"
               ],
@@ -1881,18 +1877,6 @@
                 "relationship.storefront_sessions_store",
                 "relationship.order_lifecycle_store",
                 "relationship.order_lifecycle_to_customer_history"
-              ],
-              [
-                "relationship.orders_store",
-                "relationship.order_lifecycle_store",
-                "relationship.order_lifecycle_customer",
-                "relationship.customer_history_customer"
-              ],
-              [
-                "relationship.orders_store",
-                "relationship.storefront_sessions_store",
-                "relationship.storefront_sessions_customer",
-                "relationship.customer_history_customer"
               ]
             ],
             "chosen_path": [
@@ -1922,7 +1906,6 @@
               "join_semantics": "",
               "label": "Order to Customer history",
               "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-              "path_preference": 50,
               "rollup_safe_aggregations": [
                 "sum",
                 "count"
@@ -2019,7 +2002,6 @@
                   "join_semantics": "",
                   "label": "Order to Customer history",
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                  "path_preference": 50,
                   "rollup_safe_aggregations": [
                     "sum",
                     "count"
@@ -2062,6 +2044,11 @@
                 "relationship.customer_history_customer"
               ],
               [
+                "relationship.order_lifecycle_order",
+                "relationship.order_lifecycle_customer",
+                "relationship.customer_history_customer"
+              ],
+              [
                 "relationship.orders_customer",
                 "relationship.order_lifecycle_customer",
                 "relationship.order_lifecycle_to_customer_history"
@@ -2072,12 +2059,19 @@
                 "relationship.order_lifecycle_to_customer_history"
               ],
               [
-                "relationship.order_lifecycle_order",
+                "relationship.storefront_sessions_order",
+                "relationship.storefront_sessions_customer",
+                "relationship.customer_history_customer"
+              ],
+              [
+                "relationship.orders_store",
+                "relationship.order_lifecycle_store",
                 "relationship.order_lifecycle_customer",
                 "relationship.customer_history_customer"
               ],
               [
-                "relationship.storefront_sessions_order",
+                "relationship.orders_store",
+                "relationship.storefront_sessions_store",
                 "relationship.storefront_sessions_customer",
                 "relationship.customer_history_customer"
               ],
@@ -2092,18 +2086,6 @@
                 "relationship.storefront_sessions_store",
                 "relationship.order_lifecycle_store",
                 "relationship.order_lifecycle_to_customer_history"
-              ],
-              [
-                "relationship.orders_store",
-                "relationship.order_lifecycle_store",
-                "relationship.order_lifecycle_customer",
-                "relationship.customer_history_customer"
-              ],
-              [
-                "relationship.orders_store",
-                "relationship.storefront_sessions_store",
-                "relationship.storefront_sessions_customer",
-                "relationship.customer_history_customer"
               ]
             ],
             "chosen_path": [
@@ -2142,10 +2124,6 @@
           "field": "revenue_usd"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "revenue_usd",
@@ -2264,10 +2242,6 @@
         "field": "revenue_usd"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "revenue_usd",
@@ -2380,8 +2354,8 @@
   "recovery_hints": [],
   "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_customer_history ON comparison_orders.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_orders.ordered_at AND (comparison_customer_history.valid_to > comparison_orders.ordered_at OR (comparison_customer_history.valid_to IS NULL))\nGROUP BY\n  comparison_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd\nFROM guarded_base AS base\nORDER BY\n  revenue_usd DESC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:c5b79ea644809aa038e12ef9fe7bda2a7d463e63f00dc256f1bdcc06e33699d8",
-  "source_fingerprint": "8104a0af4cc06331a6ce8c02a3b23de4843667b9597c8175179565433e1a930a",
+  "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
+  "source_fingerprint": "3a04595d59e97537227dfd70f6e62ae026eef579da73543884aae311262f0e28",
   "sql_plan": {
     "ctes": [
       {
@@ -2757,6 +2731,23 @@
       "path": "",
       "recovery_hints": [],
       "severity": "warning",
+      "stage": "planning"
+    },
+    {
+      "code": "ROUTE_COLOCATED_KEY",
+      "details": {
+        "route": [
+          "relationship.order_to_customer_history"
+        ]
+      },
+      "message": "Order \u2192 Customer history (own key)",
+      "object_ids": [
+        "entity.jaffle_order",
+        "entity.jaffle_customer_history"
+      ],
+      "path": "",
+      "recovery_hints": [],
+      "severity": "info",
       "stage": "planning"
     }
   ]

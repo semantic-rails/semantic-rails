@@ -23,8 +23,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 1.877,
-      "compile_ms": 0.77,
+      "cache_lookup_ms": 0.537,
+      "compile_ms": 0.224,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -50,7 +50,6 @@
                   "join_semantics": "",
                   "label": "Item to Order",
                   "name": "jaffle.Item_TO_jaffle.Order",
-                  "path_preference": 100,
                   "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -149,7 +148,6 @@
                     "join_semantics": "",
                     "label": "Item to Order",
                     "name": "jaffle.Item_TO_jaffle.Order",
-                    "path_preference": 100,
                     "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -253,7 +251,6 @@
                     "join_semantics": "",
                     "label": "Item to Order",
                     "name": "jaffle.Item_TO_jaffle.Order",
-                    "path_preference": 100,
                     "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -318,10 +315,6 @@
             "field": "item_revenue_usd"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "item_revenue_usd",
@@ -435,10 +428,6 @@
           "field": "item_revenue_usd"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "item_revenue_usd",
@@ -541,7 +530,6 @@
                     "join_semantics": "",
                     "label": "Item to Order",
                     "name": "jaffle.Item_TO_jaffle.Order",
-                    "path_preference": 100,
                     "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -683,7 +671,6 @@
                       "join_semantics": "",
                       "label": "Item to Order",
                       "name": "jaffle.Item_TO_jaffle.Order",
-                      "path_preference": 100,
                       "rollup_safe_aggregations": [],
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "safe",
@@ -1147,7 +1134,6 @@
                   "join_semantics": "",
                   "label": "Item to Order",
                   "name": "jaffle.Item_TO_jaffle.Order",
-                  "path_preference": 100,
                   "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1251,7 +1237,6 @@
                   "join_semantics": "",
                   "label": "Item to Order",
                   "name": "jaffle.Item_TO_jaffle.Order",
-                  "path_preference": 100,
                   "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1316,10 +1301,6 @@
           "field": "item_revenue_usd"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "item_revenue_usd",
@@ -1434,10 +1415,6 @@
         "field": "item_revenue_usd"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "item_revenue_usd",
@@ -1526,7 +1503,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 8.835,
+  "timing_ms": 2.617,
   "trace": {
     "fallback": {
       "reason": "",

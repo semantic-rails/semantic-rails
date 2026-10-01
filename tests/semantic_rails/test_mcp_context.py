@@ -206,7 +206,6 @@ def test_multi_value_filter_must_keep_every_value() -> None:
         ({"time": {**WINDOW_2017, "fill": True}}, "fill"),
         ({"time": {**WINDOW_2017, "calendar_id": "fiscal"}}, "calendar_id"),
         ({"temporal_role_overrides": {REVENUE: ORDER_TIME}}, "temporal_role_overrides"),
-        ({"path_policy": {"ask_if_ambiguous": False}}, "path_policy"),
     ],
 )
 def test_every_field_that_can_change_rows_is_a_slot(change: dict[str, Any], slot: str) -> None:
@@ -228,7 +227,6 @@ def test_equivalent_spellings_compare_equal() -> None:
         "group_by": [STORE],
         "where": [{"field": STORE, "op": "in", "value": ["Brooklyn"]}],
         "time": {**WINDOW_2017, "end": "2018-01-01T00:00:00", "fill": False},
-        "path_policy": {"preference": "fewest_hops", "ask_if_ambiguous": True},
         "order_by": [{"field": "time", "direction": "ASC"}],
     }
     assert mcp_context.mismatched_slots(_case(gold), spelled_out, AGGREGATIONS) == []
