@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..dialects import POSTGRES_CONNECTION_OPTIONS
@@ -55,6 +56,15 @@ POSTGRES_PROFILE = AdbcProfile(
 )
 
 
+def _is_postgres_uuid_type(data_type: Any) -> bool:
+    if data_type is None:
+        return False
+    pa = import_driver(
+        "pyarrow", extra="postgres", engine="postgres", connection_kind="postgres_native"
+    )
+    return bool(data_type == pa.binary(16) or data_type == pa.uuid())
+
+
 def _check_postgres_result_types(schema: Any) -> None:
     """Allow only exact scalar mappings, before reading even null or empty results."""
     if not len(schema):
@@ -79,6 +89,9 @@ def _check_postgres_result_types(schema: Any) -> None:
             or pa.types.is_string(data_type)
             or pa.types.is_boolean(data_type)
             or pa.types.is_date32(data_type)
+            or data_type == pa.time64("us")
+            or data_type == pa.binary()
+            or _is_postgres_uuid_type(data_type)
             or (pa.types.is_timestamp(data_type) and data_type.unit == "us")
             or data_type == pa.month_day_nano_interval()
             or pa.types.is_null(data_type)
@@ -93,6 +106,15 @@ def _check_postgres_result_types(schema: Any) -> None:
 
 def _postgres_value(value: Any, data_type: Any, result_zone: tzinfo) -> Any:
     """Convert a driver value by its Arrow type, never by the text's appearance."""
+    if value is not None and _is_postgres_uuid_type(data_type):
+        if type(value) is UUID:
+            return value
+        if type(value) is bytes and len(value) == 16:
+            return UUID(bytes=value)
+        raise SemanticLayerError(
+            "RESULT_VALUE_UNSUPPORTED",
+            "A result UUID cannot be represented as an exact Python UUID.",
+        )
     if (
         value is not None
         and getattr(data_type, "type_name", "") == "numeric"

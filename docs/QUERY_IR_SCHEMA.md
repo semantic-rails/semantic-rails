@@ -872,8 +872,11 @@ Booleans remain booleans, and nested decimal/float values retain their normaliza
 
 The Postgres ADBC adapter accepts only Arrow scalar types with exact mappings:
 integers, decimals (including PostgreSQL NUMERIC stored as text and converted
-to `Decimal`), float32/float64, text, booleans, date32, microsecond timestamps
-with or without a time zone, month-day-nanosecond intervals, and NULL.
+to `Decimal`), float32/float64, text, booleans, date32, microsecond times,
+binary, UUIDs (exactly fixed-size binary of 16 bytes or the Arrow UUID extension,
+converted to Python `UUID`), microsecond timestamps with or without a time zone,
+month-day-nanosecond intervals, and NULL. Variable-size binary remains binary,
+including 16-byte BYTEA values; UUID-looking text remains text.
 Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB
 and unknown extensions, refuse with `RESULT_TYPE_UNSUPPORTED` before rows
 are read, even for empty or all-null results. The error names the column and

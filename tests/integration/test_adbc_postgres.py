@@ -8,7 +8,9 @@ import threading
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from datetime import time as clock_time
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
 
@@ -55,6 +57,107 @@ def test_postgres_exact_types(adbc):
     assert row["i"] == timedelta(days=32, seconds=3, microseconds=123456)
     assert row["missing"] is None
     assert adbc.query("SELECT current_setting('TimeZone') z")[0]["z"] == original_zone
+
+
+@pytest.mark.parametrize("contents", ["value", "null", "empty"])
+@pytest.mark.parametrize(
+    "expression, value, metadata",
+    [
+        (
+            "TIME '12:34:56.123456'",
+            clock_time(12, 34, 56, 123456),
+            {"type": "time", "timezone": "naive"},
+        ),
+        (
+            "decode('00ff1234', 'hex')",
+            b"\x00\xff\x12\x34",
+            {"type": "binary", "encoding": "base64"},
+        ),
+        ("decode('', 'hex')", b"", {"type": "binary", "encoding": "base64"}),
+        (
+            "decode('78787878787878787878787878787878', 'hex')",
+            b"x" * 16,
+            {"type": "binary", "encoding": "base64"},
+        ),
+        (
+            "'12345678-1234-5678-9abc-def012345678'::UUID",
+            UUID("12345678-1234-5678-9abc-def012345678"),
+            {"type": "uuid"},
+        ),
+        (
+            "'12345678-1234-5678-9abc-def012345678'::TEXT",
+            "12345678-1234-5678-9abc-def012345678",
+            {"type": "string"},
+        ),
+    ],
+)
+def test_postgres_time_binary_uuid_results(adbc, expression, value, metadata, contents):
+    if contents == "null":
+        expression = f"CASE WHEN FALSE THEN {expression} ELSE NULL END"
+    rows = adbc.query(
+        f"SELECT {expression} AS payload" + (" WHERE FALSE" if contents == "empty" else "")
+    )
+    if contents == "empty":
+        assert rows == []
+    elif contents == "null":
+        assert rows == [{"payload": None}]
+    else:
+        assert rows == [{"payload": value}]
+        assert type(rows[0]["payload"]) is type(value)
+        assert result_rows(rows)["column_types"] == {"payload": metadata}
+
+
+def test_postgres_semantic_dimension_on_uuid_key(adbc, tmp_path):
+    root = _package(tmp_path / "uuid_keys", [])
+    config = load_package_config(str(root))
+    package = replace(
+        config.package,
+        warehouse="postgres",
+        default_db="",
+        seed=SeedSpec(),
+        connection=ConnectionSpec(kind="postgres_native", options=dict(TARGET.connection_options)),
+    )
+    runtime = Runtime.from_config(
+        replace(config, package=package), source_path=str(root), package_id="rf"
+    )
+    adbc.query("CREATE TEMP TABLE order_fact(order_id UUID, amount BIGINT)")
+    adbc.query(
+        "INSERT INTO order_fact VALUES "
+        "('12345678-1234-5678-9abc-def012345678', 10), "
+        "('fedcba98-7654-3210-9abc-def012345678', 20)"
+    )
+    runtime.set_adapter(adbc)
+    try:
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "aggregate",
+                            "measure": "measure.rf.revenue",
+                            "aggregation": "sum",
+                        },
+                        "as": "revenue",
+                    }
+                ],
+                "group_by": ["dimension.rf_order_order_ref"],
+                "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "ASC"}],
+            }
+        )
+        assert result["column_types"]["dimension.rf_order_order_ref"] == {"type": "uuid"}
+        assert result["rows"] == [
+            {
+                "dimension.rf_order_order_ref": "12345678-1234-5678-9abc-def012345678",
+                "revenue": "10",
+            },
+            {
+                "dimension.rf_order_order_ref": "fedcba98-7654-3210-9abc-def012345678",
+                "revenue": "20",
+            },
+        ]
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("empty", [False, True])
