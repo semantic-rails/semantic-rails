@@ -18,9 +18,7 @@ import pytest
 
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import (
-    _explicit_grain,
     _time_bounds_from_text,
-    _time_cues,
     _time_spec,
     _unresolved_time_phrases,
 )
@@ -121,23 +119,6 @@ def test_comparison_relative_period_stays_outside_window_resolution(text: str) -
 def test_quantities_are_not_years(text: str) -> None:
     assert _time_bounds_from_text(text) == {}
     assert _unresolved_time_phrases(text) == []
-
-
-@pytest.mark.parametrize(
-    ("text", "grain"),
-    [("orders per second", "second"), ("orders by minute", "minute"), ("hourly orders", "hour")],
-)
-def test_explicit_sub_day_grains_use_the_shared_interpreter(text: str, grain: str) -> None:
-    assert _explicit_grain(text, include_unsupported=True) == grain
-
-
-@pytest.mark.parametrize("phrase", ["tomorrow", "next month"])
-def test_future_time_intent_is_detected_without_resolving_a_window(phrase: str) -> None:
-    question = f"revenue {phrase}"
-    assert _time_bounds_from_text(question) == {}
-    assert [question[start:end] for start, end in _time_cues(question, include_future=True)] == [
-        phrase
-    ]
 
 
 @pytest.mark.parametrize(

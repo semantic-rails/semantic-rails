@@ -2,10 +2,11 @@
 
 Full cards (match reasons, starter patches, comparison metadata) made
 discover over half of a typical agent session's context. verbosity="minimal"
-(the default) returns slim cards; verbosity="compact" returns the full
-cards. When the question names an object outright ("revenue by
-store"), that object outranks near-duplicates that add a qualifier the question
-never used ("delivered revenue", "drink revenue").
+(the default) returns slim cards, which leave out their bucket's kind,
+available=true and empty fields; verbosity="compact" returns the full cards.
+When the question names an object outright ("revenue by store"), that object
+outranks near-duplicates that add a qualifier the question never used
+("delivered revenue", "drink revenue").
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.metadata import discover_payload
 
 SLIM_KEYS = {"id", "kind", "label", "score", "description", "default_temporal_role", "available"}
 VALUE_KEYS = {"id", "kind", "dimension_id", "value", "label", "available", "score"}
@@ -53,7 +55,9 @@ def test_explicit_minimal_discover_returns_five_slim_cards_per_kind(
         rows = response[bucket]
         assert 0 < len(rows) <= 5, bucket
         for row in rows:
-            assert set(row) <= SLIM_KEYS, (bucket, sorted(set(row) - SLIM_KEYS))
+            assert set(row) <= SLIM_KEYS - {"kind", "available"}, (bucket, sorted(set(row)))
+            assert {"id", "label", "score"} <= set(row), (bucket, row)
+    assert "terms" not in response and "verbosity" not in response
     for row in response["dimension_values"]:
         assert set(row) <= VALUE_KEYS | {"blocked_reason"}
 
@@ -110,13 +114,29 @@ def test_unavailable_candidates_keep_their_reason(adapter: SemanticLayerMCPAdapt
     assert all("blocked_reason" not in row for row in available if row.get("available", True))
 
 
-def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter) -> None:
+@pytest.mark.parametrize("verbosity", ["compact", "full"])
+def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter, verbosity: str) -> None:
     response = adapter.call_tool(
-        "discover", {"terms": "revenue by store", "verbosity": "compact", "limit": 10}
+        "discover", {"terms": "revenue by store", "verbosity": verbosity, "limit": 10}
     )
     card = response["measures"][0]
-    assert {"match_reasons", "starter_query_patch", "topics"} <= set(card)
+    assert {"match_reasons", "starter_query_patch", "topics", "kind"} <= set(card)
     assert len(response["measures"]) > 5
+    original = discover_payload(
+        adapter.runtime, terms="revenue by store", verbosity=verbosity, limit=10, enforce_scope=True
+    )
+    for bucket in ("measures", "metrics", "dimensions", "entities", "dimension_values", "blocked"):
+        assert response[bucket] == original[bucket]
+
+
+def test_nonsense_terms_return_a_relevance_block_with_empty_buckets(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    discover = next(tool for tool in list_tool_definitions() if tool["name"] == "discover")
+    assert "'out_of_scope' or 'low_relevance' with empty buckets" in discover["description"]
+    response = adapter.call_tool("discover", {"terms": "unladen swallow airspeed"})
+    assert response.get("out_of_scope") or response.get("low_relevance")
+    assert not response["measures"] and not response["metrics"]
 
 
 @pytest.mark.parametrize(
@@ -138,3 +158,22 @@ def test_canonical_objects_outrank_near_duplicates(
 ) -> None:
     response = adapter.call_tool("discover", {"terms": terms})
     assert response[bucket][0]["id"] == expected, [row["id"] for row in response[bucket]]
+
+
+@pytest.mark.parametrize(
+    "kinds",
+    [
+        ["measure", "metric"],
+        "measure,metric",
+        "measure,\nmetric",
+        '["measure", "metric"]',
+        '[\n  "measure",\n  "metric"\n]',
+    ],
+)
+def test_kinds_filter_accepts_a_list_in_any_encoding(
+    adapter: SemanticLayerMCPAdapter, kinds: Any
+) -> None:
+    response = adapter.call_tool("discover", {"terms": "revenue by store", "kinds": kinds})
+    assert not [w for w in response["warnings"] if w["code"] == "DISCOVER_UNKNOWN_KIND"]
+    assert response["measures"] and response["metrics"]
+    assert not response["dimensions"] and not response["entities"]

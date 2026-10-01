@@ -164,12 +164,103 @@ with `INVALID_QUERY` and the `USE_NULL_TEST_OR_SCALAR` recovery hint, since they
 would always evaluate to unknown in SQL. `IS DISTINCT FROM`, `IS NOT DISTINCT FROM`
 and `<=>` already handle null, so they pass through unchanged. A comparison
 between two nullable columns retains ordinary SQL three-valued semantics, as does
-a comparison against a computed null such as `NOT(NULL)`: `FALSE != NOT(NULL)`
-evaluates to unknown (NULL) and retains no rows when used as a filter.
+a comparison against a computed null such as `NOT(NULL)`: comparing it to `FALSE`
+with `!=` evaluates to unknown (NULL) and retains no rows when used as a filter.
+`NOT(NULL)` renders as `CAST(NULL AS Nullable(Bool))` on
+ClickHouse and `CAST(NULL AS BOOLEAN)` on other warehouses.
+Boolean `and` / `or` expressions require at least two arguments; zero or
+single-argument forms, including negated forms, are refused before SQL with
+`INVALID_EXPRESSION_AST` and the message "and/or need at least two arguments".
 A `metric_predicate` whose `value` is null refuses with `INVALID_METRIC_PREDICATE`:
 its input reads `0` for an entity with no rows and `NULL` for one with no data, so
 a count of none is `= 0`, and a null test belongs inside the input as an
 `aggregate_if` condition.
+
+## Scalar `call` expressions
+
+`{"kind":"call","name":"ROUND","args":[<expression>,{"kind":"literal","value":1}]}`
+applies a scalar function. Names are case-insensitive. Each warehouse accepts
+the common names below plus its additions; aggregate, window and table
+functions must use their semantic expression forms instead of `call`.
+`distinct` is not supported on scalar calls. An unsupported name returns
+`INVALID_EXPRESSION_AST` with `details.allowed` equal to the warehouse's
+accepted set, including `CAST`.
+
+Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
+`FLOOR`, `LENGTH`, `LN`, `LOG`, `LOWER`, `NULLIF`, `POWER`, `REPLACE`, `ROUND`,
+`SQRT`, `SUBSTR`, `SUBSTRING`, `TRIM`, `UPPER`.
+
+| Warehouse | Additions or exceptions |
+| --- | --- |
+| DuckDB, MotherDuck, DuckLake | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `JSON_EXTRACT`, `JSON_EXTRACT_STRING`, `SPLIT`, `STRING_SPLIT`, `STR_SPLIT` |
+| Postgres | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT` |
+| Snowflake | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `SPLIT` |
+| BigQuery | `LEFT`, `RIGHT`, `JSON_EXTRACT`, `SPLIT` |
+| Databricks | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `SPLIT` |
+| Athena | `DATE_TRUNC`, `JSON_EXTRACT`, `SPLIT` |
+| ClickHouse | No additions; `TRIM` is excluded because its plain uppercase spelling is unavailable |
+
+Use each warehouse's scalar argument signatures. For example, Athena `LOG`
+takes a base and a value. Engine-generated SQL has a separate function list;
+it does not advertise functions that a client can call.
+
+Numeric conversion uses exactly two args:
+
+```json
+{"kind":"call","name":"CAST","args":[
+  {"kind":"column","column":"amount_text","entity":"entity.order"},
+  {"kind":"literal","value":"DOUBLE"}
+]}
+```
+
+The type must be a string literal naming `DOUBLE`, `DECIMAL(p,s)`, `INTEGER`,
+`BIGINT` or `VARCHAR` (case-insensitive). Decimal precision is 1–38 and scale
+is 0–precision. `INTEGER` and `BIGINT` both select a signed 64-bit type.
+The rendered targets are:
+
+| Warehouse | `DOUBLE` | `DECIMAL(p,s)` | `INTEGER`, `BIGINT` | `VARCHAR` |
+| --- | --- | --- | --- | --- |
+| DuckDB, MotherDuck, DuckLake, Snowflake, Athena | `DOUBLE` | `DECIMAL(p,s)` | `BIGINT` | `VARCHAR` |
+| Postgres | `FLOAT8` | `DECIMAL(p,s)` | `BIGINT` | `VARCHAR` |
+| BigQuery | `FLOAT64` | Refused (`INVALID_EXPRESSION_AST`) | `INT64` | `STRING` |
+| Databricks | `DOUBLE` | `DECIMAL(p,s)` | `BIGINT` | `STRING` |
+| ClickHouse | `Nullable(Float64)` | `Nullable(DECIMAL(p,s))` | `Nullable(Int64)` | `Nullable(String)` |
+
+BigQuery only supports parameterized decimal types on columns and script
+variables, not CAST targets. Decimal casts are refused rather than silently
+discarding the authored precision and scale; use `DOUBLE` for approximate
+conversion or declare a parameterized decimal column in the warehouse.
+See [BigQuery parameterized type rules](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types#parameterized_data_types).
+ClickHouse emits
+nullable targets so NULL inputs remain NULL. Invalid conversions fail execution;
+CAST does not silently return NULL. `DATE`, `TIMESTAMP`, other target types, non-literal targets and
+`TRY_CAST` are refused. The same AST works in package expressions,
+conditional aggregates and post-aggregation expressions.
+
+Certainly incompatible arguments fail before SQL lowering with `CALL_ARGUMENT_TYPE`
+and `details: {function, argument_index, expected, received}`. Indices are
+zero-based and the type families are `number`, `text`, `date`, `boolean`
+and `array`. Declared dimension types, literals, casts and known nested-call
+return types are checked; a defaulted or authored `categorical` semantic kind
+and columns without a resolved entity have unknown types and pass to the
+warehouse. Coarse family checks apply to DuckDB (including MotherDuck and
+DuckLake), Postgres and BigQuery. Other warehouses' implicit conversions and
+overloads are deferred to execution. Postgres string literals are unknown until
+the warehouse resolves them against a function signature. DuckDB-family `LENGTH` accepts arrays as
+well as text. Additional `ROUND` arguments are deferred to the warehouse;
+Snowflake's text rounding-mode argument is supported.
+Arguments to `CONCAT`, `JSON_EXTRACT`, `JSON_EXTRACT_STRING` and the `SPLIT`
+family are unchecked because warehouse overloads accept multiple type families.
+The package walker visits parsed expressions and leaves metadata, defaults and
+parameters as data. A numeric function receiving text includes a recovery hint to wrap that argument in
+CAST. Package `check`, query validation, planning and execution share this
+check. Package `check` retains other configuration errors alongside a structured
+call type error. Warehouse execution errors remain redacted.
+
+A top-level request select containing only literals, literal arithmetic or casts
+of literals, with no grouping, where, time or metric filter, returns `INVALID_QUERY` with
+`details.reason: "literal_only_select"` and the message “A select of literals
+only reads no data; add a measure, a group_by dimension or time”.
 
 ## MetricFilter expressions
 

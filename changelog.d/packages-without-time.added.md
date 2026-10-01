@@ -3,4 +3,3 @@
   project scaffolds accept a blank time column.
 - Return every natural-language draft on a package without time as `low_confidence`,
   retaining its Query IR with a warning to check for a time breakdown or window.
-- Accept a null `group_by` in partial plan queries without an internal error.

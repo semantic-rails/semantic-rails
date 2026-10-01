@@ -19,7 +19,7 @@ from semantic_rails.architect_scaffold import (
     ProjectWarehouse,
     project_scaffold_files,
 )
-from semantic_rails.compiler import bind_query, compile_query, plan_query
+from semantic_rails.compiler import _compile_query_sql_ast, bind_query, compile_query, plan_query
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
@@ -233,7 +233,8 @@ TIME_REQUESTS = [
 
 @pytest.mark.parametrize("query", TIME_REQUESTS)
 @pytest.mark.parametrize(
-    "operation", ["validate", "compile", "query", "plan_query", "bind_query", "compile_query"]
+    "operation",
+    ["validate", "compile", "query", "plan_query", "bind_query", "compile_query", "nested_compile"],
 )
 def test_every_time_request_refuses_with_the_same_error(runtime, operation, query) -> None:
     if operation == "validate":
@@ -244,7 +245,9 @@ def test_every_time_request_refuses_with_the_same_error(runtime, operation, quer
         assert result["recovery_hints"][0]["kind"] == "remove_time_or_declare_role"
     else:
         with pytest.raises(SemanticLayerError) as exc:
-            if operation in {"plan_query", "bind_query", "compile_query"}:
+            if operation == "nested_compile":
+                _compile_query_sql_ast(runtime._config, query)
+            elif operation in {"plan_query", "bind_query", "compile_query"}:
                 {
                     "plan_query": plan_query,
                     "bind_query": bind_query,
@@ -400,7 +403,7 @@ def test_plan_fallback_cannot_ignore_time_intent(package_path, detail) -> None:
         ("item count by category", "Item count", "Category"),
     ],
 )
-def test_plan_ordinary_time_words_answer(
+def test_plan_ordinary_time_words_retains_query_and_downgrades(
     package_path, intent: str, measure_label: str, dimension_label: str
 ) -> None:
     model_path = package_path / "models/core/items.yml"
@@ -456,7 +459,9 @@ def test_plan_ordinary_time_words_answer(
     ]
     + [("hourly", "value")],
 )
-def test_plan_time_phrase_category_values_answer(package_path, phrase, match_by) -> None:
+def test_plan_time_phrase_category_values_retains_query_and_downgrades(
+    package_path, phrase, match_by
+) -> None:
     model_path = package_path / "models/core/items.yml"
     model = yaml.safe_load(model_path.read_text())
     value = phrase if match_by == "value" else "A"
@@ -644,7 +649,9 @@ def test_plan_drafted_time_cannot_bypass_guard(runtime, monkeypatch) -> None:
         ("item_count", "Monthly plans", "count of monthly plans"),
     ],
 )
-def test_plan_measure_label_without_recipe_answers(package_path, measure, label, intent) -> None:
+def test_plan_measure_label_without_recipe_retains_query_and_downgrades(
+    package_path, measure, label, intent
+) -> None:
     model_path = package_path / "models/core/items.yml"
     model = yaml.safe_load(model_path.read_text())
     model["model"]["measures"][measure]["label"] = label
@@ -729,7 +736,7 @@ def test_scalar_date_arithmetic_without_time_matches_independent_sql(runtime) ->
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
 
 
-def test_plan_dimension_label_with_time_word_answers(package_path) -> None:
+def test_plan_dimension_label_with_time_word_retains_query_and_downgrades(package_path) -> None:
     model_path = package_path / "models/core/items.yml"
     model = yaml.safe_load(model_path.read_text())
     model["model"]["dimensions"]["category"]["label"] = "Monthly plans"
