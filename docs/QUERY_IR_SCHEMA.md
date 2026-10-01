@@ -154,6 +154,23 @@ shorthands for the most common cases:
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
+Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
+`=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
+inside CASE and aggregate-if conditions (including a metric predicate's input),
+post-aggregation expressions, segment membership, and relation filters and joins,
+as well as `where` filters.
+Ordering (`<`, `<=`, `>`, `>=`) and LIKE comparisons with a null literal refuse
+with `INVALID_QUERY` and the `USE_NULL_TEST_OR_SCALAR` recovery hint, since they
+would always evaluate to unknown in SQL. `IS DISTINCT FROM`, `IS NOT DISTINCT FROM`
+and `<=>` already handle null, so they pass through unchanged. A comparison
+between two nullable columns retains ordinary SQL three-valued semantics, as does
+a comparison against a computed null such as `NOT(NULL)`: `FALSE != NOT(NULL)`
+evaluates to unknown (NULL) and retains no rows when used as a filter.
+A `metric_predicate` whose `value` is null refuses with `INVALID_METRIC_PREDICATE`:
+its input reads `0` for an entity with no rows and `NULL` for one with no data, so
+a count of none is `= 0`, and a null test belongs inside the input as an
+`aggregate_if` condition.
+
 ## MetricFilter expressions
 
 Different shape from `select`. The most common pattern is `kind: metric_predicate`:
@@ -219,6 +236,32 @@ Supported `op` values (all compile end-to-end):
   the looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
+
+A positive child-dimension filter on a parent-grain measure means "parents with at
+least one matching child". It lowers to correlated `EXISTS`, so multiple matching
+children never multiply a parent count or sum. This also applies to an aggregate's
+own `filter`, and to non-temporal paths that look up a parent before reaching its
+children or join on an alternate key. Each hop must declare `N:1`, `1:N` or `1:1`;
+unknown, unsafe and temporal paths retain their refusals. A lookup-before-child
+or alternate-key path requires exactly one candidate route after authored
+`graph.path_preferences` pins. When several routes remain, the query retains
+its `MIXED_GRAIN_INVALID` refusal; a shorter route does not establish which
+children the filter means. This also applies beside a lookup and to an
+aggregate's own filter.
+ClickHouse retains a deduplicated-parent leaf for servers without correlated
+subqueries. Key-based descents retain their existing SQL shape, including
+beside lookup selections, groupings and filters; those lookups remain inner
+joins. It refuses paths that look up a parent before reaching children and
+paths joined off the parent's declared key, including beside a lookup, with
+`MIXED_GRAIN_INVALID`.
+
+At most one group or filter may cross a one-to-many hop. Negated child predicates
+and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
+and "has no child that is X" have different answers, and the IR has no explicit
+`NOT EXISTS` predicate. Grouped child dimensions retain their distinct-parent
+count rules; summing a parent amount by a child dimension or reading a child
+measure expression at parent grain remains refused. Under a row policy these
+queries are refused with `POLICY_DENIED`, as before.
 
 ## OrderBy
 

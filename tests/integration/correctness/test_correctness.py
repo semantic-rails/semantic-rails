@@ -440,6 +440,31 @@ def _absent_entity_cases() -> Iterator[Case]:
             )
 
 
+def _null_comparison_cases() -> Iterator[Case]:
+    for op, sql_op in (("=", "IS NULL"), ("!=", "IS NOT NULL"), ("<>", "IS NOT NULL")):
+        conditional = {
+            "kind": "aggregate_if",
+            "aggregation": "count",
+            "condition": {
+                "kind": "comparison",
+                "op": op,
+                "left": {"kind": "column", "column": "amount", "entity": "entity.shop_order"},
+                "right": {"kind": "literal", "value": None},
+            },
+        }
+        yield Case(
+            f"predicate-conditional_count-null-{op}",
+            "utc_authored",
+            {
+                "select": [_item(ORDERS, "n")],
+                "metric_filters": [
+                    _predicate("entity.shop_order", "entity_only", conditional, ">", 0)
+                ],
+            },
+            f"SELECT COUNT(*) FROM orders WHERE amount {sql_op}",
+        )
+
+
 def _cases() -> Iterator[Case]:
     revenue, average = _item(REVENUE, "revenue"), _item(AVERAGE, "average")
     orders = _item(ORDERS, "orders")
@@ -484,6 +509,7 @@ def _cases() -> Iterator[Case]:
     )
     yield from _empty_group_cases(revenue, orders)
     yield from _absent_entity_cases()
+    yield from _null_comparison_cases()
     for name, variant, grain, start, end, routes in (
         ("utc-march_bounds_by_day", "utc_implicit", "day", "2024-03-01", "2024-04-01", None),
         ("ny-march_bounds_by_day", "ny_implicit", "day", "2024-03-01", "2024-04-01", None),

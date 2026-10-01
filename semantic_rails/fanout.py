@@ -377,3 +377,19 @@ def one_to_many_descent(analysis: dict[str, Any], entity_keys: dict[str, list[st
         elif cardinality != "1:1":
             looked_up = True
     return descended
+
+
+def filter_only_semijoin(analysis: dict[str, Any]) -> bool:
+    """A declared non-temporal path can filter rows with EXISTS without expanding them.
+
+    Unlike grouped de-duplication, this does not need a descent before every lookup or a
+    join on the parent's primary key: the correlation uses the authored join columns.
+    Undeclared cardinalities, unsafe hops and temporal paths still need other semantics.
+    """
+    rows = analysis.get("relationships", []) or []
+    return bool(rows) and all(
+        str(row.get("cardinality", "")).upper().replace(" ", "") in {"1:1", "N:1", "1:N"}
+        and row.get("directional_safety") in {"safe", "requires_rewrite"}
+        and not row.get("temporal_validity")
+        for row in rows
+    )

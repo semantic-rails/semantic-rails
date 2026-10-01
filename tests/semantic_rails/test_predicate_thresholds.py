@@ -720,6 +720,21 @@ def test_percentile_thresholds_are_unchanged(runtime):
     assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, ">=", threshold)]) >= 1
 
 
+@pytest.mark.parametrize(
+    "input_",
+    [ORDERS, {"measure": "measure.pred.revenue", "aggregation": "avg"}],
+    ids=["count", "avg"],
+)
+@pytest.mark.parametrize("op", ["=", "!="])
+def test_a_null_threshold_is_refused(runtime, op, input_):
+    # Every customer has a known order count (0 for customers 4 and 5), and those two have no
+    # average: a null test on the value would drop both, so the predicate refuses instead.
+    with pytest.raises(SemanticLayerError) as exc:
+        _run(runtime, "customer_count", [_predicate(CUSTOMER, input_, op, None)])
+    assert exc.value.code == "INVALID_METRIC_PREDICATE"
+    assert exc.value.details["recovery_hints"][0]["code"] == "USE_ZERO_OR_INPUT_NULL_TEST"
+
+
 def _by_enrolment_month(runtime: Runtime, predicate: dict) -> list[dict]:
     return _run(
         runtime,
