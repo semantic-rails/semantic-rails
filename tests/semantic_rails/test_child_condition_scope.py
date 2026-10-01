@@ -379,6 +379,28 @@ def test_a_condition_through_a_lookup_from_the_child_reads_null_when_it_finds_no
     assert _who(package, null_category) == [7]
 
 
+def test_a_lookup_key_the_child_holds_is_read_from_the_child(package: Path) -> None:
+    """The product key is the item's own sku column: no lookup join inside EXISTS."""
+    tea = {"field": "dimension.scope_product_sku", "op": "=", "value": "tea"}
+    where = [{"child": ITEM, "match": "any", "where": [tea, OVER_5]}]
+    result = _run(package, _query(where))
+    assert "JOIN products" not in result["rendered_sql"]
+    assert _normal(tuple(row.values()) for row in typed_rows(result)) == _customers(
+        package, HAS_ITEM.format("i.sku = 'tea' AND i.price > 5")
+    )
+
+
+def test_the_restatement_spells_out_a_group() -> None:
+    from semantic_rails.cli.interpretation import describe_query
+
+    labels = {ITEM: "Order item", TYPE: "Product type", PRICE: "Price"}
+    text = describe_query(_query(SAME_ROW + NO_SAME_ROW), labels)
+    assert text.endswith(
+        'where some Order item has Product type = "beverage" and Price > 5 '
+        'and no Order item has Product type = "beverage" and Price > 5'
+    )
+
+
 # ---- Flat forms -----------------------------------------------------------------------
 
 
@@ -598,6 +620,8 @@ def test_a_unknown_child_or_dimension_is_not_found(package: Path) -> None:
     unknown_dim = [{"child": ITEM, "match": "any", "where": [{"field": "dimension.nope"}]}]
     assert _refusal(package, _query(unknown_child))["code"] == "OBJECT_NOT_FOUND"
     assert _refusal(package, _query(unknown_dim))["code"] == "OBJECT_NOT_FOUND"
+    wrong_type = [{"child": ITEM, "match": "any", "where": [{**OVER_5, "value": "five"}]}]
+    assert _refusal(package, _query(wrong_type))["code"] == "INVALID_QUERY"
 
 
 def test_a_child_grain_measure_beside_a_group_refuses(package: Path) -> None:
