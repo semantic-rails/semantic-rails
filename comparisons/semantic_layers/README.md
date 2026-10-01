@@ -13,7 +13,7 @@ compare latency, token use or cost. It runs without touching the active
   same-store window, a trailing 3-month window, the prior month's value, large-order revenue
   beside total revenue, the average and maximum of a measure modeled as a sum, and two new
   thresholds. Every layer answers them with its model exactly as written for q01-q16, through
-  its query-time interface only. Answered, out of 8, in the pack's layer order: **Semantic Rails 6, MetricFlow 2, Cube 7
+  its query-time interface only. Answered, out of 8, in the pack's layer order: **Semantic Rails 8, MetricFlow 2, Cube 7
   (5 of them through SQL API workarounds), Malloy 8 and KtX 3**; each other answer needs a model
   change, for the reason in [`shared/frozen_model.yml`](shared/frozen_model.yml). Snowflake
   Semantic Views isn't assessed. See *Frozen-Model Questions* below.
@@ -22,8 +22,8 @@ compare latency, token use or cost. It runs without touching the active
   Rails, MetricFlow, Cube, Malloy and KtX), and on the frozen-model questions every answer a
   layer executed matches it too. No layer is the reference: the answer key is SQL
   written against the same views without seeing any layer's models or outputs (see *Independent
-  Answer Key* below). Every layer reads the same `comparison_*` views, and all five ran live on
-  2026-09-26 for this capture.
+  Answer Key* below). Every layer reads the same `comparison_*` views. The competitor captures
+  ran live on 2026-09-26; Semantic Rails was recaptured on 2026-10-01.
 - **Snowflake Semantic Views is a stale April capture.** It ran on 2026-04-07 on an earlier
   dataset, whose lifecycle view held only the 11 hand-authored lifecycle rows, and it can't be
   re-run or re-authored without a live account. The output check reports it separately: it matches the answer key on
@@ -67,7 +67,7 @@ compare latency, token use or cost. It runs without touching the active
 
 | Layer | Version | Captured (UTC) | Re-runnable from this repo |
 | --- | --- | --- | --- |
-| Semantic Rails | 0.3.1, not a release (engine tree `dd85761`, `main` after v0.3.1) | 2026-09-26 | yes |
+| Semantic Rails | 0.3.2rc2, not a release (engine tree c710d06) | 2026-10-01 | yes |
 | MetricFlow | `dbt-metricflow 0.15.0` (`metricflow 0.213.0`), `dbt-core 1.12.5`, `dbt-duckdb 1.11.0` (`metricflow/requirements.lock`) | 2026-09-26 | yes; installs the locked packages |
 | Cube | Cube Core `1.7.45` (`@cubejs-backend/server`, `@cubejs-backend/duckdb-driver`; `cube/package-lock.json`) | 2026-09-26 | yes, on darwin-arm64 (the only platform whose native binary is pinned); installs the locked packages and starts Cube locally |
 | Malloy | `@malloydata/cli 0.0.57` (`malloy/package-lock.json`) | 2026-09-26 | yes; installs the locked CLI |
@@ -81,9 +81,9 @@ can tell a capture made on other data from a real mismatch.
 
 The Semantic Rails runner also records the source trees of its engine, its package, its queries
 and runner, and the question suite, and whether the engine is exactly a tagged release. The
-committed Semantic Rails evidence ran on an engine after the v0.3.1 release: its engine tree,
-`dd85761`, is `main`'s engine tree at `b2bb05a`, not `git rev-parse v0.3.1:semantic_rails`, so it is
-labeled "0.3.1, not a release (engine tree dd85761)" wherever the version is shown. The commit it
+committed Semantic Rails evidence ran on `main` at `0f7f3b5`: its engine
+tree is `c710d06`, and it isn't exactly a tagged release, so it is labeled
+"0.3.2rc2, not a release (engine tree c710d06)" wherever the version is shown. The commit it
 records may not survive a squash merge, but the tree hashes do.
 
 ## Shared Questions: q01-q07
@@ -129,14 +129,14 @@ its documented query-time interface only. A layer that can't express a variant i
 
 | Layer | Support labels | Answered with the model frozen | What answers them, or why not |
 | --- | --- | --- | --- |
-| Semantic Rails | 6 native, 2 requires_model_change (q19, q20) | 6 of 8 | Query API conversion windows, aggregate overrides, a scoped aggregate and metric predicates. `rolling` and `prior_period` run over a dense calendar, and this package declares no calendar entity, so q19 and q20 need one |
+| Semantic Rails | 8 native | 8 of 8 | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
 | MetricFlow | 2 native (q23, q24), 6 requires_model_change (q17-q22) | 2 of 8 | `--where` metric filters over existing entities answer the new thresholds. A conversion window, a cumulative window, a period offset, a per-metric filter and an aggregation are each part of a metric's definition |
 | Cube | 2 native (q22, q24), 5 workaround (q18-q21, q23), 1 requires_model_change (q17) | 7 of 8 | A REST filter answers q24, and an SQL API query's `AVG` and `MAX` over the item revenue measure answer q22 (Cube pushes them down as aggregates of the measure's row expression). SQL API queries answer q18-q21 and q23 by wrapping a Cube query in SQL (a derived table, window functions, `CASE`). The 7-day window is on a declared join and the SQL API joins cubes only along declared joins, so it can narrow the window (q18) but not widen it (q17) |
 | Malloy | 8 native | 8 of 8 | Filtered and ad hoc aggregates, calculations (`sum_moving`, `lag`) and, for q17 and q18, a join the query declares on the model's source |
 | KtX | 2 native (q21, q22), 1 precomputed (q24), 5 requires_model_change (q17-q20, q23) | 3 of 8 | Inline measure expressions answer q21 and q22, and a filter on the precomputed spend column answers q24. The windows and the customer-month threshold are inside SQL sources, joins are equality-only and measures reject window functions |
 | Snowflake Semantic Views | 8 not_assessed | not assessed | A stale capture: no variant can be run without a live account |
 
-Output check: every one of the 26 answers the layers executed matches the answer key.
+Output check: every one of the 28 answers the layers executed matches the answer key.
 
 What this doesn't show:
 

@@ -8,12 +8,19 @@ LEFT JOIN comparison_customer_history ON comparison_order_lifecycle.customer_id 
 GROUP BY
   comparison_customer_history.customer_segment,
   DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))
+),
+guarded_base AS (
+SELECT
+  base.g1 AS g1,
+  base.t AS t,
+  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1 AS base
 )
 SELECT
   base.g1 AS "dimension.jaffle_customer_history_segment",
   base.t AS "temporal_role.jaffle_lifecycle_delivered_at__month",
   base.m1 AS delivered_revenue
-FROM leaf_1 AS base
+FROM guarded_base AS base
 ORDER BY
   t ASC,
   g1 ASC

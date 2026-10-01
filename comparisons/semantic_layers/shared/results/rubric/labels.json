@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-26T02:51:23+00:00",
+  "generated_at": "2026-10-01T03:57:46+00:00",
   "labels": {
     "cube": {
       "q01_orders_by_month": {
@@ -551,18 +551,12 @@
         "label": "native"
       },
       "q19_trailing_3_month_revenue_by_month": {
-        "evidence": [
-          "`rolling` and `prior_period` are query-time expressions, but they run over a dense calendar, and this package declares no calendar entity. The engine refuses the query (\"time.fill requires a calendar entity in the package\"; the refused query and its validation errors are in the Semantic Rails results), so the package needs a calendar entity first.",
-          "https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md#quickstart-init-a-directory-package"
-        ],
-        "label": "requires_model_change"
+        "evidence": [],
+        "label": "native"
       },
       "q20_revenue_and_prior_month_revenue_by_month": {
-        "evidence": [
-          "`rolling` and `prior_period` are query-time expressions, but they run over a dense calendar, and this package declares no calendar entity. The engine refuses the query (\"time.fill requires a calendar entity in the package\"; the refused query and its validation errors are in the Semantic Rails results), so the package needs a calendar entity first.",
-          "https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md#quickstart-init-a-directory-package"
-        ],
-        "label": "requires_model_change"
+        "evidence": [],
+        "label": "native"
       },
       "q21_revenue_and_large_order_revenue_by_month": {
         "evidence": [],
