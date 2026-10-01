@@ -816,28 +816,25 @@ def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) ->
     assert payload["best"]["trace"]["intent_slots"]["target"]
 
 
-def test_plan_structural_precheck_catches_empty_select() -> None:
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        pytest.param({"select": []}, "STRUCTURAL_EMPTY_SELECT", id="empty-select"),
+        pytest.param(
+            {"select": [{"as": "x"}]}, "STRUCTURAL_MISSING_EXPRESSION", id="missing-expression"
+        ),
+    ],
+)
+def test_plan_structural_precheck_short_circuits(payload, code) -> None:
     from semantic_rails.planner.plan import _validate_query
 
     class _NoCallRuntime:
         def validate(self, payload):  # noqa: ARG002
             raise AssertionError("structural precheck should have short-circuited")
 
-    result = _validate_query(_NoCallRuntime(), {"select": []}, None)
+    result = _validate_query(_NoCallRuntime(), payload, None)
     assert result["ok"] is False
-    assert result["errors"][0]["code"] == "STRUCTURAL_EMPTY_SELECT"
-
-
-def test_plan_structural_precheck_catches_missing_expression() -> None:
-    from semantic_rails.planner.plan import _validate_query
-
-    class _NoCallRuntime:
-        def validate(self, payload):  # noqa: ARG002
-            raise AssertionError("structural precheck should have short-circuited")
-
-    result = _validate_query(_NoCallRuntime(), {"select": [{"as": "x"}]}, None)
-    assert result["ok"] is False
-    assert result["errors"][0]["code"] == "STRUCTURAL_MISSING_EXPRESSION"
+    assert result["errors"][0]["code"] == code
 
 
 def test_mcp_registers_only_plan_intent_tool() -> None:

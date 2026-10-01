@@ -156,6 +156,7 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
                 for cte in node.ctes
             ],
             distinct=getattr(node, "distinct", False),
+            observation_scan=node.observation_scan,
         )
 
     return _select(select)

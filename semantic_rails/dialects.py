@@ -129,6 +129,36 @@ class SqlDialect:
     def timestamp_cast(self, expr: Any) -> Any:
         return SqlCast(expr, self.timestamp_type_name())
 
+    @property
+    def has_time_coverage(self) -> bool:
+        """Whether an empty time bucket reads 0 only inside the base's loaded range.
+
+        That coverage compares stored instants with :meth:`now` through :meth:`utc_timestamp`,
+        spelled here for DuckDB (and MotherDuck and DuckLake, which run it) and Postgres, the
+        warehouses whose execution is tested. The others keep the in-window observation test.
+        """
+        return isinstance(self, DuckDbDialect | PostgresDialect)
+
+    def now(self, timezone: str = "UTC") -> Any:
+        """Current instant as wall time in ``timezone``, independent of the session zone."""
+        return SqlCall("TIMEZONE", [SqlLiteral(timezone), SqlCall("NOW", [])])
+
+    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
+        """UTC wall time for an instant, or for naive storage in its declared zone.
+
+        Package timestamp metadata does not distinguish these physical SQL types.
+        Both CASE arms return naive UTC, so session coercion cannot change the cutoff.
+        Only used where :attr:`has_time_coverage` holds.
+        """
+        aware = SqlBinary(
+            SqlCast(SqlCall("PG_TYPEOF", [expr]), "VARCHAR"),
+            "=",
+            SqlLiteral("timestamp with time zone"),
+        )
+        instant = SqlCall("TIMEZONE", [SqlLiteral("UTC"), SqlCast(expr, "TIMESTAMPTZ")])
+        naive = self.convert_timezone(storage_zone, "UTC", self.timestamp_cast(expr))
+        return SqlCase([SqlCaseWhen(aware, instant)], naive)
+
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         return SqlCall("DATE_TRUNC", [SqlLiteral(grain), self.timestamp_cast(ts_expr)])
 
